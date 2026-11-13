@@ -2,124 +2,82 @@
 
 ## Overview
 
-[Probabilistic PCA](https://en.wikipedia.org/wiki/Probabilistic_principal_component_analysis) [@tipping1999ppca] factors a data matrix through a low-rank loading matrix $W$ acting on a per-item latent code $z$:
+[Probabilistic PCA](https://en.wikipedia.org/wiki/Probabilistic_principal_component_analysis) (PPCA) [@tipping1999ppca] explains a $D$-dimensional observation by a $K$-dimensional latent code $z_i$, a loading matrix $W$, and one isotropic noise scale $\sigma$:
 
 $$
 z_i \sim \mathcal{N}(0, I_K), \quad y_i \mid z_i \sim \mathcal{N}(W z_i, \sigma^2 I_D).
 $$
 
-The model is identifiable up to a $K \times K$ orthogonal rotation of $W$; the maximum-likelihood $W$ recovers the leading-$K$ [principal components](https://en.wikipedia.org/wiki/Principal_component_analysis) scaled by $\sqrt{\lambda_k - \sigma^2}$, where $\lambda_k$ are the data covariance eigenvalues. In general, PPCA differs from classical factor analysis in the observation noise: PPCA uses a single isotropic scalar $\sigma$, while classical factor analysis uses a free diagonal $\psi$. The gallery's [isotropic factor-model page](factor-analysis.md) intentionally has the same noise structure as this program and emphasizes the shared low-rank composition instead.
-
-In quivers, the loading matrix is a [`LatentMorphism`](../api/core/morphisms.md) $W : \mathsf{LatentDim} \to \mathsf{ObsDim}$ and the per-item code is $Z : \mathsf{Item} \to \mathsf{LatentDim}$. The model mean is the composition $Z \mathbin{>>} W$. The exported program below supplies explicit Normal priors through `Z_mat` and `W_mat`; the top-level morphisms themselves have no family declaration.
+Integrating the code out gives $y_i \sim \mathcal{N}(0, W W^\top + \sigma^2 I_D)$. Tipping and Bishop show that the maximum-likelihood $W$ spans the leading $K$ [principal components](https://en.wikipedia.org/wiki/Principal_component_analysis) of the sample covariance, with the $k$-th direction scaled by $\sqrt{\lambda_k - \sigma^2}$, where $\lambda_k$ is the $k$-th largest eigenvalue, and that $\sigma^2$ is the mean of the $D - K$ discarded eigenvalues. $W$ is identified only up to a $K \times K$ rotation, so a fit is checked through rotation-invariant quantities: the implied covariance and the subspace $W$ spans. [Factor analysis](factor-analysis.md) is the same model with a separate noise scale for every observed coordinate.
 
 ## QVR source
 
 ```qvr
 # Probabilistic Principal Component Analysis
 #
-# Probabilistic PCA factors a data matrix through a low-rank
-# loading matrix and a per-item latent code, so the model mean
-# is a morphism composition under the real algebra.
+# Probabilistic PCA explains each item's D observed coordinates by a
+# K-dimensional latent code, a shared loading matrix, and one
+# isotropic noise scale:
 #
-# Structural form:
+#   z_i     ~ Normal(0, I_K)                 per-item latent code
+#   W[d]    ~ Normal(0, I_K)                 loading row of coordinate d
+#   sigma   ~ HalfCauchy(2.5)                shared noise scale
+#   y[i, d] ~ Normal(z_i . W[d], sigma)      observed coordinate
 #
-#   Z     : Item      -> LatentDim       per-item latent code
-#   W     : LatentDim -> ObsDim          learned loadings
-#   ppca  = Z >> W                       low-rank linear mean
-#
-# The structural W arrow has no family declaration. The exported
-# program below supplies independent Normal priors for its loading
-# entries, the identity-covariance special case of a matrix-Normal
-# prior. The model is identifiable up to a K x K orthogonal
-# rotation of W; the maximum-likelihood W recovers the leading-K
-# principal components scaled by sqrt(lambda_k - sigma^2).
+# The data matrix is flattened into response rows: item_idx and
+# obs_idx give each row's item and coordinate, so the mean of a
+# row is the inner product of two gathered K-vectors. Integrating
+# the codes out gives y_i ~ Normal(0, W W^T + sigma^2 I), and the
+# maximum-likelihood W spans the leading K principal components of
+# the data. W is identified only up to a K x K rotation.
 #
 # Reference: [Tipping and Bishop 1999](https://doi.org/10.1111/1467-9868.00196).
 
-composition real [level=algebra]
-
 object LatentDim : FinSet 2
-object ObsDim : FinSet 5
-object Item : FinSet 32
-object Resp : FinSet 160
+object ObsDim : FinSet 6
+object Item : FinSet 400
+object Resp : FinSet 2400
 object Val : Real 1
 
-morphism Z : Item -> LatentDim [role=latent]
-
-morphism W : LatentDim -> ObsDim [role=latent]
-
-define ppca = Z >> W
-
-# Probabilistic model: every entry of the loading matrix and
-# per-item latent code carries an independent Normal(0, 1) prior
-# (the matrix-normal special case with V = U = I), the isotropic
-# noise scale sigma carries a HalfCauchy(2.5) prior, and the
-# observed response is scored under Normal(mu, sigma) where mu is
-# the per-row inner product Z[i] . W[d]. The loading matrix is
-# sampled transposed (ObsDim -> LatentDim) so the per-Resp inner
-# product is two compatible Resp-by-LatentDim gathers.
-program ppca_program : Resp -> Val
+program ppca : Resp -> Val
     sample sigma <- HalfCauchy(scale=2.5)
-    sample Z_mat : Item <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=Item]
-    sample W_mat : ObsDim <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=ObsDim]
+    sample Z : Item <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=Item]
+    sample W : ObsDim <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=ObsDim]
 
-    let z_row = Z_mat[item_idx]
-    let w_row = W_mat[obs_idx]
+    let z_row = Z[item_idx]
+    let w_row = W[obs_idx]
     let mu = sum(z_row * w_row)
 
     observe y : Resp <- Normal(loc=mu, scale=sigma)
     return y
 
-export ppca_program
+export ppca
 ```
 
 ## Understanding the model
 
-PPCA describes many correlated measurements using a shorter latent code.
-The [loading matrix](factor-analysis.md#understanding-the-model) expands that code back to observation space, and one
-shared noise scale describes residual variation in every direction. With
-fewer latent than observed coordinates, the mean reconstruction lies in a
-lower-dimensional subspace.
+PPCA describes many correlated measurements using a shorter latent code. The loading matrix expands that code back to observation space, and one shared noise scale describes the residual variation in every direction. With fewer latent than observed coordinates, the reconstructed means lie in a $K$-dimensional subspace, and the noise accounts for everything off it.
 
-Rotating the latent coordinates and applying the inverse rotation to the
-loadings preserves the reconstructed covariance. Compare fits through their
-reconstructed means and `W.T @ W + sigma**2 * I`, using the row-oriented
-loading convention here. Equivalent fits can have different loading entries.
+Rotating the latent coordinates and applying the inverse rotation to the loadings leaves every reconstructed mean, and thus the likelihood, unchanged. Two fits can thus have quite different loading entries and still describe the same distribution. The quantities that do not move under rotation are the implied covariance $W W^\top + \sigma^2 I$ and the column space of $W$, and these are what the fit below is compared on.
 
 ## Walkthrough
 
-The same object declaration can identify an axis in several roles. Read the
-position where it is used:
+The same object declaration can identify an axis in several roles. Read the position where it is used:
 
 | Use | Meaning in this model |
 |---|---|
-| `morphism Z : Item -> LatentDim` | A table with one row per item and one column per latent coordinate. |
-| `[over=LatentDim]` | The coordinates making up one vector-valued draw. |
-| `observe y : Resp <- Normal(...)` | One scored response per element of the flattened response index. |
+| `sample Z : Item <- ... [over=LatentDim]` | A table with one row per item and one column per latent coordinate. |
+| `sample W : ObsDim <- ... [over=LatentDim]` | A table with one row per observed coordinate: the transposed loading matrix. |
+| `observe y : Resp <- Normal(...)` | One scored response per cell of the flattened data matrix. |
 | `program ... : Resp -> Val` | A response-indexed program returning real values; `Val` is `Real 1`. |
 
-A row index tells you which observation is being scored; the Normal family
-tells you that its value is real. These are separate roles even if their
-sizes happen to coincide. Keep the return-space declaration consistent with
-the returned values rather than assuming an index name is also a value type.
+`object Item : FinSet 400` and `object ObsDim : FinSet 6` give the data matrix its $400 \times 6$ shape, and `object Resp : FinSet 2400` is that matrix flattened into one response per cell. The host data `item_idx` and `obs_idx` record which item and which coordinate each response belongs to.
 
-The two latent declarations introduce the per-item code and the loading matrix as first-class arrows. The composition `Z >> W` is real-algebra matmul: under `composition real [level=algebra]` the `(i, d)` entry of the resulting `Item x ObsDim` tensor is exactly $\sum_k Z_{i,k} W_{k,d}$, the PPCA model mean.
-
-The following matrix-normal declaration is an optional alternative, not part of the source above:
-
-<!-- compile: false -->
-```qvr
-morphism W : LatentDim -> ObsDim [role=latent] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0) over (dom, cod)
-```
-
-It would place a [`MatrixNormal`](../api/continuous/families.md#quivers.continuous.families.ConditionalMatrixNormal) prior on the loading matrix. The runnable `ppca_program` uses indexed Normal draws instead.
-
-The PPCA / factor analysis distinction lies in the downstream observation kernel applied to the matrix-product mean: a single shared scalar `sigma` for PPCA or a free diagonal `psi_d` for factor analysis. Both models use the same morphism composition, `Z >> W`.
+The three `sample` steps draw the noise scale, the codes, and the loadings. The loading table is drawn with one row per observed coordinate, $W_{d, \cdot} \in \mathbb{R}^K$, so that both gathers in the `let` steps return `Resp`-by-`LatentDim` tables: `z_row` holds the code of each response's item and `w_row` holds the loading row of its coordinate. `sum(z_row * w_row)` reduces the last axis, giving each response's mean $\sum_k Z_{i,k} W_{d,k}$, which is the $(i, d)$ entry of $Z W^\top$. Every response then shares the one noise scale `sigma`; that sharing is what makes this PPCA rather than factor analysis.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
+The blocks below simulate a data matrix from the model, check the compiled joint against a hand-written density, fit by SVI and compare the fit with the Tipping and Bishop solution, and run a short NUTS chain on the same joint.
 
 ### Generating synthetic data
 
@@ -127,30 +85,52 @@ The PPCA / factor analysis distinction lies in the downstream observation kernel
 import torch
 from quivers.dsl import load
 
+D = torch.distributions
+
 torch.manual_seed(0)
 prog = load("docs/examples/source/ppca.qvr")
 model = prog.morphism
 
-N, K, Dn = 32, 2, 5
-ND = N * Dn
+N, K, Dn = 400, 2, 6
 item_idx = torch.arange(N).repeat_interleave(Dn)
 obs_idx = torch.arange(Dn).repeat(N)
 
-true_sigma = 0.2
-true_Z_mat = torch.randn(N, K)
-true_W_mat = torch.randn(Dn, K)
-mu_true = (true_Z_mat[item_idx] * true_W_mat[obs_idx]).sum(dim=-1)
-y = torch.distributions.Normal(mu_true, true_sigma).sample()
+true_sigma = 0.5
+true_W = torch.tensor([
+    [1.2, 0.0], [1.0, 0.3], [0.8, -0.5],
+    [0.0, 1.1], [0.4, 0.9], [-0.3, 0.7],
+])
+true_Z = torch.randn(N, K)
+mu_true = (true_Z[item_idx] * true_W[obs_idx]).sum(dim=-1)
+y = D.Normal(mu_true, true_sigma).sample()
 
-observations = {
-    "y": y,
-    "item_idx": item_idx,
-    "obs_idx": obs_idx,
-}
+observations = {"y": y, "item_idx": item_idx, "obs_idx": obs_idx}
 x_in = torch.zeros(1, 1)
 ```
 
+The program input `x_in` is a single row. The extent of the `Resp` plate comes from the observed responses and their indices, and the scalar site `sigma` is drawn once per run rather than once per input row.
+
+### Checking the joint density
+
+At the true values, [`log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint) should equal the half-Cauchy and Normal prior terms plus the Normal likelihood of every cell, written out by hand.
+
+```python
+truth = {"sigma": torch.tensor(true_sigma), "Z": true_Z, "W": true_W, **observations}
+log_joint = model.log_joint(x_in, truth)[0]
+
+by_hand = (
+    D.HalfCauchy(2.5).log_prob(torch.tensor(true_sigma))
+    + D.Normal(0.0, 1.0).log_prob(true_Z).sum()
+    + D.Normal(0.0, 1.0).log_prob(true_W).sum()
+    + D.Normal(mu_true, true_sigma).log_prob(y).sum()
+)
+assert torch.allclose(log_joint, by_hand, rtol=1e-5)
+print(f"log joint at the truth: {float(log_joint):.2f}")
+```
+
 ### SVI fit
+
+Fit an [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) by [`SVI`](../api/inference/svi.md#svi) and summarize $W$ and $\sigma$ by the mean of 100 guide draws. The checks are rotation-invariant: the noise scale, the implied covariance against the true one, and the [principal angles](https://en.wikipedia.org/wiki/Angles_between_flats) between the column space of the fitted $W$ and the top-$K$ eigenvectors of the sample covariance, which is the subspace the Tipping and Bishop solution spans.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -161,15 +141,40 @@ optim = torch.optim.Adam(
     list(model.parameters()) + list(guide.parameters()), lr=5e-2,
 )
 svi = SVI(model, guide, optim, ELBO(num_particles=1))
+losses = [svi.step(x_in, observations) for _ in range(2000)]
 
-losses = [svi.step(x_in, observations) for _ in range(200)]
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(100)]
+fit_W = torch.stack([d["W"] for d in draws]).mean(0).reshape(Dn, K)
+fit_sigma = float(torch.stack([d["sigma"] for d in draws]).mean())
+
+true_cov = true_W @ true_W.T + true_sigma**2 * torch.eye(Dn)
+fit_cov = fit_W @ fit_W.T + fit_sigma**2 * torch.eye(Dn)
+cov_error = float((fit_cov - true_cov).norm() / true_cov.norm())
+
+sample_cov = torch.cov(y.reshape(N, Dn).T)
+eigvals, eigvecs = torch.linalg.eigh(sample_cov)
+leading = eigvecs[:, -K:]
+basis, _ = torch.linalg.qr(fit_W)
+cosines = torch.linalg.svdvals(leading.T @ basis).clamp(max=1.0)
+angles = torch.rad2deg(torch.arccos(cosines))
+
+ml_sigma = float(eigvals[:-K].mean().sqrt())
+print(f"ELBO loss: {losses[0]:.1f} -> {sum(losses[-100:]) / 100:.1f}")
+print(f"sigma: fitted {fit_sigma:.3f}, closed-form ML {ml_sigma:.3f}, true {true_sigma}")
+print(f"relative covariance error: {cov_error:.3f}")
+print(f"principal angles (degrees): {angles.numpy().round(2)}")
+
+assert abs(fit_sigma - true_sigma) < 0.1
+assert cov_error < 0.2
+assert angles.max() < 5.0
 ```
 
-The recovered factorization `Z @ W` matches the data up to the $K \times K$ rotation invariance of PPCA.
+The covariance tolerance is set against sampling error: with 400 items, the sample covariance itself is about 12% (in relative Frobenius norm) away from the true one here, and a fit can do no better than the data allow. The subspace check needs no truth at all; it asks whether the fitted loadings span the principal subspace of the data, which is the content of Tipping and Bishop's result.
 
 ### NUTS posterior
+
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) runs on the same joint, with the codes, the loadings, and the noise scale all latent. The chain below is short; the rotation invariance makes $W$ itself mix poorly, so a real analysis would monitor rotation-invariant summaries such as the implied covariance across several chains.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -179,22 +184,19 @@ kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
 mc     = MCMC(kernel, num_warmup=15, num_samples=15, num_chains=1)
 result = mc.run(model, x_in, observations)
 
+assert torch.isfinite(result.log_densities).all()
 print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
-
 ## Categorical perspective
 
-PPCA is a pair of arrows in a real-algebra category: the per-item code $Z : \mathsf{Item} \to \mathsf{LatentDim}$ and the loading $W : \mathsf{LatentDim} \to \mathsf{ObsDim}$. Their composition $Z \mathbin{>>} W$ is a [`ComposedMorphism`](../api/core/morphisms.md) $\mathsf{Item} \to \mathsf{ObsDim}$ whose tensor is the model mean. Marginalizing the latent factor under an isotropic noise kernel recovers the closed-form covariance $W^\top W + \sigma^2 I$ on the observation side.
-
-The optional morphism-valued [`MatrixNormal`](../api/continuous/families.md#quivers.continuous.families.ConditionalMatrixNormal) declaration shown above would place a measure on the hom-object $\mathbf{Kern}(\mathsf{LatentDim}, \mathsf{ObsDim})$. The loaded program instead uses indexed independent-Normal draws for the loading entries.
+Read as arrows in the real algebra, the code table is a map $Z : \mathsf{Item} \to \mathsf{LatentDim}$ and the transposed loading table a map $W^\top : \mathsf{LatentDim} \to \mathsf{ObsDim}$, and the mean of the response at $(i, d)$ is the $(i, d)$ entry of their composite $Z\,W^\top : \mathsf{Item} \to \mathsf{ObsDim}$. The program never materializes that composite: the two gathers pull both arrows back along `item_idx` and `obs_idx` to the response plate, where the contraction over `LatentDim` is done row by row. Following the mean by the isotropic Normal kernel and integrating $Z$ against its standard Normal prior gives, for each item, the Gaussian measure $\mathcal{N}(0, W W^\top + \sigma^2 I)$ on $\mathbb{R}^{\mathsf{ObsDim}}$. Factor analysis keeps the same composite and changes only the noise kernel.
 
 ## See also
 
-- [Isotropic Bayesian Factor Model](factor-analysis.md), the same low-rank mean and shared-noise structure presented as a factor model.
-- [DSL Guide](../guides/dsl-overview.md) for the morphism-valued prior syntax.
-
+- [Bayesian Factor Analysis](factor-analysis.md), the same low-rank mean with a separate uniqueness for every observed coordinate.
+- [Probabilistic Matrix Factorization](pmf.md), the same per-row inner-product idiom applied to a sparse rating matrix.
 
 ## Sources and further reading
 

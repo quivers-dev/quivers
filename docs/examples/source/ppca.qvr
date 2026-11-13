@@ -1,56 +1,39 @@
 # Probabilistic Principal Component Analysis
 #
-# Probabilistic PCA factors a data matrix through a low-rank
-# loading matrix and a per-item latent code, so the model mean
-# is a morphism composition under the real algebra.
+# Probabilistic PCA explains each item's D observed coordinates by a
+# K-dimensional latent code, a shared loading matrix, and one
+# isotropic noise scale:
 #
-# Structural form:
+#   z_i     ~ Normal(0, I_K)                 per-item latent code
+#   W[d]    ~ Normal(0, I_K)                 loading row of coordinate d
+#   sigma   ~ HalfCauchy(2.5)                shared noise scale
+#   y[i, d] ~ Normal(z_i . W[d], sigma)      observed coordinate
 #
-#   Z     : Item      -> LatentDim       per-item latent code
-#   W     : LatentDim -> ObsDim          learned loadings
-#   ppca  = Z >> W                       low-rank linear mean
-#
-# The structural W arrow has no family declaration. The exported
-# program below supplies independent Normal priors for its loading
-# entries, the identity-covariance special case of a matrix-Normal
-# prior. The model is identifiable up to a K x K orthogonal
-# rotation of W; the maximum-likelihood W recovers the leading-K
-# principal components scaled by sqrt(lambda_k - sigma^2).
+# The data matrix is flattened into response rows: item_idx and
+# obs_idx give each row's item and coordinate, so the mean of a
+# row is the inner product of two gathered K-vectors. Integrating
+# the codes out gives y_i ~ Normal(0, W W^T + sigma^2 I), and the
+# maximum-likelihood W spans the leading K principal components of
+# the data. W is identified only up to a K x K rotation.
 #
 # Reference: [Tipping and Bishop 1999](https://doi.org/10.1111/1467-9868.00196).
 
-composition real [level=algebra]
-
 object LatentDim : FinSet 2
-object ObsDim : FinSet 5
-object Item : FinSet 32
-object Resp : FinSet 160
+object ObsDim : FinSet 6
+object Item : FinSet 400
+object Resp : FinSet 2400
 object Val : Real 1
 
-morphism Z : Item -> LatentDim [role=latent]
-
-morphism W : LatentDim -> ObsDim [role=latent]
-
-define ppca = Z >> W
-
-# Probabilistic surface: every entry of the loading matrix and
-# per-item latent code carries an independent Normal(0, 1) prior
-# (the matrix-normal special case with V = U = I), the isotropic
-# noise scale sigma carries a HalfCauchy(2.5) prior, and the
-# observed response is scored under Normal(mu, sigma) where mu is
-# the per-row inner product Z[i] . W[d]. The loading matrix is
-# sampled transposed (ObsDim -> LatentDim) so the per-Resp inner
-# product is two compatible Resp-by-LatentDim gathers.
-program ppca_program : Resp -> Val
+program ppca : Resp -> Val
     sample sigma <- HalfCauchy(scale=2.5)
-    sample Z_mat : Item <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=Item]
-    sample W_mat : ObsDim <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=ObsDim]
+    sample Z : Item <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=Item]
+    sample W : ObsDim <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=ObsDim]
 
-    let z_row = Z_mat[item_idx]
-    let w_row = W_mat[obs_idx]
+    let z_row = Z[item_idx]
+    let w_row = W[obs_idx]
     let mu = sum(z_row * w_row)
 
     observe y : Resp <- Normal(loc=mu, scale=sigma)
     return y
 
-export ppca_program
+export ppca

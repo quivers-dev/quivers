@@ -34,7 +34,6 @@ from collections.abc import Callable
 import pytest
 import torch
 from torch import Tensor
-from torch.nn import functional as F
 from torch import distributions as td
 
 from quivers.dsl.ast_nodes.declarations import ProgramDecl
@@ -171,345 +170,6 @@ def _unknown_variant(example: str, variant: str) -> AssertionError:
 # ---------------------------------------------------------------------
 
 
-#: Factor widths of one `seq2seq` transformer block, in source order:
-#: `fan(head)`, `attn_proj`, `residual_attn`, `ff_up`, `ff_down`,
-#: `residual_ff`. `object Latent : Real 16`, `object FFHidden : Real 32`.
-_SEQ2SEQ_BLOCK_WIDTHS: tuple[int, ...] = (16, 16, 16, 32, 16, 16)
-
-
-def _seq2seq_block_prefixes(root: str) -> tuple[tuple[str, ...], ...]:
-    """Parameter prefixes of one block, in the order the source composes.
-
-    A block is `fan(head) >> attn_proj >> residual_attn >> ff_up >>
-    ff_down >> residual_ff`, composed left-associatively, so the last
-    factor sits at `right` and each earlier one gains a `left`. The
-    `fan` is the head of the chain and carries its four
-    `[replicate=4]` components. Each entry is the tuple of prefixes
-    that factor draws its parameters from: one for an ordinary factor,
-    four for the fan.
-    """
-    return (
-        tuple(
-            f"{root}.left.left.left.left.left._components.{index}.param_source"
-            for index in range(4)
-        ),
-        (f"{root}.left.left.left.left.right.param_source",),
-        (f"{root}.left.left.left.right.param_source",),
-        (f"{root}.left.left.right.param_source",),
-        (f"{root}.left.right.param_source",),
-        (f"{root}.right.param_source",),
-    )
-
-
-def _seq2seq_side(
-    root: str,
-    tokens: Tensor,
-    weights: dict[str, Tensor],
-    *,
-    activated: bool,
-) -> tuple[Tensor, Tensor]:
-    """Score one `seq2seq` tower along its canonical path.
-
-    The tower is `embed >> stack(block, 2)`. Its embedding is a
-    `Normal` whose location is the token's own centre row, so at the
-    origin it is scored there and contributes its normalizer; every
-    later factor is likewise bound to its own location, which is what
-    the base measure's origin pushes to. Returns the summed density
-    and the tower's output, which is the row the cross-attention
-    factor reads.
-    """
-    centres = weights[root + ".left.centers"]
-    scales = weights[root + ".left.log_sigma"].exp()
-    embedded = centres[tokens]
-    term = td.Normal(centres[tokens], scales[tokens]).log_prob(embedded)
-    total = term.sum(tuple(range(1, term.dim())))
-
-    current = embedded
-    factors: list[tuple[tuple[str, ...], int]] = []
-    for block in ("right.left", "right.right"):
-        prefixes = _seq2seq_block_prefixes(f"{root}.{block}")
-        factors += list(zip(prefixes, _SEQ2SEQ_BLOCK_WIDTHS, strict=True))
-
-    for prefixes, width in factors:
-        if len(prefixes) > 1:
-            # `[replicate=4]`: four heads of `object HeadOut : Real 4`,
-            # concatenated back into the 16 columns of `Latent`.
-            locations, scale_columns = [], []
-            for prefix in prefixes:
-                head_loc, head_scale = _normal_head(
-                    _mlp3_linear(
-                        current,
-                        weights,
-                        prefix + ".net.",
-                        activated=activated,
-                    ),
-                    4,
-                )
-                locations.append(head_loc)
-                scale_columns.append(head_scale)
-            location = torch.cat(locations, dim=-1)
-            scale = torch.cat(scale_columns, dim=-1)
-        else:
-            location, scale = _normal_head(
-                _mlp3_linear(
-                    current,
-                    weights,
-                    prefixes[0] + ".net.",
-                    activated=activated,
-                ),
-                width,
-            )
-        factor_term = td.Normal(location, scale).log_prob(location)
-        total = total + factor_term.sum(tuple(range(1, factor_term.dim())))
-        current = location
-    return total, current
-
-
-def _reconstruct_seq2seq(
-    dataset: _gallery_data.GalleryDataset,
-    values: dict[str, Tensor],
-    weights: dict[str, Tensor],
-    variant: str,
-) -> dict[str, Tensor]:
-    """`seq2seq.qvr`:
-
-        sample h          <- backbone
-        observe next_token <- lm_head(h)
-
-    with `backbone = (encoder @ decoder) >> cross`, each tower
-    `embed >> stack(block, 2)`, and each block
-    `fan(head) >> attn_proj >> residual_attn >> ff_up >> ff_down >>
-    residual_ff`. There is no scan here: the chain is feed-forward, so
-    the canonical path is a plain fold and the reconstruction agrees
-    with the oracle within the calibrated float32 roundoff budget.
-
-    The product scores both towers at the image of the base measure's
-    origin and hands their concatenated outputs to `cross`, which is
-    where `h` enters. `object Latent : Real 16`, `object Combined :
-    Real 32`, and `enc_head` / `dec_head` carry `[replicate=4]` over
-    `object HeadOut : Real 4`, so each fan rebuilds `Latent` from four
-    four-column heads. The MLP and embedding weights are compile-time
-    draws with no spelling in the source and are taken as given.
-    """
-    x_input = dataset.x_input
-    if x_input is None:
-        raise AssertionError(
-            "seq2seq's reconstruction needs the snippet's "
-            "`(source, target)` column pair, which the dataset did "
-            "not carry."
-        )
-    known = (
-        "",
-        "drop_encoder_tower",
-        "drop_decoder_tower",
-        "drop_cross_factor",
-    )
-    if variant not in known:
-        raise _unknown_variant("seq2seq", variant)
-
-    activated = True
-    source_tokens = x_input[..., 0]
-    target_tokens = x_input[..., 1]
-    encoder_term, encoder_out = _seq2seq_side(
-        "_step_h.left.left",
-        source_tokens,
-        weights,
-        activated=activated,
-    )
-    decoder_term, decoder_out = _seq2seq_side(
-        "_step_h.left.right",
-        target_tokens,
-        weights,
-        activated=activated,
-    )
-
-    combined = torch.cat([encoder_out, decoder_out], dim=-1)
-    loc_cross, scale_cross = _normal_head(
-        _mlp3_linear(
-            combined,
-            weights,
-            "_step_h.right.param_source.net.",
-            activated=activated,
-        ),
-        32,
-    )
-    cross_term = (
-        td.Normal(loc_cross, scale_cross)
-        .log_prob(
-            values["h"],
-        )
-        .sum(-1)
-    )
-
-    head = "_step_next_token.param_source.linear."
-    logits = F.linear(
-        values["h"],
-        weights[head + "weight"],
-        weights[head + "bias"],
-    )
-    per_token = td.Categorical(logits=logits).log_prob(
-        values["next_token"],
-    )
-
-    if variant == "drop_encoder_tower":
-        encoder_term = torch.zeros_like(encoder_term)
-    if variant == "drop_decoder_tower":
-        decoder_term = torch.zeros_like(decoder_term)
-    if variant == "drop_cross_factor":
-        cross_term = torch.zeros_like(cross_term)
-    latent = encoder_term + decoder_term + cross_term
-    return {"h": latent.sum(), "next_token": per_token.sum()}
-
-
-def _mlp3_linear(
-    x: Tensor,
-    weights: dict[str, Tensor],
-    prefix: str,
-    *,
-    activated: bool = True,
-) -> Tensor:
-    """`_mlp3` spelled through `torch.nn.functional.linear`.
-
-    The two differ only in floating-point re-association, which for a
-    feed-forward chain stays below the pin tolerance. A reconstruction
-    that scores a chain of many factors calls what the parameter
-    source itself calls, so that what the value is compared against is
-    the same implemented map.
-    """
-    layer = F.linear(
-        x,
-        weights[prefix + "0.weight"],
-        weights[prefix + "0.bias"],
-    )
-    if activated:
-        layer = torch.tanh(layer)
-    layer = F.linear(
-        layer,
-        weights[prefix + "2.weight"],
-        weights[prefix + "2.bias"],
-    )
-    if activated:
-        layer = torch.tanh(layer)
-    return F.linear(
-        layer,
-        weights[prefix + "4.weight"],
-        weights[prefix + "4.bias"],
-    )
-
-
-def _mlp3(
-    x: Tensor,
-    weights: dict[str, Tensor],
-    prefix: str,
-    *,
-    activated: bool = True,
-) -> Tensor:
-    """The parameter row a three-layer `mlp` source computes.
-
-    `[param_source=mlp]` builds `Linear, tanh, Linear, tanh, Linear`,
-    whose modules are numbered `0`, `2` and `4`. `activated=False` is
-    the mutant path: the same three matrices with the nonlinearities
-    dropped, which collapses the network to a single affine map.
-    """
-    layer = _affine(
-        x,
-        weights[prefix + "0.weight"],
-        weights[prefix + "0.bias"],
-    )
-    if activated:
-        layer = torch.tanh(layer)
-    layer = _affine(
-        layer,
-        weights[prefix + "2.weight"],
-        weights[prefix + "2.bias"],
-    )
-    if activated:
-        layer = torch.tanh(layer)
-    return _affine(
-        layer,
-        weights[prefix + "4.weight"],
-        weights[prefix + "4.bias"],
-    )
-
-
-def _reconstruct_deep_markov(
-    dataset: _gallery_data.GalleryDataset,
-    values: dict[str, Tensor],
-    weights: dict[str, Tensor],
-    variant: str,
-) -> dict[str, Tensor]:
-    """Reconstruct the path density declared by `deep_markov.qvr`.
-
-    The transition and emission sites are two-factor Normal chains. The
-    reconstruction follows each chain through the base-measure image,
-    scores all four factors, and sums over the 32-row plate. Compile-time
-    MLP weights are taken from the compiled model; wiring, layer order,
-    head splits, and densities are rebuilt.
-
-    Only whole-term removals appear in the mutant catalogue. The other
-    measured variants move this path density by less than the catalogue
-    floor, even though they remain above the pin tolerance.
-    """
-    x_input = dataset.x_input
-    if x_input is None:
-        raise AssertionError(
-            "deep_markov's reconstruction needs the snippet's "
-            "`(driver, state)` row, which the dataset did not carry."
-        )
-    known = (
-        "",
-        "drop_transition_prefix",
-        "drop_emission_prefix",
-        "drop_emission_term",
-    )
-    if variant not in known:
-        raise _unknown_variant("deep_markov", variant)
-
-    raw_hidden = _mlp3(
-        x_input,
-        weights,
-        "_step_s_new.left.param_source.net.",
-    )
-    loc_hidden, scale_hidden = _normal_head(raw_hidden, 32)
-    per_hidden = td.Normal(loc_hidden, scale_hidden).log_prob(loc_hidden)
-    raw_state = _mlp3(
-        loc_hidden,
-        weights,
-        "_step_s_new.right.param_source.net.",
-    )
-    loc_state, scale_state = _normal_head(raw_state, 8)
-    per_state = td.Normal(loc_state, scale_state).log_prob(values["s_new"])
-
-    per_transition_row = per_hidden.sum(-1) + per_state.sum(-1)
-    if variant == "drop_transition_prefix":
-        transition = per_state.sum()
-    else:
-        transition = per_transition_row.sum()
-
-    raw_emit = _mlp3(
-        values["s_new"],
-        weights,
-        "_step_o.left.param_source.net.",
-    )
-    loc_emit, scale_emit = _normal_head(raw_emit, 32)
-    per_emit = td.Normal(loc_emit, scale_emit).log_prob(loc_emit)
-    raw_obs = _mlp3(
-        loc_emit,
-        weights,
-        "_step_o.right.param_source.net.",
-    )
-    loc_obs, scale_obs = _normal_head(raw_obs, 4)
-    per_obs = td.Normal(loc_obs, scale_obs).log_prob(values["o"])
-    if variant == "drop_emission_prefix":
-        observation = per_obs.sum()
-    else:
-        observation = (per_emit.sum(-1) + per_obs.sum(-1)).sum()
-
-    if variant == "drop_emission_term":
-        return {"s_new": transition, "o": torch.zeros(())}
-    return {"s_new": transition, "o": observation}
-
-
 def _reconstruct_vae(
     dataset: _gallery_data.GalleryDataset,
     values: dict[str, Tensor],
@@ -518,104 +178,35 @@ def _reconstruct_vae(
 ) -> dict[str, Tensor]:
     """`vae.qvr`:
 
-        sample z <- prior
-        observe Y <- decoder(z)
+        sample z : Row <- Normal(loc=0.0, scale=1.0) [over=Latent]
+        observe y : Row <- decoder(z)
 
-    `prior : UnitSpace -> Latent ~ Normal` is one affine map to a
-    `(loc, log_scale)` pair over `Latent : Real 4`. `decoder` is the
-    chain `dec_1 >> stack(dec_deep, 1) >> dec_to_obs`, whose three
-    factors each carry a conditional density, so
-    [`SampledComposition`][quivers.continuous.morphisms.SampledComposition]
-    scores every one of them along its canonical path: each
-    intermediate is bound to the image of the base measure's origin,
-    which for a Normal factor is its own location, and the observed
-    `Y` enters through the last factor. A factor scored at its own
-    location contributes its normalizer alone, and writing that out
-    makes this an independent statement of the path density
-    rather than a call back into the object under test.
+    `z` is one standard-Normal code in `Latent : Real 2` per row of the
+    512-row `Row` plate. `decoder : Latent -> ObsSpace [param_source=mlp(32)]
+    ~ Normal` is a single kernel: one affine layer, `tanh`, and an affine
+    head split into a location and a log-scale over `ObsSpace : Real 5`.
 
-    The affine weights are compile-time draws with no spelling in the
-    source and are taken as given; the wiring, the layer order of the
-    `mlp` source, the head split, the three densities and the sum
-    over the 32-row plate are rebuilt.
+    The decoder's affine weights are compile-time draws with no spelling
+    in the source and are taken as given; the layer order, the head
+    split, both densities and the sum over the plate are rebuilt.
     """
-    x_input = dataset.x_input
-    if x_input is None:
-        raise AssertionError(
-            "vae's reconstruction needs the snippet's `UnitSpace` "
-            "driver column, which the dataset did not carry."
-        )
-    raw_z = _affine(
-        x_input,
-        weights["_step_z.param_source.linear.weight"],
-        weights["_step_z.param_source.linear.bias"],
-    )
-    # `object Latent : Real 4`.
-    loc_z, scale_z = _normal_head(raw_z, 4)
-    per_z = td.Normal(loc_z, scale_z).log_prob(values["z"])
-
-    # `dec_1 : Latent -> DecoderHidden`, `object DecoderHidden : Real 16`.
-    raw_1 = _affine(
-        values["z"],
-        weights["_step_Y.left.left.param_source.linear.weight"],
-        weights["_step_Y.left.left.param_source.linear.bias"],
-    )
-    loc_1, scale_1 = _normal_head(raw_1, 16)
-    if variant == "prefix_at_zero":
-        hidden_1 = torch.zeros_like(loc_1)
-    else:
-        hidden_1 = loc_1
-    per_1 = td.Normal(loc_1, scale_1).log_prob(hidden_1)
-
-    # `dec_deep : DecoderHidden -> DecoderHidden [param_source=mlp]`.
-    prefix = "_step_Y.left.right.param_source.net."
-    layer = _affine(
-        hidden_1,
-        weights[prefix + "0.weight"],
-        weights[prefix + "0.bias"],
-    )
-    layer = _affine(
-        torch.tanh(layer),
-        weights[prefix + "2.weight"],
-        weights[prefix + "2.bias"],
-    )
-    layer = torch.tanh(layer)
-    raw_2 = _affine(
-        layer,
-        weights[prefix + "4.weight"],
-        weights[prefix + "4.bias"],
-    )
-    loc_2, scale_2 = _normal_head(raw_2, 16)
-    per_2 = td.Normal(loc_2, scale_2).log_prob(loc_2)
-
-    # `dec_to_obs : DecoderHidden -> ObsSpace`, `object ObsSpace : Real 8`.
-    raw_3 = _affine(
-        loc_2,
-        weights["_step_Y.right.param_source.linear.weight"],
-        weights["_step_Y.right.param_source.linear.bias"],
-    )
-    loc_3, scale_3 = _normal_head(
-        raw_3,
-        8,
-        unit_scale=variant == "decoder_unit_scale",
-    )
-    per_obs = td.Normal(loc_3, scale_3).log_prob(values["Y"])
-
-    if variant == "drop_decoder_prefix":
-        observation = per_obs.sum()
-    elif variant in (
-        "",
-        "prefix_at_zero",
-        "decoder_unit_scale",
-        "drop_latent_prior",
-    ):
-        observation = (per_1.sum(-1) + per_2.sum(-1) + per_obs.sum(-1)).sum()
+    del dataset
+    z = values["z"].reshape(-1, 2)
+    prefix = "_step_y._family.param_source.net."
+    hidden = _affine(z, weights[prefix + "0.weight"], weights[prefix + "0.bias"])
+    if variant == "drop_activation":
+        activated = hidden
+    elif variant in ("", "decoder_unit_scale", "drop_latent_prior", "plate_mean"):
+        activated = torch.tanh(hidden)
     else:
         raise _unknown_variant("vae", variant)
-
+    raw = _affine(activated, weights[prefix + "2.weight"], weights[prefix + "2.bias"])
+    loc, scale = _normal_head(raw, 5, unit_scale=variant == "decoder_unit_scale")
+    per_row = td.Normal(loc, scale).log_prob(values["y"].reshape(-1, 5)).sum(-1)
+    observation = per_row.mean() if variant == "plate_mean" else per_row.sum()
     if variant == "drop_latent_prior":
-        return {"z": torch.zeros(()), "Y": observation}
-    return {"z": per_z.sum(), "Y": observation}
+        return {"z": torch.zeros(()), "y": observation}
+    return {"z": td.Normal(0.0, 1.0).log_prob(z).sum(), "y": observation}
 
 
 def _reconstruct_bnn(
@@ -624,155 +215,39 @@ def _reconstruct_bnn(
     weights: dict[str, Tensor],
     variant: str,
 ) -> dict[str, Tensor]:
-    """`bnn.qvr`: `observe y : Resp <- net(x)`, `net` a heteroscedastic
-    `~ Normal` morphism with `[param_source=mlp, hidden_dim=64]`.
+    """`bnn.qvr`: a four-unit, one-hidden-layer tanh network whose
+    weights are declared sample sites.
 
-    `net`'s weights are drawn at compile time from torch's default
-    `nn.Linear` initialiser. They appear nowhere in the `.qvr` text
-    and nowhere in the `.md` snippet, so the reconstruction takes the
-    four tensors as given and rebuilds everything else: the layer
-    order (affine, `tanh`, affine), the `(loc, log_scale)` split of
-    the two output columns, the Normal density, and the sum over the
-    200-row `Resp` plate. That is the whole of what the oracle
-    computes here apart from the numbers in the weight tensors, which
-    no independent source can supply.
+    `w_in`, `b_in` and `w_out` are `Hidden`-plated Normal draws, `b_out`
+    a scalar Normal and `sigma` a HalfNormal; the mean is
+    `b_out + sum_h w_out[h] * tanh(w_in[h] * x + b_in[h])` and `y` is
+    scored over the 128-row `Resp` plate. Every quantity is a site or
+    host data, so nothing is taken as given from the compiled module.
     """
-    del dataset
-    prefix = "_step_y._family.param_source.net."
-    hidden = _affine(
-        values["x"],
-        weights[prefix + "0.weight"],
-        weights[prefix + "0.bias"],
-    )
-    if variant == "mlp_without_activation":
-        activated = hidden
-    elif variant in ("", "homoscedastic", "plate_mean"):
-        activated = torch.tanh(hidden)
+    del dataset, weights
+    w_in, b_in, w_out = values["w_in"], values["b_in"], values["w_out"]
+    b_out = values["b_out"].reshape(())
+    sigma = values["sigma"].reshape(())
+    if variant == "output_weights_shifted":
+        paired_out = torch.roll(w_out, 1)
+    elif variant in ("", "drop_activation", "plate_mean", "input_prior_unit_scale"):
+        paired_out = w_out
     else:
         raise _unknown_variant("bnn", variant)
-    raw = _affine(
-        activated,
-        weights[prefix + "2.weight"],
-        weights[prefix + "2.bias"],
-    )
-    # `object Target : Real 1`: a one-dimensional response, so the
-    # head emits one location column and one log-scale column.
-    loc, scale = _normal_head(
-        raw,
-        1,
-        unit_scale=variant == "homoscedastic",
-    )
-    per_row = td.Normal(loc, scale).log_prob(values["y"])
-    if variant == "plate_mean":
-        return {"y": per_row.mean()}
-    return {"y": per_row.sum()}
-
-
-def _reconstruct_state_space(
-    dataset: _gallery_data.GalleryDataset,
-    values: dict[str, Tensor],
-    weights: dict[str, Tensor],
-    variant: str,
-    state_dim: int,
-    obs_dim: int,
-) -> dict[str, Tensor]:
-    """`continuous_hmm.qvr` and `linear_gaussian_ssm.qvr`, which share
-    a program shape:
-
-        sample s_new <- transition(<program input>)
-        observe o    <- emission(s_new)
-
-    Both morphisms are `~ Normal` Kleisli arrows over a default linear
-    parameter source, so each step is a single affine map from its
-    conditioning row to a `(loc, log_scale)` pair. As with `bnn` the
-    affine weights are compile-time draws with no source spelling and
-    are taken as given; the wiring (which row conditions which step),
-    the head split, the density, and the per-step sum over the
-    32-element scan are rebuilt.
-    """
-    x_input = dataset.x_input
-    if x_input is None:
-        raise AssertionError(
-            "a state-space reconstruction needs the snippet's "
-            "`state_prev` / `x_in` driver matrix, which the dataset "
-            "did not carry."
-        )
-    state = values["s_new"]
-
-    raw_state = _affine(
-        x_input,
-        weights["_step_s_new.param_source.linear.weight"],
-        weights["_step_s_new.param_source.linear.bias"],
-    )
-    loc_state, scale_state = _normal_head(
-        raw_state,
-        state_dim,
-        unit_scale=variant == "unit_transition_scale",
-    )
-    per_step_state = td.Normal(loc_state, scale_state).log_prob(state)
-
-    if variant == "emission_reads_previous_state":
-        emission_input = x_input
-    elif variant in (
-        "",
-        "unit_transition_scale",
-        "drop_transition_term",
-        "swap_loc_and_log_scale",
-    ):
-        emission_input = state
-    else:
-        raise _unknown_variant("state-space", variant)
-    raw_obs = _affine(
-        emission_input,
-        weights["_step_o.param_source.linear.weight"],
-        weights["_step_o.param_source.linear.bias"],
-    )
-    if variant == "swap_loc_and_log_scale":
-        loc_obs = raw_obs[..., obs_dim:]
-        scale_obs = raw_obs[..., :obs_dim].exp().clamp(min=_SCALE_FLOOR)
-    else:
-        loc_obs, scale_obs = _normal_head(raw_obs, obs_dim)
-    per_step_obs = td.Normal(loc_obs, scale_obs).log_prob(values["o"])
-
-    if variant == "drop_transition_term":
-        return {"s_new": torch.zeros(()), "o": per_step_obs.sum()}
-    return {"s_new": per_step_state.sum(), "o": per_step_obs.sum()}
-
-
-def _reconstruct_continuous_hmm(
-    dataset: _gallery_data.GalleryDataset,
-    values: dict[str, Tensor],
-    weights: dict[str, Tensor],
-    variant: str,
-) -> dict[str, Tensor]:
-    """`object State : Real 16`, `object Obs : Real 8`."""
-    return _reconstruct_state_space(
-        dataset,
-        values,
-        weights,
-        variant,
-        state_dim=16,
-        obs_dim=8,
-    )
-
-
-def _reconstruct_linear_gaussian_ssm(
-    dataset: _gallery_data.GalleryDataset,
-    values: dict[str, Tensor],
-    weights: dict[str, Tensor],
-    variant: str,
-) -> dict[str, Tensor]:
-    """`object State : Real 4`, `object Obs : Real 2`; the transition
-    additionally reads a `Driver : Real 2` row, which the snippet
-    concatenates onto the previous state before the call."""
-    return _reconstruct_state_space(
-        dataset,
-        values,
-        weights,
-        variant,
-        state_dim=4,
-        obs_dim=2,
-    )
+    x = values["x"].reshape(-1, 1)
+    pre = x * w_in + b_in
+    hidden = pre if variant == "drop_activation" else torch.tanh(pre)
+    mu = (hidden * paired_out).sum(-1) + b_out
+    per_row = td.Normal(mu, sigma).log_prob(values["y"].reshape(-1))
+    input_scale = 1.0 if variant == "input_prior_unit_scale" else 2.0
+    return {
+        "w_in": td.Normal(0.0, input_scale).log_prob(w_in).sum(),
+        "b_in": td.Normal(0.0, 2.0).log_prob(b_in).sum(),
+        "w_out": td.Normal(0.0, 1.0).log_prob(w_out).sum(),
+        "b_out": td.Normal(0.0, 1.0).log_prob(b_out),
+        "sigma": td.HalfNormal(0.5).log_prob(sigma),
+        "y": per_row.mean() if variant == "plate_mean" else per_row.sum(),
+    }
 
 
 def _reconstruct_mixture_model(
@@ -781,7 +256,7 @@ def _reconstruct_mixture_model(
     weights: dict[str, Tensor],
     variant: str,
 ) -> dict[str, Tensor]:
-    """`mixture_model.qvr`, instantiated at `gmm(alpha=1.0)`:
+    """`mixture_model.qvr`, instantiated at `gmm(alpha=2.0)`:
 
         sample probs <- Dirichlet(concentration=alpha) [over=Component]
         sample mu    : Component <- Normal(loc=0.0, scale=5.0)
@@ -849,48 +324,52 @@ def _reconstruct_parametric_pooling(
     weights: dict[str, Tensor],
     variant: str,
 ) -> dict[str, Tensor]:
-    """`parametric_pooling.qvr`, exporting `pooled_tight`:
+    """`parametric_pooling.qvr`, exporting the adaptive host `pooled`:
 
-        sample z : K <- Normal(loc=0.0, scale=1.0)      (inside school_effects)
-        let effect = spread * z               (spread = 0.6)
-        sample sigma <- LogNormal(loc=0.0, scale=0.5)
-        let total_effect = sum(theta)
-        score centering = -50.0 * total_effect * total_effect
-        observe y : School <- Normal(loc=theta, scale=sigma)
+        sample mu <- Normal(loc=0.0, scale=10.0)
+        sample tau <- HalfCauchy(scale=5.0)
+        sample z : K <- Normal(loc=0.0, scale=1.0)   (inside school_effects)
+        let effect = spread * z                       (spread = tau)
+        let school_mean = mu + theta
+        observe y : School <- Normal(loc=school_mean, scale=se)
 
-    Wholly reconstructible. The `score` step is a log-density summand
-    in its own right, not a normalised family: it enters the joint as
-    its own value. `theta` and `total_effect` are deterministic `let`
-    bindings and score zero.
+    Wholly reconstructible. `se` is host data, the known per-school
+    standard errors of Rubin's parallel-experiments model. `theta` and
+    `school_mean` are deterministic `let` bindings and score zero.
     """
     del dataset, weights
-    z, sigma, y = values["theta$z"], values["sigma"], values["y"]
-    # `sample theta <- school_effects(0.6, School)` instantiates the
-    # template's `spread` at 0.6.
-    spread = 1.0 if variant == "ignore_spread" else 0.6
+    z, mu, tau = values["theta$z"], values["mu"], values["tau"]
+    y, se = values["y"], values["se"]
+
+    spread = torch.ones_like(tau) if variant == "ignore_spread" else tau
     theta = spread * z
-
-    z_term = td.Normal(0.0, 1.0).log_prob(z).sum()
-
-    sigma_term = td.LogNormal(0.0, 0.5).log_prob(sigma).sum()
-    if variant == "unconstrain_sigma":
-        sigma_term = sigma_term + sigma.log().sum()
-
-    total_effect = theta.sum()
-    if variant == "drop_centering_score":
-        centering = torch.zeros(())
-    elif variant in ("", "ignore_spread", "unconstrain_sigma", "plate_mean"):
-        centering = -50.0 * total_effect * total_effect
+    if variant == "drop_common_mean":
+        school_mean = theta
+    elif variant in (
+        "",
+        "ignore_spread",
+        "unconstrain_tau",
+        "unit_standard_error",
+        "plate_mean",
+    ):
+        school_mean = mu + theta
     else:
         raise _unknown_variant("parametric_pooling", variant)
 
-    per_school = td.Normal(theta, sigma).log_prob(y)
+    tau_term = td.HalfCauchy(5.0).log_prob(tau).sum()
+    if variant == "unconstrain_tau":
+        # Scoring the positive spread in log space adds a
+        # `log |d tau / d log tau| = log tau` Jacobian.
+        tau_term = tau_term + tau.log().sum()
+
+    scale = torch.ones_like(se) if variant == "unit_standard_error" else se
+    per_school = td.Normal(school_mean, scale).log_prob(y)
     y_term = per_school.mean() if variant == "plate_mean" else per_school.sum()
 
     return {
-        "theta$z": z_term,
-        "sigma": sigma_term,
-        "centering": centering,
+        "mu": td.Normal(0.0, 10.0).log_prob(mu).sum(),
+        "tau": tau_term,
+        "theta$z": td.Normal(0.0, 1.0).log_prob(z).sum(),
         "y": y_term,
     }
 
@@ -901,52 +380,46 @@ def _reconstruct_pmf(
     weights: dict[str, Tensor],
     variant: str,
 ) -> dict[str, Tensor]:
-    """`pmf.qvr`, an algebra-level example whose source declares a
-    mean surface rather than a measure:
+    """`pmf.qvr`:
 
         object LatentDim : FinSet 2
-        object User, Movie : FinSet 8
-        morphism U : LatentDim -> User   [role=latent]
-        morphism V : LatentDim -> Movie  [role=latent]
-        define pmf = U.dagger >> V
+        object User : FinSet 50
+        object Movie : FinSet 40
+        sample sigma <- HalfCauchy(scale=2.5)
+        sample U : User  <- Normal(0, 1) [over=LatentDim, iid_over=User]
+        sample V : Movie <- Normal(0, 1) [over=LatentDim, iid_over=Movie]
+        let score = sum(U[user_idx] * V[movie_idx])
+        observe r : Rating <- Normal(loc=score, scale=sigma)
 
-    The `.md` snippet supplies the probabilistic surface the source
-    leaves open, and it is the standard PMF one: an entrywise
-    `Normal(0, 1)` prior over each factor matrix, and a
-    `Normal(S, 0.5)` likelihood over every cell of the dense rating
-    matrix, with `S` rebuilt from the sampled factors by the same
-    composition the source names.
-
-    Wholly reconstructible. An arrow's tensor is indexed
-    `(domain, codomain)`, so each factor is `(2, 8)`, and
-    `U.dagger >> V` under the `real` algebra contracts the shared
-    `LatentDim` index: the `(u, m)` entry is
-    `sum_k U[k, u] * V[k, m]`, written here as an `einsum` rather
-    than through the compiled composition, which is the code under
-    test. `mu` is a deterministic `let` and scores zero.
+    Wholly reconstructible. Each factor table is indexed `(row,
+    LatentDim)`, so the flat payloads inflate as `(50, 2)` and
+    `(40, 2)`, and the score of observed rating `n` is the inner
+    product of its user's and its movie's rows, written here as an
+    `einsum` over the gathered rows. `user_idx` and `movie_idx` are
+    host data; `score` is a deterministic `let` and scores zero.
     """
     del dataset, weights
-    if variant == "factors_read_column_major":
-        # The wire payload arrives flat; inflating it as `(User,
-        # LatentDim)` and transposing keeps every entry and every
-        # shape while permuting which factor coordinate meets which.
-        user_factor = values["U"].reshape(8, 2).transpose(0, 1)
-        movie_factor = values["V"].reshape(8, 2).transpose(0, 1)
+    if variant == "factors_read_transposed":
+        # The flat payload inflated as `(LatentDim, User)` and
+        # transposed: every entry and every shape survives, but the
+        # latent coordinates meet the wrong users.
+        user_factor = values["U"].reshape(2, 50).transpose(0, 1)
+        movie_factor = values["V"].reshape(2, 40).transpose(0, 1)
     elif variant in (
         "",
-        "score_transposed",
         "drop_movie_factor_prior",
         "unit_rating_scale",
         "plate_mean",
     ):
-        user_factor = values["U"].reshape(2, 8)
-        movie_factor = values["V"].reshape(2, 8)
+        user_factor = values["U"].reshape(50, 2)
+        movie_factor = values["V"].reshape(40, 2)
     else:
         raise _unknown_variant("pmf", variant)
 
-    score = torch.einsum("ku,km->um", user_factor, movie_factor)
-    if variant == "score_transposed":
-        score = score.transpose(0, 1)
+    sigma = values["sigma"]
+    user_idx = values["user_idx"].long()
+    movie_idx = values["movie_idx"].long()
+    score = torch.einsum("nk,nk->n", user_factor[user_idx], movie_factor[movie_idx])
 
     unit = td.Normal(0.0, 1.0)
     movie_term = (
@@ -954,15 +427,15 @@ def _reconstruct_pmf(
         if variant == "drop_movie_factor_prior"
         else unit.log_prob(movie_factor).sum()
     )
-    # `sigma = 0.5` in the snippet: the source fixes the mean surface
-    # and says nothing about the observation scale.
-    scale = 1.0 if variant == "unit_rating_scale" else 0.5
-    per_cell = td.Normal(score, scale).log_prob(values["rating"])
+    sigma_term = td.HalfCauchy(2.5).log_prob(sigma).sum()
+    scale = torch.ones_like(sigma) if variant == "unit_rating_scale" else sigma
+    per_rating = td.Normal(score, scale).log_prob(values["r"])
 
     return {
+        "sigma": sigma_term,
         "U": unit.log_prob(user_factor).sum(),
         "V": movie_term,
-        "rating": (per_cell.mean() if variant == "plate_mean" else per_cell.sum()),
+        "r": per_rating.mean() if variant == "plate_mean" else per_rating.sum(),
     }
 
 
@@ -985,9 +458,9 @@ def _reconstruct_tensor_contraction(
         )
 
     The `.md` snippet gives each declared arrow an entrywise
-    `Normal(0, 1)` prior and scores the judgment plate under
-    `Normal(S, 0.5)`, with `S` the contraction of the three sampled
-    tensors.
+    `Normal(0, 1)` prior and scores 50 replicate judgments of every
+    `(Item, Judgment)` cell under `Normal(S, 0.5)`, with `S` the
+    contraction of the three sampled tensors.
 
     Wholly reconstructible. The contraction's wiring is fixed by the
     typed signature rather than spelled out: `PredDim` and `ArgDim`
@@ -1025,7 +498,8 @@ def _reconstruct_tensor_contraction(
         else unit.log_prob(interaction).sum()
     )
     scale = 1.0 if variant == "unit_judgment_scale" else 0.5
-    per_cell = td.Normal(score, scale).log_prob(values["judgment"])
+    judgment = values["judgment"].reshape(-1, *score.shape)
+    per_cell = td.Normal(score, scale).log_prob(judgment)
 
     return {
         "pred_embed": unit.log_prob(pred).sum(),
@@ -1043,82 +517,64 @@ def _reconstruct_tree_categorical(
 ) -> dict[str, Tensor]:
     """`tree_categorical.qvr`:
 
-        sample p_root, p_left, p_right <- Beta(concentration1=1.0, concentration0=1.0)
-        let leaf_log = factor cls : Class in { 0 -> log(1 - p_root) + log(1 - p_left), ... }
+        sample a_root, a_left, a_right <- Normal(loc=0.0, scale=1.5)
         sample sigma_v <- HalfNormal(scale=1.0)
-        sample delta : Verb <- Normal(loc=0.0, scale=sigma_v)
-        sample mu : Class <- Normal(loc=0.0, scale=1.0)
-        let cell_score = factor v : Verb, cls : Class in delta[v] + mu[cls] + leaf_log[cls]
-        let cell0 = cell_score[0, 0]
-        observe y : Resp <- Normal(loc=cell0, scale=0.5)
+        sample e_root, e_left, e_right : Verb <- Normal(loc=0.0, scale=1.0)
+        let eta_s = a_s + sigma_v * e_s                  (s = root, left, right)
+        let leaf_prob[v, c] = sigmoid(root_side[c] * eta_root[v])
+                              * sigmoid(inner_side[c] * eta_inner(c)[v])
+        observe y : Resp <- Categorical(probs=leaf_prob[verb_idx])
 
-    Wholly reconstructible. Only cell `(0, 0)` of the rank-2 factor
-    reaches the likelihood, so the reconstruction evaluates that one
-    cell: `delta[0] + mu[0] + leaf_log[0]`, with
-    `leaf_log[0] = log(1 - p_root) + log(1 - p_left)` from the case
-    table's `0 ->` arm. The three `Beta(1, 1)` sites score exactly
-    zero, which
-    [`test_zero_scoring_sites_are_zero_by_identity`][tests.transpile.test_oracle_reference_strength.test_zero_scoring_sites_are_zero_by_identity]
-    asserts is an identity rather than a coincidence.
-
-    `y` carries one response per element of `object Resp : FinSet
-    200`, every one of them scored against the same `cell0` location,
-    so the likelihood is a 200-term sum over a plate of width 200.
+    with `root_side = (-1, -1, 1, 1)`, `inner_side = (-1, 1, -1, 1)`,
+    and the inner split of classes 0 and 1 the left one, of classes 2
+    and 3 the right one. Wholly reconstructible. The leaf
+    probabilities are written out here leaf by leaf, as products of
+    branch probabilities along each path, rather than through the
+    sign tables the source uses; `verb_idx` is host data, and every
+    `let` scores zero.
     """
     del dataset, weights
-    p_root, p_left, p_right = (
-        values["p_root"],
-        values["p_left"],
-        values["p_right"],
-    )
-    sigma_v, delta, mu, y = (
-        values["sigma_v"],
-        values["delta"],
-        values["mu"],
-        values["y"],
-    )
-    unit = td.Beta(1.0, 1.0)
+    a_root, a_left, a_right = values["a_root"], values["a_left"], values["a_right"]
+    sigma_v = values["sigma_v"]
+    e_root, e_left, e_right = values["e_root"], values["e_left"], values["e_right"]
 
     if variant == "delta_unit_scale":
-        delta_scale = torch.ones_like(sigma_v)
-    elif variant in (
-        "",
-        "wrong_leaf_branch",
-        "drop_leaf_offset",
-        "plate_mean",
-    ):
-        delta_scale = sigma_v
+        spread = torch.ones_like(sigma_v)
+    elif variant in ("", "wrong_leaf_branch", "inner_splits_swapped", "plate_mean"):
+        spread = sigma_v
     else:
         raise _unknown_variant("tree_categorical", variant)
 
+    rho = torch.sigmoid(a_root + spread * e_root)
+    lam = torch.sigmoid(a_left + spread * e_left)
+    kappa = torch.sigmoid(a_right + spread * e_right)
+    if variant == "inner_splits_swapped":
+        lam, kappa = kappa, lam
     if variant == "wrong_leaf_branch":
-        leaf_zero = torch.log(p_root) + torch.log(p_left)
+        # Leaf 0 reads the root's right branch instead of its left one,
+        # the classic tree-traversal polarity error.
+        leaf_zero = rho * (1.0 - lam)
     else:
-        leaf_zero = torch.log(1.0 - p_root) + torch.log(1.0 - p_left)
-    cell_zero = delta[0] + mu[0]
-    if variant != "drop_leaf_offset":
-        cell_zero = cell_zero + leaf_zero
+        leaf_zero = (1.0 - rho) * (1.0 - lam)
+    leaf = torch.stack(
+        [leaf_zero, (1.0 - rho) * lam, rho * (1.0 - kappa), rho * kappa],
+        dim=-1,
+    )
+    verb_idx = values["verb_idx"].long()
+    picked = leaf[verb_idx, values["y"].long()]
+    per_row = picked.log()
 
-    # `y` is summed, never averaged: the joint is a product over the
-    # 200-element `Resp` plate. Every response is scored against the
-    # same `cell0`, so an averaged plate returns the per-response
-    # density itself and the defect is worth two orders of magnitude.
-    per_response = td.Normal(cell_zero, 0.5).log_prob(y)
-    y_term = per_response.mean() if variant == "plate_mean" else per_response.sum()
-
+    normal_a = td.Normal(0.0, 1.5)
+    unit = td.Normal(0.0, 1.0)
     return {
-        "p_root": unit.log_prob(p_root).sum(),
-        "p_left": unit.log_prob(p_left).sum(),
-        "p_right": unit.log_prob(p_right).sum(),
+        "a_root": normal_a.log_prob(a_root).sum(),
+        "a_left": normal_a.log_prob(a_left).sum(),
+        "a_right": normal_a.log_prob(a_right).sum(),
         "sigma_v": td.HalfNormal(1.0).log_prob(sigma_v).sum(),
-        "delta": td.Normal(
-            torch.zeros_like(delta),
-            delta_scale,
-        )
-        .log_prob(delta)
-        .sum(),
-        "mu": td.Normal(0.0, 1.0).log_prob(mu).sum(),
-        "y": y_term,
+        "e_root": unit.log_prob(e_root).sum(),
+        "e_left": unit.log_prob(e_left).sum(),
+        "e_right": unit.log_prob(e_right).sum(),
+        "y": per_row.mean() if variant == "plate_mean" else per_row.sum(),
     }
 
 
@@ -1155,111 +611,19 @@ class _Reconstruction:
 
 
 _RECONSTRUCTIONS: dict[str, _Reconstruction] = {
-    "seq2seq": _Reconstruction(
-        _reconstruct_seq2seq,
-        (
-            "_step_h.left.left.left.centers",
-            "_step_h.left.left.left.log_sigma",
-            "_step_h.left.right.left.centers",
-            "_step_h.left.right.left.log_sigma",
-            "_step_next_token.param_source.linear.weight",
-            "_step_next_token.param_source.linear.bias",
-        ),
-        "Both embedding tables, the twenty-four block factors "
-        "of the two towers, the cross factor and the "
-        "language-model head take their weights from "
-        "compile-time draws, named in neither the `.qvr` "
-        "source nor the `.md` snippet.",
-    ),
-    "deep_markov": _Reconstruction(
-        _reconstruct_deep_markov,
-        (
-            "_step_s_new.left.param_source.net.0.weight",
-            "_step_s_new.left.param_source.net.0.bias",
-            "_step_s_new.left.param_source.net.2.weight",
-            "_step_s_new.left.param_source.net.2.bias",
-            "_step_s_new.left.param_source.net.4.weight",
-            "_step_s_new.left.param_source.net.4.bias",
-            "_step_s_new.right.param_source.net.0.weight",
-            "_step_s_new.right.param_source.net.0.bias",
-            "_step_s_new.right.param_source.net.2.weight",
-            "_step_s_new.right.param_source.net.2.bias",
-            "_step_s_new.right.param_source.net.4.weight",
-            "_step_s_new.right.param_source.net.4.bias",
-            "_step_o.left.param_source.net.0.weight",
-            "_step_o.left.param_source.net.0.bias",
-            "_step_o.left.param_source.net.2.weight",
-            "_step_o.left.param_source.net.2.bias",
-            "_step_o.left.param_source.net.4.weight",
-            "_step_o.left.param_source.net.4.bias",
-            "_step_o.right.param_source.net.0.weight",
-            "_step_o.right.param_source.net.0.bias",
-            "_step_o.right.param_source.net.2.weight",
-            "_step_o.right.param_source.net.2.bias",
-            "_step_o.right.param_source.net.4.weight",
-            "_step_o.right.param_source.net.4.bias",
-        ),
-        "All four MLPs take their weights from compile-time "
-        "draws, which are named in neither the `.qvr` source "
-        "nor the `.md` snippet.",
-    ),
     "vae": _Reconstruction(
         _reconstruct_vae,
-        (
-            "_step_z.param_source.linear.weight",
-            "_step_z.param_source.linear.bias",
-            "_step_Y.left.left.param_source.linear.weight",
-            "_step_Y.left.left.param_source.linear.bias",
-            "_step_Y.left.right.param_source.net.0.weight",
-            "_step_Y.left.right.param_source.net.0.bias",
-            "_step_Y.left.right.param_source.net.2.weight",
-            "_step_Y.left.right.param_source.net.2.bias",
-            "_step_Y.left.right.param_source.net.4.weight",
-            "_step_Y.left.right.param_source.net.4.bias",
-            "_step_Y.right.param_source.linear.weight",
-            "_step_Y.right.param_source.linear.bias",
-        ),
-        "`prior` and the three decoder factors take their affine "
-        "weights from compile-time draws, which are named in neither "
-        "the `.qvr` source nor the `.md` snippet.",
-    ),
-    "bnn": _Reconstruction(
-        _reconstruct_bnn,
         (
             "_step_y._family.param_source.net.0.weight",
             "_step_y._family.param_source.net.0.bias",
             "_step_y._family.param_source.net.2.weight",
             "_step_y._family.param_source.net.2.bias",
         ),
-        "`net`'s MLP weights are drawn by torch's default `nn.Linear` "
-        "initialiser when the module compiles. They are named in "
-        "neither the `.qvr` source nor the `.md` snippet, so no "
-        "independent source can supply their values.",
+        "The decoder MLP takes its weights from compile-time draws, "
+        "which are named in neither the `.qvr` source nor the `.md` "
+        "snippet.",
     ),
-    "continuous_hmm": _Reconstruction(
-        _reconstruct_continuous_hmm,
-        (
-            "_step_s_new.param_source.linear.weight",
-            "_step_s_new.param_source.linear.bias",
-            "_step_o.param_source.linear.weight",
-            "_step_o.param_source.linear.bias",
-        ),
-        "`transition` and `emission` take the default linear "
-        "parameter source, whose affine weights are compile-time "
-        "draws with no spelling in the source.",
-    ),
-    "linear_gaussian_ssm": _Reconstruction(
-        _reconstruct_linear_gaussian_ssm,
-        (
-            "_step_s_new.param_source.linear.weight",
-            "_step_s_new.param_source.linear.bias",
-            "_step_o.param_source.linear.weight",
-            "_step_o.param_source.linear.bias",
-        ),
-        "`transition_cell` and `emission` take the default linear "
-        "parameter source, whose affine weights are compile-time "
-        "draws with no spelling in the source.",
-    ),
+    "bnn": _Reconstruction(_reconstruct_bnn, (), ""),
     "mixture_model": _Reconstruction(_reconstruct_mixture_model, (), ""),
     "parametric_pooling": _Reconstruction(
         _reconstruct_parametric_pooling,
@@ -1306,146 +670,61 @@ class _Mutant:
 
 _MUTANTS: tuple[_Mutant, ...] = (
     _Mutant(
-        "seq2seq",
-        "drop_encoder_tower",
-        "the encoder tower's thirteen factors are dropped and only "
-        "the decoder's are scored, which is the joint a chain that "
-        "scores one arm of a product would report.",
-        200.0,
-    ),
-    _Mutant(
-        "seq2seq",
-        "drop_decoder_tower",
-        "the decoder tower's thirteen factors are dropped and only "
-        "the encoder's are scored, the other arm of the same defect.",
-        200.0,
-    ),
-    _Mutant(
-        "seq2seq",
-        "drop_cross_factor",
-        "the cross factor is dropped, so `h` enters no density at "
-        "all and the two towers are scored without the step that "
-        "relates them.",
-        40.0,
-    ),
-    _Mutant(
-        "deep_markov",
-        "drop_emission_prefix",
-        "the emission chain's first factor is dropped and only its "
-        "second is scored, which is the joint a chain that scores its "
-        "endpoint's marginal alone would report.",
-        1.0,
-    ),
-    _Mutant(
-        "deep_markov",
-        "drop_transition_prefix",
-        "the transition chain's first factor is dropped and only its "
-        "second is scored, which is what a chain that scores its "
-        "endpoint's marginal alone would report.",
-        30.0,
-    ),
-    _Mutant(
-        "deep_markov",
-        "drop_emission_term",
-        "the `observe o` term is dropped, leaving the transition "
-        "alone in a joint that claims to carry both.",
-        33.0,
-    ),
-    _Mutant(
         "vae",
-        "drop_decoder_prefix",
-        "the two decoder prefix factors are dropped and only the "
-        "observation factor is scored, which is what a chain that "
-        "scores its endpoint's marginal alone would report.",
-        25.0,
-    ),
-    _Mutant(
-        "vae",
-        "prefix_at_zero",
-        "the first decoder intermediate is bound to the origin of "
-        "the codomain rather than to the image of the base measure's "
-        "origin, which is the off-by-one a chain that forgets to "
-        "push its own location through would make.",
-        43.0,
+        "drop_activation",
+        "the decoder's hidden `tanh` is dropped, collapsing the "
+        "decoder to an affine map: the linear-decoder model the VAE "
+        "is meant to improve on.",
+        500.0,
     ),
     _Mutant(
         "vae",
         "decoder_unit_scale",
-        "the observation head's log-scale columns are ignored and "
-        "`Y` is scored at unit scale.",
-        0.35,
+        "the decoder head's log-scale columns are ignored and `y` is "
+        "scored at unit scale.",
+        140.0,
     ),
     _Mutant(
         "vae",
         "drop_latent_prior",
-        "the `sample z <- prior` term is dropped, leaving the "
+        "the standard-Normal prior on `z` is dropped, leaving the "
         "likelihood alone in a joint that claims to carry both.",
-        6.3,
+        1400.0,
+    ),
+    _Mutant(
+        "vae",
+        "plate_mean",
+        "the 512-row `Row` plate is averaged instead of summed.",
+        3200.0,
     ),
     _Mutant(
         "bnn",
-        "mlp_without_activation",
+        "drop_activation",
         "the hidden layer's `tanh` is dropped, collapsing the network "
         "to a single affine map: the defect class of a renderer that "
-        "emits a linear head for a nonlinear parameter source.",
-        5000.0,
+        "emits a linear head for a nonlinear network.",
+        30000.0,
     ),
     _Mutant(
         "bnn",
-        "homoscedastic",
-        "the head's log-scale columns are ignored and the response is "
-        "scored at unit scale, dropping the heteroscedasticity the "
-        "model exists to express.",
-        80.0,
+        "output_weights_shifted",
+        "`w_out` is read one hidden unit off, pairing each unit's "
+        "activation with its neighbour's output weight; every shape "
+        "stays valid.",
+        3700.0,
+    ),
+    _Mutant(
+        "bnn",
+        "input_prior_unit_scale",
+        "the `w_in` prior is scored at scale 1 instead of the declared "
+        "2, a mis-parameterised prior family.",
+        10.0,
     ),
     _Mutant(
         "bnn",
         "plate_mean",
-        "the 200-row `Resp` plate is averaged instead of summed.",
-        200.0,
-    ),
-    _Mutant(
-        "continuous_hmm",
-        "drop_transition_term",
-        "the `sample s_new <- transition` prior term is dropped and "
-        "only the emission likelihood is scored.",
-        14.0,
-    ),
-    _Mutant(
-        "continuous_hmm",
-        "emission_reads_previous_state",
-        "`emission` is conditioned on the program input rather than "
-        "on the freshly-drawn `s_new`, an off-by-one in the scan's "
-        "wiring that leaves every shape valid.",
-        0.65,
-    ),
-    _Mutant(
-        "continuous_hmm",
-        "unit_transition_scale",
-        "the transition head's log-scale columns are ignored.",
-        0.7,
-    ),
-    _Mutant(
-        "linear_gaussian_ssm",
-        "swap_loc_and_log_scale",
-        "the emission head's location and log-scale columns are "
-        "transposed, which every shape check still accepts.",
-        0.16,
-    ),
-    _Mutant(
-        "linear_gaussian_ssm",
-        "drop_transition_term",
-        "the `sample s_new <- transition_cell` prior term is dropped "
-        "and only the emission likelihood is scored.",
-        3.5,
-    ),
-    _Mutant(
-        "linear_gaussian_ssm",
-        "unit_transition_scale",
-        "the transition head's log-scale columns are ignored, so the "
-        "process noise is scored at unit scale instead of at the "
-        "kernel's own.",
-        0.3,
+        "the 128-row `Resp` plate is averaged instead of summed.",
+        1200.0,
     ),
     _Mutant(
         "mixture_model",
@@ -1471,73 +750,70 @@ _MUTANTS: tuple[_Mutant, ...] = (
     _Mutant(
         "mixture_model",
         "likelihood_mean",
-        "the 100-row `Resp` plate is averaged instead of summed.",
+        "the 200-row `Resp` plate is averaged instead of summed.",
         100.0,
     ),
     _Mutant(
         "parametric_pooling",
-        "drop_centering_score",
-        "the soft sum-to-zero `score` factor is dropped. Its value is "
-        "~0 at the ground truth, where the snippet centres the group "
-        "effects exactly, so this mutant is invisible at point 0 and "
-        "only the perturbed points reject it.",
-        5.0,
-    ),
-    _Mutant(
-        "parametric_pooling",
         "ignore_spread",
-        "the template's `spread = 0.6` scaling is dropped, so the "
+        "the template's `spread = tau` scaling is dropped, so the "
         "non-centred parameterisation collapses to `theta = z`.",
-        10.0,
+        9.0,
     ),
     _Mutant(
         "parametric_pooling",
-        "unconstrain_sigma",
-        "the `LogNormal` observation scale is scored in log space, "
-        "adding a `log sigma` Jacobian.",
-        0.5,
+        "drop_common_mean",
+        "the common mean `mu` is left out of the school means, so "
+        "every school effect is pulled toward zero rather than toward "
+        "`mu`.",
+        23.0,
+    ),
+    _Mutant(
+        "parametric_pooling",
+        "unconstrain_tau",
+        "the `HalfCauchy` spread is scored in log space, adding a `log tau` Jacobian.",
+        1.8,
+    ),
+    _Mutant(
+        "parametric_pooling",
+        "unit_standard_error",
+        "the known per-school standard errors are ignored and every "
+        "estimate is scored at unit scale.",
+        2400.0,
     ),
     _Mutant(
         "parametric_pooling",
         "plate_mean",
-        "the 8-school plate is averaged instead of summed.",
-        2.0,
+        "the 40-school plate is averaged instead of summed.",
+        150.0,
     ),
     _Mutant(
         "pmf",
-        "score_transposed",
-        "the rating mean is read as `S[m, u]` rather than `S[u, m]`, "
-        "the orientation error a mis-taken dagger produces. The score "
-        "matrix is square, so no shape check objects.",
-        1000.0,
-    ),
-    _Mutant(
-        "pmf",
-        "factors_read_column_major",
-        "each flat factor payload is inflated as `(User, LatentDim)` "
-        "and transposed rather than read as `(LatentDim, User)`, "
-        "permuting which latent coordinate meets which user while "
-        "leaving both entrywise priors, and every shape, untouched.",
-        1000.0,
+        "factors_read_transposed",
+        "each flat factor payload is inflated as `(LatentDim, row)` "
+        "and transposed rather than read as `(row, LatentDim)`, "
+        "permuting which latent coordinate meets which user or movie "
+        "while leaving both entrywise priors, and every shape, "
+        "untouched.",
+        18000.0,
     ),
     _Mutant(
         "pmf",
         "drop_movie_factor_prior",
-        "the entrywise `Normal(0, 1)` prior on the movie factor matrix is dropped.",
-        27.0,
+        "the entrywise `Normal(0, 1)` prior on the movie factor table is dropped.",
+        105.0,
     ),
     _Mutant(
         "pmf",
         "unit_rating_scale",
-        "the rating likelihood is scored at unit scale instead of at "
-        "the snippet's `sigma = 0.5`.",
-        18.0,
+        "the ratings are scored at unit scale instead of at the sampled `sigma`.",
+        600.0,
     ),
     _Mutant(
         "pmf",
         "plate_mean",
-        "the 64-cell `(User, Movie)` rating plate is averaged instead of summed.",
-        85.0,
+        "the 800-rating `Rating` plate is averaged instead of summed.",
+        1150.0,
     ),
     _Mutant(
         "tensor_contraction",
@@ -1552,7 +828,7 @@ _MUTANTS: tuple[_Mutant, ...] = (
         "drop_interaction_prior",
         "the entrywise `Normal(0, 1)` prior on the third-order "
         "interaction tensor is dropped.",
-        19.0,
+        14.0,
     ),
     _Mutant(
         "tensor_contraction",
@@ -1566,36 +842,36 @@ _MUTANTS: tuple[_Mutant, ...] = (
     _Mutant(
         "tensor_contraction",
         "plate_mean",
-        "the 12-cell `(Item, Judgment)` plate is averaged instead of summed.",
+        "the 600 replicate judgments are averaged instead of summed.",
         24.0,
     ),
     _Mutant(
         "tree_categorical",
         "wrong_leaf_branch",
-        "leaf 0 of the case table reads the `p_root` / `p_left` arm "
-        "instead of its complement, the classic tree-traversal "
-        "polarity error.",
-        40.0,
+        "leaf 0 reads the root's right branch instead of its left one, "
+        "the classic tree-traversal polarity error.",
+        350.0,
     ),
     _Mutant(
         "tree_categorical",
         "delta_unit_scale",
-        "the per-verb effects are scored at unit scale instead of at "
-        "the sampled `sigma_v`, severing the hierarchy.",
-        1.5,
+        "the per-verb effects enter the split logits at unit scale "
+        "instead of at the sampled `sigma_v`, severing the hierarchy.",
+        140.0,
     ),
     _Mutant(
         "tree_categorical",
-        "drop_leaf_offset",
-        "the tree-structured leaf log-probability is dropped from the "
-        "score cell, leaving `delta[0] + mu[0]`.",
-        400.0,
+        "inner_splits_swapped",
+        "the left and right inner splits trade places, so classes 0 "
+        "and 1 are scored under the right split's logit; every shape "
+        "stays valid.",
+        580.0,
     ),
     _Mutant(
         "tree_categorical",
         "plate_mean",
-        "the 200-response `Resp` plate is averaged instead of summed.",
-        100.0,
+        "the 2400-response `Resp` plate is averaged instead of summed.",
+        3500.0,
     ),
 )
 
@@ -1950,14 +1226,7 @@ def test_reconstruction_matches_the_pinned_reference(
 #: What has to be pinned is where the vanishing happens: a term that
 #: starts vanishing at a point not listed here, or stops vanishing at
 #: one that is, has changed, whether or not the joint still matches.
-_PARTIALLY_INVISIBLE_SITES: dict[str, dict[str, tuple[int, ...]]] = {
-    # `centering` scores `-50 * sum(theta)**2`, and the ground-truth
-    # `theta` is a centered vector. Points 0, 2 and 5 leave the latents
-    # at ground truth and perturb the data alone, so the penalty is
-    # zero there; at 1, 3 and 4, which perturb the latents, it reaches
-    # 1.85, 2.09 and 10.88 nats.
-    "parametric_pooling": {"centering": (0, 2, 5)},
-}
+_PARTIALLY_INVISIBLE_SITES: dict[str, dict[str, tuple[int, ...]]] = {}
 
 
 @pytest.mark.parametrize(
@@ -2030,29 +1299,12 @@ def test_zero_scoring_sites_are_zero_by_identity(example: str) -> None:
             f"nowhere by much is a term the pins barely constrain."
         )
 
-    if example != "tree_categorical":
-        assert not everywhere, (
-            f"{example!r}: {everywhere!r} contribute nothing to the "
-            f"joint at every point, so dropping them from the "
-            f"reconstruction would be undetectable. Only "
-            f"`tree_categorical`'s `Beta(1, 1)` splits are flat by "
-            f"identity; state why these are, or the check is weaker "
-            f"than its site count suggests."
-        )
-        return
-
-    assert everywhere == ["p_left", "p_right", "p_root"], (
-        f"tree_categorical: expected exactly the three `Beta(1, 1)` "
-        f"splits to score zero; got {everywhere!r}."
-    )
-    grid = torch.linspace(0.05, 0.95, 19)
-    flat = td.Beta(1.0, 1.0).log_prob(grid)
-    assert torch.equal(flat, torch.zeros_like(flat)), (
-        f"`Beta(1, 1)` is not flat across (0, 1) under this torch "
-        f"build ({flat.tolist()!r}), so the three splits scoring zero "
-        f"is a coincidence of the fixture's values rather than an "
-        f"identity, and dropping one of them would be an undetected "
-        f"defect."
+    assert not everywhere, (
+        f"{example!r}: {everywhere!r} contribute nothing to the joint "
+        f"at every point, so dropping them from the reconstruction "
+        f"would be undetectable. No reconstructed site is flat by "
+        f"identity; state why these are, or the check is weaker than "
+        f"its site count suggests."
     )
 
 
@@ -2062,11 +1314,10 @@ reconstruction makes at any point, in nats.
 
 Each site is taken at its largest contribution across the six points,
 and the floor bounds the smallest of those peaks over every site of
-every reconstruction. Measured: 0.3827 nats, `tree_categorical`'s
-`sigma_v` under `HalfNormal(1)`. The pin tolerance at that example's
-magnitude is 7.63e-06, so even the least visible site the
-reconstruction checks sits about 50000 times above the noise the
-comparison tolerates. The floor sits just under the measurement so
+every reconstruction. Measured: 0.4474 nats, `bnn`'s `sigma`; the
+next is 0.7500 nats, `tree_categorical`'s `sigma_v` under
+`HalfNormal(1)`. Even the least visible site the reconstruction checks
+thus sits far above the noise the comparison tolerates. The floor sits just under the measurement so
 that a term shrinking toward the tolerance trips here first."""
 
 
@@ -2177,11 +1428,10 @@ _TIGHTEST_MUTANT_MARGIN_IN_TOLERANCES = 4000.0
 """Floor on the *tightest* rejection in the mutant catalogue, measured
 in multiples of the reference pin tolerance at the rejecting point.
 
-Measured: 5678, `mixture_model`'s dropped `Dirichlet(1, 1, 1)` prior,
-which shifts the joint by exactly `log Gamma(3) = 0.6931` nats against
-a 1.221e-04 tolerance. The next-narrowest is 9122
-(`continuous_hmm`'s emission conditioned on the wrong state) and the
-catalogue runs out to 4.9e07 (`bnn`'s MLP stripped of its `tanh`).
+Measured: 5932, `mixture_model`'s dropped `Dirichlet(2, 2, 2)` prior,
+which shifts the joint by at most 1.448 nats across the point set. The
+next-narrowest is 10822 (`mixture_model`'s scale scored in log space),
+and the catalogue runs out past 1.0e07.
 Declaring the tightest one is what keeps the catalogue from decaying
 into a set of enormous, uninformative deviations while the small,
 realistic defect quietly stops being covered."""
@@ -2423,13 +1673,12 @@ def test_reference_pin_exemptions_are_each_covered_by_a_check() -> None:
         "parse is finding declarations that are not there."
     )
 
-    assert nondeterministic, (
-        "the unwitnessed exemption category is empty, so "
-        "`test_unwitnessable_exempt_examples_have_no_independent_source` "
-        "and `test_unwitnessable_exempt_examples_sum_each_site_once` "
-        "parametrize over nothing. Every sequence model gained a "
-        "witnessed joint, which is a real change worth reading the "
-        "measurements for, not a green run."
+    assert nondeterministic == set(_UNWITNESSABLE_JOINT), (
+        f"the unwitnessed exemption category holds "
+        f"{sorted(nondeterministic)!r}, against the declared "
+        f"{sorted(_UNWITNESSABLE_JOINT)!r}. The category is empty by "
+        f"record, so its filling is a decision someone writes down "
+        f"with the measurements that ground it."
     )
 
 
@@ -2498,94 +1747,26 @@ def test_program_free_examples_are_exempt_or_pinned(example: str) -> None:
 
 
 # ---------------------------------------------------------------------
-# The sequence-model exemptions.
+# The unwitnessed exemptions.
 #
-# The five sequence models score a joint no pin can be held to, for
-# want of a second source rather than of a density.
-# `bidirectional_rnn_lm` and `transformer_lm` bind a latent to a
-# `SampledComposition` whose factors are each scored once along the
-# canonical path. `gru_lm`, `lstm_lm`, and `vanilla_rnn_lm` scan a
-# program cell, whose embedding and cell draws are sites of the
-# program at every position, so their joint is the sum of every
-# position's densities and the emission's. Every backend refuses the
-# scan or the composition, and no reconstruction re-derives these
-# joints, which is measured below per example.
+# An example exempt from the reference pin for want of a second source
+# rather than of a density: every backend refuses it and no
+# reconstruction re-derives its joint, which is measured below per
+# example.
 # ---------------------------------------------------------------------
 
 
-_UNWITNESSABLE_JOINT: frozenset[str] = frozenset(
-    {
-        "bidirectional_rnn_lm",
-        "gru_lm",
-        "lstm_lm",
-        "transformer_lm",
-        "vanilla_rnn_lm",
-    }
-)
+_UNWITNESSABLE_JOINT: frozenset[str] = frozenset()
 """Exempt examples whose joint a pin could hold, but which nothing
 outside the oracle reproduces.
 
-Every factor of each composition, and every site a scan reaches at
-each position, carries a density scored once, so the joint is exact,
-needs no quadrature rule, and is bitwise reproducible. What is missing
-is a second source for the number. All five refuse on every backend, so
-no container re-derives them, and none carries a reconstruction here.
-
-A reconstruction is what closes each row, and for the two compositions
-it is not merely unwritten. Their chains run through a scan whose cell
-carries its own density, so the prefix is a recurrence, and as
-[`ScanMorphism.log_prob`][quivers.continuous.scan.ScanMorphism.log_prob]
-records, a perturbation of the state grows by roughly an order of
-magnitude per step.
-
-That was measured on `bidirectional_rnn_lm` rather than assumed. A
-reconstruction of it written from the source, calling the same
-``torch.nn.functional.linear`` the parameter source calls, reproduces
-the embedding, both recurrent paths, and the canonical prefix they
-produce, bitwise. What it does not reproduce bitwise is the last
-factor, which scores `h` against a combiner whose predicted scale is
-small compared with the distance it covers. That term is near -1.5e08,
-and the assembled site lands 16 nats away.
-
-Sixteen nats is not a discrepancy to chase. The float32 grid spacing
-at that magnitude *is* 16, so the reconstruction differs from the
-oracle by one unit in the last place, the smallest non-zero difference
-either can express.
-`test_reconstruction_matches_the_oracle_per_site` holds an absolute
-budget some thirty thousand times finer than that spacing, so nothing
-short of a bitwise-identical accumulation clears it.
-
-`transformer_lm` was written too, and lands in the same place from a
-different direction. It carries no recurrence at all: it is one
-feed-forward tower, the same shape as either arm of `seq2seq`, which
-*is* pinned here because its reconstruction agrees within the
-calibrated float32 roundoff budget. What
-separates them is where the chain ends. `seq2seq` hands its towers'
-origin outputs to a further factor, so every factor is scored at its
-own location and nothing is evaluated far from it; `transformer_lm`
-ends at `h`, and its last factor scores a value the canonical path did
-not produce. That single term is near -4e06 and its sensitivity to the
-prefix runs as `(h - mu) / sigma^2`, so the reconstruction's token
-likelihood reproduces exactly while its `h` lands 0.5 nats out. The
-float32 spacing at -4e06 is 0.25, so that too is two units in the last
-place, and still far finer than any budget an absolute check states.
-
-So the missing witness in both rows is not a missing afternoon.
-`test_reconstruction_matches_the_oracle_per_site` holds an absolute
-budget, and agreement against a term of this size would need the
-reconstruction to accumulate in the same order as the object under
-test, which is mirroring rather than witnessing: a pin resting on it
-would certify the implementation against itself. What would close
-these rows is the joint's conditioning improved, so that what a factor
-scores lies within reach of what it predicts, or the comparison recast
-onto the per-factor terms, each of which does agree exactly.
-
-`gru_lm`, `lstm_lm`, and `vanilla_rnn_lm` carry no reconstruction yet,
-and their case is different. A scan of a program cell scores every
-position's embedding and cell draw at its own value, so each term is
-evaluated where it was drawn and a reconstruction from raw
-`torch.distributions` is within reach; until one lands, these rows rest
-on the missing witness alone."""
+**Currently empty.** The sequence models that carried this ground are
+checked on their own gallery pages against independent float64
+oracles and carry no synthetic-data block, so they are not cells of the
+numeric tier. A row added here must name an example in
+`_SKIP_QVR_INCOMPATIBLE`, and the two per-example tests below then
+measure that its joint is finite, moves with the point set, sums each
+site once, and has no live backend cell or reconstruction."""
 
 
 @functools.cache
@@ -2639,10 +1820,6 @@ def test_composition_exemption_grounds_partition_the_registry() -> None:
         f"{stale!r} carry a ground for exemption but are not exempt: "
         f"either they left `_SKIP_QVR_INCOMPATIBLE` or the ground "
         f"names the wrong example."
-    )
-    assert unwitnessed, (
-        "the unwitnessed ground is empty, so the checks below "
-        "parametrize over nothing and pass vacuously."
     )
 
 

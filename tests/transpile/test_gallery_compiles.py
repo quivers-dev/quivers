@@ -120,11 +120,12 @@ _SYNTAX_CHECKS: dict[str, tuple[str, list[str], str | None]] = {
 #
 # Five boundary classes are represented:
 #
-# 1. Composition and contraction declarations still have no executable
-#    QIEC entry, so those examples fail before target capability analysis.
+# 1. Contraction declarations still have no executable QIEC entry, so
+#    that example fails before target capability analysis.
 # 2. Executable search computations (`schema_chart_parser` and the
-#    deduction call in `montague_nli`) reach the QIEC boundary, which
-#    refuses them on every target for want of a search runtime.
+#    deduction calls in `montague_nli`, `multimodal_tlg`,
+#    `quantifier_scope`, and `type_logical`) reach the QIEC boundary,
+#    which refuses them on every target for want of a search runtime.
 # 3. The term autoencoder reaches the same boundary with typed structural
 #    computations, which require a neural attachment no target provides.
 #
@@ -148,14 +149,6 @@ _EXPECTED_UNSUPPORTED: dict[tuple[str, str], str] = {
     ("stan", "schema_chart_parser"): "qiec:capability:search",
     ("turing", "schema_chart_parser"): "qiec:capability:search",
     ("webppl", "schema_chart_parser"): "qiec:capability:search",
-    ("edward2", "pmf"): "composition_decl",
-    ("gen", "pmf"): "composition_decl",
-    ("numpyro", "pmf"): "composition_decl",
-    ("pymc", "pmf"): "composition_decl",
-    ("pyro", "pmf"): "composition_decl",
-    ("stan", "pmf"): "composition_decl",
-    ("turing", "pmf"): "composition_decl",
-    ("webppl", "pmf"): "composition_decl",
     ("edward2", "tensor_contraction"): "composition_decl",
     ("gen", "tensor_contraction"): "composition_decl",
     ("numpyro", "tensor_contraction"): "composition_decl",
@@ -176,7 +169,32 @@ _EXPECTED_UNSUPPORTED: dict[tuple[str, str], str] = {
     #    on every target: the deduction enumerates its derivations
     #    through a search handler no target runtime carries.
     **{
-        (backend, "montague_nli"): "qiec:capability:search"
+        (backend, stem): "qiec:capability:search"
+        for stem in (
+            "montague_nli",
+            "multimodal_tlg",
+            "quantifier_scope",
+            "type_logical",
+        )
+        for backend in (
+            "bugs",
+            "church",
+            "edward2",
+            "gen",
+            "jags",
+            "numpyro",
+            "pymc",
+            "pyro",
+            "stan",
+            "turing",
+            "webppl",
+        )
+    },
+    # 2b. The weighted-grammar examples score a deduction's goal
+    #     weight from a program, which reaches the same boundary.
+    **{
+        (backend, stem): "qiec:capability:search"
+        for stem in ("ccg", "custom_rules", "wmcfg")
         for backend in (
             "bugs",
             "church",
@@ -204,13 +222,7 @@ _EXPECTED_UNSUPPORTED: dict[tuple[str, str], str] = {
 #    the wire form nor the sample sites, so no backend can reconstruct
 #    the mean. The transpiler raises rather than emit a meanless
 #    observation. Every syntax-check backend is affected.
-for _neural_example in (
-    "bnn",
-    "deep_markov",
-    "seq2seq",
-    "transformer_lm",
-    "vae",
-):
+for _neural_example in ("vae",):
     for _syntax_backend in _SYNTAX_CHECKS:
         _EXPECTED_UNSUPPORTED[(_syntax_backend, _neural_example)] = "param-source:mlp"
 
@@ -224,12 +236,26 @@ for _neural_example in (
 #    renderer runs, so it is the same kind on every target.
 for _scan_example in (
     "bidirectional_rnn_lm",
+    "continuous_hmm",
+    "deep_markov",
     "gru_lm",
+    "linear_gaussian_ssm",
     "lstm_lm",
+    "stacked_rnn_lm",
+    "stochastic_volatility",
+    "transformer_lm",
     "vanilla_rnn_lm",
 ):
     for _syntax_backend in _SYNTAX_CHECKS:
         _EXPECTED_UNSUPPORTED[(_syntax_backend, _scan_example)] = "scan:no-lowering"
+
+# 5a. A scan whose cell marginalizes the state it returns is a
+#    discrete Markov chain summed out by the forward algorithm. Its
+#    positions arrive with the data and its cell's weights would have
+#    to be rendered as target code at every pair of states, so every
+#    target refuses it where the scan is written.
+for _syntax_backend in _SYNTAX_CHECKS:
+    _EXPECTED_UNSUPPORTED[(_syntax_backend, "hmm")] = "scan:marginal:no-lowering"
 
 
 # 6. An ungrouped `marginalize` over a plated `observe` shares one
@@ -248,9 +274,45 @@ for _ungrouped_backend in (
     "turing",
 ):
     if _ungrouped_backend in _SYNTAX_CHECKS:
-        _EXPECTED_UNSUPPORTED[(_ungrouped_backend, "hmm")] = (
-            "marginalize:ungrouped-over-plate"
+        for _ungrouped_example in ("changepoint",):
+            _EXPECTED_UNSUPPORTED[(_ungrouped_backend, _ungrouped_example)] = (
+                "marginalize:ungrouped-over-plate"
+            )
+
+# 1b. A module that declares a deduction and no program has no
+#    probabilistic program to emit; the deduction itself is refused by
+#    name on every target.
+for _syntax_backend in _SYNTAX_CHECKS:
+    _EXPECTED_UNSUPPORTED[(_syntax_backend, "pcfg")] = "deduction_decl"
+
+# 1c. The sequence-to-sequence Transformer normalizes its attention
+#    scores with a row-wise `softmax` over a comprehension, which Stan's
+#    renderer cannot compute row by row, and scores its targets under
+#    `Categorical(logits=...)`, which the graph-model and Julia targets
+#    do not expose. Pyro, NumPyro, PyMC, and Edward2 render it.
+_EXPECTED_UNSUPPORTED[("stan", "seq2seq")] = "let-expr:row:softmax"
+for _syntax_backend in ("bugs", "church", "gen", "jags", "turing", "webppl"):
+    if _syntax_backend in _SYNTAX_CHECKS:
+        _EXPECTED_UNSUPPORTED[(_syntax_backend, "seq2seq")] = (
+            "family:Categorical:logits"
         )
+
+# 1d. irt_2pl scores its responses with `Bernoulli(logits=...)`, which
+#    BUGS has no distribution for; it refuses it by name.
+if "bugs" in _SYNTAX_CHECKS:
+    _EXPECTED_UNSUPPORTED[("bugs", "irt_2pl")] = "family:Bernoulli:logits"
+
+# 1e. lda gathers each token's topic weights as the prior of a
+#    per-token marginalize; Turing and Gen read a marginalize head's
+#    weights only from a declared plate, and JAGS cannot write a grouped
+#    `via` block's per-group sum as one expression.
+for _syntax_backend, _kind in (
+    ("gen", "marginalize:weight-plate"),
+    ("turing", "marginalize:weight-plate"),
+    ("jags", "let-expr:elementwise-axis-operator"),
+):
+    if _syntax_backend in _SYNTAX_CHECKS:
+        _EXPECTED_UNSUPPORTED[(_syntax_backend, "lda")] = _kind
 
 
 @pytest.mark.parametrize("example", _gallery_examples(), ids=lambda p: p.stem)

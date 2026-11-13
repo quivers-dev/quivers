@@ -1,54 +1,41 @@
-# Isotropic Bayesian Factor Model
+# Bayesian Factor Analysis
 #
-# This low-rank Gaussian factor model decomposes each observation
-# through a K-dimensional latent code and a shared loading matrix.
-# Its observation noise uses one scalar sigma, so the runnable
-# program has the isotropic noise structure of probabilistic PCA,
-# not the free diagonal uniquenesses of classical factor analysis.
+# Factor analysis explains each item's D observed coordinates by a
+# K-dimensional latent code and a shared loading matrix, and gives
+# every observed coordinate its own residual scale (its uniqueness):
 #
-# Structural form:
+#   z_i     ~ Normal(0, I_K)                 per-item factor scores
+#   W[d]    ~ Normal(0, I_K)                 loading row of coordinate d
+#   psi[d]  ~ HalfCauchy(2.5)                uniqueness of coordinate d
+#   y[i, d] ~ Normal(z_i . W[d], psi[d])     observed coordinate
 #
-#   Z     : Item      -> LatentDim       per-item latent code
-#   W     : LatentDim -> ObsDim          learned loadings
-#   model = Z >> W                       linear-Gaussian mean
+# The data matrix is flattened into response rows: item_idx and
+# obs_idx give each row's item and coordinate, so the mean of a row
+# is the inner product of two gathered K-vectors and its scale is
+# the gathered uniqueness. Integrating the factor scores out gives
+# y_i ~ Normal(0, W W^T + diag(psi^2)). Probabilistic PCA is the
+# special case in which every psi[d] equals one shared sigma.
 #
-# The structural arrows are learned tensors without family
-# declarations. The exported program supplies independent
-# Normal priors for the code and loading entries and a
-# HalfCauchy prior for the shared observation scale.
-
-composition real [level=algebra]
+# References: [Spearman 1904](https://doi.org/10.2307/1412107),
+# [Bartholomew, Knott and Moustaki 2011](https://doi.org/10.1002/9781119970583).
 
 object LatentDim : FinSet 2
-object ObsDim : FinSet 5
-object Item : FinSet 32
-object Resp : FinSet 160
+object ObsDim : FinSet 6
+object Item : FinSet 400
+object Resp : FinSet 2400
 object Val : Real 1
 
-morphism Z : Item -> LatentDim [role=latent]
+program factor_analysis : Resp -> Val
+    sample psi : ObsDim <- HalfCauchy(scale=2.5)
+    sample Z : Item <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=Item]
+    sample W : ObsDim <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=ObsDim]
 
-morphism W : LatentDim -> ObsDim [role=latent]
-
-define factor_analysis = Z >> W
-
-# Probabilistic surface: every entry of the loading matrix and
-# per-item latent code carries an independent Normal(0, 1) prior
-# (the matrix-normal special case with V = U = I), the noise
-# scale carries a HalfCauchy(2.5) prior, and the observed
-# response is scored under Normal(mu, sigma) where mu is the
-# per-row inner product Z[i] . W[d]. The loading matrix is
-# sampled transposed (ObsDim -> LatentDim) so the per-Resp
-# inner product is two compatible Resp-by-LatentDim gathers.
-program factor_analysis_program : Resp -> Val
-    sample sigma <- HalfCauchy(scale=2.5)
-    sample Z_mat : Item <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=Item]
-    sample W_mat : ObsDim <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=ObsDim]
-
-    let z_row = Z_mat[item_idx]
-    let w_row = W_mat[obs_idx]
+    let z_row = Z[item_idx]
+    let w_row = W[obs_idx]
     let mu = sum(z_row * w_row)
+    let psi_row = psi[obs_idx]
 
-    observe y : Resp <- Normal(loc=mu, scale=sigma)
+    observe y : Resp <- Normal(loc=mu, scale=psi_row)
     return y
 
-export factor_analysis_program
+export factor_analysis

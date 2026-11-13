@@ -1,44 +1,29 @@
-# Learned Gaussian State-Space Cells
-#
-# Conditional-Normal transition, emission, and recognition cells
-# with the wiring of a state-space model. The parameter maps may
-# make both the means and diagonal scales depend on their inputs,
-# so this source is more general than a classical linear-Gaussian
-# model and does not implement an analytic Kalman update.
-#
-# Generative structure:
-#
-#   s_t  ~ Normal(transition_cell(driver, s_{t-1}), Q)
-#   o_t  ~ Normal(emission(s_t), R)
-#   h_t  ~ Normal(filter_cell(o_t, h_{t-1}))       learned summary
-#
-# `scan` iterates each cell across runtime sequence data. The
-# separately declared filter_cell is a learned recognition
-# kernel, not a derived Bayesian inverse of transition_cell and
-# emission.
-#
-# Reference: [Kalman 1960](https://doi.org/10.1115/1.3662552).
-
-object Driver : Real 2
-object State : Real 4
+# A linear-Gaussian state-space model with a learned linear transition and
+# emission and constant noise scales:
+#   s_t = A s_{t-1} + B u_t + b + q e_t,    o_t = C s_t + c + r f_t,
+# with e_t, f_t standard normal and s_{-1} = 0. The transition and emission
+# maps are learned functions, so their weights are point estimates; the
+# noise scales are sites of the scanning program, read by every position.
+object Driver : Real 1
+object State : Real 2
 object Obs : Real 2
 
-morphism transition_cell : Driver * State -> State ~ Normal
-morphism emission : State -> Obs ~ Normal
-morphism filter_cell : Obs * State -> State ~ Normal
+morphism transition : Driver * State -> State [role=function]
+morphism emission : State -> Obs [role=function]
 
-define generate = scan(transition_cell) >> emission
-define filter = scan(filter_cell)
+program step(u_t, s_prev) : Driver * State -> State
+    let mean = transition(u_t, s_prev)
+    sample s <- Normal(loc=mean, scale=q)
+    let center = emission(s)
+    observe o <- Normal(loc=center, scale=r)
+    return s
 
-# Probabilistic surface: the exported one-step kernel takes the
-# previous (driver, state) pair, draws a new state, and scores one
-# observation under the emission kernel. The separate `generate`
-# composition scans transition_cell and emits once from the
-# terminal state; it does not call this program at every position.
-program generative_step : Driver * State -> State
-    sample s_new <- transition_cell
+define run_all = scan(step)
 
-    observe o <- emission(s_new)
-    return s_new
+program ssm : Driver -> State
+    sample q <- HalfNormal(scale=1.0)
+    sample r <- HalfNormal(scale=1.0)
+    sample last <- run_all
+    return last
 
-export generative_step
+export ssm

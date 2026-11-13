@@ -1,54 +1,46 @@
-# Document-level topic mixture
+# Latent Dirichlet Allocation
 
 ## Overview
 
-The source implements a document-level topic mixture with Dirichlet priors
-on document topic weights and topic vocabulary distributions. It shares its
-building blocks with [latent Dirichlet allocation](https://www.jmlr.org/papers/v3/blei03a.html),
-but the grouped block selects one topic for all words in a document. Its
-likelihood is [@blei2003lda]
+Latent Dirichlet allocation (LDA) [@blei2003lda] models a corpus of documents as mixtures of topics. Each document draws topic weights $\theta_d$ from a Dirichlet, each topic draws a distribution $\phi_k$ over the vocabulary, and each token draws its own topic from its document's weights and then its word from that topic. The program sums each token's topic out, so its likelihood is a product over tokens of per-token mixtures,
 
 $$
-p(w_d \mid \theta_d, \phi)
-= \sum_{k=1}^{K} \theta_d[k] \prod_{n:\,d[n]=d} \phi_k[w_n].
+p(w \mid \theta, \phi) = \prod_{n} \sum_{k=1}^{K} \theta_{d(n)}[k]\, \phi_k[w_n],
 $$
 
-Canonical LDA instead assigns a topic independently to each token conditional
-on the document mixture, giving a product of per-token mixture sums. The
-historical filename `lda.qvr` does not change the grouping written in source.
+with $d(n)$ the document of token $n$. The page checks this joint on both execution paths, shows the check can tell it from a document-level mixture, and reports a maximum-likelihood fit that did not pass its check.
 
 ## QVR source
 
 ```qvr
-# Document-level topic mixture
+# Latent Dirichlet Allocation
 #
-# Each document draws topic weights, and each topic draws a vocabulary
-# distribution. The grouped marginalize block sums over one topic shared
-# by every observed token in that document:
+# Each document draws topic weights theta_d, each topic draws a
+# vocabulary distribution phi_k, and each token draws its own topic
+# from its document's weights and then its word from that topic. The
+# per-token topic is summed out, one marginalization per token:
 #
-#   p(w_d | theta_d, phi) = sum_k theta_d[k] * product_n phi[k, w_d[n]].
+#   p(w | theta, phi) = prod_n sum_k theta[d(n), k] * phi[k, w_n].
 #
-# This differs from canonical LDA, whose independent per-token assignments
-# give product_n sum_k theta_d[k] * phi[k, w_d[n]].
-# Token indexes observed positions; Vocab indexes possible token values.
-# Mix is the real vector space containing the returned topic weights.
+# doc_idx maps each token to its document, so theta_tok gathers one
+# row of topic weights per token. Token indexes the corpus positions;
+# Vocab indexes the values a token takes.
 #
-# Background: Blei, Ng & Jordan (2003), Latent Dirichlet Allocation.
-
-composition log_prob [level=algebra]
+# Reference: [Blei, Ng, and Jordan 2003](https://www.jmlr.org/papers/v3/blei03a.html).
 
 object Doc : FinSet 20
 object Topic : FinSet 3
 object Vocab : FinSet 50
-object Token : FinSet 200
+object Token : FinSet 1000
 object Mix : Real 3
 
 program lda(alpha : Real, beta : Real) : Token -> Mix
     sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
     sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]
+    let theta_tok = theta[doc_idx]
 
-    marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
-        observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
+    marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
+        observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
 
     return theta
 
@@ -57,137 +49,115 @@ export lda
 
 ## Understanding the model
 
-A document-level topic mixture asks which single topic best explains all
-words in a document. For a candidate topic, multiply its probabilities for
-those words; then sum these document likelihoods using the document's topic
-weights. One rare word can thus change how the entire document is assigned.
-
-Canonical LDA lets each word choose its own topic. Its likelihood is a
-product of per-word [mixture sums](mixture-model.md#understanding-the-model).
-The grouped block in this source uses [one assignment per document](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping),
-so it [sums after multiplying the word likelihoods](https://mc-stan.org/docs/stan-users-guide/finite-mixtures.html#vectorizing-mixtures)
-[@stanFiniteMixtures]. This order makes all words in the document contribute
-to the evidence for a single topic.
+Each word picks its own topic. A document about two subjects can thus draw some words from one topic and some from the other, and its topic weights record the proportions. The per-token sum is what distinguishes LDA from a document-level mixture, in which one topic is drawn for the whole document and the sum over topics is taken after multiplying the word probabilities, $\sum_k \theta_d[k] \prod_{n: d(n) = d} \phi_k[w_n]$; the second check below shows the program computes the former.
 
 ## Walkthrough
 
-`object Doc : FinSet 20`, `object Topic : FinSet 3`, `object Vocab : FinSet 50`, and `object Token : FinSet 200` declare the four discrete sets: $D = 20$ documents, $K = 3$ topics, $V = 50$ vocabulary items, and $N = 200$ corpus-wide word positions. `Token` is the plate the corpus is observed over and `Vocab` is the set each token takes its value in, so the two stay distinct even when a corpus happens to hold as many positions as types. `object Mix : Real 3` is the value space of the returned per-document topic mixture, a point of the topic simplex embedded in $\mathbb{R}^K$. `composition log_prob [level=algebra]` selects the log-probability semiring, so the log-densities scored by `observe` accumulate additively.
-
-The two `sample` steps draw the document-topic and topic-vocabulary simplex matrices under symmetric Dirichlet priors:
-
-- `sample theta : Doc <- Dirichlet(alpha) [over=Topic, iid_over=Doc]` draws a $D \times K$ matrix in which each row is an independent symmetric-$\alpha$ Dirichlet over the topic simplex. The `over=Topic` clause names the family's event axis (Dirichlet event-rank 1), and `iid_over=Doc` asserts each row is independent.
-- `sample phi : Topic <- Dirichlet(beta) [over=Vocab, iid_over=Topic]` is the symmetric construction: a $K \times V$ matrix whose every row is an independent Dirichlet over the vocabulary simplex.
-
-The scoped marginalize block
-
-<!-- compile: false -->
-```qvr
-marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
-    observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
-```
-
-introduces one shared topic latent $z_d$ per document under a Categorical prior
-parameterized by the document-shaped `theta`. The body's
-`Categorical(probs=phi[z])` looks up that topic's vocabulary row and scores every
-observed token in the document. The `[over=Doc]` grouping plate accumulates
-each observation into its document; `[via=word_idx]` names the runtime
-fibration from each word position into its document. The agenda evaluates the
-`[reduction=logsumexp]` reduction over the $K$ topics, recovering the
-document-level mixture likelihood
-$\sum_k \theta_d[k] \prod_{n:\,d[n]=d} \phi_k[w_n]$.
-
-In the checked computation, this block is a helper that enumerates `Topic`
-under the prelude handler and returns one aggregate per `Doc`. The `word_idx`
-fibration scatter-sums word likelihoods into those document cells before
-`logsumexp` reduces over topics. Thus the reference-machine trace and every
-supporting target preserve a shared topic assignment per document, not an
-independent marginal for each token. See [Probabilistic
-programs](../reference/qvr/probabilistic-programs.md#exact-marginalization).
-
-Finally `return theta` projects the program's joint kernel onto the document-topic mixture; the per-document topic mixture is the natural quantity to inspect after fitting.
+- `object Doc : FinSet 20`, `object Topic : FinSet 3`, `object Vocab : FinSet 50`, and `object Token : FinSet 1000` are the documents, topics, vocabulary, and corpus positions. `object Mix : Real 3` is the value space of the returned topic weights.
+- `program lda(alpha : Real, beta : Real)` is a template: `prog.lda(alpha=1.0, beta=1.0)` instantiates it with symmetric Dirichlet concentrations.
+- `sample theta : Doc <- Dirichlet(...) [over=Topic, iid_over=Doc]` draws one row of topic weights per document, and `sample phi : Topic <- Dirichlet(...) [over=Vocab, iid_over=Topic]` one vocabulary distribution per topic.
+- `let theta_tok = theta[doc_idx]` gathers, for each token, its document's row of topic weights; `doc_idx` is host data holding one document index per token.
+- `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]` gives every token its own topic and sums it out by log-sum-exp: a grouped `marginalize` scores one class per group, and here each group is a single token; `observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]` scores each token's word under its topic, with `token_idx` mapping each observation to its own token row.
+- Stan, Pyro, NumPyro, PyMC, Edward2, WebPPL, and Church render the program. Turing and Gen refuse the gathered weights (`marginalize:weight-plate`), JAGS refuses the grouped `via` block's per-group sum (`let-expr:elementwise-axis-operator`), and BUGS refuses the zero-based word codes (`observe:class-code`).
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+The checks below come from a verification script whose tolerances were fixed before it was first run.
 
 ### Generating synthetic data
+
+Sharp topics and topic weights generate 50 tokens per document; a second draw of 50 tokens per document from the same documents is held out.
 
 ```python
 import torch
 import torch.nn.functional as F
+
 from quivers.dsl import load
 
-torch.manual_seed(0)
+DOCS, TOPICS, VOCAB, PER_DOC = 20, 3, 50, 50
+
 prog = load("docs/examples/source/lda.qvr")
-fit  = prog.lda(alpha=1.0, beta=0.5)
-model = fit.morphism
+model = prog.lda(alpha=1.0, beta=1.0).morphism
 
-D, T, V, Npd = 20, 3, 50, 10
+generator = torch.Generator().manual_seed(2)
+true_phi = F.softmax(torch.randn(TOPICS, VOCAB, generator=generator) * 2.0, dim=-1)
+true_theta = F.softmax(torch.randn(DOCS, TOPICS, generator=generator) * 1.5, dim=-1)
 
-# Sharp topic-word and topic-mixture matrices give a recoverable corpus.
-phi_true   = F.softmax(torch.randn(T, V) * 2.0, dim=-1)
-theta_true = F.softmax(torch.randn(D, T) * 1.5, dim=-1)
 
-word_idx, tokens = [], []
-for d in range(D):
-    for _ in range(Npd):
-        z  = torch.distributions.Categorical(theta_true[d]).sample()
-        wt = torch.distributions.Categorical(phi_true[z]).sample()
-        word_idx.append(d)
-        tokens.append(int(wt))
-word_idx = torch.tensor(word_idx, dtype=torch.long)
-w        = torch.tensor(tokens,   dtype=torch.long)
+def corpus(theta, phi, generator):
+    doc = torch.arange(DOCS).repeat_interleave(PER_DOC)
+    z = torch.multinomial(theta[doc], 1, generator=generator).squeeze(-1)
+    return doc, torch.multinomial(phi[z], 1, generator=generator).squeeze(-1)
 
-N = w.shape[0]
-observations = {"w": w, "word_idx": word_idx}
+
+doc_idx, w = corpus(true_theta, true_phi, generator)
+_, w_held_out = corpus(true_theta, true_phi, generator)
+token_idx = torch.arange(DOCS * PER_DOC)
+observations = {"w": w, "doc_idx": doc_idx, "token_idx": token_idx}
 x_in = torch.zeros(1, 1)
 ```
 
-The per-document topic weights `theta` and per-topic vocabulary distributions `phi` remain continuous simplex sites. The shared document topic `z` is integrated out by the grouped block.
+### The log joint against a per-token mixture
 
-### SVI fit
+At a traced draw of `theta` and `phi`, the compiled runtime's log joint must equal the Dirichlet priors plus $\sum_n \log \sum_k \theta_{d(n)}[k] \phi_k[w_n]$ in float64 to a relative 1e-5, and the document-level mixture must differ by more than a relative 1e-3. The reference machine, given fixed `theta` and `phi`, must equal the same oracle to a relative 1e-9.
 
 ```python
-from quivers.inference import AutoNormalGuide, ELBO, SVI
+import math
+
+import torch.distributions as D
+
+from quivers.inference import trace
+
+
+def priors(theta, phi):
+    one = torch.tensor(1.0, dtype=torch.float64)
+    return D.Dirichlet(one.expand(TOPICS)).log_prob(theta).sum() + D.Dirichlet(one.expand(VOCAB)).log_prob(phi).sum()
+
+
+def per_token(theta, phi, doc, words):
+    return torch.log((theta[doc] * phi[:, words].T).sum(-1))
+
+
+def document_level(theta, phi, doc, words):
+    total = 0.0
+    for d in range(DOCS):
+        total += float(torch.logsumexp(torch.log(theta[d]) + torch.log(phi[:, words[doc == d]]).sum(-1), 0))
+    return total
+
 
 torch.manual_seed(1)
-guide = AutoNormalGuide(model, observed_names={"w", "word_idx"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=5e-2,
+recorded = trace(model, x_in, observations=observations)
+theta = recorded.sites["theta"].value.reshape(DOCS, TOPICS).double()
+phi = recorded.sites["phi"].value.reshape(TOPICS, VOCAB).double()
+expected = float(priors(theta, phi) + per_token(theta, phi, doc_idx, w).sum())
+wrong = float(priors(theta, phi)) + document_level(theta, phi, doc_idx, w)
+got = float(recorded.log_joint)
+print(f"compiled {got:.6f}, oracle {expected:.6f}, document-level mixture {wrong:.6f}")
+assert math.isclose(got, expected, rel_tol=1e-5)
+assert not math.isclose(got, wrong, rel_tol=1e-3)
+
+theta = D.Dirichlet(torch.ones(TOPICS, dtype=torch.float64)).sample((DOCS,))
+phi = D.Dirichlet(torch.ones(VOCAB, dtype=torch.float64)).sample((TOPICS,))
+run = prog.run(
+    "lda",
+    data={"alpha": 1.0, "beta": 1.0, "w": tuple(w.tolist()), "doc_idx": tuple(doc_idx.tolist()),
+          "token_idx": tuple(token_idx.tolist())},
+    sites={"theta": tuple(map(tuple, theta.tolist())), "phi": tuple(map(tuple, phi.tolist()))},
+    seed=0,
 )
-svi = SVI(model, guide, optim, ELBO(num_particles=1))
-
-losses = [svi.step(x_in, observations) for _ in range(100)]
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
+expected = float(priors(theta, phi) + per_token(theta, phi, doc_idx, w).sum())
+print(f"reference machine {run.log_joint:.9f}, oracle {expected:.9f}")
+assert math.isclose(run.log_joint, expected, rel_tol=1e-9)
 ```
 
-### NUTS posterior
+### A fit that did not pass its check
 
-```python
-from quivers.inference import MCMC, NUTSKernel
-
-torch.manual_seed(2)
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
-mc     = MCMC(kernel, num_warmup=15, num_samples=15, num_chains=1)
-result = mc.run(model, x_in, observations)
-
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
-print(f"divergences: {int(result.divergence_counts.sum())}")
-```
+The verification script also fitted the program to the training tokens by maximum likelihood (the `Dirichlet(1)` priors are flat): Adam on unconstrained logits of `theta` and `phi`, 1500 steps at learning rate 0.05. The check, fixed in advance, was document completion: the held-out per-token negative log likelihood under the fit had to be more than 0.1 nats below a smoothed unigram model fitted to the same tokens, and less than 0.15 nats above the generating model's. The fit scored 3.25 nats against the unigram's 3.20 and the generating model's 3.00, so it failed. With 50 tokens per document and 50 free word probabilities per topic, the maximum-likelihood topics give held-out words they never saw almost no mass; a smoothing prior or a posterior average would be the next design to try, with its own thresholds. This page makes no fitting claim.
 
 ## Categorical perspective
 
-Marginalization pushes the joint measure on topic assignments and words onto
-the word observations by forgetting the assignments. Here it forgets one
-topic per document: the observation-to-document map first groups row scores,
-then the finite sum eliminates the shared topic. This is a weighted-kernel
-calculation; the grouping map determines which observations share a latent.
-
-## See also
-
-- [Bayesian Gaussian Mixture Model](mixture-model.md) for a per-row mixture whose component assignment is integrated out in closed form by the likelihood, carrying no discrete latent and no `marginalize` block.
+Marginalization pushes the joint measure on topic assignments and words onto the words by forgetting the assignments. Here it forgets one topic per token: the gathered weights `theta_tok` give each token its own Categorical kernel from the one-point space to `Topic`, the topic-word kernel `phi` maps a topic to a word, and their [Kleisli](https://ncatlab.org/nlab/show/Kleisli+category) composite is the per-token mixture. The document-level model forgets one topic per document instead, which composes the kernels after taking the product over the document's words; the two orders give different measures, and the power check above separates them.
 
 ## Sources and further reading
 
-- *Latent Dirichlet Allocation* [@blei2003lda].
+- *Latent Dirichlet allocation* [@blei2003lda].

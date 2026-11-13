@@ -2,212 +2,166 @@
 
 ## Overview
 
-[Probabilistic matrix factorization](https://en.wikipedia.org/wiki/Probabilistic_matrix_factorization) [@salakhutdinov2007pmf] is the standard latent-factor recommender model: each user and each item has a $K$-dimensional latent vector, the expected rating is their inner product, and observed ratings are Normal noise around that inner product:
+[Probabilistic matrix factorization](https://papers.nips.cc/paper/2007/hash/d7322ed717dedf1eb4e6e52a37ea7bcd-Abstract.html) (PMF) [@salakhutdinov2007pmf] completes a sparse user-item rating matrix. Each user $u$ and each item $m$ has a $K$-dimensional latent vector with a zero-mean [Normal](https://en.wikipedia.org/wiki/Normal_distribution) prior, and each observed rating is Normal noise around the inner product of its user's and its item's vectors:
 
 $$
-r_{u, m} \mid U_{:, u}, V_{:, m} \sim \mathcal{N}(\langle U_{:, u}, V_{:, m} \rangle, \sigma_{\text{obs}}^2).
+U_u \sim \mathcal{N}(0, I_K), \quad V_m \sim \mathcal{N}(0, I_K), \quad
+r_{u, m} \mid U, V \sim \mathcal{N}(U_u^\top V_m, \sigma^2) \text{ for each observed } (u, m).
 $$
 
-In quivers, the two factor matrices are arrows $U : \mathsf{LatentDim} \to \mathsf{User}$ and $V : \mathsf{LatentDim} \to \mathsf{Movie}$. The bilinear score is the composition $U^\dagger \mathbin{>>} V : \mathsf{User} \to \mathsf{Movie}$, whose `(u, m)` entry is $\sum_k U_{k,u}V_{k,m}$. The source declares learnable latent parameters but no explicit priors; the fits below supply the Normal priors that turn the deterministic score into a joint density.
+Only observed cells enter the likelihood. The unobserved cells are predicted through the same inner product, so the quality of a fit is measured by how well it predicts ratings it never saw. Salakhutdinov and Mnih fix the prior and noise precisions or adapt them; this page places a weakly informative half-Cauchy prior on $\sigma$ and unit-scale priors on the factors.
 
 ## QVR source
 
 ```qvr
 # Probabilistic Matrix Factorization
 #
-# A user-item latent-factor recommender model. Every user and
-# every item carries a K-dimensional latent vector, and the
-# expected rating is their inner product. In categorical form,
-# the two factor matrices are morphisms and the bilinear score
-# is the composite User -> Movie obtained by transposing U and
-# contracting along LatentDim.
+# A user-item latent-factor model for completing a sparse rating
+# matrix. Every user and every item carries a K-dimensional latent
+# vector with a Normal prior, and each observed rating is Normal
+# around the inner product of its user's and its item's vectors:
 #
-# Structural form:
+#   U[u]    ~ Normal(0, I_K)                    user factors
+#   V[m]    ~ Normal(0, I_K)                    item factors
+#   sigma   ~ HalfCauchy(2.5)                   rating noise scale
+#   r_n     ~ Normal(U[u_n] . V[m_n], sigma)    observed rating n
 #
-#   U     : LatentDim -> User            user latent factors
-#   V     : LatentDim -> Movie           movie latent factors
-#   pmf   = U.dagger >> V                bilinear rating score
+# Only the observed (user, item) pairs are scored: the host data
+# user_idx and movie_idx give the user and item of each observed
+# rating, so the rows of the Rating plate are a sparse subset of
+# the User x Movie grid. The posterior over U and V predicts every
+# unobserved cell through the same inner product.
 #
-# The (u, m) entry of the resulting tensor is sum_k U[k, u] *
-# V[k, m], the canonical PMF rating mean. The `[role=latent]`
-# declarations create learned factor tensors but do not declare
-# probability distributions; the runnable fit on the page adds
-# Normal priors and a Normal observation model in Python.
-
-composition real [level=algebra]
+# Reference: [Salakhutdinov and Mnih 2007](https://papers.nips.cc/paper/2007/hash/d7322ed717dedf1eb4e6e52a37ea7bcd-Abstract.html).
 
 object LatentDim : FinSet 2
-object User, Movie : FinSet 8
+object User : FinSet 50
+object Movie : FinSet 40
+object Rating : FinSet 800
+object Val : Real 1
 
-morphism U : LatentDim -> User [role=latent]
-morphism V : LatentDim -> Movie [role=latent]
+program pmf : Rating -> Val
+    sample sigma <- HalfCauchy(scale=2.5)
+    sample U : User <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=User]
+    sample V : Movie <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=Movie]
 
-define pmf = U.dagger >> V
+    let u_row = U[user_idx]
+    let v_row = V[movie_idx]
+    let score = sum(u_row * v_row)
+
+    observe r : Rating <- Normal(loc=score, scale=sigma)
+    return r
 
 export pmf
 ```
 
 ## Understanding the model
 
-A user vector describes preferences and an item vector describes features.
-Their [dot product](../tutorials/python/07-composition-rules.md#operadic-n-ary-contractions) is a predicted rating: matching coordinates reinforce
-one another, and opposite signs can lower it. The latent coordinates are
-learned jointly, so their interpretation need not be fixed in advance.
+A user vector describes preferences and an item vector describes features. Their dot product is a predicted rating: matching coordinates reinforce one another, and opposite signs lower it. The latent coordinates are learned jointly, so their interpretation need not be fixed in advance.
 
-`U.dagger` transposes the table to put users on the input side and latent
-features on the shared axis. Its entries stay the same under this transpose.
-Different factor coordinates can produce the same rating matrix, so compare
-predicted ratings when evaluating the fit. The code below scores a dense
-synthetic matrix. With missing ratings, score only the observed cells: filling
-missing cells with zero would treat those zeros as observed ratings.
+The data are a list of observed triples $(u_n, m_n, r_n)$ rather than a full matrix. Missing cells are not zeros; they are simply absent from the likelihood, and filling them with zeros would treat those zeros as observed ratings. Since the factors are shared across all of a user's ratings and all of an item's ratings, a user who rated a few items still gets a usable vector, and that is what makes completion possible.
+
+Different factor coordinates can produce the same predicted ratings: for any invertible $K \times K$ matrix $A$, replacing $U$ by $U A$ and $V$ by $V A^{-\top}$ leaves every inner product unchanged (the prior breaks this symmetry only partly). Fits are thus compared on predicted ratings, not on factor entries.
 
 ## Walkthrough
 
-The two top-level declarations introduce the factor matrices as first-class arrows. The following `MatrixNormal` declarations illustrate optional priors and are not present in the loaded source:
+`object User : FinSet 50` and `object Movie : FinSet 40` declare the two sides of the rating matrix, `object LatentDim : FinSet 2` the latent dimension $K$, and `object Rating : FinSet 800` the plate of observed ratings: 800 of the $50 \times 40 = 2000$ cells. `object Val : Real 1` is the value space of a rating.
 
-<!-- compile: false -->
-```qvr
-morphism U : LatentDim -> User [role=latent, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)
-morphism V : LatentDim -> Movie [role=latent, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)
-```
-
-The `.dagger` modifier on $U$ transposes the morphism to $\mathsf{User} \to \mathsf{LatentDim}$. The composition `U.dagger >> V` contracts along `LatentDim` and recovers the full `(User, Movie)` score matrix; under `composition real [level=algebra]` this is a real matmul and the resulting tensor entry at `(u, m)` is exactly $\sum_k U_{k, u} V_{k, m}$.
-
-Working over discrete `User` and `Movie` plates materialises the full dense score matrix. For very large catalogues the dense materialisation is wasteful and a per-rating gather is preferable; the morphism API can lift that gather as a separate fibration $\mathsf{Rating} \to \mathsf{User} \times \mathsf{Movie}$ composed with the bilinear PMF morphism.
+The three `sample` steps draw the noise scale and the two factor tables. `sample U : User <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=User]` draws one $K$-vector per user, and the `Movie` table is drawn the same way. The host data `user_idx` and `movie_idx` are integer vectors over the `Rating` plate, giving the user and item of each observed rating; the two gathers `U[user_idx]` and `V[movie_idx]` return `Rating`-by-`LatentDim` tables, and `sum(u_row * v_row)` reduces their last axis, giving each observed rating's score $U_{u_n}^\top V_{m_n}$. `observe r : Rating <- Normal(loc=score, scale=sigma)` scores the observed ratings and nothing else. The same per-row inner-product idiom appears in the [PPCA](ppca.md#walkthrough) example, where every cell of the matrix is observed.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
-
-The QVR source declares $U^\dagger \mathbin{>>} V$ as a deterministic morphism, so it defines a mean tensor rather than a probability measure. The snippets below add the standard PMF probability model: every entry of each factor matrix carries an independent $\mathcal{N}(0, 1)$ prior, and every cell of the rating matrix is scored under $r_{u, m} \sim \mathcal{N}(S_{u, m}, \sigma^2)$ with $S = U^\top V$. The mean is rebuilt from the sampled factors on each evaluation by composing them exactly as the source does, which keeps $U$ and $V$ latent variables of the model rather than fixed tensors.
+The blocks below simulate a rating matrix from the model, hide 60% of its cells, check the compiled joint against a hand-written density, fit by SVI and measure prediction error on the hidden cells against a global-mean baseline, and run a short NUTS chain on the same joint.
 
 ### Generating synthetic data
 
-Draw ground-truth factor matrices, push them through $U^\dagger \mathbin{>>} V$ to get the dense $8 \times 8$ score matrix, then add Normal observation noise to every cell. The two `sample` sites of the [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram) built here are named after the arrows the source declares, and the ratings are generated from the very factors bound as ground truth, so the snippet leaves one self-consistent point of the joint behind. Object cardinalities and the active algebra are read off the compiled module through the [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment rather than restated, so the block tracks the source if the source changes.
-
 ```python
 import torch
-import torch.distributions as D
+from quivers.dsl import load
 
-from quivers.continuous.morphisms import ContinuousMorphism
-from quivers.continuous import Draw, Let, MonadicProgram, Observe
-from quivers.continuous.spaces import Euclidean
-from quivers.core.morphisms import ObservedMorphism
-from quivers.core.objects import Unit
-from quivers.dsl.compiler import Compiler
-from quivers.dsl.parser import parse_file
+D = torch.distributions
 
 torch.manual_seed(0)
+prog = load("docs/examples/source/pmf.qvr")
+model = prog.morphism
 
-compiler = Compiler(parse_file("docs/examples/source/pmf.qvr"))
-compiler.compile()
-U_arrow = compiler.morphisms["U"]
-V_arrow = compiler.morphisms["V"]
-algebra = compiler.algebra
+K, n_user, n_movie, n_obs = 2, 50, 40, 800
+true_sigma = 0.3
+true_U = torch.randn(n_user, K)
+true_V = torch.randn(n_movie, K)
+full = true_U @ true_V.T + true_sigma * torch.randn(n_user, n_movie)
 
-K = int(U_arrow.domain.cardinality)
-n_user = int(U_arrow.codomain.cardinality)
-n_movie = int(V_arrow.codomain.cardinality)
-sigma = 0.5
+cells = torch.randperm(n_user * n_movie)
+observed, held_out = cells[:n_obs], cells[n_obs:]
+user_idx, movie_idx = observed // n_movie, observed % n_movie
+r = full[user_idx, movie_idx]
 
-
-def bilinear_score(U, V):
-    """Dense (User, Movie) tensor of `U.dagger >> V` under `real`."""
-    left = ObservedMorphism(U_arrow.domain, U_arrow.codomain, U, algebra=algebra)
-    right = ObservedMorphism(V_arrow.domain, V_arrow.codomain, V, algebra=algebra)
-    return (left.dagger >> right).tensor
-
-
-class FactorPrior(ContinuousMorphism):
-    """Independent Normal(0, 1) prior over one factor matrix's entries."""
-
-    def __init__(self, rows, cols):
-        super().__init__(Unit, Euclidean(name="Factor", dim=rows * cols))
-        self._shape = (rows, cols)
-
-    def rsample(self, x, sample_shape=torch.Size()):
-        # One flattened draw of the entries per input row.
-        return D.Normal(torch.zeros(x.shape[0], self.codomain.dim), 1.0).rsample()
-
-    def log_prob(self, x, y):
-        return D.Normal(0.0, 1.0).log_prob(y.reshape(x.shape[0], -1)).sum(-1)
-
-
-class RatingLikelihood(ContinuousMorphism):
-    """Normal rating around the bilinear score, one per (user, movie) cell."""
-
-    def __init__(self, sigma):
-        super().__init__(
-            Euclidean(name="Score", dim=n_movie),
-            Euclidean(name="Rating", dim=n_movie),
-        )
-        self._sigma = sigma
-
-    def rsample(self, x, sample_shape=torch.Size()):
-        return D.Normal(x, self._sigma).rsample()
-
-    def log_prob(self, x, y):
-        return D.Normal(x, self._sigma).log_prob(y.reshape(x.shape)).sum()
-
-
-model = MonadicProgram(
-    domain=Euclidean(name="Ix", dim=1),
-    codomain=Euclidean(name="Rating", dim=n_movie),
-    steps=[
-        Draw(names=("U",), morphism=FactorPrior(K, n_user)),
-        Draw(names=("V",), morphism=FactorPrior(K, n_movie)),
-        Let(
-            name="mu",
-            value=lambda env: bilinear_score(
-                env["U"].reshape(K, n_user),
-                env["V"].reshape(K, n_movie),
-            ),
-        ),
-        Observe(
-            names=("rating",), morphism=RatingLikelihood(sigma), args=("mu",)
-        ),
-    ],
-    return_vars=("rating",),
-)
-
-true_U = torch.randn(K, n_user)
-true_V = torch.randn(K, n_movie)
-score = bilinear_score(true_U, true_V)
-rating = D.Normal(score, sigma).sample()
-
-observations = {"rating": rating}
+observations = {"r": r, "user_idx": user_idx, "movie_idx": movie_idx}
 x_in = torch.zeros(1, 1)
-
-print("score row 0:", score[0].round(decimals=2).tolist())
 ```
 
-The program input `x_in` carries no coordinate of the model: every site is either a global factor matrix or the full rating plate, so the input is a single bracket row the steps read past. A gather-based likelihood over a sparse `(user, movie)` sample would instead thread the index pairs through it.
+The program input `x_in` is a single row. The extent of the `Rating` plate comes from the observed ratings and their indices, and the scalar site `sigma` is drawn once per run rather than once per input row. Every cell of `full` is a draw from the model, but only the 800 cells in `observed` reach the program. The other 1200 are kept aside as a test set.
+
+### Checking the joint density
+
+At the true values, [`log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint) should equal the prior terms plus the Normal likelihood of the observed ratings only, written out by hand.
+
+```python
+truth = {"sigma": torch.tensor(true_sigma), "U": true_U, "V": true_V, **observations}
+log_joint = model.log_joint(x_in, truth)[0]
+
+score = (true_U[user_idx] * true_V[movie_idx]).sum(dim=-1)
+by_hand = (
+    D.HalfCauchy(2.5).log_prob(torch.tensor(true_sigma))
+    + D.Normal(0.0, 1.0).log_prob(true_U).sum()
+    + D.Normal(0.0, 1.0).log_prob(true_V).sum()
+    + D.Normal(score, true_sigma).log_prob(r).sum()
+)
+assert torch.allclose(log_joint, by_hand, rtol=1e-5)
+print(f"log joint at the truth: {float(log_joint):.2f}")
+```
 
 ### SVI fit
 
-Fit with [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) + [`ELBO`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) + [`SVI`](../api/inference/svi.md#svi). Both factor matrices are `sample` sites. The guide places an independent Normal distribution on each unconstrained coordinate and optimizes the ELBO using draws of both matrices.
+Fit an [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) by [`SVI`](../api/inference/svi.md#svi), average the predicted rating matrix $U V^\top$ over 100 guide draws, and compute the root-mean-square error on the held-out cells. The baseline predicts every held-out cell by the mean observed rating; the noise scale $\sigma = 0.3$ is the floor no predictor can beat on average.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
 torch.manual_seed(1)
-guide = AutoNormalGuide(model, observed_names={"rating"})
+guide = AutoNormalGuide(model, observed_names={"r", "user_idx", "movie_idx"})
 optim = torch.optim.Adam(
     list(model.parameters()) + list(guide.parameters()), lr=5e-2,
 )
 svi = SVI(model, guide, optim, ELBO(num_particles=1))
+losses = [svi.step(x_in, observations) for _ in range(1500)]
 
-losses = [svi.step(x_in, observations) for _ in range(200)]
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(100)]
+predicted = torch.stack([
+    d["U"].reshape(n_user, K) @ d["V"].reshape(n_movie, K).T for d in draws
+]).mean(0)
+fit_sigma = float(torch.stack([d["sigma"] for d in draws]).mean())
+
+held_u, held_m = held_out // n_movie, held_out % n_movie
+target = full[held_u, held_m]
+model_rmse = float((predicted[held_u, held_m] - target).pow(2).mean().sqrt())
+baseline_rmse = float((r.mean() - target).pow(2).mean().sqrt())
+
+print(f"ELBO loss: {losses[0]:.1f} -> {sum(losses[-100:]) / 100:.1f}")
+print(f"held-out RMSE: PMF {model_rmse:.3f}, global mean {baseline_rmse:.3f}")
+print(f"sigma: fitted {fit_sigma:.3f}, true {true_sigma}")
+
+assert model_rmse < 0.5 * baseline_rmse
+assert model_rmse < 1.5 * true_sigma
+assert abs(fit_sigma - true_sigma) < 0.1
 ```
 
-The factorization is identifiable only up to a $K \times K$ invertible reparameterization, so the fitted $U$, $V$ tend to differ from the truths even once the score matrix has converged.
+The second assertion asks that the fit come within 50% of the noise floor on cells it never saw, which requires the user and item vectors themselves to be close to right, up to the invertible reparameterization noted above.
 
 ### NUTS posterior
 
-Because the priors are declared inside the program, [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets it directly; a model that instead exposed $U$ and $V$ as bare `[role=latent]` parameters would first need [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) to give them a prior.
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) runs on the same joint, with both factor tables and the noise scale latent. The chain below is short; a real analysis would run several chains and monitor predicted ratings rather than factor entries.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -217,21 +171,26 @@ kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
 mc     = MCMC(kernel, num_warmup=15, num_samples=15, num_chains=1)
 result = mc.run(model, x_in, observations)
 
+assert torch.isfinite(result.log_densities).all()
 print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
 ## Categorical perspective
 
-The two factor matrices $U : \mathsf{LatentDim} \to \mathsf{User}$ and $V : \mathsf{LatentDim} \to \mathsf{Movie}$ are arrows in the discrete-object category whose priors live on the hom-objects $\mathbf{Kern}(\mathsf{LatentDim}, \mathsf{User})$ and $\mathbf{Kern}(\mathsf{LatentDim}, \mathsf{Movie})$. The rating likelihood couples them through the bilinear pairing realized as the composition
+Read as arrows in the real algebra, the factor tables are maps $U : \mathsf{User} \to \mathsf{LatentDim}$ and $V^\top : \mathsf{LatentDim} \to \mathsf{Movie}$, and the dense score matrix is their composite
 
 $$
-\mathsf{User} \xrightarrow{U^\dagger} \mathsf{LatentDim} \xrightarrow{V} \mathsf{Movie}
+\mathsf{User} \xrightarrow{U} \mathsf{LatentDim} \xrightarrow{V^\top} \mathsf{Movie},
 $$
 
-in the real algebra, whose tensor is the dense score matrix $U^\top V$. The loaded source treats $U$ and $V$ as learned tensors; prior measures enter only through an explicit prior declaration or through the priors the fits on this page declare around the composition.
+whose $(u, m)$ entry is $\sum_k U_{u,k} V_{m,k}$. The program never materializes that composite. The observed ratings come with a map $\mathsf{Rating} \to \mathsf{User} \times \mathsf{Movie}$, given by `user_idx` and `movie_idx`, and the two gathers pull the factor tables back along its components, so the contraction over `LatentDim` is done only on the observed cells. Prediction for an unobserved cell evaluates the same composite at a pair outside the image of that map.
 
 ## See also
 
-- [Isotropic Bayesian Factor Model](factor-analysis.md) for a single-side morphism-valued loading.
-- [DSL Guide](../guides/dsl-overview.md) for morphism-valued prior syntax and the [`.dagger`](../api/core/morphisms.md) transpose.
+- [Probabilistic PCA](ppca.md), the same inner-product mean with every cell observed and the per-item codes treated as latent factors of a covariance model.
+- [Bilinear Tensor Contraction](tensor-contraction.md), a three-way analogue of the bilinear score.
+
+## Sources and further reading
+
+- *Probabilistic Matrix Factorization* [@salakhutdinov2007pmf].

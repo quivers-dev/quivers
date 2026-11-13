@@ -16,7 +16,7 @@ from quivers.cli.repl_session import ReplSession  # noqa: E402
 @pytest.fixture
 def lda():
     s = ReplSession()
-    s.load_file("docs/examples/source/lda.qvr")
+    s.load_file("tests/fixtures/qvr/grouped_topic_mixture.qvr")
     return s
 
 

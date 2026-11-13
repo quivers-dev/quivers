@@ -1,54 +1,69 @@
-# Weighted Type-Logical Grammar
+# Weighted Type-Logical Grammar: a sound fragment of the Lambek calculus
 #
-# The non-commutative Lambek calculus L expressed as an
-# agenda-based weighted deduction. Categories carry slash (Fwd,
-# Bwd) and tensor (Tns) constructors; chart items are span(I,
-# J, X) triples.
+# Categories are built from the atoms S, NP, N with the two slashes
+# and the product of the associative Lambek calculus L (Lambek 1958),
+# written in Lambek's argument-under convention throughout:
 #
-# Deduction:
+#   Fwd(A, B) = A/B    an A that seeks a B on its right
+#   Bwd(B, A) = B\A    an A that seeks a B on its left
+#   Tns(A, B) = A*B    an A followed by a B, kept together
 #
-#   right_app    : X/Y, Y    |- X              forward application
-#   left_app     : Y,   X\Y  |- X              backward application
-#   tensor_intro : A,   B    |- Tns(A, B)      product introduction
-#   tensor_left  : Tns(A, B) |- A              left projection
-#   tensor_right : Tns(A, B) |- B              right projection
+# so that residuation reads  A*B |- C  iff  A |- C/B  iff  B |- A\C.
+# Chart items are span(I, J, X): the words in [I, J) derive X.
 #
-# The Lambek calculus is resource-sensitive (every hypothesis is
-# used exactly once) and order-preserving (no permutation). It
-# is the internal logic of a biclosed monoidal category; the
-# residuation law A (x) B |- C iff A |- C/B iff B |- A\C makes
-# L the free residuated monoid over its atoms.
+# Every rule below is a theorem of L. A rule with premises
+# X_1, ..., X_n and conclusion Y licenses the sequent
+# X_1, ..., X_n |- Y, and each such sequent has a cut-free L proof:
+#
+#   fwd_app    : A/B, B      |- A        (/L on the axioms)
+#   bwd_app    : B, B\A      |- A        (\L on the axioms)
+#   fwd_comp   : A/B, B/C    |- A/C      (/L twice, then /R)
+#   bwd_comp   : C\B, B\A    |- C\A      (\L twice, then \R)
+#   raise_subj : NP          |- S/(NP\S) (\L, then /R; the instance
+#                                         A |- B/(A\B) at A = NP, B = S)
+#   prod_intro : A, B        |- A*B      (*R)
+#   curry      : C/(A*B)     |- (C/B)/A  (*R under /L, then /R twice)
+#
+# Every rule uses each premise exactly once and keeps the premises in
+# order, so the chart has no weakening, contraction, or permutation.
+# A finite rule set over adjacent spans has no hypothetical reasoning,
+# so the chart derives a proper subset of the L-theorems: it is a sound
+# fragment of L, not L itself.
 
 object Term : FinSet 16
 
-object Rule : FinSet 16
+object LogWeight : Real 1
 
-object Weight : Real 1
-
-# Probabilistic surface for transpile: each learnable rule weight
-# carries an independent Normal(0, 1) prior, and a treebank reports
-# how often each rule fired. Exponentiating a weight gives that
-# rule's firing rate, so the counts are Poisson in the rate; the
-# chart parser downstream consumes the same weights as its per-rule
-# log-probabilities. Rule indexes the weight vector, so it is the
-# plate extent; the codomain Weight is the value space of the one
-# real number a single weight is.
-program type_logical_prior : Rule -> Weight
-    sample rule_weights : Rule <- Normal(loc=0.0, scale=1.0)
-    let rule_rate = exp(rule_weights)
-    observe rule_counts : Rule <- Poisson(rate=rule_rate)
-    return rule_weights
-
-export type_logical_prior
-
-deduction Lambek : Term -> Term [semiring=LogProb, start=S, depth=6]
-    atoms S, NP, N, VP, PP, Fwd, Bwd, Tns, span, every, dog, barks
-    rule right_app : span(I, K, Fwd(A, B)), span(K, J, B) |- span(I, J, A) #[learnable]
-    rule left_app : span(I, K, B), span(K, J, Bwd(A, B)) |- span(I, J, A) #[learnable]
-    rule tensor_intro : span(I, K, A), span(K, J, B) |- span(I, J, Tns(A, B)) #[learnable]
-    rule tensor_left : span(I, J, Tns(A, B)) |- span(I, J, A) #[learnable]
-    rule tensor_right : span(I, J, Tns(A, B)) |- span(I, J, B) #[learnable]
+deduction Lambek : Term -> Term [semiring=LogProb, start=S, depth=4]
+    atoms S, NP, N, Fwd, Bwd, Tns, span, kim, lee, books, every, linguist, book, sleeps, admires, gives, that, today
+    rule fwd_app : span(I, K, Fwd(A, B)), span(K, J, B) |- span(I, J, A) #[learnable]
+    rule bwd_app : span(I, K, B), span(K, J, Bwd(B, A)) |- span(I, J, A) #[learnable]
+    rule fwd_comp : span(I, K, Fwd(A, B)), span(K, J, Fwd(B, C)) |- span(I, J, Fwd(A, C)) #[learnable]
+    rule bwd_comp : span(I, K, Bwd(C, B)), span(K, J, Bwd(B, A)) |- span(I, J, Bwd(C, A)) #[learnable]
+    rule raise_subj : span(I, J, NP) |- span(I, J, Fwd(S, Bwd(NP, S))) #[learnable]
+    rule prod_intro : span(I, K, A), span(K, J, B) |- span(I, J, Tns(A, B)) #[learnable]
+    rule curry : span(I, J, Fwd(C, Tns(A, B))) |- span(I, J, Fwd(Fwd(C, B), A)) #[learnable]
     lexicon
-        "every" : Fwd(NP, N) = every #[learnable]
-        "dog" : N = dog #[learnable]
-        "barks" : Bwd(S, NP) = barks #[learnable]
+        "Kim"      : NP                          = kim      #[learnable]
+        "Lee"      : NP                          = lee      #[learnable]
+        "books"    : NP                          = books    #[learnable]
+        "every"    : Fwd(NP, N)                  = every    #[learnable]
+        "linguist" : N                           = linguist #[learnable]
+        "book"     : N                           = book     #[learnable]
+        "sleeps"   : Bwd(NP, S)                  = sleeps   #[learnable]
+        "admires"  : Fwd(Bwd(NP, S), NP)         = admires  #[learnable]
+        "gives"    : Fwd(Bwd(NP, S), Tns(NP, NP)) = gives   #[learnable]
+        "that"     : Fwd(Bwd(N, N), Fwd(S, NP))  = that     #[learnable]
+        "today"    : Bwd(S, S)                   = today    #[learnable]
+
+# The program scores a sentence by the chart's goal weight: the inside
+# log-sum, over every derivation of S that spans the whole input, of
+# the learnable lexicon and rule log-weights the derivation uses. Its
+# value is one real number, so the codomain is LogWeight : Real 1.
+# The token sequence enters as the data parameter ``sentence``.
+program fit_grammar : Term -> LogWeight
+    let chart = parse(Lambek, sentence)
+    score log_Z = chart.goal_weight()
+    return log_Z
+
+export fit_grammar

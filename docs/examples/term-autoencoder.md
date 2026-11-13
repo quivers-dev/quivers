@@ -153,7 +153,7 @@ print("reconstruction root op:", recon.op)
 
 ### Score and train the round trip
 
-[`Decoder.log_prob`](../api/structural/decoder.md) scores an observed term against a code vector; the registry's `evaluate` sums every registered loss under a caller-supplied environment. A few optimizer steps on the encoder and decoder parameters drive the single-term reconstruction loss toward zero.
+[`Decoder.log_prob`](../api/structural/decoder.md) scores an observed term against a code vector; the registry's `evaluate` sums every registered loss under a caller-supplied environment, and `prog.run("reconstruct", term)` computes the same loss through the checked `reconstruct -> Enc -> Dec__nll` graph. The block first asserts that the two paths agree on every term. It then trains the encoder and decoder on six distinct terms, two of which bind variables (one with a nested binder whose body refers to the outer variable, de Bruijn index 1), and checks reconstruction two ways: the decoder must assign each training term probability above 0.99 given its own code, and 20 independent decodes of each code must reproduce the term exactly, compared as full trees with [`Term.to_tuple`](../api/structural/signature.md#quivers.structural.signature.Term.to_tuple) so that binders and indices count. Two held-out terms are reported separately.
 
 ```python
 import torch
@@ -165,33 +165,62 @@ prog = load("docs/examples/source/term_autoencoder.qvr")
 enc = prog.encoders["Enc"]
 dec = prog.decoders["Dec"]
 
-term = make_term(
-    "Lam",
-    make_term("Base", "base"),
-    make_term("App", make_term("Const", "plus"), bound_var(0)),
-)
+const = lambda name: make_term("Const", name)
+app = lambda fun, arg: make_term("App", fun, arg)
+lam = lambda body: make_term("Lam", make_term("Base", "base"), body)
 
-loss0 = prog.losses.evaluate({"term": term})
-checked0 = prog.run("reconstruct", term)
-torch.testing.assert_close(checked0.value, loss0)
-assert checked0.result.runtime == "core+structural"
+train = {
+    "plus": const("plus"),
+    "f x": app(const("f"), const("x")),
+    "\\v. v": lam(bound_var(0)),
+    "\\v. plus v": lam(app(const("plus"), bound_var(0))),
+    "\\v. f (plus v)": lam(app(const("f"), app(const("plus"), bound_var(0)))),
+    "\\v. \\w. plus v": lam(lam(app(const("plus"), bound_var(1)))),
+}
+held_out = {
+    "\\v. f v": lam(app(const("f"), bound_var(0))),
+    "f (plus x)": app(const("f"), app(const("plus"), const("x"))),
+}
+
+
+def loss_of(term):
+    return prog.losses.evaluate({"term": term})
+
+
+# The data-leaf embedding tables allocate parameters on first lookup,
+# so every term is scored once before the optimizer collects them.
+for term in [*train.values(), *held_out.values()]:
+    checked = prog.run("reconstruct", term)
+    torch.testing.assert_close(checked.value, loss_of(term))
+    assert checked.result.runtime == "core+structural"
 
 params = list(enc.parameters()) + list(dec.parameters())
 opt = torch.optim.Adam(params, lr=1e-2)
-for _ in range(20):
+for _ in range(300):
     opt.zero_grad()
-    loss = prog.losses.evaluate({"term": term})
+    loss = sum(loss_of(term) for term in train.values())
     loss.backward()
     opt.step()
-print(f"reconstruction loss: {float(loss0.detach()):.2f} -> {float(loss.detach()):.2f}")
+
+
+def recovered(term, n_draws=20):
+    """How many independent decodes of the term's code reproduce it."""
+    code = enc(term)
+    return sum(dec(code).to_tuple() == term.to_tuple() for _ in range(n_draws))
+
+
+with torch.no_grad():
+    for name, term in train.items():
+        p_self = float(torch.exp(-loss_of(term)))
+        hits = recovered(term)
+        print(f"train     {name:18} p(term | code) = {p_self:.3f}, exact decodes {hits}/20")
+        assert p_self > 0.99 and hits == 20, name
+    for name, term in held_out.items():
+        p_self = float(torch.exp(-loss_of(term)))
+        print(f"held out  {name:18} p(term | code) = {p_self:.3f}, exact decodes {recovered(term)}/20")
 ```
 
-Note that the encoder's data-leaf embedding tables allocate parameters lazily on first lookup, so the initial `evaluate` call precedes the optimizer's parameter collection.
-
-The `Program.run` call traverses the checked `reconstruct -> Enc -> Dec__nll`
-graph rather than the classic loss registry. The equality assertion tests the
-typed attachment path, while the `core+structural` runtime label records the
-two providers that served the invocation.
+The six training terms are reconstructed exactly, binders and de Bruijn indices included. The held-out terms are not: six training terms teach the decoder to reproduce those trees, not to generalize to new combinations of their parts, and a reconstruction objective on so few terms gives no pressure to do so. Generalization would need a larger and more varied training set.
 
 ## Categorical perspective
 

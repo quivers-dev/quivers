@@ -46,7 +46,7 @@ so the model carries no discrete latent: `MixtureNormal` integrates the componen
 composition log_prob [level=algebra]
 
 object Component : FinSet 3
-object Resp : FinSet 100
+object Resp : FinSet 200
 object Weights : Real 3
 
 program gmm(alpha : Real) : Resp -> Weights
@@ -73,13 +73,13 @@ an observation. Inference still estimates the uncertain component means and scal
 
 Component names do not identify physical groups: swapping their labels leaves
 the mixture density unchanged. Compare predicted densities or use a stated
-labeling convention before averaging component-specific draws. In the fitting
-illustration the weights are supplied as observations, so it estimates the
-remaining parameters conditional on those weights.
+labeling convention before averaging component-specific draws. The fit below
+infers the weights, locations, and scales jointly and aligns labels by sorting
+the fitted locations.
 
 ## Walkthrough
 
-`composition log_prob [level=algebra]` selects the log-probability semiring so the program's `Score` effect accumulates log-densities additively. `object Component : FinSet 3` and `object Resp : FinSet 100` declare the two discrete plates: $K = 3$ mixture components and $N = 100$ observed rows, and `object Weights : Real 3` is the value space of the returned mixing weights, a point of the component simplex embedded in $\mathbb{R}^K$. `program gmm(alpha : Real) : Resp -> Weights` parameterizes the program by the Dirichlet concentration and declares that what it returns is a mixing-weight vector rather than a row index.
+`composition log_prob [level=algebra]` selects the log-probability semiring so the program's `Score` effect accumulates log-densities additively. `object Component : FinSet 3` and `object Resp : FinSet 200` declare the two discrete plates: $K = 3$ mixture components and $N = 200$ observed rows, and `object Weights : Real 3` is the value space of the returned mixing weights, a point of the component simplex embedded in $\mathbb{R}^K$. `program gmm(alpha : Real) : Resp -> Weights` parameterizes the program by the Dirichlet concentration and declares that what it returns is a mixing-weight vector rather than a row index.
 
 The three `sample` steps draw the shared per-component parameters:
 
@@ -93,7 +93,7 @@ The three `sample` steps draw the shared per-component parameters:
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+The blocks below simulate a corpus from the model, check the compiled joint against a hand-written density, fit all three parameter vectors by SVI, and run a short NUTS chain on the same model.
 
 ### Generating synthetic data
 
@@ -103,10 +103,10 @@ from quivers.dsl import load
 
 torch.manual_seed(0)
 prog = load("docs/examples/source/mixture_model.qvr")
-fit = prog.gmm(alpha=1.0)
+fit = prog.gmm(alpha=2.0)
 model = fit.morphism
 
-K, N = 3, 100
+K, N = 3, 200
 true_probs = torch.tensor([0.4, 0.35, 0.25])
 true_mu    = torch.tensor([-3.0, 0.0, 3.0])
 true_sigma = torch.tensor([0.5, 0.7, 0.4])
@@ -114,35 +114,78 @@ true_sigma = torch.tensor([0.5, 0.7, 0.4])
 comps = torch.distributions.Categorical(true_probs).sample((N,))
 r     = torch.distributions.Normal(true_mu[comps], true_sigma[comps]).sample()
 
-observations = {"r": r, "probs": true_probs}
+observations = {"r": r}
 x_in = torch.zeros(1, 1)
 ```
 
-The synthetic rows are drawn by sampling a component per row and then a value from that component's Gaussian, but the model never sees the component labels: only the rows `r` and the fixed mixing weights `probs` enter `observations`. The per-component locations `mu` and scales `sigma` remain unobserved latents; SVI approximates their posterior given these observations.
+The program input `x_in` is a single row. The extent of the `Resp` plate comes from the observed rows, and the unplated site `probs` is drawn once per run rather than once per input row. The rows are drawn by sampling a component per row and then a value from that component's Gaussian. Only the rows `r` enter `observations`: the component labels, the mixing weights `probs`, the locations `mu`, and the scales `sigma` are all left for inference.
+
+### Checking the joint density
+
+At the true parameters, [`log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint) should equal the Dirichlet, Normal, and half-Normal prior terms plus the closed-form mixture log-likelihood, written here with torch's own [`MixtureSameFamily`](https://docs.pytorch.org/docs/stable/distributions.html#mixturesamefamily).
+
+```python
+D = torch.distributions
+
+truth = {"r": r, "probs": true_probs, "mu": true_mu, "sigma": true_sigma}
+log_joint = model.log_joint(x_in, truth)[0]
+
+mixture = D.MixtureSameFamily(D.Categorical(true_probs), D.Normal(true_mu, true_sigma))
+by_hand = (
+    D.Dirichlet(torch.full((K,), 2.0)).log_prob(true_probs)
+    + D.Normal(0.0, 5.0).log_prob(true_mu).sum()
+    + D.HalfNormal(1.0).log_prob(true_sigma).sum()
+    + mixture.log_prob(r).sum()
+)
+assert torch.allclose(log_joint, by_hand, rtol=1e-5)
+print(f"log joint at the truth: {float(log_joint):.2f}")
+```
 
 ### SVI fit
+
+The mixture likelihood is multimodal: a fit can settle where two components share one cluster, and every relabeling of the components is an equally good optimum. The block below thus runs three restarts from different seeds, keeps the one with the best average ELBO over its last 100 steps (a criterion that never looks at the truth), and summarizes each site by the mean of 200 draws from the fitted [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide). Components are aligned to the truth by sorting on the fitted locations [@stephens2000labels].
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
-torch.manual_seed(1)
-guide = AutoNormalGuide(model, observed_names={"r", "probs"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=1e-1,
-)
-svi = SVI(model, guide, optim, ELBO(num_particles=1))
 
-losses = [svi.step(x_in, observations) for _ in range(1200)]
-recovered = sorted(guide.loc_mu.detach().flatten().tolist())
-print(f"initial loss:    {losses[0]:.2f}")
-print(f"final loss:      {losses[-1]:.2f}")
-print("recovered means: [" + ", ".join(f"{m:.2f}" for m in recovered) + "]")
-print("true means:      [-3.00, 0.00, 3.00]")
+def fit_restart(seed, steps=1000):
+    torch.manual_seed(seed)
+    guide = AutoNormalGuide(model, observed_names={"r"})
+    optim = torch.optim.Adam(
+        list(model.parameters()) + list(guide.parameters()), lr=5e-2,
+    )
+    svi = SVI(model, guide, optim, ELBO(num_particles=1))
+    losses = [svi.step(x_in, observations) for _ in range(steps)]
+    with torch.no_grad():
+        draws = [guide.rsample(x_in) for _ in range(200)]
+    summary = {
+        name: torch.stack([d[name] for d in draws]).mean(0).reshape(-1)
+        for name in ("probs", "mu", "sigma")
+    }
+    return sum(losses[-100:]) / 100, summary
+
+
+restarts = [fit_restart(seed) for seed in (1, 2, 3)]
+for seed, (loss, _) in zip((1, 2, 3), restarts):
+    print(f"seed {seed}: final ELBO loss {loss:.1f}")
+best_loss, best = min(restarts, key=lambda pair: pair[0])
+
+order = best["mu"].argsort()
+fitted = {name: value[order] for name, value in best.items()}
+for name, true_value in (("probs", true_probs), ("mu", true_mu), ("sigma", true_sigma)):
+    print(f"{name:5s} fitted {fitted[name].numpy().round(2)}  true {true_value.numpy()}")
+
+assert (fitted["probs"] - true_probs).abs().max() < 0.09
+assert (fitted["mu"] - true_mu).abs().max() < 0.25
+assert (fitted["sigma"] - true_sigma).abs().max() < 0.2
 ```
 
-The variational locations `guide.loc_mu`, printed as “recovered means,” estimate the component locations. Repeat the fit with several seeds to check for different local optima, and compare the resulting mixture densities. Sorting the means aligns labels for display; component-specific posterior summaries also need a consistent labeling convention when symmetric weights and priors permit label switching.
+A restart can end where the components overlap instead of separating, with a loss far worse than the others; a single-seed fit could thus report a poor optimum as if it were the posterior. The tolerances are about three sampling standard errors at $N = 200$ (for instance, $\sqrt{0.25 \cdot 0.75 / 200} \approx 0.03$ for the smallest weight, and $0.7 / \sqrt{70} \approx 0.08$ for the middle component's mean), so they leave room for finite-sample error but not for a collapsed or merged component.
 
 ### NUTS posterior
+
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets the same joint, with all three parameter vectors latent. The chain below is short; a real analysis would run several chains and check their diagnostics.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -152,6 +195,7 @@ kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
 mc     = MCMC(kernel, num_warmup=15, num_samples=15, num_chains=1)
 result = mc.run(model, x_in, observations)
 
+assert torch.isfinite(result.log_densities).all()
 print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
@@ -162,4 +206,4 @@ The per-row likelihood `MixtureNormal(probs, mu, sigma)` is a conditional [Kleis
 
 ## See also
 
-- [Latent Dirichlet Allocation](lda.md), a document-level topic mixture whose shared document assignment is integrated out by a scoped `marginalize` block.
+- [Latent Dirichlet Allocation](lda.md), a topic model in which every token draws its own topic from per-document weights and a `marginalize` block integrates each token's topic out exactly.

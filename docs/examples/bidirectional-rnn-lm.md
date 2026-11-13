@@ -1,266 +1,237 @@
-# Dual-RNN masked-token model
+# Bidirectional RNN Language Model
 
 ## Overview
 
-Two independently parameterized recurrent cells scan the same token sequence, and a `combine` morphism merges their outputs before a Categorical masked-token score. Both `scan` calls run left to right on the supplied input. The source does not reverse the second sequence, so it does not provide right-context conditioning unless the caller constructs a reversed branch separately.
+A bidirectional recurrent network [@schuster1997bidirectional] reads a sequence twice, once from left to right and once from right to left, so the state it keeps at each position has seen the whole sequence: the forward state the tokens up to the position, the backward state the tokens from it to the end. This source is a bidirectional language model in the sense of [@peters2018deep]: the forward recurrence scores, at every position, the token after it, the backward recurrence scores the token before it, and the program returns the pair of states at each position as that token's contextual representation. Both recurrences are Elman cells with `tanh`, the backward one a [`scan` with `reverse=true`](../guides/dsl-declarations.md#scan-temporal-recurrence), and the weights are draws, so the model is Bayesian over them.
 
 ## QVR source
 
 ```qvr
-# Dual-RNN Masked-Token Model
+# Bidirectional RNN Language Model
 #
-# Two independently parameterized cells scan the same token
-# sequence from left to right. A combine morphism merges their
-# summaries, and a Categorical lm_head over Token scores a
-# masked-token target. The second path is named backward_path
-# for contrast, but the source does not reverse its input; a
-# caller must supply a reversed branch to obtain right context.
+# Two Elman recurrences read the same token sequence, one from left to
+# right and one from right to left. The forward recurrence scores, at
+# every position, the token after it; the backward recurrence scores the
+# token before it. Their states, paired position by position, are the
+# contextual representation of each token: the forward state has read
+# the tokens up to the position, the backward state the tokens from it
+# to the end.
 #
-# Generative structure:
+# Generative structure (h_t forward, g_t backward, both starting at 0):
 #
-#   h_fwd    ~ scan(fwd_cell)(tok_embed(x))    forward hidden states
-#   h_alt    ~ scan(bwd_cell)(tok_embed(x))    second left-to-right summary
-#   h        ~ combine(h_fwd, h_bwd)           merged representation
-#   masked_t ~ Categorical(logits=lm_head(h))  observed masked token
+#   h_t = tanh(Wf h_{t-1} + Uf[x_t])          forward state
+#   next_t ~ Categorical(logits=Vf h_t)       the token after x_t
+#   g_t = tanh(Wb g_{t+1} + Ub[x_t])          backward state
+#   prev_t ~ Categorical(logits=Vb g_t)       the token before x_t
+#   context_t = (h_t, g_t)                    returned, one per position
 #
-# Each input row is one context window, and one run of the program
-# scores its masked token: the windows of a corpus are independent
-# runs that share the model's parameters. Token is the vocabulary, so
-# it is the value space of what lm_head draws and of what the program
-# returns.
+# The weights are draws, so the model is Bayesian over them. Each input
+# row is one window of tokens; `next_token` and `prev_token` hold, for
+# each position of the window, the token after and before it.
 #
-# The fan-out fan(forward_path, backward_path) runs the two
-# paths in parallel over the same token sequence in the
-# Kleisli category; the backbone is
-# fan(forward_path, backward_path) >> combine.
+# Reference: [Schuster and Paliwal 1997](https://doi.org/10.1109/78.650093).
 
-object Token : FinSet 256
-object Embedded, FwdHidden, BwdHidden : Real 64
-object Combined : Real 128
+object Token : FinSet 6
+object Hid : FinSet 3
+object HidVec : Real 3
+object Context : Real 6
 
-morphism tok_embed : Token -> Embedded [role=embed]
-morphism fwd_cell : Embedded * FwdHidden -> FwdHidden [param_source=mlp] ~ Normal
-morphism bwd_cell : Embedded * BwdHidden -> BwdHidden [param_source=mlp] ~ Normal
-morphism combine : Combined -> Combined [param_source=mlp] ~ Normal
-morphism lm_head : Combined -> Token ~ Categorical
+program forward_step(x_t, h_prev) : Token * HidVec -> HidVec
+    let pre_f = factor d : Hid in sum(factor k : Hid in Wf[d, k] * h_prev[k]) + Uf[x_t, d]
+    let h_new = tanh(pre_f)
+    let logits_f = factor v : Token in sum(factor d : Hid in Vf[v, d] * h_new[d])
+    observe next_token <- Categorical(logits=logits_f)
+    return h_new
 
-define forward_path = tok_embed >> scan(fwd_cell)
-define backward_path = tok_embed >> scan(bwd_cell)
-define backbone = fan(forward_path, backward_path) >> combine
+program backward_step(x_t, g_next) : Token * HidVec -> HidVec
+    let pre_b = factor d : Hid in sum(factor k : Hid in Wb[d, k] * g_next[k]) + Ub[x_t, d]
+    let g_new = tanh(pre_b)
+    let logits_b = factor v : Token in sum(factor d : Hid in Vb[v, d] * g_new[d])
+    observe prev_token <- Categorical(logits=logits_b)
+    return g_new
 
-program bidirectional_rnn_lm : Token -> Token
-    sample h <- backbone
+define forward_states = scan(forward_step, outputs=all)
+define backward_states = scan(backward_step, outputs=all, reverse=true)
+define contextual = fan(forward_states, backward_states)
 
-    observe masked_token <- lm_head(h)
-    return masked_token
+program bidirectional_rnn_lm : Token -> Context
+    sample Uf : Token <- Normal(loc=0.0, scale=1.0) [over=Hid, iid_over=Token]
+    sample Wf : Hid <- Normal(loc=0.0, scale=0.5) [over=Hid, iid_over=Hid]
+    sample Vf : Token <- Normal(loc=0.0, scale=1.0) [over=Hid, iid_over=Token]
+    sample Ub : Token <- Normal(loc=0.0, scale=1.0) [over=Hid, iid_over=Token]
+    sample Wb : Hid <- Normal(loc=0.0, scale=0.5) [over=Hid, iid_over=Hid]
+    sample Vb : Token <- Normal(loc=0.0, scale=1.0) [over=Hid, iid_over=Token]
+    sample context <- contextual
+    return context
 
 export bidirectional_rnn_lm
 ```
 
 ## Understanding the model
 
-The data are a context of token IDs and one target token. An embedding turns
-each ID into a vector; each [recurrent branch](vanilla-rnn-lm.md#understanding-the-model) compresses the context into a
-running state; the merge turns the two summaries into the parameters of a
-distribution over target tokens. A high target probability lowers that row's
-negative log likelihood.
+With $x_t$ the token at position $t$ of a window of length $T$, $h_0 = g_{T+1} = 0$, and $U[x]$ the row of $U$ for token $x$, the program scores
 
-Both branches read the supplied order, even though their variable names say
-forward and backward. Separate parameters allow different summaries, but do
-not create right-to-left information flow. The synthetic experiment also
-exposes hidden values for checking scores; distinguish a fit conditioned on
-those values from a prediction that must integrate uncertainty about them.
+$$
+h_t = \tanh(W_f h_{t-1} + U_f[x_t]), \qquad g_t = \tanh(W_b g_{t+1} + U_b[x_t]),
+$$
+
+$$
+\log p = \log p(W, U, V) + \sum_{t=1}^{T} \Bigl( \log \mathrm{softmax}(V_f h_t)_{x_{t+1}} + \log \mathrm{softmax}(V_b g_t)_{x_{t-1}} \Bigr),
+$$
+
+with independent Normal priors on the six weight matrices, and returns $(h_t, g_t)$ at every position. The forward scan reads left to right and the backward scan right to left, so each direction's likelihood is a proper autoregressive model of the window in its own direction; the two share nothing but the input.
 
 ## Walkthrough
 
-### Two independent scans
-
-`forward_path = tok_embed >> scan(fwd_cell)` and
-`backward_path = tok_embed >> scan(bwd_cell)` are two independent Kleisli
-morphisms, `Token -> FwdHidden` and `Token -> BwdHidden`. Both use `scan` to
-thread state from left to right over the same token sequence. Their cells carry
-independent parameters and thus learn separate sequence summaries.
-
-### Parallel composition
-
-`fan(forward_path, backward_path) >> combine` runs the two paths in parallel via the `fan` combinator, the Kleisli fan-out that feeds the same input to two morphisms and pairs their outputs in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. The result lives in `FwdHidden * BwdHidden`, which by the type aliases above has total dimension 128, matching `Combined`. The `combine` Bayesian morphism is the merge that mixes the two streams into a single combined representation. [@giry1982categorical]
-
-### Masked LM head
-
-The Categorical `lm_head : Combined -> Token` scores a masked-token target from the two learned summaries. In the current source, both summaries use the same input order; the name `backward_path` does not itself reverse data.
-
-The program scores one context window per run. Each input row is a window, and a corpus of windows is a batch of independent runs that share the model's parameters, so every window draws its own branch trajectories and scores its own masked-token label. `Token : FinSet 256` sits in `lm_head`'s codomain and in the program's own codomain, so it is the value space the draw ranges over.
-
-```mermaid
-flowchart LR
-    tok["tok"] --> embed["embed"]
-    embed["embed"] --> fwd["fwd"]
-    embed["embed"] --> bwd["bwd"]
-    fwd["fwd"] --> combine["combine"]
-    bwd["bwd"] --> combine["combine"]
-    combine["combine"] --> lm_head["lm_head"]
-    lm_head["lm_head"] --> masked_token["masked_token"]
-    class tok qv-input
-    class embed,fwd,bwd,combine,lm_head qv-checked
-    class masked_token qv-output
-```
+- The weights `Uf`, `Wf`, `Vf` (forward) and `Ub`, `Wb`, `Vb` (backward) are drawn by the exported program and read inside the cells, so they are sample sites with Normal priors.
+- `forward_step` computes `h_new = tanh(Wf h_prev + Uf[x_t])` with `factor` comprehensions over the hidden axis and observes `next_token` under `Categorical(logits=Vf h_new)`.
+- `backward_step` is the same cell with its own weights, observing `prev_token`.
+- `scan(forward_step, outputs=all)` returns the state at every position; `scan(backward_step, outputs=all, reverse=true)` visits the positions from last to first and returns its states in input order. The backward cell's sites are numbered in visit order, so `g_new@0` is the last position.
+- `fan(forward_states, backward_states)` lays the two trajectories end to end at each position, giving the `Context : Real 6` that the program returns.
+- Each input row is one window; `next_token` and `prev_token` hold, for every position of the window, the token after and before it.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+The blocks below check the program against an independent float64 implementation of the two recurrences and their likelihoods. Every tolerance was fixed before the first run.
 
+### Shared oracle
 
-### Generating synthetic data
-
-Trace the two fixed branches once to obtain their latent trajectories, the merged `h`, and the target. Each branch is a scan, whose embedding and cell draws are sites at every position: the scans sit in the branches of a `fan`, so their sites are named under the binding `h`, as `h$<branch>@t` for the cell's draw and `h$<branch>$x_in@t` for the embedding. Reuse every latent in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each input row is one run: an int64 context of length `seq_len`, scored against one masked-token label.
+`oracle` computes one window's log joint, priors included, and its per-position context. Its two keyword switches give deliberately wrong models: a backward recurrence that runs left to right, and one that scores the next token instead of the previous one.
 
 ```python
 import torch
+import torch.distributions as D
+
 from quivers.dsl import load
-from quivers.inference.trace import trace
+from quivers.inference import trace
 
-torch.manual_seed(0)
-prog = load("docs/examples/source/bidirectional_rnn_lm.qvr")
-model = prog.morphism
+V, H, T = 6, 3, 5
+SCALES = {"Uf": 1.0, "Wf": 0.5, "Vf": 1.0, "Ub": 1.0, "Wb": 0.5, "Vb": 1.0}
 
-# Fix the model's kernel parameters to chosen values, then run one
-# forward trace so the captured hidden state and the masked-token target it
-# generated are jointly consistent under the same weights.
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
 
-rows, seq_len, vocab = 32, 8, 256
-contexts = torch.randint(0, vocab, (rows, seq_len))
-with torch.no_grad():
-    forward = trace(model, contexts)
-# Every latent the run drew: both branches' per-position sites and the
-# merged `h` the `combine` kernel draws from their final states.
-latents = {
-    name: site.value.detach()
-    for name, site in forward.sites.items()
-    if not site.is_deterministic and name != "masked_token"
-}
-masked_token = forward.sites["masked_token"].value.detach()
 
-x_in = contexts
-observations = {"masked_token": masked_token, **latents}
-print("contexts:", contexts.shape, contexts.dtype)
-print("latent sites:", len(latents))
-print("masked_token:", masked_token.shape, masked_token.dtype)
+def check(label, ok, detail):
+    print(f"[{'PASS' if ok else 'FAIL'}] {label}: {detail}")
+    assert ok, label
+
+
+def oracle(w, x, nxt, prv, *, backward_left_to_right=False, backward_scores_next=False):
+    """The log joint and the per-position context of one window."""
+    total = sum(D.Normal(0.0, SCALES[n]).log_prob(w[n]).sum() for n in SCALES)
+    h = torch.zeros(H, dtype=w["Wf"].dtype)
+    forward = []
+    for t in range(T):
+        h = torch.tanh(w["Wf"] @ h + w["Uf"][x[t]])
+        total = total + torch.log_softmax(w["Vf"] @ h, -1)[nxt[t]]
+        forward.append(h)
+    g = torch.zeros(H, dtype=w["Wb"].dtype)
+    backward = [g] * T
+    order = range(T) if backward_left_to_right else range(T - 1, -1, -1)
+    target = nxt if backward_scores_next else prv
+    for t in order:
+        g = torch.tanh(w["Wb"] @ g + w["Ub"][x[t]])
+        total = total + torch.log_softmax(w["Vb"] @ g, -1)[target[t]]
+        backward[t] = g
+    context = torch.stack([torch.cat([forward[t], backward[t]]) for t in range(T)])
+    return total, context
+
+
+program = load("docs/examples/source/bidirectional_rnn_lm.qvr")
+model = program.morphism
+generator = torch.Generator().manual_seed(0)
+windows = torch.randint(0, V, (3, T + 2), generator=generator)
+x, nxt, prv = windows[:, 1:-1], windows[:, 2:], windows[:, :-2]
+observations = {"next_token": nxt, "prev_token": prv}
+
 ```
 
-### SVI fit
+### The compiled runtime
 
-Reinitialize `tok_embed`, `fwd_cell`, `bwd_cell`, `combine`, and `lm_head`, then fit a mean-field posterior over their parameters and the latents with an [`AutoNormalGuide`](../api/inference/guide.md) and [`SVI`](../api/inference/svi.md). The branches' scans draw at every position, so their trajectories and the merged `h` are lifted beside the parameters with [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters), each per-position label stacked over positions. The [`ELBO`](../api/inference/elbo.md) scores the Categorical `masked_token` site for each context.
+At a traced draw of the weights, for three windows: the log joint matches the oracle to a relative 1e-5, the returned context matches to 1e-5 absolute, and each wrong oracle is more than a relative 1e-3 away, so the first check can see both the direction and the target of the backward recurrence. The separation depends on the draw: at this page's seeded draw the smallest gap is 1.4e-3, but a draw of the same weights made with float64 as the default dtype puts the left-to-right oracle 7.8e-4 from the runtime at window 2, under the margin. The page claims the margin at its own draw only.
 
 ```python
-import torch
-from quivers.dsl import load
-from quivers.inference import AutoNormalGuide, ELBO, SVI, bayesian_lift_parameters
-from quivers.inference.trace import trace
-
-torch.manual_seed(0)
-prog = load("docs/examples/source/bidirectional_rnn_lm.qvr")
-model = prog.morphism
-
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
-rows, seq_len, vocab = 32, 8, 256
-contexts = torch.randint(0, vocab, (rows, seq_len))
-targets = model.rsample(contexts)
-observations = {"masked_token": targets}
-
+# 1, 2, 4: compiled runtime at a traced draw.
 torch.manual_seed(1)
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
+recorded = trace(model, x, observations=observations)
+for row in range(3):
+    weights = {n: recorded.sites[n].value[row].double() for n in SCALES}
+    args = (weights, x[row].tolist(), nxt[row].tolist(), prv[row].tolist())
+    expected, context = oracle(*args)
+    got = float(recorded.log_joint[row])
+    check(
+        f"1 compiled joint, window {row}",
+        abs(got - float(expected)) <= 1e-5 * abs(float(expected)),
+        f"{got:.6f} vs oracle {float(expected):.6f}",
+    )
+    output = recorded.output
+    assert isinstance(output, torch.Tensor)
+    error = float((output[row].double() - context).abs().max())
+    check(f"2 compiled context, window {row}", error <= 1e-5, f"max abs error {error:.2e}")
+    for name, kwargs in (
+        ("backward run left to right", {"backward_left_to_right": True}),
+        ("backward scores the next token", {"backward_scores_next": True}),
+    ):
+        wrong, _ = oracle(*args, **kwargs)
+        gap = abs(got - float(wrong)) / abs(float(wrong))
+        check(f"4 wrong oracle ({name}), window {row}", gap > 1e-3, f"relative gap {gap:.2e}")
 
-# The latents: each label a branch's scan reaches per position, stacked
-# as (rows, seq_len, ...), and the merged `h`.
-forward = trace(model, contexts, observations)
-per_position: dict[str, list[torch.Tensor]] = {}
-latent_shapes: dict[str, tuple[int, ...]] = {}
-for name, site in forward.sites.items():
-    if site.is_deterministic or site.is_observed:
-        continue
-    label, at, _ = name.partition("@")
-    if at:
-        per_position.setdefault(label, []).append(site.value)
-    else:
-        latent_shapes[name] = tuple(site.value.shape)
-for label, values in per_position.items():
-    latent_shapes[label] = tuple(torch.stack(values, dim=1).shape)
-lifted, lx, lobs = bayesian_lift_parameters(
-    model, contexts, observations,
-    prior_scale=1.0,
-    additional_latents=latent_shapes,
-)
-
-guide = AutoNormalGuide(lifted, observed_names=set(lobs))
-optim = torch.optim.Adam(guide.parameters(), lr=1e-2)
-svi = SVI(lifted, guide, optim, ELBO(num_particles=1))
-
-losses = [svi.step(lx, lobs)]
-for _ in range(40):
-    losses.append(svi.step(lx, lobs))
-
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
 ```
 
-### NUTS posterior
+### The reference machine
 
-The forward / backward cells and the combine morphism are kernel Bayesian morphisms whose weights live as `nn.Parameter`s inside the program. [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) lifts those parameters into Normal-prior sample sites so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) has a continuous unconstrained state space. The branches' per-position draws and the merged `h` are lifted beside the parameters through `additional_latents`, each per-position label stacked as `(rows, seq_len, ...)`, so the likelihood scores the masked-token target via the Categorical [`lm_head`](../api/continuous/families.md) at the merged state those latents determine.
+At fixed weights, the reference machine's log joint and context match the oracle to 1e-9.
 
 ```python
-import torch
-from quivers.dsl import load
-from quivers.inference import MCMC, NUTSKernel, bayesian_lift_parameters
-from quivers.inference.trace import trace
-
-torch.manual_seed(0)
-prog = load("docs/examples/source/bidirectional_rnn_lm.qvr")
-model = prog.morphism
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
-rows, seq_len, vocab = 32, 8, 256
-contexts = torch.randint(0, vocab, (rows, seq_len))
-targets = model.rsample(contexts)
-observations = {"masked_token": targets}
-
-# The latents: each label a branch's scan reaches per position, stacked
-# as (rows, seq_len, ...), and the merged `h`.
-forward = trace(model, contexts, observations)
-per_position: dict[str, list[torch.Tensor]] = {}
-latent_shapes: dict[str, tuple[int, ...]] = {}
-for name, site in forward.sites.items():
-    if site.is_deterministic or site.is_observed:
-        continue
-    label, at, _ = name.partition("@")
-    if at:
-        per_position.setdefault(label, []).append(site.value)
-    else:
-        latent_shapes[name] = tuple(site.value.shape)
-for label, values in per_position.items():
-    latent_shapes[label] = tuple(torch.stack(values, dim=1).shape)
-lifted, lx, lobs = bayesian_lift_parameters(
-    model, contexts, observations,
-    prior_scale=1.0,
-    additional_latents=latent_shapes,
+# 3: reference machine at fixed weights.
+weights = {n: SCALES[n] * torch.randn(V if n[0] in "UV" else H, H, generator=generator, dtype=torch.float64) for n in SCALES}
+row = 0
+run = program.run(
+    "bidirectional_rnn_lm",
+    data={
+        "token": tuple(x[row].tolist()),
+        "next_token": tuple(nxt[row].tolist()),
+        "prev_token": tuple(prv[row].tolist()),
+    },
+    sites={n: tuple(tuple(r) for r in w.tolist()) for n, w in weights.items()},
+    seed=0,
 )
-kernel = NUTSKernel(step_size=0.005, max_tree_depth=3, target_accept=0.8)
-mc     = MCMC(kernel, num_warmup=10, num_samples=10, num_chains=1)
-result = mc.run(lifted, lx, lobs)
+expected, context = oracle(weights, x[row].tolist(), nxt[row].tolist(), prv[row].tolist())
+check(
+    "3 reference joint",
+    abs(run.log_joint - float(expected)) <= 1e-9 * abs(float(expected)),
+    f"{run.log_joint:.12f} vs oracle {float(expected):.12f}",
+)
+returned = torch.tensor(run.value, dtype=torch.float64)
+error = float((returned - context).abs().max())
+check("3 reference context", error <= 1e-9, f"max abs error {error:.2e}")
 
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
-print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 
+### Gradients through the reversed recurrence
+
+The gradient of the compiled log joint with respect to the backward input weights `Ub` matches the oracle's autograd gradient (relative 1e-4, absolute 1e-6).
+
+```python
+# 5: gradients through the reversed recurrence.
+clamped = {n: (weights[n].float().unsqueeze(0)) for n in SCALES}
+clamped["Ub"] = clamped["Ub"].clone().requires_grad_(True)
+joint = model.log_joint(x[:1], {**clamped, **{k: v[:1] for k, v in observations.items()}})
+joint.sum().backward()
+reference = {n: weights[n].clone() for n in SCALES}
+reference["Ub"].requires_grad_(True)
+oracle(reference, x[0].tolist(), nxt[0].tolist(), prv[0].tolist())[0].backward()
+grad = clamped["Ub"].grad
+assert grad is not None and reference["Ub"].grad is not None
+ok = torch.allclose(grad[0].double(), reference["Ub"].grad, rtol=1e-4, atol=1e-6)
+check("5 gradient wrt Ub", ok, f"max abs diff {float((grad[0].double() - reference['Ub'].grad).abs().max()):.2e}")
+```
 
 ## Categorical perspective
 
-The model denotes a Kleisli morphism $\mathrm{Token} \to \mathcal{G}(\mathrm{Token})$ assembled by `fan`-composing two independent scan-folds and following with a merge. The `fan` combinator is the diagonal-pair construction $(f \times g) \circ \Delta$ in the Kleisli category that delivers a common input to both branches, landing in $\mathrm{FwdHidden} \times \mathrm{BwdHidden}$. Because that product carries the same 128 dimensions as $\mathrm{Combined}$, the Normal-kernel morphism `combine` $: \mathrm{Combined} \to \mathcal{G}(\mathrm{Combined})$ consumes the paired streams directly and mixes them into a single object. The Categorical head closes with the masked-token likelihood as a sub-probability kernel.
-
+Each cell is a deterministic morphism followed by an observation, a sub-probability kernel in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]. `scan(..., outputs=all)` is the left [fold](https://ncatlab.org/nlab/show/fold) that keeps its intermediate states (a scan in the functional-programming sense), `reverse=true` the right fold, and `fan` the pairing of two morphisms with a common domain.
 
 ## Sources and further reading
 
+- *Bidirectional recurrent neural networks* [@schuster1997bidirectional].
+- *Deep contextualized word representations* [@peters2018deep].
 - *A categorical approach to probability theory* [@giry1982categorical].

@@ -29,7 +29,7 @@
 composition log_prob [level=algebra]
 
 object Component : FinSet 3
-object Resp : FinSet 100
+object Resp : FinSet 200
 object Weights : Real 3
 
 program gmm(alpha : Real) : Resp -> Weights

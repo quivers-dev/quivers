@@ -1,39 +1,36 @@
 # Continuous State-Space Model
 #
-# A continuous state-space wiring example with a one-step
-# generative program and a separate recurrent recognition path.
-# The learned recognition cell resembles a filter, but it is not
-# the Bayesian inverse of the transition and emission kernels.
+# A hidden Markov model whose state is a real vector: the state follows a
+# Gaussian Markov chain and each position's observation is Gaussian given
+# that position's state. Both kernels take the default linear parameter
+# source, so each maps its input affinely to the mean and the log-scale
+# of a diagonal Normal; the noise therefore varies with the state. The
+# scan's entries only set the length of the sequence.
 #
-# Generative structure:
+# Generative structure (s_{-1} = 0):
 #
-#   s_t  ~ transition(s_{t-1})                    State -> State kernel
-#   o_t  ~ emission(s_t)                          State -> Obs kernel
-#   h_t  ~ inference_cell(o_t, h_{t-1})           learned summary
+#   s_t  ~ Normal(A s_{t-1} + a, diag exp(B s_{t-1} + b))
+#   o_t  ~ Normal(C s_t + c, diag exp(D s_t + d))
 #
-# scan threads the learned state across the observation sequence;
-# filter_and_reconstruct decodes its terminal summary back to
-# observation space.
+# The weights are point estimates; the states s@0, s@1, ... are the
+# latent sites, one per position.
 
-object State : Real 16
-object Obs : Real 8
+object Tick : Real 1
+object State : Real 2
+object Obs : Real 3
 
 morphism transition : State -> State ~ Normal
 morphism emission : State -> Obs ~ Normal
 
-program generative_step : State -> State
-    sample s_new <- transition
+program step(u_t, s_prev) : Tick * State -> State
+    sample s <- transition(s_prev)
+    observe o <- emission(s)
+    return s
 
-    observe o <- emission(s_new)
-    return s_new
+define run_all = scan(step)
 
-morphism inference_cell : Obs * State -> State ~ Normal
+program continuous_hmm : Tick -> State
+    sample s_last <- run_all
+    return s_last
 
-define filter = scan(inference_cell)
-
-morphism decoder : State -> Obs ~ Normal
-
-define filter_and_reconstruct = scan(inference_cell) >> decoder
-
-export generative_step
-export filter_and_reconstruct
+export continuous_hmm

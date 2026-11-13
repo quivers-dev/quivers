@@ -1,64 +1,75 @@
-# Dual-Branch Encoder-Decoder Model
+# Sequence-to-Sequence Transformer over Fixed Windows
 #
-# Separate source-side and target-side branches combine parallel
-# MLP-Normal kernels with feed-forward stages. A cross morphism
-# merges their representations, and a Categorical lm_head scores
-# the next target token. The source contains no query-key
-# attention, cross-attention, positional encoding, or causal mask.
+# An encoder-decoder with attention, after Vaswani et al., over a source
+# window of SrcPos positions and a target window of TgtPos positions.
+# The encoder attends across the whole source; the decoder attends to
+# the target positions up to its own under a causal mask, then attends
+# across the encoder's output; a readout tied to the token embedding
+# scores the target token at every target position. Every weight is a
+# sample site with a Normal prior, so the model is Bayesian over them.
 #
-# Generative structure:
+# Generative structure (one head of width 4 per attention, scores
+# scaled by 1 / sqrt(4) = 0.5):
 #
-#   h_enc    ~ encoder(source)                    source branch
-#   h_dec    ~ decoder(target)                    target branch
-#   h        ~ cross(h_enc, h_dec)                merged representation
-#   next_t   ~ Categorical(logits=lm_head(h))     next-token target
+#   X = E[source] + P_src                        encoder input
+#   H = X + Attn(X, X)                           encoder self-attention
+#   Y = E[previous] + P_tgt                      decoder input
+#   G = Y + CausalAttn(Y, Y)                     decoder self-attention
+#   O = G + Attn(G, H)                           cross-attention
+#   target[p] ~ Categorical(logits = O[p] E^T)   tied readout
 #
-# Composing the two backbones via the tensor product @ and
-# following with cross >> lm_head gives a Kleisli morphism
-# Source * Target -> Target in the Giry monad's Kleisli
-# category.
+# The tokens arrive as data: `source` holds the source tokens,
+# `previous` the target tokens shifted right by one behind a start
+# token, and `target` is observed. A causal mask entry is 1 exactly when
+# j <= i, from the integer clamp min(1, max(0, i - j + 1)).
 #
-# Each input row is one (source, target) token pair, and one run of
-# the program scores its next target token: the pairs of a corpus are
-# independent runs that share the model's parameters. Target is the
-# target-side vocabulary, so it is the value space of what lm_head
-# draws and of what the program returns.
-#
-# The wiring is inspired by encoder-decoder models, but the
-# branch operations should not be read as a full sequence model.
+# Reference: [Vaswani et al. 2017](https://papers.nips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html).
 
-object Source, Target : FinSet 32
-object Latent : Real 16
-object HeadOut : Real 4
-object FFHidden, Combined : Real 32
+object Token : FinSet 6
+object SrcPos : FinSet 5
+object TgtPos : FinSet 4
+object Emb : FinSet 4
 
-morphism src_embed : Source -> Latent [role=embed]
-morphism tgt_embed : Target -> Latent [role=embed]
-morphism enc_head : Latent -> HeadOut [replicate=4, param_source=mlp] ~ Normal
-morphism enc_attn_proj : Latent -> Latent [param_source=mlp] ~ Normal
-morphism enc_residual_attn : Latent -> Latent [param_source=mlp] ~ Normal
-morphism enc_ff_up : Latent -> FFHidden [param_source=mlp] ~ Normal
-morphism enc_ff_down : FFHidden -> Latent [param_source=mlp] ~ Normal
-morphism enc_residual_ff : Latent -> Latent [param_source=mlp] ~ Normal
-morphism dec_head : Latent -> HeadOut [replicate=4, param_source=mlp] ~ Normal
-morphism dec_attn_proj : Latent -> Latent [param_source=mlp] ~ Normal
-morphism dec_residual_attn : Latent -> Latent [param_source=mlp] ~ Normal
-morphism dec_ff_up : Latent -> FFHidden [param_source=mlp] ~ Normal
-morphism dec_ff_down : FFHidden -> Latent [param_source=mlp] ~ Normal
-morphism dec_residual_ff : Latent -> Latent [param_source=mlp] ~ Normal
-morphism cross : Combined -> Combined [param_source=mlp] ~ Normal
-morphism lm_head : Combined -> Target ~ Categorical
+program seq2seq : TgtPos -> TgtPos
+    sample E : Token <- Normal(loc=0.0, scale=1.0) [over=Emb, iid_over=Token]
+    sample P_src : SrcPos <- Normal(loc=0.0, scale=1.0) [over=Emb, iid_over=SrcPos]
+    sample P_tgt : TgtPos <- Normal(loc=0.0, scale=1.0) [over=Emb, iid_over=TgtPos]
+    sample Wq_enc : Emb <- Normal(loc=0.0, scale=0.5) [over=Emb, iid_over=Emb]
+    sample Wk_enc : Emb <- Normal(loc=0.0, scale=0.5) [over=Emb, iid_over=Emb]
+    sample Wv_enc : Emb <- Normal(loc=0.0, scale=0.5) [over=Emb, iid_over=Emb]
+    sample Wq_dec : Emb <- Normal(loc=0.0, scale=0.5) [over=Emb, iid_over=Emb]
+    sample Wk_dec : Emb <- Normal(loc=0.0, scale=0.5) [over=Emb, iid_over=Emb]
+    sample Wv_dec : Emb <- Normal(loc=0.0, scale=0.5) [over=Emb, iid_over=Emb]
+    sample Wq_cross : Emb <- Normal(loc=0.0, scale=0.5) [over=Emb, iid_over=Emb]
+    sample Wk_cross : Emb <- Normal(loc=0.0, scale=0.5) [over=Emb, iid_over=Emb]
+    sample Wv_cross : Emb <- Normal(loc=0.0, scale=0.5) [over=Emb, iid_over=Emb]
 
-define enc_block = fan(enc_head) >> enc_attn_proj >> enc_residual_attn >> enc_ff_up >> enc_ff_down >> enc_residual_ff
-define dec_block = fan(dec_head) >> dec_attn_proj >> dec_residual_attn >> dec_ff_up >> dec_ff_down >> dec_residual_ff
-define encoder = src_embed >> stack(enc_block, 2)
-define decoder = tgt_embed >> stack(dec_block, 2)
-define backbone = (encoder @ decoder) >> cross
+    let X = factor p : SrcPos, k : Emb in E[int(source[p]), k] + P_src[p, k]
+    let Q_enc = factor p : SrcPos, d : Emb in sum(factor k : Emb in X[p, k] * Wq_enc[k, d])
+    let K_enc = factor p : SrcPos, d : Emb in sum(factor k : Emb in X[p, k] * Wk_enc[k, d])
+    let V_enc = factor p : SrcPos, d : Emb in sum(factor k : Emb in X[p, k] * Wv_enc[k, d])
+    let S_enc = factor i : SrcPos, j : SrcPos in 0.5 * sum(factor d : Emb in Q_enc[i, d] * K_enc[j, d])
+    let A_enc = softmax(S_enc)
+    let H = factor i : SrcPos, d : Emb in X[i, d] + sum(factor j : SrcPos in A_enc[i, j] * V_enc[j, d])
 
-program seq2seq : Source * Target -> Target
-    sample h <- backbone
+    let Y = factor p : TgtPos, k : Emb in E[int(previous[p]), k] + P_tgt[p, k]
+    let Q_dec = factor p : TgtPos, d : Emb in sum(factor k : Emb in Y[p, k] * Wq_dec[k, d])
+    let K_dec = factor p : TgtPos, d : Emb in sum(factor k : Emb in Y[p, k] * Wk_dec[k, d])
+    let V_dec = factor p : TgtPos, d : Emb in sum(factor k : Emb in Y[p, k] * Wv_dec[k, d])
+    let mask = factor i : TgtPos, j : TgtPos in real(min(1, max(0, i - j + 1)))
+    let S_dec = factor i : TgtPos, j : TgtPos in 0.5 * sum(factor d : Emb in Q_dec[i, d] * K_dec[j, d]) - 1000000.0 * (1.0 - mask[i, j])
+    let A_dec = softmax(S_dec)
+    let G = factor i : TgtPos, d : Emb in Y[i, d] + sum(factor j : TgtPos in A_dec[i, j] * V_dec[j, d])
 
-    observe next_token <- lm_head(h)
-    return next_token
+    let Q_cross = factor p : TgtPos, d : Emb in sum(factor k : Emb in G[p, k] * Wq_cross[k, d])
+    let K_cross = factor p : SrcPos, d : Emb in sum(factor k : Emb in H[p, k] * Wk_cross[k, d])
+    let V_cross = factor p : SrcPos, d : Emb in sum(factor k : Emb in H[p, k] * Wv_cross[k, d])
+    let S_cross = factor i : TgtPos, j : SrcPos in 0.5 * sum(factor d : Emb in Q_cross[i, d] * K_cross[j, d])
+    let A_cross = softmax(S_cross)
+    let O = factor i : TgtPos, d : Emb in G[i, d] + sum(factor j : SrcPos in A_cross[i, j] * V_cross[j, d])
+
+    let logits = factor p : TgtPos, t : Token in sum(factor d : Emb in O[p, d] * E[t, d])
+    observe target : TgtPos <- Categorical(logits=logits)
+    return target
 
 export seq2seq

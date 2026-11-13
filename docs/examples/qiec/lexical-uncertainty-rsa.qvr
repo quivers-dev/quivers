@@ -1,26 +1,52 @@
 # Lexical-Uncertainty Rational Speech Acts
 #
-# A direct implementation of the specificity-implicature example in
-# Bergen, Levy & Goodman (2016), equations 31--34 and Figure 5.
+# The specificity-implicature example of Bergen, Levy & Goodman (2016),
+# section 4.4 and Figure 5, in the known-world form of equations (34)
+# to (37):
 #
-# Worlds:
-#   0 = all of the students passed
-#   1 = some but not all of the students passed
+#   (34) L0(w | u, L) ∝ L(u, w) P(w)
+#   (35) U1(u | w, L) = log L0(w | u, L) - c(u)
+#   (36) S1(u | w, L) ∝ exp(alpha * U1(u | w, L))
+#   (37) L1(w | u)    ∝ P(w) * sum_L P(L) S1(u | w, L)
 #
-# Utterances:
+# The paper writes the rationality parameter as lambda; it is alpha
+# here. The listener marginalizes over lexica at L1 only: each S1
+# reasons about an L0 with one fixed lexicon, as equation (37) requires.
+#
+# Worlds, with the uniform prior P(w) = 1/2 of Figure 5:
+#   0 = all of the students passed            (the paper's ∀)
+#   1 = some but not all of the students passed (the paper's ∃¬∀)
+#
+# Utterances, with the Figure 5 costs c(some) = c(all) = 1, c(null) = 5:
 #   0 = "some"
 #   1 = "all"
-#   2 = the always-true null utterance
+#   2 = the null utterance, true in both worlds
 #
-# Lexica:
-#   0 = "some" is true in both worlds
-#   1 = "some" means some-but-not-all
-#   2 = "some" means all
+# Lexica, the enrichment of [[some]] = {∀, ∃¬∀}, [[all]] = {∀} given in
+# section 4.4, each with the null utterance and uniform P(L) = 1/3:
+#   0 = "some" is true in both worlds (the paper's L1)
+#   1 = "some" means some-but-not-all (the paper's L2)
+#   2 = "some" means all              (the paper's L3)
 #
-# The source mirrors the RSA recursion: pragmatic_speaker traverses the
-# alternatives to call literal_listener, and lexical_speakers traverses the
-# possible lexica to call pragmatic_speaker. False cells use the paper's
-# 10^-6 numerical relaxation (section 4.3).
+# Section 4.3 lists four ways to keep (34) and (35) well defined and
+# adopts the null utterance. The null utterance is present here, and a
+# false cell is also set to 10^-6, which is the second of those four
+# options. The reference machine's log rejects 0, and a zero cell would
+# give an infinite utility whose gradient in alpha is undefined. A
+# false cell enters S1 as (10^-6)^alpha, so the relaxation's effect on
+# L1 shrinks with alpha: at alpha = 1 it moves L1(all | "some") from
+# 0.295874 (exact zeros) to 0.295864; at alpha = 0.5 the gap is 8e-4.
+#
+# The program puts a log-normal prior on alpha (alpha = 1, the Figure 5
+# value, is its median) and conditions on two observations of one
+# exchange: whether the speaker said "some" (heard_some, scored by
+# marginalizing the six lexicon-world states under P(L) P(w)) and which
+# world the listener chose on hearing "some" (listener_choice, scored
+# under L1(. | "some")). With heard_some = 1, their product is
+# P(w, u = "some") under the generative model the L1 listener inverts.
+#
+# pragmatic_speaker traverses the alternatives to call literal_listener,
+# and lexical_speakers traverses the lexica to call pragmatic_speaker.
 
 index Evidence = Answered | Predict
 

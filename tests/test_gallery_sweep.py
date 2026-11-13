@@ -47,14 +47,49 @@ from quivers.stochastic.deduction import (
 # The corpus each deduction example parses, keyed by its stem: the
 # deduction's name and the sentences its rules and lexicon license.
 _DEDUCTION_CORPORA: dict[str, tuple[str, list[list[str]]]] = {
-    "ccg": ("CCG", [["the", "cat", "sleeps"]]),
-    "custom_rules": ("AB", [["the", "dog", "runs"]]),
-    "multimodal_tlg": ("MMTLG", [["the", "dog", "barks"]]),
-    "type_logical": ("Lambek", [["every", "dog", "barks"]]),
+    "ccg": (
+        "CCG",
+        [
+            ["the", "cat", "sleeps"],
+            ["the", "dog", "whom", "Mary", "saw", "sleeps"],
+            ["the", "cat", "that", "sleeps", "today", "purrs"],
+            ["Mary", "probably", "sleeps"],
+            ["Mary", "saw", "yesterday", "the", "cat"],
+        ],
+    ),
+    "custom_rules": (
+        "AB",
+        [
+            ["the", "dog", "runs"],
+            ["the", "dog", "whom", "Mary", "saw", "runs"],
+            ["the", "dog", "that", "runs", "today", "barks"],
+        ],
+    ),
+    "multimodal_tlg": (
+        "MMTLG",
+        [["every", "linguist", "that", "admires", "Kim", "sleeps"]],
+    ),
+    "type_logical": ("Lambek", [["Kim", "gives", "Lee", "books"]]),
     "pcfg": ("PCFG", [["the", "cat", "sleeps"]]),
-    "pmcfg": ("PMCFG", [["the", "man", "who", "Mary", "saw"]]),
+    "wmcfg": (
+        "WMCFG",
+        [
+            ["mer", "em", "Hans", "es", "huus", "hälfed", "aastriiche"],
+            [
+                "mer",
+                "d'chind",
+                "em",
+                "Hans",
+                "es",
+                "huus",
+                "lönd",
+                "hälfe",
+                "aastriiche",
+            ],
+        ],
+    ),
     "montague_nli": ("Montague", [["every", "dog", "barks"]]),
-    "quantifier_scope": ("QScope", [["every", "dog", "barks"]]),
+    "quantifier_scope": ("QScope", [["every", "linguist", "admires", "some", "model"]]),
 }
 
 
@@ -156,7 +191,25 @@ _DOC_MD_FILES = sorted(
 )
 
 
+@pytest.fixture
+def _fresh_torch_state():
+    """Run one page under the process-wide torch state a reader starts
+    from, and put that state back afterwards.
+
+    A page may set process-wide state for its own blocks: the case
+    study sets the default dtype to float64. A reader runs each page in
+    a fresh interpreter, so the next page must not inherit that dtype
+    or the generator state the page's draws left behind; otherwise a
+    page's result depends on which pages ran before it in the session.
+    """
+    dtype = torch.get_default_dtype()
+    with torch.random.fork_rng():
+        yield
+    torch.set_default_dtype(dtype)
+
+
 @pytest.mark.slow
+@pytest.mark.usefixtures("_fresh_torch_state")
 @pytest.mark.parametrize("doc_name", _DOC_MD_FILES)
 def test_gallery_try_it_blocks_execute(doc_name):
     """Execute every ``## Try it`` Python block in the doc. A block

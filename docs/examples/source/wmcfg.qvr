@@ -1,0 +1,85 @@
+# Weighted Multiple Context-Free Grammar
+#
+# A multiple context-free grammar (MCFG) whose productions carry
+# learnable log-weights. A rank-k nonterminal of an MCFG derives a
+# k-tuple of strings, and a production combines its premises'
+# components by a linear yield function: every component is used
+# exactly once, in a fixed order. The rank-1 case is CFG.
+#
+# The grammar covers Swiss German cross-serial verb clusters
+# (Shieber 1985), the standard evidence that natural language is
+# not context-free. In
+#
+#     mer d'chind em Hans es huus lönd hälfe aastriiche
+#     we  the children(ACC) Hans(DAT) the house(ACC) let help paint
+#     "we let the children help Hans paint the house"
+#
+# the i-th noun phrase is the object of the i-th verb, and each
+# verb fixes its object's case: lönd ("let") and aastriiche
+# ("paint") take accusatives, hälfe ("help") a dative. The
+# dependencies cross rather than nest, and the case agreement makes
+# them visible in the string.
+#
+# The rank-2 nonterminal vc pairs a run of objects with the run of
+# verbs that take them:
+#
+#     vc(I1, J1, I2, J2)   objects span [I1, J1), verbs span [I2, J2)
+#
+# vc_acc and vc_dat realize the yield function
+#
+#     VC(np x1, v x2) :- NP_c(np), V_c(v), VC(x1, x2)
+#
+# where the object np and the verb v agree in case c. The inner
+# item's two components are separated by the verb v, which this
+# rule places between them, so every vc item below the top of the
+# cluster is discontinuous: in the sentence above,
+# vc(2, 4, 7, 8) covers "em Hans" and "hälfe" with "es huus lönd"
+# in between. fin_acc and fin_dat close the cluster with its finite
+# first verb, making the two components adjacent. A rule's weight
+# is keyed by its category bindings; span positions are not part of
+# the key.
+
+object Term : FinSet 16
+
+object LogWeight : Real 1
+
+deduction WMCFG : Term -> Term [semiring=LogProb, start=S, depth=2]
+    atoms S, VC, Nom, Dat, Acc, DetDat, DetAcc, Noun, VDat, VAcc, VDatFin, VAccFin, vc, span, mer, chind, em, es, hans, huus, loend, laa, haelfed, haelfe, aastriiche
+    # Noun phrases: the article carries the case.
+    rule dat_np : span(I, K, DetDat), span(K, J, Noun) |- span(I, J, Dat) #[learnable]
+    rule acc_np : span(I, K, DetAcc), span(K, J, Noun) |- span(I, J, Acc) #[learnable]
+    # Innermost object-verb pair: VC(np, v) :- NP_c(np), V_c(v).
+    rule vc_acc_base : span(I1, J1, Acc), span(I2, J2, VAcc) |- vc(I1, J1, I2, J2) #[learnable]
+    rule vc_dat_base : span(I1, J1, Dat), span(I2, J2, VDat) |- vc(I1, J1, I2, J2) #[learnable]
+    # VC(np x1, v x2) :- NP_c(np), V_c(v), VC(x1, x2).
+    rule vc_acc : span(I, J, Acc), vc(J, K, M, P), span(L, M, VAcc) |- vc(I, K, L, P) #[learnable]
+    rule vc_dat : span(I, J, Dat), vc(J, K, M, P), span(L, M, VDat) |- vc(I, K, L, P) #[learnable]
+    # The finite verb opens the cluster: VC(np x1 v x2) :- NP_c(np),
+    # Vfin_c(v), VC(x1, x2), a rank-1 constituent.
+    rule fin_acc : span(I, J, Acc), vc(J, K, M, P), span(K, M, VAccFin) |- span(I, P, VC) #[learnable]
+    rule fin_dat : span(I, J, Dat), vc(J, K, M, P), span(K, M, VDatFin) |- span(I, P, VC) #[learnable]
+    rule clause : span(I, J, Nom), span(J, K, VC) |- span(I, K, S) #[learnable]
+    lexicon
+        "mer"        : Nom     = mer        #[learnable]
+        "d'chind"    : Acc     = chind      #[learnable]
+        "em"         : DetDat  = em         #[learnable]
+        "es"         : DetAcc  = es         #[learnable]
+        "Hans"       : Noun    = hans       #[learnable]
+        "huus"       : Noun    = huus       #[learnable]
+        "lönd"       : VAccFin = loend      #[learnable]
+        "laa"        : VAcc    = laa        #[learnable]
+        "hälfed"     : VDatFin = haelfed    #[learnable]
+        "hälfe"      : VDat    = haelfe     #[learnable]
+        "aastriiche" : VAcc    = aastriiche #[learnable]
+
+# The grammar's contribution to a probabilistic program: parsing an
+# observed sentence and scoring the chart's goal weight adds the
+# inside log-weight log Z(s), summed over every derivation of S, to
+# the program's log-joint. The program returns that one real number,
+# so its codomain is LogWeight : Real 1.
+program score_sentence : Term -> LogWeight
+    let chart = parse(WMCFG, sentence)
+    score log_Z = chart.goal_weight()
+    return log_Z
+
+export score_sentence

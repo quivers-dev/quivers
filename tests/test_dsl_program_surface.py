@@ -100,17 +100,17 @@ def test_example_compiles_end_to_end() -> None:
     """The gallery example loads into a Program wrapping the exported
     MonadicProgram, typed at the arrow the source declares.
 
-    `pooled_tight : School -> Effect * Scale` reads its domain from
-    the 8-school plate and returns the pair of real scalars the
-    program's two sites carry, so the codomain is that product rather
-    than the domain repeated.
+    `pooled : School -> Effect * Mean` reads its domain from the
+    40-school plate and returns the pair of real values its labeled
+    tuple names, so the codomain is that product rather than the
+    domain repeated.
     """
     prog = load(str(_EXAMPLE))
     assert isinstance(prog, Program)
     morph = prog.morphism
     assert isinstance(morph, MonadicProgram)
     assert isinstance(morph.domain, FinSet)
-    assert morph.domain.cardinality == 8
+    assert morph.domain.cardinality == 40
     assert isinstance(morph.codomain, ProductSpace)
     assert [c.dim for c in morph.codomain.components] == [1, 1]
 
@@ -159,27 +159,30 @@ def test_template_scalar_parameter_changes_log_joint() -> None:
 
 
 def test_labeled_return_tuple_keys_program_output() -> None:
-    """``return (effects: theta, scale: sigma)`` keys the compiled
+    """``return (effects: theta, mean: mu)`` keys the compiled
     program's output dict by the labels, and ``log_joint`` accepts
     label-keyed intermediates interchangeably with variable-keyed
     ones."""
     prog = load(str(_EXAMPLE))
     model = prog.morphism
     assert isinstance(model, MonadicProgram)
-    # One run of the program: its eight rows come from its plate.
     x = torch.zeros(1, 1)
+    se = torch.full((40,), 10.0)
     torch.manual_seed(0)
-    out = model.rsample(x)
+    z = torch.randn(40)
+    tau = torch.tensor(3.0)
+    theta = tau * z
+    mu = torch.tensor(1.5)
+    out = model.rsample(x, observations={"se": se, "mu": mu, "tau": tau, "theta$z": z})
     assert isinstance(out, dict)
-    assert set(out.keys()) == {"effects", "scale"}
-    assert out["effects"].shape == (8,)
+    assert set(out.keys()) == {"effects", "mean"}
+    assert torch.allclose(out["effects"], theta)
+    assert torch.allclose(out["mean"], mu)
 
-    z = torch.randn(8)
-    theta = 0.6 * z
-    sigma = torch.full((1, 1), 0.8)
-    y = torch.linspace(-1.0, 1.0, 8)
-    by_label = {"effects": theta, "scale": sigma, "theta$z": z, "y": y}
-    by_var = {"theta": theta, "sigma": sigma, "theta$z": z, "y": y}
+    y = torch.linspace(-1.0, 1.0, 40)
+    shared = {"tau": tau, "theta$z": z, "y": y, "se": se}
+    by_label = {"effects": theta, "mean": mu, **shared}
+    by_var = {"theta": theta, "mu": mu, **shared}
     assert torch.allclose(model.log_joint(x, by_label), model.log_joint(x, by_var))
 
 
@@ -202,16 +205,17 @@ def test_score_step_moves_log_joint() -> None:
 
 
 def test_export_selects_declared_morphism() -> None:
-    """``export pooled_tight`` picks that program among the module's
+    """``export pooled`` picks that program among the module's
     candidates: the compiled Program wraps it identically (object
-    identity), not the sibling host program or the template."""
+    identity), not a sibling host program or the template."""
     ast = parse_file(str(_EXAMPLE))
     compiler = Compiler(ast)
     prog = compiler.compile()
     morphisms = compiler.morphisms
-    assert prog.morphism is morphisms["pooled_tight"]
-    assert "pooled_loose" in morphisms
-    assert prog.morphism is not morphisms["pooled_loose"]
+    assert prog.morphism is morphisms["pooled"]
+    for sibling in ("pooled_tight", "pooled_loose"):
+        assert sibling in morphisms
+        assert prog.morphism is not morphisms[sibling]
     # The parametric template is registered as a template, never as
     # a concrete morphism.
     assert "school_effects" in compiler.programs

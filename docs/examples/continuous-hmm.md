@@ -2,162 +2,278 @@
 
 ## Overview
 
-A continuous state-space model extends an HMM-style sequence to continuous latent states and observations. This example demonstrates `scan`, a one-step generative program, and a separately learned recognition-reconstruction path. The recognition cell is not derived by Bayesian inversion of the transition and emission kernels.
+A continuous state-space model is a hidden Markov model whose hidden state is a real vector: the state evolves by a Gaussian Markov chain and each observation is Gaussian given the state at its position. This source writes the two conditionals as Normal kernels with the default linear parameter source, so each maps its input affinely to both the mean and the log-scale of a diagonal Normal, and the noise of each step can depend on the state. A [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) whose cell draws the next state and scores that position's observation makes the whole state path the program's latent, one site per position. The page checks the program's joint density on both execution paths and, at weights that make the model linear-Gaussian, checks the posterior mode of the state path against the Rauch-Tung-Striebel smoother [@rauch1965smoothing]. Two variational checks of the posterior failed and are reported below.
 
 ## QVR source
 
 ```qvr
 # Continuous State-Space Model
 #
-# A continuous state-space wiring example with a one-step
-# generative program and a separate recurrent recognition path.
-# The learned recognition cell resembles a filter, but it is not
-# the Bayesian inverse of the transition and emission kernels.
+# A hidden Markov model whose state is a real vector: the state follows a
+# Gaussian Markov chain and each position's observation is Gaussian given
+# that position's state. Both kernels take the default linear parameter
+# source, so each maps its input affinely to the mean and the log-scale
+# of a diagonal Normal; the noise therefore varies with the state. The
+# scan's entries only set the length of the sequence.
 #
-# Generative structure:
+# Generative structure (s_{-1} = 0):
 #
-#   s_t  ~ transition(s_{t-1})                    State -> State kernel
-#   o_t  ~ emission(s_t)                          State -> Obs kernel
-#   h_t  ~ inference_cell(o_t, h_{t-1})           learned summary
+#   s_t  ~ Normal(A s_{t-1} + a, diag exp(B s_{t-1} + b))
+#   o_t  ~ Normal(C s_t + c, diag exp(D s_t + d))
 #
-# scan threads the learned state across the observation sequence;
-# filter_and_reconstruct decodes its terminal summary back to
-# observation space.
+# The weights are point estimates; the states s@0, s@1, ... are the
+# latent sites, one per position.
 
-object State : Real 16
-object Obs : Real 8
+object Tick : Real 1
+object State : Real 2
+object Obs : Real 3
 
 morphism transition : State -> State ~ Normal
 morphism emission : State -> Obs ~ Normal
 
-program generative_step : State -> State
-    sample s_new <- transition
+program step(u_t, s_prev) : Tick * State -> State
+    sample s <- transition(s_prev)
+    observe o <- emission(s)
+    return s
 
-    observe o <- emission(s_new)
-    return s_new
+define run_all = scan(step)
 
-morphism inference_cell : Obs * State -> State ~ Normal
+program continuous_hmm : Tick -> State
+    sample s_last <- run_all
+    return s_last
 
-define filter = scan(inference_cell)
-
-morphism decoder : State -> Obs ~ Normal
-
-define filter_and_reconstruct = scan(inference_cell) >> decoder
-
-export generative_step
-export filter_and_reconstruct
+export continuous_hmm
 ```
 
 ## Understanding the model
 
-A hidden state represents something evolving that is not directly measured,
-such as position; an emission represents a noisy measurement of it. The
-transition answers where the next state might be given the previous state.
-The emission answers what observation might be seen given that new state.
-A recognition model asks the reverse inferential question, but must be trained
-or derived to answer it.
+With $s_{-1} = 0$, the program scores
 
-The fitting blocks supply synthetic `s_new` as well as `o`, teaching the
-kernels from known transitions and observations. To infer states from measurements,
-`s_new` would need to remain unobserved and the inference method would need
-to [approximate](../tutorials/python/05-variational-inference.md#creating-a-guide) its distribution conditional on `o`.
+$$
+\begin{aligned}
+s_t &\sim \mathcal{N}\bigl(A s_{t-1} + a, \operatorname{diag} \exp(B s_{t-1} + b)\bigr), \\
+o_t &\sim \mathcal{N}\bigl(C s_t + c, \operatorname{diag} \exp(D s_t + d)\bigr),
+\end{aligned}
+$$
+
+where the learned weight of `transition` is the stacked matrix $[A; B]$ with bias $[a; b]$, and likewise $[C; D]$ and $[c; d]$ for `emission`. When $B$ and $D$ are zero the noise is constant and the model is the linear-Gaussian state-space model of the [Kalman filter](linear-gaussian-ssm.md) [@kalman1960filtering], whose state posterior is Gaussian with means the smoother computes. With $B$ or $D$ nonzero the model is heteroscedastic, and its posterior has no closed form. The program has no driver; the scan's entries, `Tick`, only set the length of the sequence. Each input row is one run, with the states drawn at the sites `s@0`, `s@1`, and so on and the observations `o` scored at every position.
 
 ## Walkthrough
 
-`object State : Real 16` and `object Obs : Real 8` introduce the two Euclidean spaces: a 16-dimensional latent and an 8-dimensional observation.
-
-`morphism transition : State -> State ~ Normal` evolves the latent state by one time step under a Normal kernel whose mean and scale are both produced from the previous state by the kernel's [`ParamSource`](../api/continuous/param_source.md#quivers.continuous.param_source.ParamSource). `morphism emission : State -> Obs ~ Normal` projects a state to an observation under the same kernel family.
-
-`program generative_step : State -> State` is a one-step monadic program: `sample s_new <- transition` draws the new latent state from the transition kernel, `observe o <- emission(s_new)` scores an observation against the emission kernel, and `return s_new` projects the program's joint kernel onto the new state. `repeat(generative_step, n)` can compose this endomorphism a fixed number of times. A `scan` cell instead needs a product domain `Input * State -> State`, as the separate `inference_cell` declaration shows.
-
-`morphism inference_cell : Obs * State -> State ~ Normal` is a learned recurrent cell that incorporates a new observation into a state representation. `define filter = scan(inference_cell)` threads it across a sequence. Using it as an approximate Bayesian filter would require training its state distributions against a filtering objective.
-
-`morphism decoder : State -> Obs ~ Normal` decodes a state back to observation space; `define filter_and_reconstruct = scan(inference_cell) >> decoder` composes the scan with the decoder so the exported pipeline filters and reconstructs in one composite.
+- `morphism transition : State -> State ~ Normal` and `morphism emission : State -> Obs ~ Normal` have no parameter source declared, so each takes the default linear one: one affine map from the input to the concatenated mean and log-scale.
+- `program step(u_t, s_prev)` ignores `u_t`, draws `s` from the transition at the previous state, observes `o` under the emission at `s`, and returns `s`.
+- `define run_all = scan(step)` threads the state from zero; `program continuous_hmm` draws the path and returns its last state.
+- No transpile target lowers a scan, so every target refuses this program with `scan:no-lowering`. The program runs on the PyTorch runtime and on the reference machine, which takes the weights as data.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+The first check's tolerances were fixed before it was first run. The second was added after the variational checks failed, and the section says how.
 
+### The log joint against a hand-written recursion
 
-### Generating synthetic data
-
-Pick ground-truth linear dynamics for the latent state and a random emission matrix, then forward-sample a trajectory of latent states and observations of length `T`. The single-step program `generative_step : State -> State` reads the previous state as input; the per-step pair `(s_new, o)` is supplied as the observation dict.
+At a traced draw of the state path on two runs of length 7, the compiled runtime's log joint must equal a float64 loop over positions to a relative 1e-5, and the reference machine to 1e-9. An oracle whose emission reads the previous state and an oracle that drops the transition term must each differ by more than a relative 1e-3.
 
 ```python
+import math
+
 import torch
+import torch.distributions as D
+
 from quivers.dsl import load
+from quivers.inference import trace
+
+SOURCE = "docs/examples/source/continuous_hmm.qvr"
+STATE, OBS = 2, 3
+
+
+def networks(model: torch.nn.Module) -> dict[str, torch.nn.Linear]:
+    found: dict[str, torch.nn.Linear] = {}
+    for path, module in model.named_modules():
+        if path.endswith("_step_s.param_source.linear"):
+            found["transition"] = module
+        elif path.endswith("_step_o.param_source.linear"):
+            found["emission"] = module
+    assert set(found) == {"transition", "emission"}, found
+    return found
+
+
+def weights(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """The checked input names of both kernels' weights, float64."""
+    w: dict[str, torch.Tensor] = {}
+    for name, linear in networks(model).items():
+        w[f"{name}_param_weight"] = linear.weight
+        w[f"{name}_param_bias"] = linear.bias
+    return {k: v.detach().double() for k, v in w.items()}
+
+
+def head(w: dict[str, torch.Tensor], name: str, value: torch.Tensor, dim: int) -> D.Normal:
+    raw = w[f"{name}_param_weight"] @ value + w[f"{name}_param_bias"]
+    return D.Normal(raw[:dim], raw[dim:].exp())
+
+
+def oracle(
+    w: dict[str, torch.Tensor],
+    length: int,
+    states: torch.Tensor,
+    observations: torch.Tensor,
+    variant: str = "",
+) -> float:
+    """One run's log joint by a loop over positions, float64."""
+    total = 0.0
+    previous = torch.zeros(STATE, dtype=torch.float64)
+    for t in range(length):
+        transition = head(w, "transition", previous, STATE)
+        if variant != "drop_transition":
+            total += float(transition.log_prob(states[t]).sum())
+        read = previous if variant == "emission_reads_previous" else states[t]
+        total += float(head(w, "emission", read, OBS).log_prob(observations[t]).sum())
+        previous = states[t]
+    return total
+
+
+def host(value: torch.Tensor) -> object:
+    return float(value) if value.dim() == 0 else tuple(host(row) for row in value)
+
 
 torch.manual_seed(0)
-prog = load("docs/examples/source/continuous_hmm.qvr")
-model = prog.morphism
-
-T = 32
-state_dim = 16
-obs_dim = 8
-A = 0.9 * torch.eye(state_dim)
-C = 0.3 * torch.randn(obs_dim, state_dim)
-s = torch.zeros(T + 1, state_dim)
-o = torch.zeros(T, obs_dim)
-for t in range(T):
-    s[t + 1] = s[t] @ A.T + 0.1 * torch.randn(state_dim)
-    o[t] = s[t + 1] @ C.T + 0.1 * torch.randn(obs_dim)
-state_prev = s[:T]
-sites = {"s_new": s[1:T + 1], "o": o}
+program = load(SOURCE)
+model = program.morphism
+runs, length = 2, 7
+generator = torch.Generator().manual_seed(1)
+ticks = torch.zeros(runs, length, 1)
+observations = torch.randn(runs, length, OBS, generator=generator)
+recorded = trace(model, ticks, observations={"o": observations})
+w = weights(model)
+for r in range(runs):
+    states = torch.stack([recorded.sites[f"s@{t}"].value[r] for t in range(length)]).double().detach()
+    expected = oracle(w, length, states, observations[r].double())
+    got = float(recorded.log_joint[r].detach())
+    wrong = {
+        label: oracle(w, length, states, observations[r].double(), variant=label)
+        for label in ("emission_reads_previous", "drop_transition")
+    }
+    run = program.run(
+        "continuous_hmm",
+        data={
+            "tick": host(ticks[r].double()),
+            "o": host(observations[r].double()),
+            **{k: host(v) for k, v in w.items()},
+        },
+        sites={f"s@{t}": host(states[t]) for t in range(length)},
+        seed=0,
+    )
+    print(f"run {r}: compiled {got:.6f}, reference {run.log_joint:.9f}, oracle {expected:.9f}; "
+          + ", ".join(f"{k} {v:.6f}" for k, v in wrong.items()))
+    assert math.isclose(got, expected, rel_tol=1e-5)
+    assert math.isclose(run.log_joint, expected, rel_tol=1e-9)
+    assert all(not math.isclose(got, value, rel_tol=1e-3) for value in wrong.values())
 ```
 
-### SVI fit
+### The posterior mode against the smoother
 
-The exported program is a single-step [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram) with no explicit priors on the kernel parameter networks; [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) lifts each leaf parameter into a unit-Normal sample site so [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) can build a mean-field surrogate. With both `s_new` and `o` observed, the ELBO bounds the log evidence for that supplied trajectory under the lifted parameter model; it is not the evidence itself.
+The kernels are set to a known generator: the seeded initial weights, with the log-scale rows zeroed and their biases set so that the transition's scale is 0.3 and the emission's 0.1. The model is then linear-Gaussian, a path of 10 states and its observations are simulated from it, and with the weights frozen L-BFGS maximizes the log joint over the state path. For a Gaussian posterior the mode is the mean, so the result must match the smoother's means within 1e-3 at every coordinate, while a smoother with the transition matrix transposed must differ from it by more than 1e-3 somewhere.
 
-```python
-from quivers.inference import bayesian_lift_parameters
-from quivers.inference import AutoNormalGuide, ELBO, SVI
-
-torch.manual_seed(1)
-prog = load("docs/examples/source/continuous_hmm.qvr")
-inner = prog.morphism
-model, x_lift, obs_lift = bayesian_lift_parameters(
-    inner, state_prev, sites, prior_scale=1.0,
-)
-
-guide = AutoNormalGuide(model, observed_names={"s_new", "o"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=1e-2,
-)
-svi = SVI(model, guide, optim, ELBO())
-
-loss0 = svi.step(x_lift, obs_lift)
-losses = [svi.step(x_lift, obs_lift) for _ in range(300)]
-loss_final = sum(losses[-20:]) / 20.0
-oracle_ll = inner.log_joint(state_prev, sites).sum().item()
-print(f"initial ELBO loss: {loss0:.1f}")
-print(f"final ELBO loss:   {loss_final:.1f}")
-print(f"oracle -log p:     {-oracle_ll:.1f}")
-```
-
-### NUTS posterior
-
-The lifted model exposes one Normal sample site per leaf parameter; [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly under small warmup and sample budgets.
+This check was not fixed in advance. It was first run as a diagnostic after the two checks described below failed, measured a largest deviation of 8.8e-5, and its 1e-3 tolerance was set after that run.
 
 ```python
-from quivers.inference import MCMC, NUTSKernel
+def set_generator(model: torch.nn.Module) -> None:
+    """Fix both networks' noise scales: zero the log-scale rows, set the biases."""
+    with torch.no_grad():
+        for name, dim, scale in (("transition", STATE, 0.3), ("emission", OBS, 0.1)):
+            last = networks(model)[name]
+            last.weight[dim:].zero_()
+            last.bias[dim:].fill_(math.log(scale))
+
+
+def simulate(
+    w: dict[str, torch.Tensor], length: int, generator: torch.Generator
+) -> tuple[torch.Tensor, torch.Tensor]:
+    states, observations = [], []
+    previous = torch.zeros(STATE, dtype=torch.float64)
+    for t in range(length):
+        transition = head(w, "transition", previous, STATE)
+        state = transition.loc + transition.scale * torch.randn(STATE, generator=generator, dtype=torch.float64)
+        emission = head(w, "emission", state, OBS)
+        observations.append(emission.loc + emission.scale * torch.randn(OBS, generator=generator, dtype=torch.float64))
+        states.append(state)
+        previous = state
+    return torch.stack(states), torch.stack(observations)
+
+
+def smoother(
+    observations: torch.Tensor, transition: torch.Tensor, shift: torch.Tensor,
+    emission: torch.Tensor, offset: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Rauch-Tung-Striebel smoothed means and marginal variances, float64."""
+    q, r = 0.3, 0.1
+    eye_s, eye_o = torch.eye(STATE, dtype=torch.float64), torch.eye(OBS, dtype=torch.float64)
+    mean, cov = torch.zeros(STATE, dtype=torch.float64), torch.zeros(STATE, STATE, dtype=torch.float64)
+    filtered_means, filtered_covs, predicted_means, predicted_covs = [], [], [], []
+    for t in range(observations.shape[0]):
+        prior_mean = transition @ mean + shift
+        prior_cov = transition @ cov @ transition.T + q**2 * eye_s
+        gain = prior_cov @ emission.T @ torch.linalg.inv(emission @ prior_cov @ emission.T + r**2 * eye_o)
+        mean = prior_mean + gain @ (observations[t] - emission @ prior_mean - offset)
+        cov = (eye_s - gain @ emission) @ prior_cov
+        predicted_means.append(prior_mean)
+        predicted_covs.append(prior_cov)
+        filtered_means.append(mean)
+        filtered_covs.append(cov)
+    means, covs = list(filtered_means), list(filtered_covs)
+    for t in range(observations.shape[0] - 2, -1, -1):
+        gain = filtered_covs[t] @ transition.T @ torch.linalg.inv(predicted_covs[t + 1])
+        means[t] = filtered_means[t] + gain @ (means[t + 1] - predicted_means[t + 1])
+        covs[t] = filtered_covs[t] + gain @ (covs[t + 1] - predicted_covs[t + 1]) @ gain.T
+    return torch.stack(means), torch.stack([torch.diagonal(c) for c in covs])
+
 
 torch.manual_seed(2)
-prog = load("docs/examples/source/continuous_hmm.qvr")
-model, x_lift, obs_lift = bayesian_lift_parameters(
-    prog.morphism, state_prev, sites, prior_scale=1.0,
-)
+model = load(SOURCE).morphism
+set_generator(model)
+for p in model.parameters():
+    p.requires_grad_(False)
+w = weights(model)
+length = 10
+generator = torch.Generator().manual_seed(3)
+_, observations = simulate(w, length, generator)
+x = torch.zeros(1, length, 1)
+data = {"o": observations.float()[None]}
+path = torch.zeros(length, STATE, requires_grad=True)
+optimizer = torch.optim.LBFGS([path], max_iter=200, line_search_fn="strong_wolfe")
 
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
-mc = MCMC(kernel, num_warmup=15, num_samples=15, num_chains=1)
-result = mc.run(model, x_lift, obs_lift)
 
-print("acceptance:", float(result.acceptance_rates.mean()))
-print("divergences:", int(result.divergence_counts.sum()))
+def closure():
+    optimizer.zero_grad()
+    loss = -model.log_joint(x, {**data, **{f"s@{t}": path[t][None] for t in range(length)}}).sum()
+    loss.backward()
+    return loss
+
+
+optimizer.step(closure)
+A, a = w["transition_param_weight"][:STATE], w["transition_param_bias"][:STATE]
+C, c = w["emission_param_weight"][:OBS], w["emission_param_bias"][:OBS]
+means, _ = smoother(observations, A, a, C, c)
+wrong_means, _ = smoother(observations, A.T, a, C, c)
+mode = path.detach().double()
+deviation, separation = float((mode - means).abs().max()), float((mode - wrong_means).abs().max())
+print(f"largest |mode - smoother mean| {deviation:.2e}; transposed smoother largest gap {separation:.3f}")
+assert deviation < 1e-3
+assert separation > 1e-3
 ```
+
+### Variational checks that failed
+
+Two checks of the posterior by SVI with a mean-field Normal guide (1500 Adam steps at learning rate 0.02, 400 posterior draws) were fixed in advance on the same generator and data, and both failed.
+
+1. The first required the posterior-mean path to be closer to the true path than the prior-mean path, by an RMSE ratio below 0.5. The ratio was 0.69 (RMSE 0.169 against 0.245). The prior-mean path is already close to the true one, and the threshold was not calibrated against what the observations can add, which is why the smoother replaced it.
+2. The second required every coordinate of the SVI posterior mean to lie within four Monte Carlo standard errors plus 0.02 of the smoother's mean. A mean-field Gaussian guide has the exact posterior means at its optimum when the posterior is Gaussian, so this checks that the fit reached that optimum. The largest deviation was 0.108, 1.58 times its tolerance. The posterior mode above agrees with the smoother to 8.8e-5, so the model's density is right and the shortfall is the stochastic optimization's; a longer or better-tuned fit was not tried, and the page makes no claim for SVI here.
 
 ## Categorical perspective
 
-The `scan` combinator implements [Kleisli composition](https://en.wikipedia.org/wiki/Kleisli_category) threaded through time. Given a cell $f : O \times S \to S$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category), it consumes an observation sequence, threads the sampled state, and returns the terminal state. The current `inference_cell` defines a learned conditional Normal update; an exact filtering posterior would require the Bayesian conditioning calculation for the transition and observation model. [@giry1982categorical]
+`transition : State -> State` and `emission : State -> Obs` are Kleisli morphisms of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical], and `scan(step)` is the cell's composite along the sequence in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category), weighted at each position by the observation's likelihood. At weights with $B = D = 0$ both kernels are affine maps with Gaussian noise, which are closed under that composition and under conditioning; the smoother computes the resulting Gaussian, and the mode check above is a check of that closure in the program.
 
-The generative program uses `transition` and `emission`; the recognition path uses distinct `inference_cell` and `decoder` morphisms. The source does not tie their parameters or call `bayes_invert`, so the two paths are not the same kernels run in opposite directions.
+## Sources and further reading
+
+- *A new approach to linear filtering and prediction problems* [@kalman1960filtering].
+- *Maximum likelihood estimates of linear dynamic systems* [@rauch1965smoothing].
+- *A categorical approach to probability theory* [@giry1982categorical].

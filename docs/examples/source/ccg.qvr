@@ -2,11 +2,12 @@
 #
 # A learnable weighted CCG parser declared as an agenda-based
 # weighted deduction over chart items. Categories carry slash
-# constructors Fwd(X, Y) = X/Y and Bwd(X, Y) = X\Y; chart items
-# are span(I, J, X) triples; the semiring is LogProb for
+# constructors Fwd(X, Y) = X/Y and Bwd(X, Y) = X\Y (result first,
+# slash direction marking where the argument is sought); chart
+# items are span(I, J, X) triples; the semiring is LogProb for
 # differentiable inside scores.
 #
-# Deduction:
+# Deduction (Steedman's combinators):
 #
 #   fwd_app    : X/Y, Y       |- X           forward application
 #   bwd_app    : Y,   X\Y     |- X           backward application
@@ -15,35 +16,35 @@
 #   fwd_xcomp  : X/Y, Y\Z     |- X\Z         forward crossed composition
 #   bwd_xcomp  : Y/Z, X\Y     |- X/Z         backward crossed composition
 #
-# CCG is the internal language of a closed monoidal category:
-# the slashes are internal homs, application is the counit of
-# the hom-tensor adjunction, and composition is composition of
-# internal hom morphisms.
+# Each combinator is needed by one sentence of the lexicon below:
+#
+#   the cat sleeps                  application only
+#   the dog whom Mary saw sleeps    fwd_comp: Mary : S/(S\NP) with
+#                                   saw : (S\NP)/NP gives S/NP
+#   the cat that sleeps today purrs bwd_comp: sleeps : S\NP with
+#                                   today : S\S gives S\NP
+#   Mary probably sleeps            fwd_xcomp: probably : S/S with
+#                                   sleeps : S\NP gives S\NP
+#   Mary saw yesterday the cat      bwd_xcomp: saw : (S\NP)/NP with
+#                                   yesterday : (S\NP)\(S\NP)
+#                                   gives (S\NP)/NP
+#
+# Application and harmonic composition are theorems of the
+# Lambek calculus, whose models are biclosed monoidal categories:
+# the slashes are the two internal homs, application is
+# evaluation, and harmonic composition is composition of internal
+# homs. The crossed rules are not Lambek theorems; they hold only
+# once the tensor is symmetric, as in the commutative calculus LP.
+# The full rule set is thus an extension of the Lambek fragment
+# rather than the internal language of a biclosed monoidal
+# category.
 
 object Term : FinSet 16
 
-object Rule : FinSet 16
-
-object Weight : Real 1
-
-# Probabilistic surface for transpile: each learnable rule weight
-# carries an independent Normal(0, 1) prior, and a treebank reports
-# how often each rule fired. Exponentiating a weight gives that
-# rule's firing rate, so the counts are Poisson in the rate; the
-# chart parser downstream consumes the same weights as its per-rule
-# log-probabilities. Rule indexes the weight vector, so it is the
-# plate extent; the codomain Weight is the value space of the one
-# real number a single weight is.
-program ccg_prior : Rule -> Weight
-    sample rule_weights : Rule <- Normal(loc=0.0, scale=1.0)
-    let rule_rate = exp(rule_weights)
-    observe rule_counts : Rule <- Poisson(rate=rule_rate)
-    return rule_weights
-
-export ccg_prior
+object LogWeight : Real 1
 
 deduction CCG : Term -> Term [semiring=LogProb, start=S, depth=6]
-    atoms NP, S, N, VP, PP, Fwd, Bwd, span, the, cat, sleeps, barks
+    atoms NP, S, N, Fwd, Bwd, span, the, cat, dog, mary, saw, sleeps, purrs, whom, that, probably, today, yesterday
     rule fwd_app : span(I, K, Fwd(X, Y)), span(K, J, Y) |- span(I, J, X) #[learnable]
     rule bwd_app : span(I, K, Y), span(K, J, Bwd(X, Y)) |- span(I, J, X) #[learnable]
     rule fwd_comp : span(I, K, Fwd(X, Y)), span(K, J, Fwd(Y, Z)) |- span(I, J, Fwd(X, Z)) #[learnable]
@@ -53,5 +54,26 @@ deduction CCG : Term -> Term [semiring=LogProb, start=S, depth=6]
     lexicon
         "the" : Fwd(NP, N) = the #[learnable]
         "cat" : N = cat #[learnable]
+        "dog" : N = dog #[learnable]
+        "Mary" : NP = mary #[learnable]
+        "Mary" : Fwd(S, Bwd(S, NP)) = mary #[learnable]
+        "saw" : Fwd(Bwd(S, NP), NP) = saw #[learnable]
         "sleeps" : Bwd(S, NP) = sleeps #[learnable]
-        "barks" : Bwd(S, NP) = barks #[learnable]
+        "purrs" : Bwd(S, NP) = purrs #[learnable]
+        "whom" : Fwd(Bwd(N, N), Fwd(S, NP)) = whom #[learnable]
+        "that" : Fwd(Bwd(N, N), Bwd(S, NP)) = that #[learnable]
+        "probably" : Fwd(S, S) = probably #[learnable]
+        "today" : Bwd(S, S) = today #[learnable]
+        "yesterday" : Bwd(Bwd(S, NP), Bwd(S, NP)) = yesterday #[learnable]
+
+# The grammar's contribution to a probabilistic program: parsing an
+# observed sentence and scoring the chart's goal weight adds the
+# inside log-weight log Z(s), summed over every derivation of S, to
+# the program's log-joint. The program returns that one real number,
+# so its codomain is LogWeight : Real 1.
+program score_sentence : Term -> LogWeight
+    let chart = parse(CCG, sentence)
+    score log_Z = chart.goal_weight()
+    return log_Z
+
+export score_sentence

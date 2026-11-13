@@ -21,11 +21,13 @@ Covered defects:
   verbatim, which is a rank error at run time.
 
 A `marginalize` over an enumerable support lowers to one branch per
-atom whose weighted `logsumexp` is the integrated density, so the LDA
+atom whose weighted `logsumexp` is the integrated density, so the
 emission assertions read the branch / reduction spelling rather than a
-live `sample` site for `z`. The QVR joint for `lda` matches the NumPyro,
-Pyro, and PyMC emissions to within 4e-4 across the gallery point set,
-which is what fixes these expectations.
+live `sample` site for `z`. The marginalize assertions run on
+`tests/fixtures/qvr/grouped_topic_mixture.qvr`, a document-level topic
+mixture with typed concentration parameters, one topic shared by every
+token of a document (`[over=Doc]`), and a `via=word_idx` fibration from
+tokens to documents: the module the defects were found on.
 """
 
 from __future__ import annotations
@@ -39,18 +41,23 @@ from quivers.transpile.ir import IRDeterministic, IRMarginalize, IRNode
 from quivers.transpile.plan import Lower
 
 _GALLERY = Path(__file__).resolve().parents[2] / "docs" / "examples" / "source"
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "qvr"
+
+
+def _source(name: str) -> Path:
+    """The named test fixture if one exists, else the gallery model."""
+    fixture = _FIXTURES / f"{name}.qvr"
+    return fixture if fixture.exists() else _GALLERY / f"{name}.qvr"
 
 
 def _emit(name: str, target: str) -> str:
-    """Transpile the named gallery model to `target` and decode."""
-    source = (_GALLERY / f"{name}.qvr").read_text()
-    return transpile(parse(source), target=target).decode()
+    """Transpile the named model to `target` and decode."""
+    return transpile(parse(_source(name).read_text()), target=target).decode()
 
 
 def _lower(name: str) -> tuple[IRNode, ...]:
-    """Lower the named gallery model and return its IR body."""
-    source = (_GALLERY / f"{name}.qvr").read_text()
-    return Lower().forward(parse(source)).body
+    """Lower the named model and return its IR body."""
+    return Lower().forward(parse(_source(name).read_text())).body
 
 
 def _nospace(text: str) -> str:
@@ -84,7 +91,7 @@ def test_marginalize_survives_composite_expansion_for_every_target() -> None:
     the `[over=...]` grouping axes and the `: T` support index, so the
     rewrite could only preserve one of the two.
     """
-    source = (_GALLERY / "lda.qvr").read_text()
+    source = _source("grouped_topic_mixture").read_text()
     module = parse(source)
     for target in ("numpyro", "pymc", "pyro", "stan", "turing"):
         expanded = expand_composite_lets(module, target=target)
@@ -94,26 +101,26 @@ def test_marginalize_survives_composite_expansion_for_every_target() -> None:
         assert marginalize.plate.event_dims == ()
 
 
-def test_lda_marginalize_batch_axis_is_the_over_axis() -> None:
+def test_topic_mixture_marginalize_batch_axis_is_the_over_axis() -> None:
     """`marginalize z : Topic <- ... [over=Doc]` plates over `Doc`.
 
     `Topic` names the enumerated support the reduction sums over, not a
     replication axis, so it contributes no plate dim.
     """
-    marginalize = _find_marginalize(_lower("lda"))
+    marginalize = _find_marginalize(_lower("grouped_topic_mixture"))
     batch = marginalize.plate.batch_dims
     assert [d.name for d in batch] == ["Doc"]
     assert [d.size for d in batch] == [20]
 
 
-def test_lda_numpyro_integrates_the_topic_over_its_three_atoms() -> None:
+def test_topic_mixture_numpyro_integrates_the_topic_over_its_three_atoms() -> None:
     """NumPyro scores one branch per `Topic` atom and reduces them.
 
     `marginalize z : Topic` integrates the topic out, so no `sample("z")`
     site may survive: the emitted program carries a branch per atom, the
     log mixture weights, and a single `factor` holding the logsumexp.
     """
-    emitted = _nospace(_emit("lda", "numpyro"))
+    emitted = _nospace(_emit("grouped_topic_mixture", "numpyro"))
     for atom in range(3):
         assert (
             f"__marg_z_{atom}=numpyro.distributions."
@@ -130,7 +137,7 @@ def test_lda_numpyro_integrates_the_topic_over_its_three_atoms() -> None:
     assert 'numpyro.plate("Doc",20)' in emitted
 
 
-def test_lda_numpyro_scatters_the_words_into_their_documents() -> None:
+def test_topic_mixture_numpyro_scatters_the_words_into_their_documents() -> None:
     """`observe w ... [via=word_idx]` sums each document's words.
 
     The block's topic is one per document, shared by the words
@@ -138,7 +145,7 @@ def test_lda_numpyro_scatters_the_words_into_their_documents() -> None:
     are scatter-summed into a `(Doc, Topic)` accumulator and weighted by
     `theta` as it stands, one row per document.
     """
-    emitted = _nospace(_emit("lda", "numpyro"))
+    emitted = _nospace(_emit("grouped_topic_mixture", "numpyro"))
     assert "__marg_z_w=jnp.log(theta)" in emitted
     assert (
         "__marg_z=jnp.zeros((20,__marg_z.shape[-1]),dtype=__marg_z.dtype)"
@@ -147,9 +154,9 @@ def test_lda_numpyro_scatters_the_words_into_their_documents() -> None:
     assert "theta[word_idx]" not in emitted
 
 
-def test_lda_pymc_scores_each_document_under_one_topic() -> None:
+def test_topic_mixture_pymc_scores_each_document_under_one_topic() -> None:
     """PyMC sums each document's words into its row before the mixture."""
-    emitted = _nospace(_emit("lda", "pymc"))
+    emitted = _nospace(_emit("grouped_topic_mixture", "pymc"))
     for atom in range(3):
         assert (
             f"__marg_z_{atom}=pymc.logp(pymc.Categorical.dist(p=phi[{atom}]),w)"
@@ -160,10 +167,10 @@ def test_lda_pymc_scores_each_document_under_one_topic() -> None:
     assert 'pymc.Categorical("z"' not in emitted
 
 
-def test_lda_pyro_integrates_the_topic_over_its_three_atoms() -> None:
+def test_topic_mixture_pyro_integrates_the_topic_over_its_three_atoms() -> None:
     """Pyro scores one branch per topic, sums each document's words, and
     reduces with a factor."""
-    emitted = _nospace(_emit("lda", "pyro"))
+    emitted = _nospace(_emit("grouped_topic_mixture", "pyro"))
     for atom in range(3):
         assert (
             f"__marg_z_{atom}=pyro.distributions."
@@ -179,7 +186,7 @@ def test_lda_pyro_integrates_the_topic_over_its_three_atoms() -> None:
     assert 'pyro.plate("Doc",20)' in emitted
 
 
-def test_lda_stan_enumerates_topics_per_document() -> None:
+def test_topic_mixture_stan_enumerates_topics_per_document() -> None:
     """Stan keeps a three-topic accumulator per document and logsumexps it.
 
     The block declares one topic per document, shared by the words
@@ -187,7 +194,7 @@ def test_lda_stan_enumerates_topics_per_document() -> None:
     with `theta`'s row for the document, and each word adds its
     per-topic log-likelihood to its document's row.
     """
-    emitted = _nospace(_emit("lda", "stan"))
+    emitted = _nospace(_emit("grouped_topic_mixture", "stan"))
     assert "array[20]vector[3]lps_z=rep_array(rep_vector(0,3),20);" in emitted
     assert "lps_z[g_Doc,k]=categorical_lpmf(k|theta[g_Doc]);" in emitted
     assert (
@@ -310,7 +317,7 @@ def test_numpyro_broadcasts_a_scalar_program_parameter() -> None:
     vocabulary, not over the 200 token positions those types are drawn
     at.
     """
-    emitted = _nospace(_emit("lda", "numpyro"))
+    emitted = _nospace(_emit("grouped_topic_mixture", "numpyro"))
     assert "Dirichlet(concentration=jnp.full((3,),alpha))" in emitted
     assert "Dirichlet(concentration=jnp.full((50,),beta))" in emitted
 
@@ -323,7 +330,7 @@ def test_numpyro_leaves_an_already_vector_argument_alone() -> None:
     wrapper may be injected around it. The only two `jnp.full` calls in
     the program are the scalar Dirichlet concentrations.
     """
-    emitted = _nospace(_emit("lda", "numpyro"))
+    emitted = _nospace(_emit("grouped_topic_mixture", "numpyro"))
     for atom in range(3):
         assert f"Categorical(probs=phi[{atom}])" in emitted, atom
     assert emitted.count("jnp.full(") == 2, emitted

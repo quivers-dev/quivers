@@ -1,217 +1,282 @@
-# Finite-state path composition
+# Hidden Markov Model
 
 ## Overview
 
-The exported `hmm` is a finite-state path-composition example inspired by a discrete [hidden Markov model](https://en.wikipedia.org/wiki/Hidden_Markov_model). Its top-level morphisms live under `product_fuzzy`, have sigmoid-constrained entries, and have no `Dirichlet` declarations. They are thus not row-stochastic HMM kernels. The same source also contains `hmm_program`, which draws Dirichlet rows but currently leaves `transition_rows` unused in its marginalized observation body.
+A discrete [hidden Markov model](https://en.wikipedia.org/wiki/Hidden_Markov_model) (HMM) [@rabiner1989hmm] explains a sequence of observed symbols by a chain of hidden states: the chain starts from an initial distribution, moves by a row-stochastic transition matrix, and each state it moves to emits one symbol from its row of an emission matrix. The likelihood of the symbols sums over every path of hidden states. This source writes the model as a [marginalized chain](../reference/qvr/probabilistic-programs.md#marginalized-chains): a scan whose cell marginalizes the next state and returns it, which the library sums out with the forward algorithm in log space. The three parameter matrices carry symmetric Dirichlet priors, so the program's log joint is those priors plus the exact log marginal likelihood of the sequence.
 
 ## QVR source
 
 ```qvr
-# Finite-State Path Composition
+# Hidden Markov Model
 #
-# A finite-state path-composition example inspired by a K-state
-# hidden Markov model. The top-level arrows live in the
-# product-fuzzy algebra: their entries are sigmoid-constrained,
-# but their rows are not normalized probability distributions.
-# The composed path thus demonstrates runtime-variable
-# powering, not the sum-product HMM forward algorithm.
+# A K-state hidden Markov model over a discrete alphabet. The hidden
+# chain z_0, z_1, ..., z_T starts from initial_row and moves by
+# transition_rows; each z_t (t >= 1) emits the symbol o_t from its row of
+# emission_rows. The cell marginalizes the next state and returns it, so
+# the scan sums every path of states out: the library computes the
+# likelihood, a sum over K^(T+1) paths, by the forward algorithm in
+# O(T K^2), in log space, and adds it to the joint under `path`.
 #
-# Structural form:
+# Generative structure:
 #
-#   initial    : State -> State          fuzzy initial relation
-#   transition : State -> State          fuzzy transition relation
-#   emission   : State -> Obs            fuzzy emission relation
-#   hmm        = initial >> repeat(transition) >> emission
+#   initial_row          ~ Dirichlet(1)            p(z_0)
+#   transition_rows[i]   ~ Dirichlet(1)            p(z_t | z_{t-1} = i)
+#   emission_rows[k]     ~ Dirichlet(1)            p(o_t | z_t = k)
+#   z_0 ~ initial_row,  z_t ~ transition_rows[z_{t-1}],  o_t ~ emission_rows[z_t]
 #
-# The separate hmm_program below demonstrates Dirichlet rows and
-# exact marginalization for a single shared emission state. Its
-# transition_rows draw is present for parameter-shape comparison
-# but does not enter that likelihood; it is not a multi-step HMM.
-
-composition product_fuzzy [level=algebra]
-
-object State : FinSet 8
-object Obs : FinSet 16
-object Step : FinSet 12
-object StateDist : Real 8
-
-morphism initial, transition : State -> State [role=latent]
-morphism emission : State -> Obs [role=latent]
-
-define n_step = repeat(transition) >> emission
-define hmm = initial >> n_step
-
-# Probabilistic model for transpilation: the initial, transition,
-# and emission parameter blocks are row-stochastic Dirichlet
-# draws. The initial-state vector is one draw on the State
-# simplex; transition_rows allocates one State-simplex row per
-# source state; emission_rows allocates one Obs-simplex row per
-# latent state. The marginalized body below uses initial_row and
-# emission_rows only, so transition_rows remains prior-only.
+# The scanned sequence is the observed symbols: the block observes the
+# cell's entry `symbol`, which scores the symbol at the state the chain
+# moves to. The state before the first symbol, z_0, emits nothing.
 #
-# Step is the plate the emitted sequence is observed over and
-# Obs is the alphabet each emission takes its value in, so the
-# two are separate objects. StateDist is the value space of the
-# returned initial-state vector, a point of the State simplex
-# embedded in R^8.
-program hmm_program : Step -> StateDist
+# Reference: [Rabiner 1989](https://doi.org/10.1109/5.18626).
+
+object State : FinSet 2
+object Symbol : FinSet 4
+object StateProbs : Real 2
+
+program hmm_step(symbol, z_prev) : Symbol * State -> State
+    marginalize z : State <- Categorical(probs=transition_rows[z_prev])
+        observe symbol <- Categorical(probs=emission_rows[z])
+    return z
+
+define chain = scan(hmm_step, init=initial_row)
+
+program hmm : Symbol -> StateProbs
     sample initial_row <- Dirichlet(concentration=1.0) [over=State]
     sample transition_rows : State <- Dirichlet(concentration=1.0) [over=State, iid_over=State]
-    sample emission_rows : State <- Dirichlet(concentration=1.0) [over=Obs, iid_over=State]
-
-    marginalize state <- Categorical(probs=initial_row) [reduction=logsumexp]
-        observe obs : Step <- Categorical(probs=emission_rows[state])
-
+    sample emission_rows : State <- Dirichlet(concentration=1.0) [over=Symbol, iid_over=State]
+    sample path <- chain
     return initial_row
 
 export hmm
-export hmm_program
 ```
 
 ## Understanding the model
 
-A state-to-state relation assigns a number to each possible step. Repeating
-it combines routes with intermediate states; following it by an emission
-relation connects starting states to observations. The arithmetic matters:
-HMM probabilities sum mutually exclusive paths, whereas product-fuzzy
-composition combines route strengths with [noisy-OR](../tutorials/python/01-first-quiver.md#composition).
+With $\pi$ the initial row, $A$ the transition matrix, and $B$ the emission matrix, a sequence $o_1, \ldots, o_T$ has likelihood
 
-Read the two constructions in this source separately. The exported relation
-demonstrates repeated composition. The probabilistic `hmm_program` gives one
-shared hidden state an emission sequence and leaves its [transition draw](../tutorials/qvr/05-time-series.md#finite-state-path-composition)
-unused. It thus cannot learn transitions from that likelihood. Inspecting
-which sampled values actually reach an observation is as important as
-inspecting their shapes.
+$$
+p(o_{1:T} \mid \pi, A, B)
+  = \sum_{z_0, \ldots, z_T} \pi_{z_0} \prod_{t=1}^{T} A_{z_{t-1} z_t} B_{z_t o_t}.
+$$
+
+The chain has $T + 1$ states for $T$ symbols. The state $z_0$ is drawn from $\pi$ and emits nothing; the first symbol is emitted by $z_1$, the state the chain moves to from $z_0$. This differs from the convention in which the first state is drawn from $\pi$ and emits $o_1$ directly [@rabiner1989hmm]. This program's likelihood at $\pi$ equals that convention's likelihood at $\pi A$, the distribution of $z_1$; at a given $\pi$ the two score different numbers, and the checks below show the program computes this one and not the other.
+
+The sum has $K^{T+1}$ terms. The forward algorithm computes it in $O(T K^2)$ by carrying $\alpha_t(k) = p(o_{1:t}, z_t = k)$ along the sequence,
+
+$$
+\alpha_0 = \pi, \qquad
+\alpha_t(k) = B_{k o_t} \sum_{j} \alpha_{t-1}(j) A_{j k}, \qquad
+p(o_{1:T}) = \sum_k \alpha_T(k),
+$$
+
+and the library runs that recursion in log space, so a long sequence whose path probabilities underflow in floating point still has a finite log likelihood. Each input row is one run: one sequence, and its own draw of the three parameter matrices.
 
 ## Walkthrough
 
-`composition product_fuzzy [level=algebra]` selects product and noisy-OR aggregation for fuzzy relations. It is not the sum-product semiring used by the HMM forward algorithm. A Viterbi implementation would also require log weights and max aggregation; changing this declaration alone is not a validated conversion of the current parameters.
-
-`object State : FinSet 8` and `object Obs : FinSet 16` are finite discrete spaces: the latent state set and the emission alphabet. `object Step : FinSet 12` is the separate plate the emitted sequence is observed over, and `object StateDist : Real 8` is the value space of the returned initial-state vector, a point of the State simplex embedded in $\mathbb{R}^8$. The three `[role=latent]` declarations introduce learned relation tensors. To build a normalized categorical kernel, add a row-wise [Dirichlet](https://en.wikipedia.org/wiki/Dirichlet_distribution#Symmetric_case) family or change base through a row-normalizing transformation.
-
-`repeat` builds the algebraic power of `transition` by repeated squaring, with $n$ supplied via `prog(n_steps=N)`. Under the current algebra, the result is a product-fuzzy relation. Also note that `initial : State -> State`, so the exported domain is `State`, not a singleton initial-distribution object.
-
-`hmm_program` is the separate probabilistic model exported from the same source. Its three `sample` steps draw the initial-state vector, the transition kernel, and the emission kernel from symmetric `Dirichlet(1.0)` priors: `[over=State]` names the simplex axis of the initial row, which carries no plate annotation because it is a single draw, and `iid_over=State` allocates one independent Dirichlet row per source state for `transition_rows` and per latent state for `emission_rows`. The `marginalize` block integrates the latent `state` out of the observation by log-sum-exp over the eight `State` atoms, so the observation body scores `obs` under `Categorical(probs=emission_rows[state])` alone and `transition_rows` never enters the likelihood.
+- `object State : FinSet 2` is the hidden state space and `object Symbol : FinSet 4` the alphabet. `object StateProbs : Real 2` is the value space of what the program returns, the initial row as a point of the two-state simplex.
+- `program hmm_step(symbol, z_prev)` is one position. The `marginalize z : State` block draws the next state from the transition row of `z_prev`, and its body observes the cell's entry `symbol` under the emission row of `z`. Because the cell returns `z`, the marginalized state is carried to the next position rather than summed out locally.
+- `define chain = scan(hmm_step, init=initial_row)` runs the cell along the input sequence. `init=initial_row` makes the initial state a draw from `initial_row`; a scan whose cell marginalizes the state it returns is summed out by the forward algorithm.
+- `program hmm` draws `initial_row`, one `transition_rows` row per source state, and one `emission_rows` row per state from `Dirichlet(1)`, then scores the sequence under `path`. On the simplex `Dirichlet(1)` is flat, so the posterior mode is the maximum-likelihood estimate.
+- No transpile target lowers a marginalized chain: every target refuses this program with `scan:marginal:no-lowering:hmm_step`, where the scan's cell is written. The program runs on the PyTorch runtime and the reference machine.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+The checks below come from a verification script whose tolerances were fixed before it was first run.
 
+### Simulating sequences
 
-### Generating synthetic data
-
-Draw the three row-stochastic parameter blocks from their own Dirichlet priors, draw one latent state from the initial row, and emit a `Step`-long sequence from that state's emission row. `transition_rows` never enters the likelihood under this body, so it is drawn from the prior and clamped alongside the other two; the emitted sequence is a single-state categorical mixture rather than a full transition sequence.
+A two-state, four-symbol HMM in which state 0 favours the first two symbols, state 1 the last two, and each state tends to persist. Four sequences of 200 symbols are simulated from it; each row of `x_in` is one observed sequence, the input the scan runs over.
 
 ```python
 import torch
+
 from quivers.dsl import load
 
-torch.manual_seed(0)
-prog = load("docs/examples/source/hmm.qvr")
-model = prog.hmm_program
+SOURCE = "docs/examples/source/hmm.qvr"
+K, V = 2, 4
 
-n_state, n_emit, n_step = 8, 16, 12
+true_initial_row = torch.tensor([0.5, 0.5])
+true_transition_rows = torch.tensor([[0.9, 0.1], [0.2, 0.8]])
+true_emission_rows = torch.tensor([[0.6, 0.3, 0.05, 0.05], [0.05, 0.05, 0.3, 0.6]])
 
-true_initial_row = torch.distributions.Dirichlet(torch.ones(n_state)).sample()
-true_transition_rows = torch.distributions.Dirichlet(
-    torch.ones(n_state),
-).sample((n_state,))
-true_emission_rows = torch.distributions.Dirichlet(
-    torch.ones(n_emit),
-).sample((n_state,))
 
-state = torch.distributions.Categorical(true_initial_row).sample()
-obs = torch.distributions.Categorical(true_emission_rows[state]).sample(
-    (n_step,),
-)
+def simulate(count, steps, seed):
+    generator = torch.Generator().manual_seed(seed)
+    rows = []
+    for _ in range(count):
+        state = int(torch.multinomial(true_initial_row, 1, generator=generator))
+        row = []
+        for _ in range(steps):
+            state = int(torch.multinomial(true_transition_rows[state], 1, generator=generator))
+            row.append(int(torch.multinomial(true_emission_rows[state], 1, generator=generator)))
+        rows.append(row)
+    return torch.tensor(rows)
 
-observations = {"obs": obs}
-x_in = torch.zeros(1, 1)
+
+x_in = simulate(4, 200, seed=1)
+observations = {}
+program = load(SOURCE)
+model = program.morphism
+print(x_in.shape, x_in[0, :20].tolist())
 ```
 
-### SVI fit
+### The log joint against enumeration and the forward algorithm
 
-Reinitialize the raw relation logits and recover the n-step joint that produced the synthetic histogram by minimizing the cross-entropy between the normalized `prog(n_steps=n_steps)` and the observed counts. The optimizer walks the sigmoid-constrained entries of the product-fuzzy algebra directly.
+At a traced draw of the parameters, the compiled runtime's log joint on a seven-symbol sequence must equal the Dirichlet priors plus two independent computations of the log marginal likelihood: brute-force enumeration of all $2^8$ state paths, and a forward recursion written in torch (float32 runtime, absolute 1e-4). Two wrong likelihoods must each disagree with the runtime by more than that tolerance: one with the transition matrix transposed, and the convention in which the first state emits the first symbol. The reference machine, given fixed parameters, must equal the enumeration to a relative 1e-9.
 
 ```python
-import torch
-from quivers.dsl import load
+import itertools
+import math
 
+import torch.distributions as D
+
+from quivers.inference import trace
+
+
+def priors(initial, transition, emission):
+    return (
+        D.Dirichlet(torch.ones(K, dtype=initial.dtype)).log_prob(initial)
+        + D.Dirichlet(torch.ones(K, dtype=initial.dtype)).log_prob(transition).sum()
+        + D.Dirichlet(torch.ones(V, dtype=initial.dtype)).log_prob(emission).sum()
+    )
+
+
+def enumerated(initial, transition, emission, symbols):
+    """log p(o_1..o_T) by summing over every path z_0..z_T."""
+    terms = []
+    for path in itertools.product(range(K), repeat=len(symbols) + 1):
+        term = math.log(float(initial[path[0]]))
+        for t, symbol in enumerate(symbols):
+            term += math.log(float(transition[path[t], path[t + 1]]))
+            term += math.log(float(emission[path[t + 1], symbol]))
+        terms.append(term)
+    peak = max(terms)
+    return peak + math.log(math.fsum(math.exp(term - peak) for term in terms))
+
+
+def forward(initial, transition, emission, symbols):
+    """log p(o_1..o_T) by the forward algorithm in log space."""
+    log_alpha = torch.log(initial)
+    for symbol in symbols:
+        log_alpha = torch.logsumexp(log_alpha[:, None] + torch.log(transition), dim=0)
+        log_alpha = log_alpha + torch.log(emission[:, symbol])
+    return torch.logsumexp(log_alpha, dim=0)
+
+
+def first_state_emits(initial, transition, emission, symbols):
+    """The other convention: z_1 ~ initial emits o_1, with no state before it."""
+    log_alpha = torch.log(initial) + torch.log(emission[:, symbols[0]])
+    for symbol in symbols[1:]:
+        log_alpha = torch.logsumexp(log_alpha[:, None] + torch.log(transition), dim=0)
+        log_alpha = log_alpha + torch.log(emission[:, symbol])
+    return torch.logsumexp(log_alpha, dim=0)
+
+
+symbols = [0, 3, 2, 1, 1, 3, 0]
 torch.manual_seed(0)
-prog = load("docs/examples/source/hmm.qvr")
-for _, p in prog.named_parameters():
-    p.data.copy_(torch.randn_like(p))
-n_steps = 5
-true_marginal = prog(n_steps=n_steps).detach()
-probs = (true_marginal / true_marginal.sum()).flatten()
-N = 500
-obs_counts = torch.distributions.Multinomial(
-    total_count=N, probs=probs,
-).sample().reshape(true_marginal.shape)
+recorded = trace(model, torch.tensor([symbols]))
+initial = recorded.sites["initial_row"].value.reshape(K).double()
+transition = recorded.sites["transition_rows"].value.reshape(K, K).double()
+emission = recorded.sites["emission_rows"].value.reshape(K, V).double()
+prior = float(priors(initial, transition, emission))
+by_paths = prior + enumerated(initial, transition, emission, symbols)
+by_forward = prior + float(forward(initial, transition, emission, symbols))
+got = float(recorded.log_joint)
+print(f"compiled runtime {got:.6f}, enumeration {by_paths:.6f}, forward {by_forward:.6f}")
+assert abs(got - by_paths) < 1e-4
+assert abs(got - by_forward) < 1e-4
 
-# Fresh logits for fitting.
-torch.manual_seed(1)
-for _, p in prog.named_parameters():
-    p.data.copy_(torch.randn_like(p))
+wrong = {
+    "transposed transitions": prior + float(forward(initial, transition.T.contiguous(), emission, symbols)),
+    "first state emits": prior + float(first_state_emits(initial, transition, emission, symbols)),
+}
+for label, value in wrong.items():
+    print(f"{label}: {value:.6f}")
+    assert abs(got - value) > 1e-4
 
-optim = torch.optim.Adam(list(prog.parameters()), lr=5e-2)
-losses = []
-for _ in range(150):
-    optim.zero_grad()
-    pred = prog(n_steps=n_steps)
-    pred_norm = pred / (pred.sum() + 1e-12)
-    loss = -(obs_counts * (pred_norm + 1e-12).log()).sum()
+fixed = {
+    "initial_row": torch.tensor([0.3, 0.7], dtype=torch.float64),
+    "transition_rows": torch.tensor([[0.8, 0.2], [0.35, 0.65]], dtype=torch.float64),
+    "emission_rows": torch.tensor([[0.4, 0.3, 0.2, 0.1], [0.1, 0.1, 0.3, 0.5]], dtype=torch.float64),
+}
+run = program.run(
+    "hmm",
+    data={"symbol": tuple(symbols)},
+    sites={
+        "initial_row": tuple(fixed["initial_row"].tolist()),
+        "transition_rows": tuple(tuple(row) for row in fixed["transition_rows"].tolist()),
+        "emission_rows": tuple(tuple(row) for row in fixed["emission_rows"].tolist()),
+    },
+    seed=0,
+)
+expected = float(priors(*fixed.values())) + enumerated(*fixed.values(), symbols)
+print(f"reference machine {run.log_joint:.9f}, enumeration {expected:.9f}")
+assert math.isclose(run.log_joint, expected, rel_tol=1e-9)
+```
+
+### A long sequence in log space
+
+On a sequence of 2000 symbols the forward recursion in probability space underflows to exactly zero in float64. The compiled runtime's log joint must still be finite and equal the float64 log-space forward recursion to a relative 1e-5.
+
+```python
+long_symbols = torch.randint(0, V, (2000,), generator=torch.Generator().manual_seed(3)).tolist()
+alpha = fixed["initial_row"].clone()
+for symbol in long_symbols:
+    alpha = (alpha @ fixed["transition_rows"]) * fixed["emission_rows"][:, symbol]
+assert float(alpha.sum()) == 0.0
+
+expected = float(priors(*fixed.values()) + forward(*fixed.values(), long_symbols))
+got = float(model.log_joint(
+    torch.tensor([long_symbols]),
+    {name: value.float() for name, value in fixed.items()},
+)[0])
+print(f"probability space: {float(alpha.sum())}; log space: runtime {got:.4f}, oracle {expected:.4f}")
+assert math.isfinite(got) and math.isclose(got, expected, rel_tol=1e-5)
+```
+
+### Maximum-likelihood recovery
+
+The four simulated sequences are fitted by L-BFGS on unconstrained softmax parameters of the three simplices. The `Dirichlet(1)` priors are constant on the simplex, so this is the maximum-likelihood fit. The same parameter values are given for every row, so the loss is the pooled log likelihood of the four sequences. The fit starts from a seeded perturbation of the label-symmetric point, which is a stationary point of the likelihood.
+
+The tolerances follow from the design. The chain's stationary distribution is $(2/3, 1/3)$, so state 1 is visited about 267 times in 800 steps. If the states were observed, the largest sampling standard deviation of an emission probability would be $\sqrt{0.6 \cdot 0.4 / 267} \approx 0.030$ and of a transition probability $\sqrt{0.8 \cdot 0.2 / 267} \approx 0.024$; with the states summed out the data carry less information, and each tolerance is four of those standard deviations: every emission probability within 0.12 of the truth and every transition probability within 0.10, after matching the two fitted states to the truth's labels (the likelihood is invariant to relabelling them). The initial row is weakly identified by four sequences and is not compared.
+
+```python
+logits = {
+    "initial_row": torch.zeros(K),
+    "transition_rows": torch.zeros(K, K),
+    "emission_rows": 0.5 * torch.randn(K, V, generator=torch.Generator().manual_seed(4)),
+}
+for value in logits.values():
+    value.requires_grad_(True)
+optimizer = torch.optim.LBFGS(list(logits.values()), max_iter=80, line_search_fn="strong_wolfe")
+
+
+def closure():
+    optimizer.zero_grad()
+    values = {name: torch.softmax(value, dim=-1) for name, value in logits.items()}
+    loss = -model.log_joint(x_in, values).sum()
     loss.backward()
-    optim.step()
-    losses.append(float(loss.detach()))
+    return loss
 
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
+
+optimizer.step(closure)
+with torch.no_grad():
+    fitted_transition = torch.softmax(logits["transition_rows"], dim=-1)
+    fitted_emission = torch.softmax(logits["emission_rows"], dim=-1)
+order = [0, 1] if float(fitted_emission[0, 0]) > float(fitted_emission[1, 0]) else [1, 0]
+fitted_transition = fitted_transition[order][:, order]
+fitted_emission = fitted_emission[order]
+print("transition:", [[round(v, 3) for v in row] for row in fitted_transition.tolist()])
+print("emission:  ", [[round(v, 3) for v in row] for row in fitted_emission.tolist()])
+assert float((fitted_emission - true_emission_rows).abs().max()) < 0.12
+assert float((fitted_transition - true_transition_rows).abs().max()) < 0.10
 ```
-
-### NUTS posterior
-
-The exported `hmm` composition has no `sample` priors of its own; its `initial`, `transition`, and `emission` latents are plain algebra parameters with sigmoid-constrained entries. [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) lifts each `nn.Parameter` into a Normal-prior sample site so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) has a continuous unconstrained state space. The likelihood scores the observed histogram against the normalized n-step joint emitted by `prog(n_steps=K)`.
-
-```python
-import torch
-from quivers.dsl import load
-from quivers.inference import MCMC, NUTSKernel, lift_from_log_prob
-
-torch.manual_seed(0)
-prog = load("docs/examples/source/hmm.qvr")
-for _, p in prog.named_parameters():
-    p.data.copy_(torch.randn_like(p))
-n_steps = 5
-true_marginal = prog(n_steps=n_steps).detach()
-probs = (true_marginal / true_marginal.sum()).flatten()
-N = 500
-obs_counts = torch.distributions.Multinomial(
-    total_count=N, probs=probs,
-).sample().reshape(true_marginal.shape)
-
-def hmm_log_prob(x, counts):
-    pred = prog(n_steps=n_steps)
-    pred_norm = pred / (pred.sum() + 1e-12)
-    return (counts * (pred_norm + 1e-12).log()).sum().expand(x.shape[0])
-
-lifted, lx, lobs = lift_from_log_prob(
-    prog,
-    log_prob_fn=hmm_log_prob,
-    parameter_prior_scale=1.0,
-    target_key="obs_counts",
-    x=torch.zeros(1, 1),
-    observations={"obs_counts": obs_counts},
-)
-kernel = NUTSKernel(step_size=0.01, max_tree_depth=3, target_accept=0.8)
-mc     = MCMC(kernel, num_warmup=15, num_samples=15, num_chains=1)
-result = mc.run(lifted, lx, lobs)
-
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
-print(f"divergences: {int(result.divergence_counts.sum())}")
-```
-
 
 ## Categorical perspective
 
-HMM forward and Viterbi recurrences can be expressed as matrix products over sum-product and max-plus semirings. The current example instead demonstrates runtime-variable powering under Quivers' product-fuzzy rule. A normalized HMM needs different parameter constraints and aggregation.
+The cell `hmm_step` is a kernel $\mathrm{State} \to \mathrm{State}$ in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the finite distribution monad, weighted at each position by the likelihood of the observed symbol. Composing these kernels along the sequence and pushing the initial row through them is a product of matrices, $\pi^\top \prod_t A\, \mathrm{diag}(B_{\cdot o_t})$, in the sum-product [semiring](https://ncatlab.org/nlab/show/rig); summing the resulting vector is the forward algorithm. The marginalized chain is the program-level statement of that composite, and replacing the semiring by max-plus would give the Viterbi recursion instead.
+
+## Sources and further reading
+
+- *A tutorial on hidden Markov models and selected applications in speech recognition* [@rabiner1989hmm].

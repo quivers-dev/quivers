@@ -94,13 +94,11 @@ The `define` binding invokes the contraction on the three declared arrows. Each 
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
-The exported arrow is a deterministic score tensor materialized from the current values of the three latents, so the module defines a mean tensor rather than a probability measure. The snippets below add priors and a likelihood: every entry of the two embeddings and of the interaction tensor carries an independent $\mathcal{N}(0, 1)$ prior, and each judgment is scored under $y_{i, g} \sim \mathcal{N}(s_{i, g}, \sigma^2)$. The likelihood re-runs the wiring on every evaluation rather than reading the materialized tensor, so gradients and Hamiltonian trajectories reach all three arrows. The compiled contraction is available through the [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment's `contractions` mapping.
+The source defines a deterministic score, not a probability model: its exported arrow is the contraction of the three declared arrows, whose `[role=latent]` tensors are learned parameters with entries in $(0, 1)$. The blocks below build the probabilistic model around the declared contraction in Python. Every entry of the two embeddings and of the interaction tensor gets an independent $\mathcal{N}(0, 1)$ prior, and each of several replicate judgments of every (item, scale point) cell is scored under $y_{r, i, g} \sim \mathcal{N}(s_{i, g}, \sigma^2)$ with $s$ computed by the compiled `bilinear_score` wiring. The model is built in Python because a QVR program cannot yet call a `contraction` or hold a third-order latent tensor it can index by three binders; the compiled contraction is available through the [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment's `contractions` mapping.
 
 ### Generating synthetic data
 
-Draw ground-truth embeddings and an interaction tensor, push them through the bilinear form, and add Normal observation noise. The three `sample` sites of the [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram) built here are named after the arrows the source declares, and the judgments come from the very tensors bound as ground truth, so the snippet leaves one self-consistent point of the joint behind. Every shape is read off the compiled module rather than restated, so the block tracks the source if the source changes.
+Draw ground-truth embeddings and an interaction tensor, push them through the bilinear form, and add Normal noise to 50 replicate judgments of every cell. The three `sample` sites of the [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram) built here are named after the arrows the source declares, and every shape is read off the compiled module rather than restated. The block first confirms that the compiled wiring is the einsum `ab, ac, bcd -> ad` the typed signature implies.
 
 ```python
 import torch
@@ -122,13 +120,20 @@ wiring = compiler.contractions["bilinear_score"].wiring
 pred_shape = tuple(compiler.morphisms["pred_embed"].tensor.shape)
 arg_shape = tuple(compiler.morphisms["arg_embed"].tensor.shape)
 inter_shape = tuple(compiler.morphisms["interaction"].tensor.shape)
-n_judgment = inter_shape[-1]
+n_item, n_judgment = pred_shape[0], inter_shape[-1]
+n_rep = 50
 sigma = 0.5
 
 
 def bilinear_score(pred, arg, inter):
     """Run the declared `bilinear_score` contraction on three tensors."""
     return wiring.apply(pred, arg, inter)
+
+
+probe = [torch.randn(pred_shape), torch.randn(arg_shape), torch.randn(inter_shape)]
+assert torch.allclose(
+    bilinear_score(*probe), torch.einsum("ab,ac,bcd->ad", *probe), atol=1e-6,
+)
 
 
 class EntrywisePrior(ContinuousMorphism):
@@ -150,7 +155,7 @@ class EntrywisePrior(ContinuousMorphism):
 
 
 class JudgmentLikelihood(ContinuousMorphism):
-    """Normal judgment around the contracted bilinear score."""
+    """Normal replicate judgments around the contracted bilinear score."""
 
     def __init__(self, sigma):
         super().__init__(
@@ -160,10 +165,11 @@ class JudgmentLikelihood(ContinuousMorphism):
         self._sigma = sigma
 
     def rsample(self, x, sample_shape=torch.Size()):
-        return D.Normal(x, self._sigma).rsample()
+        return D.Normal(x, self._sigma).rsample((n_rep,))
 
     def log_prob(self, x, y):
-        return D.Normal(x, self._sigma).log_prob(y.reshape(x.shape)).sum()
+        y = y.reshape(n_rep, *x.shape)
+        return D.Normal(x, self._sigma).log_prob(y).sum()
 
 
 model = MonadicProgram(
@@ -191,20 +197,44 @@ model = MonadicProgram(
 true_pred_embed = torch.randn(pred_shape)
 true_arg_embed = torch.randn(arg_shape)
 true_interaction = torch.randn(inter_shape)
-score = bilinear_score(true_pred_embed, true_arg_embed, true_interaction)
-judgment = D.Normal(score, sigma).sample()
+true_score = bilinear_score(true_pred_embed, true_arg_embed, true_interaction)
+judgment = D.Normal(true_score, sigma).sample((n_rep,))
 
 observations = {"judgment": judgment}
 x_in = torch.zeros(1, 1)
 
-print("scores:", score.round(decimals=2).tolist())
+print("true scores:", true_score.round(decimals=2).tolist())
 ```
 
 The `mu` step is a deterministic `let`: it reads the three sampled tensors out of the trace environment, reshapes each back to its declared arrow shape, and returns the $4 \times 3$ contraction. Reshaping is what makes the step total, since a clamped site arrives flattened, and the third-order `interaction` is the one arrow whose shape a flat vector cannot be read off.
 
+### Checking the joint density
+
+At the true tensors, the program's [`log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint) should equal the three prior terms plus the Normal likelihood of every replicate judgment, with the score written as an einsum rather than through the compiled wiring.
+
+```python
+truth = {
+    "pred_embed": true_pred_embed,
+    "arg_embed": true_arg_embed,
+    "interaction": true_interaction,
+    "judgment": judgment,
+}
+log_joint = model.log_joint(x_in, truth).reshape(-1)[0]
+
+score = torch.einsum("ab,ac,bcd->ad", true_pred_embed, true_arg_embed, true_interaction)
+by_hand = (
+    D.Normal(0.0, 1.0).log_prob(true_pred_embed).sum()
+    + D.Normal(0.0, 1.0).log_prob(true_arg_embed).sum()
+    + D.Normal(0.0, 1.0).log_prob(true_interaction).sum()
+    + D.Normal(score, sigma).log_prob(judgment).sum()
+)
+assert torch.allclose(log_joint, by_hand, rtol=1e-5)
+print(f"log joint at the truth: {float(log_joint):.2f}")
+```
+
 ### SVI fit
 
-Fit with [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) + [`ELBO`](../api/inference/elbo.md#quivers.inference.objectives.ELBO) + [`SVI`](../api/inference/svi.md#svi). All three arrows are `sample` sites. The guide places an independent Normal distribution on each unconstrained coordinate and samples them to estimate the ELBO.
+Fit an [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) by [`SVI`](../api/inference/svi.md#svi) and push 200 guide draws through the contraction. The embeddings and the interaction tensor are not identified: any invertible change of basis in `PredDim` or `ArgDim`, undone in the interaction tensor, leaves every score unchanged. The score tensor is identified, so the check compares fitted scores with true ones, next to the per-cell mean of the replicate judgments as a baseline.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -215,17 +245,32 @@ optim = torch.optim.Adam(
     list(model.parameters()) + list(guide.parameters()), lr=5e-2,
 )
 svi = SVI(model, guide, optim, ELBO(num_particles=1))
+losses = [svi.step(x_in, observations) for _ in range(1000)]
 
-losses = [svi.step(x_in, observations) for _ in range(200)]
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(200)]
+fit_score = torch.stack([
+    bilinear_score(
+        d["pred_embed"].reshape(pred_shape),
+        d["arg_embed"].reshape(arg_shape),
+        d["interaction"].reshape(inter_shape),
+    )
+    for d in draws
+]).mean(0)
+
+fit_rmse = float((fit_score - true_score).pow(2).mean().sqrt())
+cell_mean_rmse = float((judgment.mean(0) - true_score).pow(2).mean().sqrt())
+print(f"ELBO loss: {losses[0]:.1f} -> {sum(losses[-100:]) / 100:.1f}")
+print(f"score RMSE: fitted {fit_rmse:.3f}, replicate means {cell_mean_rmse:.3f}")
+
+assert fit_rmse < 0.15
 ```
 
-The factorization is identifiable only up to invertible reparameterizations of the two embedding spaces, so the fitted embeddings tend to differ from the truths even once the score tensor has converged.
+Each cell has 50 judgments with noise scale 0.5, so its replicate mean has a standard error of about 0.07, and the tolerance allows about twice that. With four items and three scale points, the contraction places no real constraint on the twelve scores (the embeddings and interaction tensor have more free entries than there are cells), so the fit should not be expected to beat the replicate means; the check is that the declared contraction, fitted through its factors, reproduces the scores the data identify.
 
 ### NUTS posterior
 
-Because the priors are declared inside the program, [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets it directly; a model that instead exposed the three arrows as bare `[role=latent]` parameters would first need [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) to give them a prior.
+Because the priors are declared inside the program, [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets it directly. The chain below is short; the non-identified factors mix poorly, so a real analysis would monitor the scores rather than the factor entries, across several chains.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -235,6 +280,7 @@ kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
 mc     = MCMC(kernel, num_warmup=15, num_samples=15, num_chains=1)
 result = mc.run(model, x_in, observations)
 
+assert torch.isfinite(result.log_densities).all()
 print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
@@ -247,7 +293,7 @@ Binary composition `>>` is the 2-ary case of a wider operadic structure: a `cont
 
 - [DSL Contractions](../guides/dsl-contractions.md) for declaration syntax, wiring inference, and the `share=` / `wiring=` clauses.
 - [Composition Rules § 4](../semantics/composition-rules.md#4-operadic-contractions) for the categorical semantics of operadic contractions.
-- [Probabilistic Matrix Factorization](pmf.md) for the 2-ary bilinear score expressed with `.dagger` and `>>`.
+- [Probabilistic Matrix Factorization](pmf.md) for the two-way analogue, an inner-product score written as a QVR program over observed (user, item) pairs.
 
 ## Sources and further reading
 

@@ -53,12 +53,11 @@ def test_program_schema_object_decls_for_hmm() -> None:
     """hmm.qvr's object declarations appear as object_decl vertices
     with the right names and bind to finset vertices.
 
-    The three finite objects play different roles, and the schema
-    carries all of them: `State` is the latent's support, `Obs` the
-    alphabet an emission draws from, and `Step` the plate the
-    sequence is observed over. `StateDist` is the real vector the
-    program returns, so it binds a euclidean vertex rather than a
-    finset one.
+    The two finite objects play different roles, and the schema
+    carries both: `State` is the hidden chain's support and `Symbol`
+    the alphabet an emission draws from. `StateProbs` is the real
+    vector the program returns, so it binds a euclidean vertex rather
+    than a finset one.
     """
     compiler = _compile_to_env(EXAMPLES_DIR / "hmm.qvr")
     schema = extract_program_schema(compiler)
@@ -69,7 +68,7 @@ def test_program_schema_object_decls_for_hmm() -> None:
         for c in schema.constraints_for(vid):
             if c.sort == "name":
                 decl_names.append(c.value)
-    assert set(decl_names) == {"State", "Obs", "Step"}
+    assert set(decl_names) == {"State", "Symbol"}
 
     finset_ids = [v.id for v in schema.vertices if v.kind == "finset"]
     finset_props = []
@@ -77,7 +76,7 @@ def test_program_schema_object_decls_for_hmm() -> None:
         props = {c.sort: c.value for c in schema.constraints_for(fid)}
         finset_props.append(props)
     cardinalities = sorted(int(p["cardinality"]) for p in finset_props)
-    assert cardinalities == [8, 12, 16]
+    assert cardinalities == [2, 4]
 
 
 def test_output_decl_recorded_for_hmm() -> None:
@@ -110,7 +109,7 @@ def test_diff_distinguishes_distinct_programs() -> None:
 
     diff = panproto.diff_schemas(schema_a, schema_b).to_dict()
     # at minimum, the two schemas should differ — they declare different
-    # objects (State/Obs vs N/T) and different morphisms.
+    # objects (State/Symbol vs N/T) and different morphisms.
     assert len(diff["added_vertices"]) > 0 or len(diff["removed_vertices"]) > 0
 
 

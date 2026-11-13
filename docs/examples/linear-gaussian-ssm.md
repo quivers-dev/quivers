@@ -1,209 +1,237 @@
-# Gaussian-kernel state-space model
+# Linear-Gaussian State-Space Model
 
 ## Overview
 
-The classical linear-Gaussian [state-space model](https://en.wikipedia.org/wiki/State-space_representation) has a closed-form [Kalman filter](https://doi.org/10.1115/1.3662552) and [Rauch-Tung-Striebel smoother](https://doi.org/10.2514/3.3166): [@kalman1960filtering] [@rauch1965smoothing]
-
-$$
-\begin{aligned}
-s_t &= A s_{t-1} + B u_t + w_t,
-& w_t &\sim \mathcal{N}(0, Q), \\
-o_t &= C s_t + v_t,
-& v_t &\sim \mathcal{N}(0, R).
-\end{aligned}
-$$
-
-The QVR source uses learned conditional-Normal kernels whose means and diagonal scales depend on their inputs. The separate `filter_cell` is another learned kernel; the Kalman update equations are absent. The [continuous-state](continuous-hmm.md) and [deep Markov](deep-markov.md) examples use the same state-space wiring.
+A linear-Gaussian [state-space model](https://en.wikipedia.org/wiki/State-space_representation) explains a sequence of noisy observations by a hidden state that evolves linearly under Gaussian noise. Given the model's matrices and noise scales, the posterior over the state path is Gaussian, and the [Kalman filter](https://doi.org/10.1115/1.3662552) [@kalman1960filtering] followed by the [Rauch-Tung-Striebel smoother](https://doi.org/10.2514/3.3166) [@rauch1965smoothing] computes its means and variances exactly. This source states the model with a [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) whose cell draws the next state given the previous one, so the program's latent is the whole coupled state path. The transition and emission maps are [learned deterministic functions](../guides/dsl-declarations.md#function), affine maps with point-estimated weights, and the two noise scales are sites of the program. The page checks the program's joint density against a hand-written one and its posterior against the smoother.
 
 ## QVR source
 
 ```qvr
-# Learned Gaussian State-Space Cells
-#
-# Conditional-Normal transition, emission, and recognition cells
-# with the wiring of a state-space model. The parameter maps may
-# make both the means and diagonal scales depend on their inputs,
-# so this source is more general than a classical linear-Gaussian
-# model and does not implement an analytic Kalman update.
-#
-# Generative structure:
-#
-#   s_t  ~ Normal(transition_cell(driver, s_{t-1}), Q)
-#   o_t  ~ Normal(emission(s_t), R)
-#   h_t  ~ Normal(filter_cell(o_t, h_{t-1}))       learned summary
-#
-# `scan` iterates each cell across runtime sequence data. The
-# separately declared filter_cell is a learned recognition
-# kernel, not a derived Bayesian inverse of transition_cell and
-# emission.
-#
-# Reference: [Kalman 1960](https://doi.org/10.1115/1.3662552).
-
-object Driver : Real 2
-object State : Real 4
+# A linear-Gaussian state-space model with a learned linear transition and
+# emission and constant noise scales:
+#   s_t = A s_{t-1} + B u_t + b + q e_t,    o_t = C s_t + c + r f_t,
+# with e_t, f_t standard normal and s_{-1} = 0. The transition and emission
+# maps are learned functions, so their weights are point estimates; the
+# noise scales are sites of the scanning program, read by every position.
+object Driver : Real 1
+object State : Real 2
 object Obs : Real 2
 
-morphism transition_cell : Driver * State -> State ~ Normal
-morphism emission : State -> Obs ~ Normal
-morphism filter_cell : Obs * State -> State ~ Normal
+morphism transition : Driver * State -> State [role=function]
+morphism emission : State -> Obs [role=function]
 
-define generate = scan(transition_cell) >> emission
-define filter = scan(filter_cell)
+program step(u_t, s_prev) : Driver * State -> State
+    let mean = transition(u_t, s_prev)
+    sample s <- Normal(loc=mean, scale=q)
+    let center = emission(s)
+    observe o <- Normal(loc=center, scale=r)
+    return s
 
-# Probabilistic model: the exported one-step kernel takes the
-# previous (driver, state) pair, draws a new state, and scores one
-# observation under the emission kernel. The separate `generate`
-# composition scans transition_cell and emits once from the
-# terminal state; it does not call this program at every position.
-program generative_step : Driver * State -> State
-    sample s_new <- transition_cell
+define run_all = scan(step)
 
-    observe o <- emission(s_new)
-    return s_new
+program ssm : Driver -> State
+    sample q <- HalfNormal(scale=1.0)
+    sample r <- HalfNormal(scale=1.0)
+    sample last <- run_all
+    return last
 
-export generative_step
+export ssm
 ```
 
 ## Understanding the model
 
-A driver is an observed external input, a state is the evolving internal
-quantity, and an observation is a noisy readout of that state. A transition
-combines the driver with the previous state to predict the next one. Repeating
-that step builds a trajectory; the current [`scan`](../tutorials/qvr/05-time-series.md#scan-for-left-to-right-evaluation) interface returns its last
-state, so the following emission produces a terminal observation.
+With $u_t$ an observed driver and $s_{-1} = 0$, the program scores
 
-The classic Kalman filter analytically updates a Gaussian state distribution
-under specific linear, Gaussian, constant-covariance assumptions. The learned
-kernels here are more general, and the separately declared `filter_cell` does
-not enforce that update. The synthetic fitting blocks condition on [known states](continuous-hmm.md#understanding-the-model), which illustrates parameter learning rather than hidden-state filtering.
+$$
+\begin{aligned}
+s_t &= A s_{t-1} + B u_t + b + q\, e_t, & e_t &\sim \mathcal{N}(0, I), \\
+o_t &= C s_t + c + r\, f_t, & f_t &\sim \mathcal{N}(0, I),
+\end{aligned}
+$$
+
+with half-Normal priors on the scales $q$ and $r$. The transition reads the concatenation $[u_t; s_{t-1}]$, so the learned weight of `transition` is the block matrix $[B\ A]$ and its bias is $b$; the weight and bias of `emission` are $C$ and $c$. Each input row is one run: a sequence of drivers, with the state path drawn at the sites `s@0`, `s@1`, and so on, and the observations `o` scored at every position.
+
+The process noise is isotropic, $Q = q^2 I$, and so is the observation noise, $R = r^2 I$. With $A$, $B$, $b$, $C$, $c$, $q$, and $r$ fixed, the state path's posterior given the observations is Gaussian, and the smoother gives its means exactly. That is the check below: the program's posterior, sampled by NUTS, against the smoother.
 
 ## Walkthrough
 
-`Driver`, `State`, and `Obs` are Euclidean spaces; `Driver` carries an exogenous input concatenated with the previous state at each step. The transition and emission are conditional-Normal kernels with learned input-dependent means and diagonal scales.
-
-`scan(transition_cell)` threads the latent state forward across a driver sequence and returns the terminal state; composing with `emission` draws one observation from that terminal state. `scan(filter_cell)` is a separately learned recognition path. Nothing in the declaration constrains `filter_cell` to equal the closed-form posterior update.
-
-A matrix-Normal prior on the transition matrix is the natural conjugate choice when the analyst wants to separate row and column correlation structure: `~ MatrixNormal(loc, row_scale, col_scale) over (dom, cod)` puts a [Kronecker-covariance](https://en.wikipedia.org/wiki/Kronecker_product) prior on the representing tensor of a finite-state transition morphism. The Euclidean state space here uses parameter networks instead, but the same axis-role syntax applies once the state factorizes into named components.
+- `object Driver : Real 1`, `object State : Real 2`, and `object Obs : Real 2` are the driver, state, and observation spaces.
+- `morphism transition : Driver * State -> State [role=function]` is the affine map $[u_t; s_{t-1}] \mapsto B u_t + A s_{t-1} + b$, and `emission` is $s_t \mapsto C s_t + c$. Both are deterministic with point-estimated weights.
+- `program step` is one position: it draws the next state around the transition's mean at scale `q`, and observes `o` around the emission's mean at scale `r`. The scales `q` and `r` are not parameters of `step`; the cell reads them from the scanning program, so every position shares them.
+- `define run_all = scan(step)` threads the state from zero along the drivers. `program ssm` draws the two scales and then the path.
+- No transpile target lowers a scan, so every target refuses this program with `scan:no-lowering`. The program runs on the PyTorch runtime and the reference machine.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+The checks below come from a verification script whose tolerances were fixed before it was first run. Both blocks set the learned functions to known matrices.
 
+### The log joint against a hand-written recursion
 
-### Generating synthetic data
-
-Pick concrete ground-truth dynamics `(A, B, C)` with isotropic process and observation noise, then forward-sample a single trajectory of latent states and observations. The driver inputs `u_t` are independent Normal draws; the per-step recurrence is the standard LGSSM kalman setup. The single-step program `generative_step : Driver * State -> State` reads the previous (driver, state) pair as input; the per-step pair `(s_new, o)` is supplied as the observation dict.
+With the weights at the known matrices, the compiled runtime's log joint at fixed values of `q`, `r`, the state path, and the observations must equal a float64 loop over positions to a relative 1e-5, and the reference machine, given the weights as data, to 1e-9. An oracle with the two noise scales swapped must disagree by more than a relative 1e-3, which shows the first comparison can tell them apart.
 
 ```python
+import math
+
 import torch
+import torch.distributions as D
+
+from quivers.continuous import LearnedFunction, LinearSource
 from quivers.dsl import load
+from quivers.inference import MCMC, NUTSKernel
+
+SOURCE = "docs/examples/source/linear_gaussian_ssm.qvr"
+LENGTH = 12
+
+A = torch.tensor([[0.8, 0.1], [-0.2, 0.7]], dtype=torch.float64)
+B = torch.tensor([[0.5], [-0.3]], dtype=torch.float64)
+B_SHIFT = torch.tensor([0.1, 0.0], dtype=torch.float64)
+C = torch.tensor([[1.0, 0.5], [0.0, 1.0]], dtype=torch.float64)
+C_SHIFT = torch.tensor([0.0, 0.2], dtype=torch.float64)
+Q, R = 0.4, 0.3
+
+
+def learned(model, name):
+    found = [m for p, m in model.named_modules() if p.split(".")[-1] == f"_function_{name}"]
+    assert len(found) == 1 and isinstance(found[0], LearnedFunction)
+    assert isinstance(found[0].source, LinearSource)
+    return found[0].source
+
+
+def set_known_weights(model):
+    """Set the learned functions to the known matrices; return them as data."""
+    transition, emission = learned(model, "transition"), learned(model, "emission")
+    with torch.no_grad():
+        # The transition reads [u_t; s_{t-1}], the domain's factors in order.
+        transition.linear.weight.copy_(torch.cat([B, A], dim=1).float())
+        transition.linear.bias.copy_(B_SHIFT.float())
+        emission.linear.weight.copy_(C.float())
+        emission.linear.bias.copy_(C_SHIFT.float())
+    return {
+        "transition_param_weight": torch.cat([B, A], dim=1),
+        "transition_param_bias": B_SHIFT,
+        "emission_param_weight": C,
+        "emission_param_bias": C_SHIFT,
+    }
+
+
+def oracle(q, r, u, s, o, swap_scales=False):
+    """The joint density by a loop over positions, float64."""
+    q_t, r_t = (r, q) if swap_scales else (q, r)
+    total = float(D.HalfNormal(1.0).log_prob(torch.tensor(q, dtype=torch.float64)))
+    total += float(D.HalfNormal(1.0).log_prob(torch.tensor(r, dtype=torch.float64)))
+    previous = torch.zeros(2, dtype=torch.float64)
+    for t in range(u.shape[0]):
+        total += float(D.Normal(A @ previous + B @ u[t] + B_SHIFT, q_t).log_prob(s[t]).sum())
+        total += float(D.Normal(C @ s[t] + C_SHIFT, r_t).log_prob(o[t]).sum())
+        previous = s[t]
+    return total
+
+
+def simulate(seed):
+    """Drivers, a state path, and observations from the known model."""
+    generator = torch.Generator().manual_seed(seed)
+    u = torch.randn(LENGTH, 1, generator=generator, dtype=torch.float64)
+    s = torch.empty(LENGTH, 2, dtype=torch.float64)
+    o = torch.empty(LENGTH, 2, dtype=torch.float64)
+    previous = torch.zeros(2, dtype=torch.float64)
+    for t in range(LENGTH):
+        s[t] = A @ previous + B @ u[t] + B_SHIFT + Q * torch.randn(2, generator=generator, dtype=torch.float64)
+        o[t] = C @ s[t] + C_SHIFT + R * torch.randn(2, generator=generator, dtype=torch.float64)
+        previous = s[t]
+    return u, s, o
+
+
+def host(value):
+    return float(value) if value.dim() == 0 else tuple(host(row) for row in value)
+
 
 torch.manual_seed(0)
-prog = load("docs/examples/source/linear_gaussian_ssm.qvr")
-model = prog.morphism
-
-T = 32
-state_dim = 4
-obs_dim = 2
-driver_dim = 2
-A = 0.9 * torch.eye(state_dim)
-B = 0.1 * torch.randn(state_dim, driver_dim)
-C = torch.randn(obs_dim, state_dim)
-Q_scale, R_scale = 0.1, 0.1
-
-u = torch.randn(T, driver_dim)
-s = torch.zeros(T + 1, state_dim)
-o = torch.zeros(T, obs_dim)
-for t in range(T):
-    s[t + 1] = s[t] @ A.T + u[t] @ B.T + Q_scale * torch.randn(state_dim)
-    o[t] = s[t + 1] @ C.T + R_scale * torch.randn(obs_dim)
-
-state_prev = torch.cat([u, s[:T]], dim=-1)
-sites = {"s_new": s[1:T + 1], "o": o}
-x_in = state_prev
-observations = sites
+program = load(SOURCE)
+model = program.morphism
+weights = set_known_weights(model)
+u, s, o = simulate(seed=1)
+given = {
+    "q": torch.tensor([[Q]]),
+    "r": torch.tensor([[R]]),
+    "o": o.float()[None],
+    **{f"s@{t}": s[t].float()[None] for t in range(LENGTH)},
+}
+got = float(model.log_joint(u.float()[None], given).detach()[0])
+expected = oracle(Q, R, u, s, o)
+wrong = oracle(Q, R, u, s, o, swap_scales=True)
+run = program.run(
+    "ssm",
+    data={"driver": host(u), "o": host(o), **{k: host(v) for k, v in weights.items()}},
+    sites={"q": Q, "r": R, **{f"s@{t}": host(s[t]) for t in range(LENGTH)}},
+    seed=0,
+)
+print(f"compiled {got:.6f}, reference {run.log_joint:.9f}, oracle {expected:.9f}; scales swapped {wrong:.6f}")
+assert math.isclose(got, expected, rel_tol=1e-5)
+assert math.isclose(run.log_joint, expected, rel_tol=1e-9)
+assert not math.isclose(got, wrong, rel_tol=1e-3)
 ```
 
-### SVI fit
+### The posterior against the Rauch-Tung-Striebel smoother
 
-The exported `generative_step` is a monadic program whose linear-Gaussian
-transition and emission weights are kernel parameters without explicit
-`sample` priors.
-[`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters)
-lifts each leaf parameter into a unit-Normal sample site, allowing the standard
-guide and ELBO implementation to apply uniformly. The per-step `(s_new, o)`
-trajectory is supplied as the observation dictionary, so `log_joint` scores
-the clamped trajectory under each lifted parameter draw.
+With the weights at the known matrices and `q` and `r` observed at their true values, the only latents are the 24 coordinates of the state path, and their posterior means are the smoother's. NUTS (one chain, 200 warmup and 400 kept draws) must put every coordinate's posterior mean within four Monte Carlo standard errors of the smoother's mean, the standard error being the smoother's standard deviation over the square root of the coordinate's effective sample size. A smoother with the transition matrix transposed must be rejected at the same tolerance at one coordinate or more, which shows the check can tell the two dynamics apart.
 
 ```python
-from quivers.inference import AutoNormalGuide, ELBO, SVI, bayesian_lift_parameters
+def smoother(u, o, transition):
+    """Rauch-Tung-Striebel smoothed means and marginal variances, float64."""
+    eye = torch.eye(2, dtype=torch.float64)
+    mean, cov = torch.zeros(2, dtype=torch.float64), torch.zeros(2, 2, dtype=torch.float64)
+    filtered_means, filtered_covs, predicted_means, predicted_covs = [], [], [], []
+    for t in range(u.shape[0]):
+        prior_mean = transition @ mean + B @ u[t] + B_SHIFT
+        prior_cov = transition @ cov @ transition.T + Q**2 * eye
+        gain = prior_cov @ C.T @ torch.linalg.inv(C @ prior_cov @ C.T + R**2 * eye)
+        mean = prior_mean + gain @ (o[t] - C @ prior_mean - C_SHIFT)
+        cov = (eye - gain @ C) @ prior_cov
+        predicted_means.append(prior_mean)
+        predicted_covs.append(prior_cov)
+        filtered_means.append(mean)
+        filtered_covs.append(cov)
+    means, covs = list(filtered_means), list(filtered_covs)
+    for t in range(u.shape[0] - 2, -1, -1):
+        gain = filtered_covs[t] @ transition.T @ torch.linalg.inv(predicted_covs[t + 1])
+        means[t] = filtered_means[t] + gain @ (means[t + 1] - predicted_means[t + 1])
+        covs[t] = filtered_covs[t] + gain @ (covs[t + 1] - predicted_covs[t + 1]) @ gain.T
+    return torch.stack(means), torch.stack([torch.diagonal(c) for c in covs])
 
-torch.manual_seed(1)
-prog = load("docs/examples/source/linear_gaussian_ssm.qvr")
-inner = prog.morphism
-model, x_lift, obs_lift = bayesian_lift_parameters(
-    inner, x_in, observations, prior_scale=1.0,
-)
-
-guide = AutoNormalGuide(model, observed_names=set())
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=1e-2,
-)
-svi = SVI(model, guide, optim, ELBO())
-
-loss0 = svi.step(x_lift, obs_lift)
-losses = [svi.step(x_lift, obs_lift) for _ in range(300)]
-loss_final = sum(losses[-20:]) / 20.0
-oracle_ll = inner.log_joint(x_in, observations).sum().item()
-print(f"initial ELBO loss: {loss0:.1f}")
-print(f"final ELBO loss:   {loss_final:.1f}")
-print(f"oracle -log p(h):  {-oracle_ll:.1f}")
-```
-
-### NUTS posterior
-
-The lifted model is a [`MonadicProgram`](../api/monadic/monads.md) with one Normal sample site per leaf parameter; [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly. Small budgets keep the snippet inside tens of seconds for an API demonstration; longer, diagnosed runs are needed for posterior interpretation.
-
-```python
-from quivers.inference import MCMC, NUTSKernel, bayesian_lift_parameters
 
 torch.manual_seed(2)
-prog = load("docs/examples/source/linear_gaussian_ssm.qvr")
-model, x_lift, obs_lift = bayesian_lift_parameters(
-    prog.morphism, x_in, observations, prior_scale=1.0,
+model = load(SOURCE).morphism
+set_known_weights(model)
+u, _, o = simulate(seed=3)
+observations = {"q": torch.tensor([[Q]]), "r": torch.tensor([[R]]), "o": o.float()[None]}
+result = MCMC(NUTSKernel(max_tree_depth=6), num_warmup=200, num_samples=400, num_chains=1, seed=0).run(
+    model, u.float()[None], observations
 )
-
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=3, target_accept=0.8)
-mc = MCMC(kernel, num_warmup=15, num_samples=15, num_chains=1)
-result = mc.run(model, x_lift, obs_lift)
-
-print("acceptance:", float(result.acceptance_rates.mean()))
-print("divergences:", int(result.divergence_counts.sum()))
+means, variances = smoother(u, o, A)
+wrong_means, _ = smoother(u, o, A.T)
+worst, rejected = 0.0, 0
+for t in range(LENGTH):
+    draws = result.samples[f"s@{t}"].reshape(-1, 2).double()
+    effective = result.ess[f"s@{t}"].reshape(-1).double()
+    for k in range(2):
+        tolerance = 4.0 * math.sqrt(float(variances[t, k])) / math.sqrt(float(effective[k]))
+        deviation = abs(float(draws[:, k].mean()) - float(means[t, k]))
+        worst = max(worst, deviation / tolerance)
+        assert deviation <= tolerance, (t, k, deviation, tolerance)
+        if abs(float(draws[:, k].mean()) - float(wrong_means[t, k])) > tolerance:
+            rejected += 1
+print(f"largest deviation {worst:.2f} of the tolerance; transposed-transition smoother rejected at {rejected} coordinates")
+assert rejected >= 1
 ```
 
+What this demonstrates is narrow and exact: at known matrices and scales, the program's posterior over the coupled state path is the Kalman smoother's. The page does not fit the matrices or the scales.
 
 ## Categorical perspective
 
-`scan` iterates the conditional Gaussian kernel along the time index. Because each intermediate state is stochastic and the kernel parameters can depend on their inputs, the full composed distribution need not remain a single Gaussian. The synthetic-data block uses a classical linear-Gaussian process for comparison, but the QVR declarations are more general.
-
-```mermaid
-flowchart LR
-    u_1["u_1"] --> transition_cell["transition_cell"]
-    s_0["s_0"] --> transition_cell["transition_cell"]
-    transition_cell["transition_cell"] --> s_1["s_1"]
-    s_1["s_1"] --> emission["emission"]
-    emission["emission"] --> o_1["o_1"]
-    s_1["s_1"] --> transition_cell_2["transition_cell_2"]
-    u_2["u_2"] --> transition_cell_2["transition_cell_2"]
-    transition_cell_2["transition_cell_2"] --> s_2["s_2"]
-    class u_1,s_0,u_2 qv-input
-    class transition_cell,emission,transition_cell_2 qv-checked
-    class s_1,s_2 qv-foundation
-    class o_1 qv-output
-```
-
+The cell `step` is a Kleisli morphism $\mathrm{Driver} \otimes \mathrm{State} \to \mathrm{State}$ of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical], weighted by the likelihood of the observation it scores, and `scan(step)` composes it along the drivers in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category). Linear maps with Gaussian noise are closed under that composition and under conditioning, which is why the composite's posterior is the Gaussian the smoother computes.
 
 ## Sources and further reading
 
+- *A new approach to linear filtering and prediction problems* [@kalman1960filtering].
 - *Maximum likelihood estimates of linear dynamic systems* [@rauch1965smoothing].
-- *A New Approach to Linear Filtering and Prediction Problems* [@kalman1960filtering].
+- *A categorical approach to probability theory* [@giry1982categorical].

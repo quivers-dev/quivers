@@ -1,40 +1,40 @@
-# Gamma Regression for Component Totals
+# Gamma Regression
 #
-# A Bayesian regression for non-negative component totals, fit
-# with a Gamma likelihood and a per-category log-shape predictor.
-# This is the unnormalized layer of a Dirichlet regression:
-# independent Gamma draws with shapes (alpha_1, ..., alpha_K)
-# and unit rate normalize to a sample on the K-simplex, but the
-# observed quantity here is the raw Gamma tally.
+# A Gamma generalized linear model with a log link and one
+# intercept, slope, and shape per category. The linear predictor
+# sets the mean mu = exp(eta); the shape nu sets the coefficient
+# of variation 1 / sqrt(nu), so the variance is mu**2 / nu.
 #
 # Generative structure:
 #
 #   beta_0_k ~ Normal(0, 2)                       per-category intercept
 #   beta_1_k ~ Normal(0, 2)                       per-category slope
-#   tally_{n,k} ~ Gamma(exp(beta_0_k + beta_1_k * x_n), 1)
+#   shape_k  ~ Gamma(2, 0.5)                      per-category shape
+#   mu_n     = exp(beta_0_{k(n)} + beta_1_{k(n)} * x_n)
+#   y_n      ~ Gamma(concentration=shape_{k(n)},
+#                    rate=shape_{k(n)} / mu_n)
 #
-# The K coefficient plates are gathered through cat_idx so the
-# program scales to arbitrary K without rewriting the body.
-# Per-row simplex normalization is a deterministic
-# post-composition handled downstream when the user wants a
-# Dirichlet response.
+# Gamma(concentration, rate) has mean concentration / rate, so
+# rate = shape / mu gives mean mu and variance mu**2 / shape.
 #
-# Reference: [Maier 2014](https://epub.wu.ac.at/4077/).
+# Reference: [Nelder and Wedderburn 1972](https://doi.org/10.2307/2344614).
 
-object Item : FinSet 21
 object Cat : FinSet 3
-object Resp : FinSet 63
+object Resp : FinSet 300
 object Val : Real 1
 
 program gamma_regression : Resp -> Val
     sample beta_0 : Cat <- Normal(loc=0.0, scale=2.0)
     sample beta_1 : Cat <- Normal(loc=0.0, scale=2.0)
+    sample shape : Cat <- Gamma(concentration=2.0, rate=0.5)
 
     let b0 = beta_0[cat_idx]
     let b1 = beta_1[cat_idx]
-    let alpha = exp(b0 + b1 * x)
+    let nu = shape[cat_idx]
+    let mu = exp(b0 + b1 * x)
+    let rate = nu / mu
 
-    observe tally : Resp <- Gamma(concentration=alpha, rate=1.0)
+    observe y : Resp <- Gamma(concentration=nu, rate=rate)
     return beta_1
 
 export gamma_regression

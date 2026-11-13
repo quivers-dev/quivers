@@ -1,52 +1,55 @@
-# Stacked Parallel-Branch Token Model
+# Causal Transformer Language Model
 #
-# A token model that borrows the parallel-head and stacked-block
-# shape of a Transformer. Its heads are independent MLP-Normal
-# kernels. There are no query-key products, softmax over
-# positions, causal mask, layer normalization, or additive
-# residual connections, so this is a wiring example rather than
-# a Transformer implementation.
+# A one-block, decoder-only Transformer that scores every next token of
+# an open-length token sequence. Each position attends to itself and the
+# positions before it through two heads of causal scaled dot-product
+# self-attention, then passes through a position-wise feed-forward
+# block; layer normalization precedes each sublayer and the residual
+# stream carries the sum of their outputs.
 #
-# Generative structure:
+# Generative structure (x_t one-hot, T positions, learned weights):
 #
-#   h_heads  ~ fan(head)(h) >> attn_proj           four parallel branches
-#   h_res    ~ residual_attn(h_heads)              learned stochastic map
-#   h_ff     ~ ff_up(h_res) >> ff_down             feed-forward block
-#   h        ~ residual_ff(h_ff)                   feed-forward residual
-#   next_t   ~ Categorical(logits=lm_head(h))      next-token target
+#   e_t = W_e x_t + b_e                         token embedding
+#   u_t = e_t + P[t]                            learned position vector
+#   h   = u + Attn(LN(u))                       causal self-attention, all t at once
+#   z_t = h_t + FF(LN(h_t))                     feed-forward, per position
+#   next_t ~ Categorical(logits=W_o LN(z_t) + b_o)
 #
-# stack(layer, 2) composes two independently parameterized copies
-# of the branch plus feed-forward block. The morphism weights are
-# ordinary learned parameters unless an inference lift supplies
-# priors over them.
-#
-# Each input row is one context, and one run of the program scores
-# it: the contexts of a corpus are independent runs that share the
-# model's parameters. Token is the vocabulary, so it is the value
-# space of what lm_head draws and of what the program returns.
+# The first and last stages run once per position as scans whose cells
+# read no state; attention reads the whole sequence those scans bind.
+# Each input row is one sequence, and `next_token` holds, for each of
+# its positions, the token after it.
 #
 # Reference: [Vaswani et al. 2017](https://papers.nips.cc/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html).
 
-object Token : FinSet 32
-object Latent : Real 16
-object HeadOut : Real 4
-object FFHidden : Real 32
+object Vocab : Real 8
+object Model : Real 16
+object Logits : Real 8
 
-morphism tok_embed : Token -> Latent [role=embed]
-morphism head : Latent -> HeadOut [replicate=4, param_source=mlp] ~ Normal
-morphism attn_proj : Latent -> Latent [param_source=mlp] ~ Normal
-morphism ff_up : Latent -> FFHidden [param_source=mlp] ~ Normal
-morphism ff_down : FFHidden -> Latent [param_source=mlp] ~ Normal
-morphism residual_attn, residual_ff : Latent -> Latent [param_source=mlp] ~ Normal
-morphism lm_head : Latent -> Token ~ Categorical
+morphism embed : Vocab -> Model [role=function]
+morphism positions : Model -> Model [role=function, param_source=positions(32)]
+morphism attn : Model -> Model [role=function, param_source=self_attention, heads=2, causal=true]
+morphism ff : Model -> Model [role=function, param_source=mlp(32), activation=relu]
+morphism lm_head : Model -> Logits [role=function]
 
-define layer = fan(head) >> attn_proj >> residual_attn >> ff_up >> ff_down >> residual_ff
-define backbone = tok_embed >> stack(layer, 2)
+program embed_step(x_t, s_prev) : Vocab * Model -> Model
+    let e = embed(x_t)
+    return e
 
-program transformer_lm : Token -> Token
-    sample h <- backbone
+program head_step(h_t, s_prev) : Model * Model -> Model
+    let z = h_t + ff(layer_norm(h_t))
+    let logits = lm_head(layer_norm(z))
+    observe next_token <- Categorical(logits=logits)
+    return z
 
-    observe next_token <- lm_head(h)
-    return next_token
+define embedded = scan(embed_step, outputs=all)
+define scored = scan(head_step, outputs=all)
+
+program transformer_lm : Vocab -> Model
+    sample e <- embedded
+    let u = positions(e)
+    let h = u + attn(layer_norm(u))
+    sample out <- scored(h)
+    return out
 
 export transformer_lm
