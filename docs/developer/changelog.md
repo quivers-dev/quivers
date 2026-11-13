@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **MCMC rejects proposals with invalid inline parameters.** A positive parameter that underflows to zero at a proposed position gives log density `-inf`, so the trajectory is rejected. Initial validation stays strict, and unrelated scoring errors propagate.
+
 - **Truncated Normal densities and samples preserve tail mass.** Inline and conditional families and restricted Normal measures share log-space interval normalization and inverse-CDF sampling. Tail intervals retain their declared support and per-batch bounds, and tiny valid scales retain finite density and pathwise gradients.
 
 - **Inflated Beta densities preserve exact mixture weights and interior parameters.** Impossible boundary atoms have log probability `-inf`; valid tiny means, precisions and observations are scored without floors. The Beta mean must be strictly between zero and one, observations outside the support are rejected, and sampling broadcasts all parameter batches.
