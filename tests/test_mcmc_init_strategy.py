@@ -56,7 +56,7 @@ def _initial_draws(strategy: str) -> dict[str, torch.Tensor]:
         num_chains=1,
         init_strategy=strategy,  # type: ignore[arg-type]
     )
-    setup = driver._setup(model, torch.zeros(1, 1), {"y": y}, "test")
+    setup = driver._setup(model, torch.zeros(1, 1), {"y": y}, "test", run_seed=0)
     registry = setup.registry
     mus, sigmas = [], []
     for chain in range(_DRAWS):

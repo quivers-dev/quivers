@@ -72,10 +72,10 @@ _GROUPED_TEMPLATE = (
 
 _CASES: list[tuple[str, str, list[tuple[str, str]]]] = [
     (
-        "identity under a semigroupoid",
+        "identity under a magmoid",
         """
         object A : FinSet 2
-        composition material_impl [level=semigroupoid]
+        composition material_impl [level=bilinear_form]
         define i = identity(A)
         export i
         """,

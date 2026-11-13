@@ -1037,7 +1037,7 @@ def test_guide_initialisation_reads_trace_side_guide_samples() -> None:
     driver = MCMC(
         HMCKernel(), num_warmup=0, num_samples=1, num_chains=1, init_strategy="guide"
     )
-    setup = driver._setup(model, torch.zeros(1, 1), {}, "test")
+    setup = driver._setup(model, torch.zeros(1, 1), {}, "test", run_seed=0)
     position = driver._initial_position(
         setup,
         _FixedGuide(),  # type: ignore[arg-type]
@@ -1056,7 +1056,7 @@ def test_guide_initialisation_rejects_a_guide_without_the_batch_axis() -> None:
     driver = MCMC(
         HMCKernel(), num_warmup=0, num_samples=1, num_chains=1, init_strategy="guide"
     )
-    setup = driver._setup(model, torch.zeros(1, 1), {}, "test")
+    setup = driver._setup(model, torch.zeros(1, 1), {}, "test", run_seed=0)
     with pytest.raises(ValueError, match="expected the trace-side shape"):
         driver._initial_position(
             setup,
