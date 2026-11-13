@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **The Beta and negative-binomial gallery examples preserve parameter precision.** Beta evaluates its complementary concentration through `sigmoid(-eta)`. NB2 runs in float64 so its documented prior-recording draws retain probabilities below one. Both retain their statistical models, export parameterizations, and recovery tolerances.
 - **The ZIP gallery checks posterior sampling precision.** Its NUTS example uses four independently seeded chains, checks rank-normalized split R-hat and bulk and tail effective sample sizes, and retains the stated parameter-recovery and SVI-agreement tolerances.
 
 ## [0.60.1] - 2026-11-13
