@@ -1,4 +1,4 @@
-"""Regression links retain valid parameters at large finite predictors."""
+"""Precision requirements for regression parameters and recording runs."""
 
 from pathlib import Path
 import math
@@ -15,6 +15,15 @@ from tests.test_gallery_sweep import _extract_try_it_blocks
 @pytest.mark.parametrize("family", ["beta", "negbin"])
 @pytest.mark.parametrize("eta", [-30.0, 30.0])
 def test_gallery_density_at_saturated_predictors(family: str, eta: float) -> None:
+    """Compare the compiled density with an independent parameterization.
+
+    Parameters
+    ----------
+    family : str
+        Gallery family whose declared parameters are scored.
+    eta : float
+        Finite predictor at which float32 can lose a positive complement.
+    """
     model = load(Path(f"docs/examples/source/{family}_regression.qvr")).morphism
     dtype = torch.float64 if family == "negbin" else torch.float32
     intercept = torch.full((3,), eta, dtype=dtype)
@@ -69,7 +78,7 @@ def test_negbin_probability_requires_double_precision_at_large_predictors() -> N
     with pytest.raises(ValueError):
         D.NegativeBinomial(2.0, probs=p32, validate_args=True)
     eta64 = eta32.double()
-    # Divide by the mean before adding to avoid an independent overflow.
+    # Compute the complement directly instead of subtracting it from one.
     expected_complement = 2.0 / (2.0 + math.exp(30.0))
     p64 = eta64.exp() / (2.0 + eta64.exp())
     assert p64 < 1
