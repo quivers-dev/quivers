@@ -1,53 +1,68 @@
-# Tree-Structured Score Tensor
+# Tree-Structured Categorical Model
 #
-# A factor-expression example that assembles log weights for the
-# leaves of a binary tree and then combines them with per-verb and
-# per-class effects. The observation uses only cell_score[0, 0]
-# under a Normal likelihood; the source does not define a
-# Categorical outcome over the four leaves.
+# A categorical response over four leaf classes whose probabilities
+# come from a binary tree of splits, with per-verb random effects on
+# each split's logit. A root split chooses between the left pair
+# {0, 1} and the right pair {2, 3}; a second split then chooses
+# within the pair. A leaf's probability is the product of the
+# branch probabilities on its path, so the four probabilities are
+# normalized by construction.
 #
 # Generative structure:
 #
-#   p_root         ~ Beta(1, 1)                    root split
-#   p_left         ~ Beta(1, 1)                    left subtree split
-#   p_right        ~ Beta(1, 1)                    right subtree split
-#   sigma_v        ~ HalfNormal(1)                 per-verb scale
-#   delta_v        ~ Normal(0, sigma_v)            per-verb effect
-#   mu_k           ~ Normal(0, 1)                  per-class effect
-#   y              ~ Normal(cell_score[0, 0], 0.5)
+#   a_s       ~ Normal(0, 1.5)            population logit of split s
+#   sigma_v   ~ HalfNormal(1)             spread of verb effects
+#   e_s[v]    ~ Normal(0, 1)              standardized verb effect
+#   eta_s[v]  = a_s + sigma_v * e_s[v]    verb v's logit of split s
+#   y_n       ~ Categorical(leaf_prob[verb_idx[n]])
 #
-# Two forms of the factor expression appear: a pattern-match
-# factor builds the tree-shaped leaf log-probability vector with
-# a case table over Class (compiler-enforced label coverage of
-# {0, ..., K-1}), and a multi-binder uniform factor builds the
-# rank-2 score tensor by evaluating its body once per (Verb,
-# Class) cell.
+# for s in {root, left, right}, where with p(x) = sigmoid(x),
+#
+#   leaf_prob[v] = ( p(-eta_root) * p(-eta_left),
+#                    p(-eta_root) * p(eta_left),
+#                    p(eta_root)  * p(-eta_right),
+#                    p(eta_root)  * p(eta_right) ).
+#
+# Three pattern-match factors spell out the tree, one case per leaf:
+# which side of the root the leaf lies on, which side of its inner
+# split, and whether that inner split is the left or the right one.
+# A uniform factor over (Verb, Class) then evaluates the path
+# probability of every leaf for every verb; its rows are the
+# response probabilities.
+# There is no free per-class offset: adding one would let the class
+# effects absorb any change in the splits, leaving the splits
+# unidentified.
 
 object Verb : FinSet 12
 object Class : FinSet 4
-object Resp : FinSet 200
-object Val : Real 1
+object Resp : FinSet 2400
+object LeafProb : Real 4
 
-# Resp is the response plate: 200 rows of a single real response.
-# Val is the program's codomain, the value space of what the
-# program returns. It returns the per-verb effect vector delta,
-# whose rows are single real numbers, so the codomain is Real 1
-# and not the Resp index the observations are plated over.
-program tree_categorical : Resp -> Val
-    sample p_root <- Beta(concentration1=1.0, concentration0=1.0)
-    sample p_left <- Beta(concentration1=1.0, concentration0=1.0)
-    sample p_right <- Beta(concentration1=1.0, concentration0=1.0)
+# Resp is the plate of observed class labels and verb_idx maps each
+# label to its verb. LeafProb is the value space of the returned rows
+# of leaf probabilities, one real coordinate per class.
 
-    let leaf_log = factor cls : Class in { 0 -> log(1.0 - p_root) + log(1.0 - p_left), 1 -> log(1.0 - p_root) + log(p_left), 2 -> log(p_root)       + log(1.0 - p_right), 3 -> log(p_root)       + log(p_right), }
-
+program tree_categorical : Resp -> LeafProb
+    sample a_root <- Normal(loc=0.0, scale=1.5)
+    sample a_left <- Normal(loc=0.0, scale=1.5)
+    sample a_right <- Normal(loc=0.0, scale=1.5)
     sample sigma_v <- HalfNormal(scale=1.0)
-    sample delta : Verb <- Normal(loc=0.0, scale=sigma_v)
-    sample mu : Class <- Normal(loc=0.0, scale=1.0)
+    sample e_root : Verb <- Normal(loc=0.0, scale=1.0)
+    sample e_left : Verb <- Normal(loc=0.0, scale=1.0)
+    sample e_right : Verb <- Normal(loc=0.0, scale=1.0)
 
-    let cell_score = factor v : Verb, cls : Class in delta[v] + mu[cls] + leaf_log[cls]
-    let cell0 = cell_score[0, 0]
+    let eta_root = a_root + sigma_v * e_root
+    let eta_left = a_left + sigma_v * e_left
+    let eta_right = a_right + sigma_v * e_right
 
-    observe y : Resp <- Normal(loc=cell0, scale=0.5)
-    return delta
+    let root_side = factor cls : Class in { 0 -> -1.0, 1 -> -1.0, 2 -> 1.0, 3 -> 1.0, }
+    let inner_side = factor cls : Class in { 0 -> -1.0, 1 -> 1.0, 2 -> -1.0, 3 -> 1.0, }
+    let under_left = factor cls : Class in { 0 -> 1.0, 1 -> 1.0, 2 -> 0.0, 3 -> 0.0, }
+
+    let leaf_prob = factor v : Verb, cls : Class in sigmoid(root_side[cls] * eta_root[v]) * sigmoid(inner_side[cls] * (under_left[cls] * eta_left[v] + (1.0 - under_left[cls]) * eta_right[v]))
+    let row_probs = leaf_prob[verb_idx]
+
+    observe y : Resp <- Categorical(probs=row_probs)
+    return leaf_prob
 
 export tree_categorical

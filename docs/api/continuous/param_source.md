@@ -20,8 +20,9 @@ Families call the `make_param_source` factory, and
 morphism option. The default for a continuous domain is `LinearSource`,
 so a kernel is linear unless another source is requested. A `SetObject`
 domain uses `LookupSource` regardless of the requested kind. The
-[Bayesian Neural Network](../../examples/bnn.md) example selects the
-MLP source explicitly and relies on it for its nonlinearity.
+[Variational Autoencoder](../../examples/vae.md) example selects the
+MLP source explicitly for its encoder and decoder and relies on it for
+their nonlinearity.
 
 The hidden widths come either from the option's arguments or from
 `hidden_dim`, one width per hidden layer:

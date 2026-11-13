@@ -1,40 +1,17 @@
 # Probabilistic Context-Free Grammar
 #
-# A PCFG as an agenda-based weighted deduction over CKY chart
-# items ``span(I, J, N)`` (token range ``[I, J)`` with
-# nonterminal ``N``) under the LogProb semiring. Each production
-# is a specific ``rule`` (no free wildcards on the conclusion):
-# the chart fires only the productions the grammar licenses, the
-# weights are bindings-keyed under ``#[learnable]``, and the
-# chart's goal weight at ``span(0, n, S)`` is the corpus inside
-# log-probability.
+# A PCFG as a weighted deduction over CKY chart items ``span(I, J, N)``
+# (token range ``[I, J)`` with nonterminal ``N``) under the LogProb
+# semiring. ``normalize=lhs`` makes the productions sharing a left-hand
+# side a probability distribution: each group's learned log-weights pass
+# through a softmax, so the grammar is a proper PCFG, maximum likelihood
+# is bounded, and the chart's goal weight at ``span(0, n, S)`` is the
+# sentence's log probability.
 
 object Term : FinSet 16
-object Rule : FinSet 9
 
-object Weight : Real 1
-
-# Probabilistic surface for transpile: each learnable rule weight
-# carries an independent Normal(0, 1) prior, and a treebank reports
-# how often each rule fired. Exponentiating a weight gives that
-# rule's firing rate, so the counts are Poisson in the rate; the
-# chart parser downstream consumes the same weights as its per-rule
-# log-probabilities. Rule indexes the weight vector, so it is the
-# plate extent; the codomain Weight is the value space of the one
-# real number a single weight is.
-program pcfg_prior : Rule -> Weight
-    sample rule_weights : Rule <- Normal(loc=0.0, scale=1.0)
-    let rule_rate = exp(rule_weights)
-    observe rule_counts : Rule <- Poisson(rate=rule_rate)
-    return rule_weights
-
-export pcfg_prior
-
-deduction PCFG : Term -> Term [semiring=LogProb, start=S, depth=4]
+deduction PCFG : Term -> Term [semiring=LogProb, start=S, depth=4, normalize=lhs]
     atoms S, NP, VP, Det, N, V, span, the, a, cat, dog, sleeps, runs
-    # Concrete binary productions. Each ``#[learnable]`` allocates
-    # one log-weight per firing binding tuple; with no free
-    # wildcards in the conclusion, there is one weight per rule.
     rule s_np_vp : span(I, K, NP), span(K, J, VP) |- span(I, J, S) #[learnable]
     rule np_det_n : span(I, K, Det), span(K, J, N) |- span(I, J, NP) #[learnable]
     rule vp_v : span(I, J, V) |- span(I, J, VP) #[learnable]

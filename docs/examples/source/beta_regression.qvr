@@ -19,9 +19,8 @@
 #
 # Reference: [Ferrari and Cribari-Neto 2004](https://doi.org/10.1080/0266476042000214501).
 
-object Item : FinSet 21
 object Out : FinSet 3
-object Resp : FinSet 63
+object Resp : FinSet 300
 object Val : Real 1
 
 program beta_regression : Resp -> Val

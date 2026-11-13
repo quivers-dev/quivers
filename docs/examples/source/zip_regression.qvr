@@ -1,28 +1,34 @@
 # Multi-Output Zero-Inflated Poisson Regression
 #
-# A multi-output zero-inflated Poisson regression. ZIP models
-# count data with an excess of structural zeros relative to a
-# plain Poisson likelihood: each cell is a two-component
-# mixture of a point mass at zero and Poisson(rate). Each
-# output dimension carries its own zero-inflation logits and
-# rate coefficients.
+# A multi-output zero-inflated Poisson (ZIP) regression. Each
+# count is either a structural zero, with probability pi, or a
+# Poisson(rate) draw, which may itself be zero. Each output has
+# its own logistic regression for pi and its own log-linear
+# regression for the rate.
 #
 # Generative structure:
 #
-#   alpha_zero_d, beta_zero_d ~ Normal(0, 5)
-#   alpha_rate_d, beta_rate_d ~ Normal(0, 5)
-#   pi_{n, d}                  = sigmoid(alpha_zero_d + beta_zero_d * x_n)
-#   rate_{n, d}                = exp(alpha_rate_d + beta_rate_d * x_n)
-#   z_{n, d}                   in {0, 1}, weights (1-pi, pi)
-#   y_{n, d}                   ~ Poisson(z_{n, d} * rate_{n, d})
+#   alpha_zero_d, beta_zero_d ~ Normal(0, 5)      structural-zero logit
+#   alpha_rate_d, beta_rate_d ~ Normal(0, 5)      log rate
+#   pi_n   = sigmoid(alpha_zero_{d(n)} + beta_zero_{d(n)} * x_n)
+#   rate_n = exp(alpha_rate_{d(n)} + beta_rate_{d(n)} * x_n)
+#   z_n    in {0, 1} with P(z_n = 1) = 1 - pi_n  Poisson branch
+#   y_n    ~ Poisson(z_n * rate_n)
 #
-# The marginalize block sums the Bernoulli gate z out over its two
-# atoms: it scores both gated Poisson branches and combines them by
-# logsumexp, which is the exact ZIP likelihood.
+# z_n = 0 is the structural-zero state. The marginalize block sums
+# z_n out, giving the ZIP likelihood
 #
-# Reference: [Lambert 1992](https://doi.org/10.2307/1269547).
+#   p(y = 0) = pi + (1 - pi) * exp(-rate)
+#   p(y = k) = (1 - pi) * Poisson(k | rate),   k > 0
+#
+# The marginalize block sums the Bernoulli gate z over its two atoms,
+# with weights (pi, 1 - pi); real(z) turns the gate into the number 0
+# or 1 that multiplies the rate. The prior is given by its logit,
+# -eta_zero, so both weights are computed in log space and keep their
+# digits where the predictor saturates.
+#
+# Reference: [Lambert 1992](https://doi.org/10.1080/00401706.1992.10485228).
 
-object Item : FinSet 200
 object Out : FinSet 2
 object Resp : FinSet 400
 object Val : Real 1
@@ -37,10 +43,11 @@ program zip_regression : Resp -> Val
     let bz = beta_zero[out_idx]
     let ar = alpha_rate[out_idx]
     let br = beta_rate[out_idx]
-    let pi_z = sigmoid(az + bz * x)
+    let eta_zero = az + bz * x
+    let eta_poisson = -eta_zero
     let rate = exp(ar + br * x)
 
-    marginalize z : Resp <- Bernoulli(probs=pi_z)
+    marginalize z : Resp <- Bernoulli(logits=eta_poisson)
         let gated_rate = real(z) * rate
         observe y : Resp <- Poisson(rate=gated_rate)
 

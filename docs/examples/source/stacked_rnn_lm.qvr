@@ -1,0 +1,49 @@
+# Stacked (Two-Layer) RNN Language Model
+#
+# A deep recurrent language model: a lower Elman recurrence reads the
+# tokens, and an upper recurrence reads the lower one's state at every
+# position. The lower scan returns every state (`outputs=all`), which is
+# the sequence the upper scan runs over; the upper state at each
+# position scores the token after it.
+#
+# Generative structure (both layers start at 0):
+#
+#   a_t = tanh(W1 a_{t-1} + U1[x_t])            lower state
+#   b_t = tanh(W2 b_{t-1} + U2 a_t)             upper state
+#   next_t ~ Categorical(logits=V b_t)          the token after x_t
+#
+# The weights are draws, so the model is Bayesian over them. Each input
+# row is one window of tokens; `next_token` holds, for each position of
+# the window, the token after it. The program returns the upper state
+# after the last position.
+#
+# Reference: [Graves, Mohamed, and Hinton 2013](https://doi.org/10.1109/ICASSP.2013.6638947).
+
+object Token : FinSet 6
+object Hid : FinSet 3
+object HidVec : Real 3
+
+program lower_step(x_t, a_prev) : Token * HidVec -> HidVec
+    let pre_a = factor d : Hid in sum(factor k : Hid in W1[d, k] * a_prev[k]) + U1[x_t, d]
+    let a_new = tanh(pre_a)
+    return a_new
+
+program upper_step(a_t, b_prev) : HidVec * HidVec -> HidVec
+    let pre_b = factor d : Hid in sum(factor k : Hid in W2[d, k] * b_prev[k] + U2[d, k] * a_t[k])
+    let b_new = tanh(pre_b)
+    let logits = factor v : Token in sum(factor d : Hid in V[v, d] * b_new[d])
+    observe next_token <- Categorical(logits=logits)
+    return b_new
+
+define deep = scan(lower_step, outputs=all) >> scan(upper_step)
+
+program stacked_rnn_lm : Token -> HidVec
+    sample U1 : Token <- Normal(loc=0.0, scale=1.0) [over=Hid, iid_over=Token]
+    sample W1 : Hid <- Normal(loc=0.0, scale=0.5) [over=Hid, iid_over=Hid]
+    sample U2 : Hid <- Normal(loc=0.0, scale=0.5) [over=Hid, iid_over=Hid]
+    sample W2 : Hid <- Normal(loc=0.0, scale=0.5) [over=Hid, iid_over=Hid]
+    sample V : Token <- Normal(loc=0.0, scale=1.0) [over=Hid, iid_over=Token]
+    sample top <- deep
+    return top
+
+export stacked_rnn_lm

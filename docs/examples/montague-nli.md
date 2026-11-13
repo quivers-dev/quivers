@@ -200,7 +200,7 @@ The `ex_import` rule takes both `Every(P, Q)` and `Nonempty(P)` as premises to d
 
 ### The fit program, and what `Term` and `LogWeight` each name
 
-An [object](../guides/dsl-declarations.md#object) name in QVR has no fixed reading; the position it occupies is what gives it one, and the two objects declared here sit in different positions. `Term : FinSet 8` is the carrier the two deductions range over, so it is an index set, and its cardinality is incidental: rules match constructor-tagged tuples symbolically rather than enumerating elements of `Term`. `LogWeight : Real 1` occupies the codomain slot of the program signature instead, which names the *value space* of what the program returns. `fit_grammar` runs the chart, reads off [`goal_weight`](../api/stochastic/agenda.md#quivers.stochastic.agenda.ChartView.goal_weight), and returns that inside log-marginal at the start symbol, one real number, so the value space is `Real 1` and the signature reads `Term -> LogWeight`. Writing `Term -> Term` would instead claim the program returns a chart-item index, which is a category error the compiler cannot catch, since its only condition on `return` is that the name be bound and it never compares the returned value against the declared codomain.
+An [object](../guides/dsl-declarations.md#object) name in QVR has no fixed reading; the position it occupies is what gives it one, and the two objects declared here sit in different positions. `Term : FinSet 8` is the carrier the two deductions range over, so it is an index set, and its cardinality is incidental: rules match constructor-tagged tuples symbolically rather than enumerating elements of `Term`. `LogWeight : Real 1` occupies the codomain slot of the program signature instead, which names the *value space* of what the program returns. `fit_grammar` runs the chart, reads off [`goal_weight`](../api/stochastic/agenda.md#quivers.stochastic.agenda.ChartView.goal_weight), and returns that inside log-marginal at the start symbol, one real number, so the value space is `Real 1` and the signature reads `Term -> LogWeight`. Writing `Term -> Term` would instead claim the program returns a chart-item index, which is a category error the compiler cannot catch, since its only condition on `return` is that the name be bound and it never compares the returned value against the declared codomain. The sentence itself is not read from the domain: `sentence` is a free name in the body, which the elaborator lifts into a data parameter of the program (with the sentence length as a static extent), and a caller supplies the token sequence under that name.
 
 ## Try it
 
@@ -228,8 +228,8 @@ corpus = [
 ]
 
 # Touch every sentence once so the deduction's lazily allocated
-# lexicon- and rule-weight ParameterDicts materialise every binding
-# tuple the fit will see.
+# lexicon- and rule-weight ParameterDicts materialise every weight,
+# one per binding of a rule's category variables, the fit will see.
 for sentence in corpus:
     grammar(sentence).goal_weight()
 
@@ -295,9 +295,10 @@ def entailment_score(premises, nonempty_nouns, hypothesis):
     """Score Claim(hypothesis_lf) against the prover's chart.
 
     Returns the log-weight at the hypothesis claim together with the
-    log-normalizer over every claim the prover holds, so that their
-    difference is log p(hypothesis | premises): a proper conditional
-    distribution over the prover's conclusions. The log-weight is the
+    log-normalizer over every claim in the prover's closure (premises,
+    existence premises, and derived claims alike). Their difference is
+    the log-probability that a draw from the closure, with probability
+    proportional to weight, is the hypothesis. The log-weight is the
     LogProb semiring's zero (-inf) when the prover derives no such
     claim."""
     axioms = []
@@ -315,7 +316,7 @@ def entailment_score(premises, nonempty_nouns, hypothesis):
 
 
 # Touch every prover chart once so its rule-weight ParameterDicts
-# allocate every binding tuple before the optimizer reads them.
+# allocate every category-binding weight before the optimizer reads them.
 for premises, nonempty, hypothesis, label in nli:
     entailment_score(premises, nonempty, hypothesis)
 
@@ -335,11 +336,11 @@ for step in range(150):
             )
             loss = loss - (score - log_norm)
         else:
-            # The prover is sound on this fragment, so it derives no
-            # claim for a non-entailment at all: p(entailed) is
-            # exactly zero and the Bernoulli term -log(1 - 0) is
-            # exactly zero. Assert the soundness rather than add a
-            # term that is identically zero.
+            # Every prover rule is valid, so a claim the prover derives
+            # is entailed. The converse check is that this pair, which
+            # is not entailed, has no derivation. Its share of the
+            # closure is then exactly zero for every parameter value,
+            # so it contributes no loss and no gradient.
             assert not torch.isfinite(score), (
                 f"{' '.join(hypothesis)!r} is labelled not entailed but the "
                 f"prover derived it"
@@ -363,15 +364,15 @@ assert grad_at_start, "no parameter received a gradient"
 
 for premises, nonempty, hypothesis, label in nli:
     score, log_norm = entailment_score(premises, nonempty, hypothesis)
-    p_entail = float(torch.exp(score - log_norm).detach())
-    print(f"p(entailed | {' '.join(hypothesis)}) = {p_entail:.3f}  (label {label})")
+    share = float(torch.exp(score - log_norm).detach())
+    print(f"share of closure on {' '.join(hypothesis)!r} = {share:.3f}  (label {label})")
 ```
 
-The final loop reports a fitted probability per training pair. The non-entailment stays at `0.000`: no rule derives its claim, so its score supplies no gradient. Training changes the three entailment scores. Evaluating calibration would require held-out pairs with a broader range of constructions.
+The final loop reports, per pair, the hypothesis's share of the prover's closure: the probability that a claim drawn from the closure in proportion to its weight is the hypothesis. That is not a probability of entailment. Entailment here is decided symbolically: the prover's rules are valid, so a finite score means the hypothesis follows from the premises, and the share only says how the learned weights distribute mass over the claims that follow (premises included). The loss raises the hypothesis's share for the three entailed pairs, which is the whole of the training signal. The non-entailed pair stays at `0.000` for every parameter value, because no rule derives its claim; it serves as a soundness check. A contradiction or neutral training signal would need a component that can put weight on a hypothesis the premises do not entail, such as a learned classifier over premise and hypothesis, and a sound prover is not such a component.
 
 ### NUTS posterior
 
-Full Bayesian inference over the grammar's log-weights uses [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel). [`nuts_program_from_deduction`](../api/stochastic/deduction.md#quivers.stochastic.deduction.nuts_program_from_deduction) lifts every learnable parameter into a [`Normal`](../api/continuous/families.md) sample site and adds the corpus log-marginal to the joint via a `score` step, so the standard MCMC implementation applies unchanged.
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples the grammar's log-weights. [`nuts_program_from_deduction`](../api/stochastic/deduction.md#quivers.stochastic.deduction.nuts_program_from_deduction) lifts every learnable parameter into a [`Normal`](../api/continuous/families.md) sample site and adds the corpus score $\sum_n \log Z(s_n; \mathbf{w})$ to the joint via a `score` step, so the target density is proportional to the prior times $\prod_n Z(s_n; \mathbf{w})$. The goal weight is not normalized over sentences, so this is the posterior of a model whose likelihood is the chart score itself; for a generative reading of the grammar the normalizer would also depend on $\mathbf{w}$ (the helper's documentation discusses the difference).
 
 ```python
 from quivers.inference import MCMC, NUTSKernel

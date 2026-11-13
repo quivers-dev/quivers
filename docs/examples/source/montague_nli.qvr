@@ -1,7 +1,7 @@
 # Montague Grammar + Syllogistic Entailment
 #
 # Two-stage natural-language-inference architecture composed
-# entirely out of QVR's weighted-deduction surface:
+# entirely in QVR's weighted-deduction fragment:
 #
 #   1. A Montague-style grammar derives a logical form for every
 #      token span. Common nouns and intransitive verbs denote
@@ -10,7 +10,7 @@
 #      treats its first argument as a bound variable and
 #      alpha-renames it to a fresh canonical symbol per term
 #      construction. Structural equality on the chart is thus
-#      alpha-equivalence on the surface.
+#      alpha-equivalence in the source language.
 #
 #   2. An entailment prover closes the resulting claims under
 #      three syllogistic rules. The prover's items are the
@@ -36,7 +36,7 @@
 # A determiner contributes a nullary LF constant (``every_q`` or
 # ``some_q``); sentence rules inspect that constant to build the
 # matching constructor. Restrictor and scope stay genuine lambda
-# terms, so the ``binders`` machinery is doing real work at the
+# terms, so the ``binders`` declaration is doing real work at the
 # predicate level.
 #
 # Reference: [Montague (1973)](https://doi.org/10.1007/978-94-010-2506-5_10).

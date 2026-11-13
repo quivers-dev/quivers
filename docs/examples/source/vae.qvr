@@ -1,58 +1,47 @@
-# Latent Decoder with Encoder and Decoder Paths
+# Variational Autoencoder
 #
-# The two network paths needed by a variational autoencoder,
-# expressed with stack and explicit Kleisli composition. The
-# exported program samples z from the prior and runs only the
-# decoder. The declared encoder is not connected to the
-# AutoNormalGuide used on the page, so this source does not train
-# an amortized VAE end to end.
+# The Gaussian variational autoencoder of Kingma and Welling. Each
+# observation y_n has a latent code z_n under a standard-Normal
+# prior, and a decoder network maps the code to a diagonal Normal
+# over observation space. An encoder network maps an observation to
+# a diagonal Normal over codes, the amortized variational posterior
+# q(z | y) used to train both networks by the ELBO.
 #
-# Structural form:
+# Generative structure:
 #
-#   encoder     = pixel_embed >> stack(enc_deep, 1) >> enc_to_latent
-#   decoder     = dec_1       >> stack(dec_deep, 1) >> dec_to_obs
-#   generative  = prior   >> decoder              ancestral sampling
-#   reconstruct = encoder >> decoder              posterior predictive
+#   z_n            ~ Normal(0, I)                    latent code
+#   mu(z), s(z)    = decoder MLP(z)                  one tanh layer
+#   y_n            ~ Normal(mu(z_n), diag s(z_n))    observation
 #
-# The encoder maps observations to a distribution over latent
-# codes; the decoder maps latent codes back to observation space.
-# A complete VAE must use the encoder as an observation-dependent
-# guide and add the corresponding KL term.
+# Variational posterior:
 #
-# Reference: [Kingma and Welling 2014](https://arxiv.org/abs/1312.6114).
+#   m(y), v(y)     = encoder MLP(y)                  one tanh layer
+#   q(z_n | y_n)   = Normal(m(y_n), diag v(y_n))
+#
+# Each network is a single conditional-Normal kernel whose mean and
+# log-scale come from a tanh MLP parameter source, so the hidden
+# layer is deterministic and the only random quantities are z and y.
+# Row is the plate of observations. `reconstruct` composes the
+# encoder with the decoder, mapping an observation to a distribution
+# over its reconstruction.
+#
+# Reference: [Kingma and Welling 2014](https://doi.org/10.48550/arXiv.1312.6114).
 
-object Pixel : FinSet 8
-object Latent : Real 4
-object EncoderHidden, DecoderHidden : Real 16
-object ObsSpace : Real 8
-object UnitSpace : Real 1
+object Row : FinSet 512
+object Latent : Real 2
+object ObsSpace : Real 5
 
-morphism pixel_embed : Pixel -> EncoderHidden [role=embed]
-morphism enc_deep : EncoderHidden -> EncoderHidden [param_source=mlp] ~ Normal
-morphism enc_to_latent : EncoderHidden -> Latent ~ Normal
+morphism encoder : ObsSpace -> Latent [param_source=mlp(32)] ~ Normal
+morphism decoder : Latent -> ObsSpace [param_source=mlp(32)] ~ Normal
 
-define encoder = pixel_embed >> stack(enc_deep, 1) >> enc_to_latent
-
-morphism prior : UnitSpace -> Latent ~ Normal
-
-morphism dec_1 : Latent -> DecoderHidden ~ Normal
-morphism dec_deep : DecoderHidden -> DecoderHidden [param_source=mlp] ~ Normal
-morphism dec_to_obs : DecoderHidden -> ObsSpace ~ Normal
-
-define decoder = dec_1 >> stack(dec_deep, 1) >> dec_to_obs
-
-define generative = prior >> decoder
 define reconstruct = encoder >> decoder
 
-# Probabilistic surface for the generative branch: sample the
-# latent code under the standard-Normal prior, then push it
-# through the decoder Kleisli morphism to score the observation
-# Y. The decoder's per-layer weights carry the kernel-prior
-# Normals declared above; the program traces both the latent and
-# the observation sites for inference.
-program vae_program : UnitSpace -> ObsSpace
-    sample z <- prior
-    observe Y <- decoder(z)
-    return Y
+program vae : Row -> ObsSpace
+    sample z : Row <- Normal(loc=0.0, scale=1.0) [over=Latent]
+    observe y : Row <- decoder(z)
+    return y
 
-export vae_program
+export vae
+export encoder
+export decoder
+export reconstruct

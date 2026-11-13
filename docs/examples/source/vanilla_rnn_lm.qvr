@@ -1,53 +1,26 @@
-# Bayesian Vanilla RNN Language Model
-#
-# A standard vanilla RNN used as a causal language model. The
-# recurrent cell is written as a program so every step of the
-# recurrence is a declared site. scan threads hidden state across
-# each input sequence and returns its terminal state, which a
-# Categorical lm_head projects onto the Token vocabulary.
-#
-# Generative structure:
-#
-#   h_t      = tanh(W [x_t ; h_{t-1}])           recurrent update
-#   next_t   ~ Categorical(logits=lm_head(h_t))  next-token target
-#
-# The tanh is drawn rather than applied. A LogitNormal draw is a
-# sigmoid of a Gaussian pre-activation, and tanh(u) = 2 sigmoid(2u) - 1,
-# so squashing that draw onto (-1, 1) with an affine let is exactly a
-# tanh-transformed Gaussian pre-activation. The cell's single weight
-# matrix is the linear parameter map its arrow already carries, which
-# is what makes this the one-matrix recurrence a vanilla RNN is
-# defined to be.
-#
-# Each input row is one context, and one run of the program scores
-# it: the contexts of a corpus are independent runs that share the
-# model's parameters. Token is the vocabulary, so it is the value
-# space of what lm_head draws and of what the program returns.
-#
-# This is the simplest sequence model in the gallery and the
-# baseline against which gru_lm.qvr and lstm_lm.qvr add gating
-# structure.
+# An Elman recurrent language model with learned weights: the hidden state
+# is a deterministic function of the previous state and the current token,
+# and each position scores the next token.
+object Vocab : Real 6
+object Hidden : Real 8
+object Logits : Real 6
 
-object Token : FinSet 256
-object Embedded : Real 64
-object Hidden : Real 128
+# h_t = tanh(W [x_t; h_{t-1}] + b), with x_t the one-hot current token, so
+# the block of W that reads x_t is the token embedding.
+morphism cell : Vocab * Hidden -> Hidden [role=function, output=tanh]
+# The next token's logits, an affine readout of the hidden state.
+morphism lm_head : Hidden -> Logits [role=function]
 
-morphism tok_embed : Token -> Embedded [role=embed]
-morphism cell : Embedded * Hidden -> Hidden ~ LogitNormal
-morphism lm_head : Hidden -> Token ~ Categorical
+program rnn_step(x_t, h_prev) : Vocab * Hidden -> Hidden
+    let h = cell(x_t, h_prev)
+    let logits = lm_head(h)
+    observe next_token <- Categorical(logits=logits)
+    return h
 
-program rnn_cell(x_t, h_prev) : Embedded * Hidden -> Hidden
-    sample squashed <- cell(x_t, h_prev)
+define run_all = scan(rnn_step)
 
-    let h_new = 2.0 * squashed - 1.0
-    return h_new
+program rnn_lm : Vocab -> Hidden
+    sample last <- run_all
+    return last
 
-define backbone = tok_embed >> scan(rnn_cell)
-
-program vanilla_rnn_lm : Token -> Token
-    sample h <- backbone
-
-    observe next_token <- lm_head(h)
-    return next_token
-
-export vanilla_rnn_lm
+export rnn_lm

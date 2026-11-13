@@ -1,51 +1,78 @@
-# Multimodal Type-Logical Grammar
+# Multimodal Type-Logical Grammar: controlled extraction
 #
-# An extension of the Lambek calculus with unary type
-# constructors Dia and Box that form a residuated pair (Dia
-# adjoint to Box). The structural rules associated with each
-# modality are controlled by the grammar's structural component;
-# here we license modal introduction and elimination, leaving
-# additional structural postulates as further user-added rules.
+# The associative Lambek calculus L extended with the unary pair
+# Dia and Box (Moortgat's diamond and box-down), written in the
+# argument-under convention of the type-logical example:
 #
-# Deduction:
+#   Fwd(A, B) = A/B      Bwd(B, A) = B\A
+#   Dia(A)    = <>A      Box(A)    = []A
 #
-#   right_app : X/Y, Y     |- X            forward application
-#   left_app  : Y,   X\Y   |- X            backward application
-#   dia_intro : A          |- Dia(A)       modal introduction
-#   dia_elim  : Dia(A)     |- A            modal elimination
+# Dia and Box are residuated:  <>A |- B  iff  A |- []B.  Two theorems
+# follow at once: the counit <>[]A |- A and the unit A |- []<>A.
+# Structural control adds one postulate that only Dia-marked
+# structure may use. Writing <D> for the structure a Dia formula
+# unpacks to, controlled permutation P lets a marked structure move
+# rightward past its neighbor:
 #
-# Categories carry slash (Fwd, Bwd) and modal (Dia, Box)
-# constructors; chart items are span(I, J, X) triples.
+#   G, <D>, X, H |- C
+#   ----------------- P
+#   G, X, <D>, H |- C
+#
+# Unmarked structure never permutes, so the logic stays as
+# order-sensitive as L everywhere outside the modal marking.
+#
+# Chart items are span(I, J, X). Every rule is a theorem of L with
+# Dia, Box, and P:
+#
+#   fwd_app    : A/B, B      |- A          (/L)
+#   bwd_app    : B, B\A      |- A          (\L)
+#   fwd_comp   : A/B, B/C    |- A/C        (/L twice, /R)
+#   raise_subj : NP          |- S/(NP\S)   (\L, /R)
+#   counit_arg : A/B         |- A/<>[]B    (the counit <>[]B |- B under /L, then /R)
+#   perm_arg   : B\A         |- A/<>[]B    (<[]B>, B\A |- A by the counit and \L;
+#                                           P moves <[]B> to the right; <>L, /R)
+#   x_comp     : A/B, A\C    |- C/<>[]B    (A/B, <[]B>, A\C |- C by the counit,
+#                                           /L, \L; P moves <[]B> to the right;
+#                                           <>L, /R)
+#
+# The relative pronoun is the one decorated word: "that" seeks a
+# sentence missing a <>[]NP, so its gap is a marked hypothesis that P
+# may move. perm_arg and x_comp are the chart's image of P: they let
+# the gap sit at the left edge (subject relatives) or before a
+# modifier (medial object relatives). Neither applies to an undecorated
+# NP argument, since NP does not derive <>[]NP.
 
 object Term : FinSet 16
 
-object Rule : FinSet 16
+object LogWeight : Real 1
 
-object Weight : Real 1
-
-# Probabilistic surface for transpile: each learnable rule weight
-# carries an independent Normal(0, 1) prior, and a treebank reports
-# how often each rule fired. Exponentiating a weight gives that
-# rule's firing rate, so the counts are Poisson in the rate; the
-# chart parser downstream consumes the same weights as its per-rule
-# log-probabilities. Rule indexes the weight vector, so it is the
-# plate extent; the codomain Weight is the value space of the one
-# real number a single weight is.
-program multimodal_tlg_prior : Rule -> Weight
-    sample rule_weights : Rule <- Normal(loc=0.0, scale=1.0)
-    let rule_rate = exp(rule_weights)
-    observe rule_counts : Rule <- Poisson(rate=rule_rate)
-    return rule_weights
-
-export multimodal_tlg_prior
-
-deduction MMTLG : Term -> Term [semiring=LogProb, start=S, depth=3, tolerance=1e-5]
-    atoms S, NP, N, VP, PP, Fwd, Bwd, Dia, Box, span, the, dog, barks
-    rule right_app : span(I, K, Fwd(A, B)), span(K, J, B) |- span(I, J, A) #[learnable]
-    rule left_app : span(I, K, B), span(K, J, Bwd(A, B)) |- span(I, J, A) #[learnable]
-    rule dia_intro : span(I, J, A) |- span(I, J, Dia(A)) #[learnable, bounded]
-    rule dia_elim : span(I, J, Dia(A)) |- span(I, J, A) #[learnable, bounded]
+deduction MMTLG : Term -> Term [semiring=LogProb, start=S, depth=3]
+    atoms S, NP, N, Fwd, Bwd, Dia, Box, span, kim, lee, every, linguist, sleeps, admires, today, that
+    rule fwd_app : span(I, K, Fwd(A, B)), span(K, J, B) |- span(I, J, A) #[learnable]
+    rule bwd_app : span(I, K, B), span(K, J, Bwd(B, A)) |- span(I, J, A) #[learnable]
+    rule fwd_comp : span(I, K, Fwd(A, B)), span(K, J, Fwd(B, C)) |- span(I, J, Fwd(A, C)) #[learnable]
+    rule raise_subj : span(I, J, NP) |- span(I, J, Fwd(S, Bwd(NP, S))) #[learnable]
+    rule counit_arg : span(I, J, Fwd(A, B)) |- span(I, J, Fwd(A, Dia(Box(B)))) #[learnable]
+    rule perm_arg : span(I, J, Bwd(B, A)) |- span(I, J, Fwd(A, Dia(Box(B)))) #[learnable]
+    rule x_comp : span(I, K, Fwd(A, B)), span(K, J, Bwd(A, C)) |- span(I, J, Fwd(C, Dia(Box(B)))) #[learnable]
     lexicon
-        "the" : Fwd(NP, N) = the #[learnable]
-        "dog" : N = dog #[learnable]
-        "barks" : Bwd(S, NP) = barks #[learnable]
+        "Kim"      : NP                                  = kim      #[learnable]
+        "Lee"      : NP                                  = lee      #[learnable]
+        "every"    : Fwd(NP, N)                          = every    #[learnable]
+        "linguist" : N                                   = linguist #[learnable]
+        "sleeps"   : Bwd(NP, S)                          = sleeps   #[learnable]
+        "admires"  : Fwd(Bwd(NP, S), NP)                 = admires  #[learnable]
+        "today"    : Bwd(Bwd(NP, S), Bwd(NP, S))         = today    #[learnable]
+        "that"     : Fwd(Bwd(N, N), Fwd(S, Dia(Box(NP)))) = that    #[learnable]
+
+# The program scores a sentence by the chart's goal weight: the inside
+# log-sum, over every derivation of S that spans the whole input, of
+# the learnable lexicon and rule log-weights the derivation uses. Its
+# value is one real number, so the codomain is LogWeight : Real 1.
+# The token sequence enters as the data parameter ``sentence``.
+program fit_grammar : Term -> LogWeight
+    let chart = parse(MMTLG, sentence)
+    score log_Z = chart.goal_weight()
+    return log_Z
+
+export fit_grammar

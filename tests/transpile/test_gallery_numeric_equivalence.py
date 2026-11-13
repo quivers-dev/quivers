@@ -87,33 +87,23 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     # BUGS lower family registry has no target name for. Every other
     # backend resolves it and its cell is live.
     ("bugs", "mixture_model"): "family:MixtureNormal",
-    # pmf / tensor_contraction carry `composition` (and `contraction`)
-    # declarations; no PPL backend has a surface for them. Both
-    # examples still score a joint, because their `.md` snippets wrap
-    # the compiled composition in a `MonadicProgram`, so both carry a
-    # `_QVR_REFERENCE_JOINT` row. Every one of their cells being a
-    # pinned raise means no container re-derives that row, and the
-    # witness therefore has to come from the raw-`torch.distributions`
-    # side in `test_oracle_reference_strength.py`.
-    ("bugs", "pmf"): "composition_decl",
+    # tensor_contraction carries `composition` and `contraction`
+    # declarations; no PPL backend has a surface for them. The example
+    # still scores a joint, because its `.md` snippet wraps the
+    # compiled contraction in a `MonadicProgram`, so it carries a
+    # `_QVR_REFERENCE_JOINT` row. Every one of its cells being a pinned
+    # raise means no container re-derives that row, and the witness
+    # therefore has to come from the raw-`torch.distributions` side in
+    # `test_oracle_reference_strength.py`.
     ("bugs", "tensor_contraction"): "composition_decl",
-    ("edward2", "pmf"): "composition_decl",
     ("edward2", "tensor_contraction"): "composition_decl",
-    ("gen", "pmf"): "composition_decl",
     ("gen", "tensor_contraction"): "composition_decl",
-    ("jags", "pmf"): "composition_decl",
     ("jags", "tensor_contraction"): "composition_decl",
-    ("numpyro", "pmf"): "composition_decl",
     ("numpyro", "tensor_contraction"): "composition_decl",
-    ("pymc", "pmf"): "composition_decl",
     ("pymc", "tensor_contraction"): "composition_decl",
-    ("pyro", "pmf"): "composition_decl",
     ("pyro", "tensor_contraction"): "composition_decl",
-    ("stan", "pmf"): "composition_decl",
     ("stan", "tensor_contraction"): "composition_decl",
-    ("turing", "pmf"): "composition_decl",
     ("turing", "tensor_contraction"): "composition_decl",
-    ("webppl", "pmf"): "composition_decl",
     ("webppl", "tensor_contraction"): "composition_decl",
     # kumaraswamy_bounded_outcome names `Kumaraswamy`, which has no
     # JAGS or BUGS target name. The two engines part company: the JAGS
@@ -147,28 +137,21 @@ _EXPECTED_TRANSPILE_RAISES: dict[tuple[str, str], str] = {
     # and the zeros trick that would score the shifted code needs a
     # data-bound carrier, so BUGS refuses the observed code.
     ("bugs", "lda"): "observe:class-code",
-    # One topic per document sums each document's words before the
-    # reduction, and JAGS cannot write that per-group sum as one
-    # expression.
+    # lda gathers each token's topic weights, `theta[doc_idx]`, as the
+    # prior of a per-token marginalize. Turing and Gen read a marginalize
+    # head's weights only from a declared plate, and JAGS cannot write a
+    # grouped `via` block's per-group sum as one expression.
+    ("gen", "lda"): "marginalize:weight-plate",
+    ("turing", "lda"): "marginalize:weight-plate",
     ("jags", "lda"): "let-expr:elementwise-axis-operator",
-    # gru_lm and lstm_lm build their gate arguments with `+` between
-    # two `Hidden`-wide operands. The BUGS model language has no
-    # elementwise vector arithmetic: only the contracted product
-    # lowers, to `inprod(a, b)`. Both engines therefore reject the
-    # `let` before any site is emitted, which is a statement about the
-    # target language rather than about the oracle. Both examples sit
-    # in `_SKIP_QVR_INCOMPATIBLE`, and the test consults the raises
-    # first, so pinning these four turns four cells that asserted
-    # nothing into four that assert the boundary. The remaining eight
-    # targets render both examples and stay carried by that registry.
 }
 
-# bnn's `net` morphism draws its mean from an `mlp` param source. The
-# network weights are model-internal, absent from both the wire form
-# and the sample sites, so no backend can reconstruct the mean; the
-# transpiler raises on every backend. The same holds for every model
-# below: each hides part of its structure in a `param_source` network
-# rather than writing it as a program whose steps are declared sites.
+# A morphism that draws its mean from an `mlp` param source keeps its
+# network weights model-internal, absent from both the wire form and
+# the sample sites, so no backend can reconstruct the mean; the
+# transpiler raises on every backend. Each model below hides part of
+# its structure in a `param_source` network rather than writing it as
+# a program whose steps are declared sites.
 # The targets that reduce an ungrouped `marginalize` row by row
 # refuse it rather than emit it. An ungrouped block shares one latent
 # across the body's rows, so its density accumulates the rows and
@@ -189,31 +172,22 @@ for _ungrouped_backend in (
     "pymc",
     "turing",
 ):
-    _EXPECTED_TRANSPILE_RAISES[(_ungrouped_backend, "hmm")] = (
-        "marginalize:ungrouped-over-plate"
-    )
+    for _ungrouped_example in ("changepoint",):
+        _EXPECTED_TRANSPILE_RAISES[(_ungrouped_backend, _ungrouped_example)] = (
+            "marginalize:ungrouped-over-plate"
+        )
 
-# `scan(cell)` denotes one draw per sequence position over
-# intermediate states the program never names, over a sequence axis
-# that is not a declared object. The expansion pass refuses before any
-# renderer runs, so the kind is the same on every target, and pinning
-# it asserts the boundary where a skip asserted nothing.
-for _scan_model in (
-    "bidirectional_rnn_lm",
-    "gru_lm",
-    "lstm_lm",
-    "vanilla_rnn_lm",
-):
-    for _scan_backend in _BACKENDS_WITH_IMAGES:
-        _EXPECTED_TRANSPILE_RAISES[(_scan_backend, _scan_model)] = "scan:no-lowering"
+# irt_2pl scores its responses with `Bernoulli(logits=...)`. BUGS has
+# no Bernoulli given by its logits and refuses it by name rather than
+# rebuild the probability with a sigmoid.
+_EXPECTED_TRANSPILE_RAISES[("bugs", "irt_2pl")] = "family:Bernoulli:logits"
 
-for _neural_model in (
-    "bnn",
-    "deep_markov",
-    "seq2seq",
-    "transformer_lm",
-    "vae",
-):
+# BUGS has no data block to shift tree_categorical's zero-based class
+# codes to the one-based codes `dcat` reads, and no free log-density
+# statement to score them otherwise.
+_EXPECTED_TRANSPILE_RAISES[("bugs", "tree_categorical")] = "observe:class-code"
+
+for _neural_model in ("vae",):
     for _neural_backend in _BACKENDS_WITH_IMAGES:
         _EXPECTED_TRANSPILE_RAISES[(_neural_backend, _neural_model)] = (
             "param-source:mlp"
@@ -224,47 +198,32 @@ for _neural_model in (
 # dict). Numeric evaluation has no point set, so the cell skips.
 #
 # The registry is empty: every gallery example's snippet executes and
-# leaves an `observations` dict behind, including the two structural
-# algebra examples (`pmf`, `tensor_contraction`), whose snippets wrap
-# the compiled composition in a `MonadicProgram` with entrywise
+# leaves an `observations` dict behind, including the structural
+# algebra example `tensor_contraction`, whose snippet wraps the
+# compiled contraction in a `MonadicProgram` with entrywise
 # `Normal(0, 1)` priors over each declared arrow and a
-# `Normal(score, 0.5)` likelihood over the contraction. Their joints
-# are pinned like every other example's. Keeping the registry (rather
+# `Normal(score, 0.5)` likelihood over replicate judgments. Its joint
+# is pinned like every other example's. Keeping the registry (rather
 # than deleting it) keeps the skip path a named, testable branch, so a
 # snippet that stops executing is recorded here rather than turning
 # into a bare load failure.
 _SKIP_DATASET_LOAD_FAILED: frozenset[str] = frozenset()
 
 # Gallery examples whose oracle joint no pin can be held to, for want
-# of a source outside the oracle.
+# of a source outside the oracle: every backend refuses the program and
+# no reconstruction in `test_oracle_reference_strength.py` re-derives
+# its joint.
 #
-# `bidirectional_rnn_lm` and `transformer_lm` carry a `sample h <-
-# backbone` latent whose backbone is a `SampledComposition` over
-# continuous intermediate objects; each factor is scored once along the
-# composition's canonical path. `gru_lm`, `lstm_lm`, and
-# `vanilla_rnn_lm` scan a program cell: the embedding and every cell
-# draw are sites of the program at every position, `x_in@t` and the
-# cell's labels at `@t`, so their joint is the sum of every position's
-# densities and the emission's. All five joints are bitwise stable
-# across global RNG seeds, which
-# `test_oracle_determinism.py::test_composition_marginalised_models_are_bitwise_deterministic`
-# measures; what they lack is a witness. Every backend refuses the scan
-# or the composition, so no container re-derives the number, and no
-# reconstruction in `test_oracle_reference_strength.py` does either.
-# `test_oracle_reference_strength.py::test_unwitnessable_exempt_examples_have_no_independent_source`
-# measures that ground per example, and
+# **Currently empty.** The sequence models that once sat here are
+# checked on their own pages against independent oracles and carry no
+# synthetic-data block, so they are not cells of this tier.
 # `test_oracle_reference_strength.py::test_composition_exemption_grounds_partition_the_registry`
-# requires it to cover this registry exactly. A reconstruction or a
-# live backend cell is what moves a row to `_QVR_REFERENCE_JOINT`.
-_SKIP_QVR_INCOMPATIBLE: frozenset[str] = frozenset(
-    {
-        "bidirectional_rnn_lm",
-        "gru_lm",
-        "lstm_lm",
-        "transformer_lm",
-        "vanilla_rnn_lm",
-    }
-)
+# requires `_UNWITNESSABLE_JOINT` there to cover this registry exactly,
+# and a row added here must be measured by
+# `test_oracle_reference_strength.py::test_unwitnessable_exempt_examples_have_no_independent_source`.
+# A reconstruction or a live backend cell is what moves a row to
+# `_QVR_REFERENCE_JOINT`.
+_SKIP_QVR_INCOMPATIBLE: frozenset[str] = frozenset()
 
 # ----------------------------------------------------------------------
 # The reference pin.
@@ -308,12 +267,12 @@ _SKIP_QVR_INCOMPATIBLE: frozenset[str] = frozenset(
 # ----------------------------------------------------------------------
 _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
     "ar1": (
-        -24.030813217163086,
-        -121.17807006835938,
-        -44.41229248046875,
-        -37.35548400878906,
-        -44.10717010498047,
-        -38.02667236328125,
+        -20.22611427307129,
+        -118.73294830322266,
+        -43.448455810546875,
+        -27.370044708251953,
+        -42.96034240722656,
+        -36.832603454589844,
     ),
     "bayesian_regression": (
         -54.560791015625,
@@ -324,132 +283,92 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -83.58819580078125,
     ),
     "beta_binomial_ab_test": (
-        -70.50210571289062,
-        -82.40196228027344,
-        -70.82966613769531,
-        -76.28248596191406,
-        -71.93524932861328,
-        -75.79243469238281,
+        -192.71270751953125,
+        -227.93560791015625,
+        -213.17494201660156,
+        -300.0035400390625,
+        -194.8147430419922,
+        -200.92127990722656,
     ),
     "beta_regression": (
-        26.09986114501953,
-        12.179271697998047,
-        21.649688720703125,
-        4.467376708984375,
-        20.713706970214844,
-        16.414939880371094,
+        224.82302856445312,
+        168.67962646484375,
+        166.23532104492188,
+        147.81861877441406,
+        205.65419006347656,
+        183.39932250976562,
     ),
     "bnn": (
-        -412.09527587890625,
-        -412.09527587890625,
-        -433.6674499511719,
-        -431.0032653808594,
-        -412.09527587890625,
-        -416.7749938964844,
-    ),
-    "ccg": (
-        -38.62127685546875,
-        -38.8963623046875,
-        -38.4906005859375,
-        -43.69182586669922,
-        -41.17519760131836,
-        -40.177955627441406,
+        92.09696960449219,
+        48.172828674316406,
+        -266.59625244140625,
+        -614.60498046875,
+        -1252.4736328125,
+        -316.6635437011719,
     ),
     "changepoint": (
-        -131.08474731445312,
-        -155.9451446533203,
-        -133.2001953125,
-        -145.42013549804688,
-        -188.2016143798828,
-        -135.9104766845703,
-    ),
-    "continuous_hmm": (
-        -21.395313262939453,
-        -21.497692108154297,
-        -21.478761672973633,
-        -22.007896423339844,
-        -22.696565628051758,
-        -21.73342514038086,
-    ),
-    "custom_rules": (
-        -38.62127685546875,
-        -38.8963623046875,
-        -38.4906005859375,
-        -43.69182586669922,
-        -41.17519760131836,
-        -40.177955627441406,
+        -113.22370910644531,
+        -120.67963409423828,
+        -115.28390502929688,
+        -137.56649780273438,
+        -121.0204086303711,
+        -121.38520050048828,
     ),
     "factor_analysis": (
-        -132.61660766601562,
-        -214.58114624023438,
-        -162.3575897216797,
-        -226.3590087890625,
-        -187.85678100585938,
-        -168.95579528808594,
+        -3338.30810546875,
+        -4454.0234375,
+        -3609.645263671875,
+        -4188.2109375,
+        -3860.51318359375,
+        -3656.01806640625,
     ),
     "gamma_regression": (
-        -69.07034301757812,
-        -80.96452331542969,
-        -76.0668716430664,
-        -93.28099822998047,
-        -72.47667694091797,
-        -76.60382080078125,
+        -296.97430419921875,
+        -488.4329528808594,
+        -341.32977294921875,
+        -396.873046875,
+        -327.86138916015625,
+        -330.0488586425781,
     ),
     "half_student_t_hierarchical": (
-        -35.37989044189453,
-        -75.25849914550781,
-        -62.39704132080078,
-        -98.7879409790039,
-        -56.45060729980469,
-        -83.33959197998047,
-    ),
-    "hmm": (
-        267.8604736328125,
-        267.141845703125,
-        264.1581726074219,
-        266.13934326171875,
-        267.4548645019531,
-        266.83917236328125,
+        -65.16757202148438,
+        -134.65968322753906,
+        -142.0482940673828,
+        -178.59840393066406,
+        -113.85769653320312,
+        -151.25946044921875,
     ),
     "horseshoe_regression": (
-        -64.92990112304688,
-        -85.11199951171875,
-        -82.23753356933594,
-        -145.4669647216797,
-        -135.35128784179688,
-        -84.14229583740234,
+        -197.0647735595703,
+        -257.0046691894531,
+        -225.5227813720703,
+        -430.2098083496094,
+        -672.554931640625,
+        -241.2408447265625,
     ),
     "irt_2pl": (
-        -69.23272705078125,
-        -76.04976654052734,
-        -85.58287811279297,
-        -78.32916259765625,
-        -71.45870971679688,
-        -80.12108612060547,
+        -1307.60009765625,
+        -1328.0120849609375,
+        -1623.3701171875,
+        -1702.986572265625,
+        -1334.9044189453125,
+        -1599.81591796875,
     ),
     "kumaraswamy_bounded_outcome": (
-        20.225561141967773,
-        1.1973302364349365,
-        21.390592575073242,
-        15.331405639648438,
-        6.32975959777832,
-        15.959518432617188,
+        48.15655517578125,
+        -1.2505619525909424,
+        45.79613494873047,
+        25.943862915039062,
+        28.047801971435547,
+        41.459083557128906,
     ),
     "lda": (
-        -158.507080078125,
-        -159.038330078125,
-        -486.2562255859375,
-        -519.501708984375,
-        -155.8966064453125,
-        -508.8138427734375,
-    ),
-    "linear_gaussian_ssm": (
-        -6.176448822021484,
-        -6.644833564758301,
-        -6.308502197265625,
-        -6.5248260498046875,
-        -6.4006500244140625,
-        -6.19073486328125,
+        -2883.196533203125,
+        -2889.601806640625,
+        -4164.62158203125,
+        -4198.44140625,
+        -2867.694580078125,
+        -4146.25732421875,
     ),
     "logistic_noise_regression": (
         -80.29877471923828,
@@ -460,148 +379,84 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -84.29177856445312,
     ),
     "mixture_model": (
-        -189.3568115234375,
-        -197.78488159179688,
-        -197.35861206054688,
-        -214.3572998046875,
-        -197.0948486328125,
-        -196.84445190429688,
-    ),
-    "multimodal_tlg": (
-        -38.62127685546875,
-        -38.8963623046875,
-        -38.4906005859375,
-        -43.69182586669922,
-        -41.17519760131836,
-        -40.177955627441406,
+        -391.03955078125,
+        -424.0065002441406,
+        -408.49810791015625,
+        -417.8617248535156,
+        -435.7660217285156,
+        -400.8327331542969,
     ),
     "negbin_regression": (
-        -203.68475341796875,
-        -225.95242309570312,
-        -270.5653381347656,
-        -302.58197021484375,
-        -221.177734375,
-        -268.622314453125,
+        -687.5454711914062,
+        -739.462646484375,
+        -735.5672607421875,
+        -751.8236083984375,
+        -697.0734252929688,
+        -719.3248901367188,
     ),
     "parametric_pooling": (
-        -16.053003311157227,
-        -21.250812530517578,
-        -15.52226448059082,
-        -19.705469131469727,
-        -26.930932998657227,
-        -18.749011993408203,
-    ),
-    "pcfg": (
-        -23.014850616455078,
-        -26.371784210205078,
-        -25.505828857421875,
-        -23.08839225769043,
-        -22.200294494628906,
-        -27.879863739013672,
-    ),
-    "pmcfg": (
-        -38.62127685546875,
-        -38.8963623046875,
-        -38.4906005859375,
-        -43.69182586669922,
-        -41.17519760131836,
-        -40.177955627441406,
+        -210.12452697753906,
+        -212.90829467773438,
+        -210.09971618652344,
+        -210.6964111328125,
+        -211.61328125,
+        -210.4910430908203,
     ),
     "pmf": (
-        -96.90896606445312,
-        -128.39248657226562,
-        -98.03665161132812,
-        -123.15997314453125,
-        -137.48460388183594,
-        -100.93830871582031,
+        -409.01629638671875,
+        -902.4696044921875,
+        -596.490234375,
+        -1430.7745361328125,
+        -952.38037109375,
+        -595.33740234375,
     ),
     "ppca": (
-        -67.73426818847656,
-        -231.67868041992188,
-        -105.8104476928711,
-        -274.6122741699219,
-        -188.58070373535156,
-        -141.64019775390625,
-    ),
-    "quantifier_scope": (
-        -38.62127685546875,
-        -38.8963623046875,
-        -38.4906005859375,
-        -43.69182586669922,
-        -41.17519760131836,
-        -40.177955627441406,
-    ),
-    "stochastic_volatility": (
-        -307.8003845214844,
-        -497.64605712890625,
-        -374.3330078125,
-        -449.9366760253906,
-        -448.69561767578125,
-        -387.8696594238281,
+        -2898.3642578125,
+        -3589.615234375,
+        -3093.763427734375,
+        -3519.74853515625,
+        -3539.537841796875,
+        -3080.2548828125,
     ),
     "survival_weibull": (
-        -28.67302131652832,
-        -39.528465270996094,
-        -37.15167236328125,
-        -47.73482894897461,
-        -234.78810119628906,
-        -36.604496002197266,
+        -155.67352294921875,
+        -184.38619995117188,
+        -175.67501831054688,
+        -172.9993896484375,
+        -176.0693359375,
+        -159.7487335205078,
     ),
     "tensor_contraction": (
-        -52.925621032714844,
-        -64.15614318847656,
-        -52.4114875793457,
-        -61.599327087402344,
-        -67.39108276367188,
-        -52.22042465209961,
+        -482.0543212890625,
+        -804.6907958984375,
+        -516.5264282226562,
+        -971.0435791015625,
+        -1093.5211181640625,
+        -514.5181274414062,
     ),
     "tree_categorical": (
-        -155.84384155273438,
-        -278.3675842285156,
-        -167.4322967529297,
-        -167.1120147705078,
-        -157.07876586914062,
-        -171.585205078125,
-    ),
-    "type_logical": (
-        -38.62127685546875,
-        -38.8963623046875,
-        -38.4906005859375,
-        -43.69182586669922,
-        -41.17519760131836,
-        -40.177955627441406,
+        -2984.506103515625,
+        -3060.587646484375,
+        -3399.37646484375,
+        -3582.632568359375,
+        -2993.26953125,
+        -3461.560546875,
     ),
     "zip_regression": (
-        -651.6888427734375,
-        -664.6071166992188,
-        -755.0150146484375,
-        -759.4091186523438,
-        -665.1041259765625,
-        -747.2142333984375,
-    ),
-    "deep_markov": (
-        -70.9559326171875,
-        -71.23564910888672,
-        -70.98413848876953,
-        -70.98515319824219,
-        -70.94621276855469,
-        -71.1627197265625,
-    ),
-    "seq2seq": (
-        -488.5443420410156,
-        -487.85491943359375,
-        -489.553466796875,
-        -490.8770751953125,
-        -489.0007629394531,
-        -489.3353576660156,
+        -583.2901611328125,
+        -580.0896606445312,
+        -725.9388427734375,
+        -756.9190063476562,
+        -606.8170166015625,
+        -747.0105590820312,
     ),
     "vae": (
-        -41.807464599609375,
-        -42.399044036865234,
-        -42.460121154785156,
-        -42.049835205078125,
-        -42.313289642333984,
-        -42.44348907470703,
+        -4664.140625,
+        -4679.982421875,
+        -4722.1455078125,
+        -4720.44921875,
+        -4680.5263671875,
+        -4712.373046875,
     ),
 }
 
@@ -611,18 +466,7 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
 # requires the reason to name a registry that independently agrees the
 # example has no reference, so an exemption cannot outlive the gap it
 # describes.
-_REFERENCE_PIN_EXEMPT: dict[str, str] = {
-    # Sequence models whose exact joint nothing outside the oracle
-    # re-derives: every backend refuses the scan or the composition,
-    # and no reconstruction exists. Each sits in
-    # `_SKIP_QVR_INCOMPATIBLE`, whose comment carries the diagnosis
-    # and names the test that measures the ground.
-    "bidirectional_rnn_lm": "no backend or reconstruction witnesses the joint",
-    "gru_lm": "no backend or reconstruction witnesses the joint",
-    "lstm_lm": "no backend or reconstruction witnesses the joint",
-    "transformer_lm": "no backend or reconstruction witnesses the joint",
-    "vanilla_rnn_lm": "no backend or reconstruction witnesses the joint",
-}
+_REFERENCE_PIN_EXEMPT: dict[str, str] = {}
 
 _REFERENCE_PIN_ULP_BUDGET = 8
 """Round-off budget for
@@ -640,11 +484,8 @@ against a guess. The raw-`torch.distributions` reconstructions in
 `test_oracle_reference_strength.py` sum the same per-site terms in a
 different order and grouping, while the CI probe replays the trace on
 independent runners. The largest observed difference is **two**
-float32 ULPs (1.95e-03, on a feed-forward chain's joint of magnitude
-15,836);
-`continuous_hmm`'s independent reconstruction differs by one ULP
-(6.10e-05 at magnitude 736). Eight ULPs is two bits of headroom above
-the measured worst case.
+float32 ULPs (1.95e-03, on a joint of magnitude 15,836). Eight ULPs is
+two bits of headroom above the measured worst case.
 
 This is a headroom figure, not a necessity: within each measured
 runtime and platform, the oracle is bit-exact run to run and across
@@ -712,7 +553,7 @@ def reference_pin_atol(reference: float) -> float:
     9.54e-07, the magnitude-1 floor, which
     binds wherever a joint lands below 2
     (`kumaraswamy_bounded_outcome` at its first latents point,
-    magnitude 1.20). Thus the pin remains magnitude-aware without
+    magnitude 1.25). Thus the pin remains magnitude-aware without
     demanding a sub-ULP comparison that no float32 accumulator can
     satisfy portably.
     """

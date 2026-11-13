@@ -443,7 +443,7 @@ def test_a_program_scores_the_weight_a_deduction_answers() -> None:
         "type_logical",
         "quantifier_scope",
         "multimodal_tlg",
-        "pmcfg",
+        "wmcfg",
         "pcfg",
         "montague_nli",
     ],
@@ -538,7 +538,7 @@ export builtin_parser
     [
         ("pcfg", "PCFG", "the dog runs"),
         ("ccg", "CCG", "the cat sleeps"),
-        ("type_logical", "Lambek", "every dog barks"),
+        ("type_logical", "Lambek", "Kim admires Lee"),
         ("montague_nli", "Montague", "every dog is an animal"),
     ],
 )

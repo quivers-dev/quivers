@@ -46,8 +46,8 @@ $$
 #
 # Reference: [Gelman 2006](https://doi.org/10.1214/06-BA117A).
 
-object Group : FinSet 6
-object Resp : FinSet 60
+object Group : FinSet 12
+object Resp : FinSet 120
 object Val : Real 1
 
 program hierarchical_regression : Resp -> Val
@@ -82,13 +82,17 @@ gives the residual distribution heavier tails even at a fixed scale
 
 ## Walkthrough
 
-`object Group : FinSet 6` and `object Resp : FinSet 60` are the two plates: six groups and sixty responses. `object Val : Real 1` is the value space of what the program returns, a real scalar, so the signature reads `Resp -> Val` rather than `Resp -> Resp`. The domain names the plate the responses are observed over; the codomain names the space the returned value lives in.
+`object Group : FinSet 12` and `object Resp : FinSet 120` are the two plates: twelve groups and 120 responses, ten per group. `object Val : Real 1` is the value space of what the program returns, a real scalar, so the signature reads `Resp -> Val` rather than `Resp -> Resp`. The domain names the plate the responses are observed over; the codomain names the space the returned value lives in.
 
-`sample sigma <- HalfStudentT(3.0, 1.0)` draws the residual scale under a half-Student-t with $\nu = 3$ degrees of freedom and unit scale; the small $\nu$ permits substantial prior mass on large scales. `sample tau <- HalfStudentT(3.0, 1.0)` gives the between-group scale the same treatment. `sample u : Group <- Normal(0.0, tau)` allocates one offset per group under that scale, and `let group_effect = u[group_idx]` gathers each row's offset through the exogenous `group_idx` design vector. `beta_0` and `beta_1` carry weakly-informative Normal priors; `let mu = ...` binds the linear predictor; the `observe` clause scores the response under a Normal likelihood. `return sigma` projects onto the residual-scale posterior, the diagnostic the analyst most commonly inspects.
+`sample sigma <- HalfStudentT(df=3.0, scale=1.0)` draws the residual scale under a half-Student-t with $\nu = 3$ degrees of freedom and unit scale; the small $\nu$ permits substantial prior mass on large scales. `sample tau <- HalfStudentT(df=3.0, scale=1.0)` gives the between-group scale the same treatment. `sample u : Group <- Normal(loc=0.0, scale=tau)` allocates one offset per group under that scale, and `let group_effect = u[group_idx]` gathers each row's offset through the exogenous `group_idx` design vector. `beta_0` and `beta_1` carry weakly-informative Normal priors; `let mu = ...` binds the linear predictor; the `observe` clause scores the response under a Normal likelihood. `return sigma` projects onto the residual-scale posterior, the diagnostic the analyst most commonly inspects.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+The blocks below simulate from the model, check the compiled log joint against
+a hand-written density, and then recover the parameters with SVI and NUTS. The
+program reads its data by name, so its input `x_in` is a single dummy row: that
+leading axis is a particle axis, and a longer one would score the whole data
+set once per row.
 
 ### Generating synthetic data
 
@@ -102,12 +106,12 @@ torch.manual_seed(0)
 prog = load("docs/examples/source/half_student_t_hierarchical.qvr")
 model = prog.morphism
 
-n_group, n_resp = 6, 60
+n_group, n_resp = 12, 120
 
-true_sigma = 0.4
-true_tau = 0.8
-true_beta_0 = 1.5
-true_beta_1 = 2.0
+true_sigma = torch.tensor(0.4)
+true_tau = torch.tensor(0.8)
+true_beta_0 = torch.tensor(1.5)
+true_beta_1 = torch.tensor(2.0)
 true_u = torch.distributions.Normal(0.0, true_tau).sample((n_group,))
 
 group_idx = torch.arange(n_group).repeat(n_resp // n_group)
@@ -119,42 +123,91 @@ observations = {"y": y, "x": x, "group_idx": group_idx}
 x_in = torch.zeros(1, 1)
 ```
 
+### Checking the log joint
+
+```python
+D = torch.distributions
+truth = {
+    "sigma": true_sigma, "tau": true_tau,
+    "beta_0": true_beta_0, "beta_1": true_beta_1, "u": true_u,
+}
+
+
+def half_student_t_log_prob(value, df, scale):
+    return torch.log(torch.tensor(2.0)) + D.StudentT(df, 0.0, scale).log_prob(value)
+
+
+oracle = (
+    half_student_t_log_prob(true_sigma, 3.0, 1.0)
+    + half_student_t_log_prob(true_tau, 3.0, 1.0)
+    + D.Normal(0.0, 5.0).log_prob(true_beta_0)
+    + D.Normal(0.0, 2.0).log_prob(true_beta_1)
+    + D.Normal(0.0, true_tau).log_prob(true_u).sum()
+    + D.Normal(mu, true_sigma).log_prob(y).sum()
+)
+compiled = model.log_joint(x_in, {**truth, **observations}).sum()
+print(f"compiled log joint: {float(compiled):.4f}")
+print(f"torch log joint:    {float(oracle):.4f}")
+assert torch.allclose(compiled, oracle, rtol=1e-5)
+```
+
 ### SVI fit
 
-Fit the five latent sites by maximizing the ELBO. The negative ELBO measures the variational objective; the oracle negative log-likelihood is a separate comparison that excludes prior and guide terms.
+A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+[`SVI`](../api/inference/svi.md). The slope rests on all 120 rows (standard error near 0.04) and the residual
+scale on 120 residuals (near 0.03), so both are checked to within 0.15. The
+between-group scale `tau` rests on only twelve group offsets, so its standard
+error is near 0.17 and its tolerance is 0.6. The intercept `beta_0` and the
+offsets `u` trade off against each other, so the identified quantities are the
+twelve group intercepts `beta_0 + u_g`; each rests on ten rows (standard error
+near 0.13) and is checked to within 0.5.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
-oracle_nll = float(
-    -torch.distributions.Normal(mu, true_sigma).log_prob(y).mean()
-)
+tolerance = {"beta_1": 0.15, "sigma": 0.15, "tau": 0.6}
 
 torch.manual_seed(1)
 guide = AutoNormalGuide(model, observed_names={"y", "x", "group_idx"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=5e-2,
-)
+optim = torch.optim.Adam(guide.parameters(), lr=5e-2)
 svi = SVI(model, guide, optim, ELBO(num_particles=1))
+for _ in range(1500):
+    svi.step(x_in, observations)
 
-losses = [svi.step(x_in, observations) for _ in range(300)]
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(500)]
+post = {k: float(torch.stack([d[k] for d in draws]).mean()) for k in tolerance}
+for k, tol in tolerance.items():
+    print(f"{k:>8}: posterior mean {post[k]:.3f}, truth {float(truth[k]):.3f}")
+    assert abs(post[k] - float(truth[k])) < tol
 
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
-print(f"oracle NLL:   {oracle_nll:.2f}")
+group_svi = torch.stack([d["beta_0"].reshape(()) + d["u"].reshape(-1) for d in draws]).mean(0)
+assert (group_svi - (true_beta_0 + true_u)).abs().max() < 0.5
 ```
 
 ### NUTS posterior
+
+[`NUTSKernel`](../api/inference/mcmc.md) samples the same posterior over all
+120 rows. Its posterior means should meet the same tolerances and agree with
+the SVI means to within half of each tolerance.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
 torch.manual_seed(2)
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=6, target_accept=0.8)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
 mc = MCMC(kernel, num_warmup=100, num_samples=100, num_chains=1)
 result = mc.run(model, x_in, observations)
 
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
+for k, tol in tolerance.items():
+    mean = float(result.samples[k].mean())
+    print(f"{k:>8}: posterior mean {mean:.3f}, truth {float(truth[k]):.3f}")
+    assert abs(mean - float(truth[k])) < tol
+    assert abs(mean - post[k]) < tol / 2
+group_nuts = (
+    result.samples["beta_0"].reshape(-1, 1) + result.samples["u"].reshape(-1, n_group)
+).mean(0)
+assert (group_nuts - (true_beta_0 + true_u)).abs().max() < 0.5
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 

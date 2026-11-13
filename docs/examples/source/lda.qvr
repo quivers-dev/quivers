@@ -1,32 +1,31 @@
-# Document-level topic mixture
+# Latent Dirichlet Allocation
 #
-# Each document draws topic weights, and each topic draws a vocabulary
-# distribution. The grouped marginalize block sums over one topic shared
-# by every observed token in that document:
+# Each document draws topic weights theta_d, each topic draws a
+# vocabulary distribution phi_k, and each token draws its own topic
+# from its document's weights and then its word from that topic. The
+# per-token topic is summed out, one marginalization per token:
 #
-#   p(w_d | theta_d, phi) = sum_k theta_d[k] * product_n phi[k, w_d[n]].
+#   p(w | theta, phi) = prod_n sum_k theta[d(n), k] * phi[k, w_n].
 #
-# This differs from canonical LDA, whose independent per-token assignments
-# give product_n sum_k theta_d[k] * phi[k, w_d[n]].
-# Token indexes observed positions; Vocab indexes possible token values.
-# Mix is the real vector space containing the returned topic weights.
+# doc_idx maps each token to its document, so theta_tok gathers one
+# row of topic weights per token. Token indexes the corpus positions;
+# Vocab indexes the values a token takes.
 #
-# Background: Blei, Ng & Jordan (2003), Latent Dirichlet Allocation.
-
-composition log_prob [level=algebra]
+# Reference: [Blei, Ng, and Jordan 2003](https://www.jmlr.org/papers/v3/blei03a.html).
 
 object Doc : FinSet 20
 object Topic : FinSet 3
 object Vocab : FinSet 50
-object Token : FinSet 200
+object Token : FinSet 1000
 object Mix : Real 3
 
 program lda(alpha : Real, beta : Real) : Token -> Mix
     sample theta : Doc <- Dirichlet(concentration=alpha) [over=Topic, iid_over=Doc]
     sample phi : Topic <- Dirichlet(concentration=beta) [over=Vocab, iid_over=Topic]
+    let theta_tok = theta[doc_idx]
 
-    marginalize z : Topic <- Categorical(probs=theta) [over=Doc, reduction=logsumexp]
-        observe w : Token <- Categorical(probs=phi[z]) [via=word_idx]
+    marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]
+        observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]
 
     return theta
 

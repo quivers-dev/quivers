@@ -1,37 +1,44 @@
 # Bayesian Change-Point Detection
 #
-# A canonical Bayesian change-point model with a single switch
-# in the rate of a Poisson series. The classical application is
-# the coal-mining disaster series: the rate of accidents per
-# year drops at an unknown change-point tau.
+# A single change point in the rate of a Poisson count series, in
+# the form analyzed by Carlin, Gelfand, and Smith for the British
+# coal-mining disaster counts. The change point is discrete: tau is
+# the last step of the first regime, uniform over the Step indices,
+# and it is summed out exactly.
 #
 # Generative structure:
 #
-#   tau          ~ Uniform(0, T)                  change-point time
-#   rate_before  ~ Gamma(2, 1)                    rate before tau
-#   rate_after   ~ Gamma(2, 1)                    rate after tau
-#   y_t          ~ Poisson(rate_t)                rate_t = soft switch
+#   tau          ~ Uniform{0, ..., T - 1}         last pre-change step
+#   rate_before  ~ Gamma(2, 1)                    rate at steps t <= tau
+#   rate_after   ~ Gamma(2, 1)                    rate at steps t > tau
+#   y_t          ~ Poisson(rate_before)  if t <= tau
+#                  Poisson(rate_after)   if t >  tau
 #
-# The soft-indicator parameterisation s = sigmoid(20 * (t - tau))
-# is a differentiable relaxation of 1{t > tau} that lets
-# gradient-based variational inference fit the change-point
-# location directly. Hard change-points require integer-valued
-# tau and a per-tau marginalize over a Tau-axis.
+# The marginalize block enumerates every tau in Tau, scores the whole
+# series under that switch, and log-sum-exps the results against the
+# uniform prior:
+#
+#   p(y | rates) = sum_tau p(tau) prod_t Poisson(y_t | rate_t(tau)).
+#
+# The hierarchical model of Carlin et al. also places hyperpriors on
+# the Gamma hyperparameters; this program fixes them at (2, 1).
 #
 # Reference: [Carlin, Gelfand, and Smith 1992](https://doi.org/10.2307/2347570).
 
 object Step : FinSet 64
+object Tau : FinSet 64
 object Val : Real 1
 
 program changepoint : Step -> Val
-    sample tau <- Uniform(low=0.0, high=100.0)
     sample rate_before <- Gamma(concentration=2.0, rate=1.0)
     sample rate_after <- Gamma(concentration=2.0, rate=1.0)
 
-    let s = sigmoid(20.0 * (t - tau))
-    let rate = (1.0 - s) * rate_before + s * rate_after
+    let tau_prior = factor k : Tau in 1.0 / 64.0
 
-    observe y : Step <- Poisson(rate=rate)
-    return tau
+    marginalize tau : Tau <- Categorical(probs=tau_prior) [reduction=logsumexp]
+        let after = factor t : Step in real(min(max(t - tau, 0), 1))
+        let rate = (1.0 - after) * rate_before + after * rate_after
+        observe y : Step <- Poisson(rate=rate)
+    return rate_after
 
 export changepoint

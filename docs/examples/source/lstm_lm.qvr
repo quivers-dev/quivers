@@ -1,59 +1,40 @@
-# LSTM-Shaped Stochastic Language Model
-#
-# A gated stochastic recurrence wrapped in scan and used as a
-# causal language model. It borrows three LSTM gates and a cell
-# candidate, but scan threads only h_t: the local update uses
-# h_{t-1} where a canonical LSTM carries a separate c_{t-1}.
-# The tanh readout is realized through sigmoid.
-#
-# Generative structure:
-#
-#   i_t      ~ LogitNormal(gate_i(x_t, h_{t-1}))  input gate
-#   f_t      ~ LogitNormal(gate_f(x_t, h_{t-1}))  forget gate
-#   o_t      ~ LogitNormal(gate_o(x_t, h_{t-1}))  output gate
-#   g_t      ~ Normal(cell_cand(x_t, h_{t-1}))    cell candidate
-#   h_t      = o_t * tanh(f_t * h_{t-1} + i_t * g_t) folded-state update
-#   next_t   ~ Categorical(logits=lm_head(h_t))   next-token target
-#
-# Each input row is one context, and one run of the program scores
-# it: the contexts of a corpus are independent runs that share the
-# model's parameters. Token is the vocabulary, so it is the value
-# space of what lm_head draws and of what the program returns.
-#
-# The intermediate c_new is local to one call and is not carried
-# to the next position. This is thus an LSTM-shaped example,
-# not an implementation of the canonical architecture.
-#
-# Reference: [Hochreiter and Schmidhuber 1997](https://doi.org/10.1162/neco.1997.9.8.1735).
+# A long short-term memory (LSTM) language model with learned weights. The
+# cell carries two states, the hidden state h_t and the cell state c_t,
+# packed into one State vector that the scan threads from position to
+# position. The gates and the cell candidate are learned functions of the
+# current token and h_{t-1}; each position scores the token after it.
+object Vocab : Real 6
+object Hidden : Real 8
+object State : Real 16
+object Logits : Real 6
 
-object Token : FinSet 256
-object Embedded : Real 64
-object Hidden : Real 128
+# i_t, f_t, o_t = sigmoid(W [x_t; h_{t-1}] + b), the input, forget and
+# output gates.
+morphism input_gate : Vocab * Hidden -> Hidden [role=function, output=sigmoid]
+morphism forget_gate : Vocab * Hidden -> Hidden [role=function, output=sigmoid]
+morphism output_gate : Vocab * Hidden -> Hidden [role=function, output=sigmoid]
+# g_t = tanh(W_g [x_t; h_{t-1}] + b_g), the cell candidate.
+morphism candidate : Vocab * Hidden -> Hidden [role=function, output=tanh]
+morphism lm_head : Hidden -> Logits [role=function]
 
-morphism tok_embed : Token -> Embedded [role=embed]
-morphism gate_i, gate_f, gate_o : Embedded * Hidden -> Hidden ~ LogitNormal
-morphism cell_cand : Embedded * Hidden -> Hidden ~ Normal
-morphism lm_head : Hidden -> Token ~ Categorical
+program lstm_step(x_t, state) : Vocab * State -> State
+    let h_prev = slice(state, 0, 8)
+    let c_prev = slice(state, 8, 8)
+    let i = input_gate(x_t, h_prev)
+    let f = forget_gate(x_t, h_prev)
+    let o = output_gate(x_t, h_prev)
+    let g = candidate(x_t, h_prev)
+    let c = f * c_prev + i * g
+    let h = o * tanh(c)
+    let logits = lm_head(h)
+    observe next_token <- Categorical(logits=logits)
+    let state_new = concat(h, c)
+    return state_new
 
-program lstm_cell(x_t, h_prev) : Embedded * Hidden -> Hidden
-    sample i_gate <- gate_i(x_t, h_prev)
-    sample f_gate <- gate_f(x_t, h_prev)
-    sample o_gate <- gate_o(x_t, h_prev)
-    sample g_cand <- cell_cand(x_t, h_prev)
+define run_all = scan(lstm_step)
 
-    let c_new = f_gate * h_prev + i_gate * g_cand
-    let two_c = 2.0 * c_new
-    let sig_2c = sigmoid(two_c)
-    let tanh_c = 2.0 * sig_2c - 1.0
-    let h_new = o_gate * tanh_c
-    return h_new
-
-define backbone = tok_embed >> scan(lstm_cell)
-
-program lstm_lm : Token -> Token
-    sample h <- backbone
-
-    observe next_token <- lm_head(h)
-    return next_token
+program lstm_lm : Vocab -> State
+    sample last <- run_all
+    return last
 
 export lstm_lm

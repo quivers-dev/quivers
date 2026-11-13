@@ -132,5 +132,5 @@ The QVR tutorials on [indexed data and total functions](../../tutorials/qvr/09-i
 [effects and handlers](../../tutorials/qvr/10-effects-and-handlers.md),
 [parsing as an effectful computation](../../tutorials/qvr/11-parsing-and-search.md), and
 [tree autoencoders](../../tutorials/qvr/12-structural-autoencoders.md) build one feature
-each. The [Amortized Bayesian Semantics](../../examples/amortized-bayesian-semantics.md) example
+each. The [Bayesian Semantics Case Study](../../examples/bayesian-semantics-case-study.md)
 combines indexed data, effects, probabilistic programs, and attachments in one model.

@@ -2,52 +2,63 @@
 
 ## Overview
 
-A [Bayesian neural network](https://en.wikipedia.org/wiki/Bayesian_neural_network) [@mackay1992bayesian] places priors over network weights. The QVR source below declares a conditional MLP kernel without those priors; the later `lift_from_log_prob` block adds them. The response is [Normal](https://en.wikipedia.org/wiki/Normal_distribution) about a learned function of the input,
+A [Bayesian neural network](https://en.wikipedia.org/wiki/Bayesian_neural_network) [@mackay1992bayesian] treats the weights of a network as random variables. A prior over the weights and a likelihood for the data give a posterior over networks, and predictions average the network's output over that posterior. This example is a one-hidden-layer tanh regression network with four hidden units, with every weight declared as a sample site in the source:
 
 $$
-\mu(x),\, \sigma(x) \;=\; \mathrm{MLP}(x), \qquad y_n \;\sim\; \mathcal{N}\!\bigl(\mu(x_n),\, \sigma(x_n)\bigr).
+\mu(x) = b_{\text{out}} + \sum_{h=1}^{4} w^{\text{out}}_h \tanh\bigl(w^{\text{in}}_h x + b^{\text{in}}_h\bigr),
+\qquad
+y_n \sim \mathcal{N}\bigl(\mu(x_n), \sigma\bigr),
 $$
 
-The network emits both the mean and the log-scale, so the model is [heteroscedastic](https://en.wikipedia.org/wiki/Heteroscedasticity): the predictive spread varies with the input rather than being pinned to a single global noise level.
+with $w^{\text{in}}_h, b^{\text{in}}_h \sim \mathcal{N}(0, 2)$, $w^{\text{out}}_h \sim \mathcal{N}(0, 1)$, $b_{\text{out}} \sim \mathcal{N}(0, 1)$, and $\sigma \sim \text{HalfNormal}(0.5)$.
 
-The nonlinearity lives in the morphism's parameter network. A morphism declared `~ Normal` over continuous spaces is a [Kleisli arrow](https://en.wikipedia.org/wiki/Kleisli_category) whose distribution parameters are produced from its input by a [`ParamSource`](../api/continuous/param_source.md#quivers.continuous.param_source.ParamSource), and `[param_source=mlp, hidden_dim=64]` selects an [`MLPSource`](../api/continuous/param_source.md#quivers.continuous.param_source.MLPSource): two hidden layers of width 64 with tanh activations between them. That is where the model departs from a linear map, and it is the reason this example can fit a curve that no linear model can.
+What the posterior buys over a single fitted network is *epistemic* uncertainty, uncertainty about the function itself. Inside the range of the training inputs the data pin the function down and the predictive spread is close to the noise level; outside it many networks fit the data equally well and disagree, so the predictive spread should grow. The runnable blocks fit the posterior with MacKay's [Laplace approximation](https://en.wikipedia.org/wiki/Laplace%27s_approximation) and check both halves of that claim against held-out data from the true network.
 
 ## QVR source
 
 ```qvr
-# Conditional MLP Kernel for Bayesian Nonlinear Regression
+# Bayesian Neural Network Regression
 #
-# A multi-layer perceptron kernel. The response is Normal about a
-# nonlinear function of the input, and that function is a
-# two-hidden-layer tanh MLP carried inside the morphism's parameter
-# network. The network emits both the mean and the log-scale, so the
-# model is heteroscedastic: the predictive spread varies with the
-# input.
+# A one-hidden-layer tanh network with four hidden units whose
+# weights are random variables. Every weight and bias carries a
+# Normal prior and the observation noise a half-Normal prior, so
+# conditioning on data gives a posterior over networks rather than a
+# single fitted one.
 #
 # Generative structure:
 #
-#   mu(x), sigma(x) = MLP(x)                   two hidden layers, tanh
-#   y_n             ~ Normal(mu(x_n), sigma(x_n))
+#   w_in_h, b_in_h  ~ Normal(0, 2)        input-to-hidden weights
+#   w_out_h         ~ Normal(0, 1)        hidden-to-output weights
+#   b_out           ~ Normal(0, 1)        output bias
+#   sigma           ~ HalfNormal(0.5)     observation noise
+#   h_h(x)          = tanh(w_in_h x + b_in_h)
+#   mu(x)           = b_out + sum_h w_out_h h_h(x)
+#   y_n             ~ Normal(mu(x_n), sigma)
 #
-# The per-row input x is a free variable, supplied as host data
-# through the observations dict; the Resp plate indexes the rows.
+# Resp indexes the observed rows and Hidden the hidden units; the
+# per-row input x is host data. Each hidden unit's activation is one
+# let over the Resp plate, and the output layer sums them.
 #
-# What makes the fit Bayesian is a prior over the network's weights.
-# The weights are ordinary learnable parameters here, so the prior is
-# supplied at the inference layer by lift_from_log_prob rather than
-# declared in the source: a Normal prior on every weight turns a
-# maximum-likelihood fit into a posterior over networks.
-#
-# Reference: [MacKay (1992)](https://doi.org/10.1162/neco.1992.4.3.448).
+# Reference: [MacKay 1992](https://doi.org/10.1162/neco.1992.4.3.448).
 
-object Feature : Real 1
+object Resp : FinSet 128
+object Hidden : FinSet 4
 object Target : Real 1
-object Resp : FinSet 200
-
-morphism net : Feature -> Target [param_source=mlp, hidden_dim=64] ~ Normal
 
 program bnn : Resp -> Target
-    observe y : Resp <- net(x)
+    sample w_in : Hidden <- Normal(loc=0.0, scale=2.0)
+    sample b_in : Hidden <- Normal(loc=0.0, scale=2.0)
+    sample w_out : Hidden <- Normal(loc=0.0, scale=1.0)
+    sample b_out <- Normal(loc=0.0, scale=1.0)
+    sample sigma <- HalfNormal(scale=0.5)
+
+    let h0 = tanh(w_in[0] * x + b_in[0])
+    let h1 = tanh(w_in[1] * x + b_in[1])
+    let h2 = tanh(w_in[2] * x + b_in[2])
+    let h3 = tanh(w_in[3] * x + b_in[3])
+    let mu = b_out + w_out[0] * h0 + w_out[1] * h1 + w_out[2] * h2 + w_out[3] * h3
+
+    observe y : Resp <- Normal(loc=mu, scale=sigma)
     return y
 
 export bnn
@@ -55,153 +66,323 @@ export bnn
 
 ## Understanding the model
 
-There are two sources of uncertainty in a Bayesian neural network. Even if
-the weights were known, observations would vary around the network's mean;
-that is the Normal kernel's noise. With finite data, the weights themselves
-are also uncertain. A [prior and posterior over weights](https://pyro.ai/examples/bayesian_regression.html#Model)
-represent this second source [@pyroBayesianRegression]. The code below first
-fits one weight vector, then adds priors so inference can estimate uncertainty
-in those weights.
+There are two sources of uncertainty in a prediction. Even with the weights known, a new response varies around the network's mean by the observation noise $\sigma$. With finite data the weights are also uncertain, and that second source is what the weight prior and posterior represent [@pyroBayesianRegression]. A single fitted network, whether by maximum likelihood or at the posterior mode (MAP), keeps only the first source: its predictive interval has the same width at every input.
 
-A [posterior prediction](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) draws weights, computes a mean and scale for the new
-input, then draws an outcome. The initial maximum-likelihood block instead
-holds one fitted weight vector. Compare their predictions on inputs outside
-the training region, where uncertainty about the function can matter more
-than the fitted residual noise.
+A [posterior prediction](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) draws a weight vector from the posterior, computes the network's mean at the new input, and draws a response around it. Averaging over weight draws widens the interval exactly where the posterior networks disagree, which tends to be away from the training inputs.
 
 ## Walkthrough
 
-`object Feature : Real 1` and `object Target : Real 1` declare the input and response as one-dimensional continuous spaces; `object Resp : FinSet 200` is the discrete plate indexing the rows. The plate is what the `observe` step reduces over, so it is the program's domain, and `Target` is the value space of the returned response, so it is the codomain.
+`object Resp : FinSet 128` is the plate of observed rows and `object Hidden : FinSet 4` indexes the hidden units; `object Target : Real 1` is the value space of the response, so `program bnn : Resp -> Target` scores a plate of real responses.
 
-`morphism net : Feature -> Target [param_source=mlp, hidden_dim=64] ~ Normal` declares the network. The `~ Normal` clause makes `net` a conditional-Normal kernel rather than a tensor: applied to an input it returns a distribution over `Target`, parameterized by a mean and a log-scale. Those two numbers are what the parameter network emits, so the concrete module behind `net` is
+The five `sample` lines are the priors. `sample w_in : Hidden <- Normal(loc=0.0, scale=2.0)` draws one input weight per hidden unit, and likewise for the hidden biases `b_in` and the output weights `w_out`; `b_out` and `sigma` are scalars. Because every weight is a sample site, the [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram) this source compiles to has 14 latent coordinates, and every inference driver sees them directly. No Python-side lift is needed to make the network Bayesian.
 
-```
-Linear(1, 64) -> Tanh -> Linear(64, 64) -> Tanh -> Linear(64, 2)
-```
+The `let` lines are the network. `x` is the per-row input supplied as host data. `let h0 = tanh(w_in[0] * x + b_in[0])` is the first hidden unit's activation at every row: `w_in[0]` and `b_in[0]` are scalars, so the expression stays on the `Resp` plate. The output layer `mu` weights the four activations by `w_out` and adds `b_out`. One line per unit keeps every product between a scalar and a plated vector; the checked program language has no outer product of the `Resp` and `Hidden` axes, so the hidden layer cannot be written as a single `(row, unit)` matrix.
 
-Its 4418 weights are the network's parameters. `hidden_dim` sets the width and `param_source` the architecture; `linear` is the default, and `identity` and `attention` are the other choices. Without `param_source=mlp` this kernel would map its input to the Normal's parameters through a single matrix, and the model would be a linear regression with a learned noise scale.
-
-`program bnn : Resp -> Target` then does the only thing left. `observe y : Resp <- net(x)` applies the kernel to the per-row input and scores the observed response under the resulting Normal, accumulating over the `Resp` plate. `x` is a free variable: it never appears in a `sample` or `let`, so it is supplied as host data through the observations dict alongside `y`, exactly as a covariate would be in a regression.
-
-The checked elaboration makes the network computation explicit: each affine
-weight and bias is a typed program input, and the QIEC body applies the layers
-under `tanh` before constructing the Normal family. The reference machine runs
-that graph with the compiled PyTorch modules. Transpile targets refuse
-`param-source:mlp`, however, because these model-internal weights are neither
-declared sample sites nor portable data from which a host program could
-reconstruct the network. The [measured support matrix](../transpile-support.md)
-records the resulting capability diagnostic for each target.
+`observe y : Resp <- Normal(loc=mu, scale=sigma)` scores the observed responses. A network whose weights are declared sites is also an ordinary program for the transpilers: there is no model-internal parameter network, so the [measured support matrix](../transpile-support.md) reports this source like any other plated regression.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
 ### Generating synthetic data
+
+The true network is a draw from the source's own priors. Tracing the program with only `sigma` clamped samples the weights from their priors and the responses from the likelihood, so the data come from exactly the model being fit. The block then checks the program's log joint at the true weights against a hand-written density.
 
 ```python
 import torch
 from quivers.dsl import load
+from quivers.inference.trace import trace
 
 torch.manual_seed(0)
 prog = load("docs/examples/source/bnn.qvr")
 model = prog.morphism
 
-N = 200
-x = torch.linspace(-3.0, 3.0, N).unsqueeze(-1)
-y = torch.sin(3.0 * x) + 0.1 * torch.randn(N, 1)
-
+N = 128
 x_in = torch.zeros(1, 1)
-observations = {"y": y, "x": x}
+
+
+# Draw the true network from the source's own priors, with the noise
+# scale held at 0.1, and simulate the training responses from it.
+x = torch.linspace(-2.0, 2.0, N)
+true_sigma = torch.tensor(0.1)
+with torch.no_grad():
+    forward = trace(model, x_in, {"x": x, "sigma": true_sigma})
+true_w_in = forward.sites["w_in"].value
+true_b_in = forward.sites["b_in"].value
+true_w_out = forward.sites["w_out"].value
+true_b_out = forward.sites["b_out"].value.reshape(())
+y = forward.sites["y"].value.reshape(N)
+truth = {"w_in": true_w_in, "b_in": true_b_in, "w_out": true_w_out, "b_out": true_b_out}
+
+observations = {"x": x, "y": y}
+
+# Independent oracle: the program's log joint at the true weights is
+# the hand-written prior plus likelihood.
+Normal, HalfNormal = torch.distributions.Normal, torch.distributions.HalfNormal
+mu_true = (torch.tanh(x[:, None] * true_w_in + true_b_in) * true_w_out).sum(-1) + true_b_out.reshape(())
+hand = (
+    Normal(0.0, 2.0).log_prob(true_w_in).sum()
+    + Normal(0.0, 2.0).log_prob(true_b_in).sum()
+    + Normal(0.0, 1.0).log_prob(true_w_out).sum()
+    + Normal(0.0, 1.0).log_prob(true_b_out).sum()
+    + HalfNormal(0.5).log_prob(true_sigma)
+    + Normal(mu_true, true_sigma).log_prob(y.reshape(-1)).sum()
+)
+log_joint_true = model.log_joint(x_in, {**observations, **truth, "sigma": true_sigma})
+assert torch.allclose(log_joint_true, hand.reshape(1), rtol=1e-5)
+print(f"log joint at the truth: {float(log_joint_true):.2f} (hand-written {float(hand):.2f})")
 ```
 
-The target is a sine wave in noise, so its mean bends across the input range. `y` carries the `Target` event axis, so it is shaped `(N, 1)` rather than `(N,)`. The program input `x_in` is one row, so one run of the program scores every observation through its `Resp` plate; the real covariate enters through `observations["x"]`.
+### Fitting the posterior mode
 
-### Fitting the network
-
-```python
-optim = torch.optim.Adam(model.parameters(), lr=5e-3)
-
-for step in range(2000):
-    optim.zero_grad()
-    loss = -model.log_joint(x_in, observations)[0]
-    loss.backward()
-    optim.step()
-
-print(f"final negative log-likelihood: {float(loss.detach()):.1f}")
-```
-
-[`log_joint`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram.log_joint) returns one joint per input row, each row an independent run of the program; `x_in` is a single row, so `[0]` reads that run's joint.
-
-### Does the nonlinearity earn its keep?
-
-The honest comparison is against the best a linear model can do on the same data, scored the same way. Ordinary least squares gives the optimal line, and its residual spread gives the matching Gaussian noise level.
+[`AutoLaplaceApproximation`](../api/inference/guide.md#quivers.inference.guides.AutoLaplaceApproximation) is a two-phase guide. Before its Hessian is fitted it is a point mass, and maximizing the ELBO under it maximizes the log joint, so the [`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) loop below finds the posterior mode. An L-BFGS polish then takes the mode to a stationary point, which the curvature step needs.
 
 ```python
-design = torch.cat([torch.ones(N, 1), x], dim=-1)
-beta   = torch.linalg.lstsq(design, y).solution
-resid  = y - design @ beta
-linear_nll = -torch.distributions.Normal(design @ beta, resid.std()).log_prob(y).sum()
+from quivers.inference import AutoLaplaceApproximation, ELBO, SVI
 
-print(f"MLP    negative log-likelihood: {float(loss.detach()):.1f}")
-print(f"linear negative log-likelihood: {float(linear_nll):.1f}")
-print(f"residual sd of the best line:   {float(resid.std()):.3f}")
-```
+torch.manual_seed(1)
+guide = AutoLaplaceApproximation(model, observed_names=set(observations))
+with torch.no_grad():
+    guide.map_z.normal_()
+svi = SVI(model, guide, torch.optim.Adam(guide.parameters(), lr=2e-2), ELBO())
+for _ in range(1000):
+    svi.step(x_in, observations)
 
-The line's residual spread is larger than the data-generating noise because a straight line cannot represent the sine target. Compare the printed likelihoods from the current run; their difference reflects both the nonlinear mean and the input-dependent scale available to the MLP.
-
-### NUTS posterior over the weights
-
-Nothing so far is Bayesian: the fit above is maximum likelihood over the weights. `bnn` declares no `sample` sites, so there is no prior in the source to sample. [`lift_from_log_prob`](../api/inference/lifts.md#quivers.inference.lifts.lift_from_log_prob) supplies one, putting a Normal prior on every weight and scoring the data through a log-density function of your choosing. The result is a [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram) whose sites are the weights themselves, which is exactly the Bayesian neural network the overview describes.
-
-```python
-from quivers.inference import MCMC, NUTSKernel, lift_from_log_prob
-
-def log_prob_fn(x_unused, y_obs):
-    return model.log_joint(x_in, {"y": y_obs, "x": x})[0].reshape(1)
-
-lifted, lift_x, lift_obs = lift_from_log_prob(
-    model,
-    log_prob_fn=log_prob_fn,
-    parameter_prior_scale=1.0,
-    target_key="y",
-    observations={"y": y},
+# Polish the mode with L-BFGS so the Hessian below is taken at a
+# stationary point rather than wherever Adam stopped.
+objective = ELBO()
+lbfgs = torch.optim.LBFGS(
+    guide.parameters(), max_iter=500, tolerance_grad=1e-7,
+    tolerance_change=1e-12, line_search_fn="strong_wolfe",
 )
 
-kernel = NUTSKernel(step_size=0.01, max_tree_depth=3, target_accept=0.8)
-mc     = MCMC(kernel, num_warmup=10, num_samples=10, num_chains=1)
-result = mc.run(lifted, lift_x, lift_obs)
+
+def closure():
+    lbfgs.zero_grad()
+    loss = objective(model, guide, x_in, observations)
+    loss.backward()
+    return loss
+
+
+lbfgs.step(closure)
+with torch.no_grad():
+    map_point = {k: v.detach() for k, v in guide.rsample(x_in).items()}
+log_joint_map = model.log_joint(x_in, {**observations, **map_point})
+print(f"log joint at the MAP:   {float(log_joint_map):.2f}")
+print(f"MAP noise scale: {float(map_point['sigma']):.3f} (true {float(true_sigma):.3f})")
+```
+
+The log joint at the mode exceeds the log joint at the true weights, as it should: the mode maximizes this quantity on the training data.
+
+### Laplace posterior and the predictive check
+
+`fit_hessian` replaces the point mass by a Gaussian whose covariance is the inverse Hessian of the negative log joint at the mode, the approximation MacKay used [@mackay1992bayesian; @tierney1986laplace]. Following MacKay, the predictive pushes Gaussian weight draws through the network *linearized* at the mode, computed here with a [Jacobian-vector product](https://pytorch.org/docs/stable/generated/torch.func.jvp.html) of the program's own `mu`. Linearization keeps the predictive Gaussian in the function and avoids the large excursions that raw Gaussian draws produce along weakly determined directions of a saturating network.
+
+The check uses 128 fresh responses from the true network inside the training range $[-2, 2]$ and 128 outside it, in $[-4, -3] \cup [3, 4]$. Three assertions, fixed before the run: the 90% predictive interval covers between 80% and 97% of the inside responses; the posterior standard deviation of the mean function is at least three times larger outside than inside; and the posterior intervals cover more of the outside responses than the MAP plug-in intervals do.
+
+```python
+from torch.func import jvp
+
+WEIGHTS = ("w_in", "b_in", "w_out", "b_out")
+
+
+def network_mean(x_new, weights):
+    """The program's own `mu` let at inputs `x_new` under `weights`."""
+    clamp = {"x": x_new, **weights, "sigma": map_point["sigma"], "y": torch.zeros(1, N)}
+    return trace(model, x_in, clamp).sites["mu"].value.reshape(-1)
+
+
+guide.fit_hessian(model, x_in, observations)
+
+# MacKay's predictive: weights from the Gaussian posterior at the mode,
+# pushed through the network linearized at the mode.
+base = {k: map_point[k] for k in WEIGHTS}
+
+
+def linearized_means(x_new, draws):
+    rows = []
+    for draw in draws:
+        tangent = {k: draw[k] - base[k] for k in WEIGHTS}
+        mean, delta = jvp(lambda w: network_mean(x_new, w), (base,), (tangent,))
+        rows.append(mean + delta)
+    return torch.stack(rows)
+
+
+torch.manual_seed(3)
+with torch.no_grad():
+    draws = [{k: v.detach() for k, v in guide.rsample(x_in).items()} for _ in range(300)]
+sigma_draws = torch.stack([d["sigma"].reshape(()) for d in draws])
+
+# Fresh responses from the true network, inside and outside the
+# training range [-2, 2].
+x_inside = 4.0 * torch.rand(N) - 2.0
+x_outside = torch.cat([torch.rand(N // 2) - 4.0, torch.rand(N // 2) + 3.0])
+with torch.no_grad():
+    y_inside = network_mean(x_inside, truth) + true_sigma * torch.randn(N)
+    y_outside = network_mean(x_outside, truth) + true_sigma * torch.randn(N)
+
+
+def summarize(x_new, y_new):
+    means = linearized_means(x_new, draws)
+    predictive = means + sigma_draws[:, None] * torch.randn_like(means)
+    low, high = predictive.quantile(0.05, dim=0), predictive.quantile(0.95, dim=0)
+    coverage = ((y_new >= low) & (y_new <= high)).float().mean()
+    return coverage, means.std(dim=0).mean()
+
+
+coverage_in, spread_in = summarize(x_inside, y_inside)
+coverage_out, spread_out = summarize(x_outside, y_outside)
+
+# The plug-in predictive of the MAP network: one function, noise only.
+half_width = 1.645 * map_point["sigma"].reshape(())
+map_coverage_in = ((y_inside - network_mean(x_inside, base)).abs() <= half_width).float().mean()
+map_coverage_out = ((y_outside - network_mean(x_outside, base)).abs() <= half_width).float().mean()
+
+print(f"90% interval coverage inside:  BNN {float(coverage_in):.2f}  MAP {float(map_coverage_in):.2f}")
+print(f"90% interval coverage outside: BNN {float(coverage_out):.2f}  MAP {float(map_coverage_out):.2f}")
+print(f"posterior sd of the mean function: inside {float(spread_in):.3f}  outside {float(spread_out):.3f}")
+
+assert 0.80 <= float(coverage_in) <= 0.97
+assert float(spread_out) >= 3.0 * float(spread_in)
+assert float(coverage_out) > float(map_coverage_out)
+```
+
+Inside the range both predictives are close to nominal, since the noise dominates there. Outside it the MAP network extrapolates one function with noise-width intervals and misses most responses, while the posterior networks disagree and the interval widens to cover them.
+
+### NUTS from the mode
+
+The same program runs under [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) with no change: the sampler moves over the 14 declared coordinates. `init_strategy="guide"` starts the chain at the mode by handing [`MCMC`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMC) a point-mass guide placed there. Thirty warmup and thirty retained draws keep the block short; they explore the neighborhood of the mode and do not replace a multi-chain run with convergence diagnostics.
+
+```python
+from quivers.inference import MCMC, NUTSKernel
+
+mode = AutoLaplaceApproximation(model, observed_names=set(observations))
+with torch.no_grad():
+    mode.map_z.copy_(guide.map_z)
+kernel = NUTSKernel(step_size=0.01, max_tree_depth=4, target_accept=0.8)
+mc = MCMC(kernel, num_warmup=30, num_samples=30, num_chains=1, init_strategy="guide", seed=4)
+result = mc.run(model, x_in, observations, guide=mode)
 
 print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
 print(f"divergences: {int(result.divergence_counts.sum())}")
+print(f"posterior mean noise scale: {float(result.samples['sigma'].mean()):.3f}")
 ```
 
-`log_prob_fn` evaluates the likelihood with the sampled weights installed in
-the network. The resulting posterior has 4,418 weight coordinates. Ten warmup
-steps and ten draws from one chain exercise the call, but provide little
-information about exploration of that space. For a posterior analysis, increase
-warmup and draws, run multiple chains, and compare predictive functions across
-them alongside divergence and effective sample size diagnostics.
+### The same network declared with latent network weights
+
+A neural kernel can carry the prior itself. Declaring `net : Feature -> Target [param_source=mlp(8), weights=latent, prior_scale=1.0] ~ Normal` makes the weights and biases of its one-hidden-layer `tanh` network [sample sites](../reference/qvr/probabilistic-programs.md#latent-network-weights) of every program that reaches it, each with a `Normal(0, prior_scale)` prior, at the names `net_param_layer0_weight`, `net_param_layer0_bias`, `net_param_weight`, and `net_param_bias`. The network has two output heads: the first is the response mean and the exponential of the second the response scale, so the noise level is a function of the weights rather than a separate site. The source is shorter than the page's main source, but no transpile target lowers a network applied to drawn weights (`param-source:mlp:latent`), which is why the main source writes the layers out.
+
+The checks below were fixed before they were first run. At a traced draw of the weights, the compiled runtime must match a hand-written float64 density to a relative 1e-5 and the reference machine to 1e-9, and an oracle with prior scale 2 must disagree by more than 1e-3. Then NUTS (one chain, 300 warmup and 300 kept draws, tree depth 7) is run on 20 points of $y = \sin(2x) + \mathcal{N}(0, 0.1^2)$, $x$ uniform on $[-1.5, 1.5]$. The posterior-mean network output at 50 held-out inputs must lie within an RMSE of 0.25 of $\sin(2x)$, while the prior-mean output, the same network averaged over 300 prior draws, must be further than 0.5 from it; the noise is 0.1, and the best straight line has an RMSE of about 0.45 on this range.
+
+```python
+import math
+
+import torch.distributions as D
+
+from quivers.dsl import loads
+from quivers.inference import trace
+
+LATENT_SOURCE = """
+# A Bayesian neural network regression: a one-hidden-layer network kernel
+# whose weights and biases are latent sites with Normal(0, 1) priors. The
+# network's first output head is the response mean and the exponential of
+# its second is the response scale, so the noise level is learned with the
+# weights.
+object Feature : Real 1
+object Target : Real 1
+object Row : FinSet 20
+
+morphism net : Feature -> Target [param_source=mlp(8), weights=latent, prior_scale=1.0] ~ Normal
+
+program bnn : Row -> Target
+    observe y : Row <- net(x)
+    return y
+
+export bnn
+"""
+HIDDEN = 8
+SHAPES = {
+    "net_param_layer0_weight": (HIDDEN, 1),
+    "net_param_layer0_bias": (HIDDEN,),
+    "net_param_weight": (2, HIDDEN),
+    "net_param_bias": (2,),
+}
+
+
+def heads(w, inputs):
+    """The network's raw output heads at inputs (n, 1), float64."""
+    hidden = torch.tanh(inputs @ w["net_param_layer0_weight"].T + w["net_param_layer0_bias"])
+    return hidden @ w["net_param_weight"].T + w["net_param_bias"]
+
+
+def latent_oracle(w, inputs, responses, scale=1.0):
+    prior = D.Normal(torch.tensor(0.0, dtype=torch.float64), torch.tensor(scale, dtype=torch.float64))
+    total = sum(float(prior.log_prob(v).sum()) for v in w.values())
+    raw = heads(w, inputs)
+    return total + float(D.Normal(raw[:, 0], raw[:, 1].exp()).log_prob(responses).sum())
+
+
+def host(value):
+    return float(value) if value.dim() == 0 else tuple(host(row) for row in value)
+
+
+def sine_data(seed, n):
+    generator = torch.Generator().manual_seed(seed)
+    inputs = (torch.rand(n, 1, generator=generator) * 3.0 - 1.5).double()
+    return inputs, torch.sin(2.0 * inputs[:, 0]) + 0.1 * torch.randn(n, generator=generator, dtype=torch.float64)
+
+
+torch.manual_seed(0)
+latent_program = loads(LATENT_SOURCE)
+inputs, responses = sine_data(seed=1, n=20)
+recorded = trace(latent_program.morphism, torch.zeros(1, 1), observations={"x": inputs.float(), "y": responses.float()})
+w = {name: recorded.sites[name].value.reshape(shape).double() for name, shape in SHAPES.items()}
+expected = latent_oracle(w, inputs.float().double(), responses.float().double())
+wrong = latent_oracle(w, inputs.float().double(), responses.float().double(), scale=2.0)
+got = float(recorded.log_joint[0])
+run = latent_program.run(
+    "bnn",
+    data={"x": host(inputs.float().double()), "y": host(responses.float().double()[:, None])},
+    sites={name: host(value) for name, value in w.items()},
+    seed=0,
+)
+print(f"compiled {got:.6f}, reference {run.log_joint:.9f}, oracle {expected:.9f}; prior scale 2 {wrong:.6f}")
+assert math.isclose(got, expected, rel_tol=1e-5)
+assert math.isclose(run.log_joint, expected, rel_tol=1e-9)
+assert not math.isclose(got, wrong, rel_tol=1e-3)
+
+inputs, responses = sine_data(seed=2, n=20)
+result = MCMC(NUTSKernel(max_tree_depth=7), num_warmup=300, num_samples=300, num_chains=1, seed=0).run(
+    loads(LATENT_SOURCE).morphism, torch.zeros(1, 1), {"x": inputs.float(), "y": responses.float()}
+)
+grid = torch.linspace(-1.5, 1.5, 50, dtype=torch.float64)[:, None]
+target = torch.sin(2.0 * grid[:, 0])
+draws = {name: result.samples[name].reshape(-1, *shape).double() for name, shape in SHAPES.items()}
+count = next(iter(draws.values())).shape[0]
+posterior_mean = torch.stack([heads({k: v[i] for k, v in draws.items()}, grid)[:, 0] for i in range(count)]).mean(0)
+generator = torch.Generator().manual_seed(3)
+prior_mean = torch.stack(
+    [heads({k: torch.randn(*s, generator=generator, dtype=torch.float64) for k, s in SHAPES.items()}, grid)[:, 0]
+     for _ in range(count)]
+).mean(0)
+posterior_rmse = float(((posterior_mean - target) ** 2).mean().sqrt())
+prior_rmse = float(((prior_mean - target) ** 2).mean().sqrt())
+print(f"held-out RMSE: posterior mean {posterior_rmse:.4f}, prior mean {prior_rmse:.4f}; "
+      f"acceptance {float(result.acceptance_rates.mean()):.2f}")
+assert posterior_rmse < 0.25
+assert prior_rmse > 0.5
+```
 
 ## Categorical perspective
 
-`net : Feature -> Target` is a Kleisli arrow $\mathbb{R} \to \mathcal{G}(\mathbb{R})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872), sending an input to a Gaussian measure over the response. The MLP is not part of that arrow's type: it is the map from the domain into the family's parameter space, and composing it with the Gaussian's parameterization is what makes the kernel's mean and scale depend nonlinearly on the input. [@giry1982categorical]
+`bnn : Resp -> Target` is a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]. Its sample steps compose a prior over the parameter space $\mathbb{R}^{13} \times \mathbb{R}_{>0}$ with a likelihood kernel from weights to responses, and the network is the deterministic map inside that kernel from a weight vector and an input to a Normal mean. The posterior predictive at a new input is then the Kleisli composite of the posterior over weights with the same kernel, which is why its spread inherits the posterior's disagreement about the function.
 
-Under a strictly linear algebra, a chain
-`W_1 >> W_2 >> W_3` of tensor morphisms collapses to a single linear map; the
-intermediate objects impose only a rank bound. Placing the nonlinearity inside
-the kernel's parameter source avoids that collapse while retaining the V-Cat
-representation, because the kernel need not be linear in its input. The
-[`ParamSource`](../api/continuous/param_source.md#quivers.continuous.param_source.ParamSource)
-interface supplies the common boundary: `mlp`, `linear`, `attention`, and
-`identity` differ only in what they compute. An `attention` source pools a
-sequence of rows into one parameter vector, so a program step, which hands a
-kernel one row per draw, refuses to draw through it; a program attends over a
-sequence with a [learned function](../guides/dsl-declarations.md#sequence-functions-self-attention-and-position-tables)
-declared `param_source=self_attention`.
-
-Putting a prior on the weights is then a second, independent move. It lifts the deterministic parameter $\theta$ into a sample site, so the model becomes a mixture of networks $\int p(y \mid x, \theta)\, p(\theta)\, d\theta$ rather than a single one.
+Declaring the weights as sites is what separates this source from a neural kernel such as `morphism net : A -> B [param_source=mlp] ~ Normal`, whose network's weights belong to the morphism's [`ParamSource`](../api/continuous/param_source.md#quivers.continuous.param_source.ParamSource) and are learned as point estimates. Here they are random variables of the program, as they are under `weights=latent` in the section above, so a single source denotes the whole mixture $\int p(y \mid x, \theta)\, p(\theta \mid \mathcal{D})\, d\theta$.
 
 ## See also
 
-- [Deep Markov Model](deep-markov.md) for the same conditional-Normal kernels threaded through `scan` as a nonlinear state-space model.
-- [Bayesian Regression](bayesian-regression.md) for the linear counterpart, where the coefficients carry declared priors in the source.
+- [Bayesian Regression](bayesian-regression.md) for the linear special case, a network with no hidden layer.
+- [Variational Autoencoder](vae.md) for neural kernels whose weights are point estimates, with an amortized posterior over latent codes instead of over weights.
+
+## Sources and further reading
+
+- *A Practical Bayesian Framework for Backpropagation Networks* [@mackay1992bayesian].
+- *Accurate Approximations for Posterior Moments and Marginal Densities* [@tierney1986laplace].

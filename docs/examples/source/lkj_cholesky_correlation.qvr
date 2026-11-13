@@ -12,7 +12,7 @@
 #   eta     ~ HalfNormal(2)                          shape parameter
 #   chol    ~ LKJCholesky(eta)                       Cholesky factor
 #
-# The program carries no observe step: it is the prior surface a
+# The program carries no observe step: it is the prior model a
 # multivariate model composes with, and Sigma = chol * chol^T is
 # the correlation matrix a downstream likelihood would consume.
 #

@@ -1,15 +1,25 @@
 # Multi-Output Negative Binomial Regression
 #
-# Per-output coefficients and count parameters are gathered to response rows.
-# The inline family follows PyTorch's NegativeBinomial convention:
-# mean = total_count * probs / (1 - probs).
-# With probs = disp / (disp + mu), the actual mean is disp**2 / mu.
-# For the usual NB2 mean mu, use probs = mu / (disp + mu) instead.
-# This source preserves the former probability expression.
+# An NB2 negative-binomial regression with one intercept, one
+# slope, and one dispersion per output. The log link maps the
+# linear predictor to the count mean mu = exp(eta); the dispersion
+# phi sets the extra-Poisson variance mu + mu**2 / phi.
+#
+# Generative structure:
+#
+#   beta_0_d     ~ Normal(0, 5)                   per-output intercept
+#   beta_1_d     ~ Normal(0, 5)                   per-output slope
+#   phi_d        ~ Gamma(2, 0.5)                  per-output dispersion
+#   mu_n         = exp(beta_0_{d(n)} + beta_1_{d(n)} * x_n)
+#   y_n          ~ NegativeBinomial(total_count=phi_{d(n)},
+#                                   probs=mu_n / (phi_{d(n)} + mu_n))
+#
+# NegativeBinomial(total_count, probs) has mean
+# total_count * probs / (1 - probs), so probs = mu / (phi + mu)
+# gives mean mu and variance mu + mu**2 / phi (the NB2 form).
 
-object Item : FinSet 21
 object Out : FinSet 3
-object Resp : FinSet 63
+object Resp : FinSet 300
 object Val : Real 1
 
 program negbin_regression : Resp -> Val
@@ -22,7 +32,7 @@ program negbin_regression : Resp -> Val
     let disp = dispersion[out_idx]
     let eta = b0 + b1 * x
     let mu = exp(eta)
-    let probs = disp / (disp + mu)
+    let probs = mu / (disp + mu)
 
     observe y : Resp <- NegativeBinomial(total_count=disp, probs=probs)
     return beta_1

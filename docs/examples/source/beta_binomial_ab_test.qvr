@@ -29,7 +29,7 @@
 # Reference: [Skellam 1948](https://doi.org/10.1111/j.2517-6161.1948.tb00014.x).
 
 object Arm : FinSet 2
-object Batch : FinSet 12
+object Batch : FinSet 40
 object Val : Real 1
 
 program ab_test : Batch -> Val

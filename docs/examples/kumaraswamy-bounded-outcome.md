@@ -49,7 +49,7 @@ The Kumaraswamy density is $f(y; a, b) = a b\, y^{a - 1} (1 - y^a)^{b - 1}$ on $
 #
 # Reference: [Kumaraswamy 1980](https://doi.org/10.1016/0022-1694(80)90036-0).
 
-object Resp : FinSet 64
+object Resp : FinSet 200
 object Val : Real 1
 
 program kumaraswamy_regression : Resp -> Val
@@ -82,18 +82,21 @@ different predictor values can be more interpretable than comparing the raw
 
 ## Walkthrough
 
-`object Resp : FinSet 64` is the plate the responses are observed over, and `object Val : Real 1` is the value space of what the program returns, so the signature reads `Resp -> Val`. The domain names the plate; the codomain names the space the returned value lives in, which for a real scalar is `Real 1`.
+`object Resp : FinSet 200` is the plate the responses are observed over, and `object Val : Real 1` is the value space of what the program returns, so the signature reads `Resp -> Val`. The domain names the plate; the codomain names the space the returned value lives in, which for a real scalar is `Real 1`.
 
 `sample b <- HalfNormal(2.0)` gives the global second shape parameter a weakly-informative positive prior. The uniform Kumaraswamy occurs at $a = b = 1$; a half-Normal is not centered specifically on that value. The two coefficients carry unit-Normal priors, `let eta = gamma_0 + gamma_1 * x` binds the linear predictor over the exogenous covariate `x`, and `let a = exp(eta)` maps it into the positive first shape parameter. `return a` exposes the per-row fitted shape. The implied mean is $E[Y_n] = b\,B(1 + 1/a_n, b)$; this parameterization has no standard one-number concentration equal to `1 / (1 + 1 / b)`.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
-
+The blocks below simulate from the model, check the compiled log joint against
+a hand-written density, and then recover the parameters with SVI and NUTS. The
+program reads its data by name, so its input `x_in` is a single dummy row: that
+leading axis is a particle axis, and a longer one would score the whole data
+set once per row.
 
 ### Generating synthetic data
 
-Pick ground truth for all three latent sites, build the per-row first shape from the covariate, and forward-generate the bounded responses from those same values, so the point the harness scores is self-consistent.
+Pick ground truth for all three latent sites, build the per-row first shape from the covariate, and forward-generate the bounded responses by inverting the Kumaraswamy CDF $F(y) = 1 - (1 - y^a)^b$, so the point the harness scores is self-consistent.
 
 ```python
 import torch
@@ -103,11 +106,11 @@ torch.manual_seed(0)
 prog = load("docs/examples/source/kumaraswamy_bounded_outcome.qvr")
 model = prog.morphism
 
-n_resp = 64
+n_resp = 200
 
-true_b = 1.6
-true_gamma_0 = 0.3
-true_gamma_1 = 0.7
+true_b = torch.tensor(1.6)
+true_gamma_0 = torch.tensor(0.3)
+true_gamma_1 = torch.tensor(0.7)
 
 x = torch.randn(n_resp)
 a_true = torch.exp(true_gamma_0 + true_gamma_1 * x)
@@ -118,37 +121,74 @@ observations = {"y": y, "x": x}
 x_in = torch.zeros(1, 1)
 ```
 
-The response is generated through the Kumaraswamy quantile function $Q(u) = (1 - (1 - u)^{1/b})^{1/a}$, the closed form that motivates the family in the first place.
+### Checking the log joint
+
+```python
+D = torch.distributions
+truth = {"b": true_b, "gamma_0": true_gamma_0, "gamma_1": true_gamma_1}
+# Kumaraswamy density: a * b * y**(a - 1) * (1 - y**a)**(b - 1).
+kumaraswamy_log_density = (
+    torch.log(a_true) + torch.log(true_b) + (a_true - 1.0) * torch.log(y)
+    + (true_b - 1.0) * torch.log1p(-(y ** a_true))
+)
+oracle = (
+    D.HalfNormal(2.0).log_prob(true_b)
+    + D.Normal(0.0, 1.0).log_prob(true_gamma_0)
+    + D.Normal(0.0, 1.0).log_prob(true_gamma_1)
+    + kumaraswamy_log_density.sum()
+)
+compiled = model.log_joint(x_in, {**truth, **observations}).sum()
+print(f"compiled log joint: {float(compiled):.4f}")
+print(f"torch log joint:    {float(oracle):.4f}")
+assert torch.allclose(compiled, oracle, rtol=1e-5)
+```
 
 ### SVI fit
+
+A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+[`SVI`](../api/inference/svi.md). With 200 rows the standard errors are near 0.085 for `gamma_0`, 0.06 for
+`gamma_1`, and 0.15 for `b`, so the tolerances are about four standard errors:
+0.35, 0.25, and 0.6.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
 
+tolerance = {"gamma_0": 0.35, "gamma_1": 0.25, "b": 0.6}
+
 torch.manual_seed(1)
-guide = AutoNormalGuide(model, observed_names={"y", "x"})
-optim = torch.optim.Adam(
-    list(model.parameters()) + list(guide.parameters()), lr=5e-2,
-)
+guide = AutoNormalGuide(model, observed_names={"x", "y"})
+optim = torch.optim.Adam(guide.parameters(), lr=5e-2)
 svi = SVI(model, guide, optim, ELBO(num_particles=1))
+for _ in range(1500):
+    svi.step(x_in, observations)
 
-losses = [svi.step(x_in, observations) for _ in range(300)]
-
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
+with torch.no_grad():
+    draws = [guide.rsample(x_in) for _ in range(500)]
+post = {k: float(torch.stack([d[k] for d in draws]).mean()) for k in tolerance}
+for k, tol in tolerance.items():
+    print(f"{k:>8}: posterior mean {post[k]:.3f}, truth {float(truth[k]):.3f}")
+    assert abs(post[k] - float(truth[k])) < tol
 ```
 
 ### NUTS posterior
+
+[`NUTSKernel`](../api/inference/mcmc.md) samples the same posterior over all
+200 rows. Its posterior means should meet the same tolerances and agree with
+the SVI means to within half of each tolerance.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
 torch.manual_seed(2)
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=6, target_accept=0.8)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
 mc = MCMC(kernel, num_warmup=100, num_samples=100, num_chains=1)
 result = mc.run(model, x_in, observations)
 
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
+for k, tol in tolerance.items():
+    mean = float(result.samples[k].mean())
+    print(f"{k:>8}: posterior mean {mean:.3f}, truth {float(truth[k]):.3f}")
+    assert abs(mean - float(truth[k])) < tol
+    assert abs(mean - post[k]) < tol / 2
 print(f"divergences: {int(result.divergence_counts.sum())}")
 ```
 

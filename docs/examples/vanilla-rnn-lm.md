@@ -2,260 +2,188 @@
 
 ## Overview
 
-This recurrent language model uses a [`rnn_cell`](../guides/dsl-programs-and-lets.md) program to update the hidden state from the current embedded token and the previous state. [`scan(rnn_cell)`](../guides/dsl-declarations.md#scan-temporal-recurrence) threads that state across a sequence, and a `Categorical` [`lm_head`](../api/continuous/families.md) maps the terminal hidden state to a distribution over the vocabulary for one next-token observation.
+An Elman recurrent network [@elman1990finding] reads a token sequence one position at a time, keeps a hidden state that summarizes the prefix it has read, and predicts the next token from that state. This source states the network exactly: the hidden-state update is a [learned deterministic function](../guides/dsl-declarations.md#function), `h_t = tanh(W [x_t; h_{t-1}] + b)`, a [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) threads it along the sequence, and every position scores its next token under a Categorical whose logits are an affine readout of the state. The weights are point-estimated, so fitting the program by gradient ascent on its log joint is maximum-likelihood training of the language model.
 
 ## QVR source
 
 ```qvr
-# Bayesian Vanilla RNN Language Model
-#
-# A standard vanilla RNN used as a causal language model. The
-# recurrent cell is written as a program so every step of the
-# recurrence is a declared site. scan threads hidden state across
-# each input sequence and returns its terminal state, which a
-# Categorical lm_head projects onto the Token vocabulary.
-#
-# Generative structure:
-#
-#   h_t      = tanh(W [x_t ; h_{t-1}])           recurrent update
-#   next_t   ~ Categorical(logits=lm_head(h_t))  next-token target
-#
-# The tanh is drawn rather than applied. A LogitNormal draw is a
-# sigmoid of a Gaussian pre-activation, and tanh(u) = 2 sigmoid(2u) - 1,
-# so squashing that draw onto (-1, 1) with an affine let is exactly a
-# tanh-transformed Gaussian pre-activation. The cell's single weight
-# matrix is the linear parameter map its arrow already carries, which
-# is what makes this the one-matrix recurrence a vanilla RNN is
-# defined to be.
-#
-# Each input row is one context, and one run of the program scores
-# it: the contexts of a corpus are independent runs that share the
-# model's parameters. Token is the vocabulary, so it is the value
-# space of what lm_head draws and of what the program returns.
-#
-# This is the simplest sequence model in the gallery and the
-# baseline against which gru_lm.qvr and lstm_lm.qvr add gating
-# structure.
+# An Elman recurrent language model with learned weights: the hidden state
+# is a deterministic function of the previous state and the current token,
+# and each position scores the next token.
+object Vocab : Real 6
+object Hidden : Real 8
+object Logits : Real 6
 
-object Token : FinSet 256
-object Embedded : Real 64
-object Hidden : Real 128
+# h_t = tanh(W [x_t; h_{t-1}] + b), with x_t the one-hot current token, so
+# the block of W that reads x_t is the token embedding.
+morphism cell : Vocab * Hidden -> Hidden [role=function, output=tanh]
+# The next token's logits, an affine readout of the hidden state.
+morphism lm_head : Hidden -> Logits [role=function]
 
-morphism tok_embed : Token -> Embedded [role=embed]
-morphism cell : Embedded * Hidden -> Hidden ~ LogitNormal
-morphism lm_head : Hidden -> Token ~ Categorical
+program rnn_step(x_t, h_prev) : Vocab * Hidden -> Hidden
+    let h = cell(x_t, h_prev)
+    let logits = lm_head(h)
+    observe next_token <- Categorical(logits=logits)
+    return h
 
-program rnn_cell(x_t, h_prev) : Embedded * Hidden -> Hidden
-    sample squashed <- cell(x_t, h_prev)
+define run_all = scan(rnn_step)
 
-    let h_new = 2.0 * squashed - 1.0
-    return h_new
+program rnn_lm : Vocab -> Hidden
+    sample last <- run_all
+    return last
 
-define backbone = tok_embed >> scan(rnn_cell)
-
-program vanilla_rnn_lm : Token -> Token
-    sample h <- backbone
-
-    observe next_token <- lm_head(h)
-    return next_token
-
-export vanilla_rnn_lm
+export rnn_lm
 ```
 
 ## Understanding the model
 
-A [recurrent state](https://colah.github.io/posts/2015-08-Understanding-LSTMs/#recurrent-neural-networks)
-summarizes the preceding context [@olah2015lstm]. Each new token updates
-that summary, so the same token can lead to different predictions depending
-on what preceded it. The terminal state summarizes the supplied prefix;
-the head turns it into probabilities for one following token.
+With $x_t$ the one-hot encoding of the token at position $t$ and $h_0 = 0$, the program scores
 
-This cell includes random hidden draws. Forward executions can thus differ
-even at fixed parameters, unlike a deterministic RNN. Scoring an explicit
-trajectory and scoring only the final output are different operations: the
-latter generally requires [integrating hidden draws](../tutorials/python/03-probabilistic-programs.md#building-a-monadicprogram). The [trajectory addresses](../tutorials/qvr/05-time-series.md#scan-for-left-to-right-evaluation)
-below keep repeated sites distinguishable when replaying and checking a run.
+$$
+h_t = \tanh\bigl(W [x_t; h_{t-1}] + b\bigr), \qquad
+\log p(y_{1:T} \mid x_{1:T}) = \sum_{t=1}^{T} \log \mathrm{softmax}(U h_t + c)_{y_t},
+$$
+
+where $y_t$ is the token that follows position $t$. Because $x_t$ is one-hot, the columns of $W$ that multiply it are a token embedding, so the network needs no separate embedding layer. Each input row is one run: a whole sequence, with its one-hot tokens as the input and its next tokens as the observation `next_token`, so a batch of $B$ rows is $B$ independent sequences.
 
 ## Walkthrough
 
-Tokens are embedded into the 64-dimensional `Embedded` space, after which `scan(rnn_cell)` threads a 128-dimensional hidden state across the sequence. At each step, `rnn_cell` consumes `(x_t, h_{t-1})`, draws `s_t` from the `LogitNormal` cell, and returns $h_t = 2s_t - 1$ on $(-1, 1)$. The program form exposes this draw as a declared site. Since $2\sigma(u)-1=\tanh(u/2)$, the affine `let` is a scaled tanh transform of a Gaussian pre-activation; unlike a deterministic vanilla-RNN update, it retains the `LogitNormal` family's learned scale. The terminal state $h_T$ summarizes the prefix, and the `Categorical` [`lm_head`](../api/continuous/families.md) maps it to a distribution over the 256-symbol vocabulary for `observe next_token`.
-
-The program scores one context per run. Each input row is a prompt, and a corpus of prompts is a batch of independent runs that share the model's parameters, so every prompt draws its own trajectory and scores its own next-token label. `Token : FinSet 256` sits in `lm_head`'s codomain and in the program's own codomain, so it is the value space: the 256 outcomes a draw ranges over, and the space the returned `next_token` lives in.
-
-`scan(rnn_cell)` elaborates to a one-position step computation
-and a recursive helper over the input's open sequence extent. Repeated sites
-receive stable trajectory addresses such as `s@0`, `s@1`, and so on, which the
-reference machine can replay and score. Current transpile targets refuse the
-scan under `scan:no-lowering:rnn_cell`; the open sequence extent is runtime
-data rather than a declared object the target can use as a static loop bound.
-See the [probabilistic-program reference](../reference/qvr/probabilistic-programs.md#scans).
-
-```mermaid
-flowchart LR
-    tok["tok"] --> embed["embed"]
-    embed["embed"] --> scan_cell_["scan(rnn_cell)"]
-    scan_cell_["scan(rnn_cell)"] --> h_T["h_T"]
-    h_T["h_T"] --> lm_head["lm_head"]
-    lm_head["lm_head"] --> next_token["next_token"]
-    class tok qv-input
-    class embed,scan_cell_,lm_head qv-checked
-    class h_T qv-foundation
-    class next_token qv-output
-```
+- `object Vocab : Real 6` is the space of one-hot tokens and `object Logits : Real 6` the space of next-token logits over the same six-token vocabulary; `object Hidden : Real 8` is the hidden state.
+- `morphism cell ... [role=function, output=tanh]` is the recurrence: an affine map of the concatenated input and previous state, followed by `tanh`. `role=function` makes it a deterministic function with point-estimated weights rather than a random kernel, so it has no sample site.
+- `morphism lm_head ... [role=function]` is the affine readout to logits.
+- `program rnn_step` is one position: it updates the state, observes the next token under `Categorical(logits=logits)`, and returns the new state.
+- `define run_all = scan(rnn_step)` runs the step along the sequence from a zero initial state; the observation `next_token` is scored at every position, at the sites `next_token@0`, `next_token@1`, and so on.
+- `program rnn_lm` is the exported program: one draw from the scan, which is deterministic apart from its observations.
 
 ## Try it
 
-> The short fits below demonstrate the API. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
+The first block checks the compiled runtime and the reference machine against an independent float64 implementation of the Elman recurrence; the second fits the network by maximum likelihood and checks what it has learned. The tolerances in both were fixed before the first run.
 
-### Generating synthetic data
+### The log joint against a hand-written recurrence
 
-Trace the fixed vanilla recurrence once to obtain its latent trajectory and target. The scan reaches the embedding and the cell's draws once per position, at the sites `h$x_in@t`, named under the scan's binding `h`, and the cell's own labels at `@t`, and the terminal state `h` is a function of them. Reuse the trajectory in `observations` so later likelihood evaluations score that same realization; otherwise each evaluation draws a new one. Each input row is one run: an int64 prompt of length `seq_len`, scored against one next-token label.
+`oracle` recomputes one run's log joint from the learned functions' weights with a plain torch loop. The compiled runtime (float32) must match it to a relative 1e-5 and the reference machine, given the same weights as data, to 1e-9. An oracle that drops the `tanh` must disagree by more than 1e-3, which shows the first comparison can tell the two recurrences apart.
 
 ```python
+import math
+
 import torch
+import torch.distributions as D
+
+from quivers.continuous import LearnedFunction, LinearSource
 from quivers.dsl import load
-from quivers.inference.trace import trace
+
+SOURCE = "docs/examples/source/vanilla_rnn_lm.qvr"
+VOCAB, HIDDEN = 6, 8
+
+
+def learned_weights(model):
+    """The learned functions' weights under their checked input names."""
+    found = {}
+    for path, module in model.named_modules():
+        tail = path.split(".")[-1]
+        if not tail.startswith("_function_"):
+            continue
+        assert isinstance(module, LearnedFunction)
+        assert isinstance(module.source, LinearSource)
+        name = tail.removeprefix("_function_")
+        found[f"{name}_param_weight"] = module.source.linear.weight.detach()
+        found[f"{name}_param_bias"] = module.source.linear.bias.detach()
+    return found
+
+
+def oracle(weights, tokens, targets, squash=True):
+    """One run's log joint: an Elman loop with a softmax readout, in float64."""
+    w = {k: v.double() for k, v in weights.items()}
+    h = torch.zeros(HIDDEN, dtype=torch.float64)
+    total = 0.0
+    for t in range(tokens.shape[0]):
+        x = torch.nn.functional.one_hot(tokens[t], VOCAB).double()
+        pre = w["cell_param_weight"] @ torch.cat([x, h]) + w["cell_param_bias"]
+        h = torch.tanh(pre) if squash else pre
+        logits = w["lm_head_param_weight"] @ h + w["lm_head_param_bias"]
+        total += float(D.Categorical(logits=logits).log_prob(targets[t]))
+    return total
+
+
+def host(value):
+    return value.item() if value.dim() == 0 else tuple(host(row) for row in value)
+
 
 torch.manual_seed(0)
-prog = load("docs/examples/source/vanilla_rnn_lm.qvr")
-model = prog.morphism
-
-# Fix the model's kernel parameters to chosen values, then run one
-# forward trace so the captured hidden state and the next-token target it
-# generated are jointly consistent under the same weights.
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
-
-rows, seq_len, vocab = 32, 8, 256
-prompts = torch.randint(0, vocab, (rows, seq_len))
-with torch.no_grad():
-    forward = trace(model, prompts)
-# Every position's embedding and cell draws, `h$x_in@t` and the cell's own
-# sites at `@t`, are the latent trajectory the terminal state is a
-# function of.
-trajectory = {
-    name: site.value.detach()
-    for name, site in forward.sites.items()
-    if "@" in name and not site.is_deterministic
-}
-next_token = forward.sites["next_token"].value.detach()
-
-x_in = prompts
-observations = {"next_token": next_token, **trajectory}
-print("prompts:", prompts.shape, prompts.dtype)
-print("trajectory sites:", len(trajectory))
-print("next_token:", next_token.shape, next_token.dtype)
+program = load(SOURCE)
+model = program.morphism
+tokens = torch.randint(0, VOCAB, (2, 7))
+targets = torch.randint(0, VOCAB, (2, 7))
+x = torch.nn.functional.one_hot(tokens, VOCAB).float()
+compiled = model.log_joint(x, {"next_token": targets})
+weights = learned_weights(model)
+for row in range(2):
+    expected = oracle(weights, tokens[row], targets[row])
+    wrong = oracle(weights, tokens[row], targets[row], squash=False)
+    run = program.run(
+        "rnn_lm",
+        data={
+            "vocab": host(x[row].double()),
+            "next_token": host(targets[row]),
+            **{k: host(v.double()) for k, v in weights.items()},
+        },
+        sites={},
+        seed=0,
+    )
+    print(f"run {row}: compiled {float(compiled[row]):.6f}, reference {run.log_joint:.9f}, "
+          f"oracle {expected:.9f}, oracle without tanh {wrong:.6f}")
+    assert math.isclose(float(compiled[row]), expected, rel_tol=1e-5)
+    assert math.isclose(run.log_joint, expected, rel_tol=1e-9)
+    assert not math.isclose(float(compiled[row]), wrong, rel_tol=1e-3)
 ```
 
-### SVI fit
+### Maximum-likelihood fitting
 
-Reinitialize `tok_embed`, the recurrent `cell`, and `lm_head`, then fit a mean-field posterior over their parameters and the latent trajectory with an [`AutoNormalGuide`](../api/inference/guide.md) and [`SVI`](../api/inference/svi.md). The scan draws the embedding and the cell's sites at every position, so the trajectory is lifted beside the parameters with [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters), each label stacked over positions. The [`ELBO`](../api/inference/elbo.md) scores the Categorical `next_token` site for each prompt.
-
-```python
-import torch
-from quivers.dsl import load
-from quivers.inference import AutoNormalGuide, ELBO, SVI, bayesian_lift_parameters
-from quivers.inference.trace import trace
-
-torch.manual_seed(0)
-prog = load("docs/examples/source/vanilla_rnn_lm.qvr")
-model = prog.morphism
-
-# Regenerate the synthetic corpus under the same seed used for
-# data generation.
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
-rows, seq_len, vocab = 32, 8, 256
-prompts = torch.randint(0, vocab, (rows, seq_len))
-targets = model.rsample(prompts)
-observations = {"next_token": targets}
-
-# Fresh weights for fitting.
-torch.manual_seed(1)
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
-
-# The scan's draws at every position are latents too: collect each
-# label, stacked as (rows, seq_len, ...), and lift it beside the
-# kernel parameters so the guide covers the whole trajectory.
-forward = trace(model, prompts, observations)
-per_position: dict[str, list[torch.Tensor]] = {}
-for name, site in forward.sites.items():
-    label, at, _ = name.partition("@")
-    if at and not site.is_deterministic and not site.is_observed:
-        per_position.setdefault(label, []).append(site.value)
-trajectory_shapes = {
-    label: tuple(torch.stack(values, dim=1).shape)
-    for label, values in per_position.items()
-}
-lifted, lx, lobs = bayesian_lift_parameters(
-    model, prompts, observations,
-    prior_scale=1.0,
-    additional_latents=trajectory_shapes,
-)
-
-guide = AutoNormalGuide(lifted, observed_names=set(lobs))
-optim = torch.optim.Adam(guide.parameters(), lr=1e-2)
-svi = SVI(lifted, guide, optim, ELBO(num_particles=1))
-
-losses = [svi.step(lx, lobs)]
-for _ in range(30):
-    losses.append(svi.step(lx, lobs))
-
-print(f"initial loss: {losses[0]:.2f}")
-print(f"final loss:   {losses[-1]:.2f}")
-```
-
-### NUTS posterior
-
-The lifted Bayesian model treats both the parameters $\theta$ and the latent trajectory $z$ as latents: $p(\theta, z \mid x, y) \propto p(\theta) \, p(z \mid x, \theta) \, p(y \mid z, \theta)$, where $z$ collects every draw the scan makes at every position, the embedding `h$x_in@t` and the cell's own sites, and the terminal state is a function of $z$. [`bayesian_lift_parameters`](../api/inference/lifts.md#quivers.inference.lifts.bayesian_lift_parameters) declares Normal priors on every learnable parameter and accepts an `additional_latents` mapping that lifts each per-position label, stacked over positions as `(rows, seq_len, ...)`, as a NUTS variable with a placeholder Normal prior. The score step substitutes both into the inner program and cancels the placeholder, leaving $\log p(\theta) + \log p_{\text{inner}}(z, y \mid x, \theta)$. Given the full $(\theta, z)$ state, this log density is deterministic and introduces no Monte Carlo estimate during leapfrog steps.
+The training data follow a deterministic rule, token $t + 1$ = token $t$ + 1 (mod 6), on 8 runs of length 12 from random starts. The next token is a function of the current one, so a network that has learned the rule drives the per-token negative log likelihood toward zero. After 400 Adam steps the fitted mean per-token NLL must be below 0.05 nats on the training runs and on 8 held-out runs (a uniform predictor scores $\log 6 \approx 1.79$), and above 1.0 on runs that advance by two, so the fit has learned the rule it was shown rather than a constant.
 
 ```python
-import torch
-from quivers.dsl import load
-from quivers.inference import MCMC, NUTSKernel, bayesian_lift_parameters
-from quivers.inference.trace import trace
+def per_token_nll(model, sequence):
+    x = torch.nn.functional.one_hot(sequence[:, :-1], VOCAB).float()
+    with torch.no_grad():
+        joint = model.log_joint(x, {"next_token": sequence[:, 1:]}).sum()
+    return -float(joint) / sequence[:, 1:].numel()
 
-torch.manual_seed(0)
-prog = load("docs/examples/source/vanilla_rnn_lm.qvr")
-model = prog.morphism
-for _, p in model.named_parameters():
-    p.data.copy_(torch.randn_like(p) * 0.3)
-rows, seq_len, vocab = 32, 8, 256
-prompts = torch.randint(0, vocab, (rows, seq_len))
-targets = model.rsample(prompts)
-observations = {"next_token": targets}
 
-# The latent trajectory: each label the scan reaches per position,
-# stacked as (rows, seq_len, ...), the layout a scanned site's values
-# take under its bare label.
-forward = trace(model, prompts, observations)
-per_position: dict[str, list[torch.Tensor]] = {}
-for name, site in forward.sites.items():
-    label, at, _ = name.partition("@")
-    if at and not site.is_deterministic and not site.is_observed:
-        per_position.setdefault(label, []).append(site.value)
-trajectory_shapes = {
-    label: tuple(torch.stack(values, dim=1).shape)
-    for label, values in per_position.items()
-}
-lifted, lx, lobs = bayesian_lift_parameters(
-    model, prompts, observations,
-    prior_scale=1.0,
-    additional_latents=trajectory_shapes,
+def rule(starts, length, step):
+    return (starts + step * torch.arange(length + 1)) % VOCAB
+
+
+generator = torch.Generator().manual_seed(3)
+runs, length = 8, 12
+train = rule(torch.randint(0, VOCAB, (runs, 1), generator=generator), length, 1)
+held_out = rule(torch.randint(0, VOCAB, (runs, 1), generator=generator), length, 1)
+other = rule(torch.randint(0, VOCAB, (runs, 1), generator=generator), length, 2)
+
+torch.manual_seed(4)
+model = load(SOURCE).morphism
+x = torch.nn.functional.one_hot(train[:, :-1], VOCAB).float()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.05)
+for _ in range(400):
+    optimizer.zero_grad()
+    loss = -model.log_joint(x, {"next_token": train[:, 1:]}).sum()
+    loss.backward()
+    optimizer.step()
+
+fitted, generalized, contrast = (
+    per_token_nll(model, train),
+    per_token_nll(model, held_out),
+    per_token_nll(model, other),
 )
-kernel = NUTSKernel(step_size=0.005, max_tree_depth=3, target_accept=0.8)
-mc     = MCMC(kernel, num_warmup=10, num_samples=10, num_chains=1)
-result = mc.run(lifted, lx, lobs)
-
-print(f"acceptance:  {float(result.acceptance_rates.mean()):.2f}")
-print(f"divergences: {int(result.divergence_counts.sum())}")
+print(f"per-token NLL: training {fitted:.4f}, held out {generalized:.4f}, other rule {contrast:.4f}")
+assert fitted < 0.05 and generalized < 0.05
+assert contrast > 1.0
 ```
 
 ## Categorical perspective
 
-The model is a Kleisli morphism $\mathrm{Token} \to \mathcal{G}(\mathrm{Token})$ in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. [`scan(rnn_cell)`](../guides/dsl-declarations.md#scan-temporal-recurrence) is the recursive [fold](https://ncatlab.org/nlab/show/fold) along the sequence in the Kleisli category: each step composes the previous step's output kernel with the new cell. The closing Categorical head observes the next-token label as a sub-probability kernel in $\mathcal{G}_{\le 1}$. [@giry1982categorical]
+`cell` and `lm_head` are morphisms of the deterministic subcategory of the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]: each is a Dirac kernel at its output. [`scan(rnn_step)`](../guides/dsl-declarations.md#scan-temporal-recurrence) is the left [fold](https://ncatlab.org/nlab/show/fold) of the step along the sequence, and the only non-deterministic part of the run is the observation at each position, a sub-probability kernel in $\mathcal{G}_{\le 1}$ that weights the run by the likelihood of its next token.
 
 ## Sources and further reading
 
+- *Finding structure in time* [@elman1990finding].
 - *A categorical approach to probability theory* [@giry1982categorical].

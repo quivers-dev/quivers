@@ -1,22 +1,24 @@
 # First-Order Autoregressive Model
 #
-# A first-order autoregressive time series with Normal noise.
-# Conditioning on an observed series indexed by Step gives a
-# posterior over (alpha, phi, sigma); this is
-# the canonical reference point for the more elaborate
-# state-space models in the gallery.
+# A first-order autoregressive series with Normal innovations,
+# scored under its conditional likelihood: given the value y_0 that
+# starts the series, each of the T observed values y_1, ..., y_T is
+# Normal around a linear function of its predecessor. This is the
+# reference point for the state-space models in the gallery.
 #
 # Generative structure:
 #
-#   alpha  ~ Normal(0, 5)
-#   phi    ~ Uniform(-1, 1)                       stationarity constraint
-#   sigma  ~ HalfCauchy(1)
-#   y_t    ~ Normal(alpha + phi * y_{t-1}, sigma) per-step observation
+#   alpha  ~ Normal(0, 5)                         intercept
+#   phi    ~ Uniform(-1, 1)                       stationary region
+#   sigma  ~ HalfCauchy(1)                        innovation scale
+#   y_t    ~ Normal(alpha + phi * y_{t-1}, sigma) for t = 1, ..., T
 #
-# The Uniform(-1, 1) prior on phi enforces the AR stationarity
-# condition. A stationary initialization would have mean
-# alpha / (1 - phi) and variance sigma^2 / (1 - phi^2); the
-# runnable example instead conditions on an explicit lag vector.
+# Step indexes the T scored transitions. y_prev is the series
+# shifted by one, supplied as data: row t of y_prev holds y_{t-1}, so
+# the first row conditions on y_0, which the likelihood does not
+# score. Inside the Uniform(-1, 1) support the series has a
+# stationary distribution with mean alpha / (1 - phi) and variance
+# sigma^2 / (1 - phi^2).
 
 object Step : FinSet 64
 object Val : Real 1

@@ -2,7 +2,7 @@
 #
 # The two-parameter logistic IRT model for binary responses
 # y_{ij} of respondent i to item j. Each item carries its own
-# discrimination and difficulty; respondents carry an
+# discrimination and difficulty; respondents carry a
 # unidimensional ability.
 #
 # Generative structure:
@@ -12,14 +12,16 @@
 #   discrim_j     ~ LogNormal(0, 1)               positive discrimination
 #   y_{ij}        ~ Bernoulli(sigmoid(discrim_j * (ability_i - difficulty_j)))
 #
-# The runtime observes the full response matrix indexed by
-# Resp; the per-row item and respondent indices are supplied at
-# fit time via the standard plate-gather idiom
-# (difficulty[item_idx], ability[person_idx]).
+# Resp enumerates the full 100 x 20 person-by-item crossing, one
+# row per response; the per-row person and item indices are host
+# data, read through the plate-gather idiom
+# (ability[person_idx], difficulty[item_idx]). The response is scored
+# from its logit, so a saturated predictor keeps its precision; the
+# program returns the response probabilities.
 
-object Person : FinSet 8
-object Item : FinSet 8
-object Resp : FinSet 64
+object Person : FinSet 100
+object Item : FinSet 20
+object Resp : FinSet 2000
 object Val : Real 1
 
 program irt_2pl : Resp -> Val
@@ -33,7 +35,7 @@ program irt_2pl : Resp -> Val
     let eta = a * (theta - b)
     let p = sigmoid(eta)
 
-    observe y : Resp <- Bernoulli(probs=p)
+    observe y : Resp <- Bernoulli(logits=eta)
     return p
 
 export irt_2pl

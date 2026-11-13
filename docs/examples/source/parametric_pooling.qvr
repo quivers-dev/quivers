@@ -1,57 +1,64 @@
 # Parametric Partial Pooling
 #
-# A one-way random-effects model whose group-level effects come
-# from a parametric program template. The template fixes the
-# non-centered pooling structure once; each host program
-# instantiates it at a concrete between-group spread, so a single
-# source expresses tight and loose partial pooling side by side.
+# The eight-schools model of Rubin (1981): each school j reports an
+# estimated treatment effect y_j with a known standard error se_j,
+# and the true effects are drawn around a common mean. A parametric
+# program template fixes the non-centered form of the school effects
+# once; each host program instantiates it at a different between-
+# school spread, so one source states the fully adaptive model and
+# two fixed-spread variants side by side.
 #
 # Generative structure:
 #
-#   z_j      ~ Normal(0, 1)              standardized group effect
-#   theta_j  = spread * z_j              non-centered scaling
-#   sigma    ~ LogNormal(0, 0.5)         observation noise scale
-#   y_j      ~ Normal(theta_j, sigma)    per-group observed summary
+#   mu       ~ Normal(0, 10)           common mean effect
+#   tau      ~ HalfCauchy(5)           between-school spread
+#   z_j      ~ Normal(0, 1)            standardized school effect
+#   theta_j  = tau * z_j               non-centered scaling
+#   y_j      ~ Normal(mu + theta_j, se_j)
 #
-# The score step multiplies the joint density by a soft
-# sum-to-zero factor on the group effects, the standard
-# identification device for random effects, and the labeled
-# return tuple names the program's outputs. The export selects
-# which host program the compiled module runs.
+# The host program `pooled` samples tau, so the data decide how much
+# the school effects are pooled toward mu. The hosts `pooled_tight`
+# and `pooled_loose` instantiate the same template at a fixed spread
+# of 2 and of 20, which shrinks the effects strongly or barely. The
+# standard errors se are host data, as in Rubin's analysis. Each host
+# returns a labeled tuple naming the school deviations and the mean.
 #
-# School is the plate the group summaries are observed over.
-# Effect and Scale are the value spaces of the two returned
-# quantities, both real scalars, so each host program's codomain
-# is the product Effect * Scale that its labeled return tuple
-# inhabits.
+# School is the plate the estimates are observed over. Effect and
+# Mean are the value spaces of the two returned quantities, so each
+# host program's codomain is the product Effect * Mean.
 #
 # References: [Rubin 1981](https://doi.org/10.3102/10769986006004377),
-# [Papaspiliopoulos et al. 2007](https://doi.org/10.1214/088342307000000014),
-# [Morris et al. 2019](https://doi.org/10.1016/j.sste.2019.100301).
+# [Papaspiliopoulos et al. 2007](https://doi.org/10.1214/088342307000000014).
 
-object School : FinSet 8
+object School : FinSet 40
 object Effect : Real 1
-object Scale : Real 1
+object Mean : Real 1
 
 program school_effects(spread : Real, K : FinSet) : K -> Effect
     sample z : K <- Normal(loc=0.0, scale=1.0)
     let effect = spread * z
     return effect
 
-program pooled_tight : School -> Effect * Scale
-    sample theta <- school_effects(0.6, School)
-    sample sigma <- LogNormal(loc=0.0, scale=0.5)
-    let total_effect = sum(theta)
-    score centering = -50.0 * total_effect * total_effect
-    observe y : School <- Normal(loc=theta, scale=sigma)
-    return (effects: theta, scale: sigma)
+program pooled : School -> Effect * Mean
+    sample mu <- Normal(loc=0.0, scale=10.0)
+    sample tau <- HalfCauchy(scale=5.0)
+    sample theta <- school_effects(tau, School)
+    let school_mean = mu + theta
+    observe y : School <- Normal(loc=school_mean, scale=se)
+    return (effects: theta, mean: mu)
 
-program pooled_loose : School -> Effect * Scale
-    sample theta <- school_effects(2.5, School)
-    sample sigma <- LogNormal(loc=0.0, scale=0.5)
-    let total_effect = sum(theta)
-    score centering = -50.0 * total_effect * total_effect
-    observe y : School <- Normal(loc=theta, scale=sigma)
-    return (effects: theta, scale: sigma)
+program pooled_tight : School -> Effect * Mean
+    sample mu <- Normal(loc=0.0, scale=10.0)
+    sample theta <- school_effects(2.0, School)
+    let school_mean = mu + theta
+    observe y : School <- Normal(loc=school_mean, scale=se)
+    return (effects: theta, mean: mu)
 
-export pooled_tight
+program pooled_loose : School -> Effect * Mean
+    sample mu <- Normal(loc=0.0, scale=10.0)
+    sample theta <- school_effects(20.0, School)
+    let school_mean = mu + theta
+    observe y : School <- Normal(loc=school_mean, scale=se)
+    return (effects: theta, mean: mu)
+
+export pooled

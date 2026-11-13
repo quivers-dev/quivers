@@ -33,7 +33,7 @@ import pytest  # noqa: E402
 
 from quivers.cli.repl_session import ReplSession  # noqa: E402
 
-LDA_PATH = "docs/examples/source/lda.qvr"
+LDA_PATH = "tests/fixtures/qvr/grouped_topic_mixture.qvr"
 
 
 # ---------------------------------------------------------------------------

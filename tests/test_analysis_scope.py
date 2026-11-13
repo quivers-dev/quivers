@@ -34,7 +34,7 @@ def _session(path: str) -> ReplSession:
 
 @pytest.fixture
 def lda():
-    return _session("docs/examples/source/lda.qvr")
+    return _session("tests/fixtures/qvr/grouped_topic_mixture.qvr")
 
 
 @pytest.fixture

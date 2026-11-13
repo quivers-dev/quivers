@@ -83,7 +83,7 @@ guess: across every live `(backend, example)` cell, every point of
 the six-point set, and every element of every exported vector, the
 largest disagreement is
 `_MEASURED_WORST_ULP_RATIO` float32 ULPs. Eight ULPs clears that
-worst case by a factor of 1.29, and
+worst case by a factor of 3.0, and
 [`test_export_tolerance_is_tight`][tests.transpile.test_export_equivalence.test_export_tolerance_is_tight]
 pins both numbers so the headroom cannot quietly grow.
 
@@ -91,35 +91,35 @@ The factor is that small because one gallery export runs a link
 function. `kumaraswamy_bounded_outcome` returns
 `a = exp(gamma_0 + gamma_1 * x)`, and `exp` turns the reference's
 float32 error on the exponent into a *relative* error on the result,
-so its worst element misses by six ULPs of a 99-magnitude value
+so its worst element misses by 2.7 ULPs of a 26-magnitude value
 where every export without a link misses by less than one. Those
-cells sit an order of magnitude inside the budget: `beta_regression`,
-`pcfg` and `ccg` top out at 0.81, 0.73 and 0.63 ULPs, and 53 cells
-reproduce the reference bit for bit.
+cells sit an order of magnitude inside the budget: `beta_regression`
+and `pcfg` top out at 0.81 and 0.73 ULPs, and 69 cells reproduce the
+reference bit for bit.
 
 This is a headroom figure, not a necessity. Widening it is never the
 fix for a failure: a real export defect moves the value by a
 multiple of its own magnitude, not by bits."""
 
-_MEASURED_WORST_ULP_RATIO = 6.18
+_MEASURED_WORST_ULP_RATIO = 2.67
 """Largest measured reference-versus-backend disagreement, in float32
 ULPs at the compared element's magnitude.
 
 Measured over every `(backend, example)` cell whose probe run
-completes, 250 of them at the time of the measurement, all six
+completes, 247 of them at the time of the measurement, all six
 points of each cell's set, and every element of every exported
-vector: the worst is `pyro@kumaraswamy_bounded_outcome`, 4.71431e-05
-absolute at a reference magnitude of 99.0359, which is 6.179 float32
-ULPs. 53 of the 250 cells agree to the last bit.
+vector: the worst is `pyro@kumaraswamy_bounded_outcome`, 5.0893e-06
+absolute at a reference magnitude of 26.4035, which is 2.668 float32
+ULPs. 69 of the 247 cells agree to the last bit.
 
 The worst case is a link function rather than a renderer, and the
 attribution is derived rather than assumed. That program returns
 `a = exp(gamma_0 + gamma_1 * x)`; recomputing the exponent in
-float64 from the point's own clamped `gamma_0 = 0.0594303198158741`,
-`gamma_1 = 1.3300246000289917` and `x[59] = 3.4105026721954346`
-gives `exp(gamma_0 + gamma_1 * x[59]) = 99.03593581497408`, which is
+float64 from the point's own `gamma_0 = 0.508632481098175`,
+`gamma_1 = 0.8106905817985535` and `x[59] = 3.4105026721954346`
+gives `exp(gamma_0 + gamma_1 * x[59]) = 26.403455101503106`, which is
 what pyro reports to the last digit, while the reference rounds the
-same quantity onto the float32 grid at 99.035888671875. The gap is
+same quantity onto the float32 grid at 26.40345001220703. The gap is
 the reference's own rounding scaled by the exported magnitude, so no
 change to any emission would close it.
 
@@ -159,15 +159,14 @@ def export_atol(reference: float) -> float:
 # entry cannot outlive the gap it describes.
 _NO_EXPORTED_PROGRAM: dict[str, str] = {
     # No `program` block at all: the module exports a `define`d
-    # composition morphism (`U.dagger >> V`, `bilinear_score(...)`),
-    # which denotes a linear map rather than a Markov kernel. There is
-    # no `return` clause, and `exported_return_names` raises rather
-    # than inventing one. Both carry a synthetic-data block and a
-    # pinned joint, so the density tier scores them; what they lack is
-    # a codomain for this tier to compare, and every one of their
-    # `(backend, example)` cells sits in the gallery tier's
-    # `_EXPECTED_TRANSPILE_RAISES` under `composition_decl`.
-    "pmf": "structural: composition morphism, no program block",
+    # contraction morphism (`bilinear_score(...)`), which denotes a
+    # linear map rather than a Markov kernel. There is no `return`
+    # clause, and `exported_return_names` raises rather than inventing
+    # one. It carries a synthetic-data block and a pinned joint, so the
+    # density tier scores it; what it lacks is a codomain for this tier
+    # to compare, and every one of its `(backend, example)` cells sits
+    # in the gallery tier's `_EXPECTED_TRANSPILE_RAISES` under
+    # `composition_decl`.
     "tensor_contraction": ("structural: contraction morphism, no program block"),
 }
 
@@ -1329,8 +1328,8 @@ def test_export_tolerance_is_tight() -> None:
        keeps the headroom from growing into a hiding place.
 
     The third claim is the loose one today, and knowing by how much
-    matters: the measured worst case is 6.18 ULPs against a budget of
-    8, so the real headroom is a factor of 1.29 while the ceiling
+    matters: the measured worst case is 2.67 ULPs against a budget of
+    8, so the real headroom is a factor of 3.0 while the ceiling
     would tolerate 16. The ceiling bites only once the measurement
     drops under half an ULP, a little below where the widest
     link-free export sits today (`stan@beta_regression`, 0.81); a

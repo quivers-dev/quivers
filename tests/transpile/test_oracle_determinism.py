@@ -201,13 +201,11 @@ def _scored_examples() -> list[pathlib.Path]:
 def _composition_marginalised_examples() -> list[pathlib.Path]:
     """Gallery examples whose oracle integrates a composition's insides.
 
-    `_SKIP_QVR_INCOMPATIBLE` is the registry of examples that draw a
-    latent from a `SampledComposition`: the four recurrent language
-    models, the transformer, the deep Markov state-space model, the
-    encoder-decoder, and the variational autoencoder. Their
-    intermediates are recorded at no trace site, so they are exactly
-    the programs `Trace.latent_sites` cannot speak about, and the
-    behavioural guard is the only thing that can.
+    `_SKIP_QVR_INCOMPATIBLE` is the registry of examples whose joint no
+    pin can be held to. Their intermediates may be recorded at no trace
+    site, so they are the programs `Trace.latent_sites` cannot speak
+    about, and the behavioural guard is the only thing that can. The
+    registry is currently empty.
     """
     return [
         example

@@ -819,25 +819,26 @@ _AR1_PARAMETER_NORMALIZER_DROPPED = Mutation(
 )
 
 
-_WEIBULL_ARGUMENTS_TRANSPOSED = Mutation(
+_GAMMA_ARGUMENTS_TRANSPOSED = Mutation(
     name="family_arguments_transposed",
     defect_class="family-arguments-transposed",
     provenance=(
-        "shipped defect: a Weibull observation received its shape "
-        "where its scale belonged and vice versa. Both arguments are "
-        "positive, so the mutant is a perfectly well-formed Weibull "
-        "density for the wrong parameterisation and nothing short of "
-        "a numeric comparison distinguishes it."
+        "shipped defect: a two-parameter positive family received its "
+        "shape where its scale or rate belonged and vice versa. Both "
+        "arguments of the Gamma likelihood are positive, so the mutant "
+        "is a perfectly well-formed Gamma density for the wrong "
+        "parameterisation and nothing short of a numeric comparison "
+        "distinguishes it."
     ),
-    example="survival_weibull",
-    min_spread=74.0,
+    example="gamma_regression",
+    min_spread=400.0,
     mutants=(
         BackendMutant(
             backend="stan",
             rewrites=(
                 SourceRewrite(
-                    old="weibull_lpdf(t[m_Item] | k,scale[m_Item])",
-                    new="weibull_lpdf(t[m_Item] | scale[m_Item],k)",
+                    old="gamma_lpdf(y[m_Resp] | nu[m_Resp],rate[m_Resp])",
+                    new="gamma_lpdf(y[m_Resp] | rate[m_Resp],nu[m_Resp])",
                 ),
             ),
         ),
@@ -845,21 +846,26 @@ _WEIBULL_ARGUMENTS_TRANSPOSED = Mutation(
             backend="numpyro",
             rewrites=(
                 SourceRewrite(
-                    old="Weibull(scale=scale,concentration=k)",
-                    new="Weibull(scale=k,concentration=scale)",
+                    old="Gamma(concentration=nu,rate=rate),obs=y",
+                    new="Gamma(concentration=rate,rate=nu),obs=y",
                 ),
             ),
         ),
         BackendMutant(
             backend="pyro",
-            rewrites=(SourceRewrite(old="Weibull(scale,k)", new="Weibull(k,scale)"),),
+            rewrites=(
+                SourceRewrite(
+                    old="Gamma(nu,rate),obs=y",
+                    new="Gamma(rate,nu),obs=y",
+                ),
+            ),
         ),
         BackendMutant(
             backend="pymc",
             rewrites=(
                 SourceRewrite(
-                    old='pymc.Weibull("t" ,beta=scale,alpha=k',
-                    new='pymc.Weibull("t" ,beta=k,alpha=scale',
+                    old='pymc.Gamma("y" ,alpha=nu,beta=rate',
+                    new='pymc.Gamma("y" ,alpha=rate,beta=nu',
                 ),
             ),
         ),
@@ -867,8 +873,8 @@ _WEIBULL_ARGUMENTS_TRANSPOSED = Mutation(
             backend="edward2",
             rewrites=(
                 SourceRewrite(
-                    old='edward2.Weibull(scale=scale,concentration=k,value=t,name="t" )',
-                    new='edward2.Weibull(scale=k,concentration=scale,value=t,name="t" )',
+                    old='edward2.Gamma(concentration=nu,rate=rate,value=y,name="y" )',
+                    new='edward2.Gamma(concentration=rate,rate=nu,value=y,name="y" )',
                 ),
             ),
         ),
@@ -876,8 +882,8 @@ _WEIBULL_ARGUMENTS_TRANSPOSED = Mutation(
             backend="turing",
             rewrites=(
                 SourceRewrite(
-                    old="Weibull.(k, scale)",
-                    new="Weibull.(scale, k)",
+                    old="Gamma.(nu, inv(rate) )",
+                    new="Gamma.(rate, inv(nu) )",
                 ),
             ),
         ),
@@ -885,8 +891,8 @@ _WEIBULL_ARGUMENTS_TRANSPOSED = Mutation(
             backend="gen",
             rewrites=(
                 SourceRewrite(
-                    old="weibull(scale[m_Item], k)",
-                    new="weibull(k, scale[m_Item])",
+                    old="gamma(nu[m_Resp], inv(rate[m_Resp]) )",
+                    new="gamma(rate[m_Resp], inv(nu[m_Resp]) )",
                 ),
             ),
         ),
@@ -894,8 +900,8 @@ _WEIBULL_ARGUMENTS_TRANSPOSED = Mutation(
             backend="jags",
             rewrites=(
                 SourceRewrite(
-                    old="dweib(k,pow(scale[m_Item],- k))",
-                    new="dweib(pow(scale[m_Item],- k),k)",
+                    old="dgamma(nu[m_Resp],rate[m_Resp])",
+                    new="dgamma(rate[m_Resp],nu[m_Resp])",
                 ),
             ),
         ),
@@ -903,8 +909,8 @@ _WEIBULL_ARGUMENTS_TRANSPOSED = Mutation(
             backend="bugs",
             rewrites=(
                 SourceRewrite(
-                    old="dweib(k,pow(scale[m_Item],- k))",
-                    new="dweib(pow(scale[m_Item],- k),k)",
+                    old="dgamma(nu[m_Resp],rate[m_Resp])",
+                    new="dgamma(rate[m_Resp],nu[m_Resp])",
                 ),
             ),
         ),
@@ -1255,7 +1261,7 @@ CATALOGUE: tuple[Mutation, ...] = (
     _AR1_LOCATION_TRUNCATED,
     _AR1_OBSERVATION_TERM_DROPPED,
     _AR1_PARAMETER_NORMALIZER_DROPPED,
-    _WEIBULL_ARGUMENTS_TRANSPOSED,
+    _GAMMA_ARGUMENTS_TRANSPOSED,
     _NEGBIN_FAMILY_SUBSTITUTED,
     _NEGBIN_GATHER_SHIFTED,
     _CHANGEPOINT_DATA_ONLY_NORMALIZER_DROPPED,

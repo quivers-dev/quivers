@@ -1,36 +1,45 @@
-# Conditional MLP Kernel for Bayesian Nonlinear Regression
+# Bayesian Neural Network Regression
 #
-# A multi-layer perceptron kernel. The response is Normal about a
-# nonlinear function of the input, and that function is a
-# two-hidden-layer tanh MLP carried inside the morphism's parameter
-# network. The network emits both the mean and the log-scale, so the
-# model is heteroscedastic: the predictive spread varies with the
-# input.
+# A one-hidden-layer tanh network with four hidden units whose
+# weights are random variables. Every weight and bias carries a
+# Normal prior and the observation noise a half-Normal prior, so
+# conditioning on data gives a posterior over networks rather than a
+# single fitted one.
 #
 # Generative structure:
 #
-#   mu(x), sigma(x) = MLP(x)                   two hidden layers, tanh
-#   y_n             ~ Normal(mu(x_n), sigma(x_n))
+#   w_in_h, b_in_h  ~ Normal(0, 2)        input-to-hidden weights
+#   w_out_h         ~ Normal(0, 1)        hidden-to-output weights
+#   b_out           ~ Normal(0, 1)        output bias
+#   sigma           ~ HalfNormal(0.5)     observation noise
+#   h_h(x)          = tanh(w_in_h x + b_in_h)
+#   mu(x)           = b_out + sum_h w_out_h h_h(x)
+#   y_n             ~ Normal(mu(x_n), sigma)
 #
-# The per-row input x is a free variable, supplied as host data
-# through the observations dict; the Resp plate indexes the rows.
+# Resp indexes the observed rows and Hidden the hidden units; the
+# per-row input x is host data. Each hidden unit's activation is one
+# let over the Resp plate, and the output layer sums them.
 #
-# What makes the fit Bayesian is a prior over the network's weights.
-# The weights are ordinary learnable parameters here, so the prior is
-# supplied at the inference layer by lift_from_log_prob rather than
-# declared in the source: a Normal prior on every weight turns a
-# maximum-likelihood fit into a posterior over networks.
-#
-# Reference: [MacKay (1992)](https://doi.org/10.1162/neco.1992.4.3.448).
+# Reference: [MacKay 1992](https://doi.org/10.1162/neco.1992.4.3.448).
 
-object Feature : Real 1
+object Resp : FinSet 128
+object Hidden : FinSet 4
 object Target : Real 1
-object Resp : FinSet 200
-
-morphism net : Feature -> Target [param_source=mlp, hidden_dim=64] ~ Normal
 
 program bnn : Resp -> Target
-    observe y : Resp <- net(x)
+    sample w_in : Hidden <- Normal(loc=0.0, scale=2.0)
+    sample b_in : Hidden <- Normal(loc=0.0, scale=2.0)
+    sample w_out : Hidden <- Normal(loc=0.0, scale=1.0)
+    sample b_out <- Normal(loc=0.0, scale=1.0)
+    sample sigma <- HalfNormal(scale=0.5)
+
+    let h0 = tanh(w_in[0] * x + b_in[0])
+    let h1 = tanh(w_in[1] * x + b_in[1])
+    let h2 = tanh(w_in[2] * x + b_in[2])
+    let h3 = tanh(w_in[3] * x + b_in[3])
+    let mu = b_out + w_out[0] * h0 + w_out[1] * h1 + w_out[2] * h2 + w_out[3] * h3
+
+    observe y : Resp <- Normal(loc=mu, scale=sigma)
     return y
 
 export bnn

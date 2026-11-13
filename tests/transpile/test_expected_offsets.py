@@ -555,18 +555,6 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("stan", "beta_regression"): _derived(half_sites=3, dropped_sites=3),
     ("turing", "beta_regression"): _derived(half_sites=3, dropped_sites=0),
     ("webppl", "beta_regression"): _derived(half_sites=3, dropped_sites=3),
-    # ccg: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("bugs", "ccg"): _derived(half_sites=0, dropped_sites=0),
-    ("edward2", "ccg"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "ccg"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "ccg"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "ccg"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "ccg"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "ccg"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "ccg"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "ccg"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "ccg"): _derived(half_sites=0, dropped_sites=0),
     # changepoint: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     ("bugs", "changepoint"): _derived(half_sites=0, dropped_sites=0),
@@ -579,45 +567,6 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("stan", "changepoint"): _derived(half_sites=0, dropped_sites=0),
     ("turing", "changepoint"): _derived(half_sites=0, dropped_sites=0),
     ("webppl", "changepoint"): _derived(half_sites=0, dropped_sites=0),
-    # continuous_hmm / linear_gaussian_ssm: both programs score two
-    # `~ Normal` steps and name no folded family, so no target is
-    # entitled to a truncation renormalizer and none reaches its
-    # families through the zeros trick. Every cell owes nothing and
-    # scores the reference exactly. Both programs are declared
-    # without a plate, so the fixture presents the one row they
-    # denote and the emitted program reads it directly.
-    ("bugs", "continuous_hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("edward2", "continuous_hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "continuous_hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "continuous_hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "continuous_hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "continuous_hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "continuous_hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "continuous_hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "continuous_hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "continuous_hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("bugs", "linear_gaussian_ssm"): _derived(half_sites=0, dropped_sites=0),
-    ("edward2", "linear_gaussian_ssm"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "linear_gaussian_ssm"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "linear_gaussian_ssm"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "linear_gaussian_ssm"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "linear_gaussian_ssm"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "linear_gaussian_ssm"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "linear_gaussian_ssm"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "linear_gaussian_ssm"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "linear_gaussian_ssm"): _derived(half_sites=0, dropped_sites=0),
-    # custom_rules: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("bugs", "custom_rules"): _derived(half_sites=0, dropped_sites=0),
-    ("edward2", "custom_rules"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "custom_rules"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "custom_rules"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "custom_rules"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "custom_rules"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "custom_rules"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "custom_rules"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "custom_rules"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "custom_rules"): _derived(half_sites=0, dropped_sites=0),
     # factor_analysis: 1 HalfCauchy folded factor(s).
     ("bugs", "factor_analysis"): _derived(half_sites=1, dropped_sites=0),
     ("edward2", "factor_analysis"): _derived(half_sites=1, dropped_sites=0),
@@ -663,35 +612,28 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("stan", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=2),
     ("turing", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
     ("webppl", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
-    # hmm: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("webppl", "hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "hmm"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "hmm"): _derived(half_sites=0, dropped_sites=0),
-    # horseshoe_regression: 6 HalfCauchy folded factor(s).
-    ("bugs", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("edward2", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("gen", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=6),
-    ("jags", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("numpyro", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("pymc", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("pyro", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("stan", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=6),
-    ("turing", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=0),
-    ("webppl", "horseshoe_regression"): _derived(half_sites=6, dropped_sites=6),
+    # horseshoe_regression: 22 HalfCauchy folded factor(s).
+    ("bugs", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("edward2", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("gen", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=22),
+    ("jags", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("numpyro", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("pymc", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("pyro", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("stan", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=22),
+    ("turing", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=0),
+    ("webppl", "horseshoe_regression"): _derived(half_sites=22, dropped_sites=22),
     # irt_2pl: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
-    ("bugs", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("edward2", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("gen", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("jags", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
+    ("webppl", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("pymc", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("pyro", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("stan", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     ("turing", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "irt_2pl"): _derived(half_sites=0, dropped_sites=0),
     # kumaraswamy_bounded_outcome: 1 HalfNormal folded factor(s).
     # `jags` also owes the zeros-trick lift: it has no `Kumaraswamy`
     # distribution, so `_emit_kumaraswamy` writes the closed-form
@@ -716,10 +658,8 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # lda: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     #
-    # `bugs` refuses the example: its word codes are observed class
-    # codes, which BUGS cannot shift to `dcat`'s one-based classes.
-    ("turing", "lda"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "lda"): _derived(half_sites=0, dropped_sites=0),
+    # `bugs`, `jags`, `turing`, and `gen` refuse the example; the
+    # refusals are pinned in `_EXPECTED_TRANSPILE_RAISES`.
     ("webppl", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("edward2", "lda"): _derived(half_sites=0, dropped_sites=0),
     ("numpyro", "lda"): _derived(half_sites=0, dropped_sites=0),
@@ -758,18 +698,6 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("stan", "mixture_model"): _derived(half_sites=3, dropped_sites=3),
     ("turing", "mixture_model"): _derived(half_sites=3, dropped_sites=0),
     ("webppl", "mixture_model"): _derived(half_sites=3, dropped_sites=3),
-    # multimodal_tlg: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("bugs", "multimodal_tlg"): _derived(half_sites=0, dropped_sites=0),
-    ("edward2", "multimodal_tlg"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "multimodal_tlg"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "multimodal_tlg"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "multimodal_tlg"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "multimodal_tlg"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "multimodal_tlg"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "multimodal_tlg"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "multimodal_tlg"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "multimodal_tlg"): _derived(half_sites=0, dropped_sites=0),
     # negbin_regression: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     ("bugs", "negbin_regression"): _derived(half_sites=0, dropped_sites=0),
@@ -782,30 +710,6 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("stan", "negbin_regression"): _derived(half_sites=0, dropped_sites=0),
     ("turing", "negbin_regression"): _derived(half_sites=0, dropped_sites=0),
     ("webppl", "negbin_regression"): _derived(half_sites=0, dropped_sites=0),
-    # pcfg: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("bugs", "pcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("edward2", "pcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "pcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "pcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "pcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "pcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "pcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "pcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "pcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "pcfg"): _derived(half_sites=0, dropped_sites=0),
-    # pmcfg: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("bugs", "pmcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("edward2", "pmcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "pmcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "pmcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "pmcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "pmcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "pmcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "pmcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "pmcfg"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "pmcfg"): _derived(half_sites=0, dropped_sites=0),
     # ppca: 1 HalfCauchy folded factor(s).
     ("bugs", "ppca"): _derived(half_sites=1, dropped_sites=0),
     ("edward2", "ppca"): _derived(half_sites=1, dropped_sites=0),
@@ -817,32 +721,6 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("stan", "ppca"): _derived(half_sites=1, dropped_sites=1),
     ("turing", "ppca"): _derived(half_sites=1, dropped_sites=0),
     ("webppl", "ppca"): _derived(half_sites=1, dropped_sites=1),
-    # quantifier_scope: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("bugs", "quantifier_scope"): _derived(half_sites=0, dropped_sites=0),
-    ("edward2", "quantifier_scope"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "quantifier_scope"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "quantifier_scope"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "quantifier_scope"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "quantifier_scope"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "quantifier_scope"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "quantifier_scope"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "quantifier_scope"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "quantifier_scope"): _derived(half_sites=0, dropped_sites=0),
-    # stochastic_volatility: 1 HalfCauchy folded factor(s).
-    ("webppl", "stochastic_volatility"): _derived(
-        half_sites=1,
-        dropped_sites=1,
-    ),
-    ("bugs", "stochastic_volatility"): _derived(half_sites=1, dropped_sites=0),
-    ("edward2", "stochastic_volatility"): _derived(half_sites=1, dropped_sites=0),
-    ("gen", "stochastic_volatility"): _derived(half_sites=1, dropped_sites=1),
-    ("jags", "stochastic_volatility"): _derived(half_sites=1, dropped_sites=0),
-    ("numpyro", "stochastic_volatility"): _derived(half_sites=1, dropped_sites=0),
-    ("pymc", "stochastic_volatility"): _derived(half_sites=1, dropped_sites=0),
-    ("pyro", "stochastic_volatility"): _derived(half_sites=1, dropped_sites=0),
-    ("stan", "stochastic_volatility"): _derived(half_sites=1, dropped_sites=1),
-    ("turing", "stochastic_volatility"): _derived(half_sites=1, dropped_sites=0),
     # survival_weibull: no folded-family site, so every target is
     # entitled to nothing and scores the reference exactly.
     ("bugs", "survival_weibull"): _derived(half_sites=0, dropped_sites=0),
@@ -872,18 +750,6 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     ("pyro", "tree_categorical"): _derived(half_sites=1, dropped_sites=0),
     ("turing", "tree_categorical"): _derived(half_sites=1, dropped_sites=0),
     ("webppl", "tree_categorical"): _derived(half_sites=1, dropped_sites=1),
-    # type_logical: no folded-family site, so every target is
-    # entitled to nothing and scores the reference exactly.
-    ("bugs", "type_logical"): _derived(half_sites=0, dropped_sites=0),
-    ("edward2", "type_logical"): _derived(half_sites=0, dropped_sites=0),
-    ("gen", "type_logical"): _derived(half_sites=0, dropped_sites=0),
-    ("jags", "type_logical"): _derived(half_sites=0, dropped_sites=0),
-    ("numpyro", "type_logical"): _derived(half_sites=0, dropped_sites=0),
-    ("pymc", "type_logical"): _derived(half_sites=0, dropped_sites=0),
-    ("pyro", "type_logical"): _derived(half_sites=0, dropped_sites=0),
-    ("stan", "type_logical"): _derived(half_sites=0, dropped_sites=0),
-    ("turing", "type_logical"): _derived(half_sites=0, dropped_sites=0),
-    ("webppl", "type_logical"): _derived(half_sites=0, dropped_sites=0),
     # parametric_pooling: a draw from a program template inlines its
     # `Normal` plate under `theta$z`, spelled `theta__z` on every
     # target; no folded-family site anywhere. Its `score` step is one
@@ -1005,7 +871,7 @@ def _exported_program(module: Module, stem: str) -> ProgramDecl:
     (`ppca.qvr` exports `ppca_program`), so the export declaration is
     the authority. A module may export more than one name, since the
     probabilistic surface often sits alongside the pure composite it
-    scores (`hmm.qvr` exports both `hmm` and `hmm_program`); only the
+    scores (`ppca.qvr` exports `ppca_program`); only the
     exports naming a `program` declaration are candidates, and exactly
     one of those must exist for the count to be well defined.
     """
