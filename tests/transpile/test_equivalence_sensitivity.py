@@ -860,7 +860,13 @@ def test_integrated_marginal_replaced_by_draw_is_rejected(
 def test_edward2_accumulates_log_terms_without_float32_cancellation(
     plated: bool,
 ) -> None:
-    """Preserve an exact unit term between opposite large log factors."""
+    """Preserve an exact unit term between opposite large log factors.
+
+    Parameters
+    ----------
+    plated
+        Whether the factors share one plate or occupy separate sites.
+    """
     runtime = (
         _REPO_ROOT / "src/quivers/transpile/runtime_factor_edward2.py"
     ).read_text()

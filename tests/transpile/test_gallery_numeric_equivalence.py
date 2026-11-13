@@ -479,7 +479,13 @@ density in float64 and against deliberately incorrect densities."""
 
 
 def reference_examples() -> set[str]:
-    """Examples with either a stored joint or an independent formula."""
+    """Return examples with either a stored joint or an independent formula.
+
+    Returns
+    -------
+    set[str]
+        Every example covered by a declared joint reference.
+    """
     return set(_QVR_REFERENCE_JOINT) | set(ANALYTIC_REFERENCES)
 
 
@@ -490,6 +496,23 @@ def reference_values(
 
     Analytic entries always use their independent formula. They do not
     read QVR output or select an expectation after a comparison fails.
+
+    Parameters
+    ----------
+    example
+        Gallery source stem with a declared reference.
+    dataset
+        Fixed data and parameters defining the point schedule.
+
+    Returns
+    -------
+    tuple[float, ...]
+        Expected log joints in point-schedule order.
+
+    Raises
+    ------
+    KeyError
+        If the example has no declared reference.
     """
     if example in ANALYTIC_REFERENCES:
         formula = ANALYTIC_REFERENCES[example]

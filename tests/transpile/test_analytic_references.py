@@ -18,7 +18,13 @@ _EXAMPLE = "kumaraswamy_bounded_outcome"
 
 @pytest.mark.parametrize("index", range(6))
 def test_analytic_reference_matches_every_compiled_site(index: int) -> None:
-    """All four sites and the joint agree at the existing eight-ULP budget."""
+    """Check all four sites and the joint at the existing eight-ULP budget.
+
+    Parameters
+    ----------
+    index
+        Position in the six-point gallery schedule.
+    """
     fixture = _fixture(_EXAMPLE)
     terms = kumaraswamy_terms(fixture.dataset, fixture.points[index])
     assert set(terms) | {"eta", "a"} == set(fixture.sites[index])
@@ -36,7 +42,13 @@ def test_analytic_reference_matches_every_compiled_site(index: int) -> None:
 
 @pytest.mark.parametrize("index", range(6))
 def test_analytic_reference_agrees_with_scalar_closed_form(index: int) -> None:
-    """Check the distribution calls against the density on (0, 1)."""
+    """Check the distribution calls against the density on (0, 1).
+
+    Parameters
+    ----------
+    index
+        Position in the six-point gallery schedule.
+    """
     fixture = _fixture(_EXAMPLE)
     point = fixture.points[index]
     # JSON values retain the fixture's represented float32 numbers.
@@ -71,7 +83,13 @@ def test_analytic_reference_agrees_with_scalar_closed_form(index: int) -> None:
     "defect", ("prior_dropped", "shapes_transposed", "data_term_dropped")
 )
 def test_analytic_reference_rejects_wrong_densities(defect: str) -> None:
-    """The reference detects missing terms and a proper but different law."""
+    """Detect missing terms and a proper but different law.
+
+    Parameters
+    ----------
+    defect
+        Density error to introduce at every gallery point.
+    """
     fixture = _fixture(_EXAMPLE)
     gaps = []
     for index, point in enumerate(fixture.points):
