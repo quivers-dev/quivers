@@ -1043,7 +1043,7 @@ def test_reconstruction_registry_is_well_formed() -> None:
     still run; the declared list would then understate what the check
     assumes and overstate what it verifies.
     """
-    pinned = set(_gallery_tier._QVR_REFERENCE_JOINT)
+    pinned = _gallery_tier.reference_examples()
     unknown = sorted(set(_RECONSTRUCTIONS) - pinned)
     assert not unknown, (
         f"{unknown!r} carry a raw-torch reconstruction but no "
@@ -1083,7 +1083,7 @@ def test_every_pinned_example_has_an_independent_witness() -> None:
     reconstruction in this module. Reconstructed examples must also still
     occupy the no-live-backend gap they were added to cover.
     """
-    pinned = sorted(_gallery_tier._QVR_REFERENCE_JOINT)
+    pinned = sorted(_gallery_tier.reference_examples())
     unwitnessed = [
         example
         for example in pinned
@@ -1699,7 +1699,7 @@ def test_program_free_examples_are_exempt_or_pinned(example: str) -> None:
     """
     programs = _declared_programs(example)
     exempt = example in _exempt_by(_gallery_tier._SKIP_DATASET_LOAD_FAILED)
-    pinned = example in _gallery_tier._QVR_REFERENCE_JOINT
+    pinned = example in _gallery_tier.reference_examples()
     dataset = _gallery_data.load_gallery_data(
         _SOURCE_DIR / f"{example}.qvr",
     )

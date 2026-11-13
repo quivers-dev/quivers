@@ -43,7 +43,7 @@ program beta_regression : Resp -> Val
     let eta = b0 + b1 * x
     let mu = sigmoid(eta)
     let alpha = mu * p
-    let beta_p = (1.0 - mu) * p
+    let beta_p = sigmoid(-eta) * p
 
     observe y : Resp <- Beta(concentration1=alpha, concentration0=beta_p)
     return beta_1
@@ -68,6 +68,10 @@ scientific question is about differences on the original response scale.
 ## Walkthrough
 
 Per-output coefficient plates `beta_0 : Out` and `beta_1 : Out` carry one coefficient per response dimension; per-output precision `phi : Out` permits heterogeneous dispersion across the response axis. The per-cell linear predictor `eta = b0 + b1 * x` is mapped to the unit interval via `mu = sigmoid(eta)`. The mean / precision form of the Beta is `Beta(mu * phi, (1 - mu) * phi)`, giving mean `mu` and variance `mu * (1 - mu) / (1 + phi)`. Plate-gathers `beta_0[out_idx]`, `beta_1[out_idx]`, `phi[out_idx]` broadcast each output's coefficients across its share of the flat `Resp` plate, 100 rows per output.
+
+The complementary concentration is evaluated as `sigmoid(-eta) * phi`. The identity
+`1 - sigmoid(eta) = sigmoid(-eta)` preserves the model, while direct evaluation of
+the right side avoids subtracting a rounded value of one at large positive predictors.
 
 The program returns `beta_1`, an `Out`-indexed plate of real scalars, so the declared codomain is `Val : Real 1`: the per-row value space of the returned coefficients. `Resp` names the plate extent of the response and appears in the signature only as the domain.
 

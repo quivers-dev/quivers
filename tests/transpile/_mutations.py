@@ -882,8 +882,8 @@ _GAMMA_ARGUMENTS_TRANSPOSED = Mutation(
             backend="turing",
             rewrites=(
                 SourceRewrite(
-                    old="Gamma.(nu, inv(rate) )",
-                    new="Gamma.(rate, inv(nu) )",
+                    old="Gamma.(nu, inv.(rate) )",
+                    new="Gamma.(rate, inv.(nu) )",
                 ),
             ),
         ),
@@ -1093,29 +1093,26 @@ _NEGBIN_GATHER_SHIFTED = Mutation(
 )
 
 
-_CHANGEPOINT_DATA_ONLY_NORMALIZER_DROPPED = Mutation(
+_NEGBIN_DATA_ONLY_NORMALIZER_DROPPED = Mutation(
     name="data_only_normalizer_dropped",
     defect_class="data-dependent-term-dropped",
     provenance=(
-        "shipped defect: Stan's `~` sampling operator discards every "
-        "summand of a log-density that carries no parameter, so a "
-        "Poisson likelihood loses `-log(y!)`. The mutant reproduces "
-        "that exactly, on Stan through the operator itself and "
-        "elsewhere by scoring the unnormalised Poisson kernel. The "
-        "resulting offset is a function of the data alone: it is "
-        "perfectly constant as the latents move and moves only when "
-        "the observations do, which makes it the sharpest available "
-        "probe of the point set's data axis."
+        "shipped defect: an unnormalised count likelihood discards "
+        "the data-only term -log(y!). Adding log Gamma(y + 1) to the "
+        "negative-binomial log density removes exactly that term, "
+        "while retaining the dispersion-dependent normalizer. The "
+        "offset is constant as latents move and changes with the "
+        "observations, testing the point set's data axis."
     ),
-    example="changepoint",
+    example="negbin_regression",
     min_spread=5.9,
     mutants=(
         BackendMutant(
             backend="stan",
             rewrites=(
                 SourceRewrite(
-                    old="target +=poisson_lpmf(y[m_Step] | rate[m_Step]);",
-                    new="y[m_Step] ~ poisson(rate[m_Step]);",
+                    old="target +=neg_binomial_2_lpmf(y[m_Resp] | disp[m_Resp]*probs[m_Resp]/(1-probs[m_Resp]),disp[m_Resp]);",
+                    new="target +=neg_binomial_2_lpmf(y[m_Resp] | disp[m_Resp]*probs[m_Resp]/(1-probs[m_Resp]),disp[m_Resp]) + lgamma(y[m_Resp]+1);",
                 ),
             ),
         ),
@@ -1123,12 +1120,12 @@ _CHANGEPOINT_DATA_ONLY_NORMALIZER_DROPPED = Mutation(
             backend="numpyro",
             rewrites=(
                 SourceRewrite(
-                    old=(
-                        '  with numpyro.plate("Step" ,64) :\n'
-                        '    numpyro.sample("y" ,numpyro.distributions.'
-                        "Poisson(rate=rate),obs=y)"
-                    ),
-                    new='  numpyro.factor("y" ,jnp.sum(y*jnp.log(rate)-rate))',
+                    old="import jax.numpy as jnp",
+                    new="import jax.numpy as jnp\nimport jax.scipy as jsp",
+                ),
+                SourceRewrite(
+                    old="  return beta_1",
+                    new='  numpyro.factor("missing_normalizer", jsp.special.gammaln(y + 1).sum())\n  return beta_1',
                 ),
             ),
         ),
@@ -1136,12 +1133,8 @@ _CHANGEPOINT_DATA_ONLY_NORMALIZER_DROPPED = Mutation(
             backend="pyro",
             rewrites=(
                 SourceRewrite(
-                    old=(
-                        '  with pyro.plate("Step" ,64) :\n'
-                        '    pyro.sample("y" ,pyro.distributions.'
-                        "Poisson(rate),obs=y)"
-                    ),
-                    new='  pyro.factor("y" ,(y*torch.log(rate)-rate).sum())',
+                    old="  return beta_1",
+                    new='  pyro.factor("missing_normalizer", torch.lgamma(y + 1).sum())\n  return beta_1',
                 ),
             ),
         ),
@@ -1149,8 +1142,8 @@ _CHANGEPOINT_DATA_ONLY_NORMALIZER_DROPPED = Mutation(
             backend="turing",
             rewrites=(
                 SourceRewrite(
-                    old="  y ~ product_distribution(Poisson.(rate) )",
-                    new="  Turing.@addlogprob! sum(y .* log.(rate) .- rate)",
+                    old="  return beta_1",
+                    new="  Turing.@addlogprob! sum(sum(log, 1:Int(yi); init=0.0) for yi in y)\n  return beta_1",
                 ),
             ),
         ),
@@ -1158,25 +1151,25 @@ _CHANGEPOINT_DATA_ONLY_NORMALIZER_DROPPED = Mutation(
 )
 
 
-_CHANGEPOINT_PRIOR_TRANSPOSED = Mutation(
+_NEGBIN_PRIOR_TRANSPOSED = Mutation(
     name="prior_arguments_transposed",
     defect_class="family-arguments-transposed",
     provenance=(
         "shipped defect class, prior flavour: a Gamma prior's shape "
-        "and rate arguments swap places. `Gamma(2, 1)` and `Gamma(1, "
-        "2)` are both proper densities on the positive reals, so the "
-        "mutant is well-formed everywhere the point set visits and "
-        "only the latent-dependence of the prior term moves."
+        "and rate arguments swap places. Gamma(2, 0.5) and Gamma(0.5, "
+        "2) are proper densities on the positive reals. The mutant "
+        "transposes the three dispersion priors, changing their "
+        "latent dependence while retaining support."
     ),
-    example="changepoint",
+    example="negbin_regression",
     min_spread=0.37,
     mutants=(
         BackendMutant(
             backend="stan",
             rewrites=(
                 SourceRewrite(
-                    old="gamma_lpdf(rate_before | 2,1)",
-                    new="gamma_lpdf(rate_before | 1,2)",
+                    old="gamma_lpdf(dispersion[m_Out] | 2,0.5)",
+                    new="gamma_lpdf(dispersion[m_Out] | 0.5,2)",
                 ),
             ),
         ),
@@ -1185,12 +1178,12 @@ _CHANGEPOINT_PRIOR_TRANSPOSED = Mutation(
             rewrites=(
                 SourceRewrite(
                     old=(
-                        '"rate_before" ,numpyro.distributions.'
-                        "Gamma(concentration=2,rate=1)"
+                        '"dispersion" ,numpyro.distributions.'
+                        "Gamma(concentration=2,rate=0.5)"
                     ),
                     new=(
-                        '"rate_before" ,numpyro.distributions.'
-                        "Gamma(concentration=1,rate=2)"
+                        '"dispersion" ,numpyro.distributions.'
+                        "Gamma(concentration=0.5,rate=2)"
                     ),
                 ),
             ),
@@ -1199,8 +1192,8 @@ _CHANGEPOINT_PRIOR_TRANSPOSED = Mutation(
             backend="pyro",
             rewrites=(
                 SourceRewrite(
-                    old='"rate_before" ,pyro.distributions.Gamma(2,1)',
-                    new='"rate_before" ,pyro.distributions.Gamma(1,2)',
+                    old='"dispersion" ,pyro.distributions.Gamma(2,0.5)',
+                    new='"dispersion" ,pyro.distributions.Gamma(0.5,2)',
                 ),
             ),
         ),
@@ -1208,8 +1201,8 @@ _CHANGEPOINT_PRIOR_TRANSPOSED = Mutation(
             backend="pymc",
             rewrites=(
                 SourceRewrite(
-                    old='pymc.Gamma("rate_before" ,alpha=2,beta=1)',
-                    new='pymc.Gamma("rate_before" ,alpha=1,beta=2)',
+                    old='pymc.Gamma("dispersion" ,alpha=2,beta=0.5,',
+                    new='pymc.Gamma("dispersion" ,alpha=0.5,beta=2,',
                 ),
             ),
         ),
@@ -1217,8 +1210,8 @@ _CHANGEPOINT_PRIOR_TRANSPOSED = Mutation(
             backend="turing",
             rewrites=(
                 SourceRewrite(
-                    old="rate_before ~ Gamma(2, inv(1) )",
-                    new="rate_before ~ Gamma(1, inv(2) )",
+                    old="dispersion ~ filldist(Gamma(2, inv(0.5) ) , 3)",
+                    new="dispersion ~ filldist(Gamma(0.5, inv(2) ) , 3)",
                 ),
             ),
         ),
@@ -1226,8 +1219,8 @@ _CHANGEPOINT_PRIOR_TRANSPOSED = Mutation(
             backend="gen",
             rewrites=(
                 SourceRewrite(
-                    old="@trace(gamma(2, inv(1) ) , :rate_before)",
-                    new="@trace(gamma(1, inv(2) ) , :rate_before)",
+                    old="@trace(gamma(2, inv(0.5) ) , (:dispersion, m_Out_dispersion))",
+                    new="@trace(gamma(0.5, inv(2) ) , (:dispersion, m_Out_dispersion))",
                 ),
             ),
         ),
@@ -1235,8 +1228,8 @@ _CHANGEPOINT_PRIOR_TRANSPOSED = Mutation(
             backend="jags",
             rewrites=(
                 SourceRewrite(
-                    old="rate_before ~ dgamma(2,1)",
-                    new="rate_before ~ dgamma(1,2)",
+                    old="dispersion[m_Out] ~ dgamma(2,0.5)",
+                    new="dispersion[m_Out] ~ dgamma(0.5,2)",
                 ),
             ),
         ),
@@ -1244,8 +1237,8 @@ _CHANGEPOINT_PRIOR_TRANSPOSED = Mutation(
             backend="bugs",
             rewrites=(
                 SourceRewrite(
-                    old="rate_before ~ dgamma(2,1)",
-                    new="rate_before ~ dgamma(1,2)",
+                    old="dispersion[m_Out] ~ dgamma(2,0.5)",
+                    new="dispersion[m_Out] ~ dgamma(0.5,2)",
                 ),
             ),
         ),
@@ -1264,8 +1257,8 @@ CATALOGUE: tuple[Mutation, ...] = (
     _GAMMA_ARGUMENTS_TRANSPOSED,
     _NEGBIN_FAMILY_SUBSTITUTED,
     _NEGBIN_GATHER_SHIFTED,
-    _CHANGEPOINT_DATA_ONLY_NORMALIZER_DROPPED,
-    _CHANGEPOINT_PRIOR_TRANSPOSED,
+    _NEGBIN_DATA_ONLY_NORMALIZER_DROPPED,
+    _NEGBIN_PRIOR_TRANSPOSED,
 )
 
 

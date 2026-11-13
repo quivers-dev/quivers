@@ -24,6 +24,7 @@ import torch
 from quivers.dsl.parser import parse
 from quivers.transpile import UnsupportedConstruct, transpile
 from tests.transpile import _docker, _equivalence, _gallery_data
+from tests.transpile._analytic_references import ANALYTIC_REFERENCES
 from tests.transpile.probes.qvr import QvrProbe
 
 
@@ -238,9 +239,10 @@ _SKIP_QVR_INCOMPATIBLE: frozenset[str] = frozenset()
 # Three properties, each asserted rather than assumed:
 #
 # 1. **Total.** Every gallery example that scores a joint has an entry
-#    here or a justified row in `_REFERENCE_PIN_EXEMPT`, and
+#    here, a formula in `ANALYTIC_REFERENCES`, or a justified row in
+#    `_REFERENCE_PIN_EXEMPT`, and
 #    `test_gallery_reference_pin_registry_is_total` fails when the two
-#    registries stop covering the gallery exactly. A deleted row, or a
+#    reference registries stop covering the gallery exactly. A deleted row, or a
 #    new example, is a failure rather than a silently weaker suite.
 # 2. **Per point.** An entry pins the joint at every point of
 #    `points_from_dataset`, in schedule order, not only at the ground
@@ -354,14 +356,6 @@ _QVR_REFERENCE_JOINT: dict[str, tuple[float, ...]] = {
         -1334.9044189453125,
         -1599.81591796875,
     ),
-    "kumaraswamy_bounded_outcome": (
-        48.15655517578125,
-        -1.2505619525909424,
-        45.79613494873047,
-        25.943862915039062,
-        28.047801971435547,
-        41.459083557128906,
-    ),
     "lda": (
         -2883.196533203125,
         -2889.601806640625,
@@ -473,24 +467,60 @@ _REFERENCE_PIN_ULP_BUDGET = 8
 [`reference_pin_atol`][tests.transpile.test_gallery_numeric_equivalence.reference_pin_atol],
 in units of the float32 grid spacing at the pinned magnitude.
 
-The reference joint reaches the harness as
-``float(trace.log_joint.sum().item())``: the exact float64 widening of
-a float32 accumulator. Two evaluations of the *same* density therefore
-agree exactly whenever they accumulate in the same order, and differ
-only in the low bits of that accumulator when they do not (a different
-reduction kernel, SIMD width, or BLAS). The budget is calibrated
-against direct measurements of that re-association effect rather than
-against a guess. The raw-`torch.distributions` reconstructions in
-`test_oracle_reference_strength.py` sum the same per-site terms in a
-different order and grouping, while the CI probe replays the trace on
-independent runners. The largest observed difference is **two**
-float32 ULPs (1.95e-03, on a joint of magnitude 15,836). Eight ULPs is
-two bits of headroom above the measured worst case.
+The trace returns a float32 joint. Stored references allow eight ULPs
+for reassociation at that magnitude, with a magnitude-one floor. This
+bounds ordinary reduction drift but cannot bound cancellation error:
+large terms may leave a small joint whose ULP is much finer than theirs.
+Such examples declare an independent formula in `ANALYTIC_REFERENCES`
+and compare at the same budget. The formula evaluates each fixed point
+without reading the compiled program or its trace, using the platform's
+distribution arithmetic. It is also checked against a scalar closed-form
+density in float64 and against deliberately incorrect densities."""
 
-This is a headroom figure, not a necessity: within each measured
-runtime and platform, the oracle is bit-exact run to run and across
-`torch.set_num_threads`. A failure at this budget is a real change in
-the density, not noise."""
+
+def reference_examples() -> set[str]:
+    """Return examples with either a stored joint or an independent formula.
+
+    Returns
+    -------
+    set[str]
+        Every example covered by a declared joint reference.
+    """
+    return set(_QVR_REFERENCE_JOINT) | set(ANALYTIC_REFERENCES)
+
+
+def reference_values(
+    example: str, dataset: _gallery_data.GalleryDataset
+) -> tuple[float, ...]:
+    """Evaluate the example's declared reference at every fixed point.
+
+    Analytic entries always use their independent formula. They do not
+    read QVR output or select an expectation after a comparison fails.
+
+    Parameters
+    ----------
+    example
+        Gallery source stem with a declared reference.
+    dataset
+        Fixed data and parameters defining the point schedule.
+
+    Returns
+    -------
+    tuple[float, ...]
+        Expected log joints in point-schedule order.
+
+    Raises
+    ------
+    KeyError
+        If the example has no declared reference.
+    """
+    if example in ANALYTIC_REFERENCES:
+        formula = ANALYTIC_REFERENCES[example]
+        return tuple(
+            float(sum(formula(dataset, point).values()).item())
+            for point in _gallery_data.points_from_dataset(dataset)
+        )
+    return _QVR_REFERENCE_JOINT[example]
 
 
 def _float32_ulp(value: float) -> float:
@@ -551,11 +581,9 @@ def reference_pin_atol(reference: float) -> float:
     The largest pinned magnitudes are `zip_regression`'s roughly
     760-nat joints, where eight float32 ULPs are 4.88e-04. The tightest bound is
     9.54e-07, the magnitude-1 floor, which
-    binds wherever a joint lands below 2
-    (`kumaraswamy_bounded_outcome` at its first latents point,
-    magnitude 1.25). Thus the pin remains magnitude-aware without
-    demanding a sub-ULP comparison that no float32 accumulator can
-    satisfy portably.
+    binds wherever a joint lands below 2. The Kumaraswamy example uses
+    an independent analytic reference because its cancelling terms do
+    not admit a portable stored float32 joint at that budget.
     """
     return reference_roundoff_atol(reference)
 
@@ -622,7 +650,8 @@ def test_gallery_reference_pin_registry_is_total() -> None:
         carry.
     """
     gallery = {example.stem for example in _gallery_cells()}
-    pinned = set(_QVR_REFERENCE_JOINT)
+    pinned = reference_examples()
+    assert not set(_QVR_REFERENCE_JOINT) & set(ANALYTIC_REFERENCES)
     exempt = set(_REFERENCE_PIN_EXEMPT)
 
     overlap = sorted(pinned & exempt)
@@ -636,7 +665,7 @@ def test_gallery_reference_pin_registry_is_total() -> None:
     unpinned = sorted(gallery - pinned - exempt)
     assert not unpinned, (
         f"{unpinned!r} ship synthetic data but appear in neither "
-        f"`_QVR_REFERENCE_JOINT` nor `_REFERENCE_PIN_EXEMPT`, so "
+        f"`_QVR_REFERENCE_JOINT`, `ANALYTIC_REFERENCES`, nor `_REFERENCE_PIN_EXEMPT`, so "
         f"nothing asserts their oracle joint is right. Derive the "
         f"reference from raw `torch.distributions` and pin every "
         f"point, or record why the example has no reference."
@@ -650,7 +679,13 @@ def test_gallery_reference_pin_registry_is_total() -> None:
     )
 
     expected_points = len(_gallery_data.perturbation_labels())
-    for stem, values in sorted(_QVR_REFERENCE_JOINT.items()):
+    reference_rows = dict(_QVR_REFERENCE_JOINT)
+    for example in _gallery_cells():
+        if example.stem in ANALYTIC_REFERENCES:
+            dataset = _gallery_data.load_gallery_data(example)
+            assert dataset is not None
+            reference_rows[example.stem] = reference_values(example.stem, dataset)
+    for stem, values in sorted(reference_rows.items()):
         assert len(values) == expected_points, (
             f"{stem!r}: pinned at {len(values)} point(s) against a "
             f"{expected_points}-point set. The pin has to cover every "
@@ -720,7 +755,7 @@ def test_gallery_qvr_reference_pin_holds_at_every_point(
         # reason to name a registry which independently agrees. A
         # silent skip would let an example lose its ground and still
         # pass.
-        assert example.stem not in _QVR_REFERENCE_JOINT, (
+        assert example.stem not in reference_examples(), (
             f"{example.stem!r} carries both a pinned reference joint "
             f"and a row in `_REFERENCE_PIN_EXEMPT`. One of the two is "
             f"stale: pin it or exempt it, not both."
@@ -731,10 +766,9 @@ def test_gallery_qvr_reference_pin_holds_at_every_point(
         )
         return
 
-    reference = _QVR_REFERENCE_JOINT.get(example.stem)
-    assert reference is not None, (
+    assert example.stem in reference_examples(), (
         f"{example.stem!r}: reaches the multi-point scoring path with "
-        f"no `_QVR_REFERENCE_JOINT` entry. See "
+        f"no declared joint reference. See "
         f"`test_gallery_reference_pin_registry_is_total`."
     )
 
@@ -744,6 +778,7 @@ def test_gallery_qvr_reference_pin_holds_at_every_point(
         f"though the example was not in `_SKIP_DATASET_LOAD_FAILED`."
     )
 
+    reference = reference_values(example.stem, dataset)
     points = _gallery_data.points_from_dataset(dataset)
     labels = _gallery_data.perturbation_labels(len(points))
     assert len(points) == len(reference), (
@@ -851,10 +886,9 @@ def test_gallery_qvr_logdensity_finite(example: pathlib.Path) -> None:
         # drop that too, and a joint that turned non-finite is exactly
         # the failure this line exists to catch.
         return
-    reference = _QVR_REFERENCE_JOINT.get(example.stem)
-    assert reference is not None, (
+    assert example.stem in reference_examples(), (
         f"{example.stem!r}: scores a finite QVR joint ({lp!r}) but has "
-        f"no `_QVR_REFERENCE_JOINT` entry, so nothing checks that the "
+        f"no declared joint reference, so nothing checks that the "
         f"value is *right*. Theorem 4.1's constant-spread quotient "
         f"cannot see a point-independent oracle error, which makes "
         f"this pin the only thing that can. Re-derive the joint from "
@@ -864,6 +898,7 @@ def test_gallery_qvr_logdensity_finite(example: pathlib.Path) -> None:
         f"reference, record the reason in `_REFERENCE_PIN_EXEMPT` "
         f"instead."
     )
+    reference = reference_values(example.stem, dataset)
     atol = reference_pin_atol(reference[0])
     assert abs(lp - reference[0]) <= atol, (
         f"{example.stem!r}: QVR joint {lp!r} drifted from its "
