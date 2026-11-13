@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Coproduct coherence and closure preserve matrix semantics.** Left and right unitors use the algebra's zero and flatten multidimensional objects. Yanking verification evaluates coproduct traces. Log-probability Kleene closure uses state elimination in log space, retaining tiny nonzero paths and their gradients without exponentiating the input matrix.
 - **The ZIP gallery checks posterior sampling precision.** Its NUTS example uses four independently seeded chains, checks rank-normalized split R-hat and bulk and tail effective sample sizes, and retains the stated parameter-recovery and SVI-agreement tolerances.
 
 ## [0.60.1] - 2026-11-13

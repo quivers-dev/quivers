@@ -166,14 +166,10 @@ class TracedMonoidal(ABC):
             True if yanking holds within tolerance.
         """
         # σ_{U,U}: U ⊗ U → U ⊗ U (swap)
-        if isinstance(self._monoidal, CartesianProductMonoidal):
-            swap = self._monoidal.braiding(feedback, feedback)
-            traced = self.trace(swap, feedback, feedback, feedback)
-            expected = identity(feedback, algebra=self._algebra).tensor
-
-            return torch.allclose(traced.tensor, expected, atol=atol)
-
-        return True  # skip for non-cartesian
+        swap = self._monoidal.braiding(feedback, feedback)
+        traced = self.trace(swap, feedback, feedback, feedback)
+        expected = identity(feedback, algebra=self._algebra).tensor
+        return torch.allclose(traced.tensor, expected, atol=atol)
 
     def __repr__(self) -> str:
         cls = type(self).__name__
