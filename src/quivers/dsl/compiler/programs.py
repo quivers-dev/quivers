@@ -17,6 +17,8 @@ from typing import Literal, cast
 import didactic.api as dx
 import torch
 from torch.distributions import constraints as _constraints
+from quivers.continuous._closed_probability import _count_log
+from quivers.continuous.param_transforms import _validate_parameter
 from quivers.continuous.deterministic import (
     LearnedFunction,
     learned_function_draw_message,
@@ -761,7 +763,7 @@ def _binary_log_prior(
     ``log sigmoid(l)``, computed in log space, so both stay finite and
     accurate where the probability ``sigmoid(l)`` rounds to zero or one
     in the runtime's precision. From ``probs`` they are ``log1p(-p)`` and
-    ``log p``, with ``p`` held inside the open unit interval.
+    ``log p``, retaining zero probability as negative infinity.
 
     Parameters
     ----------
@@ -784,8 +786,39 @@ def _binary_log_prior(
             ],
             dim=-1,
         )
-    p = weight.clamp(1e-38, 1.0 - 1e-7)
-    return torch.stack([torch.log1p(-p), torch.log(p)], dim=-1)
+    p = torch.distributions.Bernoulli(probs=weight, validate_args=True).probs
+    one = torch.ones_like(p)
+    return torch.stack([_count_log(one, 1 - p), _count_log(one, p)], dim=-1)
+
+
+def _categorical_log_prior(
+    weight: torch.Tensor, parameterization: str | None
+) -> torch.Tensor:
+    """Normalized log weights of a categorical prior.
+
+    Parameters
+    ----------
+    weight : torch.Tensor
+        Nonnegative weights or logits, with categories on the trailing axis.
+    parameterization : str | None
+        ``"logits"`` for logits, otherwise probability weights.
+
+    Returns
+    -------
+    torch.Tensor
+        Normalized log weights, retaining impossible atoms as negative infinity.
+
+    Raises
+    ------
+    ValueError
+        If the weights do not define a categorical distribution.
+    """
+    if parameterization == "logits":
+        _validate_parameter(weight, _constraints.real)
+        return torch.log_softmax(weight, dim=-1)
+    _validate_parameter(weight, _constraints.nonnegative)
+    probs = torch.distributions.Categorical(probs=weight, validate_args=True).probs
+    return _count_log(torch.ones_like(probs), probs)
 
 
 def _shared_vector_parameter(family: ContinuousMorphism | None) -> bool:
@@ -4172,11 +4205,7 @@ class _ProgramsMixin:
                         probs = env[_probs]
                         for index_name in _probs_indices:
                             probs = probs[env[index_name].to(torch.long)]
-                        log_prior = (
-                            torch.log_softmax(probs, dim=-1)
-                            if _parameterization == "logits"
-                            else torch.log(probs.clamp_min(1e-38))
-                        )
+                        log_prior = _categorical_log_prior(probs, _parameterization)
                         # The block's latent is indexed by its grouping
                         # plate: one class per group, drawn from that
                         # group's prior row when the prior is a
@@ -5443,11 +5472,7 @@ class _ProgramsMixin:
                     torch.tensor(k, dtype=torch.long, device=probs.device)
                     for k in range(class_count)
                 ]
-                log_prior = (
-                    torch.log_softmax(probs, dim=-1)
-                    if _parameterization == "logits"
-                    else torch.log(probs.clamp_min(1e-38))
-                )
+                log_prior = _categorical_log_prior(probs, _parameterization)
             else:
                 class_values = [
                     torch.zeros((), dtype=probs.dtype, device=probs.device),

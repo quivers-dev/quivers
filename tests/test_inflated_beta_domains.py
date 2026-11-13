@@ -4,9 +4,32 @@ import math
 
 import pytest
 import torch
+from quivers.qiec.distributions import RuntimeDistribution
 from scipy.special import betaln
 
 from quivers.continuous._zip_hurdle import ZeroOneInflatedBeta
+
+
+@pytest.mark.parametrize("zoi,coi", [(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)])
+@pytest.mark.parametrize("value", [0.0, 0.5, 1.0])
+def test_reference_inflated_beta_scores_impossible_branches(
+    zoi: float, coi: float, value: float
+) -> None:
+    dist = RuntimeDistribution(
+        "ZeroOneInflatedBeta", {"mu": 0.5, "phi": 2.0, "zoi": zoi, "coi": coi}
+    )
+    mass = zoi * (1 - coi) if value == 0 else zoi * coi if value == 1 else 1 - zoi
+    expected = math.log(mass) if mass > 0 else -math.inf
+    assert dist.log_prob(value) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("mu", [0.0, 1.0, -0.1, 1.1])
+def test_reference_inflated_beta_refuses_invalid_means_even_at_atoms(mu: float) -> None:
+    dist = RuntimeDistribution(
+        "ZeroOneInflatedBeta", {"mu": mu, "phi": 2.0, "zoi": 1.0, "coi": 0.5}
+    )
+    with pytest.raises(ValueError):
+        dist.log_prob(0.0)
 
 
 @pytest.mark.parametrize(

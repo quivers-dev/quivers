@@ -252,9 +252,8 @@ def _make_family(
         Whether the family is discrete. Auto-detected from
         ``not dist_class.has_rsample`` if absent.
     inline_bounds : dict[str, tuple[float, float]], optional
-        The closed interval each named parameter's inline clamp
-        projects onto, for a parameter whose family admits a boundary
-        value its transform's default clamp would move. See
+        The closed interval accepted for each named inline parameter,
+        including any boundary value admitted by its family. See
         [`ParamSpec`][quivers.continuous.family_spec.ParamSpec].
 
     Returns

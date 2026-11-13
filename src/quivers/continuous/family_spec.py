@@ -132,7 +132,7 @@ class ParamSpec:
     kind : ParamKind
         Per-parameter shape contract on the inline call side.
     inline_bounds : tuple[float, float] | None
-        A closed interval for the inline parameter's projection, such as
+        A closed interval for inline parameter validation, such as
         the nonnegative domain of a Poisson ``rate``. ``None`` uses
         the transform's domain map, which preserves positive values
         and refuses nonpositive values for a positive parameter.
@@ -173,8 +173,8 @@ class ParamSpec:
         """Domain map for explicit literal or runtime parameters.
 
         Valid positive values are preserved and nonpositive values
-        are refused. A declared `inline_bounds` interval instead
-        projects onto that closed interval.
+        are refused. A declared `inline_bounds` interval preserves its
+        endpoints and refuses values outside that interval.
         """
         if self.inline_bounds is not None:
             low, high = self.inline_bounds

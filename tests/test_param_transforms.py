@@ -202,13 +202,11 @@ def test_paramspec_inline_clamp_string_softplus() -> None:
 
 def test_paramspec_inline_clamp_string_sigmoid_bounds_unit_interval() -> None:
     p = ParamSpec(name="probs", transform="sigmoid")
-    values = torch.tensor(
-        [-1.0, 0.0, 1e-12, 0.5, 1.0 - 1e-12, 1.0, 2.0], dtype=torch.float64
-    )
-    expected = torch.tensor(
-        [0.0, 0.0, 1e-12, 0.5, 1.0 - 1e-12, 1.0, 1.0], dtype=torch.float64
-    )
-    torch.testing.assert_close(p.inline_clamp(values), expected, rtol=0, atol=0)
+    values = torch.tensor([0.0, 1e-12, 0.5, 1.0 - 1e-12, 1.0], dtype=torch.float64)
+    torch.testing.assert_close(p.inline_clamp(values), values, rtol=0, atol=0)
+    for invalid in [-1.0, 2.0, float("nan")]:
+        with pytest.raises(ValueError, match="inline parameter"):
+            p.inline_clamp(torch.tensor(invalid))
 
 
 def test_exponential_transform_inverse_and_jacobian_below_epsilon() -> None:

@@ -1,8 +1,8 @@
 """Parameter bijectors and domain maps for inline distribution arguments.
 
 Raw network outputs use bijectors. Inline arguments are already parameters:
-positive values are preserved, and a declared closed interval uses its
-projection. A projection is a callable and has no inverse or Jacobian API.
+valid values are preserved, and values outside the declared domain raise.
+These validators are callables and have no inverse or Jacobian API.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from torch import Tensor
+from torch.distributions import constraints
 
 from quivers.continuous.bijectors import (
     AffineBijector,
@@ -62,8 +63,33 @@ def positive_parameter(value: Tensor) -> Tensor:
     return value
 
 
+def _validate_parameter(value: Tensor, constraint: constraints.Constraint) -> Tensor:
+    """Preserve a parameter that satisfies its distribution constraint.
+
+    Parameters
+    ----------
+    value : Tensor
+        The parameter.
+    constraint : constraints.Constraint
+        Its admissible values.
+
+    Returns
+    -------
+    Tensor
+        The unchanged tensor, retaining its derivative.
+
+    Raises
+    ------
+    ValueError
+        If any entry violates the constraint.
+    """
+    if not bool(constraint.check(value).all()):
+        raise ValueError(f"inline parameter must satisfy {constraint}")
+    return value
+
+
 def closed_interval_clamp(low: float, high: float) -> Callable[[Tensor], Tensor]:
-    """Return the projection onto a closed parameter interval.
+    """Return a validator for a closed parameter interval.
 
     Parameters
     ----------
@@ -75,7 +101,7 @@ def closed_interval_clamp(low: float, high: float) -> Callable[[Tensor], Tensor]
     Returns
     -------
     Callable[[Tensor], Tensor]
-        A tensor-valued projection preserving values in the interval.
+        A callable preserving valid values and refusing values outside the interval.
 
     Raises
     ------
@@ -88,8 +114,8 @@ def closed_interval_clamp(low: float, high: float) -> Callable[[Tensor], Tensor]
             f"bound {high}"
         )
 
-    def project(value: Tensor) -> Tensor:
-        """Project a parameter onto the interval.
+    def validate(value: Tensor) -> Tensor:
+        """Validate a parameter against the interval.
 
         Parameters
         ----------
@@ -99,11 +125,16 @@ def closed_interval_clamp(low: float, high: float) -> Callable[[Tensor], Tensor]
         Returns
         -------
         Tensor
-            The projected values.
-        """
-        return value.clamp(min=low, max=high)
+            The unchanged values.
 
-    return project
+        Raises
+        ------
+        ValueError
+            If any entry is outside the interval or NaN.
+        """
+        return _validate_parameter(value, constraints.interval(low, high))
+
+    return validate
 
 
 def _softplus_shifted(shift: float) -> Bijector:
