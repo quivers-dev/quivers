@@ -4,7 +4,7 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.60.0] - 2026-11-13
 
 ### Changed
 
@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Renamed gallery pages.** The case study is `examples/bayesian-semantics-case-study.md` (titled Bayesian Semantics Case Study) and the multiple context-free grammar example is `examples/wmcfg.md` with source `docs/examples/source/wmcfg.qvr` and deduction `WMCFG`.
 
 ### Fixed
+
+- **The funnel benchmark measures its Gaussian conditional.** With nine observations fixed at zero, the reference mean is -40.5 and variance is 9. The report compares recovery against that conditional at fixed computation budgets, and the generator retains the model definitions, references and interpretation used by the documentation.
 
 - **MCMC rejects proposals with invalid inline parameters.** A positive parameter that underflows to zero at a proposed position gives log density `-inf`, so the trajectory is rejected. Initial validation stays strict, and unrelated scoring errors propagate.
 
