@@ -184,15 +184,29 @@ assert svi_mae < 0.5 * baseline_mae
 ### NUTS posterior
 
 [`NUTSKernel`](../api/inference/mcmc.md) samples the 140-dimensional posterior
-over the full response matrix and is held to the same three checks.
+over the full response matrix and is held to the same three recovery checks.
+Four chains each use 500 warmup iterations and 1,000 retained draws. Before
+comparing posterior means, the example checks rank-normalized split
+$\hat R < 1.01$ and bulk and tail effective sample sizes above 400 for every
+parameter [@vehtari2021rhat]. These
+[diagnostics](../guides/inference-mcmc.md#mcmc-hmc-and-nuts) assess mixing and
+sampling precision across abilities, difficulties, and discriminations.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
-torch.manual_seed(2)
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=4, target_accept=0.8)
-mc = MCMC(kernel, num_warmup=100, num_samples=100, num_chains=1)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=8, target_accept=0.9)
+mc = MCMC(kernel, num_warmup=500, num_samples=1000, num_chains=4, seed=2)
 result = mc.run(model, x_in, observations)
+
+for k in truth:
+    print(f"{k:>10}: max R-hat {result.r_hat[k].max():.4f}, "
+          f"min bulk ESS {result.ess[k].min():.0f}, "
+          f"min tail ESS {result.ess_tail[k].min():.0f}")
+    assert (result.r_hat[k] < 1.01).all()
+    assert (result.ess[k] > 400).all()
+    assert (result.ess_tail[k] > 400).all()
+assert int(result.divergence_counts.sum()) == 0
 
 s = {k: result.samples[k].reshape(-1, v.numel()) for k, v in truth.items()}
 p_nuts = torch.sigmoid(

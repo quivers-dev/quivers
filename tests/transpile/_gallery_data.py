@@ -1911,6 +1911,77 @@ def observations_for_point(
     return out
 
 
+def reference_log_densities(
+    example: Path,
+    dataset: GalleryDataset,
+    points: list[Point],
+    *,
+    scratch: Path,
+) -> list[float]:
+    """Evaluate each gallery point with its shaped observations and precision.
+
+    LDA uses float64 throughout the reference calculation because float32
+    quantization of its thousand-token reduction is comparable to the fixed
+    backend comparison budget. Point values and tolerances are unchanged.
+    Every evaluation retains the clamping and determinism guards, and the
+    caller's default dtype is restored even when a guard raises.
+
+    Parameters
+    ----------
+    example
+        Source path identifying the gallery program.
+    dataset
+        Compiled program, input, and observation shapes.
+    points
+        Fixed latent and observed values to evaluate in order.
+    scratch
+        Scratch path required by the in-process probe interface.
+
+    Returns
+    -------
+    list[float]
+        One joint log density per point.
+
+    Raises
+    ------
+    RuntimeError
+        If a point leaves a latent unclamped, its density is nondeterministic,
+        or the program does not expose a joint density.
+    """
+    probe = QvrProbe()
+    source = example.read_bytes()
+    values: list[float] = []
+    previous_dtype = torch.get_default_dtype()
+    double_reference = example.stem == "lda"
+    try:
+        if double_reference:
+            torch.set_default_dtype(torch.float64)
+        for point in points:
+            observations = observations_for_point(dataset, point)
+            x_input = dataset.x_input
+            if double_reference:
+                observations = {
+                    name: value.double() if value.is_floating_point() else value
+                    for name, value in observations.items()
+                }
+                if x_input is not None:
+                    x_input = x_input.double()
+            values.extend(
+                probe.evaluate(
+                    source,
+                    example.stem,
+                    [point],
+                    scratch=scratch,
+                    monadic=dataset.monadic,
+                    x_input=x_input,
+                    observations=observations,
+                ).log_densities
+            )
+    finally:
+        torch.set_default_dtype(previous_dtype)
+    return values
+
+
 def observed_data_names(dataset: GalleryDataset) -> frozenset[str]:
     """Names a point carries as *observed* data.
 

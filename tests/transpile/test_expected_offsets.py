@@ -52,7 +52,6 @@ from quivers.transpile import UnsupportedConstruct, transpile
 from quivers.transpile.family_meta import FAMILY_META
 from tests.transpile import _docker, _equivalence, _gallery_data
 from tests.transpile.probes._protocol import Point
-from tests.transpile.probes.qvr import QvrProbe
 from tests.transpile.test_gallery_numeric_equivalence import (
     _BACKENDS_WITH_IMAGES,
     _EXPECTED_TRANSPILE_RAISES,
@@ -1354,6 +1353,11 @@ def _qvr_log_densities(
     [`_QVR_LOG_DENSITY_CACHE`][tests.transpile.test_expected_offsets._QVR_LOG_DENSITY_CACHE]
     for why serving it to any other caller would be a defect rather than
     a memoisation.
+
+    LDA's thousand-token reduction is evaluated in float64: float32
+    quantization of the joint is comparable to the fixed offset budget.
+    The represented point values and every comparison bound are retained.
+    The caller's default dtype is restored even if evaluation raises.
     """
     key = _points_key(points)
     cached = _QVR_LOG_DENSITY_CACHE.get(example.stem)
@@ -1373,24 +1377,9 @@ def _qvr_log_densities(
                 f"concluded until the point set is stable."
             )
         return cached_values
-    probe = QvrProbe()
-    source = example.read_bytes()
-    values: list[float] = []
-    for point in points:
-        values.extend(
-            probe.evaluate(
-                source,
-                example.stem,
-                [point],
-                scratch=scratch,
-                monadic=dataset.monadic,
-                x_input=dataset.x_input,
-                observations=_gallery_data.observations_for_point(
-                    dataset,
-                    point,
-                ),
-            ).log_densities
-        )
+    values = _gallery_data.reference_log_densities(
+        example, dataset, points, scratch=scratch
+    )
     _QVR_LOG_DENSITY_CACHE[example.stem] = (key, values)
     return values
 

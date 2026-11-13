@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --no-cache-dir cmdstanpy==1.2.5 numpy==1.26.4
 
-# Install cmdstan once at build time so the probe doesn't pay the
-# install cost on every container start.
-RUN python -c "import cmdstanpy; cmdstanpy.install_cmdstan(progress=False)"
+# A failed download or compiler build must fail the image build.
+# The installer validates CmdStan by compiling its Bernoulli example.
+RUN python -c "import sys; import cmdstanpy; sys.exit(0 if cmdstanpy.install_cmdstan(version='2.40.0', progress=False) else 1)"
 
 ENTRYPOINT ["python"]
