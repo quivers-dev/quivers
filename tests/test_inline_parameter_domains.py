@@ -10,7 +10,26 @@ import torch
 import torch.distributions as distributions
 
 from quivers.continuous.family_spec import ParamSpec
+from quivers.continuous import inline
 from quivers.dsl import loads
+
+
+@pytest.mark.parametrize(
+    "builder,parameters",
+    [
+        ("_bernoulli_builder", [1.1]),
+        ("_beta_binomial_builder", [-1.0, 1.0, 1.0]),
+        ("_zero_inflated_poisson_builder", [-0.1, 1.0]),
+        ("_zero_inflated_poisson_builder", [0.5, -1.0]),
+        ("_hurdle_poisson_builder", [1.1, 1.0]),
+        ("_zero_one_inflated_beta_builder", [0.5, 1.0, 1.1, 0.5]),
+    ],
+)
+def test_handwritten_builders_reject_invalid_closed_parameters(
+    builder: str, parameters: list[float]
+) -> None:
+    with pytest.raises(ValueError):
+        getattr(inline, builder)([torch.tensor(p) for p in parameters])
 
 
 @pytest.fixture(autouse=True)

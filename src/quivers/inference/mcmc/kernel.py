@@ -32,7 +32,7 @@ from torch.distributions import Distribution
 from torch.distributions import constraints as _constraints
 
 from quivers.continuous.program_steps import Draw, Observe
-from quivers.continuous.param_transforms import positive_parameter
+from quivers.continuous.param_transforms import _validate_parameter, positive_parameter
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.joint_plan import JointPlans
 from quivers.effects.subsample import refuse_subsampling
@@ -45,12 +45,13 @@ _DISTRIBUTION_VALIDATION_CODE = frozenset(
         Distribution.__init__.__code__,
         Distribution._validate_sample.__code__,
         positive_parameter.__code__,
+        _validate_parameter.__code__,
     }
 )
 """Raising frames for distribution parameter and value constraints.
 
 Includes Torch's constructor and observation validators and the inline
-positive-parameter validator.
+parameter validators.
 """
 
 

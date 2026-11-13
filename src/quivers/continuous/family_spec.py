@@ -173,8 +173,8 @@ class ParamSpec:
         """Domain map for explicit literal or runtime parameters.
 
         Valid positive values are preserved and nonpositive values
-        are refused. A declared `inline_bounds` interval instead
-        projects onto that closed interval.
+        are refused. A declared `inline_bounds` interval preserves its
+        endpoints and refuses values outside that interval.
         """
         if self.inline_bounds is not None:
             low, high = self.inline_bounds

@@ -1472,10 +1472,13 @@ def _bernoulli_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build Bernoulli from [probs].
 
     A success probability of zero or one is the point mass at failure
-    or success, so ``probs`` is projected onto ``[0, 1]`` and scored
-    where it stands.
+    or success. Values outside the closed unit interval are refused.
     """
-    return ClosedBernoulli(probs=params[0].clamp(0.0, 1.0))
+    return ClosedBernoulli(
+        probs=parameter_domains._validate_parameter(
+            params[0], _constraints.unit_interval
+        )
+    )
 
 
 def _truncated_normal_builder(params: list[torch.Tensor]) -> D.Distribution:
@@ -1727,10 +1730,12 @@ def _beta_binomial_builder(params: list[torch.Tensor]) -> D.Distribution:
     The distribution is the continuous-layer `_BetaBinomial`, whose
     closed-form `log_prob` exposes `sample`, `mean`, and `variance`
     directly and keeps the inline path free of a transpile import. Zero
-    trials is the point mass at zero, so ``total_count`` is projected
-    onto the nonnegative reals.
+    trials is the point mass at zero. Negative or noninteger trial counts
+    are refused.
     """
-    total_count = params[0].clamp(min=0.0)
+    total_count = parameter_domains._validate_parameter(
+        params[0], _constraints.nonnegative_integer
+    )
     a = parameter_domains.positive_parameter(params[1])
     b = parameter_domains.positive_parameter(params[2])
     return _BetaBinomial(total_count, a, b)
@@ -1799,13 +1804,13 @@ def _zero_inflated_poisson_builder(
 ) -> D.Distribution:
     """Build `ZeroInflatedPoisson` from ``[zero_prob, rate]``.
 
-    Both parameters are projected onto their closed domains: a
+    Both parameters are validated against their closed domains: a
     ``zero_prob`` of one is the point mass at zero, one of zero the
     plain Poisson, and a ``rate`` of zero the point mass at zero.
     """
     return ZeroInflatedPoisson(
-        params[0].clamp(0.0, 1.0),
-        params[1].clamp(min=0.0),
+        parameter_domains._validate_parameter(params[0], _constraints.unit_interval),
+        parameter_domains._validate_parameter(params[1], _constraints.nonnegative),
     )
 
 
@@ -1815,12 +1820,12 @@ def _hurdle_poisson_builder(
     """Build `HurdlePoisson` from ``[zero_prob, rate]``.
 
     A ``zero_prob`` of one is the point mass at zero and one of zero
-    the zero-truncated Poisson, so it is projected onto ``[0, 1]``. The
+    the zero-truncated Poisson. Values outside ``[0, 1]`` are refused. The
     zero-truncated Poisson needs a positive ``rate``; a nonpositive
     value is refused.
     """
     return HurdlePoisson(
-        params[0].clamp(0.0, 1.0),
+        parameter_domains._validate_parameter(params[0], _constraints.unit_interval),
         parameter_domains.positive_parameter(params[1]),
     )
 
@@ -1834,10 +1839,10 @@ def _zero_one_inflated_beta_builder(
     ``observe y <- ZeroOneInflatedBeta(mu, phi, zoi, coi)``.
     """
     return ZeroOneInflatedBeta(
-        params[0].clamp(0.0, 1.0),
+        parameter_domains._validate_parameter(params[0], _constraints.unit_interval),
         parameter_domains.positive_parameter(params[1]),
-        params[2].clamp(0.0, 1.0),
-        params[3].clamp(0.0, 1.0),
+        parameter_domains._validate_parameter(params[2], _constraints.unit_interval),
+        parameter_domains._validate_parameter(params[3], _constraints.unit_interval),
     )
 
 

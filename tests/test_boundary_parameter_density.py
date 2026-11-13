@@ -352,12 +352,32 @@ def test_an_interior_success_probability_scores_the_geometric_density(
 # -- the clamps themselves ----------------------------------------------------
 
 
-def test_the_poisson_rate_clamp_projects_onto_the_nonnegative_reals() -> None:
+def test_the_poisson_rate_map_preserves_nonnegative_values() -> None:
     spec = get_family_spec("Poisson")
     assert spec is not None
     (rate,) = spec.params
-    moved = rate.inline_clamp(_f64([-1.0, 0.0, 1e-9, 3.0]))
-    assert moved.tolist() == pytest.approx([0.0, 0.0, 1e-9, 3.0], abs=0.0)
+    values = _f64([0.0, 1e-9, 3.0])
+    torch.testing.assert_close(rate.inline_clamp(values), values, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "family,parameter,value",
+    [
+        ("Poisson", "rate", -1.0),
+        ("Bernoulli", "probs", -0.1),
+        ("Bernoulli", "probs", 1.1),
+        ("Binomial", "total_count", -1.0),
+        ("Poisson", "rate", math.nan),
+    ],
+)
+def test_inline_closed_domain_rejects_invalid_values(
+    family: str, parameter: str, value: float
+) -> None:
+    spec = get_family_spec(family)
+    assert spec is not None
+    param = next(p for p in spec.params if p.name == parameter)
+    with pytest.raises(ValueError):
+        param.inline_clamp(_f64(value))
 
 
 def test_the_geometric_probs_map_preserves_its_positive_domain() -> None:

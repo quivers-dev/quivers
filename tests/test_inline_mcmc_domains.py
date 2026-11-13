@@ -5,7 +5,11 @@ import math
 import pytest
 import torch
 
-from quivers.continuous.param_transforms import positive_parameter
+from quivers.continuous.param_transforms import (
+    positive_parameter,
+    closed_interval_clamp,
+)
+from quivers.dsl import loads
 from quivers.inference.mcmc import PotentialFn
 from quivers.inference.mcmc.kernel import _rejects_position
 from quivers.inference.registry import LatentRegistry
@@ -41,6 +45,33 @@ def test_tiny_valid_scale_keeps_its_potential_gradient() -> None:
 def test_parameter_validator_is_identified_by_its_raising_frame() -> None:
     with pytest.raises(ValueError) as genuine:
         positive_parameter(torch.tensor(0.0))
+    assert _rejects_position(genuine.value)
+    with pytest.raises(ValueError) as unrelated:
+        raise ValueError(str(genuine.value))
+    assert not _rejects_position(unrelated.value)
+
+
+def test_closed_domain_proposal_rejection_keeps_initial_validation_strict() -> None:
+    model = loads("""
+object Obs : FinSet 1
+object Out : Real 1
+program p : Obs -> Out
+    sample q <- Normal(loc=0.5, scale=1.0)
+    observe y : Obs <- Bernoulli(probs=q)
+    return q
+export p
+""").morphism
+    registry = LatentRegistry.from_model(model, {"y"})
+    potential = PotentialFn(model, registry, torch.zeros(1, 1), {"y": torch.ones(1)})
+    assert torch.isfinite(potential.check_initial(torch.tensor([0.5])))
+    for invalid in [-0.1, 1.1]:
+        value, grad = potential.value_and_grad(torch.tensor([invalid]))
+        assert torch.isneginf(value)
+        torch.testing.assert_close(grad, torch.zeros(1), rtol=0, atol=0)
+        with pytest.raises(ValueError):
+            potential.check_initial(torch.tensor([invalid]))
+    with pytest.raises(ValueError) as genuine:
+        closed_interval_clamp(0.0, 1.0)(torch.tensor(1.1))
     assert _rejects_position(genuine.value)
     with pytest.raises(ValueError) as unrelated:
         raise ValueError(str(genuine.value))

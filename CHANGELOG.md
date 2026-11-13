@@ -4,6 +4,13 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Marginalized priors retain exact atom weights.** Bernoulli and categorical marginalization preserve zero and arbitrarily small probabilities. Grouped and ungrouped categorical priors normalize nonnegative weights, so rescaling those weights does not change the density.
+- **Invalid inline parameters raise instead of selecting a boundary distribution.** Negative rates, trial counts, and probabilities outside the unit interval are refused by generic and hand-written family builders. Valid closed endpoints remain available. MCMC rejects invalid proposals while preserving strict initial validation and unrelated errors.
+
 ## [0.60.0] - 2026-11-13
 
 ### Changed
