@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking: CLI records are typed immutable models.** Completion candidates, highlight spans, migration inputs, grammar asset identities, and grammar history reports use didactic models with keyword-only construction, field validation, equality, hashing, and immutable updates through `with_`.
+
 ## [0.61.0] - 2026-11-13
 
 ### Added

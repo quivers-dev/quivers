@@ -24,9 +24,9 @@ themes never drift across surfaces.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
+import didactic.api as dx
 from pygments.token import (
     Comment,
     Keyword,
@@ -109,8 +109,7 @@ colours a token alike."""
 _PUNCT = {"(", ")", "[", "]", "{", "}", ",", ":", "."}
 
 
-@dataclass(frozen=True)
-class Span:
+class Span(dx.Model):
     """One styled run of source.
 
     Parameters

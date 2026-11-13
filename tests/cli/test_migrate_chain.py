@@ -174,10 +174,10 @@ def test_manifest_identity_drift_is_checked_for_v09_alias(
     assert ("v0.9.0", "v0.10.0") in IDENTITY_PAIRS
     original = _identity.grammar_identity
     changed = _manifest.GrammarAsset(
-        "0" * 64,
-        "1" * 64,
-        "2" * 64,
-        "3" * 64,
+        grammar_json_sha256="0" * 64,
+        node_types_sha256="1" * 64,
+        parser_c_sha256="2" * 64,
+        compiled_inputs_sha256="3" * 64,
     )
     monkeypatch.setattr(
         _identity,
@@ -454,10 +454,10 @@ def test_identity_hop_rejects_parser_hash_delta(
 ) -> None:
     original = _identity.grammar_identity
     changed = _manifest.GrammarAsset(
-        "0" * 64,
-        "1" * 64,
-        "2" * 64,
-        "3" * 64,
+        grammar_json_sha256="0" * 64,
+        node_types_sha256="1" * 64,
+        parser_c_sha256="2" * 64,
+        compiled_inputs_sha256="3" * 64,
     )
     monkeypatch.setattr(
         _identity,

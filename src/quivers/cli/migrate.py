@@ -27,9 +27,10 @@ import os
 import stat
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+
+import didactic.api as dx
 
 from quivers.cli.migrations import (
     MigrationError,
@@ -43,8 +44,17 @@ class MigrateError(Exception):
     """Raised by the migrate CLI on a recoverable user-facing error."""
 
 
-@dataclass(frozen=True)
-class _MigrationInput:
+class _MigrationInput(dx.Model):
+    """One source path and its relative migration destination.
+
+    Parameters
+    ----------
+    source : Path
+        Input source file.
+    relative_output : Path
+        Destination relative to the requested output directory.
+    """
+
     source: Path
     relative_output: Path
 

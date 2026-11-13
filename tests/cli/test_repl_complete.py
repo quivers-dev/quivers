@@ -116,10 +116,10 @@ def test_empty_prefix_returns_meta_commands_only() -> None:
         assert c.kind in {"command", "env", "path"}
 
 
-def test_completion_dataclass_is_hashable() -> None:
+def test_completion_model_is_hashable() -> None:
+    """Equal immutable completion records have the same set membership."""
     c = Completion(text="foo", kind="env", detail="object")
-    # frozen=True dataclasses round-trip through set membership.
-    assert c in {c}
+    assert Completion(text="foo", kind="env", detail="object") in {c}
 
 
 def test_no_completions_for_nonexistent_prefix() -> None:
