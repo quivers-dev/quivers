@@ -65,6 +65,7 @@ from quivers.continuous.family_spec import (
     FamilySpec,
 )
 from quivers.core._util import EPS
+import quivers.continuous.param_transforms as parameter_domains
 from quivers.continuous.bijectors import BIJECTORS_BY_NAME, Bijector
 from quivers.continuous.program_steps import Indexed, StepArgument
 from quivers.qiec.families import FAMILIES
@@ -1464,7 +1465,7 @@ def get_inline_parameterizations(family: str) -> tuple[tuple[str, ...], ...]:
 
 def _normal_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build Normal from [loc, scale]."""
-    return D.Normal(params[0], params[1].clamp(min=EPS))
+    return D.Normal(params[0], parameter_domains.positive_parameter(params[1]))
 
 
 def _bernoulli_builder(params: list[torch.Tensor]) -> D.Distribution:
@@ -1484,7 +1485,7 @@ def _truncated_normal_builder(params: list[torch.Tensor]) -> D.Distribution:
     inverse-CDF truncated normal sampling.
     """
     mu, sigma, low_t, high_t = params
-    sigma = sigma.clamp(min=EPS)
+    sigma = parameter_domains.positive_parameter(sigma)
     low = float(low_t.flatten()[0])
     high = float(high_t.flatten()[0])
 
@@ -1532,7 +1533,7 @@ def _truncated_normal_builder(params: list[torch.Tensor]) -> D.Distribution:
 
 def _logitnormal_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build LogitNormal from [mu, sigma]."""
-    base = D.Normal(params[0], params[1].clamp(min=EPS))
+    base = D.Normal(params[0], parameter_domains.positive_parameter(params[1]))
     return D.TransformedDistribution(base, [D.SigmoidTransform()])
 
 
@@ -1562,39 +1563,45 @@ def _uniform_builder(params: list[torch.Tensor]) -> D.Distribution:
 
 def _beta_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build Beta from [concentration1, concentration0]."""
-    return D.Beta(params[0].clamp(min=EPS), params[1].clamp(min=EPS))
+    return D.Beta(
+        parameter_domains.positive_parameter(params[0]),
+        parameter_domains.positive_parameter(params[1]),
+    )
 
 
 def _exponential_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build Exponential from [rate]."""
-    return D.Exponential(params[0].clamp(min=EPS))
+    return D.Exponential(parameter_domains.positive_parameter(params[0]))
 
 
 def _halfcauchy_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build HalfCauchy from [scale]."""
-    return D.HalfCauchy(params[0].clamp(min=EPS))
+    return D.HalfCauchy(parameter_domains.positive_parameter(params[0]))
 
 
 def _halfnormal_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build HalfNormal from [scale]."""
-    return D.HalfNormal(params[0].clamp(min=EPS))
+    return D.HalfNormal(parameter_domains.positive_parameter(params[0]))
 
 
 def _lognormal_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build LogNormal from [loc, scale]."""
-    return D.LogNormal(params[0], params[1].clamp(min=EPS))
+    return D.LogNormal(params[0], parameter_domains.positive_parameter(params[1]))
 
 
 def _gamma_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build Gamma from [concentration, rate]."""
-    return D.Gamma(params[0].clamp(min=EPS), params[1].clamp(min=EPS))
+    return D.Gamma(
+        parameter_domains.positive_parameter(params[0]),
+        parameter_domains.positive_parameter(params[1]),
+    )
 
 
 def _dirichlet_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build Dirichlet from [concentration]. The concentration tensor is
     ``(batch,)`` for scalar input (broadcast to the simplex dimension at
     sample time) or ``(batch, d)`` for a per-fibre vector."""
-    return D.Dirichlet(params[0].clamp(min=EPS))
+    return D.Dirichlet(parameter_domains.positive_parameter(params[0]))
 
 
 def _logistic_builder(params: list[torch.Tensor]) -> D.Distribution:
@@ -1608,7 +1615,7 @@ def _logistic_builder(params: list[torch.Tensor]) -> D.Distribution:
     AffineTransform(loc, scale)])` which has the right density.
     """
     loc = params[0]
-    scale = params[1].clamp(min=EPS)
+    scale = parameter_domains.positive_parameter(params[1])
     base = D.Uniform(torch.zeros_like(loc), torch.ones_like(loc))
     return D.TransformedDistribution(
         base,
@@ -1669,8 +1676,8 @@ def _half_student_t_builder(params: list[torch.Tensor]) -> D.Distribution:
     `log_abs_det_jacobian` and the transformed-distribution
     `log_prob` would crash with `NotImplementedError`.
     """
-    df = params[0].clamp(min=EPS)
-    scale = params[1].clamp(min=EPS)
+    df = parameter_domains.positive_parameter(params[0])
+    scale = parameter_domains.positive_parameter(params[1])
     return _HalfStudentT(df, scale)
 
 
@@ -1771,8 +1778,8 @@ def _beta_binomial_builder(params: list[torch.Tensor]) -> D.Distribution:
     onto the nonnegative reals.
     """
     total_count = params[0].clamp(min=0.0)
-    a = params[1].clamp(min=EPS)
-    b = params[2].clamp(min=EPS)
+    a = parameter_domains.positive_parameter(params[1])
+    b = parameter_domains.positive_parameter(params[2])
     return _BetaBinomial(total_count, a, b)
 
 
@@ -1795,7 +1802,7 @@ def _dim_dependent_builder(
     if family == "LKJCholesky":
 
         def _builder(params: list[torch.Tensor]) -> D.Distribution:
-            concentration = params[0].clamp(min=EPS)
+            concentration = parameter_domains.positive_parameter(params[0])
             return OnionLKJCholesky(dim, concentration)
 
         return _builder
@@ -1856,12 +1863,12 @@ def _hurdle_poisson_builder(
 
     A ``zero_prob`` of one is the point mass at zero and one of zero
     the zero-truncated Poisson, so it is projected onto ``[0, 1]``. The
-    zero-truncated Poisson needs a positive ``rate``, which is held off
-    zero.
+    zero-truncated Poisson needs a positive ``rate``; a nonpositive
+    value is refused.
     """
     return HurdlePoisson(
         params[0].clamp(0.0, 1.0),
-        params[1].clamp(min=EPS),
+        parameter_domains.positive_parameter(params[1]),
     )
 
 
@@ -1874,10 +1881,10 @@ def _zero_one_inflated_beta_builder(
     ``observe y <- ZeroOneInflatedBeta(mu, phi, zoi, coi)``.
     """
     return ZeroOneInflatedBeta(
-        params[0].clamp(EPS, 1.0 - EPS),
-        params[1].clamp(min=EPS),
-        params[2].clamp(EPS, 1.0 - EPS),
-        params[3].clamp(EPS, 1.0 - EPS),
+        params[0].clamp(0.0, 1.0),
+        parameter_domains.positive_parameter(params[1]),
+        params[2].clamp(0.0, 1.0),
+        params[3].clamp(0.0, 1.0),
     )
 
 
@@ -1897,7 +1904,7 @@ def _mixture_normal_builder(
     return MixtureNormal(
         params[0],
         params[1],
-        params[2].clamp(min=EPS),
+        parameter_domains.positive_parameter(params[2]),
     )
 
 
@@ -2894,7 +2901,7 @@ def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.T
 
     A parameter whose family admits a boundary value (a Geometric
     ``probs`` of one) is projected onto its declared bounds, any other
-    probability is held off zero and one, a parameter the family's
+    probability retains its value, a parameter the family's
     specification declares takes its own inline clamp, and an alternative
     the specification does not declare (logits, a covariance or a
     precision matrix) is passed as written: logits range over the reals,
@@ -2918,8 +2925,6 @@ def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.T
     declared = {param.name: param for param in spec.params}
     if name in declared and declared[name].inline_bounds is not None:
         return declared[name].inline_clamp(value)
-    if name == "probs":
-        return value.clamp(min=EPS, max=1.0 - EPS)
     if name in declared:
         return declared[name].inline_clamp(value)
     return value

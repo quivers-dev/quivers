@@ -1061,7 +1061,7 @@ ConditionalGeometric = _make_family(
     "Conditional Geometric(probs(x)). Number of failures before first success.",
     # A success probability of one is the point mass at zero failures;
     # one of zero puts no mass on any count.
-    inline_bounds={"probs": (EPS, 1.0)},
+    inline_bounds={"probs": (0.0, 1.0)},
 )
 """Conditional Geometric(probs(x)). Number of failures before first success."""
 
@@ -1073,8 +1073,8 @@ ConditionalNegativeBinomial = _make_family(
     "Discrete, over-dispersed count distribution.",
     # A total count of zero, or a success probability of zero, is the
     # point mass at zero; a success probability of one is no
-    # distribution, so it is held below one.
-    inline_bounds={"total_count": (0.0, math.inf), "probs": (0.0, 1.0 - EPS)},
+    # distribution, so the distribution validates that open endpoint.
+    inline_bounds={"total_count": (0.0, math.inf), "probs": (0.0, 1.0)},
 )
 """Conditional NegativeBinomial(total_count(x), probs(x)). Discrete, over-dispersed count distribution."""
 
