@@ -350,7 +350,7 @@ $B_1 \times B_2$, an axis name that no longer exists is a type error, not silent
 The shorthand names `dom` and `cod` may be used in $E$ only when that side is a single factor. For a
 product, each factor must be named.
 
-## 7. Priors on learnable tables
+## 7. Distribution clauses {#7-priors-on-learnable-tables}
 
 A `latent` declaration accepts a family clause, with the `over` and `iid` options of §6:
 
@@ -358,17 +358,18 @@ A `latent` declaration accepts a family clause, with the `over` and `iid` option
 morphism f : τ₁ -> τ₂ [role=latent, over=E, iid=I] ~ Family(args)
 ```
 
-The clause states a prior on the entries of the table: the table is a draw from the family over
-the stated event and batch axes, so that a model using $f$ treats the table as one more latent
-variable.
+The clause specifies the distribution of a program draw from $f$, with the event and batch
+axes declared above. It does not place a prior on the learned table used in a morphism
+composition.
 
 A program step `sample v <- f` draws $v$ from `Family(args)` and scores it under that family, on the
 [compiled runtime](../guides/dsl-overview.md#compilation-pipeline) (the PyTorch implementation of a
-module), on the reference machine, and on every transpilation target. The clause fixes the
+module), on the reference machine, and on every transpilation target that supports the declaration.
+The clause fixes the
 family's arguments, so a draw that passes arguments, `sample v <- f(x)`, is refused.
 
 Where $f$ appears in a morphism expression, such as the composition `g >> f`, the compiled runtime
 builds the same `LatentMorphism` as for a declaration without a clause: a free table initialized
 from a Normal with standard deviation `scale` and passed through the sigmoid. The clause does not
-enter that table, so a composition fits a point estimate of the table where the clause describes a
-posterior over it.
+enter that table, so a composition fits its entries as parameters. Posterior inference applies to
+the values sampled in a program.

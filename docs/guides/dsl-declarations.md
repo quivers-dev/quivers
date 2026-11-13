@@ -94,8 +94,8 @@ A morphism's role, in its option block, decides what is stored and learned:
 
 | Role | What the declaration holds | Typical use |
 | --- | --- | --- |
-| `latent` without a prior | a table of learnable parameters | a learned soft relation or weight table |
-| `latent` with `~ Family(...)` | a random tensor with a prior | Bayesian uncertainty about weights |
+| `latent` without a family clause | a table of learnable parameters | a learned soft relation or weight table |
+| `latent` with `~ Family(...)` | program draws from the family; a learnable table in compositions | random values with a specified prior |
 | `observed` | fixed data | a known relation |
 | `kernel`, or no role | a distribution for each input | random outputs given inputs |
 | `function` | a learned deterministic map | a neural network layer |
@@ -123,18 +123,18 @@ define fg = f >> g
 export fg
 ```
 
-### Latent morphism prior
+### Latent morphism draws {#latent-morphism-prior}
 
-A `latent` declaration may end with `~ Family(args)`, which declares a prior with the
-given literal hyperparameters on the morphism's tensor. A program step `sample v <- W`
+A `latent` declaration may end with `~ Family(args)`, which fixes the distribution of
+a program draw using the given literal hyperparameters. A program step `sample v <- W`
 draws `v` from that family and scores it under it, on the compiled runtime, the
-reference machine, and every transpilation target. In a morphism expression such as
-`f >> W`, `W` is its learnable table, a
+reference machine, and every transpilation target that supports the declaration.
+
+In a morphism expression such as `f >> W`, `W` is its learnable table, a
 [`LatentMorphism`](../api/core/morphisms.md#quivers.core.morphisms.LatentMorphism)
-built as without the clause, and the prior does not enter its fit
-([Morphisms §7](../semantics/morphisms.md#7-priors-on-learnable-tables)). (A kernel's
-`~ Family` clause differs: there a network computes the family's parameters from each
-input.) The
+built as without the clause, and the family clause does not enter its fit
+([Morphisms §7](../semantics/morphisms.md#7-priors-on-learnable-tables)). For a kernel,
+a network computes the family's parameters from each input. The
 [`over` clause](dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over) and other
 options go in the option block, before the `~`, and the whole declaration is one line:
 
@@ -142,13 +142,10 @@ options go in the option block, before the `~`, and the whole declaration is one
 object D : FinSet 3
 object K : FinSet 2
 
-# A matrix-normal prior on the 3 x 2 tensor of W
+# A matrix-normal distribution for 3 x 2 tensor draws from W
 morphism W : D -> K [role=latent, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)
 export W
 ```
-
-As a table in an expression, `W` is thus a free parameter, estimated as a point under
-whatever objective trains the model.
 
 ### Init recipes (`[init=auto]`) {#init-recipes-initauto}
 

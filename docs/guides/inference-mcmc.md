@@ -171,7 +171,7 @@ reach it. A warmup too short for the buffers
 (`init_buffer + base_window + term_buffer > num_warmup`) rescales them
 to 15% / 75% / 10% of the warmup, and a warmup of fewer than 20
 iterations estimates no metric at all.
-[`NUTSKernel.adaptation_windows`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel.adaptation_windows)
+[`NUTSKernel.adaptation_windows`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel)
 returns the windows a given warmup will run, as
 [`AdaptationWindow`](../api/inference/mcmc.md#quivers.inference.mcmc.AdaptationWindow)
 records, and `inverse_mass_matrix` reports the metric in use.
