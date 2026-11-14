@@ -26,6 +26,7 @@ from didactic.gadt import (
 )
 from panproto import GatError
 
+from quivers._values import HeldValue
 from quivers.dsl import ast_nodes as surface
 from quivers.qiec.canonical import (
     BUILTIN_TYPE_CONSTRUCTORS,
@@ -955,6 +956,32 @@ def lower_qvr_to_qiec(
     )
 
 
+def _authored_strings(syntax: surface.Module) -> frozenset[str]:
+    """Reserve source strings when choosing generated local names.
+
+    Parameters
+    ----------
+    syntax : surface.Module
+        The complete source projection, including later bindings.
+
+    Returns
+    -------
+    frozenset[str]
+        All string leaves of the syntax, including every authored name.
+    """
+    strings: set[str] = set()
+    pending: list[HeldValue] = [syntax]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            strings.add(value)
+        elif isinstance(value, tuple):
+            pending.extend(value)
+        elif isinstance(value, dx.Model):
+            pending.extend(getattr(value, name) for name in type(value).__field_specs__)
+    return frozenset(strings)
+
+
 def _module_name(file_path: str) -> str:
     """Derive a module name from a source path.
 
@@ -1475,6 +1502,7 @@ class _Elaborator(
         # Numbers the locals a lowering introduces to share a value, so
         # each such binder is unique across the module.
         self._shared_serial = 0
+        self._authored_names = _authored_strings(source.syntax)
         self._program_state: _ProgramState | None = None
         self._program_objects: dict[str, ObjectInfo] = {}
         self._program_morphisms: dict[str, surface.MorphismDecl] = {}
@@ -3330,13 +3358,14 @@ class _Elaborator(
         Returns
         -------
         Local
-            A local named ``__<stem>_<n>``, unique across the module.
+            A local named ``__<stem>_<n>``, unique across the module and
+            distinct from every authored name, including later bindings.
         """
         occupied = {local.name for local in context.locals}
         while True:
             self._shared_serial += 1
             name = f"__{stem}_{self._shared_serial}"
-            if name not in occupied:
+            if name not in occupied and name not in self._authored_names:
                 return Local(name=name, type=type_)
 
     def _let(

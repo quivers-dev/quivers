@@ -3056,9 +3056,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             If the name is already bound.
         """
         if name is None:
-            binder = Local(
-                name=f"_step{len(scope.steps)}_{id(scope) & 0xFFFF:x}", type=type_
-            )
+            binder = self._shared_local("step", type_, scope.context())
         else:
             if scope.lookup(name) is not None:
                 self._fail(
