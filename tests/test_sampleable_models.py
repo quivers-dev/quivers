@@ -10,6 +10,7 @@ from quivers.continuous.inline import MixedInlineDistribution, _normal_builder
 from quivers.continuous.spaces import Euclidean
 from quivers.effects.reparam import SiteRequest
 from quivers.effects.sites import TorchSampleable
+from quivers.effects.trace_types import SampleSite, Trace
 
 
 def test_sampleable_updates_keep_declared_morphism_and_density_gradient() -> None:
@@ -61,3 +62,30 @@ def test_site_request_update_retains_sampleable_and_given_identity() -> None:
         request.with_(given=3)
     with pytest.raises(dx.ValidationError, match="map names"):
         request.with_(seen={"bad": 3})
+
+
+def test_trace_finalization_preserves_live_site_values() -> None:
+    """Finalization retains site storage and the exact Gaussian score gradient."""
+    value = torch.tensor([0.3, -0.2], dtype=torch.float64, requires_grad=True)
+    density = torch.distributions.Normal(0.0, 1.0).log_prob(value)
+    site = SampleSite(name="z", morphism=None, value=value, log_prob=density)
+    pending = Trace(sites={"z": site})
+    complete = pending.with_(output=value, log_joint=density)
+    assert pending.output is None
+    assert pending.log_joint is None
+    assert complete.sites is pending.sites
+    assert complete.output is value
+    assert complete.log_joint is density
+    assert complete.latent_sites == {"z": site}
+    assert copy.copy(site) == site
+    assert hash(copy.copy(site)) == hash(site)
+    assert site.with_(value=value.detach().clone()) != site
+    assert Trace().sites is not Trace().sites
+    density.sum().backward()
+    torch.testing.assert_close(value.grad, -value.detach(), rtol=0, atol=0)
+    with pytest.raises(dx.ValidationError, match="torch.Tensor"):
+        site.with_(log_prob=0.0)
+    with pytest.raises(dx.ValidationError, match="SampleSite"):
+        pending.with_(sites={"z": 3})
+    with pytest.raises(dx.ValidationError, match="trace output"):
+        complete.with_(output={"z": 3})

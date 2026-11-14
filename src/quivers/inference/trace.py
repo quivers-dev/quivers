@@ -67,6 +67,7 @@ def trace(
     """
     with TraceHandler() as handler:
         output = run_program(program, x, observations)
-    handler.trace.output = output
-    handler.trace.log_joint = handler.total_log_joint(x.device)
+    handler.trace = handler.trace.with_(
+        output=output, log_joint=handler.total_log_joint(x.device)
+    )
     return handler.trace
