@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import didactic.api as dx
 
 from quivers.qiec import (
     BOOL,
@@ -39,6 +40,18 @@ ORIGIN = SourceOrigin(
     role="primitive",
     source_protocol="test",
 )
+
+
+def test_primitive_signature_updates_validate_recursive_types() -> None:
+    """Primitive signatures compare typed fields and reject malformed updates."""
+    signature = primitive("add_real")
+    assert signature == signature.with_(parameters=(REAL, REAL))
+    assert hash(signature) == hash(signature.with_(parameters=(REAL, REAL)))
+    assert signature != signature.with_(result=INT)
+    with pytest.raises(dx.ValidationError, match="parameters"):
+        signature.with_(parameters=(REAL, "Real"))
+    with pytest.raises(dx.ValidationError):
+        signature.with_(capability="unknown")
 
 
 def _apply(name: str, *arguments: LiteralData) -> PrimitiveApplication:

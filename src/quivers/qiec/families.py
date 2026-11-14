@@ -26,10 +26,14 @@ components weighs each by its mass.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
 from types import MappingProxyType
 
+import didactic.api as dx
+
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.qiec._models import validate_shape
 from quivers.qiec.identifiers import DistributionId
+from quivers.qiec.terms import LiteralData
 from quivers.qiec.types import BOOL, INT, REAL, TypeExpr
 
 type ParameterConstraint = str
@@ -46,8 +50,7 @@ type SupportKind = str
 the parameter constraints."""
 
 
-@dataclass(frozen=True, slots=True)
-class FamilyParameter:
+class FamilyParameter(dx.Model):
     """One parameter of a distribution family.
 
     Parameters
@@ -73,8 +76,7 @@ class FamilyParameter:
     event_dims: tuple[int | None, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class DistributionFamily:
+class DistributionFamily(ValueModel):
     """The semantic record of one distribution family.
 
     Parameters
@@ -113,28 +115,46 @@ class DistributionFamily:
     """
 
     name: str
-    parameters: tuple[FamilyParameter, ...]
+    parameters: tuple[FamilyParameter, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
     support: SupportKind
-    element: TypeExpr
+    element: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     event_rank: int
     event_sources: tuple[str, ...]
     discrete: bool
     reparameterizable: bool
     compositional: bool
-    targets: Mapping[str, str] = field(default_factory=dict)
-    finite_support: tuple[object, ...] | None = None
+    targets: Mapping[str, str] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    finite_support: tuple[LiteralData, ...] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
-    def __post_init__(self) -> None:
-        """Freeze the target spellings and check the parameter names.
+    @dx.model_validator()
+    def _validate_family(self) -> None:
+        """Validate semantic fields, parameter names, and event dimensions.
 
         Raises
         ------
+        TypeError
+            If a recursive field or target spelling has the wrong type.
         ValueError
             If two parameters share a name, an event source names no
             parameter or has a rank below the event rank, or a
             parameter ties a dimension to one the sample does not have.
         """
-        object.__setattr__(self, "targets", MappingProxyType(dict(self.targets)))
+        validate_shape(self.parameters, tuple[FamilyParameter, ...], path="parameters")
+        validate_shape(self.element, TypeExpr, path="element")
+        validate_shape(
+            self.finite_support, tuple[LiteralData, ...] | None, path="finite_support"
+        )
+        if not isinstance(self.targets, Mapping) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in self.targets.items()
+        ):
+            raise TypeError("targets must map target names to family spellings")
         names = [parameter.name for parameter in self.parameters]
         if len(set(names)) != len(names):
             raise ValueError(f"family {self.name!r} repeats a parameter name")
@@ -234,8 +254,11 @@ class DistributionFamily:
 
 _FAMILIES: tuple[DistributionFamily, ...] = (
     DistributionFamily(
-        "Normal",
-        (FamilyParameter("loc", "real", 0), FamilyParameter("scale", "positive", 0)),
+        name="Normal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
         support="real",
         element=REAL,
         event_rank=0,
@@ -258,8 +281,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "LogitNormal",
-        (FamilyParameter("loc", "real", 0), FamilyParameter("scale", "positive", 0)),
+        name="LogitNormal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
         support="unit_interval",
         element=REAL,
         event_rank=0,
@@ -276,10 +302,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Beta",
-        (
-            FamilyParameter("concentration1", "positive", 0),
-            FamilyParameter("concentration0", "positive", 0),
+        name="Beta",
+        parameters=(
+            FamilyParameter(name="concentration1", constraint="positive", rank=0),
+            FamilyParameter(name="concentration0", constraint="positive", rank=0),
         ),
         support="unit_interval",
         element=REAL,
@@ -303,12 +329,12 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "TruncatedNormal",
-        (
-            FamilyParameter("loc", "real", 0),
-            FamilyParameter("scale", "positive", 0),
-            FamilyParameter("low", "real", 0),
-            FamilyParameter("high", "real", 0),
+        name="TruncatedNormal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="low", constraint="real", rank=0),
+            FamilyParameter(name="high", constraint="real", rank=0),
         ),
         support="real",
         element=REAL,
@@ -330,8 +356,12 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Dirichlet",
-        (FamilyParameter("concentration", "positive", 1, (0,)),),
+        name="Dirichlet",
+        parameters=(
+            FamilyParameter(
+                name="concentration", constraint="positive", rank=1, event_dims=(0,)
+            ),
+        ),
         support="simplex",
         element=REAL,
         event_rank=1,
@@ -354,8 +384,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Cauchy",
-        (FamilyParameter("loc", "real", 0), FamilyParameter("scale", "positive", 0)),
+        name="Cauchy",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
         support="real",
         element=REAL,
         event_rank=0,
@@ -378,8 +411,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Laplace",
-        (FamilyParameter("loc", "real", 0), FamilyParameter("scale", "positive", 0)),
+        name="Laplace",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
         support="real",
         element=REAL,
         event_rank=0,
@@ -401,8 +437,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Gumbel",
-        (FamilyParameter("loc", "real", 0), FamilyParameter("scale", "positive", 0)),
+        name="Gumbel",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
         support="real",
         element=REAL,
         event_rank=0,
@@ -420,8 +459,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "LogNormal",
-        (FamilyParameter("loc", "real", 0), FamilyParameter("scale", "positive", 0)),
+        name="LogNormal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
         support="positive",
         element=REAL,
         event_rank=0,
@@ -444,11 +486,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "StudentT",
-        (
-            FamilyParameter("df", "positive", 0),
-            FamilyParameter("loc", "real", 0),
-            FamilyParameter("scale", "positive", 0),
+        name="StudentT",
+        parameters=(
+            FamilyParameter(name="df", constraint="positive", rank=0),
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
         ),
         support="real",
         element=REAL,
@@ -471,8 +513,8 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Exponential",
-        (FamilyParameter("rate", "positive", 0),),
+        name="Exponential",
+        parameters=(FamilyParameter(name="rate", constraint="positive", rank=0),),
         support="nonnegative",
         element=REAL,
         event_rank=0,
@@ -495,10 +537,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Gamma",
-        (
-            FamilyParameter("concentration", "positive", 0),
-            FamilyParameter("rate", "positive", 0),
+        name="Gamma",
+        parameters=(
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
+            FamilyParameter(name="rate", constraint="positive", rank=0),
         ),
         support="nonnegative",
         element=REAL,
@@ -522,10 +564,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "LogGamma",
-        (
-            FamilyParameter("concentration", "positive", 0),
-            FamilyParameter("rate", "positive", 0),
+        name="LogGamma",
+        parameters=(
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
+            FamilyParameter(name="rate", constraint="positive", rank=0),
         ),
         support="real",
         element=REAL,
@@ -541,10 +583,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "LogitBeta",
-        (
-            FamilyParameter("concentration1", "positive", 0),
-            FamilyParameter("concentration0", "positive", 0),
+        name="LogitBeta",
+        parameters=(
+            FamilyParameter(name="concentration1", constraint="positive", rank=0),
+            FamilyParameter(name="concentration0", constraint="positive", rank=0),
         ),
         support="real",
         element=REAL,
@@ -560,8 +602,8 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Chi2",
-        (FamilyParameter("df", "positive", 0),),
+        name="Chi2",
+        parameters=(FamilyParameter(name="df", constraint="positive", rank=0),),
         support="nonnegative",
         element=REAL,
         event_rank=0,
@@ -581,8 +623,8 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "HalfCauchy",
-        (FamilyParameter("scale", "positive", 0),),
+        name="HalfCauchy",
+        parameters=(FamilyParameter(name="scale", constraint="positive", rank=0),),
         support="nonnegative",
         element=REAL,
         event_rank=0,
@@ -605,8 +647,8 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "HalfNormal",
-        (FamilyParameter("scale", "positive", 0),),
+        name="HalfNormal",
+        parameters=(FamilyParameter(name="scale", constraint="positive", rank=0),),
         support="nonnegative",
         element=REAL,
         event_rank=0,
@@ -629,10 +671,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "InverseGamma",
-        (
-            FamilyParameter("concentration", "positive", 0),
-            FamilyParameter("rate", "positive", 0),
+        name="InverseGamma",
+        parameters=(
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
+            FamilyParameter(name="rate", constraint="positive", rank=0),
         ),
         support="positive",
         element=REAL,
@@ -651,10 +693,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Weibull",
-        (
-            FamilyParameter("scale", "positive", 0),
-            FamilyParameter("concentration", "positive", 0),
+        name="Weibull",
+        parameters=(
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
         ),
         support="positive",
         element=REAL,
@@ -678,10 +720,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Pareto",
-        (
-            FamilyParameter("scale", "positive", 0),
-            FamilyParameter("alpha", "positive", 0),
+        name="Pareto",
+        parameters=(
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="alpha", constraint="positive", rank=0),
         ),
         support="dependent",
         element=REAL,
@@ -703,10 +745,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Kumaraswamy",
-        (
-            FamilyParameter("concentration1", "positive", 0),
-            FamilyParameter("concentration0", "positive", 0),
+        name="Kumaraswamy",
+        parameters=(
+            FamilyParameter(name="concentration1", constraint="positive", rank=0),
+            FamilyParameter(name="concentration0", constraint="positive", rank=0),
         ),
         support="unit_interval",
         element=REAL,
@@ -727,10 +769,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "ContinuousBernoulli",
-        (
-            FamilyParameter("probs", "unit_interval", 0),
-            FamilyParameter("logits", "real", 0),
+        name="ContinuousBernoulli",
+        parameters=(
+            FamilyParameter(name="probs", constraint="unit_interval", rank=0),
+            FamilyParameter(name="logits", constraint="real", rank=0),
         ),
         support="unit_interval",
         element=REAL,
@@ -751,8 +793,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "FisherSnedecor",
-        (FamilyParameter("df1", "positive", 0), FamilyParameter("df2", "positive", 0)),
+        name="FisherSnedecor",
+        parameters=(
+            FamilyParameter(name="df1", constraint="positive", rank=0),
+            FamilyParameter(name="df2", constraint="positive", rank=0),
+        ),
         support="positive",
         element=REAL,
         event_rank=0,
@@ -768,8 +813,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Uniform",
-        (FamilyParameter("low", "real", 0), FamilyParameter("high", "real", 0)),
+        name="Uniform",
+        parameters=(
+            FamilyParameter(name="low", constraint="real", rank=0),
+            FamilyParameter(name="high", constraint="real", rank=0),
+        ),
         support="dependent",
         element=REAL,
         event_rank=0,
@@ -792,12 +840,27 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "MultivariateNormal",
-        (
-            FamilyParameter("loc", "real", 1, (0,)),
-            FamilyParameter("covariance_matrix", "positive_definite", 2, (0, 0)),
-            FamilyParameter("precision_matrix", "positive_definite", 2, (0, 0)),
-            FamilyParameter("scale_tril", "lower_cholesky", 2, (0, 0)),
+        name="MultivariateNormal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=1, event_dims=(0,)),
+            FamilyParameter(
+                name="covariance_matrix",
+                constraint="positive_definite",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="precision_matrix",
+                constraint="positive_definite",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="scale_tril",
+                constraint="lower_cholesky",
+                rank=2,
+                event_dims=(0, 0),
+            ),
         ),
         support="real",
         element=REAL,
@@ -821,11 +884,15 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "LowRankMVN",
-        (
-            FamilyParameter("loc", "real", 1, (0,)),
-            FamilyParameter("cov_factor", "real", 2, (0, None)),
-            FamilyParameter("cov_diag", "positive", 1, (0,)),
+        name="LowRankMVN",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=1, event_dims=(0,)),
+            FamilyParameter(
+                name="cov_factor", constraint="real", rank=2, event_dims=(0, None)
+            ),
+            FamilyParameter(
+                name="cov_diag", constraint="positive", rank=1, event_dims=(0,)
+            ),
         ),
         support="real",
         element=REAL,
@@ -840,11 +907,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "RelaxedBernoulli",
-        (
-            FamilyParameter("temperature", "positive", 0),
-            FamilyParameter("probs", "unit_interval", 0),
-            FamilyParameter("logits", "real", 0),
+        name="RelaxedBernoulli",
+        parameters=(
+            FamilyParameter(name="temperature", constraint="positive", rank=0),
+            FamilyParameter(name="probs", constraint="unit_interval", rank=0),
+            FamilyParameter(name="logits", constraint="real", rank=0),
         ),
         support="unit_interval",
         element=REAL,
@@ -860,11 +927,13 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "RelaxedOneHotCategorical",
-        (
-            FamilyParameter("temperature", "positive", 0),
-            FamilyParameter("probs", "simplex", 1, (0,)),
-            FamilyParameter("logits", "real", 1, (0,)),
+        name="RelaxedOneHotCategorical",
+        parameters=(
+            FamilyParameter(name="temperature", constraint="positive", rank=0),
+            FamilyParameter(
+                name="probs", constraint="simplex", rank=1, event_dims=(0,)
+            ),
+            FamilyParameter(name="logits", constraint="real", rank=1, event_dims=(0,)),
         ),
         support="simplex",
         element=REAL,
@@ -879,12 +948,27 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Wishart",
-        (
-            FamilyParameter("df", "positive", 0),
-            FamilyParameter("covariance_matrix", "positive_definite", 2, (0, 0)),
-            FamilyParameter("precision_matrix", "positive_definite", 2, (0, 0)),
-            FamilyParameter("scale_tril", "lower_cholesky", 2, (0, 0)),
+        name="Wishart",
+        parameters=(
+            FamilyParameter(name="df", constraint="positive", rank=0),
+            FamilyParameter(
+                name="covariance_matrix",
+                constraint="positive_definite",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="precision_matrix",
+                constraint="positive_definite",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="scale_tril",
+                constraint="lower_cholesky",
+                rank=2,
+                event_dims=(0, 0),
+            ),
         ),
         support="positive_definite",
         element=REAL,
@@ -904,10 +988,15 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "InverseWishart",
-        (
-            FamilyParameter("df", "positive", 0),
-            FamilyParameter("scale_tril", "lower_cholesky", 2, (0, 0)),
+        name="InverseWishart",
+        parameters=(
+            FamilyParameter(name="df", constraint="positive", rank=0),
+            FamilyParameter(
+                name="scale_tril",
+                constraint="lower_cholesky",
+                rank=2,
+                event_dims=(0, 0),
+            ),
         ),
         support="positive_definite",
         element=REAL,
@@ -924,11 +1013,21 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "MatrixNormal",
-        (
-            FamilyParameter("loc", "real", 2, (0, 1)),
-            FamilyParameter("row_covariance", "positive_definite", 2, (0, 0)),
-            FamilyParameter("col_covariance", "positive_definite", 2, (1, 1)),
+        name="MatrixNormal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=2, event_dims=(0, 1)),
+            FamilyParameter(
+                name="row_covariance",
+                constraint="positive_definite",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="col_covariance",
+                constraint="positive_definite",
+                rank=2,
+                event_dims=(1, 1),
+            ),
         ),
         support="real",
         element=REAL,
@@ -950,10 +1049,12 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "GP",
-        (
-            FamilyParameter("mean", "real", 1, (0,)),
-            FamilyParameter("kernel", "positive_definite", 2, (0, 0)),
+        name="GP",
+        parameters=(
+            FamilyParameter(name="mean", constraint="real", rank=1, event_dims=(0,)),
+            FamilyParameter(
+                name="kernel", constraint="positive_definite", rank=2, event_dims=(0, 0)
+            ),
         ),
         support="real",
         element=REAL,
@@ -977,8 +1078,8 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Horseshoe",
-        (FamilyParameter("scale", "positive", 0),),
+        name="Horseshoe",
+        parameters=(FamilyParameter(name="scale", constraint="positive", rank=0),),
         support="real",
         element=REAL,
         event_rank=0,
@@ -989,10 +1090,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
-        "Bernoulli",
-        (
-            FamilyParameter("probs", "unit_interval", 0),
-            FamilyParameter("logits", "real", 0),
+        name="Bernoulli",
+        parameters=(
+            FamilyParameter(name="probs", constraint="unit_interval", rank=0),
+            FamilyParameter(name="logits", constraint="real", rank=0),
         ),
         support="boolean",
         element=BOOL,
@@ -1017,8 +1118,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Categorical",
-        (FamilyParameter("probs", "simplex", 1), FamilyParameter("logits", "real", 1)),
+        name="Categorical",
+        parameters=(
+            FamilyParameter(name="probs", constraint="simplex", rank=1),
+            FamilyParameter(name="logits", constraint="real", rank=1),
+        ),
         support="dependent",
         element=INT,
         event_rank=0,
@@ -1041,8 +1145,8 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Poisson",
-        (FamilyParameter("rate", "nonnegative", 0),),
+        name="Poisson",
+        parameters=(FamilyParameter(name="rate", constraint="nonnegative", rank=0),),
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
@@ -1065,11 +1169,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "NegativeBinomial",
-        (
-            FamilyParameter("total_count", "nonnegative", 0),
-            FamilyParameter("probs", "unit_interval_half_open", 0),
-            FamilyParameter("logits", "real", 0),
+        name="NegativeBinomial",
+        parameters=(
+            FamilyParameter(name="total_count", constraint="nonnegative", rank=0),
+            FamilyParameter(name="probs", constraint="unit_interval_half_open", rank=0),
+            FamilyParameter(name="logits", constraint="real", rank=0),
         ),
         support="nonnegative_integer",
         element=INT,
@@ -1093,10 +1197,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Geometric",
-        (
-            FamilyParameter("probs", "unit_interval", 0),
-            FamilyParameter("logits", "real", 0),
+        name="Geometric",
+        parameters=(
+            FamilyParameter(name="probs", constraint="unit_interval", rank=0),
+            FamilyParameter(name="logits", constraint="real", rank=0),
         ),
         support="nonnegative_integer",
         element=INT,
@@ -1116,11 +1220,13 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Binomial",
-        (
-            FamilyParameter("total_count", "nonnegative_integer", 0),
-            FamilyParameter("probs", "unit_interval", 0),
-            FamilyParameter("logits", "real", 0),
+        name="Binomial",
+        parameters=(
+            FamilyParameter(
+                name="total_count", constraint="nonnegative_integer", rank=0
+            ),
+            FamilyParameter(name="probs", constraint="unit_interval", rank=0),
+            FamilyParameter(name="logits", constraint="real", rank=0),
         ),
         support="dependent",
         element=INT,
@@ -1142,10 +1248,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "VonMises",
-        (
-            FamilyParameter("loc", "real", 0),
-            FamilyParameter("concentration", "positive", 0),
+        name="VonMises",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
         ),
         support="real",
         element=REAL,
@@ -1164,8 +1270,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "LogisticNormal",
-        (FamilyParameter("loc", "real", 0), FamilyParameter("scale", "positive", 0)),
+        name="LogisticNormal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
         support="simplex",
         element=REAL,
         event_rank=1,
@@ -1180,10 +1289,12 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "OneHotCategorical",
-        (
-            FamilyParameter("probs", "simplex", 1, (0,)),
-            FamilyParameter("logits", "real", 1, (0,)),
+        name="OneHotCategorical",
+        parameters=(
+            FamilyParameter(
+                name="probs", constraint="simplex", rank=1, event_dims=(0,)
+            ),
+            FamilyParameter(name="logits", constraint="real", rank=1, event_dims=(0,)),
         ),
         support="one_hot",
         element=INT,
@@ -1199,8 +1310,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "LKJCholesky",
-        (FamilyParameter("concentration", "positive", 0),),
+        name="LKJCholesky",
+        parameters=(
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
+        ),
         support="corr_cholesky",
         element=REAL,
         event_rank=2,
@@ -1220,10 +1333,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Mixture",
-        (
-            FamilyParameter("weights", "simplex", 1),
-            FamilyParameter("component", "sampleable", 0),
+        name="Mixture",
+        parameters=(
+            FamilyParameter(name="weights", constraint="simplex", rank=1),
+            FamilyParameter(name="component", constraint="sampleable", rank=0),
         ),
         support="dependent",
         element=REAL,
@@ -1243,11 +1356,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "MixtureNormal",
-        (
-            FamilyParameter("weights", "simplex", 1),
-            FamilyParameter("loc", "real", 1),
-            FamilyParameter("scale", "positive", 1),
+        name="MixtureNormal",
+        parameters=(
+            FamilyParameter(name="weights", constraint="simplex", rank=1),
+            FamilyParameter(name="loc", constraint="real", rank=1),
+            FamilyParameter(name="scale", constraint="positive", rank=1),
         ),
         support="real",
         element=REAL,
@@ -1268,10 +1381,14 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Independent",
-        (
-            FamilyParameter("base", "sampleable", 0),
-            FamilyParameter("reinterpreted_batch_ndims", "nonnegative_integer", 0),
+        name="Independent",
+        parameters=(
+            FamilyParameter(name="base", constraint="sampleable", rank=0),
+            FamilyParameter(
+                name="reinterpreted_batch_ndims",
+                constraint="nonnegative_integer",
+                rank=0,
+            ),
         ),
         support="dependent",
         element=REAL,
@@ -1287,10 +1404,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Transformed",
-        (
-            FamilyParameter("base", "sampleable", 0),
-            FamilyParameter("transforms", "transform", 0),
+        name="Transformed",
+        parameters=(
+            FamilyParameter(name="base", constraint="sampleable", rank=0),
+            FamilyParameter(name="transforms", constraint="transform", rank=0),
         ),
         support="dependent",
         element=REAL,
@@ -1306,11 +1423,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Truncated",
-        (
-            FamilyParameter("base", "sampleable", 0),
-            FamilyParameter("low", "real", 0),
-            FamilyParameter("high", "real", 0),
+        name="Truncated",
+        parameters=(
+            FamilyParameter(name="base", constraint="sampleable", rank=0),
+            FamilyParameter(name="low", constraint="real", rank=0),
+            FamilyParameter(name="high", constraint="real", rank=0),
         ),
         support="real",
         element=REAL,
@@ -1327,10 +1444,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "ZeroInflatedPoisson",
-        (
-            FamilyParameter("zero_prob", "unit_interval", 0),
-            FamilyParameter("rate", "nonnegative", 0),
+        name="ZeroInflatedPoisson",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="rate", constraint="nonnegative", rank=0),
         ),
         support="nonnegative_integer",
         element=INT,
@@ -1342,10 +1459,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
-        "HurdlePoisson",
-        (
-            FamilyParameter("zero_prob", "unit_interval", 0),
-            FamilyParameter("rate", "nonnegative", 0),
+        name="HurdlePoisson",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="rate", constraint="nonnegative", rank=0),
         ),
         support="nonnegative_integer",
         element=INT,
@@ -1357,12 +1474,12 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
-        "ZeroOneInflatedBeta",
-        (
-            FamilyParameter("mu", "unit_interval_open", 0),
-            FamilyParameter("phi", "positive", 0),
-            FamilyParameter("zoi", "unit_interval", 0),
-            FamilyParameter("coi", "unit_interval", 0),
+        name="ZeroOneInflatedBeta",
+        parameters=(
+            FamilyParameter(name="mu", constraint="unit_interval_open", rank=0),
+            FamilyParameter(name="phi", constraint="positive", rank=0),
+            FamilyParameter(name="zoi", constraint="unit_interval", rank=0),
+            FamilyParameter(name="coi", constraint="unit_interval", rank=0),
         ),
         support="unit_interval",
         element=REAL,
@@ -1374,11 +1491,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
-        "Restrict",
-        (
-            FamilyParameter("base", "sampleable", 0),
-            FamilyParameter("low", "real", 0),
-            FamilyParameter("high", "real", 0),
+        name="Restrict",
+        parameters=(
+            FamilyParameter(name="base", constraint="sampleable", rank=0),
+            FamilyParameter(name="low", constraint="real", rank=0),
+            FamilyParameter(name="high", constraint="real", rank=0),
         ),
         support="dependent",
         element=REAL,
@@ -1390,8 +1507,8 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
-        "Normalize",
-        (FamilyParameter("base", "sampleable", 0),),
+        name="Normalize",
+        parameters=(FamilyParameter(name="base", constraint="sampleable", rank=0),),
         support="dependent",
         element=REAL,
         event_rank=0,
@@ -1402,8 +1519,8 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
-        "PointMass",
-        (FamilyParameter("value", "numeric", 0),),
+        name="PointMass",
+        parameters=(FamilyParameter(name="value", constraint="numeric", rank=0),),
         support="dependent",
         element=REAL,
         event_rank=0,
@@ -1414,8 +1531,10 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
-        "LKJCorrelationFactor",
-        (FamilyParameter("concentration", "positive", 0),),
+        name="LKJCorrelationFactor",
+        parameters=(
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
+        ),
         support="positive_definite",
         element=REAL,
         event_rank=2,
@@ -1431,11 +1550,13 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "BetaBinomial",
-        (
-            FamilyParameter("total_count", "nonnegative_integer", 0),
-            FamilyParameter("concentration1", "positive", 0),
-            FamilyParameter("concentration0", "positive", 0),
+        name="BetaBinomial",
+        parameters=(
+            FamilyParameter(
+                name="total_count", constraint="nonnegative_integer", rank=0
+            ),
+            FamilyParameter(name="concentration1", constraint="positive", rank=0),
+            FamilyParameter(name="concentration0", constraint="positive", rank=0),
         ),
         support="nonnegative_integer",
         element=INT,
@@ -1458,8 +1579,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "OrderedLogistic",
-        (FamilyParameter("eta", "real", 0), FamilyParameter("cutpoints", "real", 1)),
+        name="OrderedLogistic",
+        parameters=(
+            FamilyParameter(name="eta", constraint="real", rank=0),
+            FamilyParameter(name="cutpoints", constraint="real", rank=1),
+        ),
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
@@ -1475,8 +1599,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "OrderedProbit",
-        (FamilyParameter("eta", "real", 0), FamilyParameter("cutpoints", "real", 1)),
+        name="OrderedProbit",
+        parameters=(
+            FamilyParameter(name="eta", constraint="real", rank=0),
+            FamilyParameter(name="cutpoints", constraint="real", rank=1),
+        ),
         support="nonnegative_integer",
         element=INT,
         event_rank=0,
@@ -1492,8 +1619,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "Logistic",
-        (FamilyParameter("loc", "real", 0), FamilyParameter("scale", "positive", 0)),
+        name="Logistic",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
         support="real",
         element=REAL,
         event_rank=0,
@@ -1515,8 +1645,11 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
-        "HalfStudentT",
-        (FamilyParameter("df", "positive", 0), FamilyParameter("scale", "positive", 0)),
+        name="HalfStudentT",
+        parameters=(
+            FamilyParameter(name="df", constraint="positive", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
         support="positive",
         element=REAL,
         event_rank=0,
