@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Bijector checks use reproducible draws and sufficient inverse precision.** Affine–sigmoid round trips use float64 with fixed tail cases and unchanged tolerances. A scalar derivative checks the chain rule, while float32 coverage checks the inverse of the represented probability.
 - **CI retains test timings after failures.** Completed tests contribute scheduling durations even when another shard fails or times out. Slow shards have a 90-minute budget for the full sampling and recovery workloads.
 - **The IRT gallery allocates more posterior sampling.** Four chains each retain 4,000 draws after 1,000 warmup iterations. Rank-normalized split R-hat, bulk and tail effective sample size, divergence, and parameter-recovery requirements remain fixed.
 - **LDA backend comparisons use a double-precision reference.** The reference retains the fixed six-point corpus and comparison tolerance while evaluating its grouped token likelihood and Dirichlet priors in float64. An independent scalar calculation checks the joint and rejects a document-level topic mixture.
