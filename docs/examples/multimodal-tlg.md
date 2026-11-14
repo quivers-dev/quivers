@@ -1,5 +1,9 @@
 # Multimodal Type-Logical Grammar
 
+## Overview
+
+Multimodal type-logical grammar adds unary modalities to the Lambek calculus and lets structural rules apply only to material those modalities mark [@moortgat1997categorial; @kurtonina1997structural]. This example implements a sound fragment of that system: the associative Lambek calculus L, the residuated pair `Dia` and `Box` (written `<>` and `[]`), and one structural postulate, controlled permutation, that only `Dia`-marked structure may use. The relative pronoun `that` is the one decorated word. Its gap is typed `<>[]NP`, and that decoration is what lets the gap sit at the left edge of the clause or before a modifier, positions plain L cannot reach. Removing the decoration removes exactly those analyses.
+
 ## QVR source
 
 ```qvr
@@ -83,19 +87,15 @@ program fit_grammar : Term -> LogWeight
 export fit_grammar
 ```
 
-## Overview
-
-Multimodal type-logical grammar adds unary modalities to the Lambek calculus and lets structural rules apply only to material those modalities mark [@moortgat1997categorial; @kurtonina1997structural]. This example implements a sound fragment of that system: the associative Lambek calculus L, the residuated pair `Dia` and `Box` (written `<>` and `[]`), and one structural postulate, controlled permutation, that only `Dia`-marked structure may use. The relative pronoun `that` is the one decorated word. Its gap is typed `<>[]NP`, and that decoration is what lets the gap sit at the left edge of the clause or before a modifier, positions plain L cannot reach. Removing the decoration removes exactly those analyses.
-
 ## Understanding the model
 
 The [type-logical example](type-logical.md) shows that L handles extraction only at the right edge: "linguist that Kim admires" is fine because "Kim admires" derives `S/NP`, but "linguist that Kim admires today" is out, because the gap sits before the modifier and L cannot reorder. Adding a global permutation rule would fix that and wreck word order everywhere, since every sentence would then be acceptable in every order.
 
-Structural control takes a narrower route. The modalities obey residuation, `<>A |- B` iff `A |- []B`, which yields the counit `<>[]A |- A` and the unit `A |- []<>A`. A `Dia` formula in a proof unpacks to a bracketed structure `<D>`, and the postulate P lets a bracketed structure, and nothing else, move rightward past its neighbor. A hypothesis typed `<>[]NP` can thus start wherever an `NP` is needed, move to the right edge, and be discharged there by `/R`; the counit turns it back into an `NP` at its original position. Unmarked material never moves, so "Kim admires today Lee" stays ungrammatical.
+Structural control takes a narrower route. The modalities obey residuation, `<>A |- B` iff `A |- []B`, which yields the [counit](https://ncatlab.org/nlab/show/adjunction) `<>[]A |- A` and the unit `A |- []<>A`. A `Dia` formula in a proof unpacks to a bracketed structure `<D>`, and the postulate P lets a bracketed structure, and nothing else, move rightward past its neighbor. A hypothesis typed `<>[]NP` can thus start wherever an `NP` is needed, move to the right edge, and be discharged there by `/R`. The counit turns it back into an `NP` at its original position. Unmarked material never moves, so "Kim admires today Lee" stays ungrammatical.
 
 ## Walkthrough
 
-The chart has no hypotheses of its own: a rule combines adjacent spans. Each rule is therefore a derived sequent of L with `Dia`, `Box`, and P, chosen so that the chart can use the postulate without hypothetical reasoning.
+The chart has no hypotheses of its own: a rule combines adjacent spans. Each rule is thus a derived sequent of L with `Dia`, `Box`, and P, chosen so that the chart can use the postulate without hypothetical reasoning.
 
 | Rule | Sequent | Derivation |
 |---|---|---|
@@ -104,8 +104,8 @@ The chart has no hypotheses of its own: a rule combines adjacent spans. Each rul
 | `fwd_comp` | `A/B, B/C \|- A/C` | `/L` twice, then `/R` |
 | `raise_subj` | `NP \|- S/(NP\S)` | `\L`, then `/R` |
 | `counit_arg` | `A/B \|- A/<>[]B` | the counit `<>[]B \|- B` under `/L`, then `/R` |
-| `perm_arg` | `B\A \|- A/<>[]B` | `<[]B>, B\A \|- A` by `[]L` and `\L`; P moves `<[]B>` to the right; `<>L`, then `/R` |
-| `x_comp` | `A/B, A\C \|- C/<>[]B` | `A/B, <[]B>, A\C \|- C` by `[]L`, `/L`, `\L`; P moves `<[]B>` to the right; `<>L`, then `/R` |
+| `perm_arg` | `B\A \|- A/<>[]B` | `<[]B>, B\A \|- A` by `[]L` and `\L`. P moves `<[]B>` to the right. `<>L`, then `/R` |
+| `x_comp` | `A/B, A\C \|- C/<>[]B` | `A/B, <[]B>, A\C \|- C` by `[]L`, `/L`, `\L`. P moves `<[]B>` to the right. `<>L`, then `/R` |
 
 `counit_arg` is a residuation consequence: an argument slot that accepts `B` also accepts the weaker `<>[]B`. `perm_arg` and `x_comp` are the chart's image of P. With `perm_arg`, "admires Kim" (`NP\S`) also derives `S/<>[]NP`, a sentence whose missing subject is a marked gap, which gives the subject relative "linguist that admires Kim". With `x_comp`, "admires today" derives `(NP\S)/<>[]NP`, and composition with the raised subject gives "Kim admires today" the type `S/<>[]NP` that `that` seeks. All three conclusions end in `<>[]B`, and because `B |- <>[]B` is not a theorem, no undecorated argument can fill the slot they create: the reordering stays confined to marked gaps.
 
@@ -277,7 +277,7 @@ assert derivable(LEX, two_modifiers) and not parses(ded, two_modifiers)
 
 ### Recovering a distribution over sentences
 
-As in the type-logical example, conditioning on length turns the goal weight into a distribution, $p(s \mid |s| = n, \mathbf{w}) = Z(s; \mathbf{w}) / \sum_{|s'| = n} Z(s'; \mathbf{w})$, which [`sample_corpus`](../api/stochastic/deduction/sample.md#quivers.stochastic.deduction.sample.sample_corpus) samples exactly. The block draws the learnable log-weights from a Normal(0, 1) prior, samples 2,000 three-word sentences, refits by MAP from zero, and requires the fitted distribution over grammatical yields to lie within total-variation distance 0.05 of the generating one.
+As in the type-logical example, conditioning on length turns the goal weight into a distribution, $p(s \mid |s| = n, \mathbf{w}) = Z(s; \mathbf{w}) / \sum_{|s'| = n} Z(s'; \mathbf{w})$, which [`sample_corpus`](../api/stochastic/deduction/sample.md#quivers.stochastic.deduction.sample.sample_corpus) samples exactly. The block draws the learnable log-weights from a Normal(0, 1) prior, samples 2,000 three-word sentences, refits by [MAP](https://en.wikipedia.org/wiki/Maximum_a_posteriori_estimation) (maximum a posteriori) from zero, and requires the fitted distribution over grammatical yields to lie within total-variation distance 0.05 of the generating one.
 
 ```python
 from quivers.stochastic.deduction import sample_corpus
@@ -327,7 +327,7 @@ assert tv < 0.05
 
 ## Categorical perspective
 
-In a residuated monoid with a unary residuated pair, `<>` is left adjoint to `[]` (`<>A |- B` iff `A |- []B`), so `<>[]A |- A` is the [counit](https://ncatlab.org/nlab/show/adjunction) and `A |- []<>A` the unit of the adjunction. P is an additional arrow `B * <>A |- <>A * B`, an exchange map whose second factor must lie in the image of `<>`. No other arrow reorders a product, which is the algebraic content of "only marked structure permutes"; the chart's rules are composites of these arrows with the biclosed structure of L.
+In a residuated monoid with a unary residuated pair, `<>` is left adjoint to `[]` (`<>A |- B` iff `A |- []B`), so `<>[]A |- A` is the [counit](https://ncatlab.org/nlab/show/adjunction) and `A |- []<>A` the unit of the [adjunction](https://ncatlab.org/nlab/show/adjunction). P is an additional arrow `B * <>A |- <>A * B`, an exchange map whose second factor must lie in the image of `<>`. No other arrow reorders a product, which is the algebraic content of "only marked structure permutes". The chart's rules are composites of these arrows with the biclosed structure of L.
 
 ## Linguistic applications
 
@@ -335,4 +335,4 @@ In a residuated monoid with a unary residuated pair, `<>` is left adjoint to `[]
 - **Subject relatives.** "every linguist that admires Kim sleeps": one relative-pronoun type serves subject and object gaps, because P lets the left-edge gap move to the right edge.
 - **Word order outside the gap.** "Kim admires today Lee" and "Lee Kim admires" stay ungrammatical, since no unmarked material reorders.
 
-The postulate lets a gap appear anywhere inside the relative clause, so the fragment models no island constraints; Kurtonina and Moortgat discuss postulate packages that restrict where marked material may travel.
+The postulate lets a gap appear anywhere inside the relative clause, so the fragment models no island constraints. Kurtonina and Moortgat discuss postulate packages that restrict where marked material may travel.
