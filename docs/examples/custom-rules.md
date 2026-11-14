@@ -1,14 +1,17 @@
 # Custom Sequent Rules
 
+## Overview
+
+This AB grammar (Ajdukiewicz-Bar-Hillel) adds harmonic composition to forward and backward application. An indented `deduction` body declares its four rules directly as sequents over chart items `span(I, J, X)`. Reusable [schemas and bundles](schema-chart-parser.md) provide another declaration form. The grammar uses Steedman notation [@steedman2000syntactic]: `Fwd(X, Y)` is `X/Y` and `Bwd(X, Y)` is `X\Y`, with the result first in both. Removing a rule tests which sentences depend on it.
+
 ## QVR source
 
 ```qvr
 # Custom Rules
 #
 # An AB grammar (Ajdukiewicz-Bar-Hillel) plus harmonic
-# composition, illustrating that every rule in a deduction block
-# is a sequent declared in the DSL itself; there are no built-in
-# named rule schemas.
+# composition. Each rule is declared directly as a sequent in
+# the deduction body. Reusable schemas provide another declaration form.
 #
 # Deduction:
 #
@@ -70,10 +73,6 @@ program score_sentence : Term -> LogWeight
 export score_sentence
 ```
 
-## Overview
-
-Every rule in a `deduction { … }` block is a sequent declared in the DSL itself; there are no built-in named rule schemas to import. This example defines an AB grammar (Ajdukiewicz-Bar-Hillel) plus harmonic composition over chart-spans `span(I, J, X)`. `Fwd(X, Y)` is the forward-slash constructor `X/Y`; `Bwd(X, Y)` is the backward-slash constructor `X\Y`. The lexicon is chosen so that each of the four rules is needed by at least one sentence, and the page checks this by deleting each rule in turn.
-
 ## Understanding the model
 
 A rule is a template for combining known facts. Suppose one chart entry is
@@ -90,11 +89,11 @@ builds it: the type-raised subject `Mary : S/(S\NP)` composes with
 `saw : (S\NP)/NP` into `S/NP`. In the subject relative
 `the dog that runs today barks`, `that : (N\N)/(S\NP)` asks for a verb phrase,
 and backward composition of `runs : S\NP` with the sentence modifier
-`today : S\S` supplies the verb phrase `runs today : S\NP`.
+`today : S\S` provides the verb phrase `runs today : S\NP`.
 
 An [agenda](../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores) records newly derived entries and tries rules that can use them.
 Weights say how to combine evidence along a derivation and across alternatives.
-Changing the rule changes what can be derived; changing the [semiring](../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine) changes
+Changing the rule changes what can be derived. Changing the [semiring](../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine) changes
 what is accumulated about those derivations. Keep those two choices separate
 when interpreting the returned goal weight.
 
@@ -106,9 +105,9 @@ recovers.
 
 ## Walkthrough
 
-`object Term : FinSet 16` is the index the deduction's domain and codomain range over; its cardinality is incidental, since rules match constructor-tagged tuples symbolically.
+`object Term : FinSet 16` is the index the deduction's domain and codomain range over. Its cardinality is incidental, since rules match constructor-tagged tuples symbolically.
 
-`atoms NAME, NAME, …` lists every identifier the rules may match literally. Category atoms (`S`, `NP`, `N`), slash constructors (`Fwd`, `Bwd`), the chart-item constructor (`span`), and the lexical logical-form constants are atoms. Identifiers that appear in a rule pattern but are *not* listed in `atoms` are pattern variables; the convention is single uppercase letters (`X`, `Y`, `Z`, `I`, `J`, `K`). A pattern variable must not reuse an atom's spelling: had a rule written a position as `N`, it would match the noun category literally.
+`atoms NAME, NAME, …` lists every identifier the rules may match literally. Category atoms (`S`, `NP`, `N`), slash constructors (`Fwd`, `Bwd`), the chart-item constructor (`span`), and the lexical logical-form constants are atoms. Identifiers that appear in a rule pattern but are *not* listed in `atoms` are pattern variables. The convention is single uppercase letters (`X`, `Y`, `Z`, `I`, `J`, `K`). A pattern variable must not reuse an atom's spelling: had a rule written a position as `N`, it would match the noun category literally.
 
 Each rule's body is a sequent: comma-separated premises on the left of `|-`, a single conclusion on the right. The premise multiplicity determines whether the rule fires on a single chart cell (unary) or on several cells (binary and higher).
 
@@ -116,14 +115,14 @@ A variable appearing multiple times in the same rule unifies across occurrences:
 
 Every rule and lexical entry carries `#[learnable]`. A learnable rule's log-weight is keyed by the binding of its category variables `X`, `Y`, `Z`, not by the span positions `I`, `J`, `K` ([Weighted Deduction Fragment §2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)), and is allocated the first time that binding fires. Two firings of `fwd_app` on the same categories at different positions thus read one weight.
 
-The `score_sentence` program connects the grammar to a probabilistic program: `parse(AB, sentence)` runs the deduction on an observed sentence, and `score log_Z = chart.goal_weight()` adds $\log Z(s)$ to the program's log-joint. That is an unnormalized factor; the fit below divides by the length-$n$ total explicitly.
+The `score_sentence` program connects the grammar to a probabilistic program: `parse(AB, sentence)` runs the deduction on an observed sentence, and `score log_Z = chart.goal_weight()` adds $\log Z(s)$ to the program's log-joint. That is an unnormalized factor. The fit below divides by the length-$n$ total explicitly.
 
 ## DSL features
 
-- **`rule NAME : premises |- conclusion`**: a sequent rule. Arbitrary-arity premise lists are supported; the compiler dispatches to the appropriate chart-cell shape.
-- **Pattern variables vs atoms**: single-uppercase identifiers bind as wildcards; every other identifier in a rule pattern must appear in the `atoms` list.
+- **`rule NAME : premises |- conclusion`**: a sequent rule. Arbitrary-arity premise lists are supported. The compiler dispatches to the appropriate chart-cell shape.
+- **Pattern variables vs atoms**: single-uppercase identifiers bind as wildcards. Every other identifier in a rule pattern must appear in the `atoms` list.
 - **Constructor applications in patterns**: `Fwd(X, Y)`, `Bwd(X, Y)`, `span(I, J, X)` are patterns whose head is an atom and whose arguments are nested patterns. Matching is structural and unification-based.
-- **Several entries per word**: `Mary` is listed twice, as `NP` and as the type-raised `S/(S\NP)`; the lexicon injects one axiom per entry, and the chart sums over both.
+- **Several entries per word**: `Mary` is listed twice, as `NP` and as the type-raised `S/(S\NP)`. The lexicon injects one axiom per entry, and the chart sums over both.
 - **`parse(D, sentence)` in a program**: a program body can run a deduction and score its goal weight.
 
 ## Pattern Matching and Unification
@@ -133,7 +132,7 @@ The compiler uses first-order pattern matching with occurs-checking-free unifica
 - **Variables** (`X`, `Y`, `Z`): metavariables that match any concrete subterm. Repeated occurrences within a rule must unify.
 - **Constructor patterns** (`Fwd(X, Y)`): match constructor-application items whose head is the same atom and whose children unify.
 
-The agenda fires each rule at every chart cell (unary) or every combination of cells (binary and higher) whose items unify with the rule's premises; the conclusion item is then inserted into the chart under the rule's weight.
+The agenda fires each rule at every chart cell (unary) or every combination of cells (binary and higher) whose items unify with the rule's premises. The conclusion item is then inserted into the chart under the rule's weight.
 
 ## Extending the Rule Set
 
@@ -285,4 +284,6 @@ along one derivation, so the check is on the distribution over strings.
 
 ## Categorical perspective
 
-Sequent rules are hyperedges in the rule-system multicategory. A binary rule is a 2-input / 1-output hyperedge whose endpoints are pattern templates; firing the rule against the chart is the substitution along a pattern morphism into the category of concrete chart items. Variable unification across premises is exactly the pullback in the category of variable assignments: two premise patterns sharing a variable `Y` constrain the two assignments to agree on `Y`'s value. The chart accumulates the weights of derivations, combining premises and alternatives with the semiring operations [@goodman1999semiring]. Agreement between evaluation orders requires an appropriate algorithm: repeated contributions must be handled correctly, and recursive systems need termination or convergence conditions. The runtime selects a default strategy from rule arities and semiring properties; an arbitrary firing order need not preserve the result.
+A [directed hyperedge](https://en.wikipedia.org/wiki/Hypergraph#Directed_hypergraph) can connect several premise items to one conclusion item. A rule describes such edges by patterns. Matching the premises finds a substitution for their variables, and repeated occurrences of a variable must receive the same value.
+
+The chart combines premise weights by semiring multiplication and alternative derivations by semiring addition [@goodman1999semiring]. Agreement between evaluation orders requires correct handling of repeated contributions and, for recursive systems, termination or convergence. The runtime selects a strategy from rule arities and semiring properties. An arbitrary firing order need not preserve the result.
