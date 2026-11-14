@@ -795,7 +795,7 @@ class SMC:
         kernel = self.kernel
         pilot = int(torch.randint(0, positions.shape[0], (), generator=generator))
         state = kernel.init(registry, model, x, observations, positions[pilot])
-        state.gibbs_values = dict(gibbs[pilot])
+        state = state.with_(gibbs_values=dict(gibbs[pilot]))
         kernel.tune(positions)
         if self.num_pilot_steps > 0:
             kernel.start_adaptation(self.num_pilot_steps)
@@ -810,7 +810,7 @@ class SMC:
         for i in range(positions.shape[0]):
             state = kernel.init(registry, model, x, observations, positions[i])
             kernel.load_state_dict(tuned)
-            state.gibbs_values = dict(gibbs[i])
+            state = state.with_(gibbs_values=dict(gibbs[i]))
             for _ in range(self.num_mcmc_steps):
                 state = kernel.step(state, _conditioned(potential, state))
                 accepted += state.stats.get("accepted", 0.0)

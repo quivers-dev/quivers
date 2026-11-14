@@ -1066,7 +1066,7 @@ class MCMC:
         state = self.kernel.init(
             setup.registry, setup.model, setup.x, setup.observations, init_pos
         )
-        state.gibbs_values = gibbs_values
+        state = state.with_(gibbs_values=gibbs_values)
         if self.num_warmup > 0:
             self.kernel.start_adaptation(self.num_warmup)
             return _ChainRecord("warmup", state, setup.site_names)
