@@ -226,7 +226,7 @@ The six training terms are reconstructed exactly, binders and de Bruijn indices 
 
 An encoder recursively replaces each constructor by its vector operation. For an ordinary signature $\Sigma$, this is the [fold](https://ncatlab.org/nlab/show/catamorphism) from the initial term algebra $T_\Sigma$ to the chosen vector algebra $\mathrm{Vec}_D$, and it satisfies the corresponding algebra-homomorphism equations [@meijer1991functional]. With binders, the recursion also carries the typed variable context described in [structural semantics](../semantics/structural.md).
 
-The decoder unfolds a vector by choosing a constructor and producing child vectors. Its one-step operation has the form of a probabilistic [coalgebra](https://ncatlab.org/nlab/show/coalgebra+over+an+endofunctor). Recursing with the depth bound yields a [kernel](https://en.wikipedia.org/wiki/Markov_kernel) $\mathrm{Vec}_D\to\mathcal{G}(T_\Sigma)$ on the supported terms, where $\mathcal{G}$ denotes probability measures. Composing encoding and decoding gives a stochastic map $T_\Sigma\to\mathcal{G}(T_\Sigma)$. The reconstruction loss is the negative log probability of the observed term under that map, not a metric distance between functions.
+The decoder unfolds a vector by choosing a constructor and producing child vectors. Recursing with the depth bound yields a [kernel](https://en.wikipedia.org/wiki/Markov_kernel) $\mathrm{Vec}_D\to\mathcal{G}(T_\Sigma)$ on the supported terms, where $\mathcal{G}$ denotes probability measures. Composing encoding and decoding gives a stochastic map $T_\Sigma\to\mathcal{G}(T_\Sigma)$. The reconstruction loss is the negative log probability of the observed term under that map, not a metric distance between functions.
 
 ## See also
 

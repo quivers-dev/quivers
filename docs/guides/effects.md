@@ -59,6 +59,11 @@ than a symmetric monoidal one [@jacobs2009categorical].
 | `ArrowLoop` | `loop_arr` | feedback, for recursive definitions |
 | `ArrowZero` / `ArrowPlus` | `zero_arr`, `alt_arr` | failure and choice between arrows |
 
+`Function` and `Stochastic` do not implement `ArrowLoop`: diagonal contraction
+can return several fixed points, no fixed point, or weights whose rows do not sum to one.
+`VRel` exposes this contraction for weighted relations; the trace laws require an
+appropriate algebra, such as a commutative semiring.
+
 ## Stdlib effect instances
 
 `quivers.monadic.instances` provides seven effects, each a `dx.Model` that holds its
@@ -100,7 +105,9 @@ effect `T`, the lifts are:
 | `Alternative` | `alt_T_r` | $T(X),\ T(X) \vdash T(X)$ |
 
 Each lift is a `SchemaDecl`, the same value a QVR `schema` declaration produces, so a
-chart parser treats lifted and written schemas alike.
+chart parser treats lifted and written schemas alike. The base rule contributes the name
+suffix; the displayed schema shapes are fixed. A bare `Functor` and arrow-only instances
+produce no lifts, and this operation does not run QIEC handlers.
 
 ```python
 from quivers.dsl.ast_nodes import (

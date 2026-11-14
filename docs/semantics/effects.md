@@ -84,7 +84,8 @@ of an applicative functor, the lifting of function application that effect-drive
 [@mcbride2008applicative; @bumford2026effect]. `bind_T` is monadic bind, whose second premise
 $T(Y) / X$ is the categorial type of a function from $X$ to $T(Y)$. It is the bind of $T$, not a
 morphism of the Kleisli category of $T$. A `MonadPlus` instance gets the lifts of `Monad` and of
-`Alternative`. `ArrowApply` and `ArrowLoop` add no schemata.
+`Alternative`. A bare `Functor`, `ArrowApply`, and `ArrowLoop` add no schemata. The base
+schema contributes the generated names, while the four displayed shapes remain fixed.
 
 The chart combines lifted applications in the order it builds spans. The applicative laws, in
 particular the composition law, make the result independent of that order when the instance satisfies
@@ -136,9 +137,9 @@ that exchanges the two monads compatibly with both [@beck1969distributive]. The 
 of all derivations built from these firings under the conditions of
 [Weighted deduction §7](grammar.md#7-strategy-independence).
 
-The docstring of `quivers.stochastic.effect_lifts` also lists a fourth firing, which applies a
-registered handler to a cell and removes an effect from its stack. No code in `quivers.stochastic`
-performs it, so a chart never eliminates an effect.
+A chart does not eliminate an effect prefix by invoking a handler. These prefixes annotate
+semantic types; QIEC effect instances and their lexical handlers belong to the computation
+runtime described in §8.
 
 ## 5. When lifting preserves the base grammar
 
