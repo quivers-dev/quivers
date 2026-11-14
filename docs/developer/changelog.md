@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
-- **Breaking: Structured records are typed immutable models.** Completion candidates, highlight spans, migration inputs, grammar asset identities, grammar history reports, and resolved distributions use didactic models with keyword-only construction, field validation, equality, hashing, and immutable updates through `with_`.
+- **Breaking: Structured records are typed immutable models.** Completion candidates, highlight spans, migration inputs, grammar asset identities, grammar history reports, resolved distributions, and stable QIEC identifiers use didactic models with keyword-only construction, field validation, equality, hashing, and immutable updates through `with_`. Invalid model fields raise `didactic.ValidationError`. Identifiers retain their namespace equality, digest ordering, and wire representation; parsing malformed wire identifiers raises `ValueError`.
 
 ### Fixed
 
