@@ -91,8 +91,7 @@ QIEC_DIAGNOSTIC_CODES = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class QiecToolingDiagnostic:
+class QiecToolingDiagnostic(dx.Model):
     """A frontend-neutral QIEC diagnostic."""
 
     message: str

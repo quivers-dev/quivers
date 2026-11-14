@@ -6,6 +6,8 @@ from collections.abc import Mapping
 
 from dataclasses import dataclass, field
 
+import didactic.api as dx
+
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
 from quivers.qiec.effects import (
     ResumptionGrade,
@@ -3323,8 +3325,7 @@ def _infer_new_instance(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class ResumptionUse:
+class ResumptionUse(dx.Model):
     """How many times a clause body may invoke its continuation.
 
     An interval rather than a count, because a `case` splits the paths
@@ -3363,7 +3364,7 @@ class ResumptionUse:
             if self.maximum is None or other.maximum is None
             else self.maximum + other.maximum
         )
-        return ResumptionUse(self.minimum + other.minimum, maximum)
+        return ResumptionUse(minimum=self.minimum + other.minimum, maximum=maximum)
 
     def join(self, other: ResumptionUse) -> ResumptionUse:
         """Alternation: one path or the other, so the interval widens.
@@ -3385,13 +3386,13 @@ class ResumptionUse:
             if self.maximum is None or other.maximum is None
             else max(self.maximum, other.maximum)
         )
-        return ResumptionUse(min(self.minimum, other.minimum), maximum)
+        return ResumptionUse(minimum=min(self.minimum, other.minimum), maximum=maximum)
 
 
-NEVER = ResumptionUse(0, 0)
+NEVER = ResumptionUse(minimum=0, maximum=0)
 """A computation that cannot invoke the continuation."""
 
-ONCE = ResumptionUse(1, 1)
+ONCE = ResumptionUse(minimum=1, maximum=1)
 """A computation that invokes the continuation exactly once."""
 
 

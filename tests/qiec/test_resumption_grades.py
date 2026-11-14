@@ -90,12 +90,12 @@ def _case(*bodies) -> Case:
 
 def test_a_body_that_never_resumes_counts_zero() -> None:
     """The baseline the other counts are measured against."""
-    assert resumption_use(_PLAIN) == ResumptionUse(0, 0)
+    assert resumption_use(_PLAIN) == ResumptionUse(minimum=0, maximum=0)
 
 
 def test_a_body_that_resumes_once_counts_one() -> None:
     """A bare resumption is exactly one invocation."""
-    assert resumption_use(_RESUME) == ResumptionUse(1, 1)
+    assert resumption_use(_RESUME) == ResumptionUse(minimum=1, maximum=1)
 
 
 def test_sequenced_resumptions_add() -> None:
@@ -106,7 +106,7 @@ def test_sequenced_resumptions_add() -> None:
     an affine promise.
     """
     twice = Bind(Local("a", INT), _RESUME, Bind(Local("b", INT), _RESUME, _PLAIN))
-    assert resumption_use(twice) == ResumptionUse(2, 2)
+    assert resumption_use(twice) == ResumptionUse(minimum=2, maximum=2)
 
 
 def test_a_call_cannot_resume_this_clause() -> None:
@@ -129,7 +129,7 @@ def test_a_call_cannot_resume_this_clause() -> None:
         EMPTY_ROW,
         _ORIGIN,
     )
-    assert resumption_use(call) == ResumptionUse(0, 0)
+    assert resumption_use(call) == ResumptionUse(minimum=0, maximum=0)
 
 
 def test_branches_widen_the_interval_rather_than_adding() -> None:
@@ -139,27 +139,29 @@ def test_branches_widen_the_interval_rather_than_adding() -> None:
     some does not. Reading that as a count would make it either wrongly
     linear or wrongly forbidden.
     """
-    assert resumption_use(_case(_RESUME, _PLAIN)) == ResumptionUse(0, 1)
-    assert resumption_use(_case(_RESUME, _RESUME)) == ResumptionUse(1, 1)
+    assert resumption_use(_case(_RESUME, _PLAIN)) == ResumptionUse(minimum=0, maximum=1)
+    assert resumption_use(_case(_RESUME, _RESUME)) == ResumptionUse(
+        minimum=1, maximum=1
+    )
 
 
 @pytest.mark.parametrize(
     ("grade", "use", "allowed"),
     [
-        (ResumptionGrade.ZERO, ResumptionUse(0, 0), True),
-        (ResumptionGrade.ZERO, ResumptionUse(1, 1), False),
-        (ResumptionGrade.ZERO, ResumptionUse(0, 1), False),
-        (ResumptionGrade.AFFINE, ResumptionUse(0, 0), True),
-        (ResumptionGrade.AFFINE, ResumptionUse(0, 1), True),
-        (ResumptionGrade.AFFINE, ResumptionUse(1, 1), True),
-        (ResumptionGrade.AFFINE, ResumptionUse(2, 2), False),
-        (ResumptionGrade.AFFINE, ResumptionUse(0, None), False),
-        (ResumptionGrade.LINEAR, ResumptionUse(1, 1), True),
-        (ResumptionGrade.LINEAR, ResumptionUse(0, 1), False),
-        (ResumptionGrade.LINEAR, ResumptionUse(0, 0), False),
-        (ResumptionGrade.LINEAR, ResumptionUse(2, 2), False),
-        (ResumptionGrade.UNRESTRICTED, ResumptionUse(0, None), True),
-        (ResumptionGrade.UNRESTRICTED, ResumptionUse(9, 9), True),
+        (ResumptionGrade.ZERO, ResumptionUse(minimum=0, maximum=0), True),
+        (ResumptionGrade.ZERO, ResumptionUse(minimum=1, maximum=1), False),
+        (ResumptionGrade.ZERO, ResumptionUse(minimum=0, maximum=1), False),
+        (ResumptionGrade.AFFINE, ResumptionUse(minimum=0, maximum=0), True),
+        (ResumptionGrade.AFFINE, ResumptionUse(minimum=0, maximum=1), True),
+        (ResumptionGrade.AFFINE, ResumptionUse(minimum=1, maximum=1), True),
+        (ResumptionGrade.AFFINE, ResumptionUse(minimum=2, maximum=2), False),
+        (ResumptionGrade.AFFINE, ResumptionUse(minimum=0, maximum=None), False),
+        (ResumptionGrade.LINEAR, ResumptionUse(minimum=1, maximum=1), True),
+        (ResumptionGrade.LINEAR, ResumptionUse(minimum=0, maximum=1), False),
+        (ResumptionGrade.LINEAR, ResumptionUse(minimum=0, maximum=0), False),
+        (ResumptionGrade.LINEAR, ResumptionUse(minimum=2, maximum=2), False),
+        (ResumptionGrade.UNRESTRICTED, ResumptionUse(minimum=0, maximum=None), True),
+        (ResumptionGrade.UNRESTRICTED, ResumptionUse(minimum=9, maximum=9), True),
     ],
     ids=lambda value: str(value),
 )
@@ -187,7 +189,7 @@ def test_an_unbounded_use_is_refused_by_every_bounded_grade() -> None:
     extended to a construct it cannot bound fails closed rather than
     reporting zero.
     """
-    unbounded = ResumptionUse(0, None)
+    unbounded = ResumptionUse(minimum=0, maximum=None)
     for grade in (
         ResumptionGrade.ZERO,
         ResumptionGrade.AFFINE,
