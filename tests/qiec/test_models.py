@@ -7,6 +7,10 @@ import pytest
 
 from quivers.qiec import (
     TYPE,
+    REAL,
+    CheckContext,
+    KernelRegistry,
+    Local,
     EffectId,
     EffectInstanceId,
     EffectRef,
@@ -111,3 +115,36 @@ def test_kernel_model_inheritance_does_not_open_the_wire_allowlist() -> None:
     """A well-typed model still needs an explicit stable wire registration."""
     with pytest.raises(SerializationError, match="unregistered model"):
         dumps(_Unregistered(value=3))
+
+
+def test_checker_context_updates_preserve_typed_bindings() -> None:
+    """Context extension retains values and validates each recursive field."""
+    local = Local(name="x", type=REAL)
+    empty = CheckContext()
+    context = empty.extend(local)
+    assert empty.locals == ()
+    assert context.locals == (local,)
+    assert context == context.with_(locals=(Local(name="x", type=REAL),))
+    assert hash(context) == hash(copy.copy(context))
+    with pytest.raises(dx.ValidationError, match="locals"):
+        context.with_(locals=("x",))
+
+
+def test_kernel_registry_retains_live_tables_and_validates_replacements() -> None:
+    """Registry tables stay independent and mutable with stable identity keys."""
+    registry = KernelRegistry()
+    other = KernelRegistry()
+    copied = copy.copy(registry)
+    assert registry != other
+    assert registry == copied
+    assert copied.type_constructors is registry.type_constructors
+    before = hash(registry)
+    constructor = TypeConstructorRef(id=TypeId.derive("models", "T"), name="T")
+    registry.type_constructors[constructor.id] = constructor
+    assert copied.type_constructors[constructor.id] is constructor
+    assert other.type_constructors == {}
+    assert hash(registry) == before
+    with pytest.raises(dx.ValidationError, match="type_constructors.key"):
+        registry.with_(type_constructors={"T": constructor})
+    with pytest.raises(dx.ValidationError, match="TypeConstructorRef"):
+        registry.with_(type_constructors={constructor.id: "T"})

@@ -465,7 +465,7 @@ class _Scope:
         locals_: list[Local] = []
         for item in reversed(chain):
             locals_.extend(item.locals.values())
-        return CheckContext(tuple(locals_))
+        return CheckContext(locals=tuple(locals_))
 
 
 def _scanned_names(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
@@ -1516,12 +1516,17 @@ def _elaborate_marginal_chain(
     )
     identity = ComputationId.derive(elaborator.source.module_name, "computation", name)
     helper = ComputationSignature(
-        identity,
-        name,
-        telescope,
-        (INT, local.type, filter_type, *(item.type for item in passed_locals)),
-        REAL,
-        signature.effects,
+        id=identity,
+        name=name,
+        telescope=telescope,
+        parameters=(
+            INT,
+            local.type,
+            filter_type,
+            *(item.type for item in passed_locals),
+        ),
+        result=REAL,
+        effects=signature.effects,
     )
     try:
         elaborator.registry.register_computation(helper)
@@ -2604,12 +2609,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             self.source.module_name, "computation", declaration.name
         )
         signature = ComputationSignature(
-            identity,
-            declaration.name,
-            telescope,
-            tuple(parameter.type for parameter in parameters),
-            result_type,
-            row,
+            id=identity,
+            name=declaration.name,
+            telescope=telescope,
+            parameters=tuple(parameter.type for parameter in parameters),
+            result=result_type,
+            effects=row,
         )
         try:
             self.registry.register_computation(signature)
@@ -2625,7 +2630,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             type=ComputationType(effects=row, result=result_type),
             origin=_origin_at(self, ("programs", declaration.name), "computation"),
         )
-        context = CheckContext(parameters)
+        context = CheckContext(locals=parameters)
         try:
             actual = infer_computation(body, self.registry, context)
         except (KernelError, TypeError, ValueError) as error:
@@ -3994,12 +3999,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         telescope = (IndexBinder(name=extent.name, sort=extent.sort),)
         identity = ComputationId.derive(self.source.module_name, "computation", name)
         helper = ComputationSignature(
-            identity,
-            name,
-            telescope,
-            (INT, tokens.type, carrier, *(item.type for item in carried)),
-            carrier,
-            signature.effects,
+            id=identity,
+            name=name,
+            telescope=telescope,
+            parameters=(INT, tokens.type, carrier, *(item.type for item in carried)),
+            result=carrier,
+            effects=signature.effects,
         )
         try:
             self.registry.register_computation(helper)
@@ -4364,18 +4369,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         identity = ComputationId.derive(self.source.module_name, "computation", name)
         helper = ComputationSignature(
-            identity,
-            name,
-            telescope,
-            (
+            id=identity,
+            name=name,
+            telescope=telescope,
+            parameters=(
                 INT,
                 local.type,
                 state_type,
                 *(item.type for item in gathered),
                 *(item.type for item in carried),
             ),
-            result_type,
-            signature.effects,
+            result=result_type,
+            effects=signature.effects,
         )
         try:
             self.registry.register_computation(helper)
@@ -6347,19 +6352,19 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         identity = ComputationId.derive(self.source.module_name, "computation", name)
         signature = ComputationSignature(
-            identity,
-            name,
-            telescope,
-            tuple(parameter.type for parameter in parameters),
-            result_type,
-            EffectRow(),
+            id=identity,
+            name=name,
+            telescope=telescope,
+            parameters=tuple(parameter.type for parameter in parameters),
+            result=result_type,
+            effects=EffectRow(),
         )
         try:
             self.registry.register_computation(signature)
         except (KernelError, TypeError, ValueError) as error:
             self._fail_kernel(step, error, fallback="qiec-program")
         self.computation_signatures[name] = signature
-        context = CheckContext(parameters)
+        context = CheckContext(locals=parameters)
         try:
             actual = infer_computation(body, self.registry, context)
         except (KernelError, TypeError, ValueError) as error:

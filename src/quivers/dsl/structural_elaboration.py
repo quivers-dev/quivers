@@ -347,16 +347,16 @@ class _StructuralElaboration:
 
         for component in getattr(self, "_structural_components", {}).values():
             signature = ComputationSignature(
-                ComputationId.derive(
+                id=ComputationId.derive(
                     self.source.module_name,
                     "computation",
                     component.name,
                 ),
-                component.name,
-                (),
-                (component.argument,),
-                component.result,
-                EffectRow(),
+                name=component.name,
+                telescope=(),
+                parameters=(component.argument,),
+                result=component.result,
+                effects=EffectRow(),
             )
             self.registry.register_computation(signature)
             self.computation_signatures[component.name] = signature
@@ -371,16 +371,16 @@ class _StructuralElaboration:
             if encoder is None or decoder is None:
                 continue
             signature = ComputationSignature(
-                ComputationId.derive(
+                id=ComputationId.derive(
                     self.source.module_name,
                     "computation",
                     declaration.name,
                 ),
-                declaration.name,
-                (),
-                (encoder.argument,),
-                LOG_WEIGHT,
-                EffectRow(),
+                name=declaration.name,
+                telescope=(),
+                parameters=(encoder.argument,),
+                result=LOG_WEIGHT,
+                effects=EffectRow(),
             )
             self.registry.register_computation(signature)
             self.computation_signatures[declaration.name] = signature

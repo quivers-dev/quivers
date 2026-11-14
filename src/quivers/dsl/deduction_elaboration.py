@@ -2556,7 +2556,12 @@ class _DeductionElaboration:
                 self.source.module_name, "computation", name
             )
             signature = ComputationSignature(
-                identity, name, telescope, parameters, result, effects
+                id=identity,
+                name=name,
+                telescope=telescope,
+                parameters=parameters,
+                result=result,
+                effects=effects,
             )
             self.registry.register_computation(signature)
             self.computation_signatures[name] = signature

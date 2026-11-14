@@ -53,7 +53,7 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
     ------
     TypeError
         If the value does not inhabit its annotation, or the annotation
-        is outside the closed scalar, tuple, union, and model schema.
+        is outside the closed scalar, tuple, dictionary, union, and model schema.
     """
     if isinstance(annotation, TypeAliasType):
         validate_shape(value, annotation.__value__, path=path)
@@ -82,6 +82,13 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
                 ):
                     validate_shape(item, item_type, path=f"{path}[{index}]")
                 return
+    elif origin is dict:
+        if isinstance(value, dict):
+            key_type, value_type = arguments
+            for key, item in value.items():
+                validate_shape(key, key_type, path=f"{path}.key")
+                validate_shape(item, value_type, path=f"{path}[{key!r}]")
+            return
     elif isinstance(annotation, type):
         primitive = annotation in {bool, bytes, float, int, str, type(None)}
         if type(value) is annotation if primitive else isinstance(value, annotation):

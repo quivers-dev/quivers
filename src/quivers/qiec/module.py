@@ -485,12 +485,14 @@ def validate_module(module: QiecModule) -> KernelRegistry:
     for computation in module.computations:
         registry.register_computation(
             ComputationSignature(
-                computation.id,
-                computation.name,
-                computation.telescope,
-                tuple(parameter.type for parameter in computation.parameters),
-                computation.type.result,
-                computation.type.effects,
+                id=computation.id,
+                name=computation.name,
+                telescope=computation.telescope,
+                parameters=tuple(
+                    parameter.type for parameter in computation.parameters
+                ),
+                result=computation.type.result,
+                effects=computation.type.effects,
             )
         )
     for handler in module.handlers:

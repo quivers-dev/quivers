@@ -206,7 +206,9 @@ define account_all() : Tensor[Real]([2]) !{score} =
         item for item in module.computations if item.name == "account_all"
     )
     inferred = infer_computation(
-        computation.body, validate_module(module), CheckContext(computation.parameters)
+        computation.body,
+        validate_module(module),
+        CheckContext(locals=computation.parameters),
     )
     assert len(inferred.effects.entries) == 1
 

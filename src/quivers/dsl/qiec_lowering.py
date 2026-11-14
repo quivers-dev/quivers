@@ -1959,7 +1959,7 @@ class _Elaborator(
                         body=self._lower_computation(
                             clause.body,
                             telescope,
-                            CheckContext((binder,)),
+                            CheckContext(locals=(binder,)),
                             (*base, "body"),
                         ),
                     )
@@ -2035,8 +2035,10 @@ class _Elaborator(
                     else self._lower_computation(
                         clause.body,
                         clause_scope,
-                        CheckContext(parameters).with_resumption(
-                            ResumptionType(resumed, output_type, introduced)
+                        CheckContext(locals=parameters).with_resumption(
+                            ResumptionType(
+                                result=resumed, answer=output_type, effects=introduced
+                            )
                         ),
                         (*base, "body"),
                     )
@@ -2190,16 +2192,16 @@ class _Elaborator(
                 for parameter in declaration.parameters
             )
             signature = ComputationSignature(
-                ComputationId.derive(
+                id=ComputationId.derive(
                     self.source.module_name,
                     "computation",
                     declaration.name,
                 ),
-                declaration.name,
-                telescope,
-                parameters,
-                self._lower_type(declaration.result_type, telescope),
-                self._lower_row(
+                name=declaration.name,
+                telescope=telescope,
+                parameters=parameters,
+                result=self._lower_type(declaration.result_type, telescope),
+                effects=self._lower_row(
                     declaration.effects,
                     ("computations", declaration.name, "effects"),
                 ),
@@ -2260,7 +2262,7 @@ class _Elaborator(
                 )
                 for parameter in declaration.parameters
             )
-            context = CheckContext(parameters)
+            context = CheckContext(locals=parameters)
             path = ("computations", declaration.name, "body")
             self._expected_result = self._lower_type(declaration.result_type, telescope)
             body = self._lower_computation(declaration.body, telescope, context, path)
@@ -6570,7 +6572,7 @@ class _Elaborator(
             If the body fails to check, or its result or row differs
             from the signature's.
         """
-        context = CheckContext(parameters)
+        context = CheckContext(locals=parameters)
         try:
             actual = infer_computation(body, self.registry, context)
         except (KernelError, TypeError, ValueError) as error:

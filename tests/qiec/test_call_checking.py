@@ -60,16 +60,23 @@ def _registry() -> tuple[KernelRegistry, ComputationId, ComputationId]:
     takes_int = ComputationId.derive("tests", "takes_int")
     polymorphic = ComputationId.derive("tests", "identity")
     registry.register_computation(
-        ComputationSignature(takes_int, "takes_int", (), (INT,), INT, EMPTY_ROW)
+        ComputationSignature(
+            id=takes_int,
+            name="takes_int",
+            telescope=(),
+            parameters=(INT,),
+            result=INT,
+            effects=EMPTY_ROW,
+        )
     )
     registry.register_computation(
         ComputationSignature(
-            polymorphic,
-            "identity",
-            (TypeBinder(name="A", kind=TYPE),),
-            (_A,),
-            _A,
-            EMPTY_ROW,
+            id=polymorphic,
+            name="identity",
+            telescope=(TypeBinder(name="A", kind=TYPE),),
+            parameters=(_A,),
+            result=_A,
+            effects=EMPTY_ROW,
         )
     )
     return registry, takes_int, polymorphic
@@ -121,7 +128,14 @@ def test_mutual_recursion_needs_no_forward_declaration() -> None:
     odd = ComputationId.derive("tests", "is_odd")
     for identity, name in ((even, "is_even"), (odd, "is_odd")):
         registry.register_computation(
-            ComputationSignature(identity, name, (), (INT,), BOOL, EMPTY_ROW)
+            ComputationSignature(
+                id=identity,
+                name=name,
+                telescope=(),
+                parameters=(INT,),
+                result=BOOL,
+                effects=EMPTY_ROW,
+            )
         )
     forward = Call(
         callee=odd,
@@ -145,7 +159,14 @@ def test_a_duplicate_registration_is_rejected() -> None:
     registry, takes_int, _ = _registry()
     with pytest.raises(KernelError, match="already registered"):
         registry.register_computation(
-            ComputationSignature(takes_int, "takes_int", (), (), INT, EMPTY_ROW)
+            ComputationSignature(
+                id=takes_int,
+                name="takes_int",
+                telescope=(),
+                parameters=(),
+                result=INT,
+                effects=EMPTY_ROW,
+            )
         )
 
 
@@ -243,7 +264,9 @@ def test_resume_outside_a_handler_clause_is_rejected() -> None:
 def test_resume_inside_a_clause_answers_the_clause_type() -> None:
     """Resuming produces the clause's answer, not the operation result."""
     registry, _, _ = _registry()
-    context = CheckContext().with_resumption(ResumptionType(INT, STRING, EMPTY_ROW))
+    context = CheckContext().with_resumption(
+        ResumptionType(result=INT, answer=STRING, effects=EMPTY_ROW)
+    )
     result = infer_computation(
         Resume(value=LiteralValue(value=1, type=INT), origin=_ORIGIN), registry, context
     )
@@ -257,7 +280,9 @@ def test_resume_must_carry_what_the_operation_supplies() -> None:
     value of a type it cannot use.
     """
     registry, _, _ = _registry()
-    context = CheckContext().with_resumption(ResumptionType(INT, STRING, EMPTY_ROW))
+    context = CheckContext().with_resumption(
+        ResumptionType(result=INT, answer=STRING, effects=EMPTY_ROW)
+    )
     with pytest.raises(KernelError, match="resume carries"):
         infer_computation(
             Resume(value=LiteralValue(value="x", type=STRING), origin=_ORIGIN),
@@ -274,7 +299,9 @@ def test_a_resumption_survives_entering_a_nested_binding() -> None:
     unusable in practice while every direct test still passed.
     """
     registry, _, _ = _registry()
-    context = CheckContext().with_resumption(ResumptionType(INT, STRING, EMPTY_ROW))
+    context = CheckContext().with_resumption(
+        ResumptionType(result=INT, answer=STRING, effects=EMPTY_ROW)
+    )
     from quivers.qiec.terms import Local
 
     deeper = context.extend(Local(name="x", type=INT))
