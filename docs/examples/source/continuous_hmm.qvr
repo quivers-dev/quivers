@@ -4,10 +4,11 @@
 # Gaussian Markov chain and each position's observation is Gaussian given
 # that position's state. Both kernels take the default linear parameter
 # source, so each maps its input affinely to the mean and the log-scale
-# of a diagonal Normal; the noise therefore varies with the state. The
+# of a diagonal Normal; the noise thus varies with the state. The
 # scan's entries only set the length of the sequence.
 #
 # Generative structure (s_{-1} = 0):
+# Normal arguments below are mean and standard deviation.
 #
 #   s_t  ~ Normal(A s_{t-1} + a, diag exp(B s_{t-1} + b))
 #   o_t  ~ Normal(C s_t + c, diag exp(D s_t + d))
