@@ -2,7 +2,7 @@
 
 ## Overview
 
-The deep Markov model of Krishnan, Shalit, and Sontag [@krishnan2017structured] is a state-space model whose transition and emission are Normal distributions with neural-network parameters: the next state is drawn around a nonlinear function of the previous state and an observed driver, and each observation around a nonlinear function of its state. This source states the model with a [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) whose cell draws the next state and scores that position's observation, so the program's latent is the whole state path, one site per position. Each kernel is a [network kernel](../guides/dsl-declarations.md#kernel) whose one-hidden-layer `tanh` network maps its input to the mean and log-scale of a diagonal Normal, with point-estimated weights. The page checks the program's joint density against a hand-written one on both execution paths. It does not demonstrate inference of the state path or fitting of the networks; the section on inference below reports a check that failed.
+The deep Markov model of Krishnan, Shalit, and Sontag [@krishnan2017structured] is a state-space model whose transition and emission are Normal distributions with neural-network parameters: the next state is drawn around a nonlinear function of the previous state and an observed driver, and each observation around a nonlinear function of its state. This source states the model with a [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) whose cell draws the next state and scores that position's observation, so the program's latent is the whole state path, one site per position. Each [kernel](https://en.wikipedia.org/wiki/Markov_kernel) is a [network kernel](../guides/dsl-declarations.md#kernel) whose one-hidden-layer `tanh` network maps its input to the mean and log-scale of a diagonal Normal, with point-estimated weights. The examples compare the program's joint density against a hand-written one on both execution paths. It does not demonstrate inference of the state path or fitting of the networks. The section on inference below reports a check that failed.
 
 ## QVR source
 
@@ -18,6 +18,7 @@ The deep Markov model of Krishnan, Shalit, and Sontag [@krishnan2017structured] 
 # position's observation under the emission.
 #
 # Generative structure (s_{-1} = 0):
+# Normal arguments below are mean and standard deviation.
 #
 #   s_t  ~ Normal(m_T(u_t, s_{t-1}), diag exp(l_T(u_t, s_{t-1})))
 #   o_t  ~ Normal(m_E(s_t), diag exp(l_E(s_t)))
@@ -54,25 +55,25 @@ With $u_t$ the driver at position $t$ and $s_{-1} = 0$, the program scores
 
 $$
 \begin{aligned}
-s_t &\sim \mathcal{N}\bigl(m_T(u_t, s_{t-1}), \operatorname{diag} \exp(\ell_T(u_t, s_{t-1}))\bigr), \\
-o_t &\sim \mathcal{N}\bigl(m_E(s_t), \operatorname{diag} \exp(\ell_E(s_t))\bigr),
+s_t &\sim \mathcal{N}\bigl(m_T(u_t, s_{t-1}), \operatorname{diag} \exp(2\ell_T(u_t, s_{t-1}))\bigr), \\
+o_t &\sim \mathcal{N}\bigl(m_E(s_t), \operatorname{diag} \exp(2\ell_E(s_t))\bigr),
 \end{aligned}
 $$
 
-where $(m_T, \ell_T)$ and $(m_E, \ell_E)$ are the two halves of the output of a network $W_2 \tanh(W_1 v + b_1) + b_2$ applied to the kernel's input $v$. Without the hidden layer each kernel's parameters would be affine in its input, as in the [continuous state-space model](continuous-hmm.md); the `tanh` layer is what makes the dynamics and the emission nonlinear. Each input row is one run: a sequence of drivers, with the state path drawn at the sites `s@0`, `s@1`, and so on and the observations `o` scored at every position.
+Here the second argument of $\mathcal{N}$ is the covariance. The networks output log standard deviations, so doubling them before exponentiation gives the diagonal variances.
 
-Krishnan, Shalit, and Sontag fit such a model by maximizing an ELBO whose variational posterior over the path is itself a recurrent network run over the observations [@krishnan2017structured]. This page states the generative model and checks its density; it does not include that inference network.
+Each pair, $(m_T, \ell_T)$ or $(m_E, \ell_E)$, consists of the two halves of its network output $W_2 \tanh(W_1 v + b_1) + b_2$ applied to the kernel's input $v$. Without the hidden layer each kernel's parameters would be affine in its input, as in the [continuous state-space model](continuous-hmm.md). The `tanh` layer is what makes the dynamics and the emission nonlinear. Each input row is one run: a sequence of drivers, with the state path drawn at the sites `s@0`, `s@1`, and so on and the observations `o` scored at every position.
+
+Krishnan, Shalit, and Sontag fit such a model by maximizing an [ELBO](https://en.wikipedia.org/wiki/Evidence_lower_bound) (evidence lower bound) whose variational posterior over the path is itself a recurrent network run over the observations [@krishnan2017structured]. The source defines the generative model without that inference network.
 
 ## Walkthrough
 
 - `morphism transition : Driver * State -> State [param_source=mlp(32)] ~ Normal` is a Normal kernel whose mean and log-scale come from a `tanh` network with 32 hidden units reading the concatenation $[u_t; s_{t-1}]$. `emission` is the same construction from a state to an observation.
 - `program step` is one position: it draws `s` from the transition at the current driver and previous state, observes `o` under the emission at `s`, and returns `s`.
 - `define run_all = scan(step)` threads the state from zero along the drivers. `program deep_markov` draws the path and returns its last state.
-- No transpile target lowers a scan, so every target refuses this program with `scan:no-lowering`. The program runs on the PyTorch runtime and on the reference machine, which takes the networks' weights as data.
+- The program runs on the PyTorch runtime and the [reference evaluator](../developer/qiec.md#reference-evaluator). Backend coverage is recorded in the [support matrix](../transpile-support.md).
 
 ## Try it
-
-The checks below come from a verification script whose tolerances were fixed before it was first run.
 
 ### The log joint against a hand-written recursion
 
@@ -179,15 +180,12 @@ for r in range(runs):
 
 ### Inference of the state path: a check that failed
 
-The verification script also ran an inference check. It set the networks to a known generator (the seeded initial networks, with the transition's scale fixed at 0.3 and the emission's at 0.1), simulated a path of 10 states and its observations, and inferred the path with the networks frozen by SVI with a mean-field Normal guide (1500 Adam steps, 400 posterior draws). The threshold, fixed in advance, required the posterior-mean path to be closer to the true path than the prior-mean path by an RMSE ratio below 0.5. The ratio was 0.84 (RMSE 0.289 against 0.345), so the check failed.
+An inference check set the networks to a known generator (the seeded initial networks, with the transition's scale fixed at 0.3 and the emission's at 0.1), simulated a path of 10 states and its observations, and inferred the path with the networks frozen by [SVI](../guides/inference-svi.md) (stochastic variational inference) with a [mean-field](../guides/inference-svi.md) Normal guide (1500 Adam steps, 400 posterior draws). The threshold required the posterior-mean path to be closer to the true path than the prior-mean path by an RMSE ratio below 0.5. The ratio was 0.84 (RMSE 0.289 against 0.345), so the check failed.
 
-The failure does not separate a weak inference from a weak design. The prior-mean path is already within 0.35 of the true path, close to the transition noise, so the observations had little room to improve on it, and the threshold was not calibrated against how much information they carry. On the [continuous state-space model](continuous-hmm.md), whose posterior is Gaussian, the same design failed in the same way while the exact posterior mode was recovered. For a nonlinear model no exact posterior is available to calibrate against, and this page makes no inference claim.
+The failure does not separate a weak inference from a weak design. The prior-mean path is already within 0.35 of the true path, close to the transition noise, so the observations had little room to improve on it, and the threshold was not calibrated against how much information they carry. On the [continuous state-space model](continuous-hmm.md), whose posterior is Gaussian, the same design failed in the same way while the exact posterior mode was recovered. For a nonlinear model no exact posterior is available to calibrate against, and the failed ratio does not establish accurate posterior inference.
 
 ## Categorical perspective
 
-The cell `step` is a Kleisli morphism $\mathrm{Driver} \otimes \mathrm{State} \to \mathrm{State}$ of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical], weighted by the likelihood of the observation it scores, and `scan(step)` is its composite along the drivers in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category). The networks enter only through the kernels' parameter maps, so the categorical structure is that of the linear-Gaussian model; what changes is that the composite's posterior is no longer Gaussian, which is why it has no closed form.
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. The transition kernel takes a driver and a state, $\mathrm{Driver}\times\mathrm{State}$, and gives a distribution over the next state. The emission kernel gives an observation distribution at that state. `scan(step)` composes these kernels along the drivers. Neural parameter maps preserve this kernel composition, but the resulting posterior is generally non-Gaussian and does not admit the linear-Gaussian smoother's closed form.
 
-## Sources and further reading
-
-- *Structured inference networks for nonlinear state space models* [@krishnan2017structured].
-- *A categorical approach to probability theory* [@giry1982categorical].
+Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative].

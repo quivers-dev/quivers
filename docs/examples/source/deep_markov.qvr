@@ -9,6 +9,7 @@
 # position's observation under the emission.
 #
 # Generative structure (s_{-1} = 0):
+# Normal arguments below are mean and standard deviation.
 #
 #   s_t  ~ Normal(m_T(u_t, s_{t-1}), diag exp(l_T(u_t, s_{t-1})))
 #   o_t  ~ Normal(m_E(s_t), diag exp(l_E(s_t)))
