@@ -43,6 +43,136 @@ def field_types(class_: type[dx.Model]) -> dict[str, HeldValue]:
     return {name: annotations[name] for name in class_.__field_specs__}
 
 
+@cache
+def _model_classes(annotation: HeldValue) -> tuple[type[dx.Model], ...] | None:
+    """Resolve a closed union of model types without inspecting model values.
+
+    Parameters
+    ----------
+    annotation : HeldValue
+        A field annotation or recursive alias.
+
+    Returns
+    -------
+    tuple[type[didactic.api.Model], ...] or None
+        The model classes in the union, or ``None`` when other forms need
+        the general shape validator.
+    """
+    if isinstance(annotation, TypeAliasType):
+        return _model_classes(annotation.__value__)
+    if get_origin(annotation) is Union:
+        groups = tuple(_model_classes(item) for item in get_args(annotation))
+        if all(group is not None for group in groups):
+            return tuple(cls for group in groups if group is not None for cls in group)
+        return None
+    if isinstance(annotation, type) and issubclass(annotation, dx.Model):
+        return (annotation,)
+    return None
+
+
+@cache
+def _shape_predicate(annotation: HeldValue) -> Callable[[HeldValue], bool]:
+    """Compile a field's type check independently of its values.
+
+    Parameters
+    ----------
+    annotation : HeldValue
+        The declared field type.
+
+    Returns
+    -------
+    Callable[[HeldValue], bool]
+        A predicate that checks the complete field shape. Recursive aliases
+        resolve lazily, and no model or runtime value is retained in this cache.
+    """
+    if annotation is HeldValue:
+        return lambda value: True
+    classes = _model_classes(annotation)
+    if classes is not None:
+        return lambda value: isinstance(value, classes)
+    if isinstance(annotation, TypeAliasType):
+        return lambda value: _shape_predicate(annotation.__value__)(value)
+    origin = get_origin(annotation)
+    arguments = get_args(annotation)
+    if origin is Literal:
+        return lambda value: any(
+            type(value) is type(item) and value == item for item in arguments
+        )
+    if origin is Union:
+        alternatives = tuple(_shape_predicate(item) for item in arguments)
+        return lambda value: any(check(value) for check in alternatives)
+    if origin is tuple:
+        if len(arguments) == 2 and arguments[1] is Ellipsis:
+            check = _shape_predicate(arguments[0])
+            return lambda value: (
+                isinstance(value, tuple) and all(check(item) for item in value)
+            )
+        checks = tuple(_shape_predicate(item) for item in arguments)
+        return lambda value: (
+            isinstance(value, tuple)
+            and len(value) == len(checks)
+            and all(check(item) for check, item in zip(checks, value, strict=True))
+        )
+    if origin in {list, set, frozenset}:
+        container = cast(type, origin)
+        check = _shape_predicate(arguments[0])
+        return lambda value: (
+            isinstance(value, container)
+            and all(check(item) for item in cast(list[HeldValue], value))
+        )
+    if origin in {dict, Mapping}:
+        key_check, value_check = (_shape_predicate(item) for item in arguments)
+        return lambda value: (
+            isinstance(value, Mapping)
+            and (origin is Mapping or isinstance(value, dict))
+            and all(key_check(key) and value_check(item) for key, item in value.items())
+        )
+    if origin is Callable or annotation is Callable:
+        return callable
+    if isinstance(annotation, type) and is_protocol(annotation):
+        annotations = get_annotations(annotation, eval_str=True)
+        members = tuple(
+            (
+                name,
+                _shape_predicate(annotations[name])
+                if name in annotations
+                else callable
+                if callable(getattr(annotation, name, None))
+                else None,
+            )
+            for name in get_protocol_members(annotation)
+        )
+
+        def matches_protocol(value: HeldValue) -> bool:
+            """Check the protocol's declared attributes and methods.
+
+            Parameters
+            ----------
+            value : HeldValue
+                The candidate runtime value.
+
+            Returns
+            -------
+            bool
+                Whether all declared members have the required shapes.
+            """
+            for name, check in members:
+                try:
+                    member = getattr(value, name)
+                except AttributeError:
+                    return False
+                if check is not None and not check(member):
+                    return False
+            return True
+
+        return matches_protocol
+    if isinstance(annotation, type):
+        if annotation in {bool, bytes, float, int, str, type(None)}:
+            return lambda value: type(value) is annotation
+        return lambda value: isinstance(value, annotation)
+    return lambda value: False
+
+
 def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> None:
     """Validate a field against the closed kernel schema.
 
@@ -65,8 +195,15 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
         is outside the scalar, sequence, mapping, union, model, callable,
         and protocol schema.
     """
-    if annotation is HeldValue:
+    if _shape_predicate(annotation)(value):
         return
+    model_classes = _model_classes(annotation)
+    if model_classes is not None:
+        if isinstance(value, model_classes):
+            return
+        raise TypeError(
+            f"invalid field {path}: expected {annotation!s}, got {type(value).__name__}"
+        )
     if isinstance(annotation, TypeAliasType):
         validate_shape(value, annotation.__value__, path=path)
         return

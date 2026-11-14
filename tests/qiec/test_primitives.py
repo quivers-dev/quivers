@@ -31,7 +31,10 @@ from quivers.qiec import (
 from quivers.qiec.evaluator import EvaluationError
 from quivers.qiec.identifiers import SourceOrigin
 from quivers.qiec.substitution import StaticSubstitution, substitute_value
-from quivers.qiec.terms import Local, LiteralData
+from quivers.qiec.canonical import tensor_type
+from quivers.qiec.kinds import NAT
+from quivers.qiec.terms import Local, LiteralData, Reduction, TensorValue
+from quivers.qiec.types import IndexLiteral
 from quivers.qiec.types import TypeVariable, product_type
 
 ORIGIN = SourceOrigin(
@@ -248,3 +251,31 @@ def test_substitution_reaches_tuple_and_primitive_argument_types() -> None:
     assert projected == Projection(value=rewritten, position=0, result_type=REAL)
     context = CheckContext().extend(Local(name="x", type=REAL))
     assert infer_value(projected, KernelRegistry(), context) == REAL
+
+
+@pytest.mark.parametrize(
+    "operator,expected", [("sum", 0), ("prod", 1), ("logsumexp", -float("inf"))]
+)
+def test_empty_reductions_have_their_monoid_identity(operator, expected) -> None:
+    value = Reduction(
+        operator=operator,
+        value=TensorValue(
+            items=(), result_type=tensor_type(REAL, (IndexLiteral(value=0, sort=NAT),))
+        ),
+        result_type=REAL,
+    )
+    assert infer_value(value, KernelRegistry()) == REAL
+    assert Evaluator().evaluate(Return(value=loads(dumps(value)))) == expected
+
+
+@pytest.mark.parametrize("operator", ["mean", "min", "max"])
+def test_empty_reductions_without_an_identity_remain_errors(operator) -> None:
+    value = Reduction(
+        operator=operator,
+        value=TensorValue(
+            items=(), result_type=tensor_type(REAL, (IndexLiteral(value=0, sort=NAT),))
+        ),
+        result_type=REAL,
+    )
+    with pytest.raises(EvaluationError, match="empty tensor"):
+        Evaluator().evaluate(Return(value=value))

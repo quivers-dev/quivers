@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from functools import lru_cache
 import threading
 from typing import Self
 
@@ -42,6 +43,7 @@ from quivers.qiec._models import QiecModel
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.program_module import ProgramKernel
+from quivers.qiec.effects import HandlerDef
 from quivers.qiec.evaluator import RuntimeHandler, RuntimeRequest, RuntimeValidator
 from quivers.qiec.identifiers import HandlerId
 from quivers.qiec.module import NamedEffectInstance
@@ -289,6 +291,25 @@ class RunContext(QiecModel):
         return (static, dynamic, path)
 
 
+@lru_cache(maxsize=256)
+def _named_definition(definition: HandlerDef, name: str) -> HandlerDef:
+    """Rename an immutable signature without retaining a runtime handler.
+
+    Parameters
+    ----------
+    definition : HandlerDef
+        The complete checked handler declaration.
+    name : str
+        Its position-dependent name in the run module.
+
+    Returns
+    -------
+    HandlerDef
+        The renamed declaration, shared across equivalent installations.
+    """
+    return definition.with_(id=HandlerId.derive("run", name), name=name)
+
+
 class Installation(QiecModel):
     """One lexical handler a stack entry installs on a run.
 
@@ -328,10 +349,7 @@ class Installation(QiecModel):
             The installation with the renamed declaration, the rename
             carried into any per-installation factory the handler has.
         """
-        definition = self.runtime.definition.with_(
-            id=HandlerId.derive("run", name),
-            name=name,
-        )
+        definition = _named_definition(self.runtime.definition, name)
         runtime = self.runtime.with_(definition=definition)
         factory = self.runtime.context_factory
         if factory is not None:
