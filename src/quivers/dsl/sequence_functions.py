@@ -230,7 +230,7 @@ class _SequenceFunctionElaboration:
                 code="qiec-program",
             )
         length = shape[1][0]
-        serial = state.function_calls
+        serial = state.function_calls_cell[0]
         if kind == "positions":
             return self._position_table(
                 morphism, value, length, width, serial, scope, state, node

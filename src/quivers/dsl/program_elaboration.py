@@ -26,10 +26,9 @@ import didactic.api as dx
 import math
 from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
-from quivers._values import OPAQUE_BY_VALUE
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.dsl.ast_nodes import (
     CallStep,
@@ -390,8 +389,7 @@ class ObjectInfo(QiecModel):
     finite: bool = False
 
 
-@dataclass(slots=True)
-class _Scope:
+class _Scope(QiecModel):
     """Bindings of one program body or marginalization scope.
 
     Parameters
@@ -410,26 +408,47 @@ class _Scope:
     factors
         The axes a product grouping axis flattens, in order; the group
         itself for a single axis.
-    weight_instance
+    weight_instance_cell
+        Owned one-element cell.
         The local ``Weight`` instance a marginalization scope adds its
         weights to, else ``None`` for the program body.
-    weight_type
+    weight_type_cell
+        Owned one-element cell.
         The type that instance accumulates.
-    weights_added
+    weights_added_cell
+        Owned one-element cell.
         Whether a step of the scope has added to its ``Weight`` instance.
     outer
         The enclosing scope, else ``None``.
     """
 
-    locals: dict[str, Local] = field(default_factory=dict)
-    steps: list[tuple[Local, Computation]] = field(default_factory=list)
-    referenced: set[str] = field(default_factory=set)
-    group: PlateAxis | None = None
-    factors: tuple[PlateAxis, ...] = ()
-    weight_instance: NamedEffectInstance | None = None
-    weight_type: TypeExpr | None = None
-    weights_added: bool = False
-    outer: _Scope | None = None
+    locals: dict[str, Local] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    steps: list[tuple[Local, Computation]] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    referenced: set[str] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    group: PlateAxis | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    factors: tuple[PlateAxis, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    weight_instance_cell: list[NamedEffectInstance | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    weight_type_cell: list[TypeExpr | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    weights_added_cell: list[bool] = dx.field(
+        default_factory=lambda: [False], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    outer: _Scope | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def lookup(self, name: str) -> Local | None:
         """Find a binding in this scope or an enclosing one.
@@ -1791,8 +1810,8 @@ def _elaborate_marginal_chain(
     weight = elaborator._primitive(
         "as_weight", (Var(local=binder),), node, (*path, "weight")
     )
-    assert state.score is not None
-    elaborator._add_score(state.score, weight, scope, state, node)
+    assert state.score_cell[0] is not None
+    elaborator._add_score(state.score_cell[0], weight, scope, state, node)
 
 
 def _positions_value(
@@ -2557,20 +2576,20 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 f"program {declaration.name!r} shares its name with a computation",
                 code="qiec-program",
             )
-        state = _ProgramState(declaration)
+        state = _ProgramState(declaration=declaration)
         row = self._markov_rows.get(declaration.name)
         if row is not None:
-            state.markov_row, state.markov_entry = row
+            state.markov_row_cell[0], state.markov_entry_cell[0] = row
         self._program_state = state
         random = self._program_instance(RANDOM_INSTANCE, "Random")
         score = self._program_instance(SCORE_INSTANCE, "Score")
-        state.random = random
-        state.score = score
+        state.random_cell[0] = random
+        state.score_cell[0] = score
         scope = _Scope()
         self._program_parameters(declaration, scope, state)
-        state.input_shapes = self._infer_input_shapes(declaration)
-        state.tables = _gathered_tables(declaration.draws)
-        state.table_events = self._table_event_ranks(declaration, state.tables)
+        state.input_shapes.update(self._infer_input_shapes(declaration))
+        state.tables.update(_gathered_tables(declaration.draws))
+        state.table_events.update(self._table_event_ranks(declaration, state.tables))
         self._elaborate_steps(declaration.draws, scope, state)
         self._program_latent_types[declaration.name] = {
             site.name: scope.locals[site.name].type
@@ -2588,7 +2607,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             result_type = substitute_type(result_type, substitution)
             for name in state.extent_solution:
                 state.extents.pop(name, None)
-            state.sites = [
+            state.sites[:] = [
                 site.with_(
                     batch=fixed.batch,
                     event=fixed.event,
@@ -2601,11 +2620,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
             ]
         row_entries: list[RowEntry] = []
-        if state.uses_random:
+        if state.uses_random_cell[0]:
             row_entries.append(random.entry)
-        if state.uses_score:
+        if state.uses_score_cell[0]:
             row_entries.append(score.entry)
-        if state.uses_params:
+        if state.uses_params_cell[0]:
             row_entries.append(self.instances[PARAMS_INSTANCE].entry)
         row = EffectRow(entries=tuple(row_entries))
         parameters = tuple(scope.locals[name] for name, _ in state.parameters)
@@ -3130,15 +3149,15 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 code="qiec-program",
             )
         name = step.vars[0]
-        state.current_site = name
-        state.pending_alphabet = None
+        state.current_site_cell[0] = name
+        state.pending_alphabet_cell[0] = None
         distribution = self._step_distribution(step, scope, state, name)
-        if state.pending_alphabet is not None:
-            state.alphabets[name] = state.pending_alphabet
+        if state.pending_alphabet_cell[0] is not None:
+            state.alphabets[name] = state.pending_alphabet_cell[0]
         sampled = self._sampled_type(distribution)
-        state.uses_random = True
+        state.uses_random_cell[0] = True
         request = self._sample_request(
-            state.random, name, sampled, distribution, step, state
+            state.random_cell[0], name, sampled, distribution, step, state
         )
         state.sites.append(
             ProgramSite(
@@ -3345,13 +3364,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "outside a grouped marginalization",
                 code="qiec-program",
             )
-        state.current_site = name
-        state.pending_alphabet = None
+        state.current_site_cell[0] = name
+        state.pending_alphabet_cell[0] = None
         distribution = self._step_distribution(
             step, scope, state, name, via=via, group=group
         )
         observed_type = self._sampled_type(distribution)
-        if state.markov_row is not None and name == state.markov_entry:
+        if state.markov_row_cell[0] is not None and name == state.markov_entry_cell[0]:
             # The row of a marginalized chain's cell scores the entry it
             # reads as the observation its next state emits.
             entry = scope.lookup(name)
@@ -3403,9 +3422,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     batch=distribution.plate.batch,
                 )
             )
-            self._add_score(state.score, weight, scope, state, step)
+            self._add_score(state.score_cell[0], weight, scope, state, step)
             return
-        assert weight_scope.weight_type is not None
+        assert weight_scope.weight_type_cell[0] is not None
         if weight_scope.group is None:
             weight = WeightSum(
                 value=LogDensity(
@@ -3452,8 +3471,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     "axis nor an index map into it",
                     code="qiec-program",
                 )
-        assert weight_scope.weight_instance is not None
-        self._add_weight(weight_scope.weight_instance, weight, scope, state, step)
+        assert weight_scope.weight_instance_cell[0] is not None
+        self._add_weight(
+            weight_scope.weight_instance_cell[0], weight, scope, state, step
+        )
 
     def _add_score(
         self: _Elaborator,
@@ -3478,7 +3499,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         node : object
             The source node.
         """
-        state.uses_score = True
+        state.uses_score_cell[0] = True
         score = self._effect("Score")
         assert score is not None
         operation = next(item for item in score.operations if item.name == "add")
@@ -3551,7 +3572,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         self._bind_step(scope, None, UNIT, Perform(request=request), node)
         owner = _weight_scope(scope)
         assert owner is not None
-        owner.weights_added = True
+        owner.weights_added_cell[0] = True
 
     def _elaborate_let(
         self: _Elaborator, step: LetStep, scope: _Scope, state: _ProgramState
@@ -3762,7 +3783,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             entry.instance == params.entry.instance
             for entry in signature.effects.entries
         ):
-            state.uses_params = True
+            state.uses_params_cell[0] = True
         origin = cast(
             SourceOrigin,
             _origin_at(
@@ -4581,14 +4602,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         )
         params = self.instances.get(PARAMS_INSTANCE)
-        assert state.random is not None and state.score is not None
+        assert state.random_cell[0] is not None and state.score_cell[0] is not None
         for row_entry in signature.effects.entries:
-            if row_entry.instance == state.random.entry.instance:
-                state.uses_random = True
-            elif row_entry.instance == state.score.entry.instance:
-                state.uses_score = True
+            if row_entry.instance == state.random_cell[0].entry.instance:
+                state.uses_random_cell[0] = True
+            elif row_entry.instance == state.score_cell[0].entry.instance:
+                state.uses_score_cell[0] = True
             elif params is not None and row_entry.instance == params.entry.instance:
-                state.uses_params = True
+                state.uses_params_cell[0] = True
         initial: Value = _zero_of(state_type)
         if init is not None:
             initial = _scan_initial_state(self, init, state_type, scope, state, node)
@@ -4737,12 +4758,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             self._fail_kernel(step.call, error)
         params = self.instances.get(PARAMS_INSTANCE)
         for entry in call_type.effects.entries:
-            if entry.instance == state.random.entry.instance:
-                state.uses_random = True
-            elif entry.instance == state.score.entry.instance:
-                state.uses_score = True
+            if entry.instance == state.random_cell[0].entry.instance:
+                state.uses_random_cell[0] = True
+            elif entry.instance == state.score_cell[0].entry.instance:
+                state.uses_score_cell[0] = True
             elif params is not None and entry.instance == params.entry.instance:
-                state.uses_params = True
+                state.uses_params_cell[0] = True
             else:
                 self._fail(
                     step,
@@ -4973,7 +4994,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         weight_scope = _weight_scope(scope)
         if weight_scope is None:
-            self._add_score(state.score, weight, scope, state, step)
+            self._add_score(state.score_cell[0], weight, scope, state, step)
             return
         if weight_scope.group is not None:
             self._fail(
@@ -4982,8 +5003,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "scalar factor has no group to belong to",
                 code="qiec-program",
             )
-        assert weight_scope.weight_instance is not None
-        self._add_weight(weight_scope.weight_instance, weight, scope, state, step)
+        assert weight_scope.weight_instance_cell[0] is not None
+        self._add_weight(
+            weight_scope.weight_instance_cell[0], weight, scope, state, step
+        )
 
     def _let_value(
         self: _Elaborator,
@@ -5193,8 +5216,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             if morphism is None:
                 return candidate
             value, type_ = self._function_call(morphism, candidate, scope, state, node)
-            serial = state.function_calls
-            state.function_calls += 1
+            serial = state.function_calls_cell[0]
+            state.function_calls_cell[0] += 1
             name = f"{candidate.func}__call{serial}"
             self._bind_step(scope, name, type_, Return(value=value), node)
             return LetExprVar(name=name)
@@ -5945,8 +5968,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         "projected onto it",
                         code="qiec-program",
                     )
-        state.current_site = latent_name
-        state.pending_alphabet = None
+        state.current_site_cell[0] = latent_name
+        state.pending_alphabet_cell[0] = None
         distribution = self._step_distribution(
             step,
             inner,
@@ -5959,8 +5982,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 else (outer_group, projection)
             ),
         )
-        if state.pending_alphabet is not None:
-            state.alphabets[latent_name] = state.pending_alphabet
+        if state.pending_alphabet_cell[0] is not None:
+            state.alphabets[latent_name] = state.pending_alphabet_cell[0]
         record = FAMILIES[distribution.name]
         if not _enumerable(record):
             # Nothing finite to sum over: the latent is drawn once per
@@ -5988,7 +6011,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         # The row of a marginalized chain's cell keeps the block's weighted
         # shots, one per state, which the forward algorithm reduces.
         table = (
-            state.markov_row == latent_name and weight_scope is None and group is None
+            state.markov_row_cell[0] == latent_name
+            and weight_scope is None
+            and group is None
         )
         if table:
             states = self._object_axis(state.declaration.codomain, step)
@@ -6001,8 +6026,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         weight = self._local_instance(
             f"{latent_name}_weight", "Weight", (weight_type,), (*path, "weight")
         )
-        inner.weight_instance = weight
-        inner.weight_type = weight_type
+        inner.weight_instance_cell[0] = weight
+        inner.weight_type_cell[0] = weight_type
         request = self._sample_request(
             choice, latent_name, sampled, distribution, step, state
         )
@@ -6018,7 +6043,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         latent = Local(name=latent_name, type=sampled)
         inner.locals[latent_name] = latent
         self._elaborate_steps(remaining, inner, state)
-        if not inner.weights_added:
+        if not inner.weights_added_cell[0]:
             # A scope adding nothing still performs on its instance, so
             # the collecting handler has the effect it handles: the
             # identity weight at the scope's type.
@@ -6062,9 +6087,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             return
         weight_local = self._bind_step(scope, None, result_type, helper, step)
         if weight_scope is None:
-            self._add_score(state.score, Var(local=weight_local), scope, state, step)
+            self._add_score(
+                state.score_cell[0], Var(local=weight_local), scope, state, step
+            )
             return
-        assert weight_scope.weight_instance is not None
+        assert weight_scope.weight_instance_cell[0] is not None
         assert outer_group is not None
         weight: Value = Var(local=weight_local)
         if projection is not None:
@@ -6076,7 +6103,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 groups=outer_group.size,
                 result_type=tensor_type(LOG_WEIGHT, (outer_group.size,)),
             )
-        self._add_weight(weight_scope.weight_instance, weight, scope, state, step)
+        self._add_weight(
+            weight_scope.weight_instance_cell[0], weight, scope, state, step
+        )
 
     def _hoist_draws(
         self: _Elaborator,
@@ -6225,9 +6254,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             The latent's name.
         """
         sampled = self._sampled_type(distribution)
-        state.uses_random = True
+        state.uses_random_cell[0] = True
         request = self._sample_request(
-            state.random, latent_name, sampled, distribution, step, state
+            state.random_cell[0], latent_name, sampled, distribution, step, state
         )
         state.sites.append(
             ProgramSite(
@@ -7670,7 +7699,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if isinstance(argument, _Spread):
             # A single literal spread over a vector parameter is the
             # same number at every position of the vector.
-            spread = Local(name=f"__spread_{state.current_site}", type=INT)
+            spread = Local(name=f"__spread_{state.current_site_cell[0]}", type=INT)
             return Comprehension(
                 binder=spread,
                 extent=_extent(argument.dimension),
@@ -7973,10 +8002,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             fixed = StaticSubstitution(
                 types=(), indices=((variable.name, term),), effects=()
             )
-            state.extent_solution = {
-                name: substitute_index(value, fixed)
-                for name, value in state.extent_solution.items()
-            }
+            state.extent_solution.update(
+                {
+                    name: substitute_index(value, fixed)
+                    for name, value in state.extent_solution.items()
+                }
+            )
             state.extent_solution[variable.name] = term
             changed = True
         if changed:
@@ -8791,11 +8822,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 continue
             shape = tensor_shape(self._value_type(value, scope.context(), None))
             if shape is not None and shape[1]:
-                state.pending_alphabet = PlateAxis(name="classes", size=shape[1][-1])
+                state.pending_alphabet_cell[0] = PlateAxis(
+                    name="classes", size=shape[1][-1]
+                )
         if morphism is not None and isinstance(morphism.codomain, TypeName):
             info = self._program_objects.get(morphism.codomain.name)
             if info is not None and info.finite and info.extent is not None:
-                state.pending_alphabet = PlateAxis(
+                state.pending_alphabet_cell[0] = PlateAxis(
                     name=morphism.codomain.name, size=_extent(info.extent)
                 )
         return arguments
@@ -9659,7 +9692,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 f"{record.name} but its plate names {len(event)} event axes",
                 code="qiec-program",
             )
-        site = state.current_site
+        site = state.current_site_cell[0]
         if record.name == "MultivariateNormal":
             (n,) = event
             return [
@@ -9899,8 +9932,7 @@ def _sampled_support(
     return None
 
 
-@dataclass(slots=True)
-class _ProgramState:
+class _ProgramState(QiecModel):
     """What accumulates while one program elaborates.
 
     Parameters
@@ -9913,18 +9945,23 @@ class _ProgramState:
         The probabilistic steps seen so far.
     helpers
         The marginalization helper computations declared so far.
-    uses_random
+    uses_random_cell
+        Owned one-element cell.
         Whether any step performs on the canonical ``random`` instance.
-    uses_score
+    uses_score_cell
+        Owned one-element cell.
         Whether any step performs on the canonical ``score`` instance.
-    uses_params
+    uses_params_cell
+        Owned one-element cell.
         Whether any step calls a deduction, which reads its learned
         weights through the module's ``params`` instance.
     alphabets
         The class alphabet of each class-valued step, by step name.
-    pending_alphabet
+    pending_alphabet_cell
+        Owned one-element cell.
         The alphabet the step being elaborated draws from, if any.
-    current_site
+    current_site_cell
+        Owned one-element cell.
         The name of the step being elaborated.
     input_shapes
         The element type and batch axis inferred for each free name a
@@ -9944,15 +9981,18 @@ class _ProgramState:
     per_row
         The inputs that fill a family parameter of a plated draw
         directly, whose leading axis is that draw's plate.
-    function_calls
+    function_calls_cell
+        Owned one-element cell.
         The number of learned-function calls bound so far, which numbers
         the binding of the next one.
-    markov_row
+    markov_row_cell
+        Owned one-element cell.
         For the row of a marginalized chain's cell, the latent its block
         marginalizes, which the row binds to the block's weighted shots
         (one per state) rather than scoring their marginal; else
         ``None``.
-    markov_entry
+    markov_entry_cell
+        Owned one-element cell.
         For such a row, the parameter holding one position's entry,
         which an observation of that name scores in place.
     extents
@@ -9967,39 +10007,87 @@ class _ProgramState:
     template_objects
         The object parameters bound as objects of the body while the
         program elaborates.
-    random
+    random_cell
+        Owned one-element cell.
         The canonical ``Random`` instance.
-    score
+    score_cell
+        Owned one-element cell.
         The canonical ``Score`` instance.
     """
 
-    declaration: ProgramDecl
-    parameters: list[tuple[str, ParameterRole]] = field(default_factory=list)
-    sites: list[ProgramSite] = field(default_factory=list)
-    helpers: list[NamedComputation] = field(default_factory=list)
-    uses_random: bool = False
-    uses_score: bool = False
-    uses_params: bool = False
-    alphabets: dict[str, PlateAxis] = field(default_factory=dict)
-    pending_alphabet: PlateAxis | None = None
-    current_site: str = ""
-    extents: dict[str, IndexBinder] = field(default_factory=dict)
-    open_extents: set[str] = field(default_factory=set)
-    extent_solution: dict[str, IndexTerm] = field(default_factory=dict)
-    template_objects: list[str] = field(default_factory=list)
-    input_shapes: dict[str, tuple[TypeApplication, PlateAxis | None]] = field(
-        default_factory=dict
+    declaration: ProgramDecl = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    parameters: list[tuple[str, ParameterRole]] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    tables: dict[str, int] = field(default_factory=dict)
-    table_events: dict[str, int] = field(default_factory=dict)
-    batch_shapes: dict[str, tuple[IndexTerm, ...]] = field(default_factory=dict)
-    parameter_axes: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    per_row: set[str] = field(default_factory=set)
-    function_calls: int = 0
-    markov_row: str | None = None
-    markov_entry: str | None = None
-    random: NamedEffectInstance | None = None  # type: ignore[assignment]
-    score: NamedEffectInstance | None = None  # type: ignore[assignment]
+    sites: list[ProgramSite] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    helpers: list[NamedComputation] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    uses_random_cell: list[bool] = dx.field(
+        default_factory=lambda: [False], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    uses_score_cell: list[bool] = dx.field(
+        default_factory=lambda: [False], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    uses_params_cell: list[bool] = dx.field(
+        default_factory=lambda: [False], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    alphabets: dict[str, PlateAxis] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    pending_alphabet_cell: list[PlateAxis | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    current_site_cell: list[str] = dx.field(
+        default_factory=lambda: [""], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    extents: dict[str, IndexBinder] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    open_extents: set[str] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    extent_solution: dict[str, IndexTerm] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    template_objects: list[str] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    input_shapes: dict[str, tuple[TypeApplication, PlateAxis | None]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    tables: dict[str, int] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    table_events: dict[str, int] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    batch_shapes: dict[str, tuple[IndexTerm, ...]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    parameter_axes: dict[str, tuple[str, ...]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    per_row: set[str] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    function_calls_cell: list[int] = dx.field(
+        default_factory=lambda: [0], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    markov_row_cell: list[str | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    markov_entry_cell: list[str | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    random_cell: list[NamedEffectInstance | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )  # type: ignore[assignment]
+    score_cell: list[NamedEffectInstance | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )  # type: ignore[assignment]
 
 
 def _index_variables_in(terms: Sequence[StaticArgument]) -> frozenset[str]:
@@ -10300,7 +10388,7 @@ def _enclosing_group(scope: _Scope) -> PlateAxis | None:
     """
     current: _Scope | None = scope
     while current is not None:
-        if current.weight_instance is not None:
+        if current.weight_instance_cell[0] is not None:
             return current.group
         current = current.outer
     return None
@@ -10322,7 +10410,7 @@ def _weight_scope(scope: _Scope) -> _Scope | None:
     """
     current: _Scope | None = scope
     while current is not None:
-        if current.weight_instance is not None:
+        if current.weight_instance_cell[0] is not None:
             return current
         current = current.outer
     return None

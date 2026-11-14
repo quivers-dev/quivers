@@ -50,7 +50,6 @@ rules together. The agenda engine tabulates the same derivations.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
 import math
 from typing import TYPE_CHECKING, Literal
 
@@ -371,8 +370,7 @@ class _Group(QiecModel):
     names: dict[int, dict[str, str]] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
-@dataclass(slots=True)
-class _System:
+class _System(QiecModel):
     """Everything the elaboration reads off one deduction.
 
     Parameters
@@ -383,14 +381,16 @@ class _System:
         The declared semiring's name.
     start
         The start symbol, if any.
-    depth
+    depth_cell
+        Owned one-element cell.
         The declared derivation depth bound, if any.
     rules
         The rules in pattern form.
     entries
         The expanded lexicon, empty for a system that takes its axioms
         as input.
-    uses_forms
+    uses_forms_cell
+        Owned one-element cell.
         Whether span items carry a logical form.
     symbols
         Every constructor symbol with its slot sorts, atoms included as
@@ -398,27 +398,35 @@ class _System:
     bare
         The atoms used as items on their own, which cannot also be
         applied.
-    span_shaped
+    span_shaped_cell
+        Owned one-element cell.
         Whether every rule relates span items, so derivations may be
         enumerated by span.
-    span_fuel_factor
+    span_fuel_factor_cell
+        Owned one-element cell.
         For a schema parser, the units of derivation fuel per sentence
         position.
-    schema_categories
+    schema_categories_cell
+        Owned one-element cell.
         For a schema parser, its finite category algebra.
-    schema_words
+    schema_words_cell
+        Owned one-element cell.
         For a schema parser, its vocabulary.
-    tolerance
+    tolerance_cell
+        Owned one-element cell.
         The declared convergence tolerance, zero without one.
-    normalized
+    normalized_cell
+        Owned one-element cell.
         Whether the weights of the productions sharing a left-hand side
         are normalized (``normalize=lhs``).
-    groups
+    groups_cell
+        Owned one-element cell.
         For a normalized system, its production groups.
     table
         For a normalized system, the position of each production of a
         group of several in the table a program supplies.
-    handlers
+    handlers_cell
+        Owned one-element cell.
         The search and collection handlers, once declared.
     heads
         For a yield-directed system, the head symbols of its items, in
@@ -429,56 +437,112 @@ class _System:
     closure
         The indices of the unary rules, which a span-shaped system
         applies in chains over one derived item.
-    cyclic
+    cyclic_cell
+        Owned one-element cell.
         Whether a chain of unary rules may revisit an item, so a
         span-shaped search bounds how often a chain repeats an item and
         iterates that bound to convergence.
-    family
+    family_cell
+        Owned one-element cell.
         The item family, once declared.
     constructors
         The item family's constructors, by symbol.
-    chain_family
+    chain_family_cell
+        Owned one-element cell.
         For a cyclic system, the family of the item chains the unary
         closure carries.
     chain_constructors
         The chain family's ``nil`` and ``cons`` constructors.
-    choice
+    choice_cell
+        Owned one-element cell.
         The ``Search`` instance.
-    weight
+    weight_cell
+        Owned one-element cell.
         The ``Weight`` instance.
-    fresh
+    fresh_cell
+        Owned one-element cell.
         The count of fresh locals minted so far.
     """
 
-    decl: DeductionDecl
-    semiring: str
-    start: str | None
-    depth: int | None
-    rules: list[_Rule] = field(default_factory=list)
-    entries: list[_Entry] = field(default_factory=list)
-    uses_forms: bool = False
-    symbols: dict[str, list[Sort]] = field(default_factory=dict)
-    bare: set[str] = field(default_factory=set)
-    span_shaped: bool = False
-    span_fuel_factor: int = 0
-    schema_categories: tuple[Pattern, ...] = ()
-    schema_words: tuple[str, ...] = ()
-    tolerance: float = 0.0
-    normalized: bool = False
-    groups: tuple[ProductionGroup, ...] = ()
-    table: dict[ProductionKey, int] = field(default_factory=dict)
-    handlers: tuple[HandlerDef, HandlerDef] | None = None
-    heads: list[str] = field(default_factory=list)
-    live: list[int] = field(default_factory=list)
-    closure: list[int] = field(default_factory=list)
-    cyclic: bool = False
-    family: FamilyDecl | None = None
-    constructors: dict[str, ConstructorDecl] = field(default_factory=dict)
-    chain_family: FamilyDecl | None = None
-    chain_constructors: dict[str, ConstructorDecl] = field(default_factory=dict)
-    choice: NamedEffectInstance | None = None
-    weight: NamedEffectInstance | None = None
-    fresh: int = 0
+    decl: DeductionDecl = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    semiring: str = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    start: str | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    depth_cell: list[int | None] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    rules: list[_Rule] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    entries: list[_Entry] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    uses_forms_cell: list[bool] = dx.field(
+        default_factory=lambda: [False], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    symbols: dict[str, list[Sort]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    bare: set[str] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    span_shaped_cell: list[bool] = dx.field(
+        default_factory=lambda: [False], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    span_fuel_factor_cell: list[int] = dx.field(
+        default_factory=lambda: [0], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    schema_categories_cell: list[tuple[Pattern, ...]] = dx.field(
+        default_factory=lambda: [()], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    schema_words_cell: list[tuple[str, ...]] = dx.field(
+        default_factory=lambda: [()], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    tolerance_cell: list[float] = dx.field(
+        default_factory=lambda: [0.0], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    normalized_cell: list[bool] = dx.field(
+        default_factory=lambda: [False], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    groups_cell: list[tuple[ProductionGroup, ...]] = dx.field(
+        default_factory=lambda: [()], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    table: dict[ProductionKey, int] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    handlers_cell: list[tuple[HandlerDef, HandlerDef] | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    heads: list[str] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    live: list[int] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    closure: list[int] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    cyclic_cell: list[bool] = dx.field(
+        default_factory=lambda: [False], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    family_cell: list[FamilyDecl | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    constructors: dict[str, ConstructorDecl] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    chain_family_cell: list[FamilyDecl | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    chain_constructors: dict[str, ConstructorDecl] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    choice_cell: list[NamedEffectInstance | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    weight_cell: list[NamedEffectInstance | None] = dx.field(
+        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    fresh_cell: list[int] = dx.field(
+        default_factory=lambda: [0], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     @property
     def by_yield(self) -> bool:
@@ -490,7 +554,7 @@ class _System:
             ``True`` for a system with a lexicon whose rules do not all
             relate spans, such as a multiple context-free grammar.
         """
-        return bool(self.entries) and not self.span_shaped
+        return bool(self.entries) and not self.span_shaped_cell[0]
 
     @property
     def closes(self) -> bool:
@@ -501,7 +565,11 @@ class _System:
         bool
             ``True`` for a span-shaped lexical system with a unary rule.
         """
-        return self.span_shaped and not self.schema_categories and bool(self.closure)
+        return (
+            self.span_shaped_cell[0]
+            and not self.schema_categories_cell[0]
+            and bool(self.closure)
+        )
 
     @property
     def chained(self) -> bool:
@@ -512,7 +580,7 @@ class _System:
         bool
             ``True`` when the closure may revisit an item.
         """
-        return self.closes and self.cyclic
+        return self.closes and self.cyclic_cell[0]
 
     @property
     def chain(self) -> TypeApplication:
@@ -523,9 +591,9 @@ class _System:
         TypeApplication
             The type of the item chains a cyclic closure carries.
         """
-        assert self.chain_family is not None
+        assert self.chain_family_cell[0] is not None
         return TypeApplication(
-            constructor=self.chain_family.type_constructor, arguments=()
+            constructor=self.chain_family_cell[0].type_constructor, arguments=()
         )
 
     @property
@@ -549,8 +617,10 @@ class _System:
         TypeApplication
             The type of every item.
         """
-        assert self.family is not None
-        return TypeApplication(constructor=self.family.type_constructor, arguments=())
+        assert self.family_cell[0] is not None
+        return TypeApplication(
+            constructor=self.family_cell[0].type_constructor, arguments=()
+        )
 
     def name(self, suffix: str) -> str:
         """A module-level name derived from the deduction's.
@@ -582,8 +652,8 @@ class _System:
         Local
             A local named uniquely within the deduction's computations.
         """
-        self.fresh += 1
-        return Local(name=f"{hint}_{self.fresh}", type=type_)
+        self.fresh_cell[0] += 1
+        return Local(name=f"{hint}_{self.fresh_cell[0]}", type=type_)
 
 
 def _int(value: int) -> LiteralValue:
@@ -1133,8 +1203,10 @@ class _DeductionElaboration:
                 # binary rules, and at most one chain of unary rules per
                 # span, so L times one more than the longest chain units of
                 # fuel reach every tree.
-                system.depth = None
-                system.span_fuel_factor = 1 + self._schema_unary_chain[declaration.name]
+                system.depth_cell[0] = None
+                system.span_fuel_factor_cell[0] = (
+                    1 + self._schema_unary_chain[declaration.name]
+                )
                 first_word = system.entries[0].word
                 category_count = next(
                     (
@@ -1144,10 +1216,10 @@ class _DeductionElaboration:
                     ),
                     len(system.entries),
                 )
-                system.schema_categories = tuple(
+                system.schema_categories_cell[0] = tuple(
                     entry.category for entry in system.entries[:category_count]
                 )
-                system.schema_words = tuple(
+                system.schema_words_cell[0] = tuple(
                     dict.fromkeys(entry.word for entry in system.entries)
                 )
             self._declare_item_family(system)
@@ -1557,11 +1629,13 @@ class _DeductionElaboration:
         start = get_option_name(
             declaration.options, "start", line=declaration.line, col=declaration.col
         )
-        system = _System(declaration, semiring, start, depth)
+        system = _System(
+            decl=declaration, semiring=semiring, start=start, depth_cell=[depth]
+        )
         atoms = set(declaration.atoms)
         for atom in declaration.atoms:
             system.symbols.setdefault(atom, [])
-        system.uses_forms = bool(declaration.binders) or any(
+        system.uses_forms_cell[0] = bool(declaration.binders) or any(
             isinstance(pattern, ObjectEffectApply)
             and pattern.effect == SPAN
             and len(pattern.args) >= 4
@@ -1661,19 +1735,21 @@ class _DeductionElaboration:
                     f"{first.message} (required by normalize=lhs)",
                     code="qiec-program",
                 )
-            system.normalized = True
-            system.groups = analysis.groups
-            system.table = {
-                production.key: position
-                for position, production in enumerate(
-                    production
-                    for group in analysis.groups
-                    if len(group.productions) > 1
-                    for production in group.productions
-                )
-            }
+            system.normalized_cell[0] = True
+            system.groups_cell[0] = analysis.groups
+            system.table.update(
+                {
+                    production.key: position
+                    for position, production in enumerate(
+                        production
+                        for group in analysis.groups
+                        if len(group.productions) > 1
+                        for production in group.productions
+                    )
+                }
+            )
         self._infer_sorts(system)
-        system.span_shaped = bool(system.entries) and all(
+        system.span_shaped_cell[0] = bool(system.entries) and all(
             _is_span(pattern)
             for rule in system.rules
             for pattern in (*rule.premises, rule.conclusion)
@@ -1681,14 +1757,14 @@ class _DeductionElaboration:
         tolerance = get_option_float(
             declaration.options, "tolerance", line=declaration.line, col=declaration.col
         )
-        system.tolerance = float(tolerance) if tolerance is not None else 0.0
-        system.closure = [
+        system.tolerance_cell[0] = float(tolerance) if tolerance is not None else 0.0
+        system.closure[:] = [
             index for index, rule in enumerate(system.rules) if len(rule.premises) == 1
         ]
-        system.cyclic = _may_cycle(system)
+        system.cyclic_cell[0] = _may_cycle(system)
         if system.by_yield:
             self._read_heads(system)
-        if system.span_shaped:
+        if system.span_shaped_cell[0]:
             for rule in system.rules:
                 conclusion = rule.conclusion
                 assert isinstance(conclusion, _App)
@@ -1825,7 +1901,7 @@ class _DeductionElaboration:
                 "cannot bound",
                 code="qiec-program",
             )
-        if system.cyclic:
+        if system.cyclic_cell[0]:
             self._fail(
                 system.decl,
                 f"deduction {system.decl.name!r} has unary rules that may form a "
@@ -1834,7 +1910,7 @@ class _DeductionElaboration:
                 "does not shrink",
                 code="qiec-program",
             )
-        system.heads = heads
+        system.heads[:] = heads
 
     def _object_pattern(
         self: _Elaborator, expr: ObjectExpr, atoms: set[str], system: _System
@@ -1975,7 +2051,7 @@ class _DeductionElaboration:
             The pattern, every ``span(I, J, C)`` extended with a fresh
             variable in the form slot when the system carries forms.
         """
-        if not system.uses_forms:
+        if not system.uses_forms_cell[0]:
             return pattern
         if isinstance(pattern, _App):
             args = tuple(
@@ -2062,7 +2138,7 @@ class _DeductionElaboration:
         for word, fixed, form_expr, learnable, candidates in raw:
             form = (
                 self._form_pattern(form_expr, atoms, binders, system, declaration)
-                if system.uses_forms and form_expr is not None
+                if system.uses_forms_cell[0] and form_expr is not None
                 else None
             )
             if fixed is not None:
@@ -2082,7 +2158,7 @@ class _DeductionElaboration:
                     )
         if system.entries:
             sorts: list[Sort] = ["int", "int", "item", "item"]
-            system.symbols[SPAN] = sorts[: 4 if system.uses_forms else 3]
+            system.symbols[SPAN] = sorts[: 4 if system.uses_forms_cell[0] else 3]
 
     def _form_pattern(
         self: _Elaborator,
@@ -2239,7 +2315,7 @@ class _DeductionElaboration:
             indices=(),
             constructors=constructor_ids,
         )
-        system.family = family
+        system.family_cell[0] = family
         item = TypeApplication(constructor=family.type_constructor, arguments=())
         self.families[family_name] = family
         self.registry.register_family(family)
@@ -2306,7 +2382,7 @@ class _DeductionElaboration:
             indices=(),
             constructors=constructor_ids,
         )
-        system.chain_family = family
+        system.chain_family_cell[0] = family
         chain = TypeApplication(constructor=family.type_constructor, arguments=())
         self.families[family_name] = family
         self.registry.register_family(family)
@@ -2345,14 +2421,14 @@ class _DeductionElaboration:
             module=self.source.module_name,
             lexical_path=("instances", choice_name),
         )
-        system.choice = NamedEffectInstance(
+        system.choice_cell[0] = NamedEffectInstance(
             name=choice_name,
             entry=entry,
             origin=self._origin(
                 system.decl, ("instances", choice_name), "effect-instance"
             ),
         )
-        self.instances[choice_name] = system.choice
+        self.instances[choice_name] = system.choice_cell[0]
         weight_effect = self._effect("Weight")
         assert weight_effect is not None
         weight_name = system.name("weight")
@@ -2361,14 +2437,14 @@ class _DeductionElaboration:
             module=self.source.module_name,
             lexical_path=("instances", weight_name),
         )
-        system.weight = NamedEffectInstance(
+        system.weight_cell[0] = NamedEffectInstance(
             name=weight_name,
             entry=entry,
             origin=self._origin(
                 system.decl, ("instances", weight_name), "effect-instance"
             ),
         )
-        self.instances[weight_name] = system.weight
+        self.instances[weight_name] = system.weight_cell[0]
 
     # ------------------------------------------------------------------
     # computations
@@ -2392,7 +2468,7 @@ class _DeductionElaboration:
         weighted = _weighted_deductions(self.source.syntax.statements)
         for name, system in getattr(self, "_deductions", {}).items():
             computations.extend(self._elaborate_deduction(system))
-            if name in weighted and system.normalized:
+            if name in weighted and system.normalized_cell[0]:
                 computations.extend(self._elaborate_deduction(system, weighted=True))
         return tuple(computations)
 
@@ -2424,7 +2500,7 @@ class _DeductionElaboration:
             Its computations.
         """
         params = self.instances[PARAMS_INSTANCE]
-        assert system.choice is not None and system.weight is not None
+        assert system.choice_cell[0] is not None and system.weight_cell[0] is not None
         # Only a log semiring reads learned weights, and only the
         # computations whose entries or rules declare one perform on
         # the parameter store.
@@ -2438,12 +2514,12 @@ class _DeductionElaboration:
         learned = lexical_learned or (
             logged and any(rule.learnable or rule.parent is not None for rule in firing)
         )
-        if system.normalized:
+        if system.normalized_cell[0]:
             # A normalized production's weight reads the learnable free
             # weights of its group when the group has several members.
             reading = {
                 production.key
-                for group in system.groups
+                for group in system.groups_cell[0]
                 if len(group.productions) > 1
                 and any(member.learnable for member in group.productions)
                 for production in group.productions
@@ -2459,7 +2535,7 @@ class _DeductionElaboration:
             )
         if weighted:
             lexical_learned = learned = False
-        base = (system.choice.entry, system.weight.entry)
+        base = (system.choice_cell[0].entry, system.weight_cell[0].entry)
         axiom_row = EffectRow(
             entries=(*base, params.entry) if lexical_learned else base
         )
@@ -2579,7 +2655,11 @@ class _DeductionElaboration:
         show = declare(system.name("show"), (), (item,), STRING, pure)
         goal = declare(system.name("goal"), (), (item,), BOOL, pure)
         failing = declare(
-            system.name("fail"), (), (), item, EffectRow(entries=(system.choice.entry,))
+            system.name("fail"),
+            (),
+            (),
+            item,
+            EffectRow(entries=(system.choice_cell[0].entry,)),
         )
         if system.entries:
             tokens_type = tensor_type(STRING, (n,))
@@ -2587,7 +2667,7 @@ class _DeductionElaboration:
                 system.name("axiom"),
                 (extent,),
                 (INT, item, tokens_type)
-                if system.schema_categories
+                if system.schema_categories_cell[0]
                 else (INT, tokens_type),
                 item,
                 axiom_row,
@@ -2597,9 +2677,9 @@ class _DeductionElaboration:
                 system.name("derive"),
                 (extent,),
                 (INT, INT, INT, item, tokens_type)
-                if system.schema_categories
+                if system.schema_categories_cell[0]
                 else (*repeats, INT, INT, tokens_type)
-                if system.span_shaped
+                if system.span_shaped_cell[0]
                 else (INT, *([INT] * self._frame_width(system)), tokens_type),
                 item,
                 row,
@@ -2649,11 +2729,11 @@ class _DeductionElaboration:
                 carrier,
                 outer,
             )
-        if system.depth is not None:
+        if system.depth_cell[0] is not None:
             declare(system.name("depth"), (), (item,), INT, pure)
         normalizers: list[tuple[ComputationSignature, ProductionGroup]] = []
-        if system.normalized and not weighted:
-            for index, group in enumerate(system.groups):
+        if system.normalized_cell[0] and not weighted:
+            for index, group in enumerate(system.groups_cell[0]):
                 if len(group.productions) > 1 and any(
                     member.learnable for member in group.productions
                 ):
@@ -2682,7 +2762,7 @@ class _DeductionElaboration:
                     context.failure(failing),
                 )
             )
-            if system.depth is not None:
+            if system.depth_cell[0] is not None:
                 computations.append(
                     context.depth_measure(signatures[system.name("depth")])
                 )
@@ -2695,9 +2775,9 @@ class _DeductionElaboration:
         computations.append(context.derivation(derive))
         if system.closes:
             computations.append(context.closure(signatures[system.name("close")]))
-        if system.handlers is None:
-            system.handlers = self._deduction_handlers(system)
-        handlers = system.handlers
+        if system.handlers_cell[0] is None:
+            system.handlers_cell[0] = self._deduction_handlers(system)
+        handlers = system.handlers_cell[0]
         if system.chained:
             computations.append(
                 context.inside(signatures[system.name("inside")], handlers)
@@ -2725,7 +2805,7 @@ class _DeductionElaboration:
             collected weights of its shots, and the ``Weight`` handler,
             answering the scope's unit paired with its product.
         """
-        assert system.choice is not None and system.weight is not None
+        assert system.choice_cell[0] is not None and system.weight_cell[0] is not None
         search = self.effects[SEARCH_EFFECT]
         weight_effect = self._effect("Weight")
         assert weight_effect is not None
@@ -2967,9 +3047,9 @@ class _Context:
         Perform
             The request, answered with one entry per resumption.
         """
-        assert self.system.choice is not None
+        assert self.system.choice_cell[0] is not None
         return self.request(
-            self.system.choice,
+            self.system.choice_cell[0],
             SEARCH_CHOOSE,
             (element, count),
             (alternatives,),
@@ -3042,8 +3122,10 @@ class _Context:
         Perform
             The request.
         """
-        assert self.system.weight is not None
-        return self.request(self.system.weight, "add", (), (weight,), UNIT, *path)
+        assert self.system.weight_cell[0] is not None
+        return self.request(
+            self.system.weight_cell[0], "add", (), (weight,), UNIT, *path
+        )
 
     def parameter(self, name: Value, *path: str | int) -> Perform:
         """Read a learned real parameter by name.
@@ -3412,7 +3494,7 @@ class _Context:
             The computation, choosing among the entries whose word is
             the token and adding the entry's weight.
         """
-        if self.system.schema_categories:
+        if self.system.schema_categories_cell[0]:
             return self.schema_axiom(signature)
         position = Local(name="position", type=INT)
         tokens = Local(name="tokens", type=signature.parameters[1])
@@ -3443,7 +3525,7 @@ class _Context:
                 self.primitive("add_int", Var(local=position), _int(1)),
                 self.ground(entry.category),
             ]
-            if self.system.uses_forms:
+            if self.system.uses_forms_cell[0]:
                 assert entry.form is not None
                 fields.append(self.ground(entry.form))
             span = self.constructor(SPAN, tuple(fields))
@@ -3468,7 +3550,7 @@ class _Context:
                     then=result,
                 )
 
-            if self.system.normalized:
+            if self.system.normalized_cell[0]:
                 return self.production_weight(("lexicon", index), weighted)
             if entry.learnable and self.system.semiring in ("LogProb", "Viterbi"):
                 return self.bind(
@@ -3556,7 +3638,7 @@ class _Context:
         expected = Local(name="expected", type=system.item)
         tokens = Local(name="tokens", type=signature.parameters[2])
         token = system.local("token", STRING)
-        count = len(system.schema_categories)
+        count = len(system.schema_categories_cell[0])
 
         def token_body(token_index: int, category_index: int) -> Computation:
             """Add one lexical-table cell and return its span."""
@@ -3597,13 +3679,13 @@ class _Context:
 
         def word(token_index: int, category_index: int) -> Computation:
             """Dispatch the observed token for one expected category."""
-            if token_index == len(system.schema_words):
+            if token_index == len(system.schema_words_cell[0]):
                 return self.fail(system.item, "lexicon", "token", "none")
             return If(
                 condition=self.primitive(
                     "eq_string",
                     Var(local=token),
-                    _string(system.schema_words[token_index]),
+                    _string(system.schema_words_cell[0][token_index]),
                 ),
                 then=token_body(token_index, category_index),
                 otherwise=word(token_index + 1, category_index),
@@ -3618,7 +3700,10 @@ class _Context:
                 BOOL,
                 self.call(
                     system.name("eq"),
-                    (Var(local=expected), self.ground(system.schema_categories[index])),
+                    (
+                        Var(local=expected),
+                        self.ground(system.schema_categories_cell[0][index]),
+                    ),
                 ),
                 lambda same: If(
                     condition=Var(local=same),
@@ -3854,7 +3939,7 @@ class _Context:
             The computation, which answers the conclusion of the chosen
             rule having added its weight.
         """
-        if self.system.schema_categories:
+        if self.system.schema_categories_cell[0]:
             return self.schema_derivation(signature)
         if self.system.by_yield:
             return self.yield_derivation(signature)
@@ -3864,7 +3949,7 @@ class _Context:
         start = Local(name="start", type=INT)
         stop = Local(name="stop", type=INT)
         fuel = Local(name="fuel", type=INT)
-        if system.span_shaped:
+        if system.span_shaped_cell[0]:
             repeats = Local(name="repeats", type=INT) if system.chained else None
             tokens = Local(name="tokens", type=self.inputs(signature)[-1])
             parameters: tuple[Local, ...] = (
@@ -4066,7 +4151,7 @@ class _Context:
                         lambda value: Return(value=value),
                         *path,
                     )
-                if system.span_shaped:
+                if system.span_shaped_cell[0]:
                     low, high = group.spans[position]
                     call = recursion(Var(local=chosen[low]), Var(local=chosen[high]))
                 else:
@@ -4078,7 +4163,7 @@ class _Context:
                     lambda value: premises(position + 1, chosen, [*derived, value]),
                 )
 
-            if not system.span_shaped:
+            if not system.span_shaped_cell[0]:
                 return premises(0, {}, [])
             return choose_positions(list(group.splits), {"L": start, "R": stop})
 
@@ -4121,7 +4206,7 @@ class _Context:
                 otherwise=dispatch(chosen, 0),
             ),
         )
-        if system.span_shaped:
+        if system.span_shaped_cell[0]:
             body: Computation = If(
                 condition=self.primitive("lt_int", Var(local=start), Var(local=stop)),
                 then=self.bind(
@@ -4285,17 +4370,19 @@ class _Context:
             ),
             otherwise=self.fail(item, "derive", "lexical", "span"),
         )
-        rules_by_category: list[list[int]] = [[] for _ in system.schema_categories]
+        rules_by_category: list[list[int]] = [
+            [] for _ in system.schema_categories_cell[0]
+        ]
         for rule_index, rule in enumerate(system.rules):
             conclusion = rule.conclusion
             assert isinstance(conclusion, _App) and conclusion.symbol == SPAN
             category = conclusion.args[2]
-            category_index = system.schema_categories.index(category)
+            category_index = system.schema_categories_cell[0].index(category)
             rules_by_category[category_index].append(rule_index)
 
         def category_dispatch(category_index: int) -> Computation:
             """Choose only rules whose result is the expected category."""
-            if category_index == len(system.schema_categories):
+            if category_index == len(system.schema_categories_cell[0]):
                 return self.fail(item, "derive", "category")
             rule_indices = rules_by_category[category_index]
             alternatives = TensorValue(
@@ -4318,7 +4405,7 @@ class _Context:
                     otherwise=rule_dispatch(chosen, offset + 1),
                 )
 
-            category = system.schema_categories[category_index]
+            category = system.schema_categories_cell[0][category_index]
             return self.bind(
                 "same",
                 BOOL,
@@ -4385,11 +4472,11 @@ class _Context:
         """
         system = self.system
         conclusion = self.instantiate(rule.conclusion, bindings)
-        if system.depth is not None:
+        if system.depth_cell[0] is not None:
             # The declared depth bounds the conclusion's category, as the
             # agenda engine's side condition does; a deeper conclusion is
             # not derived.
-            bound = system.depth
+            bound = system.depth_cell[0]
             return self.bind(
                 "measured",
                 INT,
@@ -4455,7 +4542,7 @@ class _Context:
                 then=then(conclusion),
             )
 
-        if system.normalized:
+        if system.normalized_cell[0]:
             return self.production_weight(("rule", index), weighted)
         if system.semiring not in ("LogProb", "Viterbi") or not (
             rule.learnable or rule.parent is not None
@@ -5748,7 +5835,7 @@ class _Context:
         """
         groups: dict[tuple[object, ...], _Group] = {}
         for index, rule in enumerate(self.system.rules):
-            if not self.system.span_shaped:
+            if not self.system.span_shaped_cell[0]:
                 key: tuple[object, ...] = (len(rule.premises),)
                 spans: tuple[tuple[str, str], ...] = ()
                 names: dict[str, str] = {}
@@ -6028,7 +6115,7 @@ class _Context:
         system = self.system
         index, group = next(
             (index, group)
-            for index, group in enumerate(system.groups)
+            for index, group in enumerate(system.groups_cell[0])
             if any(production.key == key for production in group.productions)
         )
         if len(group.productions) == 1:
@@ -6303,7 +6390,7 @@ class _Context:
                 self.primitive(
                     "le_real",
                     self.primitive("abs_real", self.primitive("sub_real", now, before)),
-                    LiteralValue(value=system.tolerance, type=REAL),
+                    LiteralValue(value=system.tolerance_cell[0], type=REAL),
                 ),
             )
 
@@ -6349,7 +6436,7 @@ class _Context:
             The handled derivation, answering the goal's inside weight.
         """
         system = self.system
-        assert system.choice is not None and system.weight is not None
+        assert system.choice_cell[0] is not None and system.weight_cell[0] is not None
         search_handler, collect_handler = handlers
         item = system.item
         length: Value = Reduction(
@@ -6364,11 +6451,11 @@ class _Context:
         )
         if system.by_yield:
             derived = self.yield_root(parameters[0])
-        elif system.schema_categories:
+        elif system.schema_categories_cell[0]:
             # A schema parser's acyclic unary rules bound every tree's
             # depth by the fuel factor per sentence position.
             fuel_value = length
-            for _ in range(system.span_fuel_factor - 1):
+            for _ in range(system.span_fuel_factor_cell[0] - 1):
                 fuel_value = self.primitive("add_int", fuel_value, length)
             assert system.start is not None
             expected = self.constructor(system.start, ())
@@ -6376,7 +6463,7 @@ class _Context:
                 system.name("derive"),
                 (fuel_value, _int(0), length, expected, Var(local=parameters[0])),
             )
-        elif system.span_shaped:
+        elif system.span_shaped_cell[0]:
             prefix = (repeats,) if repeats is not None else ()
             derived = self.call(
                 system.name("derive"),
@@ -6454,10 +6541,10 @@ class _Context:
             ),
         )
         return Handle(
-            instance=system.choice.entry.instance,
+            instance=system.choice_cell[0].entry.instance,
             handler=search_handler.id,
             computation=Handle(
-                instance=system.weight.entry.instance,
+                instance=system.weight_cell[0].entry.instance,
                 handler=collect_handler.id,
                 computation=goal_check,
                 static_arguments=(),
