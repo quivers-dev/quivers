@@ -4,6 +4,20 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.64.0] - 2026-11-14
+
+### Changed
+
+- **Breaking: Finite functions and stochastic kernels no longer implement `ArrowLoop`.** `Function.loop_arr` and `Stochastic.loop_arr` are removed because diagonal contraction can leave their morphism classes. `VRel.loop_arr` retains finite diagonal contraction for weighted relations over a commutative semiring.
+
+### Fixed
+
+- **Nonlexical QIEC deduction computes a weighted chart to convergence.** Rule applications are no longer truncated at the number of axioms plus rules. Every item weight participates in convergence; constructor depth remains a side condition, and an exhausted execution budget raises an error. Repeated constructor growth, multiple premises, duplicate proofs, and learned weights agree with the agenda on the regression cases.
+- **Repeated inference reuses immutable checked declarations.** Field validators compile annotation checks once, monomorphic handler definitions and prelude signatures are reused, and each program caches its checked run wrappers. Observations, handler state, parameter stores, and autograd graphs remain fresh for every invocation.
+- **Empty kernel reductions respect their identities.** Sum, product, and log-sum-exp return zero, one, and negative infinity respectively; mean, minimum, and maximum continue to reject empty tensors.
+- **Effect-lift documentation describes the emitted schemas.** Applicative, Monad, and Alternative instances emit fixed pure, forward apply, bind, and alternative shapes. Bare Functor and arrow instances emit no schemas; chart effect prefixes do not execute QIEC handlers.
+- **The generated transpilation support page tracks current source locations.** Gallery comment changes no longer leave stale refusal diagnostics in the published page.
+
 ## [0.63.0] - 2026-11-14
 
 ### Changed
