@@ -9,12 +9,15 @@ consequently never become serializable QIEC fields.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
 from enum import Enum
 import math
 import operator
 from typing import cast
 
+import didactic.api as dx
+
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import (
     ELEMENT,
     ELEMENT_BINDER,
@@ -1118,21 +1121,47 @@ def enumerate_handler(
     )
 
 
-@dataclass(slots=True)
-class ScoreAccumulator:
+class ScoreAccumulator(QiecModel):
     """Mutable result owned by one installed Score handler.
+
+    The one-element state cell and contribution list retain identity.
 
     Parameters
     ----------
-    total
-        The running combination of every contribution so far, starting at
-        the handler's identity.
+    contents
+        A one-element list holding the running total, starting at the
+        handler's identity. The ``total`` property reads its value.
     contributions
         Every contribution in the order it was added.
     """
 
-    total: object
-    contributions: list[object] = field(default_factory=list)
+    contents: list[HeldValue] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    contributions: list[HeldValue] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    @dx.model_validator()
+    def _validate_cell(self) -> None:
+        """Require one stored total.
+
+        Raises
+        ------
+        ValueError
+            If the cell does not hold exactly one value.
+        """
+        if len(self.contents) != 1:
+            raise ValueError("a score accumulator needs exactly one total")
+
+    @property
+    def total(self) -> HeldValue:
+        """The accumulated total.
+
+        Returns
+        -------
+        HeldValue
+            The current value of the owned state cell.
+        """
+        return self.contents[0]
 
 
 def score_handler(
@@ -1181,7 +1210,7 @@ def score_handler(
         the accumulator each installation publishes into when its
         computation completes.
     """
-    accumulator = ScoreAccumulator(identity)
+    accumulator = ScoreAccumulator(contents=[identity])
     checked_total = total_validator or weight_validator
     output_type = (
         TypeApplication(
@@ -1209,7 +1238,7 @@ def score_handler(
             A handler with its own state, so two installations of this
             declaration do not share it.
         """
-        local = ScoreAccumulator(identity)
+        local = ScoreAccumulator(contents=[identity])
 
         def add(
             request: RuntimeRequest,
@@ -1242,7 +1271,7 @@ def score_handler(
             (weight,) = _expect_arguments(request, 1, definition.name)
             _require(weight, weight_validator, LOG_WEIGHT, "score contribution")
             local.contributions.append(weight)
-            local.total = combine(local.total, weight)
+            local.contents[0] = combine(local.total, weight)
             if observer is not None:
                 observer(request, weight)
             return TailResume(value=None)
@@ -1267,7 +1296,7 @@ def score_handler(
 
         def publish() -> None:
             """Copy this installation's total and contributions to the accumulator."""
-            accumulator.total = local.total
+            accumulator.contents[0] = local.total
             accumulator.contributions[:] = local.contributions
 
         return RuntimeHandler(
@@ -1854,9 +1883,11 @@ def replay_handler(
     return prototype
 
 
-@dataclass(frozen=True, slots=True)
-class TraceEvent:
+class TraceEvent(QiecModel):
     """One recorded request and the value produced for it.
+
+    Addresses and identifiers compare by value. Host arguments and the
+    result retain identity, including their tensor gradients.
 
     Parameters
     ----------
@@ -1875,16 +1906,17 @@ class TraceEvent:
         How the value was produced, such as ``"forwarded"``.
     """
 
-    address: tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]]
-    instance: EffectInstanceId
-    operation: OperationId
-    arguments: tuple[object, ...]
-    result: object
+    address: tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    operation: OperationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    arguments: tuple[HeldValue, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    result: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     mode: str
 
 
-@dataclass(slots=True)
-class TraceRecorder:
+class TraceRecorder(QiecModel):
     """Ordered trace; repeated dynamic addresses remain observable as events.
 
     Parameters
@@ -1893,7 +1925,9 @@ class TraceRecorder:
         The recorded events, in order; empty to start.
     """
 
-    events: list[TraceEvent] = field(default_factory=list)
+    events: list[TraceEvent] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def record(self, request: RuntimeRequest, result: object, *, mode: str) -> object:
         """Record one request and the value produced for it.
@@ -1915,12 +1949,12 @@ class TraceRecorder:
         """
         self.events.append(
             TraceEvent(
-                request.address,
-                request.instance,
-                request.operation,
-                request.arguments,
-                result,
-                mode,
+                address=request.address,
+                instance=request.instance,
+                operation=request.operation,
+                arguments=request.arguments,
+                result=result,
+                mode=mode,
             )
         )
         return result
@@ -2089,17 +2123,42 @@ def trace_handler(
     )
 
 
-@dataclass(slots=True)
-class StateCell:
+class StateCell(QiecModel):
     """The mutable cell owned by one installed State handler.
+
+    The one-element container retains identity through record updates.
 
     Parameters
     ----------
-    value
-        The current state.
+    contents
+        A one-element list holding the current state. The ``value``
+        property reads it.
     """
 
-    value: object
+    contents: list[HeldValue] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+    @dx.model_validator()
+    def _validate_cell(self) -> None:
+        """Require one stored state.
+
+        Raises
+        ------
+        ValueError
+            If the cell does not hold exactly one value.
+        """
+        if len(self.contents) != 1:
+            raise ValueError("a state cell needs exactly one value")
+
+    @property
+    def value(self) -> HeldValue:
+        """The current state.
+
+        Returns
+        -------
+        HeldValue
+            The value held by this installation.
+        """
+        return self.contents[0]
 
 
 def state_handler(
@@ -2145,7 +2204,7 @@ def state_handler(
         If ``initial`` does not inhabit ``state_type``.
     """
     _require(initial, state_validator, state_type, "initial state")
-    cell = StateCell(initial)
+    cell = StateCell(contents=[initial])
     effect = state_effect(state_type)
     definition = _handler_def(
         "State.run",
@@ -2179,7 +2238,7 @@ def state_handler(
             A handler with its own state, so two installations of this
             declaration do not share it.
         """
-        local = StateCell(initial)
+        local = StateCell(contents=[initial])
 
         def get(
             request: RuntimeRequest,
@@ -2240,7 +2299,7 @@ def state_handler(
             """
             (new_value,) = _expect_arguments(request, 1, definition.name)
             _require(new_value, state_validator, state_type, "state update")
-            local.value = new_value
+            local.contents[0] = new_value
             return TailResume(value=None)
 
         def finish(value: object, _context: ClauseContext) -> object:
@@ -2263,7 +2322,7 @@ def state_handler(
 
         def publish() -> None:
             """Copy this installation's final state to the shared cell."""
-            cell.value = local.value
+            cell.contents[0] = local.value
 
         return RuntimeHandler(
             definition=definition,
@@ -2287,9 +2346,10 @@ def state_handler(
     return prototype, cell
 
 
-@dataclass(frozen=True, slots=True)
-class Aborted:
+class Aborted(QiecModel):
     """The default answer of an abort handler, wrapping the abort payload.
+
+    The host payload retains its identity.
 
     Parameters
     ----------
@@ -2297,12 +2357,12 @@ class Aborted:
         The payload the computation aborted with.
     """
 
-    error: object
+    error: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
 def abort_handler(
     *,
-    on_abort: Callable[[object], object] = Aborted,
+    on_abort: Callable[[object], object] = lambda error: Aborted(error=error),
     result_validator: RuntimeValidator = lambda _value: True,
     error_type: TypeExpr = PAYLOAD,
     input_type: TypeExpr = ANSWER,
@@ -2670,21 +2730,47 @@ def search_handler(
     )
 
 
-@dataclass(slots=True)
-class WeightAccumulator:
+class WeightAccumulator(QiecModel):
     """Mutable result owned by one installed Weight handler.
+
+    The one-element state cell and contribution list retain identity.
 
     Parameters
     ----------
-    total
-        The running combination of every contribution so far, starting at
-        the handler's identity.
+    contents
+        A one-element list holding the running total, starting at the
+        handler's identity. The ``total`` property reads its value.
     contributions
         Every contribution in the order it was added.
     """
 
-    total: object
-    contributions: list[object] = field(default_factory=list)
+    contents: list[HeldValue] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    contributions: list[HeldValue] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    @dx.model_validator()
+    def _validate_cell(self) -> None:
+        """Require one stored total.
+
+        Raises
+        ------
+        ValueError
+            If the cell does not hold exactly one value.
+        """
+        if len(self.contents) != 1:
+            raise ValueError("a weight accumulator needs exactly one total")
+
+    @property
+    def total(self) -> HeldValue:
+        """The accumulated total.
+
+        Returns
+        -------
+        HeldValue
+            The current value of the owned state cell.
+        """
+        return self.contents[0]
 
 
 def weight_handler(
@@ -2736,7 +2822,7 @@ def weight_handler(
         the accumulator each installation publishes into when its
         computation completes.
     """
-    accumulator = WeightAccumulator(identity)
+    accumulator = WeightAccumulator(contents=[identity])
     checked_total = total_validator or weight_validator
     effect = weight_effect(weight_type)
     definition = _handler_def(
@@ -2775,9 +2861,11 @@ def weight_handler(
             declaration do not share it.
         """
         local = (
-            WeightAccumulator(identity)
+            WeightAccumulator(contents=[identity])
             if seed is None
-            else WeightAccumulator(seed.total, list(seed.contributions))
+            else WeightAccumulator(
+                contents=[seed.total], contributions=list(seed.contributions)
+            )
         )
 
         def add(
@@ -2814,7 +2902,7 @@ def weight_handler(
             (weight,) = _expect_arguments(request, 1, definition.name)
             _require(weight, weight_validator, weight_type, "semiring weight")
             local.contributions.append(weight)
-            local.total = combine(local.total, weight)
+            local.contents[0] = combine(local.total, weight)
             return TailResume(value=None)
 
         def finish(value: object, _context: ClauseContext) -> object:
@@ -2837,7 +2925,7 @@ def weight_handler(
 
         def publish() -> None:
             """Copy this installation's total and contributions to the accumulator."""
-            accumulator.total = local.total
+            accumulator.contents[0] = local.total
             accumulator.contributions[:] = local.contributions
 
         def fork(_handler: RuntimeHandler) -> RuntimeHandler:

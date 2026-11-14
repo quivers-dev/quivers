@@ -1383,7 +1383,7 @@ def test_abort_is_zero_shot_and_discards_the_bind_continuation() -> None:
     )
     assert Evaluator(attachments).evaluate(
         Handle(instance=instance, handler=handler.definition.id, computation=body)
-    ) == Aborted("stop")
+    ) == Aborted(error="stop")
 
 
 def test_choose_uses_multi_shot_resumption_and_tracks_branch_addresses() -> None:
