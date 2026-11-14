@@ -526,7 +526,9 @@ class _System:
             The type of the item chains a cyclic closure carries.
         """
         assert self.chain_family is not None
-        return TypeApplication(self.chain_family.type_constructor, ())
+        return TypeApplication(
+            constructor=self.chain_family.type_constructor, arguments=()
+        )
 
     @property
     def carrier(self) -> TypeExpr:
@@ -550,7 +552,7 @@ class _System:
             The type of every item.
         """
         assert self.family is not None
-        return TypeApplication(self.family.type_constructor, ())
+        return TypeApplication(constructor=self.family.type_constructor, arguments=())
 
     def name(self, suffix: str) -> str:
         """A module-level name derived from the deduction's.
@@ -583,7 +585,7 @@ class _System:
             A local named uniquely within the deduction's computations.
         """
         self.fresh += 1
-        return Local(f"{hint}_{self.fresh}", type_)
+        return Local(name=f"{hint}_{self.fresh}", type=type_)
 
 
 def _int(value: int) -> LiteralValue:
@@ -599,7 +601,7 @@ def _int(value: int) -> LiteralValue:
     LiteralValue
         The literal.
     """
-    return LiteralValue(value, INT)
+    return LiteralValue(value=value, type=INT)
 
 
 def _string(value: str) -> LiteralValue:
@@ -615,7 +617,7 @@ def _string(value: str) -> LiteralValue:
     LiteralValue
         The literal.
     """
-    return LiteralValue(value, STRING)
+    return LiteralValue(value=value, type=STRING)
 
 
 def _pattern_variables(pattern: Pattern) -> list[str]:
@@ -1490,17 +1492,19 @@ class _DeductionElaboration:
                 code="qiec-program",
             )
         effect_id = EffectId.derive(self.source.module_name, "effect", SEARCH_EFFECT)
-        ref = EffectRef(effect_id, SEARCH_EFFECT)
-        element = TypeVariable("a")
-        extent = IndexVariable("n", NAT)
+        ref = EffectRef(id=effect_id, name=SEARCH_EFFECT)
+        element = TypeVariable(name="a")
+        extent = IndexVariable(name="n", sort=NAT)
         operation = OperationDef(
-            OperationId.derive(effect_id, "operation", SEARCH_CHOOSE),
-            SEARCH_CHOOSE,
-            (TypeBinder("a"), IndexBinder("n", NAT)),
-            (ArgumentDef("alternatives", tensor_type(element, (extent,))),),
-            element,
+            id=OperationId.derive(effect_id, "operation", SEARCH_CHOOSE),
+            name=SEARCH_CHOOSE,
+            telescope=(TypeBinder(name="a"), IndexBinder(name="n", sort=NAT)),
+            arguments=(
+                ArgumentDef(name="alternatives", type=tensor_type(element, (extent,))),
+            ),
+            result_type=element,
         )
-        effect = EffectDef(ref, (), (operation,))
+        effect = EffectDef(ref=ref, telescope=(), operations=(operation,))
         self.effects[SEARCH_EFFECT] = effect
         self.registry.register_effect(effect)
 
@@ -2221,18 +2225,29 @@ class _DeductionElaboration:
             ConstructorId.derive(family_id, "constructor", system.name(symbol))
             for symbol in names
         )
-        family = FamilyDecl(family_id, family_name, (), (), constructor_ids)
+        family = FamilyDecl(
+            id=family_id,
+            name=family_name,
+            parameters=(),
+            indices=(),
+            constructors=constructor_ids,
+        )
         system.family = family
-        item = TypeApplication(family.type_constructor, ())
+        item = TypeApplication(constructor=family.type_constructor, arguments=())
         self.families[family_name] = family
         self.registry.register_family(family)
         for symbol, identity in zip(names, constructor_ids, strict=True):
             fields = tuple(
-                FieldDef(f"arg{position}", INT if sort == "int" else item)
+                FieldDef(name=f"arg{position}", type=INT if sort == "int" else item)
                 for position, sort in enumerate(system.symbols[symbol])
             )
             constructor = ConstructorDecl(
-                identity, family_id, system.name(symbol), (), fields, ()
+                id=identity,
+                family=family_id,
+                name=system.name(symbol),
+                telescope=(),
+                fields=fields,
+                result_indices=(),
             )
             system.constructors[symbol] = constructor
             self.constructors[constructor.name] = constructor
@@ -2277,23 +2292,32 @@ class _DeductionElaboration:
             )
             for symbol in symbols
         )
-        family = FamilyDecl(family_id, family_name, (), (), constructor_ids)
+        family = FamilyDecl(
+            id=family_id,
+            name=family_name,
+            parameters=(),
+            indices=(),
+            constructors=constructor_ids,
+        )
         system.chain_family = family
-        chain = TypeApplication(family.type_constructor, ())
+        chain = TypeApplication(constructor=family.type_constructor, arguments=())
         self.families[family_name] = family
         self.registry.register_family(family)
         fields_of = {
             "nil": (),
-            "cons": (FieldDef("head", system.item), FieldDef("tail", chain)),
+            "cons": (
+                FieldDef(name="head", type=system.item),
+                FieldDef(name="tail", type=chain),
+            ),
         }
         for symbol, identity in zip(symbols, constructor_ids, strict=True):
             constructor = ConstructorDecl(
-                identity,
-                family_id,
-                system.name(f"chain_{symbol}"),
-                (),
-                fields_of[symbol],
-                (),
+                id=identity,
+                family=family_id,
+                name=system.name(f"chain_{symbol}"),
+                telescope=(),
+                fields=fields_of[symbol],
+                result_indices=(),
             )
             system.chain_constructors[symbol] = constructor
             self.constructors[constructor.name] = constructor
@@ -2315,9 +2339,11 @@ class _DeductionElaboration:
             lexical_path=("instances", choice_name),
         )
         system.choice = NamedEffectInstance(
-            choice_name,
-            entry,
-            self._origin(system.decl, ("instances", choice_name), "effect-instance"),
+            name=choice_name,
+            entry=entry,
+            origin=self._origin(
+                system.decl, ("instances", choice_name), "effect-instance"
+            ),
         )
         self.instances[choice_name] = system.choice
         weight_effect = self._effect("Weight")
@@ -2329,9 +2355,11 @@ class _DeductionElaboration:
             lexical_path=("instances", weight_name),
         )
         system.weight = NamedEffectInstance(
-            weight_name,
-            entry,
-            self._origin(system.decl, ("instances", weight_name), "effect-instance"),
+            name=weight_name,
+            entry=entry,
+            origin=self._origin(
+                system.decl, ("instances", weight_name), "effect-instance"
+            ),
         )
         self.instances[weight_name] = system.weight
 
@@ -2425,19 +2453,23 @@ class _DeductionElaboration:
         if weighted:
             lexical_learned = learned = False
         base = (system.choice.entry, system.weight.entry)
-        axiom_row = EffectRow((*base, params.entry) if lexical_learned else base)
-        row = EffectRow((*base, params.entry) if learned else base)
-        outer = EffectRow((params.entry,) if learned else ())
+        axiom_row = EffectRow(
+            entries=(*base, params.entry) if lexical_learned else base
+        )
+        row = EffectRow(entries=(*base, params.entry) if learned else base)
+        outer = EffectRow(entries=(params.entry,) if learned else ())
         pure = EffectRow()
-        extent = IndexBinder("n", NAT)
-        n = IndexVariable("n", NAT)
+        extent = IndexBinder(name="n", sort=NAT)
+        n = IndexVariable(name="n", sort=NAT)
         item = system.item
         carrier = system.carrier
         signatures: dict[str, ComputationSignature] = {}
         table = (
             Local(
-                "productions",
-                tensor_type(REAL, (IndexLiteral(len(system.table), NAT),)),
+                name="productions",
+                type=tensor_type(
+                    REAL, (IndexLiteral(value=len(system.table), sort=NAT),)
+                ),
             )
             if weighted
             else None
@@ -2535,7 +2567,7 @@ class _DeductionElaboration:
         show = declare(system.name("show"), (), (item,), STRING, pure)
         goal = declare(system.name("goal"), (), (item,), BOOL, pure)
         failing = declare(
-            system.name("fail"), (), (), item, EffectRow((system.choice.entry,))
+            system.name("fail"), (), (), item, EffectRow(entries=(system.choice.entry,))
         )
         if system.entries:
             tokens_type = tensor_type(STRING, (n,))
@@ -2620,7 +2652,7 @@ class _DeductionElaboration:
                                 (),
                                 (),
                                 REAL,
-                                EffectRow((params.entry,)),
+                                EffectRow(entries=(params.entry,)),
                             ),
                             group,
                         )
@@ -2689,26 +2721,31 @@ class _DeductionElaboration:
         shot = product_type(UNIT, carrier)
         search_name = system.name(f"search_{system.semiring.lower()}")
         search_handler = HandlerDef(
-            HandlerId.derive(self.source.module_name, "handler", search_name),
-            search_name,
-            search.ref,
-            (HandlerClauseDef(search.operations[0].id, ResumptionGrade.UNRESTRICTED),),
-            shot,
-            carrier,
-            EffectRow(),
+            id=HandlerId.derive(self.source.module_name, "handler", search_name),
+            name=search_name,
+            effect=search.ref,
+            clauses=(
+                HandlerClauseDef(
+                    operation=search.operations[0].id,
+                    grade=ResumptionGrade.UNRESTRICTED,
+                ),
+            ),
+            input_type=shot,
+            output_type=carrier,
+            introduced=EffectRow(),
             total=True,
             implementation="foreign",
         )
         collect_name = system.name(f"collect_{system.semiring.lower()}")
         add = next(item for item in weight_effect.operations if item.name == "add")
         collect_handler = HandlerDef(
-            HandlerId.derive(self.source.module_name, "handler", collect_name),
-            collect_name,
-            weight_effect.apply((carrier,)),
-            (HandlerClauseDef(add.id, ResumptionGrade.LINEAR),),
-            UNIT,
-            shot,
-            EffectRow(),
+            id=HandlerId.derive(self.source.module_name, "handler", collect_name),
+            name=collect_name,
+            effect=weight_effect.apply((carrier,)),
+            clauses=(HandlerClauseDef(operation=add.id, grade=ResumptionGrade.LINEAR),),
+            input_type=UNIT,
+            output_type=shot,
+            introduced=EffectRow(),
             total=True,
             implementation="foreign",
         )
@@ -2826,20 +2863,20 @@ class _Context:
         if name in self.threaded or name in self.threaded.values():
             assert self.table is not None
             name = self.threaded.get(name, name)
-            arguments = (*arguments, Var(self.table))
+            arguments = (*arguments, Var(local=self.table))
         statics = tuple(
-            IndexVariable(binder.name, binder.sort)
+            IndexVariable(name=binder.name, sort=binder.sort)
             for binder in signature.telescope
             if isinstance(binder, IndexBinder)
         )
         return Call(
-            signature.id,
-            name,
-            statics,
-            arguments,
-            signature.result,
-            signature.effects,
-            self.elaborator._origin(
+            callee=signature.id,
+            name=name,
+            static_arguments=statics,
+            arguments=arguments,
+            result_type=signature.result,
+            effects=signature.effects,
+            origin=self.elaborator._origin(
                 self.system.decl, (*self.path, "calls", name), "call"
             ),
         )
@@ -2878,15 +2915,15 @@ class _Context:
         effect = self.elaborator.registry.effects[instance.entry.effect.id]
         definition = next(item for item in effect.operations if item.name == operation)
         return Perform(
-            EffectRequest(
-                instance.entry.instance,
-                instance.entry.effect,
-                definition.id,
-                statics,
-                arguments,
-                result,
-                SiteProvenance(
-                    self.elaborator._origin(
+            request=EffectRequest(
+                instance=instance.entry.instance,
+                effect=instance.entry.effect,
+                operation=definition.id,
+                static_arguments=statics,
+                arguments=arguments,
+                result_type=result,
+                origin=SiteProvenance(
+                    origin=self.elaborator._origin(
                         self.system.decl, (*self.path, *path), "effect-request"
                     )
                 ),
@@ -2948,8 +2985,11 @@ class _Context:
         """
         if result == self.system.item and self.system.name("fail") in self.signatures:
             return self.call(self.system.name("fail"), ())
-        empty = TensorValue((), tensor_type(result, (IndexLiteral(0, NAT),)))
-        return self.choose(empty, result, IndexLiteral(0, NAT), *path)
+        empty = TensorValue(
+            items=(),
+            result_type=tensor_type(result, (IndexLiteral(value=0, sort=NAT),)),
+        )
+        return self.choose(empty, result, IndexLiteral(value=0, sort=NAT), *path)
 
     def failure(self, signature: ComputationSignature) -> NamedComputation:
         """The failing computation: an empty choice at the item type.
@@ -2964,8 +3004,15 @@ class _Context:
         NamedComputation
             The computation.
         """
-        empty = TensorValue((), tensor_type(self.system.item, (IndexLiteral(0, NAT),)))
-        body = self.choose(empty, self.system.item, IndexLiteral(0, NAT), "fail")
+        empty = TensorValue(
+            items=(),
+            result_type=tensor_type(
+                self.system.item, (IndexLiteral(value=0, sort=NAT),)
+            ),
+        )
+        body = self.choose(
+            empty, self.system.item, IndexLiteral(value=0, sort=NAT), "fail"
+        )
         return self.computation(signature, (), body)
 
     def add_weight(self, weight: Value, *path: str | int) -> Perform:
@@ -3019,7 +3066,10 @@ class _Context:
             The item.
         """
         return ConstructorValue(
-            self.system.constructors[symbol].id, (), fields, self.system.item
+            constructor=self.system.constructors[symbol].id,
+            static_arguments=(),
+            fields=fields,
+            result_type=self.system.item,
         )
 
     def case(
@@ -3062,11 +3112,11 @@ class _Context:
             body = branches[symbol](fields) if symbol in branches else otherwise()
             built.append(
                 CaseBranch(
-                    constructor.id,
-                    (),
-                    fields,
-                    body,
-                    StaticScopeId.derive(
+                    constructor=constructor.id,
+                    static_arguments=(),
+                    fields=fields,
+                    body=body,
+                    scope=StaticScopeId.derive(
                         self.module,
                         (*self.path, *path),
                         "branch",
@@ -3075,7 +3125,11 @@ class _Context:
                     ),
                 )
             )
-        return Case(scrutinee, CaseMotive((), result), tuple(built))
+        return Case(
+            scrutinee=scrutinee,
+            motive=CaseMotive(indices=(), result_type=result),
+            branches=tuple(built),
+        )
 
     def bind(
         self,
@@ -3103,7 +3157,7 @@ class _Context:
             The bind.
         """
         local = self.system.local(hint, type_)
-        return Bind(local, first, then(local))
+        return Bind(binder=local, first=first, then=then(local))
 
     def weight_of(self, real: Value | None) -> Value:
         """A weight of the semiring's carrier from a real log weight.
@@ -3124,10 +3178,11 @@ class _Context:
         semiring = self.system.semiring
         if semiring in ("LogProb", "Viterbi"):
             return self.primitive(
-                "as_weight", real if real is not None else LiteralValue(0.0, REAL)
+                "as_weight",
+                real if real is not None else LiteralValue(value=0.0, type=REAL),
             )
         if semiring == "Boolean":
-            return LiteralValue(True, BOOL)
+            return LiteralValue(value=True, type=BOOL)
         return _int(1)
 
     # -- equality, rendering, goal --------------------------------------
@@ -3152,19 +3207,21 @@ class _Context:
             The computation.
         """
         item = self.system.item
-        left = Local("left", item)
-        right = Local("right", item)
+        left = Local(name="left", type=item)
+        right = Local(name="right", type=item)
         show = self.system.name("show")
         body = self.bind(
             "left_text",
             STRING,
-            self.call(show, (Var(left),)),
+            self.call(show, (Var(local=left),)),
             lambda left_text: self.bind(
                 "right_text",
                 STRING,
-                self.call(show, (Var(right),)),
+                self.call(show, (Var(local=right),)),
                 lambda right_text: Return(
-                    self.primitive("eq_string", Var(left_text), Var(right_text))
+                    value=self.primitive(
+                        "eq_string", Var(local=left_text), Var(local=right_text)
+                    )
                 ),
             ),
         )
@@ -3183,7 +3240,7 @@ class _Context:
         NamedComputation
             The computation.
         """
-        item = Local("item", self.system.item)
+        item = Local(name="item", type=self.system.item)
 
         def render(symbol: str) -> Callable[[tuple[Local, ...]], Computation]:
             """The branch rendering one constructor.
@@ -3213,7 +3270,7 @@ class _Context:
                     The text.
                 """
                 if not fields:
-                    return Return(_string(symbol))
+                    return Return(value=_string(symbol))
 
                 def piece(position: int, rendered: list[Value]) -> Computation:
                     """Render the fields from a position on, then join.
@@ -3236,18 +3293,23 @@ class _Context:
                             if index:
                                 text = self.primitive("concat", text, _string(","))
                             text = self.primitive("concat", text, part)
-                        return Return(self.primitive("concat", text, _string(")")))
+                        return Return(
+                            value=self.primitive("concat", text, _string(")"))
+                        )
                     local = fields[position]
                     if local.type == INT:
                         return piece(
                             position + 1,
-                            [*rendered, self.primitive("int_to_string", Var(local))],
+                            [
+                                *rendered,
+                                self.primitive("int_to_string", Var(local=local)),
+                            ],
                         )
                     return self.bind(
                         "text",
                         STRING,
-                        self.call(signature.name, (Var(local),)),
-                        lambda text: piece(position + 1, [*rendered, Var(text)]),
+                        self.call(signature.name, (Var(local=local),)),
+                        lambda text: piece(position + 1, [*rendered, Var(local=text)]),
                     )
 
                 return piece(0, [])
@@ -3255,10 +3317,10 @@ class _Context:
             return body
 
         body = self.case(
-            Var(item),
+            Var(local=item),
             STRING,
             {symbol: render(symbol) for symbol in self.system.constructors},
-            lambda: Return(_string("")),
+            lambda: Return(value=_string("")),
             "show",
         )
         return self.computation(signature, (item,), body)
@@ -3278,7 +3340,7 @@ class _Context:
             symbol; with one, the atom itself, an item headed by it, or
             a span whose category is that atom.
         """
-        item = Local("item", self.system.item)
+        item = Local(name="item", type=self.system.item)
         start = self.system.start
 
         def yes() -> Computation:
@@ -3289,7 +3351,7 @@ class _Context:
             Computation
                 ``true``.
             """
-            return Return(LiteralValue(True, BOOL))
+            return Return(value=LiteralValue(value=True, type=BOOL))
 
         def no() -> Computation:
             """Answer that the item is not a goal.
@@ -3299,7 +3361,7 @@ class _Context:
             Computation
                 ``false``.
             """
-            return Return(LiteralValue(False, BOOL))
+            return Return(value=LiteralValue(value=False, type=BOOL))
 
         if start is None:
             return self.computation(signature, (item,), yes())
@@ -3312,14 +3374,14 @@ class _Context:
             and not self.system.constructors[start].fields
         ):
             branches[SPAN] = lambda fields: self.case(
-                Var(fields[2]),
+                Var(local=fields[2]),
                 BOOL,
                 {start: lambda inner: yes()},
                 no,
                 "goal",
                 "category",
             )
-        body = self.case(Var(item), BOOL, branches, no, "goal")
+        body = self.case(Var(local=item), BOOL, branches, no, "goal")
         return self.computation(signature, (item,), body)
 
     # -- axioms ---------------------------------------------------------
@@ -3340,13 +3402,13 @@ class _Context:
         """
         if self.system.schema_categories:
             return self.schema_axiom(signature)
-        position = Local("position", INT)
-        tokens = Local("tokens", signature.parameters[1])
+        position = Local(name="position", type=INT)
+        tokens = Local(name="tokens", type=signature.parameters[1])
         entries = self.system.entries
         token = self.system.local("token", STRING)
         alternatives = TensorValue(
-            tuple(_int(index) for index in range(len(entries))),
-            tensor_type(INT, (IndexLiteral(len(entries), NAT),)),
+            items=tuple(_int(index) for index in range(len(entries))),
+            result_type=tensor_type(INT, (IndexLiteral(value=len(entries), sort=NAT),)),
         )
 
         def entry_body(index: int, entry: _Entry) -> Computation:
@@ -3365,15 +3427,15 @@ class _Context:
                 Add the entry's weight and return its span.
             """
             fields: list[Value] = [
-                Var(position),
-                self.primitive("add_int", Var(position), _int(1)),
+                Var(local=position),
+                self.primitive("add_int", Var(local=position), _int(1)),
                 self.ground(entry.category),
             ]
             if self.system.uses_forms:
                 assert entry.form is not None
                 fields.append(self.ground(entry.form))
             span = self.constructor(SPAN, tuple(fields))
-            result = Return(span)
+            result = Return(value=span)
 
             def weighted(weight: Value) -> Computation:
                 """Add a weight, then answer the span.
@@ -3389,9 +3451,9 @@ class _Context:
                     The sequence.
                 """
                 return Bind(
-                    self.system.local("added", UNIT),
-                    self.add_weight(weight, "lexicon", index, "weight"),
-                    result,
+                    binder=self.system.local("added", UNIT),
+                    first=self.add_weight(weight, "lexicon", index, "weight"),
+                    then=result,
                 )
 
             if self.system.normalized:
@@ -3406,7 +3468,7 @@ class _Context:
                         index,
                         "parameter",
                     ),
-                    lambda real: weighted(self.weight_of(Var(real))),
+                    lambda real: weighted(self.weight_of(Var(local=real))),
                 )
             return weighted(self.weight_of(None))
 
@@ -3429,25 +3491,33 @@ class _Context:
                 return self.fail(self.system.item, "lexicon", "none")
             entry = entries[index]
             return If(
-                self.primitive("eq_int", Var(chosen), _int(index)),
-                If(
-                    self.primitive("eq_string", Var(token), _string(entry.word)),
-                    entry_body(index, entry),
-                    self.fail(self.system.item, "lexicon", index, "mismatch"),
+                condition=self.primitive("eq_int", Var(local=chosen), _int(index)),
+                then=If(
+                    condition=self.primitive(
+                        "eq_string", Var(local=token), _string(entry.word)
+                    ),
+                    then=entry_body(index, entry),
+                    otherwise=self.fail(self.system.item, "lexicon", index, "mismatch"),
                 ),
-                dispatch(chosen, index + 1),
+                otherwise=dispatch(chosen, index + 1),
             )
 
         body = Bind(
-            token,
-            Return(Gather(Var(tokens), Var(position), STRING)),
-            self.bind(
+            binder=token,
+            first=Return(
+                value=Gather(
+                    value=Var(local=tokens),
+                    index=Var(local=position),
+                    result_type=STRING,
+                )
+            ),
+            then=self.bind(
                 "entry",
                 INT,
                 self.choose(
                     alternatives,
                     INT,
-                    IndexLiteral(len(entries), NAT),
+                    IndexLiteral(value=len(entries), sort=NAT),
                     "lexicon",
                     "choose",
                 ),
@@ -3470,9 +3540,9 @@ class _Context:
             The lexical axiom computation.
         """
         system = self.system
-        position = Local("position", INT)
-        expected = Local("expected", system.item)
-        tokens = Local("tokens", signature.parameters[2])
+        position = Local(name="position", type=INT)
+        expected = Local(name="expected", type=system.item)
+        tokens = Local(name="tokens", type=signature.parameters[2])
         token = system.local("token", STRING)
         count = len(system.schema_categories)
 
@@ -3481,9 +3551,9 @@ class _Context:
             span = self.constructor(
                 SPAN,
                 (
-                    Var(position),
-                    self.primitive("add_int", Var(position), _int(1)),
-                    Var(expected),
+                    Var(local=position),
+                    self.primitive("add_int", Var(local=position), _int(1)),
+                    Var(local=expected),
                 ),
             )
             flat_index = token_index * count + category_index
@@ -3491,14 +3561,14 @@ class _Context:
             def weighted(weight: Value) -> Computation:
                 """Add the lexical weight and return its span."""
                 return Bind(
-                    system.local("added", UNIT),
-                    self.add_weight(
+                    binder=system.local("added", UNIT),
+                    first=self.add_weight(
                         weight,
                         "lexicon",
                         flat_index,
                         "weight",
                     ),
-                    Return(span),
+                    then=Return(value=span),
                 )
 
             return self.bind(
@@ -3510,7 +3580,7 @@ class _Context:
                     flat_index,
                     "parameter",
                 ),
-                lambda real: weighted(self.weight_of(Var(real))),
+                lambda real: weighted(self.weight_of(Var(local=real))),
             )
 
         def word(token_index: int, category_index: int) -> Computation:
@@ -3518,13 +3588,13 @@ class _Context:
             if token_index == len(system.schema_words):
                 return self.fail(system.item, "lexicon", "token", "none")
             return If(
-                self.primitive(
+                condition=self.primitive(
                     "eq_string",
-                    Var(token),
+                    Var(local=token),
                     _string(system.schema_words[token_index]),
                 ),
-                token_body(token_index, category_index),
-                word(token_index + 1, category_index),
+                then=token_body(token_index, category_index),
+                otherwise=word(token_index + 1, category_index),
             )
 
         def category(index: int) -> Computation:
@@ -3536,16 +3606,22 @@ class _Context:
                 BOOL,
                 self.call(
                     system.name("eq"),
-                    (Var(expected), self.ground(system.schema_categories[index])),
+                    (Var(local=expected), self.ground(system.schema_categories[index])),
                 ),
                 lambda same: If(
-                    Var(same),
-                    Bind(
-                        token,
-                        Return(Gather(Var(tokens), Var(position), STRING)),
-                        word(0, index),
+                    condition=Var(local=same),
+                    then=Bind(
+                        binder=token,
+                        first=Return(
+                            value=Gather(
+                                value=Var(local=tokens),
+                                index=Var(local=position),
+                                result_type=STRING,
+                            )
+                        ),
+                        then=word(0, index),
                     ),
-                    category(index + 1),
+                    otherwise=category(index + 1),
                 ),
             )
 
@@ -3589,7 +3665,7 @@ class _Context:
         if isinstance(pattern, _Atom):
             return self.constructor(pattern.name, ())
         if isinstance(pattern, _Wild):
-            return Var(bindings[pattern.name])
+            return Var(local=bindings[pattern.name])
         if isinstance(pattern, _Lit):
             return _int(pattern.value)
         if isinstance(pattern, _Bound):
@@ -3638,37 +3714,41 @@ class _Context:
             if bound is None:
                 return continue_with({**bindings, pattern.name: value})
             if value.type == INT:
-                condition = self.primitive("eq_int", Var(bound), Var(value))
+                condition = self.primitive("eq_int", Var(local=bound), Var(local=value))
                 return If(
-                    condition,
-                    continue_with(bindings),
-                    self.fail(result, *path, "shared"),
+                    condition=condition,
+                    then=continue_with(bindings),
+                    otherwise=self.fail(result, *path, "shared"),
                 )
             return self.bind(
                 "same",
                 BOOL,
-                self.call(self.system.name("eq"), (Var(bound), Var(value))),
+                self.call(self.system.name("eq"), (Var(local=bound), Var(local=value))),
                 lambda same: If(
-                    Var(same),
-                    continue_with(bindings),
-                    self.fail(result, *path, "shared"),
+                    condition=Var(local=same),
+                    then=continue_with(bindings),
+                    otherwise=self.fail(result, *path, "shared"),
                 ),
             )
         if isinstance(pattern, _Lit):
             return If(
-                self.primitive("eq_int", Var(value), _int(pattern.value)),
-                continue_with(bindings),
-                self.fail(result, *path, "literal"),
+                condition=self.primitive(
+                    "eq_int", Var(local=value), _int(pattern.value)
+                ),
+                then=continue_with(bindings),
+                otherwise=self.fail(result, *path, "literal"),
             )
         if isinstance(pattern, _Bound):
             return self.case(
-                Var(value),
+                Var(local=value),
                 result,
                 {
                     BOUND: lambda fields: If(
-                        self.primitive("eq_int", Var(fields[0]), _int(pattern.index)),
-                        continue_with(bindings),
-                        self.fail(result, *path, "bound"),
+                        condition=self.primitive(
+                            "eq_int", Var(local=fields[0]), _int(pattern.index)
+                        ),
+                        then=continue_with(bindings),
+                        otherwise=self.fail(result, *path, "bound"),
                     )
                 },
                 lambda: self.fail(result, *path, "bound"),
@@ -3722,7 +3802,7 @@ class _Context:
             return step(0, bindings)
 
         return self.case(
-            Var(value),
+            Var(local=value),
             result,
             {symbol: fields_matched},
             lambda: self.fail(result, *path, "constructor"),
@@ -3769,12 +3849,12 @@ class _Context:
         system = self.system
         item = system.item
         repeats: Local | None = None
-        start = Local("start", INT)
-        stop = Local("stop", INT)
-        fuel = Local("fuel", INT)
+        start = Local(name="start", type=INT)
+        stop = Local(name="stop", type=INT)
+        fuel = Local(name="fuel", type=INT)
         if system.span_shaped:
-            repeats = Local("repeats", INT) if system.chained else None
-            tokens = Local("tokens", self.inputs(signature)[-1])
+            repeats = Local(name="repeats", type=INT) if system.chained else None
+            tokens = Local(name="tokens", type=self.inputs(signature)[-1])
             parameters: tuple[Local, ...] = (
                 *((repeats,) if repeats is not None else ()),
                 start,
@@ -3797,22 +3877,28 @@ class _Context:
                 Call
                     The recursive call.
                 """
-                prefix = (Var(repeats),) if repeats is not None else ()
-                return self.call(signature.name, (*prefix, low, high, Var(tokens)))
+                prefix = (Var(local=repeats),) if repeats is not None else ()
+                return self.call(
+                    signature.name, (*prefix, low, high, Var(local=tokens))
+                )
 
             axiom_alternative: Computation = If(
-                self.primitive(
-                    "eq_int", Var(stop), self.primitive("add_int", Var(start), _int(1))
+                condition=self.primitive(
+                    "eq_int",
+                    Var(local=stop),
+                    self.primitive("add_int", Var(local=start), _int(1)),
                 ),
-                self.call(system.name("axiom"), (Var(start), Var(tokens))),
-                self.fail(item, "derive", "lexical", "span"),
+                then=self.call(
+                    system.name("axiom"), (Var(local=start), Var(local=tokens))
+                ),
+                otherwise=self.fail(item, "derive", "lexical", "span"),
             )
             groups = [group for group in self.rule_groups() if group.arity > 1]
         else:
-            axioms = Local("axioms", signature.parameters[1])
-            weights = Local("weights", signature.parameters[2])
+            axioms = Local(name="axioms", type=signature.parameters[1])
+            weights = Local(name="weights", type=signature.parameters[2])
             parameters = (fuel, axioms, weights)
-            spent = self.primitive("sub_int", Var(fuel), _int(1))
+            spent = self.primitive("sub_int", Var(local=fuel), _int(1))
 
             def recursion(low: Value, high: Value) -> Call:
                 """Derive any item with one less fuel.
@@ -3830,27 +3916,41 @@ class _Context:
                     The recursive call.
                 """
                 del low, high
-                return self.call(signature.name, (spent, Var(axioms), Var(weights)))
+                return self.call(
+                    signature.name, (spent, Var(local=axioms), Var(local=weights))
+                )
 
             axiom_alternative = self.bind(
                 "chosen",
                 INT,
                 self.choose_position("derive", "axiom", "choose"),
                 lambda chosen: Bind(
-                    system.local("added", UNIT),
-                    self.add_weight(
-                        Gather(Var(weights), Var(chosen), system.carrier),
+                    binder=system.local("added", UNIT),
+                    first=self.add_weight(
+                        Gather(
+                            value=Var(local=weights),
+                            index=Var(local=chosen),
+                            result_type=system.carrier,
+                        ),
                         "derive",
                         "axiom",
                         "weight",
                     ),
-                    Return(Gather(Var(axioms), Var(chosen), item)),
+                    then=Return(
+                        value=Gather(
+                            value=Var(local=axioms),
+                            index=Var(local=chosen),
+                            result_type=item,
+                        )
+                    ),
                 ),
             )
             groups = self.rule_groups()
         alternatives = TensorValue(
-            tuple(_int(index) for index in range(-1, len(groups))),
-            tensor_type(INT, (IndexLiteral(len(groups) + 1, NAT),)),
+            items=tuple(_int(index) for index in range(-1, len(groups))),
+            result_type=tensor_type(
+                INT, (IndexLiteral(value=len(groups) + 1, sort=NAT),)
+            ),
         )
 
         def group_body(group_index: int, group: _Group) -> Computation:
@@ -3895,13 +3995,15 @@ class _Context:
                     INT,
                     self.choose_position(*path, "position", name),
                     lambda split: If(
-                        self.primitive(
+                        condition=self.primitive(
                             "and",
-                            self.primitive("lt_int", Var(start), Var(split)),
-                            self.primitive("lt_int", Var(split), Var(stop)),
+                            self.primitive(
+                                "lt_int", Var(local=start), Var(local=split)
+                            ),
+                            self.primitive("lt_int", Var(local=split), Var(local=stop)),
                         ),
-                        choose_positions(remaining[1:], {**chosen, name: split}),
-                        self.fail(item, *path, "position", name),
+                        then=choose_positions(remaining[1:], {**chosen, name: split}),
+                        otherwise=self.fail(item, *path, "position", name),
                     ),
                 )
 
@@ -3949,12 +4051,12 @@ class _Context:
                         group,
                         derived,
                         lambda index: positions(index, chosen),
-                        Return,
+                        lambda value: Return(value=value),
                         *path,
                     )
                 if system.span_shaped:
                     low, high = group.spans[position]
-                    call = recursion(Var(chosen[low]), Var(chosen[high]))
+                    call = recursion(Var(local=chosen[low]), Var(local=chosen[high]))
                 else:
                     call = recursion(_int(0), _int(0))
                 return self.bind(
@@ -3986,9 +4088,9 @@ class _Context:
             if index == len(groups):
                 return self.fail(item, "derive", "none")
             return If(
-                self.primitive("eq_int", Var(chosen), _int(index)),
-                group_body(index, groups[index]),
-                dispatch(chosen, index + 1),
+                condition=self.primitive("eq_int", Var(local=chosen), _int(index)),
+                then=group_body(index, groups[index]),
+                otherwise=dispatch(chosen, index + 1),
             )
 
         base = self.bind(
@@ -3997,29 +4099,29 @@ class _Context:
             self.choose(
                 alternatives,
                 INT,
-                IndexLiteral(len(groups) + 1, NAT),
+                IndexLiteral(value=len(groups) + 1, sort=NAT),
                 "derive",
                 "choose",
             ),
             lambda chosen: If(
-                self.primitive("eq_int", Var(chosen), _int(-1)),
-                axiom_alternative,
-                dispatch(chosen, 0),
+                condition=self.primitive("eq_int", Var(local=chosen), _int(-1)),
+                then=axiom_alternative,
+                otherwise=dispatch(chosen, 0),
             ),
         )
         if system.span_shaped:
             body: Computation = If(
-                self.primitive("lt_int", Var(start), Var(stop)),
-                self.bind(
+                condition=self.primitive("lt_int", Var(local=start), Var(local=stop)),
+                then=self.bind(
                     "base", item, base, lambda found: self.closed(repeats, found)
                 ),
-                self.fail(item, "derive", "span"),
+                otherwise=self.fail(item, "derive", "span"),
             )
         else:
             body = If(
-                self.primitive("le_int", Var(fuel), _int(0)),
-                self.fail(item, "derive", "fuel"),
-                base,
+                condition=self.primitive("le_int", Var(local=fuel), _int(0)),
+                then=self.fail(item, "derive", "fuel"),
+                otherwise=base,
             )
         return self.computation(signature, parameters, body)
 
@@ -4046,27 +4148,27 @@ class _Context:
         """
         system = self.system
         item = system.item
-        fuel = Local("fuel", INT)
-        start = Local("start", INT)
-        stop = Local("stop", INT)
-        expected = Local("expected", item)
-        tokens = Local("tokens", signature.parameters[4])
+        fuel = Local(name="fuel", type=INT)
+        start = Local(name="start", type=INT)
+        stop = Local(name="stop", type=INT)
+        expected = Local(name="expected", type=item)
+        tokens = Local(name="tokens", type=signature.parameters[4])
         parameters = (fuel, start, stop, expected, tokens)
-        spent = self.primitive("sub_int", Var(fuel), _int(1))
+        spent = self.primitive("sub_int", Var(local=fuel), _int(1))
 
         def recursion(low: Value, high: Value, category: Pattern) -> Call:
             """Call the derivation on a ground premise category."""
             return self.call(
                 signature.name,
-                (spent, low, high, self.ground(category), Var(tokens)),
+                (spent, low, high, self.ground(category), Var(local=tokens)),
             )
 
         def answer() -> Return:
             """Return the expected category over the current span."""
             return Return(
-                self.constructor(
+                value=self.constructor(
                     SPAN,
-                    (Var(start), Var(stop), Var(expected)),
+                    (Var(local=start), Var(local=stop), Var(local=expected)),
                 )
             )
 
@@ -4076,9 +4178,9 @@ class _Context:
             def added(weight: Value) -> Computation:
                 """Add the carrier weight and return the chart item."""
                 return Bind(
-                    system.local("added", UNIT),
-                    self.add_weight(weight, "derive", "rule", index, "weight"),
-                    answer(),
+                    binder=system.local("added", UNIT),
+                    first=self.add_weight(weight, "derive", "rule", index, "weight"),
+                    then=answer(),
                 )
 
             if not rule.learnable:
@@ -4093,7 +4195,7 @@ class _Context:
                     index,
                     "parameter",
                 ),
-                lambda raw: added(self.weight_of(Var(raw))),
+                lambda raw: added(self.weight_of(Var(local=raw))),
             )
 
         def apply_rule(index: int) -> Computation:
@@ -4108,7 +4210,7 @@ class _Context:
                     return self.bind(
                         "premise",
                         item,
-                        recursion(Var(start), Var(stop), premise.args[2]),
+                        recursion(Var(local=start), Var(local=stop), premise.args[2]),
                         lambda _: weighted(index, rule),
                     )
                 left, right = rule.premises
@@ -4120,10 +4222,10 @@ class _Context:
                     INT,
                     self.choose(
                         Comprehension(
-                            split_index,
-                            self.extent,
-                            Var(split_index),
-                            tensor_type(INT, (self.extent,)),
+                            binder=split_index,
+                            extent=self.extent,
+                            body=Var(local=split_index),
+                            result_type=tensor_type(INT, (self.extent,)),
                         ),
                         INT,
                         self.extent,
@@ -4133,37 +4235,43 @@ class _Context:
                         "split",
                     ),
                     lambda split: If(
-                        self.primitive(
+                        condition=self.primitive(
                             "and",
-                            self.primitive("lt_int", Var(start), Var(split)),
-                            self.primitive("lt_int", Var(split), Var(stop)),
+                            self.primitive(
+                                "lt_int", Var(local=start), Var(local=split)
+                            ),
+                            self.primitive("lt_int", Var(local=split), Var(local=stop)),
                         ),
-                        self.bind(
+                        then=self.bind(
                             "left",
                             item,
-                            recursion(Var(start), Var(split), left.args[2]),
+                            recursion(Var(local=start), Var(local=split), left.args[2]),
                             lambda _: self.bind(
                                 "right",
                                 item,
-                                recursion(Var(split), Var(stop), right.args[2]),
+                                recursion(
+                                    Var(local=split), Var(local=stop), right.args[2]
+                                ),
                                 lambda _: weighted(index, rule),
                             ),
                         ),
-                        self.fail(item, "derive", "rule", index, "split"),
+                        otherwise=self.fail(item, "derive", "rule", index, "split"),
                     ),
                 )
 
             return premises()
 
         lexical = If(
-            self.primitive(
-                "eq_int", Var(stop), self.primitive("add_int", Var(start), _int(1))
+            condition=self.primitive(
+                "eq_int",
+                Var(local=stop),
+                self.primitive("add_int", Var(local=start), _int(1)),
             ),
-            self.call(
+            then=self.call(
                 system.name("axiom"),
-                (Var(start), Var(expected), Var(tokens)),
+                (Var(local=start), Var(local=expected), Var(local=tokens)),
             ),
-            self.fail(item, "derive", "lexical", "span"),
+            otherwise=self.fail(item, "derive", "lexical", "span"),
         )
         rules_by_category: list[list[int]] = [[] for _ in system.schema_categories]
         for rule_index, rule in enumerate(system.rules):
@@ -4179,8 +4287,10 @@ class _Context:
                 return self.fail(item, "derive", "category")
             rule_indices = rules_by_category[category_index]
             alternatives = TensorValue(
-                (_int(-1), *(_int(index) for index in rule_indices)),
-                tensor_type(INT, (IndexLiteral(len(rule_indices) + 1, NAT),)),
+                items=(_int(-1), *(_int(index) for index in rule_indices)),
+                result_type=tensor_type(
+                    INT, (IndexLiteral(value=len(rule_indices) + 1, sort=NAT),)
+                ),
             )
 
             def rule_dispatch(chosen: Local, offset: int) -> Computation:
@@ -4189,9 +4299,11 @@ class _Context:
                     return self.fail(item, "derive", "none")
                 rule_index = rule_indices[offset]
                 return If(
-                    self.primitive("eq_int", Var(chosen), _int(rule_index)),
-                    apply_rule(rule_index),
-                    rule_dispatch(chosen, offset + 1),
+                    condition=self.primitive(
+                        "eq_int", Var(local=chosen), _int(rule_index)
+                    ),
+                    then=apply_rule(rule_index),
+                    otherwise=rule_dispatch(chosen, offset + 1),
                 )
 
             category = system.schema_categories[category_index]
@@ -4200,35 +4312,37 @@ class _Context:
                 BOOL,
                 self.call(
                     system.name("eq"),
-                    (Var(expected), self.ground(category)),
+                    (Var(local=expected), self.ground(category)),
                 ),
                 lambda same: If(
-                    Var(same),
-                    self.bind(
+                    condition=Var(local=same),
+                    then=self.bind(
                         "alternative",
                         INT,
                         self.choose(
                             alternatives,
                             INT,
-                            IndexLiteral(len(rule_indices) + 1, NAT),
+                            IndexLiteral(value=len(rule_indices) + 1, sort=NAT),
                             "derive",
                             "choose",
                             category_index,
                         ),
                         lambda chosen: If(
-                            self.primitive("eq_int", Var(chosen), _int(-1)),
-                            lexical,
-                            rule_dispatch(chosen, 0),
+                            condition=self.primitive(
+                                "eq_int", Var(local=chosen), _int(-1)
+                            ),
+                            then=lexical,
+                            otherwise=rule_dispatch(chosen, 0),
                         ),
                     ),
-                    category_dispatch(category_index + 1),
+                    otherwise=category_dispatch(category_index + 1),
                 ),
             )
 
         body = If(
-            self.primitive("le_int", Var(fuel), _int(0)),
-            self.fail(item, "derive", "fuel"),
-            category_dispatch(0),
+            condition=self.primitive("le_int", Var(local=fuel), _int(0)),
+            then=self.fail(item, "derive", "fuel"),
+            otherwise=category_dispatch(0),
         )
         return self.computation(signature, parameters, body)
 
@@ -4269,9 +4383,13 @@ class _Context:
                 INT,
                 self.call(system.name("depth"), (conclusion,)),
                 lambda measured: If(
-                    self.primitive("le_int", Var(measured), _int(bound)),
-                    self.weighted_conclusion(index, rule, bindings, conclusion, then),
-                    self.fail(system.item, "derive", "rule", index, "depth"),
+                    condition=self.primitive(
+                        "le_int", Var(local=measured), _int(bound)
+                    ),
+                    then=self.weighted_conclusion(
+                        index, rule, bindings, conclusion, then
+                    ),
+                    otherwise=self.fail(system.item, "derive", "rule", index, "depth"),
                 ),
             )
         return self.weighted_conclusion(index, rule, bindings, conclusion, then)
@@ -4320,9 +4438,9 @@ class _Context:
                 The sequence.
             """
             return Bind(
-                system.local("added", UNIT),
-                self.add_weight(weight, "derive", "rule", index, "weight"),
-                then(conclusion),
+                binder=system.local("added", UNIT),
+                first=self.add_weight(weight, "derive", "rule", index, "weight"),
+                then=then(conclusion),
             )
 
         if system.normalized:
@@ -4352,7 +4470,7 @@ class _Context:
             The computation.
         """
         system = self.system
-        item = Local("item", system.item)
+        item = Local(name="item", type=system.item)
 
         def branch(symbol: str) -> Callable[[tuple[Local, ...]], Computation]:
             """The depth of one constructor applied to its fields.
@@ -4382,12 +4500,12 @@ class _Context:
                     The depth.
                 """
                 if symbol == SPAN:
-                    return self.call(signature.name, (Var(fields[2]),))
+                    return self.call(signature.name, (Var(local=fields[2]),))
                 if symbol == BOUND:
-                    return Return(_int(0))
+                    return Return(value=_int(0))
                 nested = [field for field in fields if field.type != INT]
                 if not fields:
-                    return Return(_int(0))
+                    return Return(value=_int(0))
 
                 def deepest(position: int, most: Value) -> Computation:
                     """Fold the item fields' depths into their maximum.
@@ -4405,13 +4523,14 @@ class _Context:
                         One more than the maximum.
                     """
                     if position == len(nested):
-                        return Return(self.primitive("add_int", most, _int(1)))
+                        return Return(value=self.primitive("add_int", most, _int(1)))
                     return self.bind(
                         "inner",
                         INT,
-                        self.call(signature.name, (Var(nested[position]),)),
+                        self.call(signature.name, (Var(local=nested[position]),)),
                         lambda inner: deepest(
-                            position + 1, self.primitive("max_int", most, Var(inner))
+                            position + 1,
+                            self.primitive("max_int", most, Var(local=inner)),
                         ),
                     )
 
@@ -4420,10 +4539,10 @@ class _Context:
             return body
 
         body = self.case(
-            Var(item),
+            Var(local=item),
             INT,
             {symbol: branch(symbol) for symbol in system.constructors},
-            lambda: Return(_int(0)),
+            lambda: Return(value=_int(0)),
             "depth",
         )
         return self.computation(signature, (item,), body)
@@ -4509,8 +4628,10 @@ class _Context:
         if len(group.rules) == 1:
             return match_rule(group.rules[0])
         rule_alternatives = TensorValue(
-            tuple(_int(index) for index in range(len(group.rules))),
-            tensor_type(INT, (IndexLiteral(len(group.rules), NAT),)),
+            items=tuple(_int(index) for index in range(len(group.rules))),
+            result_type=tensor_type(
+                INT, (IndexLiteral(value=len(group.rules), sort=NAT),)
+            ),
         )
 
         def dispatch(selected: Local, position: int) -> Computation:
@@ -4531,9 +4652,9 @@ class _Context:
             if position == len(group.rules):
                 return self.fail(item, *path, "rule", "none")
             return If(
-                self.primitive("eq_int", Var(selected), _int(position)),
-                match_rule(group.rules[position]),
-                dispatch(selected, position + 1),
+                condition=self.primitive("eq_int", Var(local=selected), _int(position)),
+                then=match_rule(group.rules[position]),
+                otherwise=dispatch(selected, position + 1),
             )
 
         return self.bind(
@@ -4542,7 +4663,7 @@ class _Context:
             self.choose(
                 rule_alternatives,
                 INT,
-                IndexLiteral(len(group.rules), NAT),
+                IndexLiteral(value=len(group.rules), sort=NAT),
                 *path,
                 "rule",
             ),
@@ -4565,7 +4686,10 @@ class _Context:
         index = self.system.local("k", INT)
         return self.choose(
             Comprehension(
-                index, self.extent, Var(index), tensor_type(INT, (self.extent,))
+                binder=index,
+                extent=self.extent,
+                body=Var(local=index),
+                result_type=tensor_type(INT, (self.extent,)),
             ),
             INT,
             self.extent,
@@ -4590,17 +4714,25 @@ class _Context:
         """
         system = self.system
         if not system.closes:
-            return Return(Var(base))
+            return Return(value=Var(local=base))
         if not system.chained:
-            return self.call(system.name("close"), (Var(base),))
+            return self.call(system.name("close"), (Var(local=base),))
         assert repeats is not None
         nil = ConstructorValue(
-            system.chain_constructors["nil"].id, (), (), system.chain
+            constructor=system.chain_constructors["nil"].id,
+            static_arguments=(),
+            fields=(),
+            result_type=system.chain,
         )
         chain = ConstructorValue(
-            system.chain_constructors["cons"].id, (), (Var(base), nil), system.chain
+            constructor=system.chain_constructors["cons"].id,
+            static_arguments=(),
+            fields=(Var(local=base), nil),
+            result_type=system.chain,
         )
-        return self.call(system.name("close"), (Var(repeats), chain, Var(base)))
+        return self.call(
+            system.name("close"), (Var(local=repeats), chain, Var(local=base))
+        )
 
     def closure(self, signature: ComputationSignature) -> NamedComputation:
         """Extend an item by a chain of unary rules.
@@ -4624,18 +4756,20 @@ class _Context:
         """
         system = self.system
         item = system.item
-        current = Local("current", item)
+        current = Local(name="current", type=item)
         if system.chained:
-            repeats: Local | None = Local("repeats", INT)
-            chain: Local | None = Local("chain", system.chain)
+            repeats: Local | None = Local(name="repeats", type=INT)
+            chain: Local | None = Local(name="chain", type=system.chain)
             parameters: tuple[Local, ...] = (repeats, chain, current)
         else:
             repeats = chain = None
             parameters = (current,)
         rules = system.closure
         alternatives = TensorValue(
-            tuple(_int(index) for index in range(-1, len(rules))),
-            tensor_type(INT, (IndexLiteral(len(rules) + 1, NAT),)),
+            items=tuple(_int(index) for index in range(-1, len(rules))),
+            result_type=tensor_type(
+                INT, (IndexLiteral(value=len(rules) + 1, sort=NAT),)
+            ),
         )
 
         def onward(conclusion: Value) -> Computation:
@@ -4670,25 +4804,30 @@ class _Context:
                 assert repeats is not None and chain is not None
                 bound, visited = repeats, chain
                 extended = ConstructorValue(
-                    system.chain_constructors["cons"].id,
-                    (),
-                    (Var(following), Var(visited)),
-                    system.chain,
+                    constructor=system.chain_constructors["cons"].id,
+                    static_arguments=(),
+                    fields=(Var(local=following), Var(local=visited)),
+                    result_type=system.chain,
                 )
                 return self.bind(
                     "seen",
                     INT,
-                    self.call(system.name("count"), (Var(following), Var(visited))),
+                    self.call(
+                        system.name("count"), (Var(local=following), Var(local=visited))
+                    ),
                     lambda seen: If(
-                        self.primitive("le_int", Var(seen), Var(bound)),
-                        self.call(
-                            signature.name, (Var(bound), extended, Var(following))
+                        condition=self.primitive(
+                            "le_int", Var(local=seen), Var(local=bound)
                         ),
-                        self.fail(item, "close", "repeat"),
+                        then=self.call(
+                            signature.name,
+                            (Var(local=bound), extended, Var(local=following)),
+                        ),
+                        otherwise=self.fail(item, "close", "repeat"),
                     ),
                 )
 
-            return self.bind("following", item, Return(conclusion), counted)
+            return self.bind("following", item, Return(value=conclusion), counted)
 
         def apply(position: int) -> Computation:
             """Apply one unary rule to the current item.
@@ -4733,21 +4872,25 @@ class _Context:
             if position == len(rules):
                 return self.fail(item, "close", "none")
             return If(
-                self.primitive("eq_int", Var(chosen), _int(position)),
-                apply(position),
-                dispatch(chosen, position + 1),
+                condition=self.primitive("eq_int", Var(local=chosen), _int(position)),
+                then=apply(position),
+                otherwise=dispatch(chosen, position + 1),
             )
 
         body = self.bind(
             "step",
             INT,
             self.choose(
-                alternatives, INT, IndexLiteral(len(rules) + 1, NAT), "close", "choose"
+                alternatives,
+                INT,
+                IndexLiteral(value=len(rules) + 1, sort=NAT),
+                "close",
+                "choose",
             ),
             lambda chosen: If(
-                self.primitive("eq_int", Var(chosen), _int(-1)),
-                Return(Var(current)),
-                dispatch(chosen, 0),
+                condition=self.primitive("eq_int", Var(local=chosen), _int(-1)),
+                then=Return(value=Var(local=current)),
+                otherwise=dispatch(chosen, 0),
             ),
         )
         return self.computation(signature, parameters, body)
@@ -4767,8 +4910,8 @@ class _Context:
             equality.
         """
         system = self.system
-        item = Local("item", system.item)
-        chain = Local("chain", system.chain)
+        item = Local(name="item", type=system.item)
+        chain = Local(name="chain", type=system.chain)
         nil = system.chain_constructors["nil"]
         cons = system.chain_constructors["cons"]
         head = system.local("head", system.item)
@@ -4776,25 +4919,27 @@ class _Context:
         cons_body = self.bind(
             "same",
             BOOL,
-            self.call(system.name("eq"), (Var(item), Var(head))),
+            self.call(system.name("eq"), (Var(local=item), Var(local=head))),
             lambda same: self.bind(
                 "rest",
                 INT,
-                self.call(signature.name, (Var(item), Var(tail))),
+                self.call(signature.name, (Var(local=item), Var(local=tail))),
                 lambda rest: If(
-                    Var(same),
-                    Return(self.primitive("add_int", Var(rest), _int(1))),
-                    Return(Var(rest)),
+                    condition=Var(local=same),
+                    then=Return(
+                        value=self.primitive("add_int", Var(local=rest), _int(1))
+                    ),
+                    otherwise=Return(value=Var(local=rest)),
                 ),
             ),
         )
         branches = tuple(
             CaseBranch(
-                constructor.id,
-                (),
-                fields,
-                body,
-                StaticScopeId.derive(
+                constructor=constructor.id,
+                static_arguments=(),
+                fields=fields,
+                body=body,
+                scope=StaticScopeId.derive(
                     self.module,
                     (*self.path, "count"),
                     "branch",
@@ -4803,10 +4948,14 @@ class _Context:
                 ),
             )
             for position, (constructor, fields, body) in enumerate(
-                ((nil, (), Return(_int(0))), (cons, (head, tail), cons_body))
+                ((nil, (), Return(value=_int(0))), (cons, (head, tail), cons_body))
             )
         )
-        body = Case(Var(chain), CaseMotive((), INT), branches)
+        body = Case(
+            scrutinee=Var(local=chain),
+            motive=CaseMotive(indices=(), result_type=INT),
+            branches=branches,
+        )
         return self.computation(signature, (item, chain), body)
 
     def frame_slots(self, head: str) -> list[int]:
@@ -4872,21 +5021,22 @@ class _Context:
             Zero, or one more than an integer below the extent.
         """
         sides = TensorValue(
-            (_int(0), _int(1)), tensor_type(INT, (IndexLiteral(2, NAT),))
+            items=(_int(0), _int(1)),
+            result_type=tensor_type(INT, (IndexLiteral(value=2, sort=NAT),)),
         )
         return self.bind(
             "side",
             INT,
-            self.choose(sides, INT, IndexLiteral(2, NAT), *path, "side"),
+            self.choose(sides, INT, IndexLiteral(value=2, sort=NAT), *path, "side"),
             lambda side: If(
-                self.primitive("eq_int", Var(side), _int(0)),
-                Return(_int(0)),
-                self.bind(
+                condition=self.primitive("eq_int", Var(local=side), _int(0)),
+                then=Return(value=_int(0)),
+                otherwise=self.bind(
                     "offset",
                     INT,
                     self.choose_position(*path, "offset"),
                     lambda offset: Return(
-                        self.primitive("add_int", Var(offset), _int(1))
+                        value=self.primitive("add_int", Var(local=offset), _int(1))
                     ),
                 ),
             ),
@@ -4927,15 +5077,20 @@ class _Context:
             "offset",
             INT,
             self.choose_position(*path, "offset"),
-            lambda chosen: Return(self.primitive("add_int", low, Var(chosen))),
+            lambda chosen: Return(
+                value=self.primitive("add_int", low, Var(local=chosen))
+            ),
         )
         boundary = If(
-            self.primitive(
+            condition=self.primitive(
                 "lt_int", self.primitive("sub_int", high, low), self.length()
             ),
-            offset,
-            self.bind(
-                "any", INT, self.boundary(*path, "any"), lambda any_: Return(Var(any_))
+            then=offset,
+            otherwise=self.bind(
+                "any",
+                INT,
+                self.boundary(*path, "any"),
+                lambda any_: Return(value=Var(local=any_)),
             ),
         )
         return self.bind("boundary", INT, boundary, then)
@@ -4970,9 +5125,9 @@ class _Context:
         system = self.system
         item = system.item
         width = self.frame_width()
-        head = Local("head", INT)
-        frame = tuple(Local(f"p{index}", INT) for index in range(width))
-        tokens = Local("tokens", self.inputs(signature)[-1])
+        head = Local(name="head", type=INT)
+        frame = tuple(Local(name=f"p{index}", type=INT) for index in range(width))
+        tokens = Local(name="tokens", type=self.inputs(signature)[-1])
         parameters = (head, *frame, tokens)
 
         def recursion(symbol: str, values: list[Value]) -> Call:
@@ -4993,7 +5148,7 @@ class _Context:
             padded = [*values, *([_int(0)] * (width - len(values)))]
             return self.call(
                 signature.name,
-                (_int(system.heads.index(symbol)), *padded, Var(tokens)),
+                (_int(system.heads.index(symbol)), *padded, Var(local=tokens)),
             )
 
         def value_of(node: _Node, bindings: dict[str, Local]) -> Value:
@@ -5011,7 +5166,7 @@ class _Context:
             Value
                 The position.
             """
-            return _int(node) if isinstance(node, int) else Var(bindings[node])
+            return _int(node) if isinstance(node, int) else Var(local=bindings[node])
 
         def rule_body(index: int, rule: _Rule, symbol: str) -> Computation:
             """Derive the head's item by one rule.
@@ -5049,18 +5204,22 @@ class _Context:
                 for offset, node in ((0, start), (1, end)):
                     given = frame[2 * position + offset]
                     if isinstance(node, int):
-                        checks.append(self.primitive("eq_int", Var(given), _int(node)))
+                        checks.append(
+                            self.primitive("eq_int", Var(local=given), _int(node))
+                        )
                     elif node in bound:
                         checks.append(
-                            self.primitive("eq_int", Var(bound[node]), Var(given))
+                            self.primitive(
+                                "eq_int", Var(local=bound[node]), Var(local=given)
+                            )
                         )
                     else:
                         bound[node] = given
-            low: Value = Var(frame[0]) if conclusion else _int(0)
-            high: Value = Var(frame[0]) if conclusion else self.length()
+            low: Value = Var(local=frame[0]) if conclusion else _int(0)
+            high: Value = Var(local=frame[0]) if conclusion else self.length()
             for position in range(1, 2 * len(conclusion)):
-                low = self.primitive("min_int", low, Var(frame[position]))
-                high = self.primitive("max_int", high, Var(frame[position]))
+                low = self.primitive("min_int", low, Var(local=frame[position]))
+                high = self.primitive("max_int", high, Var(local=frame[position]))
             steps: list[tuple[_Node, _Node, _Node]] = [
                 (component[step - 1], component[step], component[-1])
                 for component in paths
@@ -5105,13 +5264,13 @@ class _Context:
                         The check and the rest.
                     """
                     return If(
-                        self.primitive(
+                        condition=self.primitive(
                             "and",
                             self.primitive("le_int", after, chosen),
                             self.primitive("le_int", chosen, before),
                         ),
-                        inner(position + 1, extended),
-                        self.fail(item, *path, "order", position),
+                        then=inner(position + 1, extended),
+                        otherwise=self.fail(item, *path, "order", position),
                     )
 
                 if isinstance(node, int) or node in current:
@@ -5119,7 +5278,7 @@ class _Context:
                 return self.choose_between(
                     after,
                     before,
-                    lambda chosen: placed(Var(chosen), {**current, node: chosen}),
+                    lambda chosen: placed(Var(local=chosen), {**current, node: chosen}),
                     *path,
                     "position",
                     node,
@@ -5142,22 +5301,22 @@ class _Context:
                 """
                 if position == len(loose):
                     return If(
-                        nonempty(current),
-                        premises(0, [], current),
-                        self.fail(item, *path, "premises"),
+                        condition=nonempty(current),
+                        then=premises(0, [], current),
+                        otherwise=self.fail(item, *path, "premises"),
                     )
                 name = loose[position]
                 if name in current:
                     return spread(position + 1, current)
                 return self.choose_boundary(
                     lambda chosen: If(
-                        self.primitive(
+                        condition=self.primitive(
                             "and",
-                            self.primitive("le_int", low, Var(chosen)),
-                            self.primitive("le_int", Var(chosen), high),
+                            self.primitive("le_int", low, Var(local=chosen)),
+                            self.primitive("le_int", Var(local=chosen), high),
                         ),
-                        spread(position + 1, {**current, name: chosen}),
-                        self.fail(item, *path, "loose", name),
+                        then=spread(position + 1, {**current, name: chosen}),
+                        otherwise=self.fail(item, *path, "loose", name),
                     ),
                     *path,
                     "position",
@@ -5185,7 +5344,11 @@ class _Context:
                 """
                 if position == len(rule.premises):
                     return self.apply_group(
-                        group, derived, lambda _: dict(current), Return, *path
+                        group,
+                        derived,
+                        lambda _: dict(current),
+                        lambda value: Return(value=value),
+                        *path,
                     )
                 pattern = rule.premises[position]
                 values: list[Value] = []
@@ -5221,7 +5384,7 @@ class _Context:
                 Value
                     The test.
                 """
-                condition: Value = LiteralValue(True, BOOL)
+                condition: Value = LiteralValue(value=True, type=BOOL)
                 for pattern in rule.premises:
                     if not _has_positions(system, pattern):
                         continue
@@ -5252,7 +5415,11 @@ class _Context:
             condition = checks[0]
             for check in checks[1:]:
                 condition = self.primitive("and", condition, check)
-            return If(condition, body, self.fail(item, *path, "frame"))
+            return If(
+                condition=condition,
+                then=body,
+                otherwise=self.fail(item, *path, "frame"),
+            )
 
         def head_body(symbol: str) -> Computation:
             """Derive an item with one head: an axiom or a rule concluding it.
@@ -5278,13 +5445,16 @@ class _Context:
             if symbol == SPAN:
                 options.append(
                     lambda: If(
-                        self.primitive(
+                        condition=self.primitive(
                             "eq_int",
-                            Var(frame[1]),
-                            self.primitive("add_int", Var(frame[0]), _int(1)),
+                            Var(local=frame[1]),
+                            self.primitive("add_int", Var(local=frame[0]), _int(1)),
                         ),
-                        self.call(system.name("axiom"), (Var(frame[0]), Var(tokens))),
-                        self.fail(item, "derive", "axiom", "span"),
+                        then=self.call(
+                            system.name("axiom"),
+                            (Var(local=frame[0]), Var(local=tokens)),
+                        ),
+                        otherwise=self.fail(item, "derive", "axiom", "span"),
                     )
                 )
             for index, rule in concluding:
@@ -5312,9 +5482,11 @@ class _Context:
                 if position == len(options) - 1:
                     return options[position]()
                 return If(
-                    self.primitive("eq_int", Var(chosen), _int(position)),
-                    options[position](),
-                    dispatch(chosen, position + 1),
+                    condition=self.primitive(
+                        "eq_int", Var(local=chosen), _int(position)
+                    ),
+                    then=options[position](),
+                    otherwise=dispatch(chosen, position + 1),
                 )
 
             if len(options) == 1:
@@ -5325,11 +5497,13 @@ class _Context:
                     INT,
                     self.choose(
                         TensorValue(
-                            tuple(_int(index) for index in range(len(options))),
-                            tensor_type(INT, (IndexLiteral(len(options), NAT),)),
+                            items=tuple(_int(index) for index in range(len(options))),
+                            result_type=tensor_type(
+                                INT, (IndexLiteral(value=len(options), sort=NAT),)
+                            ),
                         ),
                         INT,
-                        IndexLiteral(len(options), NAT),
+                        IndexLiteral(value=len(options), sort=NAT),
                         "derive",
                         "head",
                         symbol,
@@ -5339,9 +5513,12 @@ class _Context:
             if not components:
                 return derivations
             covered: Value = _int(0)
-            forward: Value = LiteralValue(True, BOOL)
+            forward: Value = LiteralValue(value=True, type=BOOL)
             for position in range(components):
-                start, end = Var(frame[2 * position]), Var(frame[2 * position + 1])
+                start, end = (
+                    Var(local=frame[2 * position]),
+                    Var(local=frame[2 * position + 1]),
+                )
                 forward = self.primitive(
                     "and", forward, self.primitive("le_int", start, end)
                 )
@@ -5349,11 +5526,11 @@ class _Context:
                     "add_int", covered, self.primitive("sub_int", end, start)
                 )
             return If(
-                self.primitive(
+                condition=self.primitive(
                     "and", forward, self.primitive("lt_int", _int(0), covered)
                 ),
-                derivations,
-                self.fail(item, "derive", "head", symbol, "frame"),
+                then=derivations,
+                otherwise=self.fail(item, "derive", "head", symbol, "frame"),
             )
 
         def heads(position: int) -> Computation:
@@ -5372,9 +5549,9 @@ class _Context:
             if position == len(system.heads):
                 return self.fail(item, "derive", "head", "none")
             return If(
-                self.primitive("eq_int", Var(head), _int(position)),
-                head_body(system.heads[position]),
-                heads(position + 1),
+                condition=self.primitive("eq_int", Var(local=head), _int(position)),
+                then=head_body(system.heads[position]),
+                otherwise=heads(position + 1),
             )
 
         return self.computation(signature, parameters, heads(0))
@@ -5388,14 +5565,14 @@ class _Context:
             The length.
         """
         return Reduction(
-            "sum",
-            Comprehension(
-                self.system.local("k", INT),
-                self.extent,
-                _int(1),
-                tensor_type(INT, (self.extent,)),
+            operator="sum",
+            value=Comprehension(
+                binder=self.system.local("k", INT),
+                extent=self.extent,
+                body=_int(1),
+                result_type=tensor_type(INT, (self.extent,)),
             ),
-            INT,
+            result_type=INT,
         )
 
     def yield_root(self, tokens: Local) -> Computation:
@@ -5448,7 +5625,7 @@ class _Context:
             padded = [*values, *([_int(0)] * (width - len(values)))]
             return self.call(
                 system.name("derive"),
-                (_int(system.heads.index(symbol)), *padded, Var(tokens)),
+                (_int(system.heads.index(symbol)), *padded, Var(local=tokens)),
             )
 
         def root(symbol: str) -> Computation:
@@ -5484,7 +5661,7 @@ class _Context:
                 if len(values) == len(slots):
                     return derive(symbol, values)
                 return self.choose_boundary(
-                    lambda chosen: frame([*values, Var(chosen)]),
+                    lambda chosen: frame([*values, Var(local=chosen)]),
                     "entry",
                     "frame",
                     symbol,
@@ -5516,9 +5693,9 @@ class _Context:
             if position == len(roots) - 1:
                 return root(roots[position])
             return If(
-                self.primitive("eq_int", Var(chosen), _int(position)),
-                root(roots[position]),
-                dispatch(chosen, position + 1),
+                condition=self.primitive("eq_int", Var(local=chosen), _int(position)),
+                then=root(roots[position]),
+                otherwise=dispatch(chosen, position + 1),
             )
 
         return self.bind(
@@ -5526,11 +5703,13 @@ class _Context:
             INT,
             self.choose(
                 TensorValue(
-                    tuple(_int(index) for index in range(len(roots))),
-                    tensor_type(INT, (IndexLiteral(len(roots), NAT),)),
+                    items=tuple(_int(index) for index in range(len(roots))),
+                    result_type=tensor_type(
+                        INT, (IndexLiteral(value=len(roots), sort=NAT),)
+                    ),
                 ),
                 INT,
-                IndexLiteral(len(roots), NAT),
+                IndexLiteral(value=len(roots), sort=NAT),
                 "entry",
                 "root",
             ),
@@ -5668,8 +5847,8 @@ class _Context:
             return self.bind(
                 "text",
                 STRING,
-                self.call(self.system.name("show"), (Var(local),)),
-                lambda text: render(position + 1, [*rendered, Var(text)], then),
+                self.call(self.system.name("show"), (Var(local=local),)),
+                lambda text: render(position + 1, [*rendered, Var(local=text)], then),
             )
 
         bounded = [
@@ -5699,7 +5878,7 @@ class _Context:
                 The read, or the identity when the rule learns nothing.
             """
             if not chain.learnable:
-                return then(LiteralValue(0.0, REAL))
+                return then(LiteralValue(value=0.0, type=REAL))
             key = self.primitive(
                 "concat",
                 _string(f"{self.system.decl.name}.rule.{chain.source.name}:"),
@@ -5721,11 +5900,13 @@ class _Context:
                     parameter itself otherwise.
                 """
                 if not chain.bounded:
-                    return Var(raw)
+                    return Var(local=raw)
                 return self.primitive(
                     "sub_real",
-                    self.primitive("neg_real", self.primitive("softplus", Var(raw))),
-                    LiteralValue(cap, REAL),
+                    self.primitive(
+                        "neg_real", self.primitive("softplus", Var(local=raw))
+                    ),
+                    LiteralValue(value=cap, type=REAL),
                 )
 
             return self.bind(
@@ -5828,15 +6009,21 @@ class _Context:
         )
         if len(group.productions) == 1:
             # A production alone in its group has probability one.
-            return continue_with(self.weight_of(LiteralValue(0.0, REAL)))
+            return continue_with(self.weight_of(LiteralValue(value=0.0, type=REAL)))
         if self.table is not None:
-            entry = Gather(Var(self.table), _int(system.table[key]), REAL)
+            entry = Gather(
+                value=Var(local=self.table),
+                index=_int(system.table[key]),
+                result_type=REAL,
+            )
             return continue_with(self.weight_of(entry))
         production = next(item for item in group.productions if item.key == key)
         if not any(member.learnable for member in group.productions):
             # Every member has free log-weight zero: a uniform group.
             return continue_with(
-                self.weight_of(LiteralValue(-math.log(len(group.productions)), REAL))
+                self.weight_of(
+                    LiteralValue(value=-math.log(len(group.productions)), type=REAL)
+                )
             )
 
         def normalized(own: Value) -> Computation:
@@ -5857,12 +6044,14 @@ class _Context:
                 REAL,
                 self.call(system.name(f"lhs{index}"), ()),
                 lambda normalizer: continue_with(
-                    self.weight_of(self.primitive("sub_real", own, Var(normalizer)))
+                    self.weight_of(
+                        self.primitive("sub_real", own, Var(local=normalizer))
+                    )
                 ),
             )
 
         if not production.learnable:
-            return normalized(LiteralValue(0.0, REAL))
+            return normalized(LiteralValue(value=0.0, type=REAL))
         return self.bind(
             "free",
             REAL,
@@ -5872,7 +6061,7 @@ class _Context:
                 group.label,
                 "parameter",
             ),
-            lambda free: normalized(Var(free)),
+            lambda free: normalized(Var(local=free)),
         )
 
     def parameter_name(self, production: Production) -> str:
@@ -5932,10 +6121,10 @@ class _Context:
                 The reads, innermost the log-sum-exp.
             """
             if position == len(group.productions):
-                return Return(self.log_sum_exp(values))
+                return Return(value=self.log_sum_exp(values))
             production = group.productions[position]
             if not production.learnable:
-                return read(position + 1, [*values, LiteralValue(0.0, REAL)])
+                return read(position + 1, [*values, LiteralValue(value=0.0, type=REAL)])
             return self.bind(
                 "free",
                 REAL,
@@ -5945,7 +6134,7 @@ class _Context:
                     group.label,
                     position,
                 ),
-                lambda free: read(position + 1, [*values, Var(free)]),
+                lambda free: read(position + 1, [*values, Var(local=free)]),
             )
 
         return self.computation(signature, (), read(0, []))
@@ -6001,7 +6190,7 @@ class _Context:
         """
         system = self.system
         parameters = tuple(
-            Local(name, type_)
+            Local(name=name, type=type_)
             for name, type_ in zip(
                 ("tokens",) if system.entries else ("axioms", "weights"),
                 self.inputs(signature),
@@ -6011,13 +6200,13 @@ class _Context:
         if not system.chained:
             body = self.searched(parameters, None, handlers)
             return self.computation(signature, parameters, body)
-        inputs = tuple(Var(parameter) for parameter in parameters)
+        inputs = tuple(Var(local=parameter) for parameter in parameters)
         body = self.bind(
             "first",
             system.carrier,
             self.call(system.name("inside"), (_int(0), *inputs)),
             lambda first: self.call(
-                system.name("converge"), (_int(1), Var(first), *inputs)
+                system.name("converge"), (_int(1), Var(local=first), *inputs)
             ),
         )
         return self.computation(signature, parameters, body)
@@ -6039,9 +6228,9 @@ class _Context:
         NamedComputation
             The computation.
         """
-        repeats = Local("repeats", INT)
-        tokens = Local("tokens", signature.parameters[1])
-        body = self.searched((tokens,), Var(repeats), handlers)
+        repeats = Local(name="repeats", type=INT)
+        tokens = Local(name="tokens", type=signature.parameters[1])
+        body = self.searched((tokens,), Var(local=repeats), handlers)
         return self.computation(signature, (repeats, tokens), body)
 
     def convergence(self, signature: ComputationSignature) -> NamedComputation:
@@ -6059,9 +6248,9 @@ class _Context:
             the tolerance of the one under the bound below it.
         """
         system = self.system
-        repeats = Local("repeats", INT)
-        previous = Local("previous", system.carrier)
-        tokens = Local("tokens", signature.parameters[2])
+        repeats = Local(name="repeats", type=INT)
+        previous = Local(name="previous", type=system.carrier)
+        tokens = Local(name="tokens", type=signature.parameters[2])
 
         def converged(current: Local) -> Value:
             """Whether a weight is within the tolerance of the previous one.
@@ -6077,34 +6266,36 @@ class _Context:
                 The test.
             """
             if system.semiring == "Boolean":
-                return self.primitive("eq_bool", Var(current), Var(previous))
+                return self.primitive(
+                    "eq_bool", Var(local=current), Var(local=previous)
+                )
             if system.semiring == "Counting":
-                return self.primitive("eq_int", Var(current), Var(previous))
-            now = self.primitive("weight_value", Var(current))
-            before = self.primitive("weight_value", Var(previous))
+                return self.primitive("eq_int", Var(local=current), Var(local=previous))
+            now = self.primitive("weight_value", Var(local=current))
+            before = self.primitive("weight_value", Var(local=previous))
             return self.primitive(
                 "or",
                 self.primitive("eq_real", now, before),
                 self.primitive(
                     "le_real",
                     self.primitive("abs_real", self.primitive("sub_real", now, before)),
-                    LiteralValue(system.tolerance, REAL),
+                    LiteralValue(value=system.tolerance, type=REAL),
                 ),
             )
 
         body = self.bind(
             "current",
             system.carrier,
-            self.call(system.name("inside"), (Var(repeats), Var(tokens))),
+            self.call(system.name("inside"), (Var(local=repeats), Var(local=tokens))),
             lambda current: If(
-                converged(current),
-                Return(Var(current)),
-                self.call(
+                condition=converged(current),
+                then=Return(value=Var(local=current)),
+                otherwise=self.call(
                     signature.name,
                     (
-                        self.primitive("add_int", Var(repeats), _int(1)),
-                        Var(current),
-                        Var(tokens),
+                        self.primitive("add_int", Var(local=repeats), _int(1)),
+                        Var(local=current),
+                        Var(local=tokens),
                     ),
                 ),
             ),
@@ -6138,14 +6329,14 @@ class _Context:
         search_handler, collect_handler = handlers
         item = system.item
         length: Value = Reduction(
-            "sum",
-            Comprehension(
-                system.local("k", INT),
-                self.extent,
-                _int(1),
-                tensor_type(INT, (self.extent,)),
+            operator="sum",
+            value=Comprehension(
+                binder=system.local("k", INT),
+                extent=self.extent,
+                body=_int(1),
+                result_type=tensor_type(INT, (self.extent,)),
             ),
-            INT,
+            result_type=INT,
         )
         if system.by_yield:
             derived = self.yield_root(parameters[0])
@@ -6159,13 +6350,13 @@ class _Context:
             expected = self.constructor(system.start, ())
             derived = self.call(
                 system.name("derive"),
-                (fuel_value, _int(0), length, expected, Var(parameters[0])),
+                (fuel_value, _int(0), length, expected, Var(local=parameters[0])),
             )
         elif system.span_shaped:
             prefix = (repeats,) if repeats is not None else ()
             derived = self.call(
                 system.name("derive"),
-                (*prefix, _int(0), length, Var(parameters[0])),
+                (*prefix, _int(0), length, Var(local=parameters[0])),
             )
         else:
             # A system without a lexicon has no sentence to recur on: it
@@ -6175,7 +6366,7 @@ class _Context:
             fuel_value = self.primitive("add_int", length, _int(len(system.rules)))
             derived = self.call(
                 system.name("derive"),
-                (fuel_value, *(Var(parameter) for parameter in parameters)),
+                (fuel_value, *(Var(local=parameter) for parameter in parameters)),
             )
 
         def accept() -> Computation:
@@ -6186,7 +6377,7 @@ class _Context:
             Computation
                 ``()``.
             """
-            return Return(LiteralValue(None, UNIT))
+            return Return(value=LiteralValue(value=None, type=UNIT))
 
         def whole(found: Local) -> Computation:
             """Accept a goal item, requiring a span to cover the sentence.
@@ -6205,17 +6396,17 @@ class _Context:
             if not system.by_yield:
                 return accept()
             return self.case(
-                Var(found),
+                Var(local=found),
                 UNIT,
                 {
                     SPAN: lambda fields: If(
-                        self.primitive(
+                        condition=self.primitive(
                             "and",
-                            self.primitive("eq_int", Var(fields[0]), _int(0)),
-                            self.primitive("eq_int", Var(fields[1]), length),
+                            self.primitive("eq_int", Var(local=fields[0]), _int(0)),
+                            self.primitive("eq_int", Var(local=fields[1]), length),
                         ),
-                        accept(),
-                        self.fail(UNIT, "entry", "extent"),
+                        then=accept(),
+                        otherwise=self.fail(UNIT, "entry", "extent"),
                     )
                 },
                 accept,
@@ -6230,19 +6421,24 @@ class _Context:
             lambda found: self.bind(
                 "is_goal",
                 BOOL,
-                self.call(system.name("goal"), (Var(found),)),
+                self.call(system.name("goal"), (Var(local=found),)),
                 lambda is_goal: If(
-                    Var(is_goal),
-                    whole(found),
-                    self.fail(UNIT, "entry", "goal"),
+                    condition=Var(local=is_goal),
+                    then=whole(found),
+                    otherwise=self.fail(UNIT, "entry", "goal"),
                 ),
             ),
         )
         return Handle(
-            system.choice.entry.instance,
-            search_handler.id,
-            Handle(system.weight.entry.instance, collect_handler.id, goal_check, ()),
-            (),
+            instance=system.choice.entry.instance,
+            handler=search_handler.id,
+            computation=Handle(
+                instance=system.weight.entry.instance,
+                handler=collect_handler.id,
+                computation=goal_check,
+                static_arguments=(),
+            ),
+            static_arguments=(),
         )
 
     def inputs(self, signature: ComputationSignature) -> tuple[TypeExpr, ...]:

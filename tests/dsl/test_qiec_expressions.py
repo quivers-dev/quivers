@@ -73,7 +73,10 @@ def test_operators_lower_to_primitives_chosen_by_operand_type() -> None:
     assert isinstance(outer, PrimitiveApplication) and outer.name == "mul_int"
     inner = outer.arguments[0]
     assert isinstance(inner, PrimitiveApplication) and inner.name == "add_int"
-    assert inner.arguments == (LiteralValue(1, INT), LiteralValue(2, INT))
+    assert inner.arguments == (
+        LiteralValue(value=1, type=INT),
+        LiteralValue(value=2, type=INT),
+    )
 
     reals = _lower("    return 1.5 / 2.0\n", "() : Real !{}")
     assert isinstance(reals.body, Return)
@@ -99,10 +102,10 @@ def test_negated_literals_fold_to_literals() -> None:
     """``-1`` stays a literal, as a static target needs it to."""
     negative = _lower("    return -1\n")
     assert isinstance(negative.body, Return)
-    assert negative.body.value == LiteralValue(-1, INT)
+    assert negative.body.value == LiteralValue(value=-1, type=INT)
     real = _lower("    return -2.5\n", "() : Real !{}")
     assert isinstance(real.body, Return)
-    assert real.body.value == LiteralValue(-2.5, REAL)
+    assert real.body.value == LiteralValue(value=-2.5, type=REAL)
 
 
 def test_tuples_and_projections_lower_and_run() -> None:

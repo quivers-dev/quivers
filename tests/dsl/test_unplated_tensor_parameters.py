@@ -221,7 +221,9 @@ def test_every_tied_extent_is_fixed_and_left_out_of_the_telescope() -> None:
     for name, extents in (("m0", (2,)), ("L", (2, 2))):
         shape = tensor_shape(types[name])
         assert shape is not None
-        assert shape[1] == tuple(IndexLiteral(value, NAT) for value in extents)
+        assert shape[1] == tuple(
+            IndexLiteral(value=value, sort=NAT) for value in extents
+        )
     assert entry.telescope == ()
 
 

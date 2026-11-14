@@ -41,19 +41,19 @@ def builtin_constructor(
         name alone, so it is the same constructor in every module.
     """
     return TypeConstructorRef(
-        TypeId.derive("builtin", name),
-        name,
-        tuple(binders),
+        id=TypeId.derive("builtin", name),
+        name=name,
+        telescope=tuple(binders),
     )
 
 
-ELEMENT_BINDER = TypeBinder("a")
+ELEMENT_BINDER = TypeBinder(name="a")
 """The element-type binder ``a`` of the canonical constructors' telescopes."""
 
-SHAPE_BINDER = IndexBinder("shape", ShapeSort())
+SHAPE_BINDER = IndexBinder(name="shape", sort=ShapeSort())
 """The shape-index binder of :data:`TENSOR_CONSTRUCTOR`'s telescope."""
 
-ELEMENT = TypeVariable("a")
+ELEMENT = TypeVariable(name="a")
 """The type variable :data:`ELEMENT_BINDER` binds."""
 
 SITE_CONSTRUCTOR = builtin_constructor("Site", ELEMENT_BINDER)
@@ -65,7 +65,7 @@ SAMPLEABLE_CONSTRUCTOR = builtin_constructor("Sampleable", ELEMENT_BINDER)
 TENSOR_CONSTRUCTOR = builtin_constructor("Tensor", ELEMENT_BINDER, SHAPE_BINDER)
 """``Tensor[A](shape)``: an array of ``A`` with a static shape index."""
 
-LOG_WEIGHT = TypeApplication(builtin_constructor("LogWeight"))
+LOG_WEIGHT = TypeApplication(constructor=builtin_constructor("LogWeight"))
 """``LogWeight``: a log-density contribution."""
 
 BUILTIN_TYPE_CONSTRUCTORS: dict[str, TypeConstructorRef] = {
@@ -90,7 +90,7 @@ def site_type(element: TypeExpr) -> TypeApplication:
     TypeApplication
         ``Site[element]``.
     """
-    return TypeApplication(SITE_CONSTRUCTOR, (element,))
+    return TypeApplication(constructor=SITE_CONSTRUCTOR, arguments=(element,))
 
 
 def sampleable_type(element: TypeExpr) -> TypeApplication:
@@ -106,7 +106,7 @@ def sampleable_type(element: TypeExpr) -> TypeApplication:
     TypeApplication
         ``Sampleable[element]``.
     """
-    return TypeApplication(SAMPLEABLE_CONSTRUCTOR, (element,))
+    return TypeApplication(constructor=SAMPLEABLE_CONSTRUCTOR, arguments=(element,))
 
 
 def tensor_type(
@@ -126,7 +126,10 @@ def tensor_type(
     TypeApplication
         ``Tensor[element](shape)``.
     """
-    return TypeApplication(TENSOR_CONSTRUCTOR, (element, ShapeIndex(dimensions)))
+    return TypeApplication(
+        constructor=TENSOR_CONSTRUCTOR,
+        arguments=(element, ShapeIndex(dimensions=dimensions)),
+    )
 
 
 def sampled_element(type_: TypeExpr) -> TypeExpr | None:

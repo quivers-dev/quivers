@@ -81,7 +81,9 @@ class CollapseHandler(EffectHandler):
             key=f"collapse-{id(self):x}",
             input_type=run.result_type,
             output_type=run.result_type,
-            introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+            introduced=EffectRow(
+                entries=(RowEntry(instance=score_instance, effect=SCORE),)
+            ),
             total=False,
         )
 

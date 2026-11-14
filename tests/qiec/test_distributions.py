@@ -38,7 +38,12 @@ from quivers.qiec.identifiers import DistributionId, SourceOrigin
 from quivers.qiec.types import IndexLiteral, product_type
 from quivers.qiec.kinds import NatSort
 
-ORIGIN = SourceOrigin("distributions", ("test",), "distribution", "test")
+ORIGIN = SourceOrigin(
+    module="distributions",
+    structural_path=("test",),
+    role="distribution",
+    source_protocol="test",
+)
 
 
 def _normal(loc: float = 0.0, scale: float = 1.0) -> DistributionValue:
@@ -57,36 +62,40 @@ def _normal(loc: float = 0.0, scale: float = 1.0) -> DistributionValue:
         ``Normal(loc, scale)`` at ``Sampleable[Real]``.
     """
     return DistributionValue(
-        family("Normal").id,
-        "Normal",
-        (("loc", LiteralValue(loc, REAL)), ("scale", LiteralValue(scale, REAL))),
-        sampleable_type(REAL),
-        ORIGIN,
+        family=family("Normal").id,
+        name="Normal",
+        arguments=(
+            ("loc", LiteralValue(value=loc, type=REAL)),
+            ("scale", LiteralValue(value=scale, type=REAL)),
+        ),
+        result_type=sampleable_type(REAL),
+        origin=ORIGIN,
     )
 
 
 def test_a_scalar_family_infers_its_sampleable_type() -> None:
     assert infer_value(_normal(), KernelRegistry()) == sampleable_type(REAL)
-    value = Evaluator().evaluate(Return(_normal(1.0, 2.0)))
+    value = Evaluator().evaluate(Return(value=_normal(1.0, 2.0)))
     assert isinstance(value, RuntimeDistribution)
     assert value.family == "Normal"
     assert dict(value.arguments) == {"loc": 1.0, "scale": 2.0}
 
 
 def test_a_vector_family_takes_its_event_shape_from_its_source_parameter() -> None:
-    three = tensor_type(REAL, (IndexLiteral(3, NatSort()),))
+    three = tensor_type(REAL, (IndexLiteral(value=3, sort=NatSort()),))
     concentration = TupleValue(
-        tuple(LiteralValue(1.0, REAL) for _ in range(3)), product_type(REAL, REAL, REAL)
+        items=tuple(LiteralValue(value=1.0, type=REAL) for _ in range(3)),
+        result_type=product_type(REAL, REAL, REAL),
     )
     # A product is not a tensor, so the argument is rejected on its type.
     with pytest.raises(KernelError, match="Tensor\\[Real\\] of rank 1"):
         infer_value(
             DistributionValue(
-                family("Dirichlet").id,
-                "Dirichlet",
-                (("concentration", concentration),),
-                sampleable_type(three),
-                ORIGIN,
+                family=family("Dirichlet").id,
+                name="Dirichlet",
+                arguments=(("concentration", concentration),),
+                result_type=sampleable_type(three),
+                origin=ORIGIN,
             ),
             KernelRegistry(),
         )
@@ -97,77 +106,84 @@ def test_a_vector_family_takes_its_event_shape_from_its_source_parameter() -> No
     [
         (
             lambda: DistributionValue(
-                DistributionId.derive("builtin", "Gaussian"),
-                "Gaussian",
-                (("loc", LiteralValue(0.0, REAL)),),
-                sampleable_type(REAL),
-                ORIGIN,
+                family=DistributionId.derive("builtin", "Gaussian"),
+                name="Gaussian",
+                arguments=(("loc", LiteralValue(value=0.0, type=REAL)),),
+                result_type=sampleable_type(REAL),
+                origin=ORIGIN,
             ),
             "unknown distribution family",
         ),
         (
             lambda: DistributionValue(
-                family("Beta").id,
-                "Normal",
-                (("loc", LiteralValue(0.0, REAL)),),
-                sampleable_type(REAL),
-                ORIGIN,
+                family=family("Beta").id,
+                name="Normal",
+                arguments=(("loc", LiteralValue(value=0.0, type=REAL)),),
+                result_type=sampleable_type(REAL),
+                origin=ORIGIN,
             ),
             "identity of another",
         ),
         (
             lambda: DistributionValue(
-                family("Normal").id,
-                "Normal",
-                (("loc", LiteralValue(0.0, REAL)), ("loc", LiteralValue(1.0, REAL))),
-                sampleable_type(REAL),
-                ORIGIN,
+                family=family("Normal").id,
+                name="Normal",
+                arguments=(
+                    ("loc", LiteralValue(value=0.0, type=REAL)),
+                    ("loc", LiteralValue(value=1.0, type=REAL)),
+                ),
+                result_type=sampleable_type(REAL),
+                origin=ORIGIN,
             ),
             "twice",
         ),
         (
             lambda: DistributionValue(
-                family("Normal").id,
-                "Normal",
-                (("mean", LiteralValue(0.0, REAL)),),
-                sampleable_type(REAL),
-                ORIGIN,
+                family=family("Normal").id,
+                name="Normal",
+                arguments=(("mean", LiteralValue(value=0.0, type=REAL)),),
+                result_type=sampleable_type(REAL),
+                origin=ORIGIN,
             ),
             "has no parameter 'mean'",
         ),
         (
             lambda: DistributionValue(
-                family("Normal").id,
-                "Normal",
-                (("loc", LiteralValue(0, INT)),),
-                sampleable_type(REAL),
-                ORIGIN,
+                family=family("Normal").id,
+                name="Normal",
+                arguments=(("loc", LiteralValue(value=0, type=INT)),),
+                result_type=sampleable_type(REAL),
+                origin=ORIGIN,
             ),
             "takes a Real",
         ),
         (
             lambda: DistributionValue(
-                family("Normal").id, "Normal", (), sampleable_type(REAL), ORIGIN
+                family=family("Normal").id,
+                name="Normal",
+                arguments=(),
+                result_type=sampleable_type(REAL),
+                origin=ORIGIN,
             ),
             "no parameters",
         ),
         (
             lambda: DistributionValue(
-                family("Normal").id,
-                "Normal",
-                (("loc", LiteralValue(0.0, REAL)),),
-                sampleable_type(INT),
-                ORIGIN,
+                family=family("Normal").id,
+                name="Normal",
+                arguments=(("loc", LiteralValue(value=0.0, type=REAL)),),
+                result_type=sampleable_type(INT),
+                origin=ORIGIN,
             ),
             "produces",
         ),
         (
             lambda: DistributionValue(
-                family("Bernoulli").id,
-                "Bernoulli",
-                (("probs", LiteralValue(0.5, REAL)),),
-                sampleable_type(REAL),
-                ORIGIN,
+                family=family("Bernoulli").id,
+                name="Bernoulli",
+                arguments=(("probs", LiteralValue(value=0.5, type=REAL)),),
+                result_type=sampleable_type(REAL),
+                origin=ORIGIN,
             ),
             "produces",
         ),
@@ -182,34 +198,61 @@ def test_log_density_and_site_are_typed() -> None:
     registry = KernelRegistry()
     assert (
         infer_value(
-            LogDensity(_normal(), LiteralValue(0.5, REAL), ORIGIN), registry
+            LogDensity(
+                sampleable=_normal(),
+                value=LiteralValue(value=0.5, type=REAL),
+                origin=ORIGIN,
+            ),
+            registry,
         ).constructor.name
         == "LogWeight"
     )  # type: ignore[union-attr]
     with pytest.raises(KernelError, match="takes a Sampleable"):
         infer_value(
-            LogDensity(LiteralValue(1.0, REAL), LiteralValue(0.5, REAL), ORIGIN),
+            LogDensity(
+                sampleable=LiteralValue(value=1.0, type=REAL),
+                value=LiteralValue(value=0.5, type=REAL),
+                origin=ORIGIN,
+            ),
             registry,
         )
     with pytest.raises(KernelError, match="at a value of type"):
-        infer_value(LogDensity(_normal(), LiteralValue(True, BOOL), ORIGIN), registry)
-    assert infer_value(SiteValue("x", site_type(REAL)), registry) == site_type(REAL)
+        infer_value(
+            LogDensity(
+                sampleable=_normal(),
+                value=LiteralValue(value=True, type=BOOL),
+                origin=ORIGIN,
+            ),
+            registry,
+        )
+    assert infer_value(
+        SiteValue(label="x", result_type=site_type(REAL)), registry
+    ) == site_type(REAL)
     with pytest.raises(KernelError, match="not a Site"):
-        infer_value(SiteValue("x", REAL), registry)
+        infer_value(SiteValue(label="x", result_type=REAL), registry)
     with pytest.raises(KernelError, match="empty"):
-        infer_value(SiteValue("", site_type(REAL)), registry)
-    assert Evaluator().evaluate(Return(SiteValue("x", site_type(REAL)))) == "x"
+        infer_value(SiteValue(label="", result_type=site_type(REAL)), registry)
+    assert (
+        Evaluator().evaluate(
+            Return(value=SiteValue(label="x", result_type=site_type(REAL)))
+        )
+        == "x"
+    )
 
 
 def test_values_round_trip_through_the_wire_format() -> None:
     term = Return(
-        TupleValue(
-            (
+        value=TupleValue(
+            items=(
                 _normal(),
-                LogDensity(_normal(), LiteralValue(0.5, REAL), ORIGIN),
-                SiteValue("x", site_type(REAL)),
+                LogDensity(
+                    sampleable=_normal(),
+                    value=LiteralValue(value=0.5, type=REAL),
+                    origin=ORIGIN,
+                ),
+                SiteValue(label="x", result_type=site_type(REAL)),
             ),
-            product_type(sampleable_type(REAL), REAL, site_type(REAL)),
+            result_type=product_type(sampleable_type(REAL), REAL, site_type(REAL)),
         )
     )
     assert loads(dumps(term)) == term
@@ -217,7 +260,13 @@ def test_values_round_trip_through_the_wire_format() -> None:
 
 def test_log_density_evaluates_through_the_reference_backend() -> None:
     value = Evaluator().evaluate(
-        Return(LogDensity(_normal(0.0, 2.0), LiteralValue(1.0, REAL), ORIGIN))
+        Return(
+            value=LogDensity(
+                sampleable=_normal(0.0, 2.0),
+                value=LiteralValue(value=1.0, type=REAL),
+                origin=ORIGIN,
+            )
+        )
     )
     assert value == pytest.approx(-0.125 - math.log(2.0) - 0.5 * math.log(2 * math.pi))
 
@@ -336,8 +385,10 @@ def _vector(*entries: float) -> TensorValue:
         The vector at ``Tensor[Real]([n])``.
     """
     return TensorValue(
-        tuple(LiteralValue(entry, REAL) for entry in entries),
-        tensor_type(REAL, (IndexLiteral(len(entries), NatSort()),)),
+        items=tuple(LiteralValue(value=entry, type=REAL) for entry in entries),
+        result_type=tensor_type(
+            REAL, (IndexLiteral(value=len(entries), sort=NatSort()),)
+        ),
     )
 
 
@@ -346,22 +397,32 @@ def test_tensor_literals_type_check_evaluate_and_serialize() -> None:
     vector = _vector(1.0, 2.0, 3.0)
     assert infer_value(vector, registry) == vector.result_type
     matrix = TensorValue(
-        (_vector(1.0, 2.0), _vector(3.0, 4.0)),
-        tensor_type(REAL, (IndexLiteral(2, NatSort()), IndexLiteral(2, NatSort()))),
+        items=(_vector(1.0, 2.0), _vector(3.0, 4.0)),
+        result_type=tensor_type(
+            REAL,
+            (
+                IndexLiteral(value=2, sort=NatSort()),
+                IndexLiteral(value=2, sort=NatSort()),
+            ),
+        ),
     )
     assert infer_value(matrix, registry) == matrix.result_type
-    assert Evaluator().evaluate(Return(matrix)) == ((1.0, 2.0), (3.0, 4.0))
-    assert loads(dumps(Return(matrix))) == Return(matrix)
+    assert Evaluator().evaluate(Return(value=matrix)) == ((1.0, 2.0), (3.0, 4.0))
+    assert loads(dumps(Return(value=matrix))) == Return(value=matrix)
     dirichlet = DistributionValue(
-        family("Dirichlet").id,
-        "Dirichlet",
-        (("concentration", vector),),
-        sampleable_type(vector.result_type),
-        ORIGIN,
+        family=family("Dirichlet").id,
+        name="Dirichlet",
+        arguments=(("concentration", vector),),
+        result_type=sampleable_type(vector.result_type),
+        origin=ORIGIN,
     )
     assert infer_value(dirichlet, registry) == sampleable_type(vector.result_type)
     density = Evaluator().evaluate(
-        Return(LogDensity(dirichlet, _vector(0.2, 0.3, 0.5), ORIGIN))
+        Return(
+            value=LogDensity(
+                sampleable=dirichlet, value=_vector(0.2, 0.3, 0.5), origin=ORIGIN
+            )
+        )
     )
     assert density == pytest.approx(
         math.log(120.0) - math.log(2.0) + math.log(0.3) + 2 * math.log(0.5)
@@ -371,25 +432,33 @@ def test_tensor_literals_type_check_evaluate_and_serialize() -> None:
 @pytest.mark.parametrize(
     ("build", "fragment"),
     [
-        (lambda: TensorValue((LiteralValue(1.0, REAL),), REAL), "non-tensor type"),
         (
             lambda: TensorValue(
-                (LiteralValue(1.0, REAL),),
-                tensor_type(REAL, (IndexLiteral(2, NatSort()),)),
+                items=(LiteralValue(value=1.0, type=REAL),), result_type=REAL
+            ),
+            "non-tensor type",
+        ),
+        (
+            lambda: TensorValue(
+                items=(LiteralValue(value=1.0, type=REAL),),
+                result_type=tensor_type(REAL, (IndexLiteral(value=2, sort=NatSort()),)),
             ),
             "1 entries along a leading dimension of 2",
         ),
         (
             lambda: TensorValue(
-                (LiteralValue(1, INT), LiteralValue(2.0, REAL)),
-                tensor_type(REAL, (IndexLiteral(2, NatSort()),)),
+                items=(
+                    LiteralValue(value=1, type=INT),
+                    LiteralValue(value=2.0, type=REAL),
+                ),
+                result_type=tensor_type(REAL, (IndexLiteral(value=2, sort=NatSort()),)),
             ),
             "entry 0 has type",
         ),
         (
             lambda: TensorValue(
-                (_vector(1.0), _vector(2.0)),
-                tensor_type(REAL, (IndexLiteral(2, NatSort()),)),
+                items=(_vector(1.0), _vector(2.0)),
+                result_type=tensor_type(REAL, (IndexLiteral(value=2, sort=NatSort()),)),
             ),
             "not the slice type",
         ),

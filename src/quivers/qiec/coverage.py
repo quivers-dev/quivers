@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
+import didactic.api as dx
+
 from enum import Enum
 
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
@@ -56,8 +59,7 @@ class Reachability(str, Enum):
     UNKNOWN = "unknown"
 
 
-@dataclass(frozen=True, slots=True)
-class BranchPattern:
+class BranchPattern(QiecModel):
     """The shape of one case branch, as coverage sees it.
 
     Parameters
@@ -69,12 +71,11 @@ class BranchPattern:
         which keeps it from counting toward completeness.
     """
 
-    constructor: ConstructorId | None
+    constructor: ConstructorId | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     guarded: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class CoverageResult:
+class CoverageResult(QiecModel):
     """The outcome of checking branch patterns against a family.
 
     Parameters
@@ -87,13 +88,16 @@ class CoverageResult:
         Constructors more than one pattern matches.
     """
 
-    status: CoverageStatus
-    missing: tuple[ConstructorId, ...] = ()
-    duplicates: tuple[ConstructorId, ...] = ()
+    status: CoverageStatus = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    missing: tuple[ConstructorId, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    duplicates: tuple[ConstructorId, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class BranchRefinement:
+class BranchRefinement(QiecModel):
     """Rigid skolems and local equalities available inside one branch.
 
     Parameters
@@ -107,9 +111,11 @@ class BranchRefinement:
         decides.
     """
 
-    skolems: tuple[str, ...]
-    givens: tuple[BranchGiven, ...]
-    reachability: Reachability = Reachability.UNKNOWN
+    skolems: tuple[str, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    givens: tuple[BranchGiven, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    reachability: Reachability = dx.field(
+        default=Reachability.UNKNOWN, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def _binder_classifier(
@@ -226,7 +232,7 @@ def check_coverage(
         status = CoverageStatus.INCOMPLETE
     else:
         status = CoverageStatus.COMPLETE
-    return CoverageResult(status, missing, tuple(duplicates))
+    return CoverageResult(status=status, missing=missing, duplicates=tuple(duplicates))
 
 
 def refine_branch(
@@ -289,9 +295,9 @@ def refine_branch(
         constructor_arguments,
     )
     substitution = StaticSubstitution(
-        (*parameter_substitution.types, *local_substitution.types),
-        (*parameter_substitution.indices, *local_substitution.indices),
-        (*parameter_substitution.effects, *local_substitution.effects),
+        types=(*parameter_substitution.types, *local_substitution.types),
+        indices=(*parameter_substitution.indices, *local_substitution.indices),
+        effects=(*parameter_substitution.effects, *local_substitution.effects),
     )
 
     actual_indices = scrutinee.arguments[parameter_count:]
@@ -306,9 +312,11 @@ def refine_branch(
         zip(family.indices, actual_indices, constructor.result_indices, strict=True)
     ):
         result = substitute_static(result, substitution)
-        equality = EqualityType(_binder_classifier(binder), actual, result)
+        equality = EqualityType(
+            kind=_binder_classifier(binder), left=actual, right=result
+        )
         equality_id = EqualityId.derive(constructor.id, position, equality)
-        givens.append(BranchGiven(equality_id, equality))
+        givens.append(BranchGiven(id=equality_id, equality=equality))
         if actual == result:
             states.append(Reachability.REACHABLE)
         elif _closed_distinct(actual, result):
@@ -323,9 +331,9 @@ def refine_branch(
     else:
         reachability = Reachability.UNKNOWN
     return BranchRefinement(
-        tuple(binder.name for binder in constructor.telescope),
-        tuple(givens),
-        reachability,
+        skolems=tuple(binder.name for binder in constructor.telescope),
+        givens=tuple(givens),
+        reachability=reachability,
     )
 
 
@@ -358,11 +366,15 @@ def constructor_skolems(
             binder.tag,
         )
         if isinstance(binder, TypeBinder):
-            arguments.append(TypeVariable(binder.name, binder.kind, identity))
+            arguments.append(
+                TypeVariable(name=binder.name, kind=binder.kind, identity=identity)
+            )
         elif isinstance(binder, IndexBinder):
-            arguments.append(IndexVariable(binder.name, binder.sort, identity))
+            arguments.append(
+                IndexVariable(name=binder.name, sort=binder.sort, identity=identity)
+            )
         elif isinstance(binder, EffectBinder):
-            arguments.append(EffectVariable(binder.name, identity))
+            arguments.append(EffectVariable(name=binder.name, identity=identity))
     return tuple(arguments)
 
 

@@ -1,8 +1,7 @@
 """Typed, target-independent IR for the Quivers Indexed Effect Core.
 
-The QIEC kernel deliberately uses frozen dataclasses: they are convenient for
-type checking and evaluation, but are not part of the structural transpiler
-IR.  This module is the lossless boundary between the two.  Every stable QIEC
+The QIEC kernel uses immutable recursive models for checking and evaluation.
+This module projects them into fully encoded structural transpiler IR. Every stable QIEC
 construct has a corresponding :mod:`didactic` model, so a backend can inspect
 effects, values, evidence, resumptions, and source provenance without parsing
 an opaque JSON side channel.
@@ -10,13 +9,13 @@ an opaque JSON side channel.
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
 from enum import Enum
 from typing import Literal, cast
 
 import didactic.api as dx
 
 from quivers.qiec import QiecModule
+from quivers.qiec._models import QiecModel
 from quivers.qiec import declarations as d
 from quivers.qiec import effects as e
 from quivers.qiec import evidence as ev
@@ -2469,7 +2468,7 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
             body=cast(IRQiecComputation, _convert(value.body)),
             origin=cast(IRQiecSourceOrigin, _convert(value.origin)),
         )
-    if not is_dataclass(value) or isinstance(value, type):
+    if not isinstance(value, QiecModel):
         raise TypeError(f"unsupported QIEC kernel value {value!r}")
     model_map: dict[type[object], type[dx.Model]] = {
         d.FieldDef: IRQiecFieldDef,
@@ -2492,9 +2491,9 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
     if model is None:
         raise TypeError(f"unsupported QIEC kernel record {type(value).__qualname__}")
     values = {
-        field.name: _convert(getattr(value, field.name))
-        for field in fields(value)
-        if field.name != "tag"
+        name: _convert(getattr(value, name))
+        for name in type(value).__field_specs__
+        if name != "tag"
     }
     return model(**values)
 
@@ -2525,9 +2524,9 @@ def lower_qiec_ir(module: QiecModule) -> IRQiecModule:
         else set()
     )
     values = {
-        field.name: _convert(getattr(module, field.name))
-        for field in fields(module)
-        if field.name not in ("tag", "computations")
+        name: _convert(getattr(module, name))
+        for name in type(module).__field_specs__
+        if name not in ("tag", "computations")
     }
     # A deduction's computations serve the reference machine; a target
     # carries them only when a program the module transpiles calls one,

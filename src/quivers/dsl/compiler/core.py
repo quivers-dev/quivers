@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import torch.nn as nn
 from quivers.dsl.markov_chains import chain_cells
 from quivers.continuous.deterministic import LearnedFunction
@@ -393,13 +392,12 @@ class Compiler(
         except QiecDiagnosticError as error:
             if error.code != GAP_CODE:
                 raise
-            return replace(
-                lower_qvr_to_qiec(
-                    module,
-                    module_name=self._qiec_module_name,
-                    file_path=self._qiec_file_path,
-                    elaborate_programs=False,
-                ),
+            return lower_qvr_to_qiec(
+                module,
+                module_name=self._qiec_module_name,
+                file_path=self._qiec_file_path,
+                elaborate_programs=False,
+            ).with_(
                 gap=error.message,
             )
 

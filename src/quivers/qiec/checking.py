@@ -1216,10 +1216,10 @@ def _binder_variable(binder: TypeBinder | IndexBinder | EffectBinder) -> StaticA
         rigid one and substitution can reach it.
     """
     if isinstance(binder, TypeBinder):
-        return TypeVariable(binder.name, binder.kind)
+        return TypeVariable(name=binder.name, kind=binder.kind)
     if isinstance(binder, IndexBinder):
-        return IndexVariable(binder.name, binder.sort)
-    return EffectVariable(binder.name)
+        return IndexVariable(name=binder.name, sort=binder.sort)
+    return EffectVariable(name=binder.name)
 
 
 def _sort_matches(expected: IndexSort, actual: IndexSort) -> bool:
@@ -1546,9 +1546,9 @@ def _combine_substitutions(
         static namespaces.
     """
     return StaticSubstitution(
-        (*first.types, *second.types),
-        (*first.indices, *second.indices),
-        (*first.effects, *second.effects),
+        types=(*first.types, *second.types),
+        indices=(*first.indices, *second.indices),
+        effects=(*first.effects, *second.effects),
     )
 
 
@@ -1705,7 +1705,7 @@ def _checked_computation_type(
         effect mentions a rigid variable that does not survive out to
         this point.
     """
-    type_ = ComputationType(effects, result)
+    type_ = ComputationType(effects=effects, result=result)
     registry.validate_computation_type(type_)
     _check_static_variable_scope(result, context, subject="computation result type")
     for entry in effects.entries:
@@ -2115,7 +2115,9 @@ def _infer_table_map(
                 "a table map's block lies outside its table", "qiec-primitive"
             )
     expected: TypeExpr = (
-        REAL if value.rows == 1 else tensor_type(REAL, (IndexLiteral(value.rows, NAT),))
+        REAL
+        if value.rows == 1
+        else tensor_type(REAL, (IndexLiteral(value=value.rows, sort=NAT),))
     )
     if value.result_type != expected:
         raise KernelError(
@@ -2204,7 +2206,9 @@ def _infer_affine_map(
             "qiec-primitive",
         )
     expected: TypeExpr = (
-        REAL if value.rows == 1 else tensor_type(REAL, (IndexLiteral(value.rows, NAT),))
+        REAL
+        if value.rows == 1
+        else tensor_type(REAL, (IndexLiteral(value=value.rows, sort=NAT),))
     )
     if value.result_type != expected:
         raise KernelError(
@@ -2670,8 +2674,8 @@ def infer_value(
             for index in constructor.result_indices
         )
         expected_result = TypeApplication(
-            family.type_constructor,
-            (*parameter_arguments, *result_indices),
+            constructor=family.type_constructor,
+            arguments=(*parameter_arguments, *result_indices),
         )
         if value.result_type != expected_result:
             raise KernelError(
@@ -2837,7 +2841,11 @@ def _infer_computation(
     if isinstance(computation, Perform):
         effect, result = check_request(computation.request, registry, context)
         return _checked_computation_type(
-            EffectRow((RowEntry(computation.request.instance, effect),)),
+            EffectRow(
+                entries=(
+                    RowEntry(instance=computation.request.instance, effect=effect),
+                )
+            ),
             result,
             registry,
             context,
@@ -2936,7 +2944,10 @@ def _infer_computation(
             family,
             constructors,
             scrutinee_type,
-            tuple(BranchPattern(branch.constructor) for branch in computation.branches),
+            tuple(
+                BranchPattern(constructor=branch.constructor)
+                for branch in computation.branches
+            ),
         )
         if coverage.status is not CoverageStatus.COMPLETE:
             raise KernelError(

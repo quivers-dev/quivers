@@ -8,7 +8,11 @@ between uniform parameters and refinable indices.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Hashable
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.qiec._models import QiecModel
+import didactic.api as dx
+
 from typing import Literal
 
 from quivers.qiec.identifiers import EffectId, StaticVariableId, TypeId
@@ -29,8 +33,7 @@ from quivers.qiec.kinds import (
 )
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class IndexVariable:
+class IndexVariable(QiecModel):
     """A variable standing for an index term.
 
     Parameters
@@ -47,52 +50,26 @@ class IndexVariable:
     """
 
     name: str
-    sort: IndexSort
-    identity: StaticVariableId | None = None
+    sort: IndexSort = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    identity: StaticVariableId | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["index_variable"] = "index_variable"
 
-    def __eq__(self, other: object) -> bool:
-        """Compare by identity when either side is rigid, else by name.
-
-        A variable carrying a `StaticVariableId` is rigid: a case branch's
-        skolem, distinct from every other even where the names agree. One
-        without is a declaration binder, which two occurrences share by
-        name. Comparing a rigid variable to a free one is therefore
-        false, which is what stops a branch's skolem from unifying with
-        an enclosing binder.
-
-        Parameters
-        ----------
-        other : object
-            The value to compare against.
+    def _local_key(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
+        """Key the fields that define this kernel object's identity.
 
         Returns
         -------
-        bool
-            True when both denote the same variable at the same sort.
+        tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]
+            Its nominal fields and recursively compared children.
         """
-        if not isinstance(other, IndexVariable) or self.sort != other.sort:
-            return False
-        if self.identity is not None or other.identity is not None:
-            return self.identity is not None and self.identity == other.identity
-        return self.name == other.name
-
-    def __hash__(self) -> int:
-        """Hash the fields `__eq__` compares.
-
-        Returns
-        -------
-        int
-            A hash of the sort with the identity when rigid, and with
-            the name otherwise, so equal variables hash alike.
-        """
-        return hash(
-            (self.sort, self.identity if self.identity is not None else self.name)
+        return self._comparison_key(
+            self.sort, self.identity if self.identity is not None else self.name
         )
 
 
-@dataclass(frozen=True, slots=True)
-class IndexLiteral:
+class IndexLiteral(QiecModel):
     """A closed index literal.
 
     Parameters
@@ -107,10 +84,11 @@ class IndexLiteral:
     """
 
     value: int | str
-    sort: IndexSort
+    sort: IndexSort = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["index_literal"] = "index_literal"
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Check the literal inhabits the sort it claims.
 
         Raises
@@ -141,8 +119,7 @@ class IndexLiteral:
             raise ValueError(f"index constructor {self.value!r} is not nullary")
 
 
-@dataclass(frozen=True, slots=True)
-class IndexConstructor:
+class IndexConstructor(QiecModel):
     """A fully applied constructor of a user-defined index sort.
 
     Parameters
@@ -158,11 +135,12 @@ class IndexConstructor:
     """
 
     name: str
-    arguments: tuple[IndexTerm, ...]
-    sort: IndexSort
+    arguments: tuple[IndexTerm, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    sort: IndexSort = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["index_constructor"] = "index_constructor"
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Check the constructor belongs to its sort and is fully applied.
 
         Raises
@@ -190,8 +168,7 @@ class IndexConstructor:
                 )
 
 
-@dataclass(frozen=True, slots=True)
-class ShapeIndex:
+class ShapeIndex(QiecModel):
     """A shape given by its dimensions.
 
     Parameters
@@ -202,7 +179,7 @@ class ShapeIndex:
         The serialization discriminator; always ``"shape_index"``.
     """
 
-    dimensions: tuple[IndexTerm, ...]
+    dimensions: tuple[IndexTerm, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["shape_index"] = "shape_index"
 
 
@@ -210,8 +187,7 @@ type IndexTerm = IndexVariable | IndexLiteral | IndexConstructor | ShapeIndex
 """A static index: a variable, a literal, a constructor application, or a shape."""
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class TypeVariable:
+class TypeVariable(QiecModel):
     """A variable standing for a type or effect-kinded static argument.
 
     Parameters
@@ -228,52 +204,26 @@ class TypeVariable:
     """
 
     name: str
-    kind: Kind = TYPE
-    identity: StaticVariableId | None = None
+    kind: Kind = dx.field(default=TYPE, opaque=True, extras=OPAQUE_BY_VALUE)
+    identity: StaticVariableId | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["type_variable"] = "type_variable"
 
-    def __eq__(self, other: object) -> bool:
-        """Compare by identity when either side is rigid, else by name.
-
-        A variable carrying a `StaticVariableId` is rigid: a case branch's
-        skolem, distinct from every other even where the names agree. One
-        without is a declaration binder, which two occurrences share by
-        name. Comparing a rigid variable to a free one is therefore
-        false, which is what stops a branch's skolem from unifying with
-        an enclosing binder.
-
-        Parameters
-        ----------
-        other : object
-            The value to compare against.
+    def _local_key(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
+        """Key the fields that define this kernel object's identity.
 
         Returns
         -------
-        bool
-            True when both denote the same variable at the same kind.
+        tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]
+            Its nominal fields and recursively compared children.
         """
-        if not isinstance(other, TypeVariable) or self.kind != other.kind:
-            return False
-        if self.identity is not None or other.identity is not None:
-            return self.identity is not None and self.identity == other.identity
-        return self.name == other.name
-
-    def __hash__(self) -> int:
-        """Hash the fields `__eq__` compares.
-
-        Returns
-        -------
-        int
-            A hash of the kind with the identity when rigid, and with
-            the name otherwise, so equal variables hash alike.
-        """
-        return hash(
-            (self.kind, self.identity if self.identity is not None else self.name)
+        return self._comparison_key(
+            self.kind, self.identity if self.identity is not None else self.name
         )
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class TypeConstructorRef:
+class TypeConstructorRef(QiecModel):
     """A fully qualified type constructor and its kinding telescope.
 
     Parameters
@@ -286,9 +236,9 @@ class TypeConstructorRef:
         The binders the constructor's arguments instantiate, in order.
     """
 
-    id: TypeId
+    id: TypeId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    telescope: Telescope = ()
+    telescope: Telescope = dx.field(default=(), opaque=True, extras=OPAQUE_BY_VALUE)
 
     @classmethod
     def builtin(cls, name: str) -> TypeConstructorRef:
@@ -306,38 +256,20 @@ class TypeConstructorRef:
             ``builtin`` namespace, so `Int` means the same type in every
             module without being declared in any of them.
         """
-        return cls(TypeId.derive("builtin", name), name)
+        return cls(id=TypeId.derive("builtin", name), name=name)
 
-    def __eq__(self, other: object) -> bool:
-        """Compare semantic identity, excluding diagnostic presentation data.
-
-        Parameters
-        ----------
-        other : object
-            The value to compare against.
+    def _local_key(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
+        """Key the fields that define this kernel object's identity.
 
         Returns
         -------
-        bool
-            True when both name the same declaration. The display name
-            and the telescope are presentation, so a constructor read
-            back under a different spelling is still the same type.
+        tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]
+            Its nominal fields and recursively compared children.
         """
-        return isinstance(other, TypeConstructorRef) and self.id == other.id
-
-    def __hash__(self) -> int:
-        """Hash the identity `__eq__` compares.
-
-        Returns
-        -------
-        int
-            A hash of the declaration identity alone.
-        """
-        return hash(self.id)
+        return self._comparison_key(self.id)
 
 
-@dataclass(frozen=True, slots=True)
-class TypeApplication:
+class TypeApplication(QiecModel):
     """A type constructor applied to static arguments.
 
     Parameters
@@ -351,13 +283,14 @@ class TypeApplication:
         The serialization discriminator; always ``"type_application"``.
     """
 
-    constructor: TypeConstructorRef
-    arguments: tuple[StaticArgument, ...] = ()
+    constructor: TypeConstructorRef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    arguments: tuple[StaticArgument, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["type_application"] = "type_application"
 
 
-@dataclass(frozen=True, slots=True)
-class FunctionType:
+class FunctionType(QiecModel):
     """A pure function type.
 
     Effectful codomains are represented explicitly by
@@ -374,13 +307,12 @@ class FunctionType:
         The serialization discriminator; always ``"function_type"``.
     """
 
-    parameter: TypeExpr
-    result: TypeExpr
+    parameter: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["function_type"] = "function_type"
 
 
-@dataclass(frozen=True, slots=True)
-class EqualityType:
+class EqualityType(QiecModel):
     """The proposition that two static arguments are equal.
 
     Parameters
@@ -395,9 +327,9 @@ class EqualityType:
         The serialization discriminator; always ``"equality_type"``.
     """
 
-    kind: Kind | IndexSort
-    left: StaticArgument
-    right: StaticArgument
+    kind: Kind | IndexSort = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    left: StaticArgument = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    right: StaticArgument = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["equality_type"] = "equality_type"
 
 
@@ -405,8 +337,7 @@ type TypeExpr = TypeVariable | TypeApplication | FunctionType | EqualityType
 """A type: a variable, a constructor application, a function type, or an equality."""
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class EffectVariable:
+class EffectVariable(QiecModel):
     """A variable standing for an effect interface application.
 
     Parameters
@@ -421,44 +352,25 @@ class EffectVariable:
     """
 
     name: str
-    identity: StaticVariableId | None = None
+    identity: StaticVariableId | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["effect_variable"] = "effect_variable"
 
-    def __eq__(self, other: object) -> bool:
-        """Compare by identity when either side is rigid, else by name.
-
-        Parameters
-        ----------
-        other : object
-            The value to compare against.
+    def _local_key(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
+        """Key the fields that define this kernel object's identity.
 
         Returns
         -------
-        bool
-            True when both denote the same effect variable. A rigid
-            variable never equals a free one, which is what keeps a
-            branch's skolem from unifying with an enclosing binder.
+        tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]
+            Its nominal fields and recursively compared children.
         """
-        if not isinstance(other, EffectVariable):
-            return False
-        if self.identity is not None or other.identity is not None:
-            return self.identity is not None and self.identity == other.identity
-        return self.name == other.name
-
-    def __hash__(self) -> int:
-        """Hash the fields `__eq__` compares.
-
-        Returns
-        -------
-        int
-            A hash of the identity when the variable is rigid, and of the
-            name otherwise.
-        """
-        return hash(self.identity if self.identity is not None else self.name)
+        return self._comparison_key(
+            self.identity if self.identity is not None else self.name
+        )
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class EffectRef:
+class EffectRef(QiecModel):
     """One closed effect interface application.
 
     Parameters
@@ -473,57 +385,37 @@ class EffectRef:
         The serialization discriminator; always ``"effect_ref"``.
     """
 
-    id: EffectId
+    id: EffectId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    arguments: tuple[StaticArgument, ...] = ()
+    arguments: tuple[StaticArgument, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["effect_ref"] = "effect_ref"
 
-    def __eq__(self, other: object) -> bool:
-        """Compare a concrete interface application by stable identity.
-
-        Parameters
-        ----------
-        other : object
-            The value to compare against.
+    def _local_key(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
+        """Key the fields that define this kernel object's identity.
 
         Returns
         -------
-        bool
-            True when both name the same declaration and supply equal
-            static arguments. The display name is ignored, and identity
-            is nominal, so two applications of one interface differ only
-            by their arguments.
+        tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]
+            Its nominal fields and recursively compared children.
         """
-        return (
-            isinstance(other, EffectRef)
-            and self.id == other.id
-            and self.arguments == other.arguments
-        )
-
-    def __hash__(self) -> int:
-        """Hash the fields `__eq__` compares.
-
-        Returns
-        -------
-        int
-            A hash of the declaration identity and the arguments.
-        """
-        return hash((self.id, self.arguments))
+        return self._comparison_key(self.id, self.arguments)
 
 
 type StaticArgument = TypeExpr | IndexTerm | EffectRef | EffectVariable
 """Anything a telescope binder may be instantiated at: a type, an index, or an effect."""
 
 
-UNIT = TypeApplication(TypeConstructorRef.builtin("Unit"))
+UNIT = TypeApplication(constructor=TypeConstructorRef.builtin("Unit"))
 """The unit type, inhabited by ``None`` alone."""
-BOOL = TypeApplication(TypeConstructorRef.builtin("Bool"))
+BOOL = TypeApplication(constructor=TypeConstructorRef.builtin("Bool"))
 """The Boolean type."""
-INT = TypeApplication(TypeConstructorRef.builtin("Int"))
+INT = TypeApplication(constructor=TypeConstructorRef.builtin("Int"))
 """The integer type."""
-REAL = TypeApplication(TypeConstructorRef.builtin("Real"))
+REAL = TypeApplication(constructor=TypeConstructorRef.builtin("Real"))
 """The real-number type."""
-STRING = TypeApplication(TypeConstructorRef.builtin("String"))
+STRING = TypeApplication(constructor=TypeConstructorRef.builtin("String"))
 """The string type."""
 
 
@@ -546,11 +438,13 @@ def product_type(*components: TypeExpr) -> TypeApplication:
 
     arity = len(components)
     constructor = TypeConstructorRef(
-        TypeId.derive("builtin", "Product", arity),
-        f"Product{arity}",
-        tuple(TypeBinder(f"item{position}") for position in range(arity)),
+        id=TypeId.derive("builtin", "Product", arity),
+        name=f"Product{arity}",
+        telescope=tuple(
+            TypeBinder(name=f"item{position}") for position in range(arity)
+        ),
     )
-    return TypeApplication(constructor, components)
+    return TypeApplication(constructor=constructor, arguments=components)
 
 
 def static_kind(term: StaticArgument) -> Kind:

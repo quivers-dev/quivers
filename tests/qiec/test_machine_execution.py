@@ -71,7 +71,7 @@ def _int_list(module: QiecModule, items: list[int]) -> RuntimeConstructor:
     """
     constructors = {item.name: item for item in module.constructors}
     family = next(item for item in module.families if item.name == "List")
-    type_ = TypeApplication(family.type_constructor, (INT,))
+    type_ = TypeApplication(constructor=family.type_constructor, arguments=(INT,))
     value = RuntimeConstructor(constructors["Nil"].id, (), (), type_)
     for item in reversed(items):
         value = RuntimeConstructor(constructors["Cons"].id, (), (item, value), type_)

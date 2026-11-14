@@ -6,7 +6,6 @@ compilation.
 """
 
 from __future__ import annotations
-import dataclasses
 import inspect
 from abc import abstractmethod
 import math
@@ -173,6 +172,7 @@ from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec import QiecModule
+from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.terms import Computation, Local
 from quivers.qiec.families import FAMILIES
@@ -400,10 +400,8 @@ def _checked_local_extents(
             types.setdefault(node.name, set()).add(node.type)
         elif isinstance(node, tuple | list):
             pending.extend(node)
-        elif dataclasses.is_dataclass(node) and not isinstance(node, type):
-            pending.extend(
-                getattr(node, field.name) for field in dataclasses.fields(node)
-            )
+        elif isinstance(node, QiecModel):
+            pending.extend(getattr(node, name) for name in type(node).__field_specs__)
     extents: dict[str, tuple[int, ...]] = {}
     for name, bound in types.items():
         if len(bound) != 1:

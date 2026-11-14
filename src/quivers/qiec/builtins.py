@@ -71,27 +71,33 @@ from quivers.qiec.types import (
 _constructor = builtin_constructor
 
 _A_BINDER = ELEMENT_BINDER
-_K_BINDER = TypeBinder("k")
-_P_BINDER = TypeBinder("payload")
-_S_BINDER = TypeBinder("state")
-_ANSWER_BINDER = TypeBinder("answer")
+_K_BINDER = TypeBinder(name="k")
+_P_BINDER = TypeBinder(name="payload")
+_S_BINDER = TypeBinder(name="state")
+_ANSWER_BINDER = TypeBinder(name="answer")
 A = ELEMENT
-K = TypeVariable("k")
-PAYLOAD = TypeVariable("payload")
-STATE = TypeVariable("state")
-ANSWER = TypeVariable("answer")
+K = TypeVariable(name="k")
+PAYLOAD = TypeVariable(name="payload")
+STATE = TypeVariable(name="state")
+ANSWER = TypeVariable(name="answer")
 
 CHOICES_CONSTRUCTOR = _constructor("Choices", _A_BINDER)
 CHOICE_RESULTS_CONSTRUCTOR = _constructor("ChoiceResults", _A_BINDER)
 STATE_RESULT_CONSTRUCTOR = _constructor("StateResult", _A_BINDER, _S_BINDER)
 WEIGHTED_RESULT_CONSTRUCTOR = _constructor("WeightedResult", _A_BINDER, _K_BINDER)
 
-SITE_A = TypeApplication(SITE_CONSTRUCTOR, (A,))
-SAMPLEABLE_A = TypeApplication(SAMPLEABLE_CONSTRUCTOR, (A,))
-CHOICES_A = TypeApplication(CHOICES_CONSTRUCTOR, (A,))
-CHOICE_RESULTS_A = TypeApplication(CHOICE_RESULTS_CONSTRUCTOR, (A,))
-STATE_RESULT = TypeApplication(STATE_RESULT_CONSTRUCTOR, (ANSWER, STATE))
-WEIGHTED_RESULT = TypeApplication(WEIGHTED_RESULT_CONSTRUCTOR, (ANSWER, K))
+SITE_A = TypeApplication(constructor=SITE_CONSTRUCTOR, arguments=(A,))
+SAMPLEABLE_A = TypeApplication(constructor=SAMPLEABLE_CONSTRUCTOR, arguments=(A,))
+CHOICES_A = TypeApplication(constructor=CHOICES_CONSTRUCTOR, arguments=(A,))
+CHOICE_RESULTS_A = TypeApplication(
+    constructor=CHOICE_RESULTS_CONSTRUCTOR, arguments=(A,)
+)
+STATE_RESULT = TypeApplication(
+    constructor=STATE_RESULT_CONSTRUCTOR, arguments=(ANSWER, STATE)
+)
+WEIGHTED_RESULT = TypeApplication(
+    constructor=WEIGHTED_RESULT_CONSTRUCTOR, arguments=(ANSWER, K)
+)
 
 
 def _effect_ref(name: str) -> EffectRef:
@@ -108,7 +114,7 @@ def _effect_ref(name: str) -> EffectRef:
         The declaration reference, in the ``prelude`` namespace so it
         names the same interface in every module.
     """
-    return EffectRef(EffectId.derive("prelude", name), name)
+    return EffectRef(id=EffectId.derive("prelude", name), name=name)
 
 
 def _operation_id(effect: EffectRef, name: str) -> OperationId:
@@ -135,15 +141,18 @@ RANDOM = _effect_ref("Random")
 RANDOM_SAMPLE = _operation_id(RANDOM, "sample")
 """``Random.sample``: draw a value of type ``A`` at a site from a ``Sampleable[A]``."""
 RANDOM_EFFECT = EffectDef(
-    RANDOM,
-    (),
-    (
+    ref=RANDOM,
+    telescope=(),
+    operations=(
         OperationDef(
-            RANDOM_SAMPLE,
-            "sample",
-            (_A_BINDER,),
-            (ArgumentDef("site", SITE_A), ArgumentDef("sampleable", SAMPLEABLE_A)),
-            A,
+            id=RANDOM_SAMPLE,
+            name="sample",
+            telescope=(_A_BINDER,),
+            arguments=(
+                ArgumentDef(name="site", type=SITE_A),
+                ArgumentDef(name="sampleable", type=SAMPLEABLE_A),
+            ),
+            result_type=A,
         ),
     ),
 )
@@ -154,9 +163,17 @@ SCORE = _effect_ref("Score")
 SCORE_ADD = _operation_id(SCORE, "add")
 """``Score.add``: add one ``LogWeight`` to the running score."""
 SCORE_EFFECT = EffectDef(
-    SCORE,
-    (),
-    (OperationDef(SCORE_ADD, "add", (), (ArgumentDef("weight", LOG_WEIGHT),), UNIT),),
+    ref=SCORE,
+    telescope=(),
+    operations=(
+        OperationDef(
+            id=SCORE_ADD,
+            name="add",
+            telescope=(),
+            arguments=(ArgumentDef(name="weight", type=LOG_WEIGHT),),
+            result_type=UNIT,
+        ),
+    ),
 )
 """The declaration of :data:`SCORE`."""
 
@@ -167,16 +184,18 @@ STATE_GET = _operation_id(STATE_EFFECT_REF, "get")
 STATE_PUT = _operation_id(STATE_EFFECT_REF, "put")
 """``State.put``: overwrite the cell."""
 STATE_EFFECT = EffectDef(
-    STATE_EFFECT_REF,
-    (_S_BINDER,),
-    (
-        OperationDef(STATE_GET, "get", (), (), STATE),
+    ref=STATE_EFFECT_REF,
+    telescope=(_S_BINDER,),
+    operations=(
         OperationDef(
-            STATE_PUT,
-            "put",
-            (),
-            (ArgumentDef("value", STATE),),
-            UNIT,
+            id=STATE_GET, name="get", telescope=(), arguments=(), result_type=STATE
+        ),
+        OperationDef(
+            id=STATE_PUT,
+            name="put",
+            telescope=(),
+            arguments=(ArgumentDef(name="value", type=STATE),),
+            result_type=UNIT,
         ),
     ),
 )
@@ -187,15 +206,15 @@ ABORT = _effect_ref("Abort")
 ABORT_ABORT = _operation_id(ABORT, "abort")
 """``Abort.abort``: stop the computation with an error payload."""
 ABORT_EFFECT = EffectDef(
-    ABORT,
-    (_P_BINDER,),
-    (
+    ref=ABORT,
+    telescope=(_P_BINDER,),
+    operations=(
         OperationDef(
-            ABORT_ABORT,
-            "abort",
-            (_A_BINDER,),
-            (ArgumentDef("error", PAYLOAD),),
-            A,
+            id=ABORT_ABORT,
+            name="abort",
+            telescope=(_A_BINDER,),
+            arguments=(ArgumentDef(name="error", type=PAYLOAD),),
+            result_type=A,
         ),
     ),
 )
@@ -206,15 +225,15 @@ CHOOSE = _effect_ref("Choose")
 CHOOSE_CHOOSE = _operation_id(CHOOSE, "choose")
 """``Choose.choose``: pick one of a collection of alternatives."""
 CHOOSE_EFFECT = EffectDef(
-    CHOOSE,
-    (),
-    (
+    ref=CHOOSE,
+    telescope=(),
+    operations=(
         OperationDef(
-            CHOOSE_CHOOSE,
-            "choose",
-            (_A_BINDER,),
-            (ArgumentDef("alternatives", CHOICES_A),),
-            A,
+            id=CHOOSE_CHOOSE,
+            name="choose",
+            telescope=(_A_BINDER,),
+            arguments=(ArgumentDef(name="alternatives", type=CHOICES_A),),
+            result_type=A,
         ),
     ),
 )
@@ -225,37 +244,37 @@ WEIGHT = _effect_ref("Weight")
 WEIGHT_ADD = _operation_id(WEIGHT, "add")
 """``Weight.add``: fold one weight into the running total in the handler's semiring."""
 WEIGHT_EFFECT = EffectDef(
-    WEIGHT,
-    (_K_BINDER,),
-    (
+    ref=WEIGHT,
+    telescope=(_K_BINDER,),
+    operations=(
         OperationDef(
-            WEIGHT_ADD,
-            "add",
-            (),
-            (ArgumentDef("weight", K),),
-            UNIT,
+            id=WEIGHT_ADD,
+            name="add",
+            telescope=(),
+            arguments=(ArgumentDef(name="weight", type=K),),
+            result_type=UNIT,
         ),
     ),
 )
 """The declaration of :data:`WEIGHT`; :func:`weight_effect` applies it."""
 
-_X_BINDER = TypeBinder("input")
-INPUT = TypeVariable("input")
+_X_BINDER = TypeBinder(name="input")
+INPUT = TypeVariable(name="input")
 
 COMPUTE = _effect_ref("Compute")
 """``Compute[X, A]``: the prelude interface for a host computation; see :data:`COMPUTE_EFFECT`."""
 COMPUTE_APPLY = _operation_id(COMPUTE, "apply")
 """``Compute.apply``: run the host computation on an argument of type ``X``."""
 COMPUTE_EFFECT = EffectDef(
-    COMPUTE,
-    (_X_BINDER, _ANSWER_BINDER),
-    (
+    ref=COMPUTE,
+    telescope=(_X_BINDER, _ANSWER_BINDER),
+    operations=(
         OperationDef(
-            COMPUTE_APPLY,
-            "apply",
-            (),
-            (ArgumentDef("argument", INPUT),),
-            ANSWER,
+            id=COMPUTE_APPLY,
+            name="apply",
+            telescope=(),
+            arguments=(ArgumentDef(name="argument", type=INPUT),),
+            result_type=ANSWER,
         ),
     ),
 )
@@ -272,15 +291,15 @@ PARAM = _effect_ref("Param")
 PARAM_GET = _operation_id(PARAM, "get")
 """``Param.get``: read a learned parameter by name."""
 PARAM_EFFECT = EffectDef(
-    PARAM,
-    (),
-    (
+    ref=PARAM,
+    telescope=(),
+    operations=(
         OperationDef(
-            PARAM_GET,
-            "get",
-            (_A_BINDER,),
-            (ArgumentDef("name", STRING),),
-            A,
+            id=PARAM_GET,
+            name="get",
+            telescope=(_A_BINDER,),
+            arguments=(ArgumentDef(name="name", type=STRING),),
+            result_type=A,
         ),
     ),
 )
@@ -530,13 +549,16 @@ def _handler_def(
         behavior is a runtime attachment, so the declaration is foreign.
     """
     return HandlerDef(
-        HandlerId.derive("prelude", name, key),
-        name,
-        effect,
-        tuple(HandlerClauseDef(operation, grade) for operation, grade in clauses),
-        input_type,
-        output_type,
-        introduced,
+        id=HandlerId.derive("prelude", name, key),
+        name=name,
+        effect=effect,
+        clauses=tuple(
+            HandlerClauseDef(operation=operation, grade=grade)
+            for operation, grade in clauses
+        ),
+        input_type=input_type,
+        output_type=output_type,
+        introduced=introduced,
         total=total,
         telescope=telescope,
     )
@@ -1154,7 +1176,9 @@ def score_handler(
     accumulator = ScoreAccumulator(identity)
     checked_total = total_validator or weight_validator
     output_type = (
-        TypeApplication(WEIGHTED_RESULT_CONSTRUCTOR, (answer_type, LOG_WEIGHT))
+        TypeApplication(
+            constructor=WEIGHTED_RESULT_CONSTRUCTOR, arguments=(answer_type, LOG_WEIGHT)
+        )
         if expose_total
         else answer_type
     )
@@ -1388,31 +1412,30 @@ def _emit_score(
         dynamic_path = request.core.origin.dynamic_path
     else:
         dynamic_path = (*request.core.origin.dynamic_path, *request.dynamic_path)
-    generated_origin = request.core.origin.__class__(
-        SourceOrigin(
-            source.module,
-            (*source.structural_path, "generated", role),
-            role,
-            source.source_protocol,
-            source.file,
-            source.line,
-            source.column,
+    generated_origin = request.core.origin.with_(
+        origin=SourceOrigin(
+            module=source.module,
+            structural_path=(*source.structural_path, "generated", role),
+            role=role,
+            source_protocol=source.source_protocol,
+            file=source.file,
+            line=source.line,
+            column=source.column,
         ),
-        dynamic_path,
-        request.core.origin.resumption_path,
-        "duplicate",
-        parents,
+        dynamic_path=dynamic_path,
+        relation="duplicate",
+        parents=parents,
     )
     context.evaluate(
         Perform(
-            EffectRequest(
-                score_instance,
-                SCORE,
-                SCORE_ADD,
-                (),
-                (weight_ref,),
-                UNIT,
-                generated_origin,
+            request=EffectRequest(
+                instance=score_instance,
+                effect=SCORE,
+                operation=SCORE_ADD,
+                static_arguments=(),
+                arguments=(weight_ref,),
+                result_type=UNIT,
+                origin=generated_origin,
             )
         )
     )
@@ -1470,7 +1493,9 @@ def condition_handler(
         key=key,
         input_type=answer_type,
         output_type=answer_type,
-        introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+        introduced=EffectRow(
+            entries=(RowEntry(instance=score_instance, effect=SCORE),)
+        ),
         total=False,
         telescope=_generic_binders(answer_type=answer_type),
     )
@@ -1663,7 +1688,7 @@ def replay_handler(
     if policy is ReplayPolicy.CLAMP_AND_SCORE and score_instance is None:
         raise ValueError("scored replay requires a Score effect instance")
     introduced = (
-        EffectRow((RowEntry(score_instance, SCORE),))
+        EffectRow(entries=(RowEntry(instance=score_instance, effect=SCORE),))
         if score_instance is not None and policy is ReplayPolicy.CLAMP_AND_SCORE
         else EffectRow()
     )
@@ -2114,7 +2139,10 @@ def state_handler(
         key=key,
         input_type=answer_type,
         output_type=(
-            TypeApplication(STATE_RESULT_CONSTRUCTOR, (answer_type, state_type))
+            TypeApplication(
+                constructor=STATE_RESULT_CONSTRUCTOR,
+                arguments=(answer_type, state_type),
+            )
             if expose_final
             else answer_type
         ),
@@ -2402,7 +2430,9 @@ def choose_handler(
         ((CHOOSE_CHOOSE, ResumptionGrade.UNRESTRICTED),),
         key=key,
         input_type=answer_type,
-        output_type=TypeApplication(CHOICE_RESULTS_CONSTRUCTOR, (answer_type,)),
+        output_type=TypeApplication(
+            constructor=CHOICE_RESULTS_CONSTRUCTOR, arguments=(answer_type,)
+        ),
         telescope=_generic_binders(answer_type=answer_type),
     )
 
@@ -2688,7 +2718,10 @@ def weight_handler(
         key=key,
         input_type=answer_type,
         output_type=(
-            TypeApplication(WEIGHTED_RESULT_CONSTRUCTOR, (answer_type, weight_type))
+            TypeApplication(
+                constructor=WEIGHTED_RESULT_CONSTRUCTOR,
+                arguments=(answer_type, weight_type),
+            )
             if expose_total
             else answer_type
         ),
@@ -2860,7 +2893,9 @@ def draw_scoring_handler(
         key=key,
         input_type=answer_type,
         output_type=answer_type,
-        introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+        introduced=EffectRow(
+            entries=(RowEntry(instance=score_instance, effect=SCORE),)
+        ),
         telescope=_generic_binders(answer_type=answer_type),
     )
 
@@ -3043,7 +3078,9 @@ def reweight_handler(
         key=key,
         input_type=answer_type,
         output_type=answer_type,
-        introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+        introduced=EffectRow(
+            entries=(RowEntry(instance=score_instance, effect=SCORE),)
+        ),
         telescope=_generic_binders(answer_type=answer_type),
     )
 
@@ -3142,7 +3179,9 @@ def block_handler(
         key=key,
         input_type=answer_type,
         output_type=answer_type,
-        introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+        introduced=EffectRow(
+            entries=(RowEntry(instance=score_instance, effect=SCORE),)
+        ),
         total=False,
         telescope=_generic_binders(answer_type=answer_type),
     )

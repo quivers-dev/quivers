@@ -2009,8 +2009,8 @@ def _parse_static(
                     f"got {len(index_parts)}"
                 )
             return TypeApplication(
-                family.type_constructor,
-                (
+                constructor=family.type_constructor,
+                arguments=(
                     *(
                         _parse_static(module, expected, part)
                         for expected, part in zip(
@@ -2029,7 +2029,7 @@ def _parse_static(
             raise ValueError(f"unknown type constructor {head!r}")
         if head not in {"Unit", "Bool", "Int", "Real", "String"}:
             raise ValueError(f"unknown closed runtime type {head!r}")
-        return TypeApplication(TypeConstructorRef.builtin(head))
+        return TypeApplication(constructor=TypeConstructorRef.builtin(head))
     if isinstance(binder, EffectBinder):
         if index_parts:
             raise ValueError(f"an effect application {text!r} takes no indices")
@@ -2053,20 +2053,20 @@ def _parse_static(
         if not isinstance(binder.sort, ShapeSort):
             raise ValueError(f"a shape {text!r} is not an index of {binder.sort!r}")
         dimensions = tuple(
-            _parse_static(module, IndexBinder("_", NatSort()), part)
+            _parse_static(module, IndexBinder(name="_", sort=NatSort()), part)
             for part in index_parts
         )
-        return ShapeIndex(dimensions)  # type: ignore[arg-type]
+        return ShapeIndex(dimensions=dimensions)  # type: ignore[arg-type]
     if index_parts:
         if not isinstance(binder.sort, UserIndexSort):
             raise ValueError(f"index sort {binder.sort!r} has no named constructors")
         arguments = tuple(
-            _parse_static(module, IndexBinder("_", binder.sort), part)
+            _parse_static(module, IndexBinder(name="_", sort=binder.sort), part)
             for part in index_parts
         )
-        return IndexConstructor(head, arguments, binder.sort)  # type: ignore[arg-type]
+        return IndexConstructor(name=head, arguments=arguments, sort=binder.sort)  # type: ignore[arg-type]
     if isinstance(binder.sort, NatSort) and head.isdigit():
-        return IndexLiteral(int(head), binder.sort)
+        return IndexLiteral(value=int(head), sort=binder.sort)
     if isinstance(binder.sort, UserIndexSort):
         # A nullary constructor is the sort's literal, the form the
         # lowering gives it, so a parsed term compares equal to a
@@ -2076,7 +2076,7 @@ def _parse_static(
                 f"index constructor {head!r} of {binder.sort.name} takes "
                 f"{binder.sort.constructor_arity(head)} arguments"
             )
-        return IndexLiteral(head, binder.sort)
+        return IndexLiteral(value=head, sort=binder.sort)
     raise ValueError(f"cannot parse closed index term {text!r} for {binder.sort!r}")
 
 
@@ -2226,7 +2226,7 @@ def _specialize_computation(
         environment keyed by the returned parameters binds them.
     """
     parameters = tuple(
-        Local(parameter.name, substitute_type(parameter.type, substitution))
+        Local(name=parameter.name, type=substitute_type(parameter.type, substitution))
         for parameter in computation.parameters
     )
     return parameters, substitute_computation(computation.body, substitution)

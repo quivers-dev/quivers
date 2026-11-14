@@ -6,7 +6,10 @@ the boundary only through stable attachment and handler identifiers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
+import didactic.api as dx
+
 from typing import Literal
 
 from quivers.qiec.effects import EffectRequest, EffectRow
@@ -26,8 +29,7 @@ from quivers.qiec.kinds import Telescope
 from quivers.qiec.types import EffectRef, IndexTerm, StaticArgument, TypeExpr
 
 
-@dataclass(frozen=True, slots=True)
-class Local:
+class Local(QiecModel):
     """A typed binder for a runtime value.
 
     Locals are compared by identity of name and type together, so two
@@ -42,11 +44,10 @@ class Local:
     """
 
     name: str
-    type: TypeExpr
+    type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(frozen=True, slots=True)
-class Var:
+class Var(QiecModel):
     """Reference to a bound local.
 
     Parameters
@@ -57,7 +58,7 @@ class Var:
         The serialization discriminator; always ``"var"``.
     """
 
-    local: Local
+    local: Local = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["var"] = "var"
 
 
@@ -65,8 +66,7 @@ type LiteralData = None | bool | int | float | str | bytes | tuple[LiteralData, 
 """The host data a literal carries: a scalar, bytes, or a tuple of literal data."""
 
 
-@dataclass(frozen=True, slots=True)
-class LiteralValue:
+class LiteralValue(QiecModel):
     """A literal host value at a primitive or tuple type.
 
     Parameters
@@ -80,13 +80,12 @@ class LiteralValue:
         The serialization discriminator; always ``"literal"``.
     """
 
-    value: LiteralData
-    type: TypeExpr
+    value: LiteralData = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["literal"] = "literal"
 
 
-@dataclass(frozen=True, slots=True)
-class ConstructorValue:
+class ConstructorValue(QiecModel):
     """Application of a declared constructor to static and value arguments.
 
     Parameters
@@ -103,15 +102,16 @@ class ConstructorValue:
         The serialization discriminator; always ``"constructor"``.
     """
 
-    constructor: ConstructorId
-    static_arguments: tuple[StaticArgument, ...]
-    fields: tuple[Value, ...]
-    result_type: TypeExpr
+    constructor: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    static_arguments: tuple[StaticArgument, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    fields: tuple[Value, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["constructor"] = "constructor"
 
 
-@dataclass(frozen=True, slots=True)
-class EvidenceValue:
+class EvidenceValue(QiecModel):
     """Kernel-checked equality evidence used as a value.
 
     Parameters
@@ -122,12 +122,11 @@ class EvidenceValue:
         The serialization discriminator; always ``"evidence"``.
     """
 
-    evidence: EqualityEvidence
+    evidence: EqualityEvidence = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["evidence"] = "evidence"
 
 
-@dataclass(frozen=True, slots=True)
-class AttachmentRef:
+class AttachmentRef(QiecModel):
     """A stable reference to a runtime-owned host value.
 
     Parameters
@@ -140,13 +139,12 @@ class AttachmentRef:
         The serialization discriminator; always ``"attachment"``.
     """
 
-    attachment: AttachmentId
-    type: TypeExpr
+    attachment: AttachmentId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["attachment"] = "attachment"
 
 
-@dataclass(frozen=True, slots=True)
-class TransportValue:
+class TransportValue(QiecModel):
     """Transport a value along kernel-checked equality evidence.
 
     Parameters
@@ -162,14 +160,13 @@ class TransportValue:
         The serialization discriminator; always ``"transport"``.
     """
 
-    evidence: EqualityEvidence
-    value: Value
-    target_type: TypeExpr
+    evidence: EqualityEvidence = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    target_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["transport"] = "transport"
 
 
-@dataclass(frozen=True, slots=True)
-class PrimitiveApplication:
+class PrimitiveApplication(QiecModel):
     """Application of a pure primitive from the closed registry.
 
     The primitive is named nominally and its signature is fixed, so the
@@ -193,16 +190,15 @@ class PrimitiveApplication:
         The serialization discriminator; always ``"primitive"``.
     """
 
-    primitive: PrimitiveId
+    primitive: PrimitiveId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    arguments: tuple[Value, ...]
-    result_type: TypeExpr
-    origin: SourceOrigin
+    arguments: tuple[Value, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["primitive"] = "primitive"
 
 
-@dataclass(frozen=True, slots=True)
-class TupleValue:
+class TupleValue(QiecModel):
     """Construction of a finite product from its components.
 
     Parameters
@@ -215,13 +211,12 @@ class TupleValue:
         The serialization discriminator; always ``"tuple"``.
     """
 
-    items: tuple[Value, ...]
-    result_type: TypeExpr
+    items: tuple[Value, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["tuple"] = "tuple"
 
 
-@dataclass(frozen=True, slots=True)
-class TensorValue:
+class TensorValue(QiecModel):
     """Construction of a tensor from its entries along the outermost axis.
 
     A rank-one tensor lists its elements; a tensor of higher rank lists
@@ -239,13 +234,12 @@ class TensorValue:
         The serialization discriminator; always ``"tensor"``.
     """
 
-    items: tuple[Value, ...]
-    result_type: TypeExpr
+    items: tuple[Value, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["tensor"] = "tensor"
 
 
-@dataclass(frozen=True, slots=True)
-class Projection:
+class Projection(QiecModel):
     """Selection of one component of a finite product.
 
     Parameters
@@ -260,14 +254,13 @@ class Projection:
         The serialization discriminator; always ``"projection"``.
     """
 
-    value: Value
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     position: int
-    result_type: TypeExpr
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["projection"] = "projection"
 
 
-@dataclass(frozen=True, slots=True)
-class PlateAxis:
+class PlateAxis(QiecModel):
     """One axis of a plated distribution.
 
     Parameters
@@ -281,12 +274,11 @@ class PlateAxis:
     """
 
     name: str
-    size: IndexTerm
+    size: IndexTerm = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["plate_axis"] = "plate_axis"
 
 
-@dataclass(frozen=True, slots=True)
-class PlateShape:
+class PlateShape(QiecModel):
     """The plate a distribution is constructed over.
 
     Batch axes replicate the distribution independently, one draw per
@@ -305,8 +297,12 @@ class PlateShape:
         The serialization discriminator; always ``"plate_shape"``.
     """
 
-    batch: tuple[PlateAxis, ...] = ()
-    event: tuple[PlateAxis, ...] = ()
+    batch: tuple[PlateAxis, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    event: tuple[PlateAxis, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["plate_shape"] = "plate_shape"
 
     @property
@@ -321,8 +317,7 @@ class PlateShape:
         return not self.batch and not self.event
 
 
-@dataclass(frozen=True, slots=True)
-class DistributionValue:
+class DistributionValue(QiecModel):
     """Construction of a distribution from a family of the semantic registry.
 
     The family is named nominally and its parameters are supplied by name,
@@ -351,17 +346,20 @@ class DistributionValue:
         The serialization discriminator; always ``"distribution"``.
     """
 
-    family: DistributionId
+    family: DistributionId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    arguments: tuple[tuple[str, Value], ...]
-    result_type: TypeExpr
-    origin: SourceOrigin
-    plate: PlateShape = PlateShape()
+    arguments: tuple[tuple[str, Value], ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    plate: PlateShape = dx.field(
+        default=PlateShape(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["distribution"] = "distribution"
 
 
-@dataclass(frozen=True, slots=True)
-class Gather:
+class Gather(QiecModel):
     """Selection along the outermost axis of a tensor.
 
     Parameters
@@ -378,14 +376,13 @@ class Gather:
         The serialization discriminator; always ``"gather"``.
     """
 
-    value: Value
-    index: Value
-    result_type: TypeExpr
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    index: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["gather"] = "gather"
 
 
-@dataclass(frozen=True, slots=True)
-class WeightSum:
+class WeightSum(QiecModel):
     """The total of a tensor of log weights.
 
     Parameters
@@ -396,12 +393,11 @@ class WeightSum:
         The serialization discriminator; always ``"weight_sum"``.
     """
 
-    value: Value
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["weight_sum"] = "weight_sum"
 
 
-@dataclass(frozen=True, slots=True)
-class SegmentSum:
+class SegmentSum(QiecModel):
     """Per-group totals of a vector of log weights.
 
     Parameters
@@ -418,15 +414,14 @@ class SegmentSum:
         The serialization discriminator; always ``"segment_sum"``.
     """
 
-    value: Value
-    index: Value
-    groups: IndexTerm
-    result_type: TypeExpr
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    index: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    groups: IndexTerm = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["segment_sum"] = "segment_sum"
 
 
-@dataclass(frozen=True, slots=True)
-class KernelMatrix:
+class KernelMatrix(QiecModel):
     """A positive-definite covariance over input locations.
 
     Parameters
@@ -445,11 +440,11 @@ class KernelMatrix:
         The serialization discriminator; always ``"kernel_matrix"``.
     """
 
-    inputs: Value
+    inputs: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     kernel: str
     length_scale: float
     jitter: float
-    result_type: TypeExpr
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["kernel_matrix"] = "kernel_matrix"
 
 
@@ -460,8 +455,7 @@ type RowwiseOperator = Literal["softmax", "log_softmax", "cumsum", "sort", "norm
 """The operations along a tensor's last axis that keep its shape."""
 
 
-@dataclass(frozen=True, slots=True)
-class Reduction:
+class Reduction(QiecModel):
     """A number summarizing every entry of a tensor.
 
     Parameters
@@ -477,14 +471,13 @@ class Reduction:
         The serialization discriminator; always ``"reduction"``.
     """
 
-    operator: ReductionOperator
-    value: Value
-    result_type: TypeExpr
+    operator: ReductionOperator = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["reduction"] = "reduction"
 
 
-@dataclass(frozen=True, slots=True)
-class Rowwise:
+class Rowwise(QiecModel):
     """An operation along a tensor's last axis keeping its shape.
 
     Parameters
@@ -499,14 +492,13 @@ class Rowwise:
         The serialization discriminator; always ``"rowwise"``.
     """
 
-    operator: RowwiseOperator
-    value: Value
-    result_type: TypeExpr
+    operator: RowwiseOperator = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["rowwise"] = "rowwise"
 
 
-@dataclass(frozen=True, slots=True)
-class Comprehension:
+class Comprehension(QiecModel):
     """A tensor built by evaluating a body at every index of an axis.
 
     Parameters
@@ -524,15 +516,14 @@ class Comprehension:
         The serialization discriminator; always ``"comprehension"``.
     """
 
-    binder: Local
-    extent: IndexTerm
-    body: Value
-    result_type: TypeExpr
+    binder: Local = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    extent: IndexTerm = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    body: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["comprehension"] = "comprehension"
 
 
-@dataclass(frozen=True, slots=True)
-class LetBinding:
+class LetBinding(QiecModel):
     """One binding of a :class:`LetValue`.
 
     Parameters
@@ -543,12 +534,11 @@ class LetBinding:
         The value bound, evaluated once.
     """
 
-    binder: Local
-    value: Value
+    binder: Local = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(frozen=True, slots=True)
-class LetValue:
+class LetValue(QiecModel):
     """A pure value shared by name through sequential bindings.
 
     Each binding's value is evaluated once, in order, and is in scope in
@@ -569,9 +559,9 @@ class LetValue:
         The serialization discriminator; always ``"let"``.
     """
 
-    bindings: tuple[LetBinding, ...]
-    body: Value
-    result_type: TypeExpr
+    bindings: tuple[LetBinding, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    body: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["let"] = "let"
 
 
@@ -581,8 +571,7 @@ SCALE_FLOOR = 1e-7
 """
 
 
-@dataclass(frozen=True, slots=True)
-class AffineMap:
+class AffineMap(QiecModel):
     """One head of an affine parameter map, ``W x + b`` on a row block.
 
     For ``i`` below ``rows`` the head's coordinate ``i`` is the sum over
@@ -612,18 +601,17 @@ class AffineMap:
         The serialization discriminator; always ``"affine_map"``.
     """
 
-    weight: Value
-    bias: Value
-    sources: tuple[Value, ...]
+    weight: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    bias: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    sources: tuple[Value, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     row_offset: int
     rows: int
     transform: Literal["identity", "exp", "exp_floor"]
-    result_type: TypeExpr
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["affine_map"] = "affine_map"
 
 
-@dataclass(frozen=True, slots=True)
-class TableMap:
+class TableMap(QiecModel):
     """One head of a table-indexed parameter map, a row block of ``T[i]``.
 
     A kernel over a finite domain reads its parameters from a table
@@ -650,17 +638,16 @@ class TableMap:
         The serialization discriminator; always ``"table_map"``.
     """
 
-    table: Value
-    index: Value
+    table: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    index: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     row_offset: int
     rows: int
     transform: Literal["identity", "exp", "exp_floor"]
-    result_type: TypeExpr
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["table_map"] = "table_map"
 
 
-@dataclass(frozen=True, slots=True)
-class SiteValue:
+class SiteValue(QiecModel):
     """A named sample site.
 
     A site is the address a probabilistic step is observed and traced
@@ -678,12 +665,11 @@ class SiteValue:
     """
 
     label: str
-    result_type: TypeExpr
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["site"] = "site"
 
 
-@dataclass(frozen=True, slots=True)
-class LogDensity:
+class LogDensity(QiecModel):
     """Evaluation of a distribution's log density at a value.
 
     Parameters
@@ -703,10 +689,12 @@ class LogDensity:
         The serialization discriminator; always ``"log_density"``.
     """
 
-    sampleable: Value
-    value: Value
-    origin: SourceOrigin
-    batch: tuple[PlateAxis, ...] = ()
+    sampleable: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    batch: tuple[PlateAxis, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["log_density"] = "log_density"
 
 
@@ -738,8 +726,7 @@ type Value = (
 """A value term: every pure, effect-free term a computation may mention."""
 
 
-@dataclass(frozen=True, slots=True)
-class Return:
+class Return(QiecModel):
     """Return a value with no effects.
 
     Parameters
@@ -750,12 +737,11 @@ class Return:
         The serialization discriminator; always ``"return"``.
     """
 
-    value: Value
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["return"] = "return"
 
 
-@dataclass(frozen=True, slots=True)
-class Bind:
+class Bind(QiecModel):
     """Sequence two computations, binding the first's result in the second.
 
     Parameters
@@ -770,14 +756,13 @@ class Bind:
         The serialization discriminator; always ``"bind"``.
     """
 
-    binder: Local
-    first: Computation
-    then: Computation
+    binder: Local = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    first: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    then: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["bind"] = "bind"
 
 
-@dataclass(frozen=True, slots=True)
-class Perform:
+class Perform(QiecModel):
     """Perform one effect operation.
 
     Parameters
@@ -789,12 +774,11 @@ class Perform:
         The serialization discriminator; always ``"perform"``.
     """
 
-    request: EffectRequest
+    request: EffectRequest = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["perform"] = "perform"
 
 
-@dataclass(frozen=True, slots=True)
-class Handle:
+class Handle(QiecModel):
     """Run a computation under a handler installed for one effect instance.
 
     Parameters
@@ -811,15 +795,16 @@ class Handle:
         The serialization discriminator; always ``"handle"``.
     """
 
-    instance: EffectInstanceId
-    handler: HandlerId
-    computation: Computation
-    static_arguments: tuple[StaticArgument, ...] = ()
+    instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    handler: HandlerId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    computation: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    static_arguments: tuple[StaticArgument, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["handle"] = "handle"
 
 
-@dataclass(frozen=True, slots=True)
-class CaseMotive:
+class CaseMotive(QiecModel):
     """The result family of an indexed case expression.
 
     Parameters
@@ -830,12 +815,11 @@ class CaseMotive:
         The type every branch must produce, over ``indices``.
     """
 
-    indices: Telescope
-    result_type: TypeExpr
+    indices: Telescope = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(frozen=True, slots=True)
-class CaseBranch:
+class CaseBranch(QiecModel):
     """One stable GADT branch with no host-language closure.
 
     Parameters
@@ -854,15 +838,16 @@ class CaseBranch:
         equality evidence are minted.
     """
 
-    constructor: ConstructorId
-    static_arguments: tuple[StaticArgument, ...]
-    fields: tuple[Local, ...]
-    body: Computation
-    scope: StaticScopeId
+    constructor: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    static_arguments: tuple[StaticArgument, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    fields: tuple[Local, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    body: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    scope: StaticScopeId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(frozen=True, slots=True)
-class Case:
+class Case(QiecModel):
     """Case analysis over an indexed family value.
 
     Parameters
@@ -878,14 +863,13 @@ class Case:
         The serialization discriminator; always ``"case"``.
     """
 
-    scrutinee: Value
-    motive: CaseMotive
-    branches: tuple[CaseBranch, ...]
+    scrutinee: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    motive: CaseMotive = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    branches: tuple[CaseBranch, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["case"] = "case"
 
 
-@dataclass(frozen=True, slots=True)
-class Call:
+class Call(QiecModel):
     """Application of a named computation.
 
     The callee is a stable identifier rather than an inlined body, which
@@ -912,18 +896,19 @@ class Call:
         The serialization discriminator; always ``"call"``.
     """
 
-    callee: ComputationId
+    callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    static_arguments: tuple[StaticArgument, ...]
-    arguments: tuple[Value, ...]
-    result_type: TypeExpr
-    effects: EffectRow
-    origin: SourceOrigin
+    static_arguments: tuple[StaticArgument, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    arguments: tuple[Value, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    effects: EffectRow = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["call"] = "call"
 
 
-@dataclass(frozen=True, slots=True)
-class Resume:
+class Resume(QiecModel):
     """Invocation of the enclosing handler clause's continuation.
 
     The resumption is not a value and cannot be stored, so it is a term
@@ -942,13 +927,12 @@ class Resume:
         The serialization discriminator; always ``"resume"``.
     """
 
-    value: Value
-    origin: SourceOrigin
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["resume"] = "resume"
 
 
-@dataclass(frozen=True, slots=True)
-class NewInstance:
+class NewInstance(QiecModel):
     """Lexically scoped allocation of an effect instance.
 
     The identity is derived from the module, the enclosing computation,
@@ -970,15 +954,14 @@ class NewInstance:
         The serialization discriminator; always ``"new_instance"``.
     """
 
-    instance: EffectInstanceId
-    effect: EffectRef
-    body: Computation
-    origin: SourceOrigin
+    instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    effect: EffectRef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    body: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["new_instance"] = "new_instance"
 
 
-@dataclass(frozen=True, slots=True)
-class If:
+class If(QiecModel):
     """Branch on a Boolean value.
 
     Both branches must produce the same type; the row of the whole is
@@ -998,9 +981,9 @@ class If:
         The serialization discriminator; always ``"if"``.
     """
 
-    condition: Value
-    then: Computation
-    otherwise: Computation
+    condition: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    then: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    otherwise: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["if"] = "if"
 
 

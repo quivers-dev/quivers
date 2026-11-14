@@ -137,7 +137,7 @@ class _Plate:
     @property
     def size(self) -> IndexLiteral:
         """The extent as an index literal."""
-        return IndexLiteral(self.extent, NAT)
+        return IndexLiteral(value=self.extent, sort=NAT)
 
     def lifted_type(self, element: TypeExpr) -> TypeExpr:
         """The type of one value per iteration.
@@ -303,12 +303,21 @@ class _Lowering:
         if self.plate is None or not self.per_item(value):
             name = self.floater.fresh(hint)
             self.let(name, value)
-            return Var(Local(name, type_))
+            return Var(local=Local(name=name, type=type_))
         plate = self.plate
         lifted = plate.lifted_type(type_)
         name = self.floater.fresh(hint)
-        self.let(name, Comprehension(plate.index, plate.size, value, lifted))
-        return Gather(Var(Local(name, lifted)), Var(plate.index), type_)
+        self.let(
+            name,
+            Comprehension(
+                binder=plate.index, extent=plate.size, body=value, result_type=lifted
+            ),
+        )
+        return Gather(
+            value=Var(local=Local(name=name, type=lifted)),
+            index=Var(local=plate.index),
+            result_type=type_,
+        )
 
     def call(
         self,
@@ -371,7 +380,9 @@ class _Lowering:
                 # A nested sequence associates into the enclosing one; its
                 # binder is fresh to the continuation.
                 node = Bind(
-                    first.binder, first.first, Bind(node.binder, first.then, node.then)
+                    binder=first.binder,
+                    first=first.first,
+                    then=Bind(binder=node.binder, first=first.then, then=node.then),
                 )
                 continue
             env[node.binder] = self.statement(
@@ -379,7 +390,7 @@ class _Lowering:
             )
             node = node.then
         return self.statement(
-            node, Local(prefix, result_type), callee, env, prefix, inner
+            node, Local(name=prefix, type=result_type), callee, env, prefix, inner
         )
 
     def statement(
@@ -511,7 +522,7 @@ class _Lowering:
         if effect == "Score":
             (weight,) = request.arguments
             self.score(replace_locals(weight, env), prefix)
-            return LiteralValue(None, binder.type)
+            return LiteralValue(value=None, type=binder.type)
         raise CallNotLowered(
             f"performs `{effect}` in `{owner.name}`{origin_line(term)}, which "
             f"the compiled runtime runs only through the program's own "
@@ -600,9 +611,13 @@ class _Lowering:
             )
         )
         if self.plate is None:
-            return Var(Local(name, binder.type))
+            return Var(local=Local(name=name, type=binder.type))
         lifted = self.plate.lifted_type(binder.type)
-        return Gather(Var(Local(name, lifted)), Var(self.plate.index), binder.type)
+        return Gather(
+            value=Var(local=Local(name=name, type=lifted)),
+            index=Var(local=self.plate.index),
+            result_type=binder.type,
+        )
 
     def _axis(self, size: object, owner: NamedComputation) -> str:
         """The object a plate axis of a draw runs over.
@@ -660,7 +675,15 @@ class _Lowering:
             element = _value_type(value)
             lifted = plate.lifted_type(element)
             name = self.floater.fresh(hint)
-            self.let(name, Comprehension(plate.index, plate.size, value, lifted))
+            self.let(
+                name,
+                Comprehension(
+                    binder=plate.index,
+                    extent=plate.size,
+                    body=value,
+                    result_type=lifted,
+                ),
+            )
             return DrawArgName(text=name)
         name = self.floater.fresh(hint)
         self.let(name, value)
@@ -725,8 +748,16 @@ class _Lowering:
         element = _value_type(value)
         lifted = self.plate.lifted_type(element)
         name = self.floater.fresh(hint)
-        self.let(name, Comprehension(self.plate.index, self.plate.size, value, lifted))
-        return Var(Local(name, lifted))
+        self.let(
+            name,
+            Comprehension(
+                binder=self.plate.index,
+                extent=self.plate.size,
+                body=value,
+                result_type=lifted,
+            ),
+        )
+        return Var(local=Local(name=name, type=lifted))
 
     def log_density(self, density: LogDensity, hint: str) -> LetExprNode:
         """A log density of a family at a value, as an internal let call.
@@ -965,7 +996,7 @@ class CallLowering:
                 lowering.steps.append(
                     LetStep(name=name, value=argument, line=step.line, col=step.col)
                 )
-            arguments.append(Var(Local(name, parameter.type)))
+            arguments.append(Var(local=Local(name=name, type=parameter.type)))
         result = lowering.call(
             callee, tuple(arguments), callee.type.result, step.name, ()
         )
@@ -1038,7 +1069,7 @@ class CallLowering:
                 f"traverses {extent} items, and no object of the module has "
                 f"{extent} elements for the iterations to run along"
             )
-        index = Local(_fresh(f"{step.name}_item", self.occupied), INT)
+        index = Local(name=_fresh(f"{step.name}_item", self.occupied), type=INT)
         plate = _Plate(axis, extent, index)
         lowering = _Lowering(
             self.computations, self.cards, self.occupied, self.program, step, plate
@@ -1080,13 +1111,22 @@ class CallLowering:
                 )
             )
             arguments.append(
-                Gather(Var(Local(name, lifted)), Var(index), parameter.type)
+                Gather(
+                    value=Var(local=Local(name=name, type=lifted)),
+                    index=Var(local=index),
+                    result_type=parameter.type,
+                )
             )
         result = lowering.call(
             callee, tuple(arguments), callee.type.result, step.name, ()
         )
         assert result_type is not None
-        lowering.let(step.name, Comprehension(index, plate.size, result, result_type))
+        lowering.let(
+            step.name,
+            Comprehension(
+                binder=index, extent=plate.size, body=result, result_type=result_type
+            ),
+        )
         return tuple(lowering.steps)
 
 

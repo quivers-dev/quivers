@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Sequence
-from dataclasses import fields, replace
 from typing import cast
 
 from torch.distributions import Distribution
@@ -60,6 +59,7 @@ from quivers.dsl.let_expr_traversal import walk_let_expr
 from quivers.transpile._resolve import build_let_table, build_morphism_table
 from quivers.transpile._python_calls import PYTHON_TARGETS, python_call_renderable
 from quivers.qiec import QiecModule, validate_module
+from quivers.qiec._models import QiecModel
 from quivers.qiec.effects import EffectRequest
 from quivers.qiec.module import NamedComputation
 from quivers.qiec.programs import ProgramEntry, ProgramParameter
@@ -390,9 +390,9 @@ class _ProgramWalk:
                 # outer continuation, so extending its lexical scope here is
                 # capture-free.
                 node = Bind(
-                    first.binder,
-                    first.first,
-                    Bind(node.binder, first.then, node.then),
+                    binder=first.binder,
+                    first=first.first,
+                    then=Bind(binder=node.binder, first=first.then, then=node.then),
                 )
                 continue
             binder = node.binder
@@ -612,16 +612,16 @@ class _ProgramWalk:
             inner = self._resolved(value.value)
             if isinstance(inner, Var) and inner.local.name in self.tuples:
                 return self.tuples[inner.local.name][value.position]
-            return replace(value, value=inner)
+            return value.with_(value=inner)
         if isinstance(value, (Var, LiteralValue)):
             return value
         changes: dict[str, Value | tuple[Value, ...]] = {}
-        for field in fields(value):
-            current = getattr(value, field.name)
+        for name in type(value).__field_specs__:
+            current = getattr(value, name)
             if isinstance(current, _VALUE_TYPES):
                 resolved = self._resolved(current)
                 if resolved is not current:
-                    changes[field.name] = resolved
+                    changes[name] = resolved
             elif isinstance(current, tuple) and any(
                 isinstance(item, _VALUE_TYPES) for item in current
             ):
@@ -630,8 +630,8 @@ class _ProgramWalk:
                     for item in current
                 )
                 if any(a is not b for a, b in zip(items, current, strict=True)):
-                    changes[field.name] = items
-        return replace(value, **changes) if changes else value
+                    changes[name] = items
+        return value.with_(**changes) if changes else value
 
     def _factor_axes(self, name: str, type_: TypeExpr) -> tuple[str, ...]:
         """The axis names a source ``factor`` binding states.
@@ -859,7 +859,7 @@ class _ProgramWalk:
                 ],
             )
         inlined = self._inlined(callee, call, binder)
-        arguments_value = TupleValue(call.arguments, binder.type)
+        arguments_value = TupleValue(items=call.arguments, result_type=binder.type)
         axes = self._inferred_axes(binder.type, arguments_value)
         self.axes[binder.name] = axes
         plate = self._inferred_plate(binder.type, axes, arguments_value)
@@ -1176,9 +1176,9 @@ class _ProgramWalk:
             first = node.first
             if isinstance(first, Bind):
                 node = Bind(
-                    first.binder,
-                    first.first,
-                    Bind(node.binder, first.then, node.then),
+                    binder=first.binder,
+                    first=first.first,
+                    then=Bind(binder=node.binder, first=first.then, then=node.then),
                 )
                 continue
             self.local_types[node.binder.name] = node.binder.type
@@ -2786,13 +2786,13 @@ def _referenced(value: Value) -> Iterator[str]:
     if isinstance(value, Var):
         yield value.local.name
         return
-    for name in getattr(value, "__dataclass_fields__", {}):
+    for name in type(value).__field_specs__:
         field = getattr(value, name)
         if isinstance(field, tuple):
             for item in field:
-                if hasattr(item, "__dataclass_fields__"):
+                if isinstance(item, QiecModel):
                     yield from _referenced(item)  # type: ignore[arg-type]
-        elif hasattr(field, "__dataclass_fields__"):
+        elif isinstance(field, QiecModel):
             yield from _referenced(field)  # type: ignore[arg-type]
 
 
@@ -2868,7 +2868,7 @@ def checked_module(
             # plan alone, and the gap is recorded on the plan.
             qiec_module = lower_qvr_to_qiec(module, elaborate_programs=False)
             validate_module(qiec_module)
-            return replace(qiec_module, gap=error.message)
+            return qiec_module.with_(gap=error.message)
         if error.code != "qiec-program" and error.program is None:
             raise
         raise UnsupportedConstruct(

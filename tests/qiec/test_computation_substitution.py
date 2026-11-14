@@ -57,15 +57,22 @@ def _origin(role: str = "call") -> SourceOrigin:
         A fixed origin, so two terms differ only where a test varies
         them.
     """
-    return SourceOrigin("tests", ("path",), role, "qvr-source/v0.19")
+    return SourceOrigin(
+        module="tests",
+        structural_path=("path",),
+        role=role,
+        source_protocol="qvr-source/v0.19",
+    )
 
 
 #: A declaration binder: no identity, so substitution matches it by name.
-FREE = TypeVariable("A", TYPE)
+FREE = TypeVariable(name="A", kind=TYPE)
 
 #: A rigid variable of the *same name*, as a case branch would introduce.
 #: Substitution must not touch it, or a branch's refinement would leak.
-RIGID = TypeVariable("A", TYPE, StaticVariableId.derive("branch-scope", "A"))
+RIGID = TypeVariable(
+    name="A", kind=TYPE, identity=StaticVariableId.derive("branch-scope", "A")
+)
 
 #: Binds the name both variables share.
 SUBSTITUTION = StaticSubstitution(types=(("A", INT),))
@@ -74,13 +81,13 @@ SUBSTITUTION = StaticSubstitution(types=(("A", INT),))
 def _call(result_type: TypeVariable | type) -> Call:
     """A call whose static argument and result type are `result_type`."""
     return Call(
-        ComputationId.derive("tests", "helper"),
-        "helper",
-        (result_type,),
-        (),
-        result_type,
-        EMPTY_ROW,
-        _origin(),
+        callee=ComputationId.derive("tests", "helper"),
+        name="helper",
+        static_arguments=(result_type,),
+        arguments=(),
+        result_type=result_type,
+        effects=EMPTY_ROW,
+        origin=_origin(),
     )
 
 
@@ -116,7 +123,9 @@ def test_a_call_keeps_the_identity_it_points_at() -> None:
 
 def test_a_resumption_substitutes_the_value_it_resumes_with() -> None:
     """`resume` carries a value whose type may mention a binder."""
-    resumption = Resume(LiteralValue(1, FREE), _origin("resume"))
+    resumption = Resume(
+        value=LiteralValue(value=1, type=FREE), origin=_origin("resume")
+    )
     result = substitute_computation(resumption, SUBSTITUTION)
     assert result.value.type == INT
     assert result.origin == resumption.origin
@@ -124,12 +133,14 @@ def test_a_resumption_substitutes_the_value_it_resumes_with() -> None:
 
 def test_a_local_instance_substitutes_its_interface_and_body() -> None:
     """An allocation's interface application may be parameterised."""
-    effect = EffectRef(EffectId.derive("tests", "State"), "State", (FREE,))
+    effect = EffectRef(
+        id=EffectId.derive("tests", "State"), name="State", arguments=(FREE,)
+    )
     allocation = NewInstance(
-        EffectInstanceId.derive("tests", "cell"),
-        effect,
-        Return(LiteralValue(0, FREE)),
-        _origin("instance"),
+        instance=EffectInstanceId.derive("tests", "cell"),
+        effect=effect,
+        body=Return(value=LiteralValue(value=0, type=FREE)),
+        origin=_origin("instance"),
     )
     result = substitute_computation(allocation, SUBSTITUTION)
     assert result.effect.arguments == (INT,)
@@ -147,9 +158,9 @@ def test_substitution_reaches_a_binder_type_inside_a_sequence() -> None:
     as opaque, but its type mentions static variables like any other.
     """
     bound = Bind(
-        Local("x", FREE),
-        Return(LiteralValue(1, FREE)),
-        Return(Var(Local("x", FREE))),
+        binder=Local(name="x", type=FREE),
+        first=Return(value=LiteralValue(value=1, type=FREE)),
+        then=Return(value=Var(local=Local(name="x", type=FREE))),
     )
     result = substitute_computation(bound, SUBSTITUTION)
     assert result.binder.type == INT
@@ -178,12 +189,16 @@ def test_every_new_term_is_handled_rather_than_rejected(term: str) -> None:
     """
     terms = {
         "call": _call(FREE),
-        "resume": Resume(LiteralValue(1, FREE), _origin("resume")),
+        "resume": Resume(
+            value=LiteralValue(value=1, type=FREE), origin=_origin("resume")
+        ),
         "instance": NewInstance(
-            EffectInstanceId.derive("tests", "cell"),
-            EffectRef(EffectId.derive("tests", "State"), "State", (FREE,)),
-            Return(LiteralValue(0, FREE)),
-            _origin("instance"),
+            instance=EffectInstanceId.derive("tests", "cell"),
+            effect=EffectRef(
+                id=EffectId.derive("tests", "State"), name="State", arguments=(FREE,)
+            ),
+            body=Return(value=LiteralValue(value=0, type=FREE)),
+            origin=_origin("instance"),
         ),
     }
     substitute_computation(terms[term], SUBSTITUTION)

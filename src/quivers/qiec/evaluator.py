@@ -534,7 +534,7 @@ class RuntimeAttachments:
                     f"runtime attachment {attachment} is already bound differently"
                 )
         self.values[attachment] = binding
-        return AttachmentRef(attachment, type)
+        return AttachmentRef(attachment=attachment, type=type)
 
     def bind_handler(self, handler: RuntimeHandler) -> HandlerId:
         """Attach executable clauses to their structural handler identity.
@@ -2154,7 +2154,7 @@ class Evaluator:
             natural: tuple[int, ...] = ()
             if split is not None and record.event_rank > 0:
                 natural = tuple(
-                    _extent(PlateAxis("event", dimension))
+                    _extent(PlateAxis(name="event", size=dimension))
                     for dimension in split[1][len(split[1]) - record.event_rank :]
                 )
             return RuntimeDistribution(
@@ -2192,7 +2192,7 @@ class Evaluator:
         if isinstance(value, WeightSum):
             return _total(self._value(value.value, environment))
         if isinstance(value, SegmentSum):
-            groups = _extent(PlateAxis("groups", value.groups))
+            groups = _extent(PlateAxis(name="groups", size=value.groups))
             totals = [0.0] * groups
             weights = self._value(value.value, environment)
             index = self._value(value.index, environment)
@@ -2227,7 +2227,7 @@ class Evaluator:
         if isinstance(value, Rowwise):
             return _rowwise(value.operator, self._value(value.value, environment))
         if isinstance(value, Comprehension):
-            extent = _extent(PlateAxis("comprehension", value.extent))
+            extent = _extent(PlateAxis(name="comprehension", size=value.extent))
             return tuple(
                 self._value(value.body, {**environment, value.binder: index})
                 for index in range(extent)
@@ -2323,9 +2323,13 @@ class Evaluator:
         path: list[DynamicAddressFrame] = []
         for frame in stack:
             if isinstance(frame, _CallFrame):
-                path.append(DynamicAddressFrame("call", f"{frame.name}#{frame.serial}"))
+                path.append(
+                    DynamicAddressFrame(
+                        scope="call", key=f"{frame.name}#{frame.serial}"
+                    )
+                )
             elif isinstance(frame, _InstanceFrame):
-                path.append(DynamicAddressFrame("instance", frame.serial))
+                path.append(DynamicAddressFrame(scope="instance", key=frame.serial))
         return tuple(path)
 
     def _drive_computation(
@@ -2642,7 +2646,10 @@ class Evaluator:
                     self._value(argument, env) for argument in current.arguments
                 )
                 parameters = tuple(
-                    Local(parameter.name, substitute_type(parameter.type, substitution))
+                    Local(
+                        name=parameter.name,
+                        type=substitute_type(parameter.type, substitution),
+                    )
                     for parameter in callee.parameters
                 )
                 self._call_serial += 1
@@ -3389,14 +3396,15 @@ class Evaluator:
             raise InvalidHandlerError(
                 f"invalid static arguments for handler {definition.name!r}: {error}"
             ) from error
-        return replace(
-            definition,
+        return definition.with_(
             effect=substitute_effect(definition.effect, substitution),
             clauses=tuple(
-                replace(
-                    clause,
+                clause.with_(
                     parameters=tuple(
-                        Local(local.name, substitute_type(local.type, substitution))
+                        Local(
+                            name=local.name,
+                            type=substitute_type(local.type, substitution),
+                        )
                         for local in clause.parameters
                     ),
                     body=(
@@ -3414,11 +3422,10 @@ class Evaluator:
             return_clause=(
                 None
                 if definition.return_clause is None
-                else replace(
-                    definition.return_clause,
+                else definition.return_clause.with_(
                     binder=Local(
-                        definition.return_clause.binder.name,
-                        substitute_type(
+                        name=definition.return_clause.binder.name,
+                        type=substitute_type(
                             definition.return_clause.binder.type, substitution
                         ),
                     ),

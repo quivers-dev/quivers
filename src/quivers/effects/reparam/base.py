@@ -184,7 +184,9 @@ class ReparamOrchestrator(EffectHandler):
             key=f"reparam-{id(self):x}",
             input_type=run.result_type,
             output_type=run.result_type,
-            introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+            introduced=EffectRow(
+                entries=(RowEntry(instance=score_instance, effect=SCORE),)
+            ),
             total=False,
         )
 

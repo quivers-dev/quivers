@@ -46,6 +46,15 @@ declarations of indexed families, effect interfaces, rows, handler signatures, v
 terms, source provenance, and equality evidence. Python callables and mutable resources are
 never part of it.
 
+Core records are immutable didactic models with keyword-only construction.
+Use `with_` to construct a validated update. Recursive fields retain their
+typed child records, and nominal references compare by stable identifier even
+when their display names differ. For instance, renaming a
+[`TypeConstructorRef`](../api/qiec/types.md#quivers.qiec.types.TypeConstructorRef)
+does not change the identity of a type application that uses it. The
+[wire codec](../api/qiec/serialization.md) records each declared field in order
+and accepts only its explicit set of kernel record types.
+
 The runtime associates stable identifiers with values and handler implementations that live
 only in the running Python process. An *attachment* is such a value
 or handler, for instance a PyTorch module for a neural component, addressed by a stable QIEC

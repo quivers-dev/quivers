@@ -17,8 +17,9 @@ without importing the planner's elaboration machinery.
 from __future__ import annotations
 
 from collections.abc import Hashable, Mapping
-from dataclasses import fields, is_dataclass, replace
 from typing import Literal, cast
+
+from quivers.qiec._models import QiecModel
 
 from quivers.dsl.ast_nodes import TypeName
 from quivers.dsl.ast_nodes.let_expressions import (
@@ -143,15 +144,15 @@ def replace_locals(value: Value, replacements: Mapping[Local, Value]) -> Value:
             if any(new is not old for new, old in zip(items, term, strict=True)):
                 return items
             return term
-        if isinstance(term, _VALUE_RECORDS) and is_dataclass(term):
+        if isinstance(term, _VALUE_RECORDS):
             changes: dict[str, _ValueTerm] = {}
-            for field in fields(term):
-                current = getattr(term, field.name)
+            for name in type(term).__field_specs__:
+                current = getattr(term, name)
                 if isinstance(current, (tuple, *_VALUE_RECORDS)):
                     rewritten = rewrite(current)
                     if rewritten is not current:
-                        changes[field.name] = rewritten
-            return replace(term, **changes) if changes else term
+                        changes[name] = rewritten
+            return term.with_(**changes) if changes else term
         return term
 
     return cast(Value, rewrite(value))
@@ -275,13 +276,13 @@ class _LetFloater:
         """
         if isinstance(first, Return):
             bindings, value = self.value(first.value, {})
-            return bindings, Return(value)
+            return bindings, Return(value=value)
         if isinstance(first, Perform):
             bindings, arguments = self.values(first.request.arguments, {})
-            return bindings, Perform(replace(first.request, arguments=arguments))
+            return bindings, Perform(request=first.request.with_(arguments=arguments))
         if isinstance(first, Call):
             bindings, arguments = self.values(first.arguments, {})
-            return bindings, replace(first, arguments=arguments)
+            return bindings, first.with_(arguments=arguments)
         return (), first
 
     def values(
@@ -338,33 +339,35 @@ class _LetFloater:
             for binding in value.bindings:
                 inner, bound = self.value(binding.value, scope)
                 hoisted.extend(inner)
-                local = Local(self.fresh(binding.binder.name), binding.binder.type)
-                hoisted.append(LetBinding(local, bound))
-                scope[binding.binder] = Var(local)
+                local = Local(
+                    name=self.fresh(binding.binder.name), type=binding.binder.type
+                )
+                hoisted.append(LetBinding(binder=local, value=bound))
+                scope[binding.binder] = Var(local=local)
             inner, body = self.value(value.body, scope)
             return (*hoisted, *inner), body
         if isinstance(value, Comprehension):
             inner, body = self.value(value.body, renamed)
             if not inner:
-                return (), replace(value, body=body)
+                return (), value.with_(body=body)
             return self._stacked(value, inner, body)
         changes: dict[
             str, Value | tuple[Value, ...] | tuple[tuple[str, Value], ...]
         ] = {}
         hoisted = []
-        for field in fields(value):
-            current = getattr(value, field.name)
+        for field_name in type(value).__field_specs__:
+            current = getattr(value, field_name)
             if isinstance(current, _VALUE_TYPES):
                 inner, result = self.value(cast(Value, current), renamed)
                 hoisted.extend(inner)
-                changes[field.name] = result
+                changes[field_name] = result
             elif isinstance(current, tuple) and current:
                 if all(isinstance(item, _VALUE_TYPES) for item in current):
                     inner, results = self.values(
                         cast(tuple[Value, ...], current), renamed
                     )
                     hoisted.extend(inner)
-                    changes[field.name] = results
+                    changes[field_name] = results
                 elif all(
                     isinstance(item, tuple)
                     and len(item) == 2
@@ -376,8 +379,8 @@ class _LetFloater:
                         inner, result = self.value(item, renamed)
                         hoisted.extend(inner)
                         pairs.append((name, result))
-                    changes[field.name] = tuple(pairs)
-        return tuple(hoisted), replace(value, **changes) if changes else value
+                    changes[field_name] = tuple(pairs)
+        return tuple(hoisted), value.with_(**changes) if changes else value
 
     def _stacked(
         self,
@@ -404,7 +407,7 @@ class _LetFloater:
             its value over the axis, and the comprehension whose body
             reads each at the index.
         """
-        index = Var(value.binder)
+        index = Var(local=value.binder)
         stacked: dict[Local, Value] = {}
         lifted: list[LetBinding] = []
         for binding in hoisted:
@@ -416,15 +419,23 @@ class _LetFloater:
                 if split is None
                 else tensor_type(split[0], (value.extent, *split[1]))
             )
-            local = Local(binding.binder.name, tensor)
+            local = Local(name=binding.binder.name, type=tensor)
             lifted.append(
                 LetBinding(
-                    local, Comprehension(value.binder, value.extent, bound, tensor)
+                    binder=local,
+                    value=Comprehension(
+                        binder=value.binder,
+                        extent=value.extent,
+                        body=bound,
+                        result_type=tensor,
+                    ),
                 )
             )
-            stacked[binding.binder] = Gather(Var(local), index, element)
+            stacked[binding.binder] = Gather(
+                value=Var(local=local), index=index, result_type=element
+            )
         _, body = self.value(body, stacked)
-        return tuple(lifted), replace(value, body=body)
+        return tuple(lifted), value.with_(body=body)
 
 
 def _local_names(term: Computation) -> set[str]:
@@ -448,8 +459,8 @@ def _local_names(term: Computation) -> set[str]:
             found.add(item.name)
         elif isinstance(item, tuple):
             pending.extend(item)
-        elif is_dataclass(item) and not isinstance(item, type):
-            pending.extend(getattr(item, field.name) for field in fields(item))
+        elif isinstance(item, QiecModel):
+            pending.extend(getattr(item, name) for name in type(item).__field_specs__)
     return found
 
 
@@ -776,8 +787,8 @@ def _first_origin(term: object) -> SourceOrigin | None:
             continue
         if isinstance(item, tuple):
             pending.extend(item)
-        elif is_dataclass(item) and not isinstance(item, type):
-            pending.extend(getattr(item, field.name) for field in fields(item))
+        elif isinstance(item, QiecModel):
+            pending.extend(getattr(item, name) for name in type(item).__field_specs__)
     return None
 
 
@@ -802,8 +813,8 @@ def free_local_names(value: Value) -> set[str]:
             found.add(item.local.name)
         elif isinstance(item, tuple):
             pending.extend(item)
-        elif is_dataclass(item) and not isinstance(item, type):
-            pending.extend(getattr(item, field.name) for field in fields(item))
+        elif isinstance(item, QiecModel):
+            pending.extend(getattr(item, name) for name in type(item).__field_specs__)
     return found
 
 
@@ -828,8 +839,8 @@ def _bound_names(term: Computation | Value) -> set[str]:
             found.add(item.binder.name)
         if isinstance(item, tuple):
             pending.extend(item)
-        elif is_dataclass(item) and not isinstance(item, type):
-            pending.extend(getattr(item, field.name) for field in fields(item))
+        elif isinstance(item, QiecModel):
+            pending.extend(getattr(item, name) for name in type(item).__field_specs__)
     return found
 
 
@@ -882,11 +893,11 @@ def _select(
         )
     signature = primitive(name)
     return PrimitiveApplication(
-        signature.id,
-        name,
-        (condition, then, otherwise),
-        result_type,
-        _origin_of(condition),
+        primitive=signature.id,
+        name=name,
+        arguments=(condition, then, otherwise),
+        result_type=result_type,
+        origin=_origin_of(condition),
     )
 
 
@@ -907,7 +918,12 @@ def _origin_of(value: Value) -> SourceOrigin:
     found = _first_origin(value)
     if found is not None:
         return found
-    return SourceOrigin("lowered", ("if",), "primitive", "qiec-lowering")
+    return SourceOrigin(
+        module="lowered",
+        structural_path=("if",),
+        role="primitive",
+        source_protocol="qiec-lowering",
+    )
 
 
 def inline_call(
@@ -979,13 +995,13 @@ def inline_call(
         ):
             replaced[parameter] = argument
         else:
-            bindings.append(LetBinding(parameter, argument))
+            bindings.append(LetBinding(binder=parameter, value=argument))
     body = computation_value(
         callee.body, replaced, result_type, callee, computations, (*active, callee.name)
     )
     if not bindings:
         return body
-    return LetValue(tuple(bindings), body, result_type)
+    return LetValue(bindings=tuple(bindings), body=body, result_type=result_type)
 
 
 def computation_value(
@@ -1035,13 +1051,15 @@ def computation_value(
             # A nested sequence associates into the enclosing one; its
             # binder is fresh to the continuation.
             node = Bind(
-                first.binder, first.first, Bind(node.binder, first.then, node.then)
+                binder=first.binder,
+                first=first.first,
+                then=Bind(binder=node.binder, first=first.then, then=node.then),
             )
             continue
         bindings.append(
             LetBinding(
-                node.binder,
-                _step_value(
+                binder=node.binder,
+                value=_step_value(
                     first, replaced, node.binder.type, owner, computations, active
                 ),
             )
@@ -1050,7 +1068,7 @@ def computation_value(
     result = _step_value(node, replaced, result_type, owner, computations, active)
     if not bindings:
         return result
-    return LetValue(tuple(bindings), result, result_type)
+    return LetValue(bindings=tuple(bindings), body=result, result_type=result_type)
 
 
 def _step_value(

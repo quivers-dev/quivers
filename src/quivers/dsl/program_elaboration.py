@@ -26,7 +26,7 @@ import didactic.api as dx
 import math
 from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
 from quivers.dsl.ast_nodes import (
@@ -627,9 +627,9 @@ def _zero_of(type_: TypeExpr) -> Value:
         If the type has no zero.
     """
     if type_ == REAL:
-        return LiteralValue(0.0, REAL)
+        return LiteralValue(value=0.0, type=REAL)
     if type_ == INT:
-        return LiteralValue(0, INT)
+        return LiteralValue(value=0, type=INT)
     shape = tensor_shape(type_)
     if shape is None or not shape[1] or not isinstance(shape[1][0], IndexLiteral):
         raise ValueError(f"{render_static(type_)} has no zero")
@@ -637,7 +637,8 @@ def _zero_of(type_: TypeExpr) -> Value:
         shape[0] if len(shape[1]) == 1 else tensor_type(shape[0], shape[1][1:])
     )
     return TensorValue(
-        tuple(_zero_of(inner) for _ in range(int(shape[1][0].value))), type_
+        items=tuple(_zero_of(inner) for _ in range(int(shape[1][0].value))),
+        result_type=type_,
     )
 
 
@@ -708,12 +709,12 @@ def _per_row(head: Value, width: int, row: Local, rows_axis: PlateAxis) -> Value
         A ``Tensor[Real]([rows, width])`` comprehension.
     """
     if width == 1:
-        head = TensorValue((head,), tensor_type(REAL, (_extent(1),)))
+        head = TensorValue(items=(head,), result_type=tensor_type(REAL, (_extent(1),)))
     return Comprehension(
-        row,
-        rows_axis.size,
-        head,
-        tensor_type(REAL, (rows_axis.size, _extent(width))),
+        binder=row,
+        extent=rows_axis.size,
+        body=head,
+        result_type=tensor_type(REAL, (rows_axis.size, _extent(width))),
     )
 
 
@@ -1504,13 +1505,15 @@ def _elaborate_marginal_chain(
         binder for name_, binder in state.extents.items() if name_ in mentioned
     )
     statics: tuple[StaticArgument, ...] = tuple(
-        IndexVariable(binder.name, binder.sort) for binder in telescope
+        IndexVariable(name=binder.name, sort=binder.sort) for binder in telescope
     )
     filter_type = tensor_type(REAL, (states.size,))
-    visited = Local("__chain_t", INT)
-    sequence = Local("__chain_xs", local.type)
-    carried = Local("__chain_log_filter", filter_type)
-    passed_locals = tuple(Local(f"__chain_{item.name}", item.type) for item in passed)
+    visited = Local(name="__chain_t", type=INT)
+    sequence = Local(name="__chain_xs", type=local.type)
+    carried = Local(name="__chain_log_filter", type=filter_type)
+    passed_locals = tuple(
+        Local(name=f"__chain_{item.name}", type=item.type) for item in passed
+    )
     identity = ComputationId.derive(elaborator.source.module_name, "computation", name)
     helper = ComputationSignature(
         identity,
@@ -1526,48 +1529,66 @@ def _elaborate_marginal_chain(
         elaborator._fail_kernel(node, error, fallback="qiec-program")
     elaborator.computation_signatures[name] = helper
     path = ("programs", state.declaration.name, "chains", node.name)
-    counter = Local("__chain_k", INT)
+    counter = Local(name="__chain_k", type=INT)
     length: Value = Reduction(
-        "sum",
-        Comprehension(
-            counter, extent, LiteralValue(1, INT), tensor_type(INT, (extent,))
+        operator="sum",
+        value=Comprehension(
+            binder=counter,
+            extent=extent,
+            body=LiteralValue(value=1, type=INT),
+            result_type=tensor_type(INT, (extent,)),
         ),
-        INT,
+        result_type=INT,
     )
-    position = Local("__chain_p", INT)
+    position = Local(name="__chain_p", type=INT)
     position_value: Value = (
         elaborator._primitive(
             "sub_int",
             (
                 elaborator._primitive(
-                    "sub_int", (length, LiteralValue(1, INT)), node, (*path, "last")
+                    "sub_int",
+                    (length, LiteralValue(value=1, type=INT)),
+                    node,
+                    (*path, "last"),
                 ),
-                Var(visited),
+                Var(local=visited),
             ),
             node,
             (*path, "position"),
         )
         if scan.reverse
-        else Var(visited)
+        else Var(local=visited)
     )
-    entry = Local("__chain_x", entry_type)
-    rows = tuple(Local(f"__chain_row_{index}", table_type) for index in range(count))
-    table = Local("__chain_table", filter_type)
-    evidence = Local("__chain_evidence", REAL)
-    following = Local("__chain_next", filter_type)
-    rest = Local("__chain_rest", REAL)
-    column = Local("__chain_j", INT)
+    entry = Local(name="__chain_x", type=entry_type)
+    rows = tuple(
+        Local(name=f"__chain_row_{index}", type=table_type) for index in range(count)
+    )
+    table = Local(name="__chain_table", type=filter_type)
+    evidence = Local(name="__chain_evidence", type=REAL)
+    following = Local(name="__chain_next", type=filter_type)
+    rest = Local(name="__chain_rest", type=REAL)
+    column = Local(name="__chain_j", type=INT)
     # The weight of moving from state i to state j and scoring j's
     # observations, after the filtered weight of i.
     moves = TensorValue(
-        tuple(
+        items=tuple(
             elaborator._primitive(
                 "add_real",
                 (
-                    Gather(Var(carried), LiteralValue(index, INT), REAL),
+                    Gather(
+                        value=Var(local=carried),
+                        index=LiteralValue(value=index, type=INT),
+                        result_type=REAL,
+                    ),
                     elaborator._primitive(
                         "weight_value",
-                        (Gather(Var(row), Var(column), LOG_WEIGHT),),
+                        (
+                            Gather(
+                                value=Var(local=row),
+                                index=Var(local=column),
+                                result_type=LOG_WEIGHT,
+                            ),
+                        ),
                         node,
                         (*path, "rows", index, "weight"),
                     ),
@@ -1577,65 +1598,73 @@ def _elaborate_marginal_chain(
             )
             for index, row in enumerate(rows)
         ),
-        filter_type,
+        result_type=filter_type,
     )
     recur = Call(
-        identity,
-        name,
-        statics,
-        (
+        callee=identity,
+        name=name,
+        static_arguments=statics,
+        arguments=(
             elaborator._primitive(
                 "add_int",
-                (Var(visited), LiteralValue(1, INT)),
+                (Var(local=visited), LiteralValue(value=1, type=INT)),
                 node,
                 (*path, "successor"),
             ),
-            Var(sequence),
-            Var(following),
-            *(Var(item) for item in passed_locals),
+            Var(local=sequence),
+            Var(local=following),
+            *(Var(local=item) for item in passed_locals),
         ),
-        REAL,
-        signature.effects,
-        _origin_at(elaborator, path, "call", node),
+        result_type=REAL,
+        effects=signature.effects,
+        origin=_origin_at(elaborator, path, "call", node),
     )
     continuation: Computation = Bind(
-        table,
-        Return(
-            Comprehension(
-                column,
-                states.size,
-                Reduction("logsumexp", moves, REAL),
-                filter_type,
+        binder=table,
+        first=Return(
+            value=Comprehension(
+                binder=column,
+                extent=states.size,
+                body=Reduction(operator="logsumexp", value=moves, result_type=REAL),
+                result_type=filter_type,
             )
         ),
-        Bind(
-            evidence,
-            Return(Reduction("logsumexp", Var(table), REAL)),
-            Bind(
-                following,
-                Return(
-                    Comprehension(
-                        column,
-                        states.size,
-                        elaborator._primitive(
+        then=Bind(
+            binder=evidence,
+            first=Return(
+                value=Reduction(
+                    operator="logsumexp", value=Var(local=table), result_type=REAL
+                )
+            ),
+            then=Bind(
+                binder=following,
+                first=Return(
+                    value=Comprehension(
+                        binder=column,
+                        extent=states.size,
+                        body=elaborator._primitive(
                             "sub_real",
                             (
-                                Gather(Var(table), Var(column), REAL),
-                                Var(evidence),
+                                Gather(
+                                    value=Var(local=table),
+                                    index=Var(local=column),
+                                    result_type=REAL,
+                                ),
+                                Var(local=evidence),
                             ),
                             node,
                             (*path, "normalize"),
                         ),
-                        filter_type,
+                        result_type=filter_type,
                     )
                 ),
-                Bind(
-                    rest,
-                    recur,
-                    Return(
-                        elaborator._primitive(
+                then=Bind(
+                    binder=rest,
+                    first=recur,
+                    then=Return(
+                        value=elaborator._primitive(
                             "add_real",
-                            (Var(evidence), Var(rest)),
+                            (Var(local=evidence), Var(local=rest)),
                             node,
                             (*path, "accumulate"),
                         )
@@ -1646,42 +1675,52 @@ def _elaborate_marginal_chain(
     )
     passed_arguments = tuple(
         Gather(
-            Var(item),
-            Var(position),
-            substitute_type(parameter.type, substitution),
+            value=Var(local=item),
+            index=Var(local=position),
+            result_type=substitute_type(parameter.type, substitution),
         )
         if per_step
-        else Var(item)
+        else Var(local=item)
         for item, per_step, parameter in zip(
             passed_locals, positional, row_entry.parameters[2:], strict=True
         )
     )
     for index, row in reversed(tuple(enumerate(rows))):
         continuation = Bind(
-            row,
-            Call(
-                signature.id,
-                signature.name,
-                row_statics,
-                (Var(entry), LiteralValue(index, INT), *passed_arguments),
-                table_type,
-                signature.effects,
-                _origin_at(elaborator, (*path, "rows", index), "call", node),
+            binder=row,
+            first=Call(
+                callee=signature.id,
+                name=signature.name,
+                static_arguments=row_statics,
+                arguments=(
+                    Var(local=entry),
+                    LiteralValue(value=index, type=INT),
+                    *passed_arguments,
+                ),
+                result_type=table_type,
+                effects=signature.effects,
+                origin=_origin_at(elaborator, (*path, "rows", index), "call", node),
             ),
-            continuation,
+            then=continuation,
         )
     body: Computation = If(
-        elaborator._primitive(
-            "eq_int", (Var(visited), length), node, (*path, "finished")
+        condition=elaborator._primitive(
+            "eq_int", (Var(local=visited), length), node, (*path, "finished")
         ),
-        Return(LiteralValue(0.0, REAL)),
-        Bind(
-            position,
-            Return(position_value),
-            Bind(
-                entry,
-                Return(Gather(Var(sequence), Var(position), entry_type)),
-                continuation,
+        then=Return(value=LiteralValue(value=0.0, type=REAL)),
+        otherwise=Bind(
+            binder=position,
+            first=Return(value=position_value),
+            then=Bind(
+                binder=entry,
+                first=Return(
+                    value=Gather(
+                        value=Var(local=sequence),
+                        index=Var(local=position),
+                        result_type=entry_type,
+                    )
+                ),
+                then=continuation,
             ),
         ),
     )
@@ -1706,38 +1745,42 @@ def _elaborate_marginal_chain(
         f"{node.name}$start",
     )
     initial = Comprehension(
-        column,
-        states.size,
-        elaborator._primitive(
+        binder=column,
+        extent=states.size,
+        body=elaborator._primitive(
             "weight_value",
             (
                 LogDensity(
-                    start,
-                    Var(column),
-                    _origin_at(elaborator, (*path, "start"), "log-density", node),
+                    sampleable=start,
+                    value=Var(local=column),
+                    origin=_origin_at(
+                        elaborator, (*path, "start"), "log-density", node
+                    ),
                 ),
             ),
             node,
             (*path, "start"),
         ),
-        filter_type,
+        result_type=filter_type,
     )
     marginal = Call(
-        identity,
-        name,
-        statics,
-        (
-            LiteralValue(0, INT),
-            Var(local),
+        callee=identity,
+        name=name,
+        static_arguments=statics,
+        arguments=(
+            LiteralValue(value=0, type=INT),
+            Var(local=local),
             initial,
-            *(Var(item) for item in passed),
+            *(Var(local=item) for item in passed),
         ),
-        REAL,
-        signature.effects,
-        _origin_at(elaborator, path, "call", node),
+        result_type=REAL,
+        effects=signature.effects,
+        origin=_origin_at(elaborator, path, "call", node),
     )
     binder = elaborator._bind_step(scope, node.name, REAL, marginal, node)
-    weight = elaborator._primitive("as_weight", (Var(binder),), node, (*path, "weight"))
+    weight = elaborator._primitive(
+        "as_weight", (Var(local=binder),), node, (*path, "weight")
+    )
     assert state.score is not None
     elaborator._add_score(state.score, weight, scope, state, node)
 
@@ -1777,7 +1820,7 @@ def _positions_value(
         sequences do not share their positions.
     """
     extent: IndexTerm | None = None
-    position = Local("__positions_t", INT)
+    position = Local(name="__positions_t", type=INT)
     entries: list[Value] = []
     for name in names:
         local = scope.lookup(name)
@@ -1807,22 +1850,34 @@ def _positions_value(
                 code="qiec-program",
             )
         if len(shape[1]) == 1:
-            entries.append(Gather(Var(local), Var(position), REAL))
+            entries.append(
+                Gather(
+                    value=Var(local=local), index=Var(local=position), result_type=REAL
+                )
+            )
             continue
         width = shape[1][1]
         assert isinstance(width, IndexLiteral)
-        row = Gather(Var(local), Var(position), tensor_type(REAL, (width,)))
+        row = Gather(
+            value=Var(local=local),
+            index=Var(local=position),
+            result_type=tensor_type(REAL, (width,)),
+        )
         entries.extend(
-            Gather(row, LiteralValue(index, INT), REAL)
+            Gather(
+                value=row, index=LiteralValue(value=index, type=INT), result_type=REAL
+            )
             for index in range(int(width.value))
         )
     assert extent is not None
-    entry_type = tensor_type(REAL, (IndexLiteral(len(entries), NAT),))
+    entry_type = tensor_type(REAL, (IndexLiteral(value=len(entries), sort=NAT),))
     return Comprehension(
-        position,
-        extent,
-        TensorValue(tuple(entries), entry_type),
-        tensor_type(REAL, (extent, IndexLiteral(len(entries), NAT))),
+        binder=position,
+        extent=extent,
+        body=TensorValue(items=tuple(entries), result_type=entry_type),
+        result_type=tensor_type(
+            REAL, (extent, IndexLiteral(value=len(entries), sort=NAT))
+        ),
     )
 
 
@@ -1877,17 +1932,22 @@ def _scan_initial_state(
         learned = elaborator._declare_parameter(
             init, state_type, "weight", scope, state, node
         )
-        return Var(learned)
+        return Var(local=learned)
     if bound.type == state_type:
-        return Var(bound)
+        return Var(local=bound)
     shape = tensor_shape(state_type)
     if (
         shape is not None
-        and shape[1] == (IndexLiteral(1, NAT),)
+        and shape[1] == (IndexLiteral(value=1, sort=NAT),)
         and bound.type == shape[0]
     ):
-        counter = Local("__scan_init_k", INT)
-        return Comprehension(counter, IndexLiteral(1, NAT), Var(bound), state_type)
+        counter = Local(name="__scan_init_k", type=INT)
+        return Comprehension(
+            binder=counter,
+            extent=IndexLiteral(value=1, sort=NAT),
+            body=Var(local=bound),
+            result_type=state_type,
+        )
     elaborator._fail(
         node,
         f"the scan starts from {init!r}, of type {render_static(bound.type)}, "
@@ -2170,8 +2230,8 @@ def _literal(value: float, integral: bool) -> LiteralValue:
         An ``Int`` literal when integral and whole, else a ``Real``.
     """
     if integral and float(value).is_integer():
-        return LiteralValue(int(value), INT)
-    return LiteralValue(float(value), REAL)
+        return LiteralValue(value=int(value), type=INT)
+    return LiteralValue(value=float(value), type=REAL)
 
 
 def _element_of(parameter: FamilyParameter | _ScalarParameter) -> TypeApplication:
@@ -2355,9 +2415,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             lexical_path=("instances", name),
         )
         instance = NamedEffectInstance(
-            name,
-            entry,
-            _origin_at(self, ("instances", name), "effect-instance"),
+            name=name,
+            entry=entry,
+            origin=_origin_at(self, ("instances", name), "effect-instance"),
         )
         self.instances[name] = instance
         return instance
@@ -2398,8 +2458,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
         if all(name in self.handlers for name in names):
             return {name: self.handlers[name] for name in names}
-        weight_binder = TypeBinder("w")
-        weight = TypeVariable("w")
+        weight_binder = TypeBinder(name="w")
+        weight = TypeVariable(name="w")
         random = self._effect("Random")
         weight_effect = self._effect("Weight")
         assert random is not None and weight_effect is not None
@@ -2408,39 +2468,47 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         declared_handlers: dict[str, HandlerDef] = {}
         for (grouped, _reduction), name in MARGINAL_HANDLERS.items():
             declared_handlers[name] = HandlerDef(
-                HandlerId.derive(self.source.module_name, "handler", name),
-                name,
-                random.ref,
-                (HandlerClauseDef(sample.id, ResumptionGrade.UNRESTRICTED),),
-                product_type(UNIT, weight),
-                weight if grouped else LOG_WEIGHT,
-                EffectRow(),
+                id=HandlerId.derive(self.source.module_name, "handler", name),
+                name=name,
+                effect=random.ref,
+                clauses=(
+                    HandlerClauseDef(
+                        operation=sample.id, grade=ResumptionGrade.UNRESTRICTED
+                    ),
+                ),
+                input_type=product_type(UNIT, weight),
+                output_type=weight if grouped else LOG_WEIGHT,
+                introduced=EffectRow(),
                 total=True,
                 telescope=(weight_binder,),
                 implementation="foreign",
             )
         declared_handlers[ENUMERATE_TABLE_HANDLER] = HandlerDef(
-            HandlerId.derive(
+            id=HandlerId.derive(
                 self.source.module_name, "handler", ENUMERATE_TABLE_HANDLER
             ),
-            ENUMERATE_TABLE_HANDLER,
-            random.ref,
-            (HandlerClauseDef(sample.id, ResumptionGrade.UNRESTRICTED),),
-            product_type(UNIT, LOG_WEIGHT),
-            weight,
-            EffectRow(),
+            name=ENUMERATE_TABLE_HANDLER,
+            effect=random.ref,
+            clauses=(
+                HandlerClauseDef(
+                    operation=sample.id, grade=ResumptionGrade.UNRESTRICTED
+                ),
+            ),
+            input_type=product_type(UNIT, LOG_WEIGHT),
+            output_type=weight,
+            introduced=EffectRow(),
             total=True,
             telescope=(weight_binder,),
             implementation="foreign",
         )
         declared_handlers[COLLECT_HANDLER] = HandlerDef(
-            HandlerId.derive(self.source.module_name, "handler", COLLECT_HANDLER),
-            COLLECT_HANDLER,
-            weight_effect.apply((weight,)),
-            (HandlerClauseDef(add.id, ResumptionGrade.LINEAR),),
-            UNIT,
-            product_type(UNIT, weight),
-            EffectRow(),
+            id=HandlerId.derive(self.source.module_name, "handler", COLLECT_HANDLER),
+            name=COLLECT_HANDLER,
+            effect=weight_effect.apply((weight,)),
+            clauses=(HandlerClauseDef(operation=add.id, grade=ResumptionGrade.LINEAR),),
+            input_type=UNIT,
+            output_type=product_type(UNIT, weight),
+            introduced=EffectRow(),
             total=True,
             telescope=(weight_binder,),
             implementation="foreign",
@@ -2501,7 +2569,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         }
         self._unify_result_extents(declaration, scope, state)
         result, result_type = self._program_return(declaration, scope, state)
-        body = self._fold_steps(scope, Return(result))
+        body = self._fold_steps(scope, Return(value=result))
         if state.extent_solution:
             # Steps elaborated before an extent was fixed read it open;
             # the body, its sites, and the telescope take the fixed one.
@@ -2511,14 +2579,15 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             for name in state.extent_solution:
                 state.extents.pop(name, None)
             state.sites = [
-                replace(
-                    site,
+                site.with_(
                     batch=fixed.batch,
                     event=fixed.event,
                 )
                 for site in state.sites
                 for fixed in (
-                    substitute_plate(PlateShape(site.batch, site.event), substitution),
+                    substitute_plate(
+                        PlateShape(batch=site.batch, event=site.event), substitution
+                    ),
                 )
             ]
         row_entries: list[RowEntry] = []
@@ -2528,7 +2597,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             row_entries.append(score.entry)
         if state.uses_params:
             row_entries.append(self.instances[PARAMS_INSTANCE].entry)
-        row = EffectRow(tuple(row_entries))
+        row = EffectRow(entries=tuple(row_entries))
         parameters = tuple(scope.locals[name] for name, _ in state.parameters)
         telescope = tuple(state.extents.values())
         identity = ComputationId.derive(
@@ -2548,13 +2617,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             self._fail_kernel(declaration, error, fallback="qiec-program")
         self.computation_signatures[declaration.name] = signature
         computation = NamedComputation(
-            identity,
-            declaration.name,
-            telescope,
-            parameters,
-            body,
-            ComputationType(row, result_type),
-            _origin_at(self, ("programs", declaration.name), "computation"),
+            id=identity,
+            name=declaration.name,
+            telescope=telescope,
+            parameters=parameters,
+            body=body,
+            type=ComputationType(effects=row, result=result_type),
+            origin=_origin_at(self, ("programs", declaration.name), "computation"),
         )
         context = CheckContext(parameters)
         try:
@@ -2569,24 +2638,24 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         self.entries.append(
             ProgramEntry(
-                declaration.name,
-                identity,
-                tuple(
+                name=declaration.name,
+                computation=identity,
+                parameters=tuple(
                     ProgramParameter(
-                        name,
-                        role,
-                        scope.locals[name].type,
-                        state.parameter_axes.get(name, ()),
+                        name=name,
+                        role=role,
+                        type=scope.locals[name].type,
+                        axes=state.parameter_axes.get(name, ()),
                         per_row=name in state.per_row,
                     )
                     for name, role in state.parameters
                 ),
-                tuple(declaration.return_vars),
-                declaration.return_labels,
-                tuple(state.sites),
-                random.entry.instance,
-                score.entry.instance,
-                telescope,
+                return_names=tuple(declaration.return_vars),
+                return_labels=declaration.return_labels,
+                sites=tuple(state.sites),
+                random_instance=random.entry.instance,
+                score_instance=score.entry.instance,
+                telescope=telescope,
             )
         )
         self._program_state = None
@@ -2743,8 +2812,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"{declaration.name!r} shadows a declared object",
                     code="qiec-program",
                 )
-            variable = IndexVariable(parameter.name, NAT)
-            state.extents[parameter.name] = IndexBinder(parameter.name, NAT)
+            variable = IndexVariable(name=parameter.name, sort=NAT)
+            state.extents[parameter.name] = IndexBinder(name=parameter.name, sort=NAT)
             if parameter.universe == "Space":
                 info = ObjectInfo(extent=variable, real_width=variable)
             else:
@@ -2861,7 +2930,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 f"{name!r} is bound by a step and cannot also be a program input",
                 code="qiec-program",
             )
-        local = Local(name, type_)
+        local = Local(name=name, type=type_)
         root.locals[name] = local
         state.parameters.append((name, role))
         state.parameter_axes[name] = (
@@ -2987,7 +3056,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             If the name is already bound.
         """
         if name is None:
-            binder = Local(f"_step{len(scope.steps)}_{id(scope) & 0xFFFF:x}", type_)
+            binder = Local(
+                name=f"_step{len(scope.steps)}_{id(scope) & 0xFFFF:x}", type=type_
+            )
         else:
             if scope.lookup(name) is not None:
                 self._fail(
@@ -2995,7 +3066,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"variable {name!r} already bound in program",
                     code="qiec-program",
                 )
-            binder = Local(name, type_)
+            binder = Local(name=name, type=type_)
             scope.locals[name] = binder
         scope.steps.append((binder, computation))
         return binder
@@ -3017,7 +3088,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         """
         body = tail
         for binder, computation in reversed(scope.steps):
-            body = Bind(binder, computation, body)
+            body = Bind(binder=binder, first=computation, then=body)
         return body
 
     def _elaborate_sample(
@@ -3063,14 +3134,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         state.sites.append(
             ProgramSite(
-                name,
-                "sample",
-                distribution.name,
-                distribution.plate.batch,
-                distribution.plate.event,
+                name=name,
+                kind="sample",
+                family=distribution.name,
+                batch=distribution.plate.batch,
+                event=distribution.plate.event,
             )
         )
-        self._bind_step(scope, name, sampled, Perform(request), step)
+        self._bind_step(scope, name, sampled, Perform(request=request), step)
 
     def _elaborate_program_draw(
         self: _Elaborator, step: SampleStep, scope: _Scope, state: _ProgramState
@@ -3207,13 +3278,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         del parameter_types
         path = ("programs", state.declaration.name, "sites", label)
         return EffectRequest(
-            instance.entry.instance,
-            instance.entry.effect,
-            operation.id,
-            (sampled,),
-            (SiteValue(label, site_type(sampled)), distribution),
-            result_type,
-            SiteProvenance(_origin_at(self, path, "effect-request", node)),
+            instance=instance.entry.instance,
+            effect=instance.entry.effect,
+            operation=operation.id,
+            static_arguments=(sampled,),
+            arguments=(
+                SiteValue(label=label, result_type=site_type(sampled)),
+                distribution,
+            ),
+            result_type=result_type,
+            origin=SiteProvenance(
+                origin=_origin_at(self, path, "effect-request", node)
+            ),
         )
 
     def _elaborate_observe(
@@ -3296,11 +3372,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         state.sites.append(
             ProgramSite(
-                name,
-                "observe",
-                distribution.name,
-                distribution.plate.batch,
-                distribution.plate.event,
+                name=name,
+                kind="observe",
+                family=distribution.name,
+                batch=distribution.plate.batch,
+                event=distribution.plate.event,
             )
         )
         origin = _origin_at(
@@ -3312,8 +3388,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         weight_scope = _weight_scope(scope)
         if weight_scope is None:
             weight: Value = WeightSum(
-                LogDensity(
-                    distribution, Var(observed), origin, distribution.plate.batch
+                value=LogDensity(
+                    sampleable=distribution,
+                    value=Var(local=observed),
+                    origin=origin,
+                    batch=distribution.plate.batch,
                 )
             )
             self._add_score(state.score, weight, scope, state, step)
@@ -3321,13 +3400,21 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         assert weight_scope.weight_type is not None
         if weight_scope.group is None:
             weight = WeightSum(
-                LogDensity(
-                    distribution, Var(observed), origin, distribution.plate.batch
+                value=LogDensity(
+                    sampleable=distribution,
+                    value=Var(local=observed),
+                    origin=origin,
+                    batch=distribution.plate.batch,
                 )
             )
         else:
             batch = distribution.plate.batch
-            density = LogDensity(distribution, Var(observed), origin, batch)
+            density = LogDensity(
+                sampleable=distribution,
+                value=Var(local=observed),
+                origin=origin,
+                batch=batch,
+            )
             if via is not None:
                 if len(batch) != 1:
                     self._fail(
@@ -3340,10 +3427,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     via, batch[0].size, batch[0].name, weight_scope, scope, state, step
                 )
                 weight = SegmentSum(
-                    density,
-                    index_map,
-                    weight_scope.group.size,
-                    tensor_type(LOG_WEIGHT, (weight_scope.group.size,)),
+                    value=density,
+                    index=index_map,
+                    groups=weight_scope.group.size,
+                    result_type=tensor_type(LOG_WEIGHT, (weight_scope.group.size,)),
                 )
             elif len(batch) == 1 and batch[0].size == weight_scope.group.size:
                 weight = density
@@ -3388,14 +3475,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         assert score is not None
         operation = next(item for item in score.operations if item.name == "add")
         request = EffectRequest(
-            instance.entry.instance,
-            instance.entry.effect,
-            operation.id,
-            (),
-            (weight,),
-            UNIT,
-            SiteProvenance(
-                _origin_at(
+            instance=instance.entry.instance,
+            effect=instance.entry.effect,
+            operation=operation.id,
+            static_arguments=(),
+            arguments=(weight,),
+            result_type=UNIT,
+            origin=SiteProvenance(
+                origin=_origin_at(
                     self,
                     ("programs", state.declaration.name, "scores", len(scope.steps)),
                     "effect-request",
@@ -3403,7 +3490,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
             ),
         )
-        self._bind_step(scope, None, UNIT, Perform(request), node)
+        self._bind_step(scope, None, UNIT, Perform(request=request), node)
 
     def _add_weight(
         self: _Elaborator,
@@ -3438,14 +3525,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         _parameter_types, result_type = instantiate_operation(operation, (), outer)
         request = EffectRequest(
-            instance.entry.instance,
-            instance.entry.effect,
-            operation.id,
-            (),
-            (weight,),
-            result_type,
-            SiteProvenance(
-                _origin_at(
+            instance=instance.entry.instance,
+            effect=instance.entry.effect,
+            operation=operation.id,
+            static_arguments=(),
+            arguments=(weight,),
+            result_type=result_type,
+            origin=SiteProvenance(
+                origin=_origin_at(
                     self,
                     ("programs", state.declaration.name, "weights", len(scope.steps)),
                     "effect-request",
@@ -3453,7 +3540,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
             ),
         )
-        self._bind_step(scope, None, UNIT, Perform(request), node)
+        self._bind_step(scope, None, UNIT, Perform(request=request), node)
         owner = _weight_scope(scope)
         assert owner is not None
         owner.weights_added = True
@@ -3497,11 +3584,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         paired = positions_let_call(step.value)
         if paired is not None:
             value = _positions_value(self, paired, scope, step)
-            self._bind_step(scope, step.name, value.result_type, Return(value), step)
+            self._bind_step(
+                scope, step.name, value.result_type, Return(value=value), step
+            )
             return
         value = self._let_value(step.value, scope, state, step)
         type_ = self._value_type(value, scope.context(), step.value)
-        self._bind_step(scope, step.name, type_, Return(value), step)
+        self._bind_step(scope, step.name, type_, Return(value=value), step)
         self._record_batch(step.name, step.value, scope, state)
 
     def _parse_call(
@@ -3647,9 +3736,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             signature = self.computation_signatures[f"{name}__weighted_run"]
         binder = state.extents.get(f"{source}_extent")
         if binder is None:
-            binder = IndexBinder(f"{source}_extent", NAT)
+            binder = IndexBinder(name=f"{source}_extent", sort=NAT)
             state.extents[binder.name] = binder
-        extent = IndexVariable(binder.name, binder.sort)
+        extent = IndexVariable(name=binder.name, sort=binder.sort)
         sentence_type = tensor_type(STRING, (extent,))
         rows = None if parse.plate is None else self._axis(parse.plate, node).size
         tokens = self._declare_parameter(
@@ -3678,13 +3767,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         extra = () if table is None else (table,)
         if rows is None:
             return Call(
-                signature.id,
-                signature.name,
-                (extent,),
-                (Var(tokens), *extra),
-                signature.result,
-                signature.effects,
-                origin,
+                callee=signature.id,
+                name=signature.name,
+                static_arguments=(extent,),
+                arguments=(Var(local=tokens), *extra),
+                result_type=signature.result,
+                effects=signature.effects,
+                origin=origin,
             )
         return self._corpus_call(
             signature, tokens, rows, extent, extra, state, node, origin
@@ -3771,14 +3860,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             size = len(group.productions)
             value = self._let_value(binding.value, scope, state, node)
             type_ = self._value_type(value, scope.context(), binding)
-            if type_ != tensor_type(REAL, (IndexLiteral(size, NAT),)):
+            if type_ != tensor_type(REAL, (IndexLiteral(value=size, sort=NAT),)):
                 self._fail(
                     binding,
                     f"parse binds {binding.label!r} to a value of type "
                     f"{render_static(type_)}, but {binding.label!r} has {size} "
                     f"productions ({', '.join(item.label for item in group.productions)}) "
                     f"and takes a probability vector of type "
-                    f"{render_static(tensor_type(REAL, (IndexLiteral(size, NAT),)))}",
+                    f"{render_static(tensor_type(REAL, (IndexLiteral(value=size, sort=NAT),)))}",
                     code="qiec-program",
                 )
             support = _sampled_support(binding.value, state.declaration)
@@ -3805,7 +3894,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         for label, group in bound.items():
             size = len(group.productions)
             probabilities = [
-                Gather(values[label], LiteralValue(position, INT), REAL)
+                Gather(
+                    value=values[label],
+                    index=LiteralValue(value=position, type=INT),
+                    result_type=REAL,
+                )
                 for position in range(size)
             ]
             total: Value = probabilities[0]
@@ -3831,7 +3924,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     )
                 )
         return TensorValue(
-            tuple(entries), tensor_type(REAL, (IndexLiteral(len(entries), NAT),))
+            items=tuple(entries),
+            result_type=tensor_type(
+                REAL, (IndexLiteral(value=len(entries), sort=NAT),)
+            ),
         )
 
     def _corpus_call(
@@ -3890,14 +3986,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 code="qiec-program",
             )
         path = ("programs", state.declaration.name, "corpora", node.name)
-        position = Local("__corpus_r", INT)
-        corpus = Local("__corpus_tokens", tokens.type)
-        total = Local("__corpus_total", carrier)
+        position = Local(name="__corpus_r", type=INT)
+        corpus = Local(name="__corpus_tokens", type=tokens.type)
+        total = Local(name="__corpus_total", type=carrier)
         carried = tuple(
-            Local(f"__corpus_table_{index}", value.result_type)
+            Local(name=f"__corpus_table_{index}", type=value.result_type)
             for index, value in enumerate(extra)
         )
-        telescope = (IndexBinder(extent.name, extent.sort),)
+        telescope = (IndexBinder(name=extent.name, sort=extent.sort),)
         identity = ComputationId.derive(self.source.module_name, "computation", name)
         helper = ComputationSignature(
             identity,
@@ -3913,59 +4009,73 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             self._fail_kernel(node, error, fallback="qiec-program")
         self.computation_signatures[name] = helper
         statics: tuple[StaticArgument, ...] = (extent,)
-        counter = Local("__corpus_k", INT)
+        counter = Local(name="__corpus_k", type=INT)
         count: Value = Reduction(
-            "sum",
-            Comprehension(
-                counter, rows, LiteralValue(1, INT), tensor_type(INT, (rows,))
+            operator="sum",
+            value=Comprehension(
+                binder=counter,
+                extent=rows,
+                body=LiteralValue(value=1, type=INT),
+                result_type=tensor_type(INT, (rows,)),
             ),
-            INT,
+            result_type=INT,
         )
-        sentence = Local("__corpus_sentence", tensor_type(STRING, (extent,)))
-        weight = Local("__corpus_weight", carrier)
-        product = self._semiring_times(Var(total), Var(weight), carrier, node, path)
+        sentence = Local(name="__corpus_sentence", type=tensor_type(STRING, (extent,)))
+        weight = Local(name="__corpus_weight", type=carrier)
+        product = self._semiring_times(
+            Var(local=total), Var(local=weight), carrier, node, path
+        )
         recur = Call(
-            identity,
-            name,
-            statics,
-            (
+            callee=identity,
+            name=name,
+            static_arguments=statics,
+            arguments=(
                 self._primitive(
                     "add_int",
-                    (Var(position), LiteralValue(1, INT)),
+                    (Var(local=position), LiteralValue(value=1, type=INT)),
                     node,
                     (*path, "next"),
                 ),
-                Var(corpus),
+                Var(local=corpus),
                 product,
-                *(Var(item) for item in carried),
+                *(Var(local=item) for item in carried),
             ),
-            carrier,
-            signature.effects,
-            origin,
+            result_type=carrier,
+            effects=signature.effects,
+            origin=origin,
         )
         body: Computation = If(
-            self._primitive(
-                "eq_int", (Var(position), count), node, (*path, "finished")
+            condition=self._primitive(
+                "eq_int", (Var(local=position), count), node, (*path, "finished")
             ),
-            Return(Var(total)),
-            Bind(
-                sentence,
-                Return(Gather(Var(corpus), Var(position), sentence.type)),
-                Bind(
-                    weight,
-                    Call(
-                        signature.id,
-                        signature.name,
-                        (extent,),
-                        (Var(sentence), *(Var(item) for item in carried)),
-                        carrier,
-                        signature.effects,
-                        cast(
+            then=Return(value=Var(local=total)),
+            otherwise=Bind(
+                binder=sentence,
+                first=Return(
+                    value=Gather(
+                        value=Var(local=corpus),
+                        index=Var(local=position),
+                        result_type=sentence.type,
+                    )
+                ),
+                then=Bind(
+                    binder=weight,
+                    first=Call(
+                        callee=signature.id,
+                        name=signature.name,
+                        static_arguments=(extent,),
+                        arguments=(
+                            Var(local=sentence),
+                            *(Var(local=item) for item in carried),
+                        ),
+                        result_type=carrier,
+                        effects=signature.effects,
+                        origin=cast(
                             SourceOrigin,
                             _origin_at(self, (*path, "sentence"), "call", node),
                         ),
                     ),
-                    recur,
+                    then=recur,
                 ),
             ),
         )
@@ -3975,18 +4085,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         )
         return Call(
-            identity,
-            name,
-            statics,
-            (
-                LiteralValue(0, INT),
-                Var(tokens),
+            callee=identity,
+            name=name,
+            static_arguments=statics,
+            arguments=(
+                LiteralValue(value=0, type=INT),
+                Var(local=tokens),
                 self._semiring_one(carrier, node, path),
                 *extra,
             ),
-            carrier,
-            signature.effects,
-            origin,
+            result_type=carrier,
+            effects=signature.effects,
+            origin=origin,
         )
 
     def _semiring_one(
@@ -4010,11 +4120,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         """
         if carrier == LOG_WEIGHT:
             return self._primitive(
-                "as_weight", (LiteralValue(0.0, REAL),), node, (*path, "one")
+                "as_weight", (LiteralValue(value=0.0, type=REAL),), node, (*path, "one")
             )
         if carrier == BOOL:
-            return LiteralValue(True, BOOL)
-        return LiteralValue(1, INT)
+            return LiteralValue(value=True, type=BOOL)
+        return LiteralValue(value=1, type=INT)
 
     def _semiring_times(
         self: _Elaborator,
@@ -4236,11 +4346,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             binder for name_, binder in state.extents.items() if name_ in mentioned
         )
         statics: tuple[StaticArgument, ...] = tuple(
-            IndexVariable(binder.name, binder.sort) for binder in telescope
+            IndexVariable(name=binder.name, sort=binder.sort) for binder in telescope
         )
-        visited = Local("__scan_t", INT)
-        sequence = Local("__scan_xs", local.type)
-        current = Local("__scan_h", state_type)
+        visited = Local(name="__scan_t", type=INT)
+        sequence = Local(name="__scan_xs", type=local.type)
+        current = Local(name="__scan_h", type=state_type)
         gathers = scan.outputs == "all"
         state_shape = tensor_shape(state_type)
         states_type: TypeExpr = (
@@ -4249,9 +4359,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             else tensor_type(state_shape[0], (extent, *state_shape[1]))
         )
         result_type = states_type if gathers else state_type
-        states = Local("__scan_states", states_type)
+        states = Local(name="__scan_states", type=states_type)
         gathered = (states,) if gathers else ()
-        carried = tuple(Local(f"__scan_{item.name}", item.type) for item in passed)
+        carried = tuple(
+            Local(name=f"__scan_{item.name}", type=item.type) for item in passed
+        )
         identity = ComputationId.derive(self.source.module_name, "computation", name)
         helper = ComputationSignature(
             identity,
@@ -4273,58 +4385,61 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             self._fail_kernel(node, error, fallback="qiec-program")
         self.computation_signatures[name] = helper
         path = ("programs", state.declaration.name, "scans", node.name)
-        counter = Local("__scan_k", INT)
+        counter = Local(name="__scan_k", type=INT)
         length: Value = Reduction(
-            "sum",
-            Comprehension(
-                counter, extent, LiteralValue(1, INT), tensor_type(INT, (extent,))
+            operator="sum",
+            value=Comprehension(
+                binder=counter,
+                extent=extent,
+                body=LiteralValue(value=1, type=INT),
+                result_type=tensor_type(INT, (extent,)),
             ),
-            INT,
+            result_type=INT,
         )
         # The position the scan visits after ``visited`` others: the same
         # number left to right, that many from the end right to left.
-        position = Local("__scan_p", INT)
+        position = Local(name="__scan_p", type=INT)
         position_value: Value = (
             self._primitive(
                 "sub_int",
                 (
                     self._primitive(
                         "sub_int",
-                        (length, LiteralValue(1, INT)),
+                        (length, LiteralValue(value=1, type=INT)),
                         node,
                         (*path, "last"),
                     ),
-                    Var(visited),
+                    Var(local=visited),
                 ),
                 node,
                 (*path, "position"),
             )
             if scan.reverse
-            else Var(visited)
+            else Var(local=visited)
         )
-        entry = Local("__scan_x", entry_type)
-        following = Local("__scan_next", state_type)
-        following_states = Local("__scan_states_next", states_type)
+        entry = Local(name="__scan_x", type=entry_type)
+        following = Local(name="__scan_next", type=state_type)
+        following_states = Local(name="__scan_states_next", type=states_type)
         origin = _origin_at(self, path, "call", node)
         recur = Call(
-            identity,
-            name,
-            statics,
-            (
+            callee=identity,
+            name=name,
+            static_arguments=statics,
+            arguments=(
                 self._primitive(
                     "add_int",
-                    (Var(visited), LiteralValue(1, INT)),
+                    (Var(local=visited), LiteralValue(value=1, type=INT)),
                     node,
                     (*path, "successor"),
                 ),
-                Var(sequence),
-                Var(following),
-                *((Var(following_states),) if gathers else ()),
-                *(Var(item) for item in carried),
+                Var(local=sequence),
+                Var(local=following),
+                *((Var(local=following_states),) if gathers else ()),
+                *(Var(local=item) for item in carried),
             ),
-            result_type,
-            signature.effects,
-            origin,
+            result_type=result_type,
+            effects=signature.effects,
+            origin=origin,
         )
         continuation: Computation = recur
         if gathers:
@@ -4332,28 +4447,28 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             # it: at each index ``j`` the entry is chosen from the pair
             # (old entry, new state) by ``max(0, 1 - |j - p|)``, which is
             # one at ``p`` and zero elsewhere.
-            index = Local("__scan_j", INT)
+            index = Local(name="__scan_j", type=INT)
             pair_type = (
-                tensor_type(state_type, (IndexLiteral(2, NAT),))
+                tensor_type(state_type, (IndexLiteral(value=2, sort=NAT),))
                 if state_shape is None
                 else tensor_type(
-                    state_shape[0], (IndexLiteral(2, NAT), *state_shape[1])
+                    state_shape[0], (IndexLiteral(value=2, sort=NAT), *state_shape[1])
                 )
             )
             here = self._primitive(
                 "max_int",
                 (
-                    LiteralValue(0, INT),
+                    LiteralValue(value=0, type=INT),
                     self._primitive(
                         "sub_int",
                         (
-                            LiteralValue(1, INT),
+                            LiteralValue(value=1, type=INT),
                             self._primitive(
                                 "abs_int",
                                 (
                                     self._primitive(
                                         "sub_int",
-                                        (Var(index), Var(position)),
+                                        (Var(local=index), Var(local=position)),
                                         node,
                                         (*path, "offset"),
                                     ),
@@ -4370,55 +4485,67 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 (*path, "here"),
             )
             continuation = Bind(
-                following_states,
-                Return(
-                    Comprehension(
-                        index,
-                        extent,
-                        Gather(
-                            TensorValue(
-                                (
-                                    Gather(Var(states), Var(index), state_type),
-                                    Var(following),
+                binder=following_states,
+                first=Return(
+                    value=Comprehension(
+                        binder=index,
+                        extent=extent,
+                        body=Gather(
+                            value=TensorValue(
+                                items=(
+                                    Gather(
+                                        value=Var(local=states),
+                                        index=Var(local=index),
+                                        result_type=state_type,
+                                    ),
+                                    Var(local=following),
                                 ),
-                                pair_type,
+                                result_type=pair_type,
                             ),
-                            here,
-                            state_type,
+                            index=here,
+                            result_type=state_type,
                         ),
-                        states_type,
+                        result_type=states_type,
                     )
                 ),
-                recur,
+                then=recur,
             )
         body: Computation = If(
-            self._primitive(
-                "eq_int", (Var(visited), length), node, (*path, "finished")
+            condition=self._primitive(
+                "eq_int", (Var(local=visited), length), node, (*path, "finished")
             ),
-            Return(Var(states if gathers else current)),
-            Bind(
-                position,
-                Return(position_value),
-                Bind(
-                    entry,
-                    Return(Gather(Var(sequence), Var(position), entry_type)),
-                    Bind(
-                        following,
-                        Call(
-                            signature.id,
-                            signature.name,
-                            step_statics,
-                            (
-                                Var(entry),
-                                Var(current),
+            then=Return(value=Var(local=states if gathers else current)),
+            otherwise=Bind(
+                binder=position,
+                first=Return(value=position_value),
+                then=Bind(
+                    binder=entry,
+                    first=Return(
+                        value=Gather(
+                            value=Var(local=sequence),
+                            index=Var(local=position),
+                            result_type=entry_type,
+                        )
+                    ),
+                    then=Bind(
+                        binder=following,
+                        first=Call(
+                            callee=signature.id,
+                            name=signature.name,
+                            static_arguments=step_statics,
+                            arguments=(
+                                Var(local=entry),
+                                Var(local=current),
                                 *(
                                     Gather(
-                                        Var(item),
-                                        Var(position),
-                                        substitute_type(parameter.type, substitution),
+                                        value=Var(local=item),
+                                        index=Var(local=position),
+                                        result_type=substitute_type(
+                                            parameter.type, substitution
+                                        ),
                                     )
                                     if per_step
-                                    else Var(item)
+                                    else Var(local=item)
                                     for item, per_step, parameter in zip(
                                         carried,
                                         positional,
@@ -4427,11 +4554,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                                     )
                                 ),
                             ),
-                            state_type,
-                            signature.effects,
-                            _origin_at(self, (*path, "step"), "call", node),
+                            result_type=state_type,
+                            effects=signature.effects,
+                            origin=_origin_at(self, (*path, "step"), "call", node),
                         ),
-                        continuation,
+                        then=continuation,
                     ),
                 ),
             ),
@@ -4460,29 +4587,29 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         zero_states: tuple[Value, ...] = (
             (
                 Comprehension(
-                    Local("__scan_zero_j", INT),
-                    extent,
-                    _zero_of(state_type),
-                    states_type,
+                    binder=Local(name="__scan_zero_j", type=INT),
+                    extent=extent,
+                    body=_zero_of(state_type),
+                    result_type=states_type,
                 ),
             )
             if gathers
             else ()
         )
         return Call(
-            identity,
-            name,
-            statics,
-            (
-                LiteralValue(0, INT),
-                Var(local),
+            callee=identity,
+            name=name,
+            static_arguments=statics,
+            arguments=(
+                LiteralValue(value=0, type=INT),
+                Var(local=local),
                 initial,
                 *zero_states,
-                *(Var(item) for item in passed),
+                *(Var(local=item) for item in passed),
             ),
-            result_type,
-            signature.effects,
-            origin,
+            result_type=result_type,
+            effects=signature.effects,
+            origin=origin,
         )
 
     def _domain_axes(
@@ -4538,9 +4665,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         """
         binder = state.extents.get(f"{source}_extent")
         if binder is None:
-            binder = IndexBinder(f"{source}_extent", NAT)
+            binder = IndexBinder(name=f"{source}_extent", sort=NAT)
             state.extents[binder.name] = binder
-        extent = IndexVariable(binder.name, binder.sort)
+        extent = IndexVariable(name=binder.name, sort=binder.sort)
         entry_shape = tensor_shape(entry_type)
         if entry_shape is None:
             return tensor_type(entry_type, (extent,))
@@ -4709,9 +4836,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
             binder = state.extents.get(extent_name)
             if binder is None:
-                binder = IndexBinder(extent_name, NAT)
+                binder = IndexBinder(name=extent_name, sort=NAT)
                 state.extents[extent_name] = binder
-            extents[variable] = IndexVariable(extent_name, NAT)
+            extents[variable] = IndexVariable(name=extent_name, sort=NAT)
         return substitute_type(
             parameter,
             StaticSubstitution(
@@ -4791,13 +4918,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         except (TypeError, ValueError) as error:
             self._fail_kernel(step, error, fallback="qiec-program")
         return Call(
-            signature.id,
-            step.call.callee,
-            tuple(statics),
-            arguments,
-            substitute_type(signature.result, substitution),
-            substitute_row(signature.effects, substitution),
-            _origin_at(self, path, "call", step),
+            callee=signature.id,
+            name=step.call.callee,
+            static_arguments=tuple(statics),
+            arguments=arguments,
+            result_type=substitute_type(signature.result, substitution),
+            effects=substitute_row(signature.effects, substitution),
+            origin=_origin_at(self, path, "call", step),
         )
 
     def _elaborate_score(
@@ -4829,10 +4956,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "Real",
                 code="qiec-program",
             )
-        binder = self._bind_step(scope, step.name, REAL, Return(value), step)
+        binder = self._bind_step(scope, step.name, REAL, Return(value=value), step)
         weight = self._primitive(
             "as_weight",
-            (Var(binder),),
+            (Var(local=binder),),
             step,
             ("programs", state.declaration.name, "scores", step.name),
         )
@@ -5061,7 +5188,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             serial = state.function_calls
             state.function_calls += 1
             name = f"{candidate.func}__call{serial}"
-            self._bind_step(scope, name, type_, Return(value), node)
+            self._bind_step(scope, name, type_, Return(value=value), node)
             return LetExprVar(name=name)
 
         return map_let_expr(expr, hoist)
@@ -5257,13 +5384,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         activation,
                         (
                             AffineMap(
-                                Var(layer_weight),
-                                Var(layer_bias),
-                                tuple(sources),
-                                0,
-                                hidden,
-                                "identity",
-                                hidden_type,
+                                weight=Var(local=layer_weight),
+                                bias=Var(local=layer_bias),
+                                sources=tuple(sources),
+                                row_offset=0,
+                                rows=hidden,
+                                transform="identity",
+                                result_type=hidden_type,
                             ),
                         ),
                         node,
@@ -5291,13 +5418,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 axes=(f"{name}_param_row",),
             )
             image = AffineMap(
-                Var(weight),
-                Var(bias),
-                tuple(sources),
-                0,
-                out_width,
-                "identity",
-                result,
+                weight=Var(local=weight),
+                bias=Var(local=bias),
+                sources=tuple(sources),
+                row_offset=0,
+                rows=out_width,
+                transform="identity",
+                result_type=result,
             )
         if output != "identity":
             image = self._primitive(
@@ -5709,14 +5836,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"program {declaration.name!r} returns unbound name {name!r}",
                     code="qiec-program",
                 )
-            values.append(Var(local))
+            values.append(Var(local=local))
             types.append(local.type)
         if not values:
-            return LiteralValue(None, UNIT), UNIT
+            return LiteralValue(value=None, type=UNIT), UNIT
         if len(values) == 1:
             return values[0], types[0]
         result_type = product_type(*types)
-        return TupleValue(tuple(values), result_type), result_type
+        return TupleValue(items=tuple(values), result_type=result_type), result_type
 
     # ------------------------------------------------------------------
     # marginalization
@@ -5873,14 +6000,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         state.sites.append(
             ProgramSite(
-                latent_name,
-                "marginal",
-                distribution.name,
-                distribution.plate.batch,
-                distribution.plate.event,
+                name=latent_name,
+                kind="marginal",
+                family=distribution.name,
+                batch=distribution.plate.batch,
+                event=distribution.plate.event,
             )
         )
-        latent = Local(latent_name, sampled)
+        latent = Local(name=latent_name, type=sampled)
         inner.locals[latent_name] = latent
         self._elaborate_steps(remaining, inner, state)
         if not inner.weights_added:
@@ -5891,33 +6018,35 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 weight, self._zero_weight(weight_type, state, step), inner, state, step
             )
         collected = Handle(
-            weight.entry.instance,
-            collect_handler.id,
-            self._fold_steps(inner, Return(LiteralValue(None, UNIT))),
-            (weight_type,),
+            instance=weight.entry.instance,
+            handler=collect_handler.id,
+            computation=self._fold_steps(
+                inner, Return(value=LiteralValue(value=None, type=UNIT))
+            ),
+            static_arguments=(weight_type,),
         )
         del self.instances[weight.name]
         del self.instances[choice.name]
         enumerated = Handle(
-            choice.entry.instance,
-            chooser.id,
-            Bind(
-                latent,
-                Perform(request),
-                NewInstance(
-                    weight.entry.instance,
-                    weight.entry.effect,
-                    collected,
-                    _origin_at(self, (*path, "weight"), "local-instance", step),
+            instance=choice.entry.instance,
+            handler=chooser.id,
+            computation=Bind(
+                binder=latent,
+                first=Perform(request=request),
+                then=NewInstance(
+                    instance=weight.entry.instance,
+                    effect=weight.entry.effect,
+                    body=collected,
+                    origin=_origin_at(self, (*path, "weight"), "local-instance", step),
                 ),
             ),
-            (result_type if table else weight_type,),
+            static_arguments=(result_type if table else weight_type,),
         )
         body = NewInstance(
-            choice.entry.instance,
-            choice.entry.effect,
-            enumerated,
-            _origin_at(self, (*path, "choice"), "local-instance", step),
+            instance=choice.entry.instance,
+            effect=choice.entry.effect,
+            body=enumerated,
+            origin=_origin_at(self, (*path, "choice"), "local-instance", step),
         )
         helper = self._marginal_helper(step, inner, body, scope, state, result_type)
         if table:
@@ -5925,19 +6054,19 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             return
         weight_local = self._bind_step(scope, None, result_type, helper, step)
         if weight_scope is None:
-            self._add_score(state.score, Var(weight_local), scope, state, step)
+            self._add_score(state.score, Var(local=weight_local), scope, state, step)
             return
         assert weight_scope.weight_instance is not None
         assert outer_group is not None
-        weight: Value = Var(weight_local)
+        weight: Value = Var(local=weight_local)
         if projection is not None:
             # The inner group refines the outer: its per-position
             # marginals sum into the outer positions they project to.
             weight = SegmentSum(
-                weight,
-                projection,
-                outer_group.size,
-                tensor_type(LOG_WEIGHT, (outer_group.size,)),
+                value=weight,
+                index=projection,
+                groups=outer_group.size,
+                result_type=tensor_type(LOG_WEIGHT, (outer_group.size,)),
             )
         self._add_weight(weight_scope.weight_instance, weight, scope, state, step)
 
@@ -6017,7 +6146,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if shape is None:
             return self._primitive(
                 "as_weight",
-                (LiteralValue(0.0, REAL),),
+                (LiteralValue(value=0.0, type=REAL),),
                 node,
                 ("programs", state.declaration.name, "weights", "identity"),
             )
@@ -6029,7 +6158,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         entries = tuple(
             self._zero_weight(inner, state, node) for _ in range(dimensions[0].value)
         )
-        return TensorValue(entries, weight_type)
+        return TensorValue(items=entries, result_type=weight_type)
 
     def _marginal_family(
         self: _Elaborator, step: MarginalizeStep
@@ -6094,14 +6223,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         state.sites.append(
             ProgramSite(
-                latent_name,
-                "sample",
-                distribution.name,
-                distribution.plate.batch,
-                distribution.plate.event,
+                name=latent_name,
+                kind="sample",
+                family=distribution.name,
+                batch=distribution.plate.batch,
+                event=distribution.plate.event,
             )
         )
-        self._bind_step(scope, latent_name, sampled, Perform(request), step)
+        self._bind_step(scope, latent_name, sampled, Perform(request=request), step)
         self._elaborate_steps(step.scope, scope, state)
 
     def _local_instance(
@@ -6147,7 +6276,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             effect, module=self.source.module_name, lexical_path=path
         )
         instance = NamedEffectInstance(
-            name, entry, _origin_at(self, path, "effect-instance")
+            name=name, entry=entry, origin=_origin_at(self, path, "effect-instance")
         )
         self.instances[name] = instance
         return instance
@@ -6216,7 +6345,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             binder for name_, binder in state.extents.items() if name_ in mentioned
         )
         statics: tuple[StaticArgument, ...] = tuple(
-            IndexVariable(binder.name, binder.sort) for binder in telescope
+            IndexVariable(name=binder.name, sort=binder.sort) for binder in telescope
         )
         identity = ComputationId.derive(self.source.module_name, "computation", name)
         signature = ComputationSignature(
@@ -6252,23 +6381,23 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         state.helpers.append(
             NamedComputation(
-                identity,
-                name,
-                telescope,
-                parameters,
-                body,
-                ComputationType(EffectRow(), result_type),
-                origin,
+                id=identity,
+                name=name,
+                telescope=telescope,
+                parameters=parameters,
+                body=body,
+                type=ComputationType(effects=EffectRow(), result=result_type),
+                origin=origin,
             )
         )
         return Call(
-            identity,
-            name,
-            statics,
-            tuple(Var(parameter) for parameter in parameters),
-            result_type,
-            EffectRow(),
-            _origin_at(
+            callee=identity,
+            name=name,
+            static_arguments=statics,
+            arguments=tuple(Var(local=parameter) for parameter in parameters),
+            result_type=result_type,
+            effects=EffectRow(),
+            origin=_origin_at(
                 self,
                 ("programs", state.declaration.name, "marginals", step.var, "call"),
                 "call",
@@ -6385,20 +6514,20 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             normalize = FAMILIES["Normalize"]
             path = ("programs", state.declaration.name, "sites", site, "distribution")
             provisional = DistributionValue(
-                normalize.id,
-                normalize.name,
-                (("base", inner),),
-                sampleable_type(REAL),
-                _origin_at(self, path, "distribution", step),
-                plate,
+                family=normalize.id,
+                name=normalize.name,
+                arguments=(("base", inner),),
+                result_type=sampleable_type(REAL),
+                origin=_origin_at(self, path, "distribution", step),
+                plate=plate,
             )
             value = DistributionValue(
-                normalize.id,
-                normalize.name,
-                (("base", inner),),
-                self._plated_type(provisional, scope, step),
-                provisional.origin,
-                plate,
+                family=normalize.id,
+                name=normalize.name,
+                arguments=(("base", inner),),
+                result_type=self._plated_type(provisional, scope, step),
+                origin=provisional.origin,
+                plate=plate,
             )
             self._value_type(value, scope.context(), step)
             return value
@@ -6429,20 +6558,20 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         path = ("programs", state.declaration.name, "sites", site, "distribution")
         value = DistributionValue(
-            record.id,
-            record.name,
-            tuple(arguments),
-            sampleable_type(REAL),
-            _origin_at(self, path, "distribution", step),
-            plate,
+            family=record.id,
+            name=record.name,
+            arguments=tuple(arguments),
+            result_type=sampleable_type(REAL),
+            origin=_origin_at(self, path, "distribution", step),
+            plate=plate,
         )
         value = DistributionValue(
-            record.id,
-            record.name,
-            tuple(arguments),
-            self._plated_type(value, scope, step),
-            value.origin,
-            plate,
+            family=record.id,
+            name=record.name,
+            arguments=tuple(arguments),
+            result_type=self._plated_type(value, scope, step),
+            origin=value.origin,
+            plate=plate,
         )
         self._value_type(value, scope.context(), step)
         return value
@@ -6612,7 +6741,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     # otherwise it replicates the latent, one per element,
                     # which is the grouping when the block groups by it.
                     batch.append(axis)
-            return PlateShape(tuple(batch), tuple(event))
+            return PlateShape(batch=tuple(batch), event=tuple(event))
         axes = step.axes
         over = (
             tuple(axes.over) if axes is not None else _option_axes(step.options, "over")
@@ -6650,21 +6779,25 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 # the plate, in the order written.
                 split = len(over) - rank
                 return PlateShape(
-                    (*batch_axes, *(self._axis(name, step) for name in over[:split])),
-                    tuple(self._axis(name, step) for name in over[split:]),
+                    batch=(
+                        *batch_axes,
+                        *(self._axis(name, step) for name in over[:split]),
+                    ),
+                    event=tuple(self._axis(name, step) for name in over[split:]),
                 )
             return PlateShape(
-                batch_axes, tuple(self._axis(name, step) for name in over)
+                batch=batch_axes, event=tuple(self._axis(name, step) for name in over)
             )
         if morphism is not None:
             morphism_over = _option_axes(morphism.options, "over")
             if morphism_over:
                 return PlateShape(
-                    (), tuple(self._axis(name, step) for name in morphism_over)
+                    batch=(),
+                    event=tuple(self._axis(name, step) for name in morphism_over),
                 )
         event_axes: tuple[PlateAxis, ...] = ()
         if record.name == "GP" and morphism is not None:
-            return PlateShape((), (self._gp_grid(morphism, step),))
+            return PlateShape(batch=(), event=(self._gp_grid(morphism, step),))
         if record.event_rank > 0 and morphism is not None:
             factors = [
                 factor
@@ -6682,7 +6815,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             elif finite and record.event_rank == 1:
                 event_axes = (finite[0],)
         if event_axes:
-            return PlateShape((), event_axes)
+            return PlateShape(batch=(), event=event_axes)
         width: PlateAxis | None = None
         if (
             record.event_rank == 0
@@ -6691,18 +6824,22 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         ):
             info = self._program_objects.get(morphism.codomain.name)
             if info is not None and info.real_width is not None:
-                width = PlateAxis(morphism.codomain.name, _extent(info.real_width))
+                width = PlateAxis(
+                    name=morphism.codomain.name, size=_extent(info.real_width)
+                )
         batch = []
         if step.index is not None:
             axis = self._object_axis(step.index, step)
             if record.event_rank > 0:
                 # A matrix family draws one square variate whose side is
                 # the annotated axis; a vector family one vector over it.
-                return PlateShape((), tuple(axis for _ in range(record.event_rank)))
+                return PlateShape(
+                    batch=(), event=tuple(axis for _ in range(record.event_rank))
+                )
             batch.append(axis)
         if width is not None:
             batch.append(width)
-        return PlateShape(tuple(batch), ())
+        return PlateShape(batch=tuple(batch), event=())
 
     def _annotated_plate(
         self: _Elaborator,
@@ -6765,7 +6902,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             return plate
         if natural == tuple(axis.size for axis in plate.event):
             return plate
-        return PlateShape((self._object_axis(step.index, step),), ())
+        return PlateShape(batch=(self._object_axis(step.index, step),), event=())
 
     def _broadcast_plate(
         self: _Elaborator,
@@ -6818,7 +6955,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 continue
             stem = value.local.name if isinstance(value, Var) else name
             found = tuple(
-                PlateAxis(stem if index == 0 else f"{stem}_{index}", size)
+                PlateAxis(name=stem if index == 0 else f"{stem}_{index}", size=size)
                 for index, size in enumerate(shape[1])
             )
             if axes is None:
@@ -6844,7 +6981,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
         if axes is None:
             return plate
-        return PlateShape(axes, ())
+        return PlateShape(batch=axes, event=())
 
     def _axis(self: _Elaborator, name: str, node: object) -> PlateAxis:
         """A plate axis named by an object with a known extent.
@@ -6873,7 +7010,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 f"axis {name!r} names no object with a static extent",
                 code="qiec-program",
             )
-        return PlateAxis(name, _extent(info.extent))
+        return PlateAxis(name=name, size=_extent(info.extent))
 
     def _object_axis(self: _Elaborator, expr: ObjectExpr, node: object) -> PlateAxis:
         """A plate axis from an index annotation.
@@ -6898,14 +7035,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         """
         if isinstance(expr, TypeName):
             if expr.name.isdigit():
-                return PlateAxis(expr.name, _extent(int(expr.name)))
+                return PlateAxis(name=expr.name, size=_extent(int(expr.name)))
             return self._axis(expr.name, node)
         info = self._object_info(expr, node)
         if info.extent is None:
             self._fail(
                 node, "an index annotation needs a static extent", code="qiec-program"
             )
-        return PlateAxis(_axis_name(expr), _extent(info.extent))
+        return PlateAxis(name=_axis_name(expr), size=_extent(info.extent))
 
     def _object_info(self: _Elaborator, expr: ObjectExpr, node: object) -> ObjectInfo:
         """The shape an object expression denotes.
@@ -7525,12 +7662,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if isinstance(argument, _Spread):
             # A single literal spread over a vector parameter is the
             # same number at every position of the vector.
-            spread = Local(f"__spread_{state.current_site}", INT)
+            spread = Local(name=f"__spread_{state.current_site}", type=INT)
             return Comprehension(
-                spread,
-                _extent(argument.dimension),
-                _literal(argument.value, integral),
-                tensor_type(element, (_extent(argument.dimension),)),
+                binder=spread,
+                extent=_extent(argument.dimension),
+                body=_literal(argument.value, integral),
+                result_type=tensor_type(element, (_extent(argument.dimension),)),
             )
         if isinstance(argument, float | int):
             return _literal(float(argument), integral)
@@ -7638,7 +7775,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         """
         local = scope.lookup(name)
         if local is not None:
-            return Var(local)
+            return Var(local=local)
         morphism = self._program_morphisms.get(name)
         if morphism is not None and constraint == "sampleable":
             return self._morphism_distribution(morphism, name, scope, state, node)
@@ -7654,7 +7791,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 else self._open_extents(name, rank, state)
             )
             return Var(
-                self._declare_parameter(
+                local=self._declare_parameter(
                     name,
                     tensor_type(element, own),
                     "data",
@@ -7691,13 +7828,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
             state.per_row.add(name)
             state.batch_shapes[name] = (axis.size,)
-            return Var(local)
+            return Var(local=local)
         if rank > 0 and extents is not None:
             # A tensor parameter whose axes the draw's event fixes, such
             # as a Cholesky factor beside an ``[over=...]`` plate, is one
             # tensor every row shares.
             return Var(
-                self._declare_parameter(
+                local=self._declare_parameter(
                     name,
                     tensor_type(element, extents),
                     "data",
@@ -7706,7 +7843,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     node,
                 )
             )
-        return Var(self._declare_parameter(name, element, "data", scope, state, node))
+        return Var(
+            local=self._declare_parameter(name, element, "data", scope, state, node)
+        )
 
     def _open_extents(
         self: _Elaborator, name: str, rank: int, state: _ProgramState
@@ -7755,9 +7894,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         if name in state.extent_solution:
             return state.extent_solution[name]
         if name not in state.extents:
-            state.extents[name] = IndexBinder(name, NAT)
+            state.extents[name] = IndexBinder(name=name, sort=NAT)
             state.open_extents.add(name)
-        return IndexVariable(name, NAT)
+        return IndexVariable(name=name, sort=NAT)
 
     @staticmethod
     def _resolved_extent(term: IndexTerm, state: _ProgramState) -> IndexTerm:
@@ -7823,7 +7962,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             else:
                 unified = False
                 continue
-            fixed = StaticSubstitution((), ((variable.name, term),), ())
+            fixed = StaticSubstitution(
+                types=(), indices=((variable.name, term),), effects=()
+            )
             state.extent_solution = {
                 name: substitute_index(value, fixed)
                 for name, value in state.extent_solution.items()
@@ -7888,7 +8029,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         StaticSubstitution
             Each fixed extent to its term.
         """
-        return StaticSubstitution((), tuple(state.extent_solution.items()), ())
+        return StaticSubstitution(
+            types=(), indices=tuple(state.extent_solution.items()), effects=()
+        )
 
     def _apply_extent_solution(
         self: _Elaborator, scope: _Scope, state: _ProgramState
@@ -7908,7 +8051,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             for name, local in list(current.locals.items()):
                 fixed = substitute_type(local.type, substitution)
                 if fixed != local.type:
-                    current.locals[name] = Local(local.name, fixed)
+                    current.locals[name] = Local(name=local.name, type=fixed)
             current = current.outer
 
     def _indexed_argument(
@@ -7953,14 +8096,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             local = scope.lookup(index)
             if local is None:
                 if _is_number_text(index):
-                    index_values.append(LiteralValue(int(float(index)), INT))
+                    index_values.append(LiteralValue(value=int(float(index)), type=INT))
                     continue
                 self._fail(
                     node,
                     f"index {index!r} of {base!r} is not bound by a step",
                     code="qiec-program",
                 )
-            index_values.append(Var(local))
+            index_values.append(Var(local=local))
         source = scope.lookup(base)
         pinned = self._pinned_types.get(base) if source is None else None
         if pinned is not None:
@@ -7977,7 +8120,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             source = self._declare_parameter(
                 base, tensor_type(element, (alphabet.size,)), "data", scope, state, node
             )
-        value: Value = Var(source)
+        value: Value = Var(local=source)
         context = scope.context()
         for index_value in index_values:
             source_type = self._value_type(value, context, node)
@@ -8001,7 +8144,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         code="qiec-program",
                     )
                 result = tensor_type(shape[0], (*index_shape[1], *rest))
-            value = Gather(value, index_value, result)
+            value = Gather(value=value, index=index_value, result_type=result)
         return value
 
     def _list_argument(
@@ -8060,7 +8203,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             result = tensor_type(types[0], (_extent(len(items)),))
         else:
             result = tensor_type(inner[0], (_extent(len(items)), *inner[1]))
-        return TensorValue(tuple(items), result)
+        return TensorValue(items=tuple(items), result_type=result)
 
     def _transform_chain(self: _Elaborator, argument: object, node: object) -> Value:
         """Lower a transform name in a ``Transformed`` construction.
@@ -8094,7 +8237,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 f"transforms are {known}",
                 code="qiec-program",
             )
-        return LiteralValue(chain, STRING)
+        return LiteralValue(value=chain, type=STRING)
 
     def _distribution_list(
         self: _Elaborator,
@@ -8162,7 +8305,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             self._fail(
                 node, "mixture components sample differing types", code="qiec-program"
             )
-        return TensorValue(tuple(items), tensor_type(types[0], (_extent(len(items)),)))
+        return TensorValue(
+            items=tuple(items),
+            result_type=tensor_type(types[0], (_extent(len(items)),)),
+        )
 
     def _nested_distribution(
         self: _Elaborator,
@@ -8260,11 +8406,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
             )
         provisional = DistributionValue(
-            record.id,
-            record.name,
-            tuple(arguments),
-            sampleable_type(REAL),
-            _origin_at(
+            family=record.id,
+            name=record.name,
+            arguments=tuple(arguments),
+            result_type=sampleable_type(REAL),
+            origin=_origin_at(
                 self,
                 ("programs", state.declaration.name, "nested", argument.family),
                 "distribution",
@@ -8272,11 +8418,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             ),
         )
         return DistributionValue(
-            record.id,
-            record.name,
-            tuple(arguments),
-            self._plated_type(provisional, scope, node),
-            provisional.origin,
+            family=record.id,
+            name=record.name,
+            arguments=tuple(arguments),
+            result_type=self._plated_type(provisional, scope, node),
+            origin=provisional.origin,
         )
 
     def _morphism_distribution(
@@ -8383,11 +8529,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
             ]
         provisional = DistributionValue(
-            record.id,
-            record.name,
-            tuple(arguments),
-            sampleable_type(REAL),
-            _origin_at(
+            family=record.id,
+            name=record.name,
+            arguments=tuple(arguments),
+            result_type=sampleable_type(REAL),
+            origin=_origin_at(
                 self,
                 ("programs", state.declaration.name, "morphisms", name),
                 "distribution",
@@ -8395,11 +8541,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             ),
         )
         return DistributionValue(
-            record.id,
-            record.name,
-            tuple(arguments),
-            self._plated_type(provisional, scope, node),
-            provisional.origin,
+            family=record.id,
+            name=record.name,
+            arguments=tuple(arguments),
+            result_type=self._plated_type(provisional, scope, node),
+            origin=provisional.origin,
         )
 
     def _grouped(
@@ -8458,7 +8604,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         index_map = self._index_map(
             via, rows, plate.batch[0].name, grouped, scope, state, node
         )
-        return Gather(value, index_map, tensor_type(shape[0], (rows, *shape[1][1:])))
+        return Gather(
+            value=value,
+            index=index_map,
+            result_type=tensor_type(shape[0], (rows, *shape[1][1:])),
+        )
 
     def _refined(
         self: _Elaborator,
@@ -8496,7 +8646,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             return value
         assert len(plate.batch) == 1
         rows = plate.batch[0].size
-        return Gather(value, projection, tensor_type(shape[0], (rows, *shape[1][1:])))
+        return Gather(
+            value=value,
+            index=projection,
+            result_type=tensor_type(shape[0], (rows, *shape[1][1:])),
+        )
 
     def _index_map(
         self: _Elaborator,
@@ -8564,12 +8718,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     code="qiec-program",
                 )
             if bound is not None:
-                entry: Value = Var(bound)
+                entry: Value = Var(local=bound)
             else:
                 parameter = self._declare_parameter(
                     name, index_type, "index_map", scope, state, node, axes=(rows_name,)
                 )
-                entry = Var(parameter)
+                entry = Var(local=parameter)
             if flat is None:
                 flat = entry
                 continue
@@ -8577,7 +8731,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             path = ("programs", state.declaration.name, "index_maps", name)
             scaled = self._primitive(
                 "mul_int",
-                (flat, LiteralValue(factor.size.value, INT)),
+                (flat, LiteralValue(value=factor.size.value, type=INT)),
                 node,
                 (*path, "scale"),
                 shape=(rows,),
@@ -8629,12 +8783,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 continue
             shape = tensor_shape(self._value_type(value, scope.context(), None))
             if shape is not None and shape[1]:
-                state.pending_alphabet = PlateAxis("classes", shape[1][-1])
+                state.pending_alphabet = PlateAxis(name="classes", size=shape[1][-1])
         if morphism is not None and isinstance(morphism.codomain, TypeName):
             info = self._program_objects.get(morphism.codomain.name)
             if info is not None and info.finite and info.extent is not None:
                 state.pending_alphabet = PlateAxis(
-                    morphism.codomain.name, _extent(info.extent)
+                    name=morphism.codomain.name, size=_extent(info.extent)
                 )
         return arguments
 
@@ -8666,7 +8820,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 continue
             info = self._program_objects.get(factor.name)
             if info is not None and info.finite and info.extent is not None:
-                return PlateAxis(factor.name, _extent(info.extent))
+                return PlateAxis(name=factor.name, size=_extent(info.extent))
         self._fail(
             step,
             f"GP morphism {morphism.names[0]!r} has no finite domain axis for its grid",
@@ -8783,7 +8937,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         sources: list[Value] = []
         widths: list[int] = []
         batched = False
-        row = Local(f"__{step.morphism}_row", INT)
+        row = Local(name=f"__{step.morphism}_row", type=INT)
         if step.args:
             for argument in step.args:
                 if not isinstance(argument, DrawArgName):
@@ -8814,14 +8968,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 shape = tensor_shape(local.type)
                 if local.type == REAL:
                     widths.append(1)
-                    sources.append(Var(local))
+                    sources.append(Var(local=local))
                 elif (
                     shape is not None
                     and len(shape[1]) == 1
                     and isinstance(shape[1][0], IndexLiteral)
                 ):
                     widths.append(int(shape[1][0].value))
-                    sources.append(Var(local))
+                    sources.append(Var(local=local))
                 elif (
                     shape is not None
                     and rows_axis is not None
@@ -8834,7 +8988,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     batched = True
                     widths.append(int(shape[1][1].value))
                     sources.append(
-                        Gather(Var(local), Var(row), tensor_type(REAL, (shape[1][1],)))
+                        Gather(
+                            value=Var(local=local),
+                            index=Var(local=row),
+                            result_type=tensor_type(REAL, (shape[1][1],)),
+                        )
                     )
                 elif (
                     shape is not None
@@ -8848,9 +9006,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         widths.append(int(shape[1][1].value))
                         sources.append(
                             Gather(
-                                Var(local),
-                                LiteralValue(position, INT),
-                                tensor_type(REAL, (shape[1][1],)),
+                                value=Var(local=local),
+                                index=LiteralValue(value=position, type=INT),
+                                result_type=tensor_type(REAL, (shape[1][1],)),
                             )
                         )
                 else:
@@ -8873,7 +9031,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 ):
                     continue
                 widths.append(int(shape[1][0].value))
-                sources.append(Var(local))
+                sources.append(Var(local=local))
         if declared != sum(widths):
             self._fail(
                 step,
@@ -8912,13 +9070,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "tanh",
                 (
                     AffineMap(
-                        Var(layer_weight),
-                        Var(layer_bias),
-                        tuple(sources),
-                        0,
-                        hidden,
-                        "identity",
-                        hidden_type,
+                        weight=Var(local=layer_weight),
+                        bias=Var(local=layer_bias),
+                        sources=tuple(sources),
+                        row_offset=0,
+                        rows=hidden,
+                        transform="identity",
+                        result_type=hidden_type,
                     ),
                 ),
                 step,
@@ -8952,13 +9110,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 REAL if width == 1 else tensor_type(REAL, (_extent(width),))
             )
             head: Value = AffineMap(
-                Var(weight),
-                Var(bias),
-                tuple(sources),
-                index * width,
-                width,
-                _map_transform(transform),
-                result,
+                weight=Var(local=weight),
+                bias=Var(local=bias),
+                sources=tuple(sources),
+                row_offset=index * width,
+                rows=width,
+                transform=_map_transform(transform),
+                result_type=result,
             )
             head = self._transformed_head(head, transform, width, step, state, name)
             if batched:
@@ -9081,7 +9239,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         offset = SOFTPLUS_LIFT if transform == "softplus" else SOFTPLUS_SHIFT
         return self._primitive(
             "add_real",
-            (lifted, LiteralValue(offset, REAL)),
+            (lifted, LiteralValue(value=offset, type=REAL)),
             step,
             (*path, "offset"),
             shape,
@@ -9271,7 +9429,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         del morphism
         name, extent = finite
         rows_axis = _rows_axis(plate, step)
-        row = Local(f"__{step.morphism}_row", INT)
+        row = Local(name=f"__{step.morphism}_row", type=INT)
         index_value: Value
         batched = False
         if step.args:
@@ -9308,7 +9466,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     )
             shape = tensor_shape(local.type)
             if local.type == INT:
-                index_value = Var(local)
+                index_value = Var(local=local)
             elif (
                 shape is not None
                 and shape[0] == INT
@@ -9317,7 +9475,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 and shape[1][0] == rows_axis.size
             ):
                 batched = True
-                index_value = Gather(Var(local), Var(row), INT)
+                index_value = Gather(
+                    value=Var(local=local), index=Var(local=row), result_type=INT
+                )
             else:
                 self._fail(
                     step,
@@ -9326,7 +9486,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
         else:
             index_value = Var(
-                self._declare_parameter(name.lower(), INT, "domain", scope, state, step)
+                local=self._declare_parameter(
+                    name.lower(), INT, "domain", scope, state, step
+                )
             )
         rows = width * len(heads)
         table = self._declare_parameter(
@@ -9344,12 +9506,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 REAL if width == 1 else tensor_type(REAL, (_extent(width),))
             )
             value: Value = TableMap(
-                Var(table),
-                index_value,
-                index * width,
-                width,
-                _map_transform(transform),
-                result,
+                table=Var(local=table),
+                index=index_value,
+                row_offset=index * width,
+                rows=width,
+                transform=_map_transform(transform),
+                result_type=result,
             )
             value = self._transformed_head(value, transform, width, step, state, head)
             if batched:
@@ -9429,7 +9591,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             for factor in factors:
                 info = self._program_objects.get(factor.name)
                 if info is not None and info.finite and info.extent is not None:
-                    grid = PlateAxis(factor.name, _extent(info.extent))
+                    grid = PlateAxis(name=factor.name, size=_extent(info.extent))
                     break
             if grid is None:
                 self._fail(
@@ -9463,22 +9625,22 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 axes=("grid",),
             )
             zeros = TensorValue(
-                tuple(
-                    LiteralValue(0.0, REAL)
+                items=tuple(
+                    LiteralValue(value=0.0, type=REAL)
                     for _ in range(int(cast(IndexLiteral, grid.size).value))
                 ),
-                tensor_type(REAL, (grid.size,)),
+                result_type=tensor_type(REAL, (grid.size,)),
             )
             return [
                 ("mean", zeros),
                 (
                     "kernel",
                     KernelMatrix(
-                        Var(inputs),
-                        "rbf",
-                        float(length_scale),
-                        1e-8,
-                        tensor_type(REAL, (grid.size, grid.size)),
+                        inputs=Var(local=inputs),
+                        kernel="rbf",
+                        length_scale=float(length_scale),
+                        jitter=1e-8,
+                        result_type=tensor_type(REAL, (grid.size, grid.size)),
                     ),
                 ),
             ]
@@ -9496,7 +9658,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 (
                     "loc",
                     Var(
-                        self._declare_parameter(
+                        local=self._declare_parameter(
                             f"{site}_loc",
                             tensor_type(REAL, (n,)),
                             "data",
@@ -9509,7 +9671,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 (
                     "covariance_matrix",
                     Var(
-                        self._declare_parameter(
+                        local=self._declare_parameter(
                             f"{site}_covariance_matrix",
                             tensor_type(REAL, (n, n)),
                             "data",
@@ -9526,7 +9688,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 (
                     "loc",
                     Var(
-                        self._declare_parameter(
+                        local=self._declare_parameter(
                             f"{site}_loc",
                             tensor_type(REAL, (rows, columns)),
                             "data",
@@ -9539,7 +9701,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 (
                     "row_covariance",
                     Var(
-                        self._declare_parameter(
+                        local=self._declare_parameter(
                             f"{site}_row_covariance",
                             tensor_type(REAL, (rows, rows)),
                             "data",
@@ -9552,7 +9714,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 (
                     "col_covariance",
                     Var(
-                        self._declare_parameter(
+                        local=self._declare_parameter(
                             f"{site}_col_covariance",
                             tensor_type(REAL, (columns, columns)),
                             "data",
@@ -9925,7 +10087,7 @@ def _extent(size: int | IndexVariable) -> IndexTerm:
     """
     if isinstance(size, IndexVariable):
         return size
-    return IndexLiteral(size, NAT)
+    return IndexLiteral(value=size, sort=NAT)
 
 
 def _fixed_extent(size: int | IndexVariable) -> int | None:
@@ -10006,7 +10168,9 @@ def _product_axis(factors: tuple[PlateAxis, ...]) -> PlateAxis:
     for factor in factors:
         assert isinstance(factor.size, IndexLiteral)
         extent *= factor.size.value
-    return PlateAxis("x".join(factor.name for factor in factors), _extent(extent))
+    return PlateAxis(
+        name="x".join(factor.name for factor in factors), size=_extent(extent)
+    )
 
 
 def _draw_dependencies(step: SampleStep) -> set[str]:
@@ -10107,9 +10271,10 @@ def _group_projection(factors: tuple[PlateAxis, ...], outer: PlateAxis) -> Value
     stride = math.prod(sizes[position + 1 :])
     total = math.prod(sizes)
     entries = tuple(
-        LiteralValue((flat // stride) % sizes[position], INT) for flat in range(total)
+        LiteralValue(value=(flat // stride) % sizes[position], type=INT)
+        for flat in range(total)
     )
-    return TensorValue(entries, tensor_type(INT, (_extent(total),)))
+    return TensorValue(items=entries, result_type=tensor_type(INT, (_extent(total),)))
 
 
 def _enclosing_group(scope: _Scope) -> PlateAxis | None:

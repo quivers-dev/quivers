@@ -38,8 +38,13 @@ from quivers.qiec.terms import Call, LiteralValue, Resume
 from quivers.qiec.types import TypeVariable
 
 
-_ORIGIN = SourceOrigin("tests", ("path",), "call", "qvr-source/v0.19")
-_A = TypeVariable("A", TYPE)
+_ORIGIN = SourceOrigin(
+    module="tests",
+    structural_path=("path",),
+    role="call",
+    source_protocol="qvr-source/v0.19",
+)
+_A = TypeVariable(name="A", kind=TYPE)
 
 
 def _registry() -> tuple[KernelRegistry, ComputationId, ComputationId]:
@@ -59,7 +64,12 @@ def _registry() -> tuple[KernelRegistry, ComputationId, ComputationId]:
     )
     registry.register_computation(
         ComputationSignature(
-            polymorphic, "identity", (TypeBinder("A", TYPE),), (_A,), _A, EMPTY_ROW
+            polymorphic,
+            "identity",
+            (TypeBinder(name="A", kind=TYPE),),
+            (_A,),
+            _A,
+            EMPTY_ROW,
         )
     )
     return registry, takes_int, polymorphic
@@ -69,7 +79,13 @@ def test_a_well_typed_call_infers_the_callee_result() -> None:
     """The ordinary case the rejections below are measured against."""
     registry, takes_int, _ = _registry()
     call = Call(
-        takes_int, "takes_int", (), (LiteralValue(1, INT),), INT, EMPTY_ROW, _ORIGIN
+        callee=takes_int,
+        name="takes_int",
+        static_arguments=(),
+        arguments=(LiteralValue(value=1, type=INT),),
+        result_type=INT,
+        effects=EMPTY_ROW,
+        origin=_ORIGIN,
     )
     assert infer_computation(call, registry).result == INT
 
@@ -83,13 +99,13 @@ def test_a_polymorphic_call_instantiates_the_telescope() -> None:
     """
     registry, _, polymorphic = _registry()
     call = Call(
-        polymorphic,
-        "identity",
-        (INT,),
-        (LiteralValue(7, INT),),
-        INT,
-        EMPTY_ROW,
-        _ORIGIN,
+        callee=polymorphic,
+        name="identity",
+        static_arguments=(INT,),
+        arguments=(LiteralValue(value=7, type=INT),),
+        result_type=INT,
+        effects=EMPTY_ROW,
+        origin=_ORIGIN,
     )
     assert infer_computation(call, registry).result == INT
 
@@ -107,7 +123,15 @@ def test_mutual_recursion_needs_no_forward_declaration() -> None:
         registry.register_computation(
             ComputationSignature(identity, name, (), (INT,), BOOL, EMPTY_ROW)
         )
-    forward = Call(odd, "is_odd", (), (LiteralValue(1, INT),), BOOL, EMPTY_ROW, _ORIGIN)
+    forward = Call(
+        callee=odd,
+        name="is_odd",
+        static_arguments=(),
+        arguments=(LiteralValue(value=1, type=INT),),
+        result_type=BOOL,
+        effects=EMPTY_ROW,
+        origin=_ORIGIN,
+    )
     assert infer_computation(forward, registry).result == BOOL
 
 
@@ -131,53 +155,61 @@ def test_a_duplicate_registration_is_rejected() -> None:
         (
             "an unregistered callee",
             lambda ids: Call(
-                ComputationId.derive("tests", "absent"),
-                "absent",
-                (),
-                (),
-                INT,
-                EMPTY_ROW,
-                _ORIGIN,
+                callee=ComputationId.derive("tests", "absent"),
+                name="absent",
+                static_arguments=(),
+                arguments=(),
+                result_type=INT,
+                effects=EMPTY_ROW,
+                origin=_ORIGIN,
             ),
         ),
         (
             "too few value arguments",
-            lambda ids: Call(ids[0], "takes_int", (), (), INT, EMPTY_ROW, _ORIGIN),
+            lambda ids: Call(
+                callee=ids[0],
+                name="takes_int",
+                static_arguments=(),
+                arguments=(),
+                result_type=INT,
+                effects=EMPTY_ROW,
+                origin=_ORIGIN,
+            ),
         ),
         (
             "an argument of the wrong type",
             lambda ids: Call(
-                ids[0],
-                "takes_int",
-                (),
-                (LiteralValue("x", STRING),),
-                INT,
-                EMPTY_ROW,
-                _ORIGIN,
+                callee=ids[0],
+                name="takes_int",
+                static_arguments=(),
+                arguments=(LiteralValue(value="x", type=STRING),),
+                result_type=INT,
+                effects=EMPTY_ROW,
+                origin=_ORIGIN,
             ),
         ),
         (
             "a stale recorded result type",
             lambda ids: Call(
-                ids[0],
-                "takes_int",
-                (),
-                (LiteralValue(1, INT),),
-                STRING,
-                EMPTY_ROW,
-                _ORIGIN,
+                callee=ids[0],
+                name="takes_int",
+                static_arguments=(),
+                arguments=(LiteralValue(value=1, type=INT),),
+                result_type=STRING,
+                effects=EMPTY_ROW,
+                origin=_ORIGIN,
             ),
         ),
         (
             "too few static arguments",
             lambda ids: Call(
-                ids[1],
-                "identity",
-                (),
-                (LiteralValue(7, INT),),
-                INT,
-                EMPTY_ROW,
-                _ORIGIN,
+                callee=ids[1],
+                name="identity",
+                static_arguments=(),
+                arguments=(LiteralValue(value=7, type=INT),),
+                result_type=INT,
+                effects=EMPTY_ROW,
+                origin=_ORIGIN,
             ),
         ),
     ],
@@ -203,14 +235,18 @@ def test_resume_outside_a_handler_clause_is_rejected() -> None:
     """
     registry, _, _ = _registry()
     with pytest.raises(KernelError, match="outside a handler clause"):
-        infer_computation(Resume(LiteralValue(1, INT), _ORIGIN), registry)
+        infer_computation(
+            Resume(value=LiteralValue(value=1, type=INT), origin=_ORIGIN), registry
+        )
 
 
 def test_resume_inside_a_clause_answers_the_clause_type() -> None:
     """Resuming produces the clause's answer, not the operation result."""
     registry, _, _ = _registry()
     context = CheckContext().with_resumption(ResumptionType(INT, STRING, EMPTY_ROW))
-    result = infer_computation(Resume(LiteralValue(1, INT), _ORIGIN), registry, context)
+    result = infer_computation(
+        Resume(value=LiteralValue(value=1, type=INT), origin=_ORIGIN), registry, context
+    )
     assert result.result == STRING
 
 
@@ -223,7 +259,11 @@ def test_resume_must_carry_what_the_operation_supplies() -> None:
     registry, _, _ = _registry()
     context = CheckContext().with_resumption(ResumptionType(INT, STRING, EMPTY_ROW))
     with pytest.raises(KernelError, match="resume carries"):
-        infer_computation(Resume(LiteralValue("x", STRING), _ORIGIN), registry, context)
+        infer_computation(
+            Resume(value=LiteralValue(value="x", type=STRING), origin=_ORIGIN),
+            registry,
+            context,
+        )
 
 
 def test_a_resumption_survives_entering_a_nested_binding() -> None:
@@ -237,5 +277,5 @@ def test_a_resumption_survives_entering_a_nested_binding() -> None:
     context = CheckContext().with_resumption(ResumptionType(INT, STRING, EMPTY_ROW))
     from quivers.qiec.terms import Local
 
-    deeper = context.extend(Local("x", INT))
+    deeper = context.extend(Local(name="x", type=INT))
     assert deeper.resumption == context.resumption

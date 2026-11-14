@@ -294,8 +294,7 @@ class Installation:
             The installation with the renamed declaration, the rename
             carried into any per-installation factory the handler has.
         """
-        definition = replace(
-            self.runtime.definition,
+        definition = self.runtime.definition.with_(
             id=HandlerId.derive("run", name),
             name=name,
         )

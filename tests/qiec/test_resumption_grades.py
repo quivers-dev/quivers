@@ -39,9 +39,14 @@ from quivers.qiec.terms import (
 )
 
 
-_ORIGIN = SourceOrigin("tests", ("path",), "resume", "qvr-source/v0.19")
-_RESUME = Resume(LiteralValue(1, INT), _ORIGIN)
-_PLAIN = Return(LiteralValue(1, INT))
+_ORIGIN = SourceOrigin(
+    module="tests",
+    structural_path=("path",),
+    role="resume",
+    source_protocol="qvr-source/v0.19",
+)
+_RESUME = Resume(value=LiteralValue(value=1, type=INT), origin=_ORIGIN)
+_PLAIN = Return(value=LiteralValue(value=1, type=INT))
 
 
 def _branch(body, tag: str) -> CaseBranch:
@@ -60,11 +65,11 @@ def _branch(body, tag: str) -> CaseBranch:
         The branch.
     """
     return CaseBranch(
-        ConstructorId.derive("tests", tag),
-        (),
-        (),
-        body,
-        StaticScopeId.derive("tests", tag),
+        constructor=ConstructorId.derive("tests", tag),
+        static_arguments=(),
+        fields=(),
+        body=body,
+        scope=StaticScopeId.derive("tests", tag),
     )
 
 
@@ -82,9 +87,9 @@ def _case(*bodies) -> Case:
         The case term.
     """
     return Case(
-        Var(Local("x", INT)),
-        CaseMotive((), INT),
-        tuple(_branch(body, f"C{index}") for index, body in enumerate(bodies)),
+        scrutinee=Var(local=Local(name="x", type=INT)),
+        motive=CaseMotive(indices=(), result_type=INT),
+        branches=tuple(_branch(body, f"C{index}") for index, body in enumerate(bodies)),
     )
 
 
@@ -105,7 +110,11 @@ def test_sequenced_resumptions_add() -> None:
     a body that resumes twice in sequence is the simplest way to exceed
     an affine promise.
     """
-    twice = Bind(Local("a", INT), _RESUME, Bind(Local("b", INT), _RESUME, _PLAIN))
+    twice = Bind(
+        binder=Local(name="a", type=INT),
+        first=_RESUME,
+        then=Bind(binder=Local(name="b", type=INT), first=_RESUME, then=_PLAIN),
+    )
     assert resumption_use(twice) == ResumptionUse(minimum=2, maximum=2)
 
 
@@ -121,13 +130,13 @@ def test_a_call_cannot_resume_this_clause() -> None:
     from quivers.qiec.terms import Call
 
     call = Call(
-        ComputationId.derive("tests", "helper"),
-        "helper",
-        (),
-        (),
-        INT,
-        EMPTY_ROW,
-        _ORIGIN,
+        callee=ComputationId.derive("tests", "helper"),
+        name="helper",
+        static_arguments=(),
+        arguments=(),
+        result_type=INT,
+        effects=EMPTY_ROW,
+        origin=_ORIGIN,
     )
     assert resumption_use(call) == ResumptionUse(minimum=0, maximum=0)
 

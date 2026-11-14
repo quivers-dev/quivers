@@ -7,8 +7,11 @@ but never parser nodes, compiler objects, callbacks, or backend-specific data.
 
 from __future__ import annotations
 
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
+import didactic.api as dx
+
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass
 
 from quivers.qiec.checking import (
     ComputationSignature,
@@ -63,8 +66,7 @@ from quivers.qiec.types import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class NamedEffectInstance:
+class NamedEffectInstance(QiecModel):
     """A source name for one deterministically allocated lexical instance.
 
     Parameters
@@ -78,10 +80,11 @@ class NamedEffectInstance:
     """
 
     name: str
-    entry: RowEntry
-    origin: SourceOrigin
+    entry: RowEntry = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Reject an unnamed instance.
 
         Raises
@@ -94,8 +97,7 @@ class NamedEffectInstance:
             raise ValueError("an effect instance name cannot be empty")
 
 
-@dataclass(frozen=True, slots=True)
-class NamedComputation:
+class NamedComputation(QiecModel):
     """One named QVR computation and its checked QIEC type.
 
     Parameters
@@ -117,15 +119,16 @@ class NamedComputation:
         Where the computation was declared.
     """
 
-    id: ComputationId
+    id: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    telescope: Telescope
-    parameters: tuple[Local, ...]
-    body: Computation
-    type: ComputationType
-    origin: SourceOrigin
+    telescope: Telescope = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    parameters: tuple[Local, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    body: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    type: ComputationType = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Reject a computation whose names collide or are absent.
 
         Raises
@@ -151,8 +154,7 @@ class NamedComputation:
             )
 
 
-@dataclass(frozen=True, slots=True)
-class QiecModule:
+class QiecModule(QiecModel):
     """A complete, serializable QIEC compilation unit.
 
     ``source_protocol`` records the exact source route that produced the
@@ -192,18 +194,35 @@ class QiecModule:
 
     module: str
     source_protocol: str
-    index_sorts: tuple[UserIndexSort, ...] = ()
-    families: tuple[FamilyDecl, ...] = ()
-    constructors: tuple[ConstructorDecl, ...] = ()
-    effects: tuple[EffectDef, ...] = ()
-    instances: tuple[NamedEffectInstance, ...] = ()
-    handlers: tuple[HandlerDef, ...] = ()
-    computations: tuple[NamedComputation, ...] = ()
-    entries: tuple[ProgramEntry, ...] = ()
+    index_sorts: tuple[UserIndexSort, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    families: tuple[FamilyDecl, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    constructors: tuple[ConstructorDecl, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    effects: tuple[EffectDef, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    instances: tuple[NamedEffectInstance, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    handlers: tuple[HandlerDef, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    computations: tuple[NamedComputation, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    entries: tuple[ProgramEntry, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     gap: str = ""
     abi: str = QIEC_ABI
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Reject a module whose identity or ABI is missing or wrong.
 
         Raises
@@ -301,8 +320,8 @@ def _children(node: object) -> tuple[object, ...]:
     """
     if isinstance(node, tuple):
         return node
-    if is_dataclass(node) and not isinstance(node, type):
-        return tuple(getattr(node, field.name) for field in fields(node))
+    if isinstance(node, QiecModel):
+        return tuple(getattr(node, name) for name in type(node).__field_specs__)
     return ()
 
 

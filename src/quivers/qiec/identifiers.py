@@ -7,8 +7,10 @@ objects and gives migrations a stable target when source locations move.
 
 from __future__ import annotations
 
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
+
 import json
-from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from functools import total_ordering
 from hashlib import sha256
@@ -28,13 +30,13 @@ def _canonical_value(value: object) -> object:
     value : object
         The value to encode. Scalars pass through, bytes become a tagged
         hex string, identifiers and enums become their wire forms,
-        sequences and mappings recurse, and a dataclass becomes its
+        sequences and mappings recurse, and a kernel model becomes its
         fields under a tag naming its type.
 
     Returns
     -------
     object
-        A JSON-encodable value. Mappings are key-sorted and dataclasses
+        A JSON-encodable value. Mappings are key-sorted and kernel models
         carry their qualified type name, so structurally distinct values
         cannot collide once encoded.
 
@@ -60,12 +62,12 @@ def _canonical_value(value: object) -> object:
             str(key): _canonical_value(item)
             for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
         }
-    if is_dataclass(value) and not isinstance(value, type):
+    if isinstance(value, QiecModel):
         return {
             "$type": f"{type(value).__module__}.{type(value).__qualname__}",
             **{
-                field.name: _canonical_value(getattr(value, field.name))
-                for field in fields(value)
+                name: _canonical_value(getattr(value, name))
+                for name in type(value).__field_specs__
             },
         }
     raise TypeError(f"value has no canonical QIEC encoding: {value!r}")
@@ -329,8 +331,7 @@ class DistributionId(StableId):
     namespace = "distribution"
 
 
-@dataclass(frozen=True, slots=True)
-class SourceOrigin:
+class SourceOrigin(QiecModel):
     """Stable structural source origin with optional diagnostic coordinates.
 
     ``structural_path`` is the protocol path after parsing and name
@@ -356,7 +357,9 @@ class SourceOrigin:
     """
 
     module: str
-    structural_path: tuple[str | int, ...]
+    structural_path: tuple[str | int, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
     role: str
     source_protocol: str
     file: str | None = None
@@ -416,8 +419,7 @@ marks one a handler discharged.
 """
 
 
-@dataclass(frozen=True, slots=True)
-class DynamicAddressFrame:
+class DynamicAddressFrame(QiecModel):
     """One serializable component of a dynamic effect address.
 
     Parameters
@@ -433,8 +435,7 @@ class DynamicAddressFrame:
     key: str | int
 
 
-@dataclass(frozen=True, slots=True)
-class SiteProvenance:
+class SiteProvenance(QiecModel):
     """Static and dynamic provenance of an effect request.
 
     Parameters
@@ -455,11 +456,19 @@ class SiteProvenance:
         The static sites a derived request was generated from.
     """
 
-    origin: SourceOrigin
-    dynamic_path: tuple[DynamicAddressFrame, ...] = ()
-    resumption_path: tuple[int, ...] = ()
-    relation: AddressRelation = "preserve"
-    parents: tuple[SiteId, ...] = ()
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    dynamic_path: tuple[DynamicAddressFrame, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    resumption_path: tuple[int, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    relation: AddressRelation = dx.field(
+        default="preserve", opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    parents: tuple[SiteId, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     @property
     def static_site(self) -> SiteId:

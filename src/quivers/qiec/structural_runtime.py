@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import torch
 
 from quivers.qiec.builtins import compute_handler
@@ -236,8 +236,7 @@ def structural_handler_definition(
         answer_type=result,
         key=f"structural-{instance_name}-{computation_name}",
     )
-    return replace(
-        runtime.definition,
+    return runtime.definition.with_(
         name=f"__structural_{instance_name}_{computation_name}",
     )
 

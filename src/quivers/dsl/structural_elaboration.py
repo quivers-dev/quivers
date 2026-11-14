@@ -81,8 +81,8 @@ class _StructuralSignature:
 
         name = self.root if sort is None else sort
         return TypeApplication(
-            self.family.type_constructor,
-            (IndexConstructor(name, (), self.sort),),
+            constructor=self.family.type_constructor,
+            arguments=(IndexConstructor(name=name, arguments=(), sort=self.sort),),
         )
 
 
@@ -209,14 +209,16 @@ class _StructuralElaboration:
                 item.name for item in (*declaration.sorts, *declaration.vertex_kinds)
             ) or ("Value",)
             sort_name = f"{declaration.name}__Sort"
-            sort = UserIndexSort(sort_name, names, tuple(0 for _ in names))
+            sort = UserIndexSort(
+                name=sort_name, constructors=names, arities=tuple(0 for _ in names)
+            )
             family_name = f"{declaration.name}__Term"
             family = FamilyDecl(
-                FamilyId.derive(self.source.module_name, "family", family_name),
-                family_name,
-                (),
-                (IndexBinder("sort", sort, refinable=True),),
-                (),
+                id=FamilyId.derive(self.source.module_name, "family", family_name),
+                name=family_name,
+                parameters=(),
+                indices=(IndexBinder(name="sort", sort=sort, refinable=True),),
+                constructors=(),
                 closed=False,
             )
             self.index_sorts[sort_name] = sort
@@ -247,7 +249,7 @@ class _StructuralElaboration:
                 structural.declaration,
                 structural.root,
             )
-            code = tensor_type(REAL, (IndexLiteral(width, NAT),))
+            code = tensor_type(REAL, (IndexLiteral(value=width, sort=NAT),))
             if isinstance(declaration, surface.EncoderDecl):
                 self._structural_component(
                     components,
@@ -314,9 +316,9 @@ class _StructuralElaboration:
             lexical_path=("structural", role, name, "instance"),
         )
         instance = NamedEffectInstance(
-            instance_name,
-            entry,
-            self._origin(
+            name=instance_name,
+            entry=entry,
+            origin=self._origin(
                 declaration,
                 ("structural", role, name, "instance"),
                 "effect-instance",
@@ -391,16 +393,16 @@ class _StructuralElaboration:
         computations: list[NamedComputation] = []
         for component in getattr(self, "_structural_components", {}).values():
             assert component.signature is not None
-            argument = Local("argument", component.argument)
+            argument = Local(name="argument", type=component.argument)
             request = EffectRequest(
-                component.instance.entry.instance,
-                component.instance.entry.effect,
-                COMPUTE_APPLY,
-                (),
-                (Var(argument),),
-                component.result,
-                SiteProvenance(
-                    self._origin(
+                instance=component.instance.entry.instance,
+                effect=component.instance.entry.effect,
+                operation=COMPUTE_APPLY,
+                static_arguments=(),
+                arguments=(Var(local=argument),),
+                result_type=component.result,
+                origin=SiteProvenance(
+                    origin=self._origin(
                         component.declaration,
                         ("structural", component.role, component.name, "apply"),
                         "effect-request",
@@ -412,10 +414,10 @@ class _StructuralElaboration:
                     component.signature,
                     (argument,),
                     Handle(
-                        component.instance.entry.instance,
-                        component.handler.id,
-                        Perform(request),
-                        (),
+                        instance=component.instance.entry.instance,
+                        handler=component.handler.id,
+                        computation=Perform(request=request),
+                        static_arguments=(),
                     ),
                     component.declaration,
                     ("structural", component.role, component.name),
@@ -432,40 +434,45 @@ class _StructuralElaboration:
             if encoder is None or decoder is None or signature is None:
                 continue
             assert encoder.signature is not None and decoder.signature is not None
-            term = Local("term", encoder.argument)
-            code = Local("code", encoder.result)
-            loss = Local("loss", LOG_WEIGHT)
+            term = Local(name="term", type=encoder.argument)
+            code = Local(name="code", type=encoder.result)
+            loss = Local(name="loss", type=LOG_WEIGHT)
             body = Bind(
-                code,
-                Call(
-                    encoder.signature.id,
-                    encoder.name,
-                    (),
-                    (Var(term),),
-                    encoder.result,
-                    encoder.signature.effects,
-                    self._origin(
+                binder=code,
+                first=Call(
+                    callee=encoder.signature.id,
+                    name=encoder.name,
+                    static_arguments=(),
+                    arguments=(Var(local=term),),
+                    result_type=encoder.result,
+                    effects=encoder.signature.effects,
+                    origin=self._origin(
                         declaration,
                         ("structural", "loss", declaration.name, "encoder"),
                         "call",
                     ),
                 ),
-                Bind(
-                    loss,
-                    Call(
-                        decoder.signature.id,
-                        decoder.name,
-                        (),
-                        (TupleValue((Var(term), Var(code)), decoder.argument),),
-                        LOG_WEIGHT,
-                        decoder.signature.effects,
-                        self._origin(
+                then=Bind(
+                    binder=loss,
+                    first=Call(
+                        callee=decoder.signature.id,
+                        name=decoder.name,
+                        static_arguments=(),
+                        arguments=(
+                            TupleValue(
+                                items=(Var(local=term), Var(local=code)),
+                                result_type=decoder.argument,
+                            ),
+                        ),
+                        result_type=LOG_WEIGHT,
+                        effects=decoder.signature.effects,
+                        origin=self._origin(
                             declaration,
                             ("structural", "loss", declaration.name, "decoder"),
                             "call",
                         ),
                     ),
-                    Return(Var(loss)),
+                    then=Return(value=Var(local=loss)),
                 ),
             )
             computations.append(
