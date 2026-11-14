@@ -191,7 +191,9 @@ jobs:
   test:
     name: Test (shard ${{ matrix.shard }}/6)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Include toolchain setup and the longest shard in the job budget.
+    # Progressing shards can exceed 45 minutes before saving new timings.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
