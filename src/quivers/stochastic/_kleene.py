@@ -45,7 +45,7 @@ from quivers.stochastic.semiring import (
 
 
 class DivergentClosureError(ValueError):
-    """The unary rules' closure is an infinite sum with no finite value."""
+    """A path closure has no finite value in the declared semiring."""
 
 
 def _check_square(matrix: torch.Tensor) -> int:
@@ -131,6 +131,53 @@ def _linear_star(matrix: torch.Tensor) -> torch.Tensor:
     return torch.where(reach, star.clamp(min=0.0), torch.zeros_like(star))
 
 
+def _log_star(matrix: torch.Tensor) -> torch.Tensor:
+    """Sum all paths by state elimination in log space.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        Square log-weight matrix, with negative infinity for absent edges.
+
+    Returns
+    -------
+    torch.Tensor
+        Log weights of all paths, including empty paths.
+
+    Raises
+    ------
+    DivergentClosureError
+        If a state's effective return weight is at least one.
+    ValueError
+        If the matrix contains NaN or positive infinity.
+    """
+    n = _check_square(matrix)
+    if bool((torch.isnan(matrix) | torch.isposinf(matrix)).any()):
+        raise ValueError("log closure requires finite weights or negative infinity")
+    star = matrix
+    indices = torch.arange(n, device=matrix.device)
+    for k in range(n):
+        loop = star[k, k]
+        if not bool(loop < 0):
+            raise DivergentClosureError(
+                "the unary rules' closure diverges: an effective return weight "
+                "is at least one"
+            )
+        repeat = -torch.log(-torch.expm1(loop))
+        through = star[:, k, None] + repeat + star[None, k, :]
+        empty = torch.isneginf(star) & torch.isneginf(through)
+        combined = torch.logaddexp(
+            torch.where(empty, torch.zeros_like(star), star),
+            torch.where(empty, torch.zeros_like(through), through),
+        )
+        combined = torch.where(empty, -torch.inf, combined)
+        row = indices[:, None] == k
+        column = indices[None, :] == k
+        star = torch.where(row | column, star + repeat, combined)
+        star = torch.where(row & column, repeat, star)
+    return star
+
+
 def _max_plus_star(matrix: torch.Tensor) -> torch.Tensor:
     """The closure in the max-plus semiring: best chain log weights.
 
@@ -214,10 +261,7 @@ def kleene_star(matrix: torch.Tensor, semiring: ChartSemiring) -> torch.Tensor:
         If the semiring is not one whose closure this module computes.
     """
     if isinstance(semiring, LogProbSemiring):
-        star = _linear_star(matrix.exp())
-        return torch.where(
-            star > 0, star.clamp(min=torch.finfo(star.dtype).tiny).log(), -torch.inf
-        )
+        return _log_star(matrix)
     if isinstance(semiring, CountingSemiring):
         return _linear_star(matrix)
     if isinstance(semiring, ViterbiSemiring):

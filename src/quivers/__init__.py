@@ -187,6 +187,8 @@ from quivers.enriched.optics import (
     compose_optics,
 )
 from quivers.categorical.traced import (
+    KleeneStarTrace,
+    DivergentClosureError,
     TracedMonoidal,
     CompactClosedTrace,
     trace,
@@ -459,6 +461,8 @@ __all__ = [
     "ComposedOptic",
     "compose_optics",
     # traced monoidal
+    "KleeneStarTrace",
+    "DivergentClosureError",
     "TracedMonoidal",
     "CompactClosedTrace",
     "trace",

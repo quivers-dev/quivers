@@ -19,7 +19,8 @@ entry.
   f.change_base(φ) >> g.change_base(φ)``.
 
 The shipped homomorphisms are `IdentityHom`, `Embedding` (of a
-sub-algebra such as ``BOOLEAN ↪ PRODUCT_FUZZY``) and `CountingToReal`.
+sub-algebra such as ``BOOLEAN ↪ PRODUCT_FUZZY``), `CountingToReal`, and
+`SupportMap` on its declared source algebras.
 Every other shipped map (`MarkovToProductFuzzy`, `LogProb`, `MaxPlus`,
 `Threshold`, `ProductFuzzyToGodel`, `ProbabilityClamp`,
 `CountingFromReal`, `ProbabilityToReal`) is a `CarrierMap` that fails
@@ -42,6 +43,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
+from quivers.core._carriers import validate_carrier
 from quivers.core.algebras import (
     COUNTING,
     GODEL,
@@ -103,6 +105,77 @@ class AlgebraHomomorphism(CarrierMap):
     Membership is a claim that the equations hold; the test suite checks
     every shipped instance.
     """
+
+
+class SupportMap(AlgebraHomomorphism):
+    """Map positive entries to true and zero entries to false.
+
+    The supported source algebras have zero-sum-free joins and products
+    without zero divisors: a join is positive exactly when some argument
+    is positive, and a product is positive exactly when both factors are.
+    Thus support preserves join, product, zero, and unit on their
+    mathematical carriers. Floating-point products can still underflow.
+
+    Entrywise support preserves binary matrix composition and identities.
+    For Boolean, Gödel, Counting, and Markov semirings this defines a
+    functor between matrix categories. ProductFuzzy and Probability are
+    not semirings: their matrix composition is not associative. The
+    positivity test is not differentiable.
+
+    Parameters
+    ----------
+    source : Algebra
+        A built-in Boolean, ProductFuzzy, Gödel, Probability, Counting,
+        or Markov algebra. Custom subclasses are not accepted.
+
+    Raises
+    ------
+    TypeError
+        If the source is not one of these built-in algebras.
+    """
+
+    def __init__(self, source: Algebra) -> None:
+        if type(source) not in {
+            type(q)
+            for q in (BOOLEAN, PRODUCT_FUZZY, GODEL, PROBABILITY, COUNTING, MARKOV)
+        }:
+            raise TypeError(f"support is not a declared homomorphism for {source!r}")
+        self._source = source
+
+    @property
+    def source(self) -> Algebra:
+        """The algebra whose positive entries are mapped to true."""
+        return self._source
+
+    @property
+    def target(self) -> Algebra:
+        """The Boolean algebra."""
+        return BOOLEAN
+
+    def apply(self, t: torch.Tensor) -> torch.Tensor:
+        """Return the Boolean support of a tensor in the source carrier.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Entries in the source algebra's carrier.
+
+        Returns
+        -------
+        torch.Tensor
+            Zero-one entries of the same shape and device. Floating-point
+            inputs retain their dtype; other inputs produce float32.
+
+        Raises
+        ------
+        TypeError
+            If entries are complex.
+        ValueError
+            If entries lie outside the source carrier.
+        """
+        validate_carrier(t, self._source)
+        dtype = t.dtype if t.is_floating_point() else torch.float32
+        return (t > 0).to(dtype=dtype)
 
 
 class IdentityHom(AlgebraHomomorphism):
@@ -508,6 +581,7 @@ def lookup_carrier_map(source: Algebra, target: Algebra) -> CarrierMap | None:
 __all__ = [
     "CarrierMap",
     "AlgebraHomomorphism",
+    "SupportMap",
     "IdentityHom",
     "Embedding",
     "MarkovToProductFuzzy",

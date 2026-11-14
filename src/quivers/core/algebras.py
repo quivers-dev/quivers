@@ -1105,9 +1105,26 @@ class BooleanAlgebra(IdempotentSemiring):
         return a * b
 
     def join(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
-        """Logical OR via iterated max."""
+        """Compute the finite join, returning zero on empty axes.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Values in the algebra's carrier.
+        dim : int or tuple[int, ...]
+            Axes to reduce.
+
+        Returns
+        -------
+        torch.Tensor
+            The reduction with the named axes removed. Empty reductions
+            retain the input dtype, device, and a zero input gradient.
+        """
         if isinstance(dim, int):
             dim = (dim,)
+        if any(t.shape[axis] == 0 for axis in dim):
+            reduced = t.sum(dim=dim).to(dtype=t.dtype)
+            return reduced + torch.full_like(reduced, self.zero)
 
         result = t
 
@@ -1117,9 +1134,26 @@ class BooleanAlgebra(IdempotentSemiring):
         return result
 
     def meet(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
-        """Logical AND via iterated min."""
+        """Compute the finite meet, returning the top on empty axes.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Values in the algebra's carrier.
+        dim : int or tuple[int, ...]
+            Axes to reduce.
+
+        Returns
+        -------
+        torch.Tensor
+            The reduction with the named axes removed. Empty reductions
+            retain the input dtype, device, and a zero input gradient.
+        """
         if isinstance(dim, int):
             dim = (dim,)
+        if any(t.shape[axis] == 0 for axis in dim):
+            reduced = t.sum(dim=dim).to(dtype=t.dtype)
+            return reduced + torch.full_like(reduced, self.top)
 
         result = t
 
@@ -1246,16 +1280,52 @@ class GodelAlgebra(IdempotentSemiring):
         return torch.min(a, b)
 
     def join(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
+        """Compute the finite join, returning zero on empty axes.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Values in the algebra's carrier.
+        dim : int or tuple[int, ...]
+            Axes to reduce.
+
+        Returns
+        -------
+        torch.Tensor
+            The reduction with the named axes removed. Empty reductions
+            retain the input dtype, device, and a zero input gradient.
+        """
         if isinstance(dim, int):
             dim = (dim,)
+        if any(t.shape[axis] == 0 for axis in dim):
+            reduced = t.sum(dim=dim).to(dtype=t.dtype)
+            return reduced + torch.full_like(reduced, self.zero)
         result = t
         for d in sorted(dim, reverse=True):
             result = result.max(dim=d).values
         return result
 
     def meet(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
+        """Compute the finite meet, returning the top on empty axes.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Values in the algebra's carrier.
+        dim : int or tuple[int, ...]
+            Axes to reduce.
+
+        Returns
+        -------
+        torch.Tensor
+            The reduction with the named axes removed. Empty reductions
+            retain the input dtype, device, and a zero input gradient.
+        """
         if isinstance(dim, int):
             dim = (dim,)
+        if any(t.shape[axis] == 0 for axis in dim):
+            reduced = t.sum(dim=dim).to(dtype=t.dtype)
+            return reduced + torch.full_like(reduced, self.top)
         result = t
         for d in sorted(dim, reverse=True):
             result = result.min(dim=d).values
@@ -1396,8 +1466,26 @@ class MaxPlusAlgebra(IdempotentSemiring):
         return a + b
 
     def join(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
+        """Compute the finite join, returning zero on empty axes.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Values in the algebra's carrier.
+        dim : int or tuple[int, ...]
+            Axes to reduce.
+
+        Returns
+        -------
+        torch.Tensor
+            The reduction with the named axes removed. Empty reductions
+            retain the input dtype, device, and a zero input gradient.
+        """
         if isinstance(dim, int):
             dim = (dim,)
+        if any(t.shape[axis] == 0 for axis in dim):
+            reduced = t.sum(dim=dim).to(dtype=t.dtype)
+            return reduced + torch.full_like(reduced, self.zero)
         result = t
         for d in sorted(dim, reverse=True):
             result = result.max(dim=d).values
@@ -1474,8 +1562,26 @@ class LogProbAlgebra(Semiring):
         return a + b
 
     def join(self, t: torch.Tensor, dim: int | tuple[int, ...]) -> torch.Tensor:
+        """Compute the finite join, returning zero on empty axes.
+
+        Parameters
+        ----------
+        t : torch.Tensor
+            Values in the algebra's carrier.
+        dim : int or tuple[int, ...]
+            Axes to reduce.
+
+        Returns
+        -------
+        torch.Tensor
+            The reduction with the named axes removed. Empty reductions
+            retain the input dtype, device, and a zero input gradient.
+        """
         if isinstance(dim, int):
             dim = (dim,)
+        if any(t.shape[axis] == 0 for axis in dim):
+            reduced = t.sum(dim=dim).to(dtype=t.dtype)
+            return reduced + torch.full_like(reduced, self.zero)
         # ``torch.logsumexp`` has the right value for an all-``-inf``
         # reduction but differentiates that value as ``NaN``. Impossible
         # dynamic-programming cells are represented by exactly such rows, so

@@ -26,6 +26,8 @@ from quivers.categorical.base_change import (
     BoolToFuzzy,
 )
 from quivers.categorical.traced import (
+    KleeneStarTrace,
+    DivergentClosureError,
     TracedMonoidal,
     CompactClosedTrace,
     trace,
@@ -54,6 +56,8 @@ __all__ = [
     "BaseChange",
     "BoolToFuzzy",
     # traced
+    "KleeneStarTrace",
+    "DivergentClosureError",
     "TracedMonoidal",
     "CompactClosedTrace",
     "trace",

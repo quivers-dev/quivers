@@ -277,11 +277,9 @@ class CoproductMonoidal(MonoidalStructure):
         """
         source = CoproductSet(components=(EMPTY, a))
         target = a
-        n = target.size
-        data = torch.zeros(n, *target.shape)
-        for i in range(n):
-            idx = (i,)
-            data[idx + idx] = self._algebra.unit
+        data = self._algebra.identity_tensor(target.shape).reshape(
+            target.size, *target.shape
+        )
         return observed(source, target, data, algebra=self._algebra)
 
     def right_unitor(self, a: SetObject) -> ObservedMorphism:
@@ -291,11 +289,9 @@ class CoproductMonoidal(MonoidalStructure):
         """
         source = CoproductSet(components=(a, EMPTY))
         target = a
-        n = target.size
-        data = torch.zeros(n, *target.shape)
-        for i in range(n):
-            idx = (i,)
-            data[idx + idx] = self._algebra.unit
+        data = self._algebra.identity_tensor(target.shape).reshape(
+            target.size, *target.shape
+        )
         return observed(source, target, data, algebra=self._algebra)
 
     def braiding(self, a: SetObject, b: SetObject) -> ObservedMorphism:
