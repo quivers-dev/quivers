@@ -260,6 +260,11 @@ runs the loop for a program, an input with one row, and a fit
 below checks a fit that samples the closed-form posterior of a
 Normal mean, so its ranks should look uniform.
 
+Each simulation and fit uses an independently derived seed. CPU and available
+accelerator random states are restored when either scope exits, including when a
+fit raises an error. A callback that draws from a global Torch generator is thus
+reproducible without changing the caller's random stream.
+
 ```python
 import torch
 from quivers.diagnostics import sbc, sbc_coverage, sbc_uniformity
