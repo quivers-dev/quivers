@@ -28,12 +28,14 @@ inline (Gen samples discrete latents natively, unlike Stan's
 
 from __future__ import annotations
 
-import dataclasses
 import pathlib
 from typing import Callable
 
+import didactic.api as dx
 import panproto
 
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, ValueModel
+from quivers.qiec._models import QiecModel
 from quivers.dsl.ast_nodes.let_expressions import (
     LetExprBinOp,
     LetExprCall,
@@ -131,8 +133,7 @@ from quivers.transpile.renderers._qiec import (
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass
-class _GenCtx:
+class _GenCtx(QiecModel):
     """Per-render Julia schema-construction carrier.
 
     Wraps the panproto `SchemaBuilder` with a
@@ -142,46 +143,83 @@ class _GenCtx:
     indices through references (which prior-step samples live on
     which axes, which inputs are scalar vs vector / index, which
     morphism decls back wrapper families).
+
+    The schema builder, counter, accumulators, and lookup tables retain
+    identity. Each render constructs its own mutable containers.
     """
 
-    sb: panproto.SchemaBuilder
-    n: int = 0
-    params: list[str] = dataclasses.field(default_factory=list)
+    sb: panproto.SchemaBuilder = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    counter: list[int] = dx.field(
+        default_factory=lambda: [0], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    params: list[str] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     # The model function's body block; a statement is placed in it as
     # soon as it is built, so emitters that write into a block
     # directly (the shared marginalize emitter) interleave in order.
     body: str = ""
-    return_names: tuple[str, ...] = ()
+    return_names: list[str] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     # The bodies whose native operation table a call has bound.
-    operations_bound: set[str] = dataclasses.field(default_factory=set)
+    operations_bound: set[str] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     # Each previously-declared sample / observe / data-input mapped to
     # the tuple of batch Dims it lives on, in declaration order. Used
     # to thread loop indices through `IRArgRef` instances.
-    decl_axes: dict[str, tuple[Dim, ...]] = dataclasses.field(default_factory=dict)
+    decl_axes: dict[str, tuple[Dim, ...]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     # Each name the plan binds mapped to its whole plate, batch and
     # event: a gather `mu[z]` carries the axes of `mu` after the indexed
     # ones, which each take the loop over that axis or a whole `:`.
-    name_plates: dict[str, Plate] = dataclasses.field(default_factory=dict)
+    name_plates: dict[str, Plate] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     # Cards harvested from the IR for axis-name lookups.
-    cards: dict[str, int] = dataclasses.field(default_factory=dict)
+    cards: dict[str, int] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     # Morphism declarations needed by wrapper-family rendering.
-    morphisms: dict[str, object] = dataclasses.field(default_factory=dict)
+    morphisms: dict[str, HeldValue] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     # IRDataInput records by name, to recover constraint info on the
     # fly during arg rendering.
-    inputs_by_name: dict[str, IRDataInput] = dataclasses.field(default_factory=dict)
+    inputs_by_name: dict[str, IRDataInput] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     # Axis names a prior `for` loop has already iterated over in the
     # function body. The loop-variable namer consults this set to
     # decide whether to emit the bare `m_<Axis>` form or the
     # disambiguated `m_<Axis>_<step>` form.
-    used_axes: set[str] = dataclasses.field(default_factory=set)
+    used_axes: set[str] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     # The array-shape environment the shared Julia let-expression
     # helper consults: per-name event rank and full array rank, plus
     # the bindings materialised as a nested tower of vector literals.
-    shapes: JuliaShapes = dataclasses.field(default_factory=JuliaShapes)
+    shapes: JuliaShapes = dx.field(
+        default_factory=JuliaShapes, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def fresh(self, prefix: str) -> str:
-        self.n += 1
-        return f"{prefix}_{self.n}"
+        """Allocate a distinct schema identifier within this render.
+
+        Parameters
+        ----------
+        prefix : str
+            The identifier's role prefix.
+
+        Returns
+        -------
+        str
+            The prefix followed by the next counter value.
+        """
+        self.counter[0] += 1
+        return f"{prefix}_{self.counter[0]}"
 
     def v(self, kind: str, prefix: str | None = None) -> str:
         vid = self.fresh(prefix or kind[:3])
@@ -622,8 +660,7 @@ def _is_scalar_input(inp: IRDataInput) -> bool:
     return True
 
 
-@dataclasses.dataclass
-class _ArgCtx:
+class _ArgCtx(ValueModel):
     """Per-call rendering context for the args of one distribution call.
 
     Carries the per-step batch-loop bindings (axis name → loop
@@ -632,12 +669,12 @@ class _ArgCtx:
     index map semantics so reference threading routes through it.
     """
 
-    batch_loops: dict[str, str] = dataclasses.field(default_factory=dict)
+    batch_loops: dict[str, str] = dx.field(default_factory=dict)
     via_indexer: str | None = None
     via_loop_var: str | None = None
     # Every loop of the step, its residual event axes included: the axis
     # a gathered element carries reads the loop over that axis.
-    axis_loops: dict[str, str] = dataclasses.field(default_factory=dict)
+    axis_loops: dict[str, str] = dx.field(default_factory=dict)
     # Whether the argument being rendered fills a rank-0 family
     # parameter, which reads one entry per drawn element.
     scalar_slot: bool = False
@@ -690,9 +727,7 @@ def _render_arg_ref(gx: _GenCtx, ref: IRArgRef, *, arg_ctx: _ArgCtx) -> str:
         rendered = tuple(
             _one_higher(
                 gx,
-                _render_arg(
-                    gx, idx, arg_ctx=dataclasses.replace(arg_ctx, scalar_slot=False)
-                ),
+                _render_arg(gx, idx, arg_ctx=arg_ctx.with_(scalar_slot=False)),
                 idx,
             )
             for idx in ref.indices
@@ -1162,12 +1197,14 @@ class GenRenderer(RendererBase):
         gx = _GenCtx(sb=sb, cards={}, morphisms={}, name_plates=name_plate_map(ir))
 
         _harvest_cards(ir, gx)
-        gx.shapes = JuliaShapes(
-            name_event_rank=name_event_rank_map(ir),
-            name_array_rank=name_array_rank_map(ir),
-            nested_names=nested_tower_names(ir),
-            program_values=frozenset(name_rank_map(ir)),
-            row_arrays=_row_array_names(ir.body),
+        gx = gx.with_(
+            shapes=JuliaShapes(
+                name_event_rank=name_event_rank_map(ir),
+                name_array_rank=name_array_rank_map(ir),
+                nested_names=nested_tower_names(ir),
+                program_values=frozenset(name_rank_map(ir)),
+                row_arrays=_row_array_names(ir.body),
+            )
         )
 
         # Sort inputs alphabetically so the emitted `model(...)` signature
@@ -1183,7 +1220,7 @@ class GenRenderer(RendererBase):
         # lives on `_GenCtx`.
         ctx = RenderContext(sb=sb, morphisms={}, defines={})
         blk = gx.v("block", "body")
-        gx.body = blk
+        gx = gx.with_(body=blk)
         self._gx = gx
         self._module = ir.module
         self._ir = ir
@@ -1276,7 +1313,7 @@ class GenRenderer(RendererBase):
             self._emit_marginalize(ctx, node)
             return
         if isinstance(node, IRReturn):
-            self._gx.return_names = tuple(node.names)
+            self._gx.return_names[:] = node.names
             return
         raise UnsupportedConstruct("qvr-gen", [f"node:{type(node).__name__}"])
 
@@ -1550,9 +1587,7 @@ class GenRenderer(RendererBase):
             rendered = _render_arg(
                 gx,
                 arg,
-                arg_ctx=dataclasses.replace(
-                    arg_ctx, scalar_slot=scalar_parameter(family, name)
-                ),
+                arg_ctx=arg_ctx.with_(scalar_slot=scalar_parameter(family, name)),
             )
             rendered = _broadcast_arg_to_event(
                 gx,
@@ -2423,7 +2458,7 @@ class _GenMarginalizer(TuringRenderer):
             sb=gx.sb,
             morphisms={},
             lets={},
-            counter=[gx.n + _MARGINALIZE_ID_OFFSET],
+            counter=[gx.counter[0] + _MARGINALIZE_ID_OFFSET],
             cards=dict(ir.cards),
             body=gx.body,
             input_plates={item.name: item.plate for item in ir.inputs},

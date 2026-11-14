@@ -94,7 +94,7 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
                 ):
                     validate_shape(item, item_type, path=f"{path}[{index}]")
                 return
-    elif origin in {list, frozenset}:
+    elif origin in {list, set, frozenset}:
         if isinstance(value, origin):
             for item in value:
                 validate_shape(item, arguments[0], path=f"{path}.member")
