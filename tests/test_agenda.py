@@ -41,6 +41,30 @@ from quivers.stochastic.semiring import (
 # ---------------------------------------------------------------------------
 
 
+def test_rules_accept_bare_wildcard_premises_and_conclusions() -> None:
+    """Whole-item variables preserve the weights of a two-step derivation."""
+    item = Wildcard(name="item")
+    rules = (
+        InferenceRule(name="unwrap", premises=(("source", item),), conclusion=item),
+        InferenceRule(
+            name="finish",
+            premises=(item,),
+            conclusion=("done",),
+            side_condition=lambda bindings: bindings["item"] == ("answer",),
+        ),
+    )
+    result = run_agenda(
+        axioms=[(("source", ("answer",)), torch.tensor(-0.75))],
+        rules=rules,
+        semiring=LOG_PROB,
+    )
+    weights = dict(result.chart.items())
+    assert set(weights) == {("source", ("answer",)), ("answer",), ("done",)}
+    for weight in weights.values():
+        torch.testing.assert_close(weight, torch.tensor(-0.75))
+    assert match(item, ("answer",), {"item": ("different",)}) is None
+
+
 class TestMatch:
     def test_constant_match(self):
         assert match(("span", "A", 0, 3), ("span", "A", 0, 3)) == {}

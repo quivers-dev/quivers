@@ -18,7 +18,6 @@ against the compiled deduction rather than against its weights:
 
 from __future__ import annotations
 
-import dataclasses
 import itertools
 import re
 
@@ -90,7 +89,7 @@ def _without(system: DeductionSystem, rule_name: str) -> DeductionSystem:
     """
     rules = tuple(rule for rule in system.rules if rule.name != rule_name)
     assert len(rules) == len(system.rules) - 1, rule_name
-    return dataclasses.replace(system, rules=rules)
+    return system.with_(rules=rules)
 
 
 _NEEDED = [

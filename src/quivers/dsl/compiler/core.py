@@ -477,8 +477,7 @@ class Compiler(
         # rule-attached and chart-attached losses automatically.
         if program.losses is not None:
             for name, system in program.deductions.items():
-                system._loss_registry = program.losses  # type: ignore[attr-defined]
-                system._deduction_name = name  # type: ignore[attr-defined]
+                system.losses[name] = program.losses
         return program
 
     def _attach_host_data_types(self, module: QiecModule) -> None:

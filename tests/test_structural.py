@@ -575,8 +575,8 @@ def test_deduction_with_attached_encoder_exposes_embeddings():
     """
     prog = loads(textwrap.dedent(src))
     D = prog.deductions["Parse"]
-    assert getattr(D, "_item_signature", None) is not None
-    assert getattr(D, "_item_encoder", None) is not None
+    assert D.item_signature is not None
+    assert D.item_encoder is not None
     chart = D(
         [
             (("atom", "NP"), torch.tensor(0.0)),

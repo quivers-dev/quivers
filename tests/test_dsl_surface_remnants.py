@@ -160,8 +160,8 @@ def test_plural_lexicon_entries_match_separate_entries() -> None:
     assert [item for item, _ in plural_axioms] == [item for item, _ in separate_axioms]
 
     # Each expanded word carries its own learnable weight.
-    plural_module = getattr(plural, "_axiom_module")
-    separate_module = getattr(separate, "_axiom_module")
+    plural_module = plural.modules["_axiom_module"]
+    separate_module = separate.modules["_axiom_module"]
     assert isinstance(plural_module, nn.Module)
     assert isinstance(separate_module, nn.Module)
     plural_params = list(plural_module.parameters())

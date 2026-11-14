@@ -79,6 +79,7 @@ from quivers.dsl.compiler._prelude import CompileError
 from quivers.dsl.compiler.programs import _ProgramsMixin
 from quivers.dsl.parser import parse as _parse_qvr
 from quivers.stochastic.agenda import (
+    Bindings,
     DeductionSystem,
     InferenceRule,
     Wildcard,
@@ -252,30 +253,52 @@ def _category_depth(value: Hashable) -> int:
     )
 
 
-def _install_depth_guard(rule, depth_n: int) -> None:
+def _with_depth_guard(rule: InferenceRule, depth_n: int) -> InferenceRule:
     """Wrap ``rule.side_condition`` with a category-depth guard.
 
     The guard rejects firings whose *conclusion category* would
     have constructor depth strictly greater than ``depth_n`` after
     pattern instantiation. Composes with any pre-existing side
     condition the rule already carries (``AND``).
+
+    Parameters
+    ----------
+    rule
+        The inference rule whose conclusion depth is bounded.
+    depth_n
+        The largest accepted constructor depth.
+
+    Returns
+    -------
+    InferenceRule
+        A rule carrying the conjunction of both conditions.
     """
 
     existing = rule.side_condition
     conclusion_pattern = rule.conclusion
 
-    def _depth_ok(bindings, _exist=existing, _pat=conclusion_pattern, _n=depth_n):
-        if _exist is not None and not _exist(bindings):
+    def _depth_ok(bindings: Bindings) -> bool:
+        """Check the rule's condition and the instantiated conclusion's depth.
+
+        Parameters
+        ----------
+        bindings
+            The variable bindings from matching the rule's premises.
+
+        Returns
+        -------
+        bool
+            Whether the existing condition and depth bound accept the match.
+        """
+        if existing is not None and not existing(bindings):
             return False
         try:
-            instantiated = _instantiate(_pat, bindings)
+            instantiated = _instantiate(conclusion_pattern, bindings)
         except KeyError:
             return True  # let the engine handle the missing binding downstream
-        return _category_depth(instantiated) <= _n
+        return _category_depth(instantiated) <= depth_n
 
-    # InferenceRule is @dataclass(frozen=True); we mutate via
-    # object.__setattr__ to install the new side condition.
-    object.__setattr__(rule, "side_condition", _depth_ok)
+    return rule.with_(side_condition=_depth_ok)
 
 
 def load_lexicon_tsv(
@@ -1387,8 +1410,7 @@ class _DeductionsMixin:
         )
         if depth_bound is not None:
             depth_n = int(depth_bound)
-            for r in inference_rules:
-                _install_depth_guard(r, depth_n)
+            inference_rules = [_with_depth_guard(r, depth_n) for r in inference_rules]
 
         # ``tolerance=epsilon`` option exposes Kleene-star
         # convergence semantics for non-idempotent semirings with
@@ -1424,6 +1446,7 @@ class _DeductionsMixin:
             col=decl.col,
         )
         system = DeductionSystem(
+            name=decl.name,
             rules=tuple(inference_rules),
             semiring=semiring,
             axiom_injector=axiom_injector,
@@ -1442,12 +1465,12 @@ class _DeductionsMixin:
         # reach it (via `parse(NAME, …)`) can include its
         # parameters in their optimizer.
         if axiom_module is not None:
-            system._axiom_module = axiom_module  # type: ignore[attr-defined]
+            system.modules["_axiom_module"] = axiom_module
         # Stash the rule-weight module so its parameters appear in
         # ``model.parameters()`` of any Program that references
         # this deduction. Empty if no rule declared `#[learnable]`.
         if rule_param_dicts:
-            system._rule_module = rule_module  # type: ignore[attr-defined]
+            system.modules["_rule_module"] = rule_module
         # Attach a signature / encoder pairing, if declared. The
         # chart-query operations (`chart.embedding(pattern)`) consult
         # this attached encoder to compute on-demand item
@@ -1467,7 +1490,7 @@ class _DeductionsMixin:
                     decl.line,
                     decl.col,
                 )
-            system._item_signature = sigs[item_signature]  # type: ignore[attr-defined]
+            system = system.with_(item_signature=sigs[item_signature])
         item_encoder = get_option_name(
             decl.options,
             "encoder",
@@ -1482,7 +1505,7 @@ class _DeductionsMixin:
                     decl.line,
                     decl.col,
                 )
-            system._item_encoder = comps[item_encoder]  # type: ignore[attr-defined]
+            system = system.with_(item_encoder=comps[item_encoder])
         self._deductions[decl.name] = system
 
 

@@ -174,7 +174,6 @@ depend on it. Each sentence below parses with the full rule set and fails
 without the rule it is meant to exercise.
 
 ```python
-import dataclasses
 
 import torch
 from quivers.dsl import load
@@ -190,7 +189,7 @@ def parses(system, sentence):
 def without(system, rule_name):
     rules = tuple(rule for rule in system.rules if rule.name != rule_name)
     assert len(rules) == len(system.rules) - 1
-    return dataclasses.replace(system, rules=rules)
+    return system.with_(rules=rules)
 
 
 needs = {

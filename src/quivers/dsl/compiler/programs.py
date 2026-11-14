@@ -10,7 +10,6 @@ import inspect
 from abc import abstractmethod
 import math
 from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
-from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
 from typing import Literal, cast
 import didactic.api as dx
@@ -7173,14 +7172,10 @@ class _ProgramsMixin:
                         d2_axioms = list(_d2.axiom_injector(inp))
                         return d1_axioms + d2_axioms
 
-                    composed = _dc_replace(d2, axiom_injector=_composed_injector)
-                    # Carry across any submodules so the composed
-                    # system's ``.parameters()`` walks both factors.
-                    for attr in ("_axiom_module", "_rule_module"):
-                        for src in (d1, d2):
-                            mod = getattr(src, attr, None)
-                            if mod is not None:
-                                setattr(composed, attr, mod)
+                    composed = d2.with_(
+                        axiom_injector=_composed_injector,
+                        modules={**d1.modules, **d2.modules},
+                    )
                     return composed
                 # Standard scalar / tensor builtins.
                 if func_name in _TENSOR_BUILTINS:
