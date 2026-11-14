@@ -2,7 +2,7 @@
 
 ## Overview
 
-A [probabilistic context-free grammar](https://en.wikipedia.org/wiki/Probabilistic_context-free_grammar) (PCFG) assigns each production a probability, so that the productions sharing a left-hand side form a distribution, and scores a sentence by the total probability of its derivations. This source states a small PCFG as a [weighted deduction](../guides/deduction.md) over [CKY](https://en.wikipedia.org/wiki/CYK_algorithm) chart items `span(I, J, N)` under the `LogProb` semiring. `normalize=lhs` passes each left-hand side's learned log-weights through a softmax, so the grammar is a proper PCFG and the chart's goal weight is the sentence's log probability. The page checks the chart against a CKY recursion written by hand, fits the production probabilities by maximum likelihood, and, with a Dirichlet prior on each left-hand side, checks the Bayesian program's joint on both execution paths and its NUTS posterior against the exact conjugate posterior.
+A [probabilistic context-free grammar](https://en.wikipedia.org/wiki/Probabilistic_context-free_grammar) (PCFG) assigns each production a probability, so that the productions sharing a left-hand side form a distribution, and scores a sentence by the total probability of its derivations. This source states a small PCFG as a [weighted deduction](../guides/deduction.md) over [CKY](https://en.wikipedia.org/wiki/CYK_algorithm) chart items `span(I, J, N)` under the `LogProb` [semiring](https://ncatlab.org/nlab/show/rig). `normalize=lhs` passes each left-hand side's learned log-weights through a softmax, so the grammar is a proper PCFG and the chart's goal weight is the sentence's log probability. The examples compare the chart against a CKY recursion written by hand, fit the production probabilities by maximum likelihood, and, with a Dirichlet prior on each left-hand side, compare the Bayesian program's joint on both execution paths and its [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler) posterior against the exact conjugate posterior.
 
 ## QVR source
 
@@ -37,11 +37,11 @@ deduction PCFG : Term -> Term [semiring=LogProb, start=S, depth=4, normalize=lhs
 
 For `the dog sleeps`, the chart combines `the` and `dog` into a noun phrase, lifts `sleeps` to a verb phrase, and combines the two into a sentence. A [chart](../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores) saves each partial result at its [substring interval](https://www.nltk.org/book/ch08.html#well-formed-substring-tables) [@nltkSyntax2019], and when several derivations produce the same item the semiring's addition, here log-sum-exp, combines them [@goodman1999semiring]. The goal weight at `span(0, n, S)` is thus the inside log probability $\log P(S \Rightarrow^* w_1 \cdots w_n)$.
 
-With `normalize=lhs`, the productions are grouped by left-hand side: `S`, `NP`, and `VP` have one production each, which therefore has probability one, while `Det`, `N`, and `V` each choose between two words. The probabilities within a group are the softmax of that group's learned log-weights, so each group sums to one by construction, and the likelihood of a corpus is bounded above, which is what makes maximum-likelihood fitting well posed. Normalizing every group gives a distribution over derivations only when the grammar is consistent, its derivations terminating with probability one [@booth1973applying]; this grammar has no recursive production, so every derivation terminates.
+With `normalize=lhs`, the productions are grouped by left-hand side: `S`, `NP`, and `VP` have one production each, which thus has probability one, while `Det`, `N`, and `V` each choose between two words. The probabilities within a group are the softmax of that group's learned log-weights, so each group sums to one by construction, and the likelihood of a corpus is bounded above, which is what makes maximum-likelihood fitting well posed. Normalizing every group gives a distribution over derivations only when the grammar is consistent, its derivations terminating with probability one [@booth1973applying]. This grammar has no recursive production, so every derivation terminates.
 
 ## Walkthrough
 
-- `object Term : FinSet 16` is the index set the deduction's domain and codomain range over; the chart reasons over constructor-tagged items, not over its elements.
+- `object Term : FinSet 16` is the index set the deduction's domain and codomain range over. The chart reasons over constructor-tagged items, not over its elements.
 - The `atoms` block lists the constructors: nonterminals (`S`, `NP`, `VP`), preterminals (`Det`, `N`, `V`), the chart-item constructor `span`, and the six words.
 - `s_np_vp`, `np_det_n`, and `vp_v` are the three non-lexical productions. Each conclusion has no free category variable, so `#[learnable]` allocates one log-weight per production. `I`, `J`, and `K` range over token positions.
 - Each `lexicon` line `"word" : Cat = lf #[learnable]` is a unit-width axiom `span(I, I+1, Cat)` wherever the token at position `I` is `word`, with one learned log-weight.
@@ -49,9 +49,7 @@ With `normalize=lhs`, the productions are grouped by left-hand side: `S`, `NP`, 
 
 ## Try it
 
-The checks below come from verification scripts whose tolerances were fixed before they were first run.
-
-### An independent grammar and a CKY oracle
+### An independent grammar and a CKY reference calculation
 
 The generating grammar is written out by hand and shares no code with quivers: `sample_corpus` draws sentences top-down and counts the productions each derivation uses, and `cky_log_inside` computes $\log P(S \Rightarrow^* w)$ by the CKY recursion with unary closure, in float64.
 
@@ -149,7 +147,7 @@ def cky_log_inside(
 
 ### Maximum-likelihood fitting
 
-A corpus of 300 sentences is sampled from the generating grammar and the grammar is fitted by [`adam_fit_deduction`](../api/stochastic/deduction/fit.md#quivers.stochastic.deduction.fit.adam_fit_deduction) (300 steps, learning rate 0.1). Every sentence of this grammar has one derivation, so the maximum-likelihood estimate of each production probability is its relative frequency among the derivations' uses of its left-hand side, and the corpus negative log likelihood at those frequencies is a lower bound the loss can reach. The checks: the final loss is within 0.02 nats of that bound; each left-hand side's probabilities sum to one within 1e-6; each fitted probability is within 0.005 of its relative frequency and within four binomial standard errors of the generating probability; and the chart's goal weight at the fitted probabilities equals the CKY oracle within 1e-4 on ten sentences.
+A corpus of 300 sentences is sampled from the generating grammar and the grammar is fitted by [`adam_fit_deduction`](../api/stochastic/deduction/fit.md#quivers.stochastic.deduction.fit.adam_fit_deduction) (300 steps, learning rate 0.1). Every sentence of this grammar has one derivation, so the maximum-likelihood estimate of each production probability is its relative frequency among the derivations' uses of its left-hand side, and the corpus negative log likelihood at those frequencies is a lower bound the loss can reach. The checks: the final loss is within 0.02 nats of that bound. Each left-hand side's probabilities sum to one within 1e-6. Each fitted probability is within 0.005 of its relative frequency and within four binomial standard errors of the generating probability. And the chart's goal weight at the fitted probabilities equals the CKY reference calculation within 1e-4 on ten sentences.
 
 ```python
 from collections import Counter
@@ -193,9 +191,9 @@ for tokens in corpus[:10]:
 
 ### A Bayesian PCFG
 
-A program can place a [prior on the production probabilities](../guides/deduction.md#priors-on-production-probabilities) of a normalized grammar and infer their posterior, the Bayesian PCFG of [@johnson2007bayesian]. The source below is the same grammar without learned weights; the program draws each two-production left-hand side's probabilities from `Dirichlet(1, 1)` and binds them in the `parse` call. The corpus is one input of one run, a table with one sentence per object of `Sentence`, and `chart.goal_weight()` is the sum of the sentences' log inside weights.
+A program can place a [prior on the production probabilities](../guides/deduction.md#priors-on-production-probabilities) of a normalized grammar and infer their posterior, the Bayesian PCFG of [@johnson2007bayesian]. The source below is the same grammar without learned weights. The program draws each two-production left-hand side's probabilities from `Dirichlet(1, 1)` and binds them in the `parse` call. The corpus is one input of one run, a table with one sentence per object of `Sentence`, and `chart.goal_weight()` is the sum of the sentences' log inside weights.
 
-Because every sentence has one derivation, each left-hand side's posterior is the conjugate $\mathrm{Dirichlet}(1 + n)$, with $n$ the production counts. On 60 sampled sentences, the program's log joint at a fixed point must equal the CKY oracle (the `Dirichlet(1, 1)` density is one) to 1e-9 on the reference machine and to 1e-3 on the compiled runtime. NUTS (two chains, 200 warmup and 300 kept draws each) must then reach an effective sample size of at least 100 for every site and put every posterior mean within $4\,\mathrm{sd} / \sqrt{100}$ of the exact posterior mean, and the exact posterior mean must lie within four posterior standard deviations of the generating probabilities.
+Because every sentence has one derivation, each left-hand side's posterior is the conjugate $\mathrm{Dirichlet}(1 + n)$, with $n$ the production counts. On 60 sampled sentences, the program's log joint at a fixed point must equal the CKY reference calculation (the `Dirichlet(1, 1)` density is one) to 1e-9 on the [reference machine](../developer/qiec.md#reference-evaluator) and to 1e-3 on the compiled runtime. NUTS (two chains, 200 warmup and 300 kept draws each) must then reach an effective sample size of at least 100 for every site and put every posterior mean within $4\,\mathrm{sd} / \sqrt{100}$ of the exact posterior mean, and the exact posterior mean must lie within four posterior standard deviations of the generating probabilities.
 
 ```python
 import torch
@@ -289,15 +287,8 @@ for site, lhs in (("p_det", "Det"), ("p_n", "N"), ("p_v", "V")):
 
 ## Categorical perspective
 
-A chart assigns a weight to each item, here a `span(I, J, N)` triple saying that nonterminal `N` covers a substring. A rule combines the weights of its premises by the semiring's multiplication, and alternative derivations of the same item are combined by its addition; in `LogProb` this is adding log weights along a derivation and taking log-sum-exp across alternatives, so the inside weight accounts for every derivation, whereas a best-derivation weight needs a different semiring [@goodman1999semiring]. Rules are directed hyperedges from premise items to a conclusion item, which separates the grammar from the schedule that evaluates it.
+A chart assigns a weight to each item, here a `span(I, J, N)` triple saying that nonterminal `N` covers a substring. A rule combines the weights of its premises by the semiring's multiplication, and alternative derivations of the same item are combined by its addition. In `LogProb` this is adding log weights along a derivation and taking log-sum-exp across alternatives, so the inside weight accounts for every derivation, whereas a best-derivation weight needs a different semiring [@goodman1999semiring]. Rules are directed hyperedges from premise items to a conclusion item, which separates the grammar from the schedule that evaluates it.
 
 ## Inside computation
 
-The compiled runtime computes chart values through the agenda and differentiates through its semiring operations; gradients reach the learned log-weights, or, in the Bayesian program, the sampled probabilities. The same declaration also generates a checked search on the reference machine, and given the same weights and depth bound its goal weight equals the agenda chart's inside weight; the [parsing tutorial](../tutorials/qvr/11-parsing-and-search.md) shows the comparison.
-
-## Sources and further reading
-
-- *Semiring parsing* [@goodman1999semiring].
-- *Applying probability measures to abstract languages* [@booth1973applying].
-- *Bayesian inference for PCFGs via Markov chain Monte Carlo* [@johnson2007bayesian].
-- *Analyzing sentence structure*, chapter 8 of *Natural Language Processing with Python* [@nltkSyntax2019].
+The compiled runtime computes chart values through the agenda and differentiates through its semiring operations. Gradients reach the learned log-weights, or, in the Bayesian program, the sampled probabilities. The same declaration also generates a checked search on the reference machine, and given the same weights and depth bound its goal weight equals the agenda chart's inside weight. The [parsing tutorial](../tutorials/qvr/11-parsing-and-search.md) shows the comparison.
