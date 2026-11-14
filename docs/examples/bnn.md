@@ -2,17 +2,17 @@
 
 ## Overview
 
-A [Bayesian neural network](https://en.wikipedia.org/wiki/Bayesian_neural_network) [@mackay1992bayesian] treats the weights of a network as random variables. A prior over the weights and a likelihood for the data give a posterior over networks, and predictions average the network's output over that posterior. This example is a one-hidden-layer tanh regression network with four hidden units, with every weight declared as a sample site in the source:
+A [Bayesian neural network](https://en.wikipedia.org/wiki/Bayesian_neural_network) [@mackay1992bayesian] treats the weights of a network as random variables. A prior over the weights and a likelihood for the data give a posterior over networks, and posterior prediction averages their response distributions. This example is a one-hidden-layer tanh regression network with four hidden units, with every weight declared as a [sample site](../guides/inference-foundations.md#trace-and-sample-sites) in the source:
 
 $$
 \mu(x) = b_{\text{out}} + \sum_{h=1}^{4} w^{\text{out}}_h \tanh\bigl(w^{\text{in}}_h x + b^{\text{in}}_h\bigr),
 \qquad
-y_n \sim \mathcal{N}\bigl(\mu(x_n), \sigma\bigr),
+y_n \sim \mathcal{N}\bigl(\mu(x_n), \sigma^2\bigr),
 $$
 
-with $w^{\text{in}}_h, b^{\text{in}}_h \sim \mathcal{N}(0, 2)$, $w^{\text{out}}_h \sim \mathcal{N}(0, 1)$, $b_{\text{out}} \sim \mathcal{N}(0, 1)$, and $\sigma \sim \text{HalfNormal}(0.5)$.
+with $w^{\text{in}}_h, b^{\text{in}}_h \sim \mathcal{N}(0, 2^2)$, $w^{\text{out}}_h \sim \mathcal{N}(0, 1)$, $b_{\text{out}} \sim \mathcal{N}(0, 1)$, and $\sigma \sim \text{HalfNormal}(0.5)$.
 
-What the posterior buys over a single fitted network is *epistemic* uncertainty, uncertainty about the function itself. Inside the range of the training inputs the data pin the function down and the predictive spread is close to the noise level; outside it many networks fit the data equally well and disagree, so the predictive spread should grow. The runnable blocks fit the posterior with MacKay's [Laplace approximation](https://en.wikipedia.org/wiki/Laplace%27s_approximation) and check both halves of that claim against held-out data from the true network.
+What the posterior buys over a single fitted network is *epistemic* uncertainty, uncertainty about the function itself. Inside the range of the training inputs the data pin the function down and the predictive spread is close to the noise level. Outside it many networks fit the data equally well and disagree, so the predictive spread should grow. The runnable blocks fit the posterior with MacKay's [Laplace approximation](https://en.wikipedia.org/wiki/Laplace%27s_approximation) and check both halves of that claim against held-out data from the true network.
 
 ## QVR source
 
@@ -66,17 +66,17 @@ export bnn
 
 ## Understanding the model
 
-There are two sources of uncertainty in a prediction. Even with the weights known, a new response varies around the network's mean by the observation noise $\sigma$. With finite data the weights are also uncertain, and that second source is what the weight prior and posterior represent [@pyroBayesianRegression]. A single fitted network, whether by maximum likelihood or at the posterior mode (MAP), keeps only the first source: its predictive interval has the same width at every input.
+There are two sources of uncertainty in a prediction. Even with the weights known, a new response varies around the network's mean by the observation noise $\sigma$. With finite data the weights are also uncertain, and that second source is what the weight prior and posterior represent [@pyroBayesianRegression]. A single fitted network, whether by maximum likelihood or at the posterior mode ([MAP](https://en.wikipedia.org/wiki/Maximum_a_posteriori_estimation) (maximum a posteriori)), keeps only the first source: its predictive interval has the same width at every input.
 
 A [posterior prediction](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) draws a weight vector from the posterior, computes the network's mean at the new input, and draws a response around it. Averaging over weight draws widens the interval exactly where the posterior networks disagree, which tends to be away from the training inputs.
 
 ## Walkthrough
 
-`object Resp : FinSet 128` is the plate of observed rows and `object Hidden : FinSet 4` indexes the hidden units; `object Target : Real 1` is the value space of the response, so `program bnn : Resp -> Target` scores a plate of real responses.
+`object Resp : FinSet 128` is the [plate](https://en.wikipedia.org/wiki/Plate_notation) of observed rows and `object Hidden : FinSet 4` indexes the hidden units. `object Target : Real 1` is the value space of the response, so `program bnn : Resp -> Target` scores a plate of real responses.
 
-The five `sample` lines are the priors. `sample w_in : Hidden <- Normal(loc=0.0, scale=2.0)` draws one input weight per hidden unit, and likewise for the hidden biases `b_in` and the output weights `w_out`; `b_out` and `sigma` are scalars. Because every weight is a sample site, the [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram) this source compiles to has 14 latent coordinates, and every inference driver sees them directly. No Python-side lift is needed to make the network Bayesian.
+The five `sample` lines are the priors. `sample w_in : Hidden <- Normal(loc=0.0, scale=2.0)` draws one input weight per hidden unit, and likewise for the hidden biases `b_in` and the output weights `w_out`. `b_out` and `sigma` are scalars. Because every weight is a sample site, the [`MonadicProgram`](../api/continuous/programs.md#quivers.continuous.programs.MonadicProgram) this source compiles to has 14 latent coordinates, and every inference driver sees them directly. No Python-side lift is needed to make the network Bayesian.
 
-The `let` lines are the network. `x` is the per-row input supplied as host data. `let h0 = tanh(w_in[0] * x + b_in[0])` is the first hidden unit's activation at every row: `w_in[0]` and `b_in[0]` are scalars, so the expression stays on the `Resp` plate. The output layer `mu` weights the four activations by `w_out` and adds `b_out`. One line per unit keeps every product between a scalar and a plated vector; the checked program language has no outer product of the `Resp` and `Hidden` axes, so the hidden layer cannot be written as a single `(row, unit)` matrix.
+The `let` lines are the network. `x` is the per-row input provided as input data. `let h0 = tanh(w_in[0] * x + b_in[0])` is the first hidden unit's activation at every row: `w_in[0]` and `b_in[0]` are scalars, so the expression stays on the `Resp` plate. The output layer `mu` weights the four activations by `w_out` and adds `b_out`. One line per unit keeps every product between a scalar and a plated vector. The checked program language has no outer product of the `Resp` and `Hidden` axes, so the hidden layer cannot be written as a single `(row, unit)` matrix.
 
 `observe y : Resp <- Normal(loc=mu, scale=sigma)` scores the observed responses. A network whose weights are declared sites is also an ordinary program for the transpilers: there is no model-internal parameter network, so the [measured support matrix](../transpile-support.md) reports this source like any other plated regression.
 
@@ -133,7 +133,7 @@ print(f"log joint at the truth: {float(log_joint_true):.2f} (hand-written {float
 
 ### Fitting the posterior mode
 
-[`AutoLaplaceApproximation`](../api/inference/guide.md#quivers.inference.guides.AutoLaplaceApproximation) is a two-phase guide. Before its Hessian is fitted it is a point mass, and maximizing the ELBO under it maximizes the log joint, so the [`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) loop below finds the posterior mode. An L-BFGS polish then takes the mode to a stationary point, which the curvature step needs.
+[`AutoLaplaceApproximation`](../api/inference/guide.md#quivers.inference.guides.AutoLaplaceApproximation) is a two-phase guide. Before its Hessian is fitted it is a point mass, and maximizing the [ELBO](https://en.wikipedia.org/wiki/Evidence_lower_bound) (evidence lower bound) under it maximizes the log joint, so the [`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) (stochastic variational inference) loop below finds the posterior mode. An L-BFGS polish then takes the mode to a stationary point, which the curvature step needs.
 
 ```python
 from quivers.inference import AutoLaplaceApproximation, ELBO, SVI
@@ -176,7 +176,7 @@ The log joint at the mode exceeds the log joint at the true weights, as it shoul
 
 `fit_hessian` replaces the point mass by a Gaussian whose covariance is the inverse Hessian of the negative log joint at the mode, the approximation MacKay used [@mackay1992bayesian; @tierney1986laplace]. Following MacKay, the predictive pushes Gaussian weight draws through the network *linearized* at the mode, computed here with a [Jacobian-vector product](https://pytorch.org/docs/stable/generated/torch.func.jvp.html) of the program's own `mu`. Linearization keeps the predictive Gaussian in the function and avoids the large excursions that raw Gaussian draws produce along weakly determined directions of a saturating network.
 
-The check uses 128 fresh responses from the true network inside the training range $[-2, 2]$ and 128 outside it, in $[-4, -3] \cup [3, 4]$. Three assertions, fixed before the run: the 90% predictive interval covers between 80% and 97% of the inside responses; the posterior standard deviation of the mean function is at least three times larger outside than inside; and the posterior intervals cover more of the outside responses than the MAP plug-in intervals do.
+The check uses 128 fresh responses from the true network inside the training range $[-2, 2]$ and 128 outside it, in $[-4, -3] \cup [3, 4]$. The criteria require (i) coverage of 80% to 97% of the inside responses by the 90% predictive interval, (ii) posterior standard deviation of the mean function at least three times larger outside than inside, and (iii) greater coverage of outside responses by the posterior intervals than by the MAP plug-in intervals.
 
 ```python
 from torch.func import jvp
@@ -249,7 +249,7 @@ Inside the range both predictives are close to nominal, since the noise dominate
 
 ### NUTS from the mode
 
-The same program runs under [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) with no change: the sampler moves over the 14 declared coordinates. `init_strategy="guide"` starts the chain at the mode by handing [`MCMC`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMC) a point-mass guide placed there. Thirty warmup and thirty retained draws keep the block short; they explore the neighborhood of the mode and do not replace a multi-chain run with convergence diagnostics.
+The same program runs under [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) with no change: the sampler moves over the 14 declared coordinates. `init_strategy="guide"` starts the chain at the mode by handing [`MCMC`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMC) a point-mass guide placed there. Thirty warmup and thirty retained draws keep the block short. They explore the neighborhood of the mode and do not replace a multi-chain run with convergence diagnostics.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -266,11 +266,11 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 print(f"posterior mean noise scale: {float(result.samples['sigma'].mean()):.3f}")
 ```
 
-### The same network declared with latent network weights
+### A network with latent weights {#the-same-network-declared-with-latent-network-weights}
 
-A neural kernel can carry the prior itself. Declaring `net : Feature -> Target [param_source=mlp(8), weights=latent, prior_scale=1.0] ~ Normal` makes the weights and biases of its one-hidden-layer `tanh` network [sample sites](../reference/qvr/probabilistic-programs.md#latent-network-weights) of every program that reaches it, each with a `Normal(0, prior_scale)` prior, at the names `net_param_layer0_weight`, `net_param_layer0_bias`, `net_param_weight`, and `net_param_bias`. The network has two output heads: the first is the response mean and the exponential of the second the response scale, so the noise level is a function of the weights rather than a separate site. The source is shorter than the page's main source, but no transpile target lowers a network applied to drawn weights (`param-source:mlp:latent`), which is why the main source writes the layers out.
+A neural [kernel](https://en.wikipedia.org/wiki/Markov_kernel) can carry weight priors directly. This variant has eight hidden units and predicts both mean and scale, so its architecture and likelihood differ from the four-unit model above. Declaring `net : Feature -> Target [param_source=mlp(8), weights=latent, prior_scale=1.0] ~ Normal` makes the weights and biases of its one-hidden-layer `tanh` network [sample sites](../reference/qvr/probabilistic-programs.md#latent-network-weights) of every program that reaches it, each with a `Normal(0, prior_scale)` prior, at the names `net_param_layer0_weight`, `net_param_layer0_bias`, `net_param_weight`, and `net_param_bias`. The network has two output heads: the first is the response mean and the exponential of the second the response scale, so the noise level is a function of the weights rather than a separate site. The [support matrix](../transpile-support.md) records backend coverage for latent network weights.
 
-The checks below were fixed before they were first run. At a traced draw of the weights, the compiled runtime must match a hand-written float64 density to a relative 1e-5 and the reference machine to 1e-9, and an oracle with prior scale 2 must disagree by more than 1e-3. Then NUTS (one chain, 300 warmup and 300 kept draws, tree depth 7) is run on 20 points of $y = \sin(2x) + \mathcal{N}(0, 0.1^2)$, $x$ uniform on $[-1.5, 1.5]$. The posterior-mean network output at 50 held-out inputs must lie within an RMSE of 0.25 of $\sin(2x)$, while the prior-mean output, the same network averaged over 300 prior draws, must be further than 0.5 from it; the noise is 0.1, and the best straight line has an RMSE of about 0.45 on this range.
+At a traced draw of the weights, the compiled runtime must match a hand-written float64 density to a relative 1e-5 and the [reference machine](../developer/qiec.md#reference-evaluator) to 1e-9, and a reference calculation with prior scale 2 must disagree by more than 1e-3. Then [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler) (one chain, 300 warmup and 300 kept draws, tree depth 7) is run on 20 points of $y = \sin(2x) + \mathcal{N}(0, 0.1^2)$, $x$ uniform on $[-1.5, 1.5]$. The posterior-mean network output at 50 held-out inputs must lie within an RMSE of 0.25 of $\sin(2x)$, while the prior-mean output, the same network averaged over 300 prior draws, must be further than 0.5 from it. The noise is 0.1, and the best straight line has an RMSE of about 0.45 on this range.
 
 ```python
 import math
@@ -373,16 +373,11 @@ assert prior_rmse > 0.5
 
 ## Categorical perspective
 
-`bnn : Resp -> Target` is a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]. Its sample steps compose a prior over the parameter space $\mathbb{R}^{13} \times \mathbb{R}_{>0}$ with a likelihood kernel from weights to responses, and the network is the deterministic map inside that kernel from a weight vector and an input to a Normal mean. The posterior predictive at a new input is then the Kleisli composite of the posterior over weights with the same kernel, which is why its spread inherits the posterior's disagreement about the function.
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. Prior draws over $\mathbb{R}^{13}\times\mathbb{R}_{>0}$ compose with the response kernel to define the generative model. The deterministic network maps a weight vector and an input to the Normal mean. Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative].
 
-Declaring the weights as sites is what separates this source from a neural kernel such as `morphism net : A -> B [param_source=mlp] ~ Normal`, whose network's weights belong to the morphism's [`ParamSource`](../api/continuous/param_source.md#quivers.continuous.param_source.ParamSource) and are learned as point estimates. Here they are random variables of the program, as they are under `weights=latent` in the section above, so a single source denotes the whole mixture $\int p(y \mid x, \theta)\, p(\theta \mid \mathcal{D})\, d\theta$.
+At a new input, composing the inferred parameter posterior with the response kernel gives the posterior predictive $\int p(y\mid x,\theta)p(\theta\mid\mathcal{D})\,d\theta$. Its spread reflects both observation noise and disagreement among posterior functions. A neural kernel with point-estimated weights instead stores those weights in its [`ParamSource`](../api/continuous/param_source.md#quivers.continuous.param_source.ParamSource). Declared sample sites and `weights=latent` make them random variables.
 
 ## See also
 
 - [Bayesian Regression](bayesian-regression.md) for the linear special case, a network with no hidden layer.
 - [Variational Autoencoder](vae.md) for neural kernels whose weights are point estimates, with an amortized posterior over latent codes instead of over weights.
-
-## Sources and further reading
-
-- *A Practical Bayesian Framework for Backpropagation Networks* [@mackay1992bayesian].
-- *Accurate Approximations for Posterior Moments and Marginal Densities* [@tierney1986laplace].
