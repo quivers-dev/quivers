@@ -60,7 +60,7 @@ p(o_{1:T} \mid \pi, A, B)
   = \sum_{z_0, \ldots, z_T} \pi_{z_0} \prod_{t=1}^{T} A_{z_{t-1} z_t} B_{z_t o_t}.
 $$
 
-The chain has $T + 1$ states for $T$ symbols. The state $z_0$ is drawn from $\pi$ and emits nothing; the first symbol is emitted by $z_1$, the state the chain moves to from $z_0$. This differs from the convention in which the first state is drawn from $\pi$ and emits $o_1$ directly [@rabiner1989hmm]. This program's likelihood at $\pi$ equals that convention's likelihood at $\pi A$, the distribution of $z_1$; at a given $\pi$ the two score different numbers, and the checks below show the program computes this one and not the other.
+The chain has $T + 1$ states for $T$ symbols. The state $z_0$ is drawn from $\pi$ and emits nothing. The first symbol is emitted by $z_1$, the state the chain moves to from $z_0$. This differs from the convention in which the first state is drawn from $\pi$ and emits $o_1$ directly [@rabiner1989hmm]. This program's likelihood at $\pi$ equals that convention's likelihood at $\pi A$, the distribution of $z_1$. At a given $\pi$ the two score different numbers, and the checks below show the program computes this one and not the other.
 
 The sum has $K^{T+1}$ terms. The forward algorithm computes it in $O(T K^2)$ by carrying $\alpha_t(k) = p(o_{1:t}, z_t = k)$ along the sequence,
 
@@ -76,17 +76,15 @@ and the library runs that recursion in log space, so a long sequence whose path 
 
 - `object State : FinSet 2` is the hidden state space and `object Symbol : FinSet 4` the alphabet. `object StateProbs : Real 2` is the value space of what the program returns, the initial row as a point of the two-state simplex.
 - `program hmm_step(symbol, z_prev)` is one position. The `marginalize z : State` block draws the next state from the transition row of `z_prev`, and its body observes the cell's entry `symbol` under the emission row of `z`. Because the cell returns `z`, the marginalized state is carried to the next position rather than summed out locally.
-- `define chain = scan(hmm_step, init=initial_row)` runs the cell along the input sequence. `init=initial_row` makes the initial state a draw from `initial_row`; a scan whose cell marginalizes the state it returns is summed out by the forward algorithm.
+- `define chain = scan(hmm_step, init=initial_row)` runs the cell along the input sequence. `init=initial_row` makes the initial state a draw from `initial_row`. A scan whose cell marginalizes the state it returns is summed out by the forward algorithm.
 - `program hmm` draws `initial_row`, one `transition_rows` row per source state, and one `emission_rows` row per state from `Dirichlet(1)`, then scores the sequence under `path`. On the simplex `Dirichlet(1)` is flat, so the posterior mode is the maximum-likelihood estimate.
-- No transpile target lowers a marginalized chain: every target refuses this program with `scan:marginal:no-lowering:hmm_step`, where the scan's cell is written. The program runs on the PyTorch runtime and the reference machine.
+- The program runs on the PyTorch runtime and the [reference evaluator](../developer/qiec.md#reference-evaluator). Backend coverage is recorded in the [support matrix](../transpile-support.md).
 
 ## Try it
 
-The checks below come from a verification script whose tolerances were fixed before it was first run.
-
 ### Simulating sequences
 
-A two-state, four-symbol HMM in which state 0 favours the first two symbols, state 1 the last two, and each state tends to persist. Four sequences of 200 symbols are simulated from it; each row of `x_in` is one observed sequence, the input the scan runs over.
+A two-state, four-symbol HMM in which state 0 favours the first two symbols, state 1 the last two, and each state tends to persist. Four sequences of 200 symbols are simulated from it. Each row of `x_in` is one observed sequence, the input the scan runs over.
 
 ```python
 import torch
@@ -239,7 +237,7 @@ assert math.isfinite(got) and math.isclose(got, expected, rel_tol=1e-5)
 
 The four simulated sequences are fitted by L-BFGS on unconstrained softmax parameters of the three simplices. The `Dirichlet(1)` priors are constant on the simplex, so this is the maximum-likelihood fit. The same parameter values are given for every row, so the loss is the pooled log likelihood of the four sequences. The fit starts from a seeded perturbation of the label-symmetric point, which is a stationary point of the likelihood.
 
-The tolerances follow from the design. The chain's stationary distribution is $(2/3, 1/3)$, so state 1 is visited about 267 times in 800 steps. If the states were observed, the largest sampling standard deviation of an emission probability would be $\sqrt{0.6 \cdot 0.4 / 267} \approx 0.030$ and of a transition probability $\sqrt{0.8 \cdot 0.2 / 267} \approx 0.024$; with the states summed out the data carry less information, and each tolerance is four of those standard deviations: every emission probability within 0.12 of the truth and every transition probability within 0.10, after matching the two fitted states to the truth's labels (the likelihood is invariant to relabelling them). The initial row is weakly identified by four sequences and is not compared.
+The tolerances follow from the design. The chain's stationary distribution is $(2/3, 1/3)$, so state 1 is visited about 267 times in 800 steps. If the states were observed, the largest sampling standard deviation of an emission probability would be $\sqrt{0.6 \cdot 0.4 / 267} \approx 0.030$ and of a transition probability $\sqrt{0.8 \cdot 0.2 / 267} \approx 0.024$. With the states summed out the data carry less information, and each tolerance is four of those standard deviations: every emission probability within 0.12 of the truth and every transition probability within 0.10, after matching the two fitted states to the truth's labels (the likelihood is invariant to relabelling them). The initial row is weakly identified by four sequences and is not compared.
 
 ```python
 logits = {
@@ -275,8 +273,6 @@ assert float((fitted_transition - true_transition_rows).abs().max()) < 0.10
 
 ## Categorical perspective
 
-The cell `hmm_step` is a kernel $\mathrm{State} \to \mathrm{State}$ in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the finite distribution monad, weighted at each position by the likelihood of the observed symbol. Composing these kernels along the sequence and pushing the initial row through them is a product of matrices, $\pi^\top \prod_t A\, \mathrm{diag}(B_{\cdot o_t})$, in the sum-product [semiring](https://ncatlab.org/nlab/show/rig); summing the resulting vector is the forward algorithm. The marginalized chain is the program-level statement of that composite, and replacing the semiring by max-plus would give the Viterbi recursion instead.
+Before scoring a symbol, the transition is a probability [kernel](https://en.wikipedia.org/wiki/Markov_kernel) from `State` to `State`. Multiplying its entries by the observed symbol's probability produces a weighted transition matrix, which need not have row sums one. With $\pi$ a row vector, the forward calculation is $\pi\prod_t A\,\mathrm{diag}(B_{\cdot o_t})$, followed by a sum over the final state.
 
-## Sources and further reading
-
-- *A tutorial on hidden Markov models and selected applications in speech recognition* [@rabiner1989hmm].
+This is matrix composition in the sum-product [semiring](https://ncatlab.org/nlab/show/rig), whose two operations combine successive transitions and alternative paths. The marginalized chain expresses this calculation as a program. In log space, replacing log-sum-exp over alternative paths by maximum gives the Viterbi recursion [@rabiner1989hmm].
