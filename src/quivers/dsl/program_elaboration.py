@@ -2139,8 +2139,7 @@ def _is_number_text(text: str) -> bool:
     return True
 
 
-@dataclass(frozen=True, slots=True)
-class _Spread:
+class _Spread(dx.Model):
     """A single literal filling every position of a vector parameter.
 
     Parameters
@@ -7473,7 +7472,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     "program's codomain leaves open; write its entries",
                     code="qiec-program",
                 )
-        return [_Spread(items[0].value, dimension)]
+        return [_Spread(value=items[0].value, dimension=dimension)]
 
     def _draw_argument(
         self: _Elaborator,

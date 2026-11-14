@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn, cast
 
+import didactic.api as dx
 from didactic.extensions import LoweringRoute, lower_checked
 from didactic.gadt import (
     GADT,
@@ -227,8 +228,7 @@ PROGRAM_CONTEXT_TYPES = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class QvrQiecSource:
+class QvrQiecSource(dx.Model):
     """A parsed QVR projection plus the identity absent from the AST root.
 
     Parameters
@@ -919,7 +919,10 @@ def lower_qvr_to_qiec(
             column=error.col,
         ) from error
     source = QvrQiecSource(
-        qiec_projection(module), module_name, file_path, elaborate_programs
+        syntax=qiec_projection(module),
+        module_name=module_name,
+        file_path=file_path,
+        elaborate_programs=elaborate_programs,
     )
     return lower_checked(
         source,
