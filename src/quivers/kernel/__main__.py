@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from quivers.kernel.install import main as kmain
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m quivers.kernel")
@@ -21,7 +23,6 @@ def main() -> int:
     run_f = sub.add_parser("_run_f")
     run_f.add_argument("connection_file")
     args = parser.parse_args()
-    from quivers.kernel.install import main as kmain
 
     return kmain(args)
 

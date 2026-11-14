@@ -34,19 +34,13 @@ Textual front end is an optional dependency.
 
 from __future__ import annotations
 
+import argparse
 import importlib
+import sys
 from typing import TYPE_CHECKING, Callable
 
 from quivers.cli.check import CheckDiagnostic, CheckSeverity, check_file
 from quivers.cli.check import main as check_main
-from quivers.cli.repl_session import (
-    Diagnostic,
-    ReplResponse,
-    ReplSession,
-    SessionOptions,
-    render_qiec_signature,
-    render_signature,
-)
 from quivers.cli.repl_complete import (
     Completion,
     all_completions,
@@ -64,6 +58,14 @@ from quivers.cli.repl_highlight import (
     tokenize,
 )
 from quivers.cli.repl_prompt import run_plain
+from quivers.cli.repl_session import (
+    Diagnostic,
+    ReplResponse,
+    ReplSession,
+    SessionOptions,
+    render_qiec_signature,
+    render_signature,
+)
 
 if TYPE_CHECKING:
     from quivers.cli.repl_tui import run_tui
@@ -105,8 +107,6 @@ def main() -> int:
     int
         The process exit status of the selected subcommand.
     """
-    import argparse
-    import sys
 
     parser = argparse.ArgumentParser(prog="qvr", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
