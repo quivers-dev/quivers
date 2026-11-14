@@ -4,6 +4,12 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.63.0] - 2026-11-14
+
+### Changed
+
+- **Breaking: Declaration options use parameter, posterior, and magmoid terminology.** Morphisms use `role=parameter`, posterior programs use `posterior_of=model`, and compositions use `level=magmoid`. The removed spellings are rejected. `qvr migrate --from v0.62.0` rewrites these header options while preserving comments, strings, user identifiers, latent-weight options, and event-axis options. Earlier migration hops remain pinned to their released parser snapshots.
+
 ## [0.62.0] - 2026-11-13
 
 ### Changed
