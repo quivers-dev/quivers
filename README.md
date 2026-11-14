@@ -1,7 +1,7 @@
 <h1 align="center">Quivers</h1>
 
 <p align="center">
-  <em>A typed functional probabilistic programming language for PyTorch.</em>
+  <em>Typed, composable models with PyTorch.</em>
 </p>
 
 <p align="center">
@@ -26,199 +26,154 @@
 
 ---
 
-Quivers is a typed functional probabilistic programming language and compiler
-with a PyTorch runtime. It includes the QVR source language, a compiler to the
-Quivers Indexed Effect Core (QIEC), inference and diagnostics, a mixed-effects
-formula interface, eleven transpilers, and editor and notebook tooling. Its
-Python API also exposes categorical, deduction, and structural modeling
-primitives.
+Quivers is a Python library for constructing and fitting models from typed,
+composable components. It provides weighted relations, Markov kernels, and
+probabilistic programs backed by PyTorch tensors and automatic differentiation.
+The Python API exposes these components directly, while QVR, its typed
+functional probabilistic programming language, lets you describe models in
+source files that can be checked, executed, and translated to other languages.
 
-A probabilistic program describes how unknown quantities could generate data.
-For a regression, it might first draw a slope and an intercept, then describe
-how measurements vary around the resulting line. [Fitting the program](docs/tutorials/qvr/01-first-model.md#compile-and-fit) asks
-which slopes and intercepts remain plausible after seeing the measurements.
-Quivers keeps that model separate from the algorithm used to fit it.
+The library draws on category theory: components have explicit input and output
+types, and composition connects compatible components. A choice of algebra
+specifies how weights combine, supporting probabilistic, Boolean, fuzzy, and
+optimization-based interpretations. Applications include Bayesian regression,
+sequence models, weighted parsing, and models of structured data.
 
-The types describe what can connect to what. A table from people to activities
-can compose with a table from activities to outcomes when the intermediate
-activities agree. The [chosen algebra](docs/getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine) determines how alternative routes combine:
-adding probabilities answers a different question from taking a best score.
-You can use the modeling interface before studying this mathematical structure.
-Start with [the conceptual introduction](https://quivers.dev/getting-started/concepts/)
-and [a first regression](https://quivers.dev/tutorials/qvr/01-first-model/).
+## Features
 
-## What Quivers includes
-
-| Area | What it provides |
-| --- | --- |
-| **QVR language and compiler** | Typed probabilistic programs with indexed families, lexical effect instances, row-polymorphic computations, and authored handlers. The language includes discrete marginalization and collection operators such as `map`, `fold`, and `traverse`. |
-| **Execution and inference** | A PyTorch runtime with automatic differentiation and more than forty distribution families. Inference includes SVI with automatic and flow-based guides, HMC, NUTS, and hybrid samplers. |
-| **Formulas and data** | A brms-style mixed-effects interface for pandas, Polars, and other Narwhals-compatible dataframes. The generated QVR can be saved and edited. |
-| **Diagnostics and analysis** | ArviZ export, ESS and R-hat, PSIS-LOO, posterior-predictive checks, LOO-PIT, static program summaries, source maps, and algebra-aware initialization advice. |
-| **Composition and structure** | A typed V-enriched categorical API and algebra-parametric semantics. QVR adds weighted chart deduction and declarations for structural signatures, encoders, decoders, and losses. |
-| **Transpilation** | Capability-checked output for BUGS, Church, Edward2, Gen, JAGS, NumPyro, PyMC, Pyro, Stan, Turing, and WebPPL. Unsupported target features are reported before code generation. |
-| **Developer tooling** | A command-line interface, interactive REPL, Jupyter kernel, language server, Pygments and tree-sitter grammars, and first-party extensions for VS Code, Cursor, and Zed. |
+- **Composable models:** build weighted relations and discrete or continuous
+  probabilistic computations through the Python API or QVR.
+- **Learning and inference:** train differentiable components with PyTorch
+  optimizers, or fit probabilistic programs with variational inference and
+  Markov chain Monte Carlo (MCMC).
+- **Statistical modeling:** write mixed-effects regressions with formulas,
+  work with dataframes, and inspect fits with posterior predictive checks,
+  convergence diagnostics, and ArviZ integration.
+- **Structured models:** define weighted deduction systems, including parsers,
+  and encoders and decoders for recursively structured data.
+- **Language tools and interoperability:** check QVR programs from the command
+  line, use editor and notebook integrations, and transpile supported models
+  to other probabilistic programming languages. See the
+  [target support matrix](https://quivers.dev/transpile-support/) for supported
+  features and restrictions.
 
 ## Installation
 
-Quivers requires Python 3.14 or later. Install the base package with:
+Quivers requires **Python 3.14 or later**:
 
 ```bash
 python -m pip install quivers
 ```
 
-Optional features are distributed as extras:
+Install optional dependencies for the features you use:
 
 ```bash
-python -m pip install 'quivers[formulas,diagnostics,repl,lsp,targets]'
+python -m pip install 'quivers[formulas,diagnostics]'
 ```
 
-The user-facing extras are `formulas`, `data`, `diagnostics`, `repl`, `lsp`,
-and `targets`. The `dev` and `docs` extras are for work on Quivers itself.
-Some transpilation targets require their own runtime or compiler. The
-[installation guide](https://quivers.dev/getting-started/installation/)
-covers editor setup and target-specific dependencies.
+Other extras include `data` for dataframe utilities, `repl` for the interactive
+shell and Jupyter kernel, `lsp` for the language server, and `targets` for Python
+target runtimes. The [installation guide](https://quivers.dev/getting-started/installation/)
+covers these extras, editor setup, and dependencies for individual targets.
 
 ## Quick start
 
-The following QVR file is a larger language-model showcase. It defines a
-stochastic GRU-shaped recurrence; the regression tutorial above introduces
-`sample`, `observe`, and inference with a smaller model:
+### Compose a model in Python
+
+A Markov kernel maps each input to a probability distribution over outputs.
+This example composes two learnable kernels through a shared hidden state:
+
+```python
+from quivers import FinSet, Program, stochastic
+
+inputs = FinSet(name="Input", cardinality=3)
+hidden = FinSet(name="Hidden", cardinality=4)
+outputs = FinSet(name="Output", cardinality=2)
+
+encode = stochastic(inputs, hidden)
+decode = stochastic(hidden, outputs)
+model = Program(encode >> decode)
+
+probabilities = model()
+print(probabilities.shape)  # torch.Size([3, 2])
+```
+
+Each row is a distribution over the two outputs, with the hidden state summed
+out. `Program` is a PyTorch `nn.Module`, so its learnable parameters can be
+trained with PyTorch optimizers. The
+[Python tutorials](https://quivers.dev/tutorials/python/01-first-quiver/)
+introduce weighted relations, composition, and learning.
+
+### Write a probabilistic program in QVR
+
+QVR separates a model's generative assumptions from the inference algorithm.
+For instance, save this Bayesian linear regression as `regression.qvr`:
 
 <!-- GitHub Linguist fallback: QVR currently uses the R lexer. -->
 ```R
-object Token : FinSet 256
-object Resp : FinSet 32
-object Embedded : Real 64
-object Hidden : Real 128
+object Item : FinSet 100
 
-morphism tok_embed : Token -> Embedded [role=embed]
-morphism gate_z, gate_r : Embedded * Hidden -> Hidden ~ LogitNormal
-morphism lm_head : Hidden -> Token ~ Categorical
+program regression : Item -> Item
+    sample sigma  <- HalfNormal(scale=1.0)
+    sample beta_0 <- Normal(loc=0.0, scale=5.0)
+    sample beta_1 <- Normal(loc=0.0, scale=2.0)
+    let mu = beta_0 + beta_1 * x
+    observe y : Item <- Normal(loc=mu, scale=sigma)
+    return y
 
-program gru_cell(x_t, h_prev) : Embedded * Hidden -> Hidden
-    sample z <- gate_z(x_t, h_prev)
-    sample r <- gate_r(x_t, h_prev)
-
-    let reset_hidden = r * h_prev
-
-    sample h_cand <- Normal(loc=reset_hidden, scale=0.5)
-
-    let z_complement = 1.0 - z
-    let h_new = z_complement * h_prev + z * h_cand
-    return h_new
-
-define backbone = tok_embed >> scan(gru_cell)
-
-program gru_lm : Token -> Token
-    sample h <- backbone
-
-    observe next_token : Resp <- lm_head(h)
-    return next_token
-
-export gru_lm
+export regression
 ```
 
-Download the example and check it:
+The `sample` steps specify priors, and `observe` specifies the likelihood.
+The predictor `x` and observed responses `y` are provided as tensors when
+fitting the model. Check the file from the command line:
 
 ```bash
-curl -LO https://raw.githubusercontent.com/quivers-dev/quivers/main/docs/examples/source/gru_lm.qvr
-qvr check gru_lm.qvr
+qvr check regression.qvr
 ```
 
-The [QVR tutorial](https://quivers.dev/tutorials/qvr/01-first-model/)
-develops the language and inference workflow from a first model. The
-[examples gallery](https://quivers.dev/examples/) covers
-hierarchical and state-space models, mixture models, neural language models,
-formal grammars, and structural autoencoders.
-
-## Typical workflows
-
-Check, inspect, and run a QVR file from the command line:
-
-```bash
-qvr check model.qvr
-qvr run model.qvr --list
-qvr run model.qvr my_program
-```
-
-Check whether a model is supported by a target before emitting code:
-
-```bash
-qvr check --target pyro model.qvr
-qvr transpile --to pyro model.qvr -o model.py
-qvr transpile --to-all model.qvr --out-dir generated
-```
-
-Fit a mixed-effects model from a dataframe, then save the QVR produced by the
-formula compiler:
+Load the checked model in Python:
 
 ```python
-from quivers.formulas import fit
+from quivers.dsl import load
 
-result = fit(
-    "response ~ predictor + (1 + predictor | participant)",
-    data=df,
-    family="gaussian",
-    method="nuts",
-)
-result.dump_qvr("model.qvr")
+regression = load("regression.qvr").morphism
 ```
 
-For language work, `qvr repl` opens the interactive environment,
-`qvr-kernel install` registers the Jupyter kernel, and `qvr-lsp` starts the
-language server. The repository contains extensions for
-[VS Code and Cursor](https://github.com/quivers-dev/quivers/tree/main/editors/vscode-qvr)
-and [Zed](https://github.com/quivers-dev/quivers/tree/main/editors/zed-extension-qvr).
-
-## How the pieces fit together
-
-```mermaid
-flowchart LR
-    Formula["Formulas + data"] --> QVR["QVR programs"]
-    QVR --> Check["Parser + type/effect checker"]
-    Check --> QIEC["Typed executable QIEC"]
-    QIEC --> Ref["Reference execution"]
-    QIEC --> Tools["Analysis + editor diagnostics"]
-    QIEC --> Targets["11 target transpilers"]
-    QVR --> Torch["PyTorch program"]
-    Torch --> Infer["Inference + diagnostics"]
-    QVR --> API["Categorical + structural Python APIs"]
-    API --> Torch
-```
+The [end-to-end quickstart](https://quivers.dev/getting-started/quickstart/)
+shows how to supply data, fit this model, and summarize its posterior. For
+regression from a dataframe, the
+[formula interface](https://quivers.dev/guides/analysis-data-and-formulas/)
+provides an alternative to writing QVR by hand.
 
 ## Documentation
 
-| Resource | Use it for |
-| --- | --- |
-| [Getting started](https://quivers.dev/getting-started/quickstart/) | Installation and a first working model. |
-| [QVR tutorials](https://quivers.dev/tutorials/qvr/01-first-model/) | Guided lessons from core syntax through indexed effects, handlers, inference, and release checks. |
-| [Python tutorials](https://quivers.dev/tutorials/python/01-first-quiver/) | The typed categorical library and its composition rules. |
-| [Examples](https://quivers.dev/examples/) | Complete models organized by statistical family and language feature. |
-| [Language reference](https://quivers.dev/reference/qvr/) | QVR syntax, types, effects, execution, and tooling behavior. |
-| [Guides](https://quivers.dev/guides/) | Inference, formulas and data, transpilation, the REPL, the LSP, and extension points. |
-| [Python API](https://quivers.dev/api/) | Public classes, functions, and modules. |
-| [Semantics](https://quivers.dev/semantics/) | Formal denotations for well-typed programs. |
-| [QIEC internals](https://quivers.dev/developer/qiec/) | The stable core, serialization format, and runtime ABI. |
+- [Getting started](https://quivers.dev/getting-started/quickstart/): installation,
+  a first fit, and the core concepts.
+- [Tutorials](https://quivers.dev/tutorials/): separate tracks for QVR and the
+  Python API.
+- [Examples](https://quivers.dev/examples/): complete models, including
+  hierarchical models, state-space models, neural networks, and grammars.
+- [Guides](https://quivers.dev/guides/): inference, data and formulas,
+  diagnostics, and transpilation.
+- [Language reference](https://quivers.dev/reference/qvr/),
+  [Python API](https://quivers.dev/api/), and
+  [semantics](https://quivers.dev/semantics/): syntax, public interfaces, and
+  mathematical foundations.
 
 ## Project status
 
-Quivers is alpha software. Language and API changes are recorded in the
-[changelog](CHANGELOG.md), and published releases are available from
-[PyPI](https://pypi.org/project/quivers/) and
-[GitHub Releases](https://github.com/quivers-dev/quivers/releases).
+Quivers is alpha software. The language and Python API may change; see the
+[changelog](CHANGELOG.md) and
+[releases](https://github.com/quivers-dev/quivers/releases) for details.
 
-## Support
+## Contributing and support
 
-Use [GitHub Issues](https://github.com/quivers-dev/quivers/issues) for bug reports,
-feature requests, and documentation problems. Include a minimal `.qvr` file,
-the command you ran, and the complete diagnostic when reporting compiler or
-runtime behavior.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, tests,
-contribution workflow, and commit conventions.
+Bug reports, feature requests, and documentation improvements are welcome through
+[GitHub Issues](https://github.com/quivers-dev/quivers/issues). For a bug report,
+include a minimal Python or QVR example, the package version, and the full error
+message. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, tests, and
+the contribution workflow.
 
 ## Acknowledgments
 
@@ -226,7 +181,6 @@ This project was developed by [Aaron Steven White](https://aaronstevenwhite.io/)
 at the University of Rochester with support from the National Science
 Foundation (NSF-BCS-2237175 *CAREER: Logical Form Induction*,
 NSF-BCS-2040831 *Computational Modeling of the Internal Structure of Events*).
-It was architected and implemented with the assistance of Claude Code.
 
 ## License
 
