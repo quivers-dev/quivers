@@ -1332,12 +1332,17 @@ def test_checked_evaluation_rejects_handler_id_collision_with_divergent_definiti
     registry = KernelRegistry()
     registry.register_effect(STATE_EFFECT)
     registry.register_handler(expected.definition)
+    definitions = dict(registry.handlers)
+    manifest = HandlerManifest(definitions=definitions)
+    definitions.clear()
+    assert manifest.definitions[expected.definition.id] is expected.definition
+    assert manifest == HandlerManifest.from_registry(registry)
 
     # The ergonomic evaluator can execute deliberately unchecked core.
     assert Evaluator(attachments).evaluate(computation) == 1
     checked = Evaluator(
         attachments,
-        handler_manifest=HandlerManifest.from_registry(registry),
+        handler_manifest=manifest,
     )
     with pytest.raises(InvalidHandlerError, match="checked definition"):
         checked.evaluate(computation)

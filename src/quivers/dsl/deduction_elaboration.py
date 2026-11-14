@@ -56,7 +56,8 @@ from typing import TYPE_CHECKING, Literal
 
 import didactic.api as dx
 
-from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers.qiec._models import QiecModel
 
 from quivers.dsl.ast_nodes import (
     BundleDecl,
@@ -295,8 +296,7 @@ class _App(ValueModel):
 type Pattern = _Atom | _Wild | _Lit | _Bound | _App
 
 
-@dataclass(slots=True)
-class _Rule:
+class _Rule(QiecModel):
     """One rule of a deduction, in pattern form.
 
     Parameters
@@ -315,16 +315,15 @@ class _Rule:
         The rule whose weight on the same bindings is added, if any.
     """
 
-    source: SequentRule
-    premises: tuple[Pattern, ...]
-    conclusion: Pattern
+    source: SequentRule = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    premises: tuple[Pattern, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    conclusion: Pattern = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     learnable: bool
     bounded: bool
     parent: str | None
 
 
-@dataclass(slots=True)
-class _Entry:
+class _Entry(QiecModel):
     """One expanded lexicon entry.
 
     Parameters
@@ -341,13 +340,12 @@ class _Entry:
     """
 
     word: str
-    category: Pattern
-    form: Pattern | None
+    category: Pattern = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    form: Pattern | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     learnable: bool
 
 
-@dataclass(slots=True)
-class _Group:
+class _Group(QiecModel):
     """The rules whose premises share one shape.
 
     Parameters
@@ -367,10 +365,10 @@ class _Group:
     """
 
     arity: int
-    spans: tuple[tuple[str, str], ...]
+    spans: tuple[tuple[str, str], ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     splits: tuple[str, ...]
-    rules: list[tuple[int, _Rule]]
-    names: dict[int, dict[str, str]]
+    rules: list[tuple[int, _Rule]] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    names: dict[int, dict[str, str]] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
 @dataclass(slots=True)
@@ -1620,12 +1618,12 @@ class _DeductionElaboration:
                 )
             system.rules.append(
                 _Rule(
-                    rule,
-                    premises,
-                    conclusion,
-                    get_option_flag(rule.options, "learnable"),
-                    get_option_flag(rule.options, "bounded"),
-                    parent_name,
+                    source=rule,
+                    premises=premises,
+                    conclusion=conclusion,
+                    learnable=get_option_flag(rule.options, "learnable"),
+                    bounded=get_option_flag(rule.options, "bounded"),
+                    parent=parent_name,
                 )
             )
         for rule in system.rules:
@@ -2069,10 +2067,19 @@ class _DeductionElaboration:
             )
             if fixed is not None:
                 category = self._object_pattern(fixed.category, atoms, system)
-                system.entries.append(_Entry(word, category, form, learnable))
+                system.entries.append(
+                    _Entry(word=word, category=category, form=form, learnable=learnable)
+                )
             else:
                 for atom in candidates:
-                    system.entries.append(_Entry(word, _Atom(name=atom), form, True))
+                    system.entries.append(
+                        _Entry(
+                            word=word,
+                            category=_Atom(name=atom),
+                            form=form,
+                            learnable=True,
+                        )
+                    )
         if system.entries:
             sorts: list[Sort] = ["int", "int", "item", "item"]
             system.symbols[SPAN] = sorts[: 4 if system.uses_forms else 3]
@@ -5230,7 +5237,13 @@ class _Context:
                 for component in paths
                 for step in range(1, len(component) - 1)
             ]
-            group = _Group(len(rule.premises), (), (), [(index, rule)], {})
+            group = _Group(
+                arity=len(rule.premises),
+                spans=(),
+                splits=(),
+                rules=[(index, rule)],
+                names={},
+            )
 
             def inner(position: int, current: dict[str, Local]) -> Computation:
                 """Place the positions inside each component, in order.
@@ -5765,7 +5778,13 @@ class _Context:
                     )
                     if name not in ("L", "R")
                 )
-                group = _Group(len(rule.premises), spans, splits, [], {})
+                group = _Group(
+                    arity=len(rule.premises),
+                    spans=spans,
+                    splits=splits,
+                    rules=[],
+                    names={},
+                )
                 groups[key] = group
             group.rules.append((index, rule))
             group.names[index] = names

@@ -13,7 +13,11 @@ it like any other before it runs.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+
+import didactic.api as dx
+
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY
+from quivers.qiec._models import QiecModel
 
 from quivers.qiec.builtins import PARAM_GET, RANDOM_SAMPLE, SCORE_ADD
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_shape
@@ -73,8 +77,7 @@ ACCUMULATE_HANDLER = "__program_accumulate"
 PARAMS_HANDLER = "__program_params"
 
 
-@dataclass(frozen=True, slots=True)
-class ProgramRun:
+class ProgramRun(QiecModel):
     """What running a program on the reference machine produced.
 
     Parameters
@@ -88,9 +91,9 @@ class ProgramRun:
         The underlying execution result, with its trace.
     """
 
-    value: object
+    value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     log_joint: float
-    result: ExecutionResult
+    result: ExecutionResult = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
 def program_entry(module: QiecModule, name: str) -> ProgramEntry:
@@ -924,10 +927,10 @@ def _refuse_unmapped_data(
             continue
         raise ExecutionFailure(
             ExecutionDiagnostic(
-                "qiec-run-type",
-                f"datum {parameter.name!r} has {supplied} axes, but the program "
+                code="qiec-run-type",
+                message=f"datum {parameter.name!r} has {supplied} axes, but the program "
                 f"reads it at type {render_static(parameter.type)}: {note}",
-                entry.name,
+                computation=entry.name,
             )
         )
 
@@ -1014,7 +1017,7 @@ def _run_wrapped(
         observer=observer,
     )
     value, weight = result.value  # type: ignore[misc]
-    return ProgramRun(value, float(weight), result)  # type: ignore[arg-type]
+    return ProgramRun(value=value, log_joint=float(weight), result=result)  # type: ignore[arg-type]
 
 
 def foreign_handler_configuration(module: QiecModule) -> dict[str, object]:
@@ -1109,8 +1112,7 @@ def _deduction_handler(name: str) -> tuple[str, str] | None:
     return None
 
 
-@dataclass(frozen=True, slots=True)
-class DeductionRun:
+class DeductionRun(QiecModel):
     """The outcome of running a deduction on the reference machine.
 
     Parameters
@@ -1122,8 +1124,8 @@ class DeductionRun:
         The machine's full result, with its trace.
     """
 
-    weight: object
-    result: ExecutionResult
+    weight: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    result: ExecutionResult = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
 def run_deduction(
@@ -1209,7 +1211,7 @@ def run_deduction(
         ),
         fuel=fuel,
     )
-    return DeductionRun(result.value, result)
+    return DeductionRun(weight=result.value, result=result)
 
 
 def deduction_item(

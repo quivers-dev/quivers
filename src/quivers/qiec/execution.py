@@ -21,6 +21,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, NoReturn, Protocol, cast
 
+import didactic.api as dx
+
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.qiec.evaluator import (
     EvaluationError,
     Evaluator,
@@ -165,8 +169,7 @@ class ExecutionTraceRecorder:
         self.events.append(event)
 
 
-@dataclass(frozen=True, slots=True)
-class ExecutionDiagnostic:
+class ExecutionDiagnostic(QiecModel):
     """A stable failure at the source-to-host execution boundary.
 
     Parameters
@@ -186,7 +189,9 @@ class ExecutionDiagnostic:
     code: str
     message: str
     computation: str | None = None
-    origin: SourceOrigin | None = None
+    origin: SourceOrigin | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     severity: Literal["error", "warning", "note"] = "error"
 
     def to_data(self) -> dict[str, object]:
@@ -1404,16 +1409,16 @@ class RuntimeConfiguration:
                 available = ", ".join(available_runtime_providers()) or "(none)"
                 raise ExecutionFailure(
                     ExecutionDiagnostic(
-                        "qiec-run-provider",
-                        f"unknown runtime provider {selection.provider!r}; "
+                        code="qiec-run-provider",
+                        message=f"unknown runtime provider {selection.provider!r}; "
                         f"available providers: {available}",
                     )
                 ) from error
             except Exception as error:
                 raise ExecutionFailure(
                     ExecutionDiagnostic(
-                        "qiec-run-provider",
-                        f"could not load runtime provider {selection.provider!r}: {error}",
+                        code="qiec-run-provider",
+                        message=f"could not load runtime provider {selection.provider!r}: {error}",
                     )
                 ) from error
             try:
@@ -1421,8 +1426,8 @@ class RuntimeConfiguration:
             except Exception as error:
                 raise ExecutionFailure(
                     ExecutionDiagnostic(
-                        "qiec-run-provider",
-                        f"runtime provider {selection.provider!r} rejected its "
+                        code="qiec-run-provider",
+                        message=f"runtime provider {selection.provider!r} rejected its "
                         f"configuration: {error}",
                     )
                 ) from error
@@ -2543,7 +2548,11 @@ def _fail(
     ExecutionFailure
         Always.
     """
-    raise ExecutionFailure(ExecutionDiagnostic(code, message, computation, origin))
+    raise ExecutionFailure(
+        ExecutionDiagnostic(
+            code=code, message=message, computation=computation, origin=origin
+        )
+    )
 
 
 def _render_type(type_: TypeExpr) -> str:

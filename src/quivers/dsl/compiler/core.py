@@ -348,17 +348,17 @@ class Compiler(
         if module is None:
             raise ExecutionFailure(
                 ExecutionDiagnostic(
-                    "qiec-run-module",
-                    "the source has no checked module and no entry points",
-                    name,
+                    code="qiec-run-module",
+                    message="the source has no checked module and no entry points",
+                    computation=name,
                 )
             )
         if module.gap and not any(point.name == name for point in entry_points(module)):
             raise ExecutionFailure(
                 ExecutionDiagnostic(
-                    "qiec-program-gap",
-                    f"entry point {name!r} was not lowered: {module.gap}",
-                    name,
+                    code="qiec-program-gap",
+                    message=f"entry point {name!r} was not lowered: {module.gap}",
+                    computation=name,
                 )
             )
         return entry_point(module, name)

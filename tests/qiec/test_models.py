@@ -4,6 +4,7 @@ import copy
 
 import didactic.api as dx
 import pytest
+import torch
 
 from quivers.qiec import (
     TYPE,
@@ -27,6 +28,9 @@ from quivers.qiec import (
 )
 from quivers.qiec._models import QiecModel
 from quivers.qiec.serialization import SerializationError, dumps, loads
+from quivers.qiec.entries import EntryPoint, EntryRun
+from quivers.qiec.execution import ExecutionResult
+from quivers.qiec.program_runtime import DeductionRun, ProgramRun
 
 
 def test_nominal_identity_survives_recursive_models_and_display_renames() -> None:
@@ -148,3 +152,34 @@ def test_kernel_registry_retains_live_tables_and_validates_replacements() -> Non
         registry.with_(type_constructors={"T": constructor})
     with pytest.raises(dx.ValidationError, match="TypeConstructorRef"):
         registry.with_(type_constructors={constructor.id: "T"})
+
+
+def test_runtime_results_retain_live_values_and_gradients() -> None:
+    """Result wrappers retain tensor and execution identities through updates."""
+    parameter = torch.tensor(2.0, dtype=torch.float64, requires_grad=True)
+    value = 3.0 * parameter
+    result = ExecutionResult(
+        computation="test", value=value, result_type=REAL, runtime="core", trace=()
+    )
+    program = ProgramRun(value=value, log_joint=1.0, result=result)
+    deduction = DeductionRun(weight=value, result=result)
+    entry = EntryPoint(
+        name="test",
+        kind="computation",
+        parameters=(),
+        statics=(),
+        effects=(),
+        result="Real",
+        sites=(),
+    )
+    invocation = EntryRun(entry=entry, value=value, log_joint=None, result=result)
+    assert program.with_(log_joint=2.0).value is value
+    assert copy.copy(deduction).weight is value
+    assert invocation.with_(value={"nested": (value,)}).value["nested"][0] is value
+    assert all(item.result is result for item in (program, deduction, invocation))
+    value.backward()
+    assert parameter.grad.item() == 3.0
+    with pytest.raises(dx.ValidationError, match="ExecutionResult"):
+        program.with_(result="result")
+    with pytest.raises(dx.ValidationError, match="EntryPoint"):
+        invocation.with_(entry="entry")

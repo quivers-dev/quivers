@@ -18,6 +18,7 @@ import torch
 from quivers.cli.repl_session import ReplSession
 from quivers.cli.run import main as run_main
 from quivers.dsl import Compiler, load, parse
+from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 from quivers.continuous import MonadicProgram
 from quivers.qiec import (
     ExecutionFailure,
@@ -57,6 +58,15 @@ export prog
 """
 
 DATA = (0.1, 0.2, 0.3, 0.4)
+
+
+def test_a_unit_entry_retains_the_validated_runtime_result() -> None:
+    """A Unit computation returns the reference machine's None value."""
+    module = lower_qvr_to_qiec(parse("define done() : Unit !{} =\n    return unit\n"))
+    run = invoke_entry(module, "done")
+    assert run.value is None
+    assert run.result.value is None
+    assert run.to_data()["value"] is None
 
 
 @pytest.fixture

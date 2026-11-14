@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Hashable
+from collections.abc import Hashable, Mapping
 from functools import cache
 from inspect import get_annotations
 import sys
@@ -53,7 +53,7 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
     ------
     TypeError
         If the value does not inhabit its annotation, or the annotation
-        is outside the closed scalar, tuple, dictionary, union, and model schema.
+        is outside the closed scalar, sequence, mapping, union, and model schema.
     """
     if annotation is HeldValue:
         return
@@ -84,8 +84,13 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
                 ):
                     validate_shape(item, item_type, path=f"{path}[{index}]")
                 return
-    elif origin is dict:
-        if isinstance(value, dict):
+    elif origin in {list, frozenset}:
+        if isinstance(value, origin):
+            for item in value:
+                validate_shape(item, arguments[0], path=f"{path}.member")
+            return
+    elif origin in {dict, Mapping}:
+        if isinstance(value, origin):
             key_type, value_type = arguments
             for key, item in value.items():
                 validate_shape(key, key_type, path=f"{path}.key")

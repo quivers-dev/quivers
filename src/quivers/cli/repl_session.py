@@ -707,7 +707,7 @@ class ReplSession:
             )
         except (ValueError, KeyError) as error:
             self._last_failure = ExecutionDiagnostic(
-                "qiec-run-config", str(error), name
+                code="qiec-run-config", message=str(error), computation=name
             )
             return _err(str(error), code="qiec-run-config")
         except ExecutionFailure as error:

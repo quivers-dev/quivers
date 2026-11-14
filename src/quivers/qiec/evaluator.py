@@ -18,8 +18,11 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from types import MappingProxyType
 
+import didactic.api as dx
+
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.qiec.effects import (
     EffectRequest,
     HandlerDef,
@@ -178,8 +181,7 @@ class InvalidHandlerError(EvaluationError):
     """A runtime handler contradicts its checked structural signature."""
 
 
-@dataclass(frozen=True, slots=True)
-class HandlerManifest:
+class HandlerManifest(QiecModel):
     """Immutable checked handler definitions accepted by an evaluator.
 
     Construct this from a :class:`KernelRegistry` after its declarations have
@@ -193,21 +195,9 @@ class HandlerManifest:
         The checked handler definitions by identity.
     """
 
-    definitions: Mapping[HandlerId, HandlerDef]
-
-    def __post_init__(self) -> None:
-        """Freeze the definitions behind a read-only view.
-
-        The manifest is what a runtime resolves a handler through, so it
-        is copied and wrapped rather than aliased: a caller mutating the
-        mapping it passed in would otherwise change which handler a
-        running computation reaches.
-        """
-        object.__setattr__(
-            self,
-            "definitions",
-            MappingProxyType(dict(self.definitions)),
-        )
+    definitions: Mapping[HandlerId, HandlerDef] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     @classmethod
     def from_registry(cls, registry: KernelRegistry) -> HandlerManifest:
@@ -223,7 +213,7 @@ class HandlerManifest:
         HandlerManifest
             A manifest over those handlers.
         """
-        return cls(registry.handlers)
+        return cls(definitions=registry.handlers)
 
 
 class ResumptionUsageError(EvaluationError):

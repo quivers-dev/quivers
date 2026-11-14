@@ -108,10 +108,10 @@ class Program(nn.Module):
         if self.qiec is None:
             raise ExecutionFailure(
                 ExecutionDiagnostic(
-                    "qiec-run-module",
-                    "this Program was not compiled from source and has no "
+                    code="qiec-run-module",
+                    message="this Program was not compiled from source and has no "
                     "checked module to run entry points in",
-                    "",
+                    computation="",
                 )
             )
         return self.qiec

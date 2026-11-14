@@ -120,9 +120,9 @@ def main(args: object) -> int:
         if module is None:
             raise ExecutionFailure(
                 ExecutionDiagnostic(
-                    "qiec-run-module",
-                    f"{path} contains no executable entry points",
-                    name,
+                    code="qiec-run-module",
+                    message=f"{path} contains no executable entry points",
+                    computation=name,
                 )
             )
         if computation is None or bool(getattr(args, "list", False)):
@@ -172,17 +172,19 @@ def main(args: object) -> int:
         return _emit_failure(error.diagnostic, json_output=json_output)
     except ParseError as error:
         return _emit_failure(
-            ExecutionDiagnostic("parse", str(error), name),
+            ExecutionDiagnostic(code="parse", message=str(error), computation=name),
             json_output=json_output,
         )
     except (OSError, ValueError, KeyError) as error:
         return _emit_failure(
-            ExecutionDiagnostic("qiec-run-config", str(error), name),
+            ExecutionDiagnostic(
+                code="qiec-run-config", message=str(error), computation=name
+            ),
             json_output=json_output,
         )
     except Exception as error:
         return _emit_failure(
-            ExecutionDiagnostic("compile", str(error), name),
+            ExecutionDiagnostic(code="compile", message=str(error), computation=name),
             json_output=json_output,
         )
 
