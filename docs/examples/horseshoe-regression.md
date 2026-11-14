@@ -2,7 +2,7 @@
 
 ## Overview
 
-A multiple linear regression with the horseshoe prior [@carvalho2010horseshoe] on its coefficients. Each of 100 responses depends on all twenty columns of a dense design matrix, and only three of the twenty true coefficients are nonzero. The horseshoe is a [global-local scale mixture of Normals](https://en.wikipedia.org/wiki/Sparsity-inducing_prior): a global scale `tau` shared by all coefficients and local scales `lambda_p`, one per coefficient, jointly set each coefficient's prior scale `tau * lambda_p`. The result has a pole at zero and Cauchy-like tails, so it shrinks the null coefficients hard toward zero while leaving the large ones nearly unbiased.
+A multiple linear regression with the horseshoe prior [@carvalho2010horseshoe] on its coefficients. Each of 100 responses depends on all twenty columns of a dense design matrix, and only three of the twenty true coefficients are nonzero. The horseshoe is a [global-local scale mixture of Normals](https://en.wikipedia.org/wiki/Sparsity-inducing_prior): a global scale `tau` shared by all coefficients and local scales `lambda_p`, one per coefficient, jointly set each coefficient's prior scale `tau * lambda_p`. Conditional on the global scale, integrating over the local scale gives a density unbounded at zero with Cauchy-like tails. This prior encourages small coefficients while allowing large effects.
 
 ## QVR source
 
@@ -59,48 +59,32 @@ export horseshoe_regression
 
 ## Understanding the model
 
-The coefficient is built as `tau * lambda * z`, the
-[non-centered parameterization](../tutorials/qvr/03-hierarchical.md#non-centered-parameterization)
-of `beta_p ~ Normal(0, (tau * lambda_p)**2)`. A small global `tau` pulls all
-coefficients toward zero, while a sufficiently large local `lambda_p` lets one
-coefficient remain large. With half-Cauchy priors on both scales, the marginal
-prior on each `beta_p` has an infinite spike at zero and tails that decay like
-`beta**-2`, which is what lets the posterior separate a few strong effects from
-many null ones without setting any coefficient exactly to zero.
+The coefficient is built as `tau * lambda * z`, a [non-centered parameterization](../tutorials/qvr/03-hierarchical.md#non-centered-parameterization) of a Normal with mean zero and standard deviation `tau * lambda_p`. For fixed positive `tau`, integrating a half-Cauchy local scale gives the horseshoe density, which is unbounded at zero and has tails proportional to `beta**-2`. Integrating over the additional prior on `tau` gives a further mixture. The prior does not place a point mass at zero.
 
-The global scale has the half-Cauchy(0, 1) prior that Carvalho, Polson, and
-Scott use. Scaling `tau` with the noise scale `sigma` instead is a common
-alternative [@piironen2016hyperprior]; the two lead to similar posteriors when,
-as here, the response is on roughly unit scale and the noise is not tiny. The
-global and local scales can trade off even when their product is well
-constrained, so the page judges the fit through the coefficients
-`beta_p = tau * lambda_p * z_p` rather than through `tau` or `lambda_p` alone.
+The global scale has a half-Cauchy prior with scale 1. Scaling it by the observation noise `sigma` is another specification [@piironen2016hyperprior], with a different joint prior. The global and local scales can trade off even when their product is constrained, so the fit is assessed through `beta_p = tau * lambda_p * z_p`.
 
 ## Walkthrough
 
-`tau ~ HalfCauchy(1)` is the global scale; `lambda_local : Coef <- HalfCauchy(1)`
-is the plate of twenty local scales and `z_raw : Coef <- Normal(0, 1)` the plate
+`tau ~ HalfCauchy(1)` is the global scale. `lambda_local : Coef <- HalfCauchy(1)`
+is the [plate](https://en.wikipedia.org/wiki/Plate_notation) of twenty local scales and `z_raw : Coef <- Normal(0, 1)` the plate
 of standard-Normal raw draws. The deterministic product `beta = tau * lambda * z`
 gives the twenty coefficients. The design matrix arrives as its twenty columns
 `x_0`, ..., `x_19`, each a host vector over the 100 response rows, and the
 let-steps `signal_a` through `signal_d` form the dense inner product
 `sum_p beta_p * x_{n,p}` for every row `n`, five columns at a time. Each column
 is a separate host vector because a free name in a program body is typed by the
-plate of the step that reads it, which gives it one axis; a single `(N, P)`
-host matrix would need a second. The intercept `alpha` gets a flat
-Normal(0, 5) prior and is not shrunk.
+plate of the step that reads it, which gives it one axis. A single `(N, P)`
+host matrix would need a second. The intercept `alpha` has a Normal prior with standard deviation 5. It is regularized separately from the coefficients and is not subject to the horseshoe scales.
 
-The program returns `tau`, a scalar real, so the declared codomain is `Val : Real 1`: the value space of what comes back. `Resp` names the plate extent of the response and appears in the signature only as the domain.
+`return tau` exposes the positive global shrinkage scale. The coefficient posterior is recovered from draws of `tau`, `lambda_local`, and `z_raw`.
 
 ## Try it
 
 The blocks below simulate a sparse regression, check the compiled log joint
-against a hand-written density, and then show shrinkage under SVI and NUTS: the
+against a hand-written density, and then show shrinkage under [SVI](../guides/inference-svi.md) (stochastic variational inference) and [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler): the
 seventeen null coefficients are pulled toward zero while the three signals are
 recovered, and the coefficients come out closer to the truth than least
-squares puts them. The program reads its data
-by name, so its input `x_in` is a single dummy row: that leading axis is a
-particle axis, and a longer one would score the whole data set once per row.
+squares puts them. The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
@@ -166,7 +150,7 @@ assert torch.allclose(compiled, oracle, rtol=1e-5)
 
 ### SVI fit
 
-A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by
 [`SVI`](../api/inference/svi.md), and every summary is computed from guide draws
 of the latents. Least squares on the same data is the baseline. Three checks
 follow from what the horseshoe is for:
@@ -252,13 +236,8 @@ summarize(
 )
 ```
 
-
 ## Categorical perspective
 
-The model factors as the Kleisli composite of a global-local hyperprior kernel, a deterministic Hadamard product `tau * lambda * z` lifted into the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category as a Dirac kernel, a deterministic linear map from the `Coef`-indexed coefficients to the `Resp`-indexed means (the design matrix, applied column by column), and the per-row Normal likelihood. The plate-draws `lambda_local` and `z_raw` are Kleisli sections of the `Coef`-indexed plate. [@giry1982categorical]
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. The sampling construction draws the global and local scales and the standardized coefficients, applies the elementwise product `tau * lambda * z`, maps the coefficients through the design matrix, and draws Normal responses. A deterministic function defines a [Dirac kernel](https://en.wikipedia.org/wiki/Dirac_measure), which puts all probability at its output. The `lambda_local` and `z_raw` plates are independent draws indexed by `Coef`, conditional on the shared parameters.
 
-
-## Model reference
-
-- Carlos M. Carvalho, Nicholas G. Polson, and James G. Scott. 2010. The horseshoe estimator for sparse signals. *Biometrika*, 97(2):465–480.
-- Juho Piironen and Aki Vehtari. 2016. On the hyperprior choice for the global shrinkage parameter in the horseshoe prior. [arXiv:1610.05559](https://doi.org/10.48550/arXiv.1610.05559).
+Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative].
