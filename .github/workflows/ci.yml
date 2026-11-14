@@ -411,13 +411,19 @@ jobs:
   # unit tier; each shard runs its tests one at a time, since a single
   # recovery benchmark already uses every core of its runner.
   test-slow:
-    name: Test slow tier (shard ${{ matrix.shard }}/6)
+    name: Test slow tier (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
+        # Keep these long cases apart even when recorded durations are stale.
+        include:
+          - shard: wmcfg
+            test: tests/test_deduction_multiple_context_free.py::test_the_cross_serial_grammar_scores_one_derivation_on_both_evaluators
+          - shard: transformer
+            test: tests/test_gallery_sweep.py::test_gallery_try_it_blocks_execute[transformer-lm.md]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -444,10 +450,20 @@ jobs:
           fi
 
       - name: Run slow test shard
+        if: ${{ !matrix.test }}
         run: >-
           python -m pytest tests/ -m slow -v
+          --deselect 'tests/test_deduction_multiple_context_free.py::test_the_cross_serial_grammar_scores_one_derivation_on_both_evaluators'
+          --deselect 'tests/test_gallery_sweep.py::test_gallery_try_it_blocks_execute[transformer-lm.md]'
           --splits 6 --group ${{ matrix.shard }}
           --splitting-algorithm least_duration
+          --store-durations --durations-path .test_durations
+          --durations 25
+
+      - name: Run isolated slow test
+        if: matrix.test
+        run: >-
+          python -m pytest '${{ matrix.test }}' -m slow -v
           --store-durations --durations-path .test_durations
           --durations 25
 
