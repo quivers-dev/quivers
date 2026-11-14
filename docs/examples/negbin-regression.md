@@ -7,8 +7,8 @@ regression in the NB2 form: each output has its own intercept, slope, and
 dispersion, the log link sets the count mean `mu = exp(eta)`, and the
 dispersion `phi` sets the variance `mu + mu**2 / phi`. As `phi` grows the
 variance approaches `mu` and the model approaches
-[Poisson regression](../tutorials/qvr/02-glms.md#poisson-regression); a
-small `phi` allows counts far more variable than a Poisson with the same mean.
+[Poisson regression](../tutorials/qvr/02-glms.md#poisson-regression). A
+small `phi` allows counts far more variable than a Poisson with the same mean. [@cameron1986econometric]
 
 ## QVR source
 
@@ -82,18 +82,13 @@ family's probability parameter. The Gamma(2, 0.5) prior on the dispersion has
 mean 4 and a long right tail, so it allows anything from strong overdispersion
 to counts that are close to Poisson.
 
-The program returns `beta_1`, an `Out`-indexed plate of real scalars, so the
-declared codomain is `Val : Real 1`: the per-row value space of the returned
-coefficients. `Resp` names the plate extent of the response and appears in the
-signature only as the domain.
+`return beta_1` exposes one real slope per output. `Out` indexes those slopes, and `Resp` indexes observations.
 
 ## Try it
 
 The blocks below simulate from the model, check the compiled log joint against
-a hand-written density, and then recover the coefficients with SVI and NUTS.
-The program reads its data by name, so its input `x_in` is a single dummy row:
-that leading axis is a particle axis, and a longer one would score the whole
-data set once per row.
+a hand-written density, and then recover the coefficients with [SVI](../guides/inference-svi.md) (stochastic variational inference) and [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler).
+The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
@@ -162,7 +157,7 @@ assert torch.allclose(compiled, oracle, rtol=1e-5)
 
 ### SVI fit
 
-A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by
 [`SVI`](../api/inference/svi.md). With 100 rows per output, the posterior
 standard deviation of each coefficient is roughly 0.08, so the recovery check
 asks every coefficient's posterior mean to sit within 0.3 of the truth (about
@@ -230,7 +225,7 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 The negative binomial is the Gamma-Poisson
 [mixture](https://en.wikipedia.org/wiki/Compound_probability_distribution): a
-`Poisson(rate)` kernel composed after `rate ~ Gamma(concentration=phi,
+`Poisson(rate)` [kernel](https://en.wikipedia.org/wiki/Markov_kernel) composed after `rate ~ Gamma(concentration=phi,
 rate=phi / mu)` marginalizes to `NegativeBinomial(total_count=phi,
 probs=mu / (phi + mu))`. The Gamma mixing kernel has mean `mu` and variance
 `mu**2 / phi`, which is where the NB2 variance `mu + mu**2 / phi` comes from:
