@@ -8,7 +8,7 @@ $$
 p(w \mid \theta, \phi) = \prod_{n} \sum_{k=1}^{K} \theta_{d(n)}[k]\, \phi_k[w_n],
 $$
 
-with $d(n)$ the document of token $n$. The page checks this joint on both execution paths, shows the check can tell it from a document-level mixture, and reports a maximum-likelihood fit that did not pass its check.
+where $d(n)$ identifies the document containing token $n$. The joint differs from a model that draws one topic for a whole document.
 
 ## QVR source
 
@@ -49,24 +49,22 @@ export lda
 
 ## Understanding the model
 
-Each word picks its own topic. A document about two subjects can thus draw some words from one topic and some from the other, and its topic weights record the proportions. The per-token sum is what distinguishes LDA from a document-level mixture, in which one topic is drawn for the whole document and the sum over topics is taken after multiplying the word probabilities, $\sum_k \theta_d[k] \prod_{n: d(n) = d} \phi_k[w_n]$; the second check below shows the program computes the former.
+Each word picks its own topic. A document about two subjects can thus draw some words from one topic and some from the other, and its topic weights record the proportions. The per-token sum is what distinguishes LDA from a document-level mixture, in which one topic is drawn for the whole document and the sum over topics is taken after multiplying the word probabilities, $\sum_k \theta_d[k] \prod_{n: d(n) = d} \phi_k[w_n]$. The second check below shows the program computes the former.
 
 ## Walkthrough
 
 - `object Doc : FinSet 20`, `object Topic : FinSet 3`, `object Vocab : FinSet 50`, and `object Token : FinSet 1000` are the documents, topics, vocabulary, and corpus positions. `object Mix : Real 3` is the value space of the returned topic weights.
 - `program lda(alpha : Real, beta : Real)` is a template: `prog.lda(alpha=1.0, beta=1.0)` instantiates it with symmetric Dirichlet concentrations.
 - `sample theta : Doc <- Dirichlet(...) [over=Topic, iid_over=Doc]` draws one row of topic weights per document, and `sample phi : Topic <- Dirichlet(...) [over=Vocab, iid_over=Topic]` one vocabulary distribution per topic.
-- `let theta_tok = theta[doc_idx]` gathers, for each token, its document's row of topic weights; `doc_idx` is host data holding one document index per token.
-- `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]` gives every token its own topic and sums it out by log-sum-exp: a grouped `marginalize` scores one class per group, and here each group is a single token; `observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]` scores each token's word under its topic, with `token_idx` mapping each observation to its own token row.
-- Stan, Pyro, NumPyro, PyMC, Edward2, WebPPL, and Church render the program. Turing and Gen refuse the gathered weights (`marginalize:weight-plate`), JAGS refuses the grouped `via` block's per-group sum (`let-expr:elementwise-axis-operator`), and BUGS refuses the zero-based word codes (`observe:class-code`).
+- `let theta_tok = theta[doc_idx]` gathers, for each token, its document's row of topic weights. `doc_idx` is input data holding one document index per token.
+- `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]` gives every token its own topic and sums it out by log-sum-exp: a grouped `marginalize` scores one class per group, and here each group is a single token. `observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]` scores each token's word under its topic, with `token_idx` mapping each observation to its own token row.
+- The [support matrix](../transpile-support.md) records backend coverage for the gathered weights and grouped marginalization.
 
 ## Try it
 
-The checks below come from a verification script whose tolerances were fixed before it was first run.
-
 ### Generating synthetic data
 
-Sharp topics and topic weights generate 50 tokens per document; a second draw of 50 tokens per document from the same documents is held out.
+Sharp topics and topic weights generate 50 tokens per document. A second draw of 50 tokens per document from the same documents is held out.
 
 ```python
 import torch
@@ -99,7 +97,7 @@ x_in = torch.zeros(1, 1)
 
 ### The log joint against a per-token mixture
 
-At a traced draw of `theta` and `phi`, the compiled runtime's log joint must equal the Dirichlet priors plus $\sum_n \log \sum_k \theta_{d(n)}[k] \phi_k[w_n]$ in float64 to a relative 1e-5, and the document-level mixture must differ by more than a relative 1e-3. The reference machine, given fixed `theta` and `phi`, must equal the same oracle to a relative 1e-9.
+At a traced draw of `theta` and `phi`, the compiled runtime's log joint must equal the Dirichlet priors plus $\sum_n \log \sum_k \theta_{d(n)}[k] \phi_k[w_n]$ in float64 to a relative 1e-5, and the document-level mixture must differ by more than a relative 1e-3. The [reference machine](../developer/qiec.md#reference-evaluator), given fixed `theta` and `phi`, must equal the same reference calculation to a relative 1e-9.
 
 ```python
 import math
@@ -152,12 +150,8 @@ assert math.isclose(run.log_joint, expected, rel_tol=1e-9)
 
 ### A fit that did not pass its check
 
-The verification script also fitted the program to the training tokens by maximum likelihood (the `Dirichlet(1)` priors are flat): Adam on unconstrained logits of `theta` and `phi`, 1500 steps at learning rate 0.05. The check, fixed in advance, was document completion: the held-out per-token negative log likelihood under the fit had to be more than 0.1 nats below a smoothed unigram model fitted to the same tokens, and less than 0.15 nats above the generating model's. The fit scored 3.25 nats against the unigram's 3.20 and the generating model's 3.00, so it failed. With 50 tokens per document and 50 free word probabilities per topic, the maximum-likelihood topics give held-out words they never saw almost no mass; a smoothing prior or a posterior average would be the next design to try, with its own thresholds. This page makes no fitting claim.
+A maximum-likelihood fit on the training tokens used flat `Dirichlet(1)` priors and Adam on unconstrained logits of `theta` and `phi`, 1500 steps at learning rate 0.05. The document-completion criterion required the held-out per-token negative log likelihood under the fit to be more than 0.1 nats below a smoothed unigram model fitted to the same tokens, and less than 0.15 nats above the generating model's. The fit scored 3.25 nats against the unigram's 3.20 and the generating model's 3.00, so it failed. With 50 tokens per document and 50 free word probabilities per topic, the maximum-likelihood topics give held-out words they never saw almost no mass. A smoothing prior or a posterior average would be the next design to try, with its own thresholds. This fit does not demonstrate successful prediction of held-out words.
 
 ## Categorical perspective
 
-Marginalization pushes the joint measure on topic assignments and words onto the words by forgetting the assignments. Here it forgets one topic per token: the gathered weights `theta_tok` give each token its own Categorical kernel from the one-point space to `Topic`, the topic-word kernel `phi` maps a topic to a word, and their [Kleisli](https://ncatlab.org/nlab/show/Kleisli+category) composite is the per-token mixture. The document-level model forgets one topic per document instead, which composes the kernels after taking the product over the document's words; the two orders give different measures, and the power check above separates them.
-
-## Sources and further reading
-
-- *Latent Dirichlet allocation* [@blei2003lda].
+Marginalization pushes the joint measure on topic assignments and words onto the words by forgetting the assignments. Here it forgets one topic per token: the gathered weights `theta_tok` give each token its own Categorical [kernel](https://en.wikipedia.org/wiki/Markov_kernel) from the one-point space to `Topic`, the topic-word kernel `phi` maps a topic to a word, and their [Kleisli](https://ncatlab.org/nlab/show/Kleisli+category) composite is the per-token mixture. The document-level model forgets one topic per document instead, which composes the kernels after taking the product over the document's words. The two orders give different measures, and the power check above separates them.
