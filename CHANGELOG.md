@@ -4,6 +4,13 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.64.1] - 2026-11-14
+
+### Fixed
+
+- **Polymorphic calls reuse their instantiated computation graphs.** A bounded cache keys the complete declaration and static arguments, avoiding repeated substitution during recursive parsing and inference. Runtime arguments, environments, observations, and handler state remain fresh.
+- **The slow CI tier runs across six shards.** Every slow test remains selected once, with serial execution within each shard and the existing 90-minute job limit.
+
 ## [0.64.0] - 2026-11-14
 
 ### Changed
