@@ -10,10 +10,10 @@ z_n \sim \mathcal{N}(0, I),
 y_n \mid z_n \sim \mathcal{N}\bigl(\mu_\theta(z_n), \operatorname{diag} \sigma_\theta^2(z_n)\bigr),
 $$
 
-where the decoder $(\mu_\theta, \sigma_\theta)$ is a one-hidden-layer tanh network. The encoder $q_\phi(z \mid y) = \mathcal{N}(m_\phi(y), \operatorname{diag} v_\phi^2(y))$ is a second network of the same shape. Training maximizes the evidence lower bound (ELBO)
+where the decoder $(\mu_\theta, \sigma_\theta)$ is a one-hidden-layer tanh network. The encoder $q_\phi(z \mid y) = \mathcal{N}(m_\phi(y), \operatorname{diag} v_\phi^2(y))$ is a second network of the same shape. Training maximizes the [evidence lower bound](https://en.wikipedia.org/wiki/Evidence_lower_bound) (ELBO)
 
 $$
-\mathcal{L}(\theta, \phi) = \sum_n \mathbb{E}_{q_\phi(z_n \mid y_n)}\bigl[\log p_\theta(y_n \mid z_n)\bigr] - \operatorname{KL}\bigl(q_\phi(z_n \mid y_n) \,\|\, p(z_n)\bigr)
+\mathcal{L}(\theta, \phi) = \sum_n \left\{\mathbb{E}_{q_\phi(z_n \mid y_n)}\bigl[\log p_\theta(y_n \mid z_n)\bigr] - \operatorname{KL}\bigl(q_\phi(z_n \mid y_n) \,\|\, p(z_n)\bigr)\right\}
 $$
 
 jointly in the decoder weights $\theta$ and the encoder weights $\phi$, with the reparameterized gradient. Because one encoder serves every observation, its posterior approximation is *amortized*: a new observation gets its code distribution from a single forward pass.
@@ -31,6 +31,7 @@ jointly in the decoder weights $\theta$ and the encoder weights $\phi$, with the
 # q(z | y) used to train both networks by the ELBO.
 #
 # Generative structure:
+# Normal arguments below are mean and standard deviation.
 #
 #   z_n            ~ Normal(0, I)                    latent code
 #   mu(z), s(z)    = decoder MLP(z)                  one tanh layer
@@ -78,19 +79,19 @@ The network weights are point estimates, not random variables. Only $z$ and $y$ 
 
 ## Walkthrough
 
-`object Row : FinSet 512` is the plate of observations; `Latent : Real 2` and `ObsSpace : Real 5` are the code and observation spaces.
+`object Row : FinSet 512` is the [plate](https://en.wikipedia.org/wiki/Plate_notation) of observations. `Latent : Real 2` and `ObsSpace : Real 5` are the code and observation spaces.
 
-`morphism decoder : Latent -> ObsSpace [param_source=mlp(32)] ~ Normal` declares the decoder as a single conditional-Normal kernel. The [`MLPSource`](../api/continuous/param_source.md#quivers.continuous.param_source.MLPSource) behind it maps a code through one tanh layer of width 32 to a mean and a log-scale for each of the five observation coordinates, so the hidden layer is deterministic and the only randomness is the Normal draw at the output. `encoder` is the same construction in the other direction, from an observation to a mean and log-scale for each code coordinate.
+`morphism decoder : Latent -> ObsSpace [param_source=mlp(32)] ~ Normal` declares the decoder as a single conditional-Normal [kernel](https://en.wikipedia.org/wiki/Markov_kernel). The [`MLPSource`](../api/continuous/param_source.md#quivers.continuous.param_source.MLPSource) behind it maps a code through one tanh layer of width 32 to a mean and a log-scale for each of the five observation coordinates, so the hidden layer is deterministic and the only randomness is the Normal draw at the output. `encoder` is the same construction in the other direction, from an observation to a mean and log-scale for each code coordinate.
 
 `program vae : Row -> ObsSpace` is the generative model. `sample z : Row <- Normal(loc=0.0, scale=1.0) [over=Latent]` draws one standard-Normal code per row, and `observe y : Row <- decoder(z)` scores each row's observation under the decoder at that row's code. `define reconstruct = encoder >> decoder` is the composite kernel from an observation to the distribution of its reconstruction. The four exports make `prog.encoder`, `prog.decoder` and `prog.reconstruct` available next to the program, and all of them share one set of network weights.
 
-The declared `encoder` is the variational posterior. [`AmortizedGuide`](../api/inference/guide.md#quivers.inference.guides.AmortizedGuide) takes the program, its observed sites, and a map from each latent site to the morphism that proposes it and the datum it reads, here `{"z": (encoder, "y")}`: it draws `z` from `encoder(y)` row by row and scores the draw under the same kernel, so one set of encoder weights serves every observation, $q(z_n \mid y_n) = \mathrm{encoder}(y_n)$. The guide's parameters are the encoder's own, and [`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) with the [`ELBO`](../api/inference/elbo.md) objective optimizes them together with the decoder's weights (the program's parameters), which is Kingma and Welling's training procedure. `guide.observe` points the same guide at new observations, which is how the held-out checks below get the posterior of data the networks never saw.
+The declared `encoder` is the variational posterior. [`AmortizedGuide`](../api/inference/guide.md#quivers.inference.guides.AmortizedGuide) takes the program, its observed sites, and a map from each latent site to the morphism that proposes it and the datum it reads, here `{"z": (encoder, "y")}`: it draws `z` from `encoder(y)` row by row and scores the draw under the same kernel, so one set of encoder weights serves every observation, $q(z_n \mid y_n) = \mathrm{encoder}(y_n)$. The guide's parameters are the encoder's own, and [`SVI`](../api/inference/svi.md#quivers.inference.svi.SVI) (stochastic variational inference) with the [`ELBO`](../api/inference/elbo.md) objective optimizes them together with the decoder's weights (the program's parameters), which is Kingma and Welling's training procedure. `guide.observe` points the same guide at new observations, which is how the held-out checks below get the posterior of data the networks never saw.
 
 ## Try it
 
 ### Generating synthetic data
 
-The data lie near a two-dimensional *twisted strip* in five dimensions: the first code coordinate winds around a circle and the second sets the width of a twist about it. The generator is a member of the model's own family, $z \sim \mathcal{N}(0, I)$ and $y \sim \mathcal{N}(g(z), 0.1^2 I)$ for a fixed smooth map $g$, which the decoder network has to learn. A second sample of 512 rows is held out. The block also checks the program's log joint at the true codes against a hand-written prior plus decoder density.
+The data lie near a two-dimensional *twisted strip* in five dimensions: the first code coordinate winds around a circle and the second sets the width of a twist about it. The generator has the same latent dimension and Gaussian observation form, $z \sim \mathcal{N}(0, I)$ and $y \sim \mathcal{N}(g(z), 0.1^2 I)$ for a fixed smooth map $g$, which the decoder network approximates. A second sample of 512 rows is held out. The block also checks the program's log joint at the true codes against a hand-written prior plus decoder density.
 
 ```python
 import torch
@@ -144,7 +145,7 @@ print(f"log joint at the true codes: {log_joint_true[0].item():.1f} (hand-writte
 
 ### Training the encoder and decoder by the ELBO
 
-The fit conditions on `y` alone; the codes stay latent and are drawn from the encoder at every step. Before training, the block checks that the guide scores a draw exactly as the declared encoder does: its log density must equal `encoder.log_prob` summed over the rows, to a relative 1e-6.
+The fit conditions on `y` alone. The codes stay latent and are drawn from the encoder at every step. Before training, the block checks that the guide scores a draw exactly as the declared encoder does: its log density must equal `encoder.log_prob` summed over the rows, to a relative 1e-6.
 
 ```python
 from quivers.inference import ELBO, SVI, AmortizedGuide
@@ -164,7 +165,7 @@ print(f"training ELBO per row: first step {-losses[0] / N:.2f}, last 100 steps {
 
 ### Held-out evidence and reconstruction
 
-Two baselines, both fitted to the same training rows. [Probabilistic PCA](ppca.md) (PPCA) [@tipping1999ppca] is the linear-Gaussian latent model with the same two latent dimensions, and its maximum-likelihood fit has a closed form and an exact marginal likelihood. Since the ELBO lower-bounds the VAE's own log likelihood, a held-out ELBO above the exact PPCA log likelihood shows that the VAE models the curved data better than any linear latent model can. The reconstruction check runs held-out rows through `reconstruct`, averages 20 draws, and compares the error with predicting the training mean. Both assertions were fixed before the run.
+Two baselines, both fitted to the same training rows. [Probabilistic PCA](ppca.md) (PPCA) [@tipping1999ppca] is the linear-Gaussian latent model with the same two latent dimensions, and its maximum-likelihood fit has a closed form and an exact marginal likelihood. Since the ELBO lower-bounds the VAE's own log likelihood, a held-out ELBO above the exact PPCA log likelihood supports a higher held-out log likelihood than this fitted PPCA comparator, subject to Monte Carlo error in the estimated ELBO. The reconstruction check runs held-out rows through `reconstruct`, averages 20 draws, and compares the error with predicting the training mean.
 
 ```python
 def heldout_elbo(y_eval, particles=20):
@@ -206,7 +207,7 @@ assert elbo_test > ppca_test
 assert recon_mse < 0.5 * baseline_mse
 ```
 
-### An oracle on linear data
+### A reference calculation on linear data
 
 On data from a linear-Gaussian generator the true marginal likelihood is available in closed form, and a VAE whose decoder can represent the linear map and whose encoder can represent the Gaussian posterior should reach it from below. The block refits a fresh copy of the model to such data and requires the held-out ELBO per row to come within 0.25 nats of the exact log likelihood, and to exceed it by no more than 0.05 nats of sampling noise.
 
@@ -244,7 +245,7 @@ assert -0.05 <= gap <= 0.25
 
 ### NUTS over the codes
 
-With the networks fixed at their trained weights, the program's only latent site is `z`, so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples the 1,024 code coordinates directly. `init_strategy="guide"` starts the chain from an encoder draw. Comparing the chain's mean codes with the encoder's means gives a direct look at the amortization gap, the error the encoder makes by predicting each posterior instead of computing it. Thirty warmup and thirty retained draws keep the block short; a longer run is needed before reading the difference as a precise measurement.
+With the networks fixed at their trained weights, the program's only latent site is `z`, so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples the 1,024 code coordinates directly. `init_strategy="guide"` starts the chain from an encoder draw. Comparing the chain's mean codes with the encoder's means measures disagreement between two posterior approximations. It does not isolate the amortization gap: the difference also includes restrictions of the variational family, optimization error, and Monte Carlo error. Thirty warmup and thirty retained draws keep the block short. A longer run is needed before reading the difference as a precise measurement.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -265,14 +266,9 @@ print(f"mean |NUTS mean - encoder mean| per code coordinate: {float((nuts_means 
 
 ## Categorical perspective
 
-`encoder : ObsSpace -> Latent` and `decoder : Latent -> ObsSpace` are [Kleisli morphisms](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]: each sends a point to a Gaussian measure on the other space. The generative program composes the prior $1 \to \mathcal{G}(\mathsf{Latent})$ with the decoder, giving the model's marginal over observations, and `reconstruct` composes the encoder with the decoder, giving an endomorphism of $\mathsf{ObsSpace}$. Training by the ELBO asks the encoder to approximate the Bayesian inverse of the decoder with respect to the prior, the kernel $\mathsf{ObsSpace} \to \mathcal{G}(\mathsf{Latent})$ that disintegrates the joint distribution of $(z, y)$ along $y$. Under that reading, `reconstruct` is the composite of a kernel with its approximate inverse, and its distance from the identity is what the reconstruction check measures.
+`encoder : ObsSpace -> Latent` and `decoder : Latent -> ObsSpace` are [Kleisli morphisms](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]: each sends a point to a Gaussian measure on the other space. The generative program composes the prior $1 \to \mathcal{G}(\mathsf{Latent})$ with the decoder, giving the model's marginal over observations, and `reconstruct` composes the encoder with the decoder, giving a stochastic map from $\mathsf{ObsSpace}$ to itself. Training by the ELBO asks the encoder to approximate the Bayesian inverse of the decoder with respect to the prior, the conditional kernel $\mathsf{ObsSpace} \to \mathcal{G}(\mathsf{Latent})$ obtained by [disintegrating](https://ncatlab.org/nlab/show/disintegration) the joint distribution of $(z,y)$ along $y$ [@cho2019disintegration]. Under that reading, `reconstruct` is the composite of a kernel with its approximate inverse, and the reconstruction check measures squared error on held-out observations, rather than a distance between kernels.
 
 ## See also
 
-- [Probabilistic PCA](ppca.md) for the linear-Gaussian latent model that serves as the baseline and the oracle here.
+- [Probabilistic PCA](ppca.md) for the linear-Gaussian latent model that serves as the baseline and the reference calculation here.
 - [Bayesian Neural Network](bnn.md) for a network whose weights, rather than its inputs, are the latent variables.
-
-## Sources and further reading
-
-- *Auto-Encoding Variational Bayes* [@kingma2014autoencoding].
-- *Probabilistic Principal Component Analysis* [@tipping1999ppca].
