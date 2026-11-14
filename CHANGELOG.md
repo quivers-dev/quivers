@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Guide registry tracing resolves its module independently of import order.** Constructing a guide from a program execution accepts either inference-first or effects-first imports, excludes observed sites from the latent registry, and preserves the caller's random stream.
 - **Empty static substitutions reuse immutable computation graphs.** Monomorphic calls avoid rebuilding unchanged bodies, and identity substitution accepts deep graphs without recursive copying. Nonempty substitutions retain their capture-avoiding rewrites.
 - **QVR lowering generates deterministic local names.** Repeated lowering with the same source, module name, and file path produces identical QIEC wire bytes. Generated locals avoid authored names throughout the module, including later bindings.
 - **Simulation-based calibration preserves accelerator random states.** Prior simulations and fitting callbacks use locally seeded CPU and available-device generators within scopes that restore every modified state on success or failure. Callback draws remain reproducible from the calibration seed.
