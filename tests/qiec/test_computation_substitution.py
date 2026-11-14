@@ -78,6 +78,24 @@ RIGID = TypeVariable(
 SUBSTITUTION = StaticSubstitution(types=(("A", INT),))
 
 
+def test_empty_substitution_shares_a_deep_immutable_computation() -> None:
+    """Identity substitution preserves a deep graph without recursive copying."""
+    body = Return(value=LiteralValue(value=1, type=INT))
+    for index in range(1100):
+        body = Bind(
+            binder=Local(name=f"x{index}", type=INT),
+            first=Return(value=LiteralValue(value=index, type=INT)),
+            then=body,
+        )
+    assert substitute_computation(body, StaticSubstitution()) is body
+
+
+def test_empty_substitution_still_refuses_a_value_in_computation_position() -> None:
+    """The identity path keeps the computation union closed."""
+    with pytest.raises(TypeError, match="unknown computation"):
+        substitute_computation(LiteralValue(value=1, type=INT), StaticSubstitution())
+
+
 def _call(result_type: TypeVariable | type) -> Call:
     """A call whose static argument and result type are `result_type`."""
     return Call(

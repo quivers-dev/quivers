@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **Empty static substitutions reuse immutable computation graphs.** Monomorphic calls avoid rebuilding unchanged bodies, and identity substitution accepts deep graphs without recursive copying. Nonempty substitutions retain their capture-avoiding rewrites.
 - **QVR lowering generates deterministic local names.** Repeated lowering with the same source, module name, and file path produces identical QIEC wire bytes. Generated locals avoid authored names throughout the module, including later bindings.
 - **Simulation-based calibration preserves accelerator random states.** Prior simulations and fitting callbacks use locally seeded CPU and available-device generators within scopes that restore every modified state on success or failure. Callback draws remain reproducible from the calibration seed.
 - **Seeded formula fits preserve the caller's random stream.** Compilation and inference run within an isolated CPU random state, restored on success or failure. The explicit fit seed also initializes the MCMC driver's chain streams.

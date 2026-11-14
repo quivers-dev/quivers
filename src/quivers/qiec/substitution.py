@@ -739,7 +739,7 @@ def substitute_computation(
         The computation with every static position substituted.
         Identities are preserved throughout: a call still names the same
         callee, a handle the same handler, and an allocation the same
-        instance.
+        instance. An empty substitution returns the immutable graph itself.
 
     Raises
     ------
@@ -747,6 +747,16 @@ def substitute_computation(
         If the computation, or a term nested in it, is of an unknown
         class.
     """
+    if (
+        isinstance(
+            computation,
+            Return | Bind | Perform | Handle | Case | Call | Resume | NewInstance | If,
+        )
+        and not substitution.types
+        and not substitution.indices
+        and not substitution.effects
+    ):
+        return computation
     if isinstance(computation, Return):
         return Return(value=substitute_value(computation.value, substitution))
     if isinstance(computation, Bind):
