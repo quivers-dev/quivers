@@ -79,22 +79,22 @@ $$
 \log p = \log p(W, U, V) + \sum_{t=1}^{T} \Bigl( \log \mathrm{softmax}(V_f h_t)_{x_{t+1}} + \log \mathrm{softmax}(V_b g_t)_{x_{t-1}} \Bigr),
 $$
 
-with independent Normal priors on the six weight matrices, and returns $(h_t, g_t)$ at every position. The forward scan reads left to right and the backward scan right to left, so each direction's likelihood is a proper autoregressive model of the window in its own direction; the two share nothing but the input.
+with independent Normal priors on the six weight matrices, and returns $(h_t, g_t)$ at every position. The forward scan reads left to right and the backward scan right to left, so each direction's likelihood is a proper autoregressive model of the window in its own direction. The two share nothing but the input.
 
 ## Walkthrough
 
 - The weights `Uf`, `Wf`, `Vf` (forward) and `Ub`, `Wb`, `Vb` (backward) are drawn by the exported program and read inside the cells, so they are sample sites with Normal priors.
 - `forward_step` computes `h_new = tanh(Wf h_prev + Uf[x_t])` with `factor` comprehensions over the hidden axis and observes `next_token` under `Categorical(logits=Vf h_new)`.
 - `backward_step` is the same cell with its own weights, observing `prev_token`.
-- `scan(forward_step, outputs=all)` returns the state at every position; `scan(backward_step, outputs=all, reverse=true)` visits the positions from last to first and returns its states in input order. The backward cell's sites are numbered in visit order, so `g_new@0` is the last position.
+- `scan(forward_step, outputs=all)` returns the state at every position. `scan(backward_step, outputs=all, reverse=true)` visits the positions from last to first and returns its states in input order. The backward cell's sites are numbered in visit order, so `g_new@0` is the last position.
 - `fan(forward_states, backward_states)` lays the two trajectories end to end at each position, giving the `Context : Real 6` that the program returns.
-- Each input row is one window; `next_token` and `prev_token` hold, for every position of the window, the token after and before it.
+- Each input row is one window. `next_token` and `prev_token` hold, for every position of the window, the token after and before it.
 
 ## Try it
 
-The blocks below check the program against an independent float64 implementation of the two recurrences and their likelihoods. Every tolerance was fixed before the first run.
+The blocks below check the program against an independent float64 implementation of the two recurrences and their likelihoods.
 
-### Shared oracle
+### Shared reference calculation
 
 `oracle` computes one window's log joint, priors included, and its per-position context. Its two keyword switches give deliberately wrong models: a backward recurrence that runs left to right, and one that scores the next token instead of the previous one.
 
@@ -147,7 +147,7 @@ observations = {"next_token": nxt, "prev_token": prv}
 
 ### The compiled runtime
 
-At a traced draw of the weights, for three windows: the log joint matches the oracle to a relative 1e-5, the returned context matches to 1e-5 absolute, and each wrong oracle is more than a relative 1e-3 away, so the first check can see both the direction and the target of the backward recurrence. The separation depends on the draw: at this page's seeded draw the smallest gap is 1.4e-3, but a draw of the same weights made with float64 as the default dtype puts the left-to-right oracle 7.8e-4 from the runtime at window 2, under the margin. The page claims the margin at its own draw only.
+At a traced draw of the weights, for three windows: the log joint matches the reference calculation to a relative 1e-5, the returned context matches to 1e-5 absolute, and each wrong reference calculation is more than a relative 1e-3 away, so the first check can see both the direction and the target of the backward recurrence. The separation depends on the draw: at the seeded draw the smallest gap is 1.4e-3, but a draw of the same weights made with float64 as the default dtype puts the left-to-right reference calculation 7.8e-4 from the runtime at window 2, under the margin. The margin thus depends on the parameter draw.
 
 ```python
 # 1, 2, 4: compiled runtime at a traced draw.
@@ -179,7 +179,7 @@ for row in range(3):
 
 ### The reference machine
 
-At fixed weights, the reference machine's log joint and context match the oracle to 1e-9.
+At fixed weights, the [reference machine](../developer/qiec.md#reference-evaluator)'s log joint and context match the reference calculation to 1e-9.
 
 ```python
 # 3: reference machine at fixed weights.
@@ -209,7 +209,7 @@ check("3 reference context", error <= 1e-9, f"max abs error {error:.2e}")
 
 ### Gradients through the reversed recurrence
 
-The gradient of the compiled log joint with respect to the backward input weights `Ub` matches the oracle's autograd gradient (relative 1e-4, absolute 1e-6).
+The gradient of the compiled log joint with respect to the backward input weights `Ub` matches the reference calculation's autograd gradient (relative 1e-4, absolute 1e-6).
 
 ```python
 # 5: gradients through the reversed recurrence.
@@ -228,10 +228,6 @@ check("5 gradient wrt Ub", ok, f"max abs diff {float((grad[0].double() - referen
 
 ## Categorical perspective
 
-Each cell is a deterministic morphism followed by an observation, a sub-probability kernel in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]. `scan(..., outputs=all)` is the left [fold](https://ncatlab.org/nlab/show/fold) that keeps its intermediate states (a scan in the functional-programming sense), `reverse=true` the right fold, and `fan` the pairing of two morphisms with a common domain.
+A deterministic function defines a [Dirac kernel](https://en.wikipedia.org/wiki/Dirac_measure), which puts all probability at its output. A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical].
 
-## Sources and further reading
-
-- *Bidirectional recurrent neural networks* [@schuster1997bidirectional].
-- *Deep contextualized word representations* [@peters2018deep].
-- *A categorical approach to probability theory* [@giry1982categorical].
+`scan(..., outputs=all)` repeatedly updates a state and retains every intermediate result. `reverse=true` traverses the sequence from the other end, and `fan` pairs the outputs of two functions with a common input. Each direction scores its own target array conditional on the inputs. Multiplying these scores does not by itself define a normalized joint distribution over a shared window of tokens. The scored transition is a subprobability [kernel](https://en.wikipedia.org/wiki/Markov_kernel) because each token probability is at most one. It belongs to the extension that permits mass below one, rather than to the probability-kernel category itself [@staton2017commutative].
