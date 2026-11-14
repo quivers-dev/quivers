@@ -47,8 +47,8 @@ class ReplayHandler(EffectHandler):
         }
         return (
             Installation(
-                kernel.random,
-                replay_handler(
+                instance=kernel.random,
+                runtime=replay_handler(
                     values,
                     result_validator=run.validator,
                     policy=ReplayPolicy.CLAMP_AND_SCORE,

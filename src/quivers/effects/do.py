@@ -58,8 +58,8 @@ class DoHandler(EffectHandler):
 
         return (
             Installation(
-                run.kernel.random,
-                intervene_handler(
+                instance=run.kernel.random,
+                runtime=intervene_handler(
                     {
                         name: run.slice_value(name, value)
                         for name, value in self.data.items()

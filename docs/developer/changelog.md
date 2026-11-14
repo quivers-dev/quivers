@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- **Breaking: Effect run contexts and installations use validated models.** Constructors use keywords, checked kernels and addresses compare by value, and live tensors, callbacks, and mutable run collections retain identity. Parameter handlers share the run's parameter store throughout execution.
 - **Breaking: Runtime handlers use validated immutable models.** Definitions and operation-clause maps compare by value; executable callbacks retain identity. Renaming, installation factories, and continuation forks use validated updates while preserving independent mutable state and exact-once finalization.
 - **Breaking: Evaluator attachments and continuations use immutable records.** Attachment tables remain mutable and retain their identities. Checked terms and addresses compare by value, while host values, callbacks, and handler lifecycles retain identity. Delimiters remain distinct for each host invocation, and constructors use keywords.
 - **Breaking: QIEC execution and host-program records use immutable models.** Runtime configurations, trace events, collectors, distributions, and host-step records use keyword-only construction and validated `with_` updates. Configuration and distribution maps retain owned snapshots with live host values; collectors keep independent mutable event lists. Checked types, effect instances, and structural compilation metadata remain values.

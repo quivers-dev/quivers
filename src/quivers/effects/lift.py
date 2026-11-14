@@ -72,8 +72,8 @@ class LiftHandler(EffectHandler):
 
         return (
             Installation(
-                run.kernel.param,
-                param_handler(
+                instance=run.kernel.param,
+                runtime=param_handler(
                     draw,
                     result_validator=run.validator,
                     total=False,

@@ -68,8 +68,8 @@ class MaskHandler(EffectHandler):
 
         return (
             Installation(
-                run.kernel.score,
-                reweight_handler(
+                instance=run.kernel.score,
+                runtime=reweight_handler(
                     masked,
                     score_instance=run.kernel.score.entry.instance,
                     answer_type=run.result_type,

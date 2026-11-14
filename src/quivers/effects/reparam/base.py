@@ -244,7 +244,7 @@ class ReparamOrchestrator(EffectHandler):
                 )
             },
         )
-        return (Installation(kernel.random, runtime),)
+        return (Installation(instance=kernel.random, runtime=runtime),)
 
 
 def reparam(strategies: dict[str, Reparam]) -> ReparamOrchestrator:

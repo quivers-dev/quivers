@@ -160,7 +160,7 @@ class CollapseHandler(EffectHandler):
                 )
             },
         )
-        return (Installation(kernel.random, runtime),)
+        return (Installation(instance=kernel.random, runtime=runtime),)
 
 
 def collapse(pairs: dict[str, str] | None = None) -> CollapseHandler:

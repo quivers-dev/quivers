@@ -2402,8 +2402,8 @@ def _run_once(
         if "@" not in label:
             axis.given(program, label, _site_carries(kernel, label, value))
     run = RunContext(
-        kernel,
-        host_value,
+        kernel=kernel,
+        validator=host_value,
         observations=dict(sites),
         supplied=supplied,
         run_index=run_index,
@@ -2436,17 +2436,17 @@ def _run_once(
         assert isinstance(weight, torch.Tensor | float | int)
         run.contributions.append(
             Contribution(
-                run.key_of(request),
-                request.core.origin.origin.role,
-                torch.as_tensor(weight),
-                request.core.origin.origin.structural_path,
+                key=run.key_of(request),
+                role=request.core.origin.origin.role,
+                weight=torch.as_tensor(weight),
+                path=request.core.origin.origin.structural_path,
             )
         )
 
     accumulator, _ = score_handler(
         answer_type=result_type, observer=record, key="run-accumulator"
     )
-    score_installations = [Installation(kernel.score, accumulator)]
+    score_installations = [Installation(instance=kernel.score, runtime=accumulator)]
     random_installations: list[Installation] = []
     param_installations: list[Installation] = []
     user_random: list[Installation] = []
@@ -2471,8 +2471,8 @@ def _run_once(
         finishers.append(handler)
     random_installations.append(
         Installation(
-            kernel.random,
-            draw_scoring_handler(
+            instance=kernel.random,
+            runtime=draw_scoring_handler(
                 score_instance=kernel.score.entry.instance,
                 result_validator=host_value,
                 answer_type=result_type,
@@ -2487,8 +2487,8 @@ def _run_once(
         }
         random_installations.append(
             Installation(
-                kernel.random,
-                condition_handler(
+                instance=kernel.random,
+                runtime=condition_handler(
                     clamped,
                     score_instance=kernel.score.entry.instance,
                     result_validator=host_value,
@@ -2500,7 +2500,7 @@ def _run_once(
             )
         )
     random_installations.extend(user_random)
-    store: dict[str, torch.Tensor] = {}
+    store = run.parameters
     for step in kernel.steps:
         if step.kind != "draw" or step.site is None:
             continue
@@ -2509,12 +2509,11 @@ def _run_once(
         assert isinstance(morphism, ContinuousMorphism)
         for name, parameter in morphism.named_parameters():
             store[f"{step.site}.{name}"] = parameter
-    run.parameters = store
     param_installations.insert(
         0,
         Installation(
-            kernel.param,
-            param_handler(
+            instance=kernel.param,
+            runtime=param_handler(
                 lambda name, _request: store[name],
                 result_validator=host_value,
                 answer_type=result_type,
@@ -2536,8 +2535,8 @@ def _run_once(
         )
         step_installations.append(
             Installation(
-                instance,
-                compute_handler(
+                instance=instance,
+                runtime=compute_handler(
                     steps.function(step),
                     effect=step.effect,
                     result_validator=host_value,

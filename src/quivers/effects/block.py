@@ -73,8 +73,8 @@ class BlockHandler(EffectHandler):
         kernel = run.kernel
         return (
             Installation(
-                kernel.random,
-                block_handler(
+                instance=kernel.random,
+                runtime=block_handler(
                     self._should_block,
                     score_instance=kernel.score.entry.instance,
                     result_validator=run.validator,
