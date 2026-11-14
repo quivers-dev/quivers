@@ -69,15 +69,15 @@ The same object declaration can identify an axis in several roles. Read the posi
 | `sample Z : Item <- ... [over=LatentDim]` | A table with one row per item and one column per latent coordinate. |
 | `sample W : ObsDim <- ... [over=LatentDim]` | A table with one row per observed coordinate: the transposed loading matrix. |
 | `observe y : Resp <- Normal(...)` | One scored response per cell of the flattened data matrix. |
-| `program ... : Resp -> Val` | A response-indexed program returning real values; `Val` is `Real 1`. |
+| `program ... : Resp -> Val` | A response-indexed program returning real values. `Val` is `Real 1`. |
 
-`object Item : FinSet 400` and `object ObsDim : FinSet 6` give the data matrix its $400 \times 6$ shape, and `object Resp : FinSet 2400` is that matrix flattened into one response per cell. The host data `item_idx` and `obs_idx` record which item and which coordinate each response belongs to.
+`object Item : FinSet 400` and `object ObsDim : FinSet 6` give the data matrix its $400 \times 6$ shape, and `object Resp : FinSet 2400` is that matrix flattened into one response per cell. The input data `item_idx` and `obs_idx` record which item and which coordinate each response belongs to.
 
-The three `sample` steps draw the noise scale, the codes, and the loadings. The loading table is drawn with one row per observed coordinate, $W_{d, \cdot} \in \mathbb{R}^K$, so that both gathers in the `let` steps return `Resp`-by-`LatentDim` tables: `z_row` holds the code of each response's item and `w_row` holds the loading row of its coordinate. `sum(z_row * w_row)` reduces the last axis, giving each response's mean $\sum_k Z_{i,k} W_{d,k}$, which is the $(i, d)$ entry of $Z W^\top$. Every response then shares the one noise scale `sigma`; that sharing is what makes this PPCA rather than factor analysis.
+The three `sample` steps draw the noise scale, the codes, and the loadings. The loading table is drawn with one row per observed coordinate, $W_{d, \cdot} \in \mathbb{R}^K$, so that both gathers in the `let` steps return `Resp`-by-`LatentDim` tables: `z_row` holds the code of each response's item and `w_row` holds the loading row of its coordinate. `sum(z_row * w_row)` reduces the last axis, giving each response's mean $\sum_k Z_{i,k} W_{d,k}$, which is the $(i, d)$ entry of $Z W^\top$. Every response then shares the one noise scale `sigma`. That sharing is what makes this PPCA rather than factor analysis.
 
 ## Try it
 
-The blocks below simulate a data matrix from the model, check the compiled joint against a hand-written density, fit by SVI and compare the fit with the Tipping and Bishop solution, and run a short NUTS chain on the same joint.
+The blocks below simulate a data matrix from the model, check the compiled joint against a hand-written density, fit by [SVI](../guides/inference-svi.md) (stochastic variational inference) and compare the fit with the Tipping and Bishop solution, and run a short [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler) chain on the same joint.
 
 ### Generating synthetic data
 
@@ -108,7 +108,7 @@ observations = {"y": y, "item_idx": item_idx, "obs_idx": obs_idx}
 x_in = torch.zeros(1, 1)
 ```
 
-The program input `x_in` is a single row. The extent of the `Resp` plate comes from the observed responses and their indices, and the scalar site `sigma` is drawn once per run rather than once per input row.
+The program input `x_in` is a single row. The extent of the `Resp` [plate](https://en.wikipedia.org/wiki/Plate_notation) comes from the observed responses and their indices, and the scalar site `sigma` is drawn once in that run. Each [input row is an independent run](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Checking the joint density
 
@@ -170,11 +170,11 @@ assert cov_error < 0.2
 assert angles.max() < 5.0
 ```
 
-The covariance tolerance is set against sampling error: with 400 items, the sample covariance itself is about 12% (in relative Frobenius norm) away from the true one here, and a fit can do no better than the data allow. The subspace check needs no truth at all; it asks whether the fitted loadings span the principal subspace of the data, which is the content of Tipping and Bishop's result.
+The covariance tolerance is set against sampling error: with 400 items, the sample covariance itself is about 12% (in relative Frobenius norm) away from the true one here, which gives a scale for assessing the covariance error. The subspace check needs no truth at all. It asks whether the fitted loadings span the principal subspace of the data, which is the subspace characterized by Tipping and Bishop's maximum-likelihood result.
 
 ### NUTS posterior
 
-[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) runs on the same joint, with the codes, the loadings, and the noise scale all latent. The chain below is short; the rotation invariance makes $W$ itself mix poorly, so a real analysis would monitor rotation-invariant summaries such as the implied covariance across several chains.
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) runs on the same joint, with the codes, the loadings, and the noise scale all latent. The chain below is short. The rotation invariance makes $W$ itself mix poorly, so a real analysis would monitor rotation-invariant summaries such as the implied covariance across several chains.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -191,13 +191,9 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-Read as arrows in the real algebra, the code table is a map $Z : \mathsf{Item} \to \mathsf{LatentDim}$ and the transposed loading table a map $W^\top : \mathsf{LatentDim} \to \mathsf{ObsDim}$, and the mean of the response at $(i, d)$ is the $(i, d)$ entry of their composite $Z\,W^\top : \mathsf{Item} \to \mathsf{ObsDim}$. The program never materializes that composite: the two gathers pull both arrows back along `item_idx` and `obs_idx` to the response plate, where the contraction over `LatentDim` is done row by row. Following the mean by the isotropic Normal kernel and integrating $Z$ against its standard Normal prior gives, for each item, the Gaussian measure $\mathcal{N}(0, W W^\top + \sigma^2 I)$ on $\mathbb{R}^{\mathsf{ObsDim}}$. Factor analysis keeps the same composite and changes only the noise kernel.
+In the category of real matrices, whose composition is matrix multiplication, the code table is a map $Z : \mathsf{Item} \to \mathsf{LatentDim}$ and the transposed loading table a map $W^\top : \mathsf{LatentDim} \to \mathsf{ObsDim}$, and the mean of the response at $(i, d)$ is the $(i, d)$ entry of their composite $Z\,W^\top : \mathsf{Item} \to \mathsf{ObsDim}$. The program never materializes that composite: the two gathers pull both arrows back along `item_idx` and `obs_idx` to the response plate, where the contraction over `LatentDim` is done row by row. Following the mean by the isotropic Normal [kernel](https://en.wikipedia.org/wiki/Markov_kernel) and integrating $Z$ against its standard Normal prior gives, for each item, the Gaussian measure $\mathcal{N}(0, W W^\top + \sigma^2 I)$ on $\mathbb{R}^{\mathsf{ObsDim}}$. Factor analysis keeps the same composite and changes only the noise kernel.
 
 ## See also
 
 - [Bayesian Factor Analysis](factor-analysis.md), the same low-rank mean with a separate uniqueness for every observed coordinate.
 - [Probabilistic Matrix Factorization](pmf.md), the same per-row inner-product idiom applied to a sparse rating matrix.
-
-## Sources and further reading
-
-- *Probabilistic Principal Component Analysis* [@tipping1999ppca].
