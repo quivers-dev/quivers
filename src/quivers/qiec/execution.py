@@ -14,7 +14,7 @@ or ambient attachment registry is consulted by ``run_named``.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from importlib.metadata import entry_points
 import json
 from pathlib import Path
@@ -23,7 +23,7 @@ from typing import Literal, NoReturn, Protocol, cast
 
 import didactic.api as dx
 
-from quivers._values import OPAQUE_BY_VALUE
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.qiec.evaluator import (
     EvaluationError,
@@ -104,9 +104,10 @@ type TraceObserver = Callable[["ExecutionTraceEvent"], None]
 """A callback receiving each event an execution emits, in order."""
 
 
-@dataclass(frozen=True, slots=True)
-class ExecutionTraceEvent:
+class ExecutionTraceEvent(QiecModel):
     """One stable event emitted by a named QIEC invocation.
+
+    The detail mapping is an owned snapshot retained by identity.
 
     Parameters
     ----------
@@ -123,11 +124,14 @@ class ExecutionTraceEvent:
     sequence: int
     event: str
     computation: str
-    detail: Mapping[str, object] = field(default_factory=dict)
+    detail: Mapping[str, HeldValue] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _freeze_detail(self) -> None:
         """Freeze ``detail`` so a recorded event cannot change after emission."""
-        object.__setattr__(self, "detail", MappingProxyType(dict(self.detail)))
+        self._normalize_field("detail", MappingProxyType(dict(self.detail)))
 
     def to_data(self) -> dict[str, object]:
         """Render the event as JSON-compatible data.
@@ -146,9 +150,10 @@ class ExecutionTraceEvent:
         }
 
 
-@dataclass(slots=True)
-class ExecutionTraceRecorder:
+class ExecutionTraceRecorder(QiecModel):
     """Collect events while also satisfying the :class:`TraceObserver` API.
+
+    The mutable event list retains its identity through record updates.
 
     Parameters
     ----------
@@ -156,7 +161,9 @@ class ExecutionTraceRecorder:
         The recorded events, in order; empty to start.
     """
 
-    events: list[ExecutionTraceEvent] = field(default_factory=list)
+    events: list[ExecutionTraceEvent] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def __call__(self, event: ExecutionTraceEvent) -> None:
         """Record one event.
@@ -569,8 +576,7 @@ def _weight_type(definition: HandlerDef) -> TypeExpr:
     return argument
 
 
-@dataclass(frozen=True, slots=True)
-class CoreRuntimeProvider:
+class CoreRuntimeProvider(QiecModel):
     """Primitive validators plus explicitly configured structural handlers.
 
     ``options.handlers`` maps authored handler names to either
@@ -578,6 +584,9 @@ class CoreRuntimeProvider:
     or ``{"kind": "scripted", "responses": {"op": [...]}}``.  The source
     handler still controls types, coverage, and resumption grades; options
     supply only process-local clause behavior and state.
+
+    The options mapping is an owned snapshot retained by identity so
+    configured live values keep their runtime behavior.
 
     Parameters
     ----------
@@ -587,12 +596,15 @@ class CoreRuntimeProvider:
         The provider's name, reported in traces and result labels.
     """
 
-    options: Mapping[str, object] = field(default_factory=dict)
+    options: Mapping[str, HeldValue] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     name: str = "core"
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _freeze_options(self) -> None:
         """Freeze ``options`` so a provider's configuration cannot drift."""
-        object.__setattr__(self, "options", MappingProxyType(dict(self.options)))
+        self._normalize_field("options", MappingProxyType(dict(self.options)))
 
     def attach(self, module: QiecModule, attachments: RuntimeAttachments) -> None:
         """Bind one structural handler per configured authored handler.
@@ -1246,7 +1258,7 @@ type RuntimeProviderFactory = Callable[[Mapping[str, object]], RuntimeProvider]
 
 
 _PROVIDER_FACTORIES: dict[str, RuntimeProviderFactory] = {
-    "core": lambda options: CoreRuntimeProvider(options),
+    "core": lambda options: CoreRuntimeProvider(options=options),
 }
 
 
@@ -1326,9 +1338,10 @@ def register_runtime_provider(name: str, factory: RuntimeProviderFactory) -> Non
     _PROVIDER_FACTORIES[name] = factory
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeSelection:
+class RuntimeSelection(QiecModel):
     """One named provider and its JSON-compatible construction options.
+
+    The options mapping is an owned snapshot retained by identity.
 
     Parameters
     ----------
@@ -1341,9 +1354,12 @@ class RuntimeSelection:
     """
 
     provider: str
-    options: Mapping[str, object] = field(default_factory=dict)
+    options: Mapping[str, HeldValue] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_selection(self) -> None:
         """Reject empty provider names and freeze the options.
 
         Raises
@@ -1353,12 +1369,13 @@ class RuntimeSelection:
         """
         if not self.provider:
             raise ValueError("runtime provider name cannot be empty")
-        object.__setattr__(self, "options", MappingProxyType(dict(self.options)))
+        self._normalize_field("options", MappingProxyType(dict(self.options)))
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeConfiguration:
+class RuntimeConfiguration(QiecModel):
     """Complete, explicit runtime selection for one or more invocations.
+
+    Selections compare by value; already-built providers retain identity.
 
     Parameters
     ----------
@@ -1370,8 +1387,14 @@ class RuntimeConfiguration:
         used from Python.
     """
 
-    selections: tuple[RuntimeSelection, ...] = (RuntimeSelection("core"),)
-    providers: tuple[RuntimeProvider, ...] = ()
+    selections: tuple[RuntimeSelection, ...] = dx.field(
+        default=(RuntimeSelection(provider="core"),),
+        opaque=True,
+        extras=OPAQUE_BY_VALUE,
+    )
+    providers: tuple[RuntimeProvider, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     @property
     def label(self) -> str:
@@ -1482,17 +1505,21 @@ def runtime_configuration_from_data(data: object) -> RuntimeConfiguration:
     selections: list[RuntimeSelection] = []
     for item in raw:
         if isinstance(item, str):
-            selections.append(RuntimeSelection(item))
+            if not item:
+                raise ValueError("runtime provider name cannot be empty")
+            selections.append(RuntimeSelection(provider=item))
             continue
         if not isinstance(item, dict) or not isinstance(item.get("name"), str):
             raise ValueError(
                 "each runtime provider must be a name or object with 'name'"
             )
+        if not item["name"]:
+            raise ValueError("runtime provider name cannot be empty")
         options = item.get("options", {})
         if not isinstance(options, dict):
             raise ValueError("runtime provider 'options' must be an object")
-        selections.append(RuntimeSelection(item["name"], options))
-    return RuntimeConfiguration(tuple(selections))
+        selections.append(RuntimeSelection(provider=item["name"], options=options))
+    return RuntimeConfiguration(selections=tuple(selections))
 
 
 def load_runtime_configuration(path: str | Path) -> RuntimeConfiguration:
@@ -1619,9 +1646,11 @@ def parse_static_arguments(
         )
 
 
-@dataclass(frozen=True, slots=True)
-class ExecutionResult:
+class ExecutionResult(QiecModel):
     """The checked value and trace produced by one named invocation.
+
+    The host result retains identity. Its checked type and trace records
+    compare by value.
 
     Parameters
     ----------
@@ -1638,10 +1667,12 @@ class ExecutionResult:
     """
 
     computation: str
-    value: object
-    result_type: TypeExpr
+    value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     runtime: str
-    trace: tuple[ExecutionTraceEvent, ...]
+    trace: tuple[ExecutionTraceEvent, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     def to_data(self) -> dict[str, object]:
         """Render the result as JSON-compatible data.
@@ -1750,7 +1781,12 @@ def run_named(
             JSON-compatible event data; ``None`` records an empty mapping.
         """
         nonlocal sequence
-        trace_event = ExecutionTraceEvent(sequence, event, selected.name, detail or {})
+        trace_event = ExecutionTraceEvent(
+            sequence=sequence,
+            event=event,
+            computation=selected.name,
+            detail=detail or {},
+        )
         sequence += 1
         recorder(trace_event)
         if observer is not None:
@@ -1909,11 +1945,11 @@ def run_named(
         )
     emit("run.completed", {"result_type": _render_type(specialized_result)})
     return ExecutionResult(
-        selected.name,
-        value,
-        specialized_result,
-        config.label,
-        tuple(recorder.events),
+        computation=selected.name,
+        value=value,
+        result_type=specialized_result,
+        runtime=config.label,
+        trace=tuple(recorder.events),
     )
 
 

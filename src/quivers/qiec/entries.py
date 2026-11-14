@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from typing import Literal, NoReturn, cast
 
 import didactic.api as dx
@@ -401,9 +400,14 @@ def invoke_entry(
         if static_arguments
         else ()
     )
-    if runtime is not None and runtime.selections not in (
-        RuntimeConfiguration().selections,
-        (),
+    if (
+        runtime is not None
+        and runtime.selections
+        and (
+            len(runtime.selections) != 1
+            or runtime.selections[0].provider != "core"
+            or runtime.selections[0].options
+        )
     ):
         _refuse(
             name,
@@ -468,8 +472,7 @@ def invoke_entry(
     # entry's result is the program's value at the program's type,
     # instantiated at the extents the run fixed.
     extents = static_arguments_for(program, supplied, statics)
-    result = replace(
-        run.result,
+    result = run.result.with_(
         computation=name,
         value=run.value,
         result_type=substitute_type(

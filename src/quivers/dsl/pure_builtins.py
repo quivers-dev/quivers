@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from typing import Literal
 
+import didactic.api as dx
 import torch
 
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.dsl.ast_nodes.let_expressions import LetBinaryOperator
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.terms import ReductionOperator, RowwiseOperator
@@ -290,25 +292,33 @@ type QiecBuiltinForm = Literal[
 ]
 
 
-@dataclass(frozen=True, slots=True)
-class BuiltinSpec:
+class BuiltinSpec(QiecModel):
     """One source builtin's eager and checked capabilities.
 
     ``qiec_form`` records how checked lowering consumes the call. ``filter``
     deliberately has the ``unsupported`` form: it is a known surface operation
     with a stable dynamic-shape diagnostic, not an accidentally unknown name.
+
+    Eager callables and overload registries retain their runtime identities.
+    Arity sets, operator tags, and supported targets compare by value.
     """
 
     name: str
-    eager: Callable | None
-    eager_arities: frozenset[int]
-    qiec_arities: frozenset[int]
+    eager: Callable[..., HeldValue] | None = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    eager_arities: frozenset[int] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    qiec_arities: frozenset[int] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     purity: Literal["pure", "random"]
     shape_rule: str
     qiec_form: QiecBuiltinForm
-    qiec_overloads: Mapping[tuple[TypeExpr, ...], str]
-    qiec_operator: ReductionOperator | RowwiseOperator | None
-    targets: frozenset[str]
+    qiec_overloads: Mapping[tuple[TypeExpr, ...], str] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    qiec_operator: ReductionOperator | RowwiseOperator | None = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    targets: frozenset[str] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 _COLLECTION_ARITIES: Mapping[str, frozenset[int]] = {

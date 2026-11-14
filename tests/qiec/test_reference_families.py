@@ -235,8 +235,8 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
 def _component(loc: Sequence[float], scale: Sequence[float]) -> RuntimeDistribution:
     """A normal plated over the components of a mixture."""
     return RuntimeDistribution(
-        "Normal",
-        {"loc": tuple(loc), "scale": tuple(scale)},
+        family="Normal",
+        arguments={"loc": tuple(loc), "scale": tuple(scale)},
         batch=(len(loc),),
         ranks={"loc": 0, "scale": 0},
     )
@@ -332,14 +332,18 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     ),
     "Transformed": (
         {
-            "base": RuntimeDistribution("Normal", {"loc": 0.2, "scale": 0.7}),
+            "base": RuntimeDistribution(
+                family="Normal", arguments={"loc": 0.2, "scale": 0.7}
+            ),
             "transforms": "exp, sigmoid",
         },
         (0.6, 0.9),
     ),
     "Truncated": (
         {
-            "base": RuntimeDistribution("Normal", {"loc": 0.5, "scale": 1.5}),
+            "base": RuntimeDistribution(
+                family="Normal", arguments={"loc": 0.5, "scale": 1.5}
+            ),
             "low": -1.0,
             "high": 2.0,
         },
@@ -351,7 +355,9 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     ),
     "Restrict": (
         {
-            "base": RuntimeDistribution("Normal", {"loc": 0.5, "scale": 1.5}),
+            "base": RuntimeDistribution(
+                family="Normal", arguments={"loc": 0.5, "scale": 1.5}
+            ),
             "low": -1.0,
             "high": 2.0,
         },
@@ -360,9 +366,11 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     "Normalize": (
         {
             "base": RuntimeDistribution(
-                "Restrict",
-                {
-                    "base": RuntimeDistribution("Normal", {"loc": 0.5, "scale": 1.5}),
+                family="Restrict",
+                arguments={
+                    "base": RuntimeDistribution(
+                        family="Normal", arguments={"loc": 0.5, "scale": 1.5}
+                    ),
                     "low": -1.0,
                     "high": 2.0,
                 },
@@ -387,9 +395,9 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
 def test_measure_algebra_masses() -> None:
     """A restriction's mass is its base's on the interval, a mixture's the
     weighted sum, and normalizing divides the density by the mass."""
-    normal = RuntimeDistribution("Normal", {"loc": 0.5, "scale": 1.5})
+    normal = RuntimeDistribution(family="Normal", arguments={"loc": 0.5, "scale": 1.5})
     restricted = RuntimeDistribution(
-        "Restrict", {"base": normal, "low": -1.0, "high": 2.0}
+        family="Restrict", arguments={"base": normal, "low": -1.0, "high": 2.0}
     )
     torch_normal = td.Normal(0.5, 1.5)
     expected = float(
@@ -397,15 +405,18 @@ def test_measure_algebra_masses() -> None:
     )
     assert restricted.log_mass() == pytest.approx(expected, rel=1e-7)
     assert normal.log_mass() == 0.0
-    counts = RuntimeDistribution("Poisson", {"rate": 2.0})
-    bounded = RuntimeDistribution("Restrict", {"base": counts, "low": 1.0, "high": 3.0})
+    counts = RuntimeDistribution(family="Poisson", arguments={"rate": 2.0})
+    bounded = RuntimeDistribution(
+        family="Restrict", arguments={"base": counts, "low": 1.0, "high": 3.0}
+    )
     pmf = td.Poisson(2.0).log_prob(torch.tensor([1.0, 2.0, 3.0])).exp().sum().log()
     assert bounded.log_mass() == pytest.approx(float(pmf), rel=1e-7)
     mixture = RuntimeDistribution(
-        "Mixture", {"weights": (0.3, 0.7), "component": (restricted, normal)}
+        family="Mixture",
+        arguments={"weights": (0.3, 0.7), "component": (restricted, normal)},
     )
     assert mixture.log_mass() == pytest.approx(math.log(0.3 * math.exp(expected) + 0.7))
-    normalized = RuntimeDistribution("Normalize", {"base": mixture})
+    normalized = RuntimeDistribution(family="Normalize", arguments={"base": mixture})
     assert normalized.log_mass() == 0.0
     point = 1.2
     density = float(torch_normal.log_prob(_tensor(point)))
@@ -413,7 +424,7 @@ def test_measure_algebra_masses() -> None:
     assert normalized.log_prob(point) == pytest.approx(
         unnormalized - mixture.log_mass(), rel=1e-7
     )
-    atom = RuntimeDistribution("PointMass", {"value": 0.75})
+    atom = RuntimeDistribution(family="PointMass", arguments={"value": 0.75})
     assert atom.log_prob(0.75) == 0.0
     assert atom.log_prob(0.8) == -math.inf
     assert atom.sample() == 0.75
@@ -522,8 +533,8 @@ def test_lkj_samples_are_correlation_factors() -> None:
 def test_a_constructed_lkj_distribution_reads_its_dimension_from_the_type() -> None:
     seed_reference_rng(2)
     distribution = RuntimeDistribution(
-        "LKJCholesky",
-        {"concentration": 2.0},
+        family="LKJCholesky",
+        arguments={"concentration": 2.0},
         natural=(3, 3),
         ranks={"concentration": 0},
     )
@@ -544,7 +555,9 @@ def test_transform_chains_are_the_documented_names() -> None:
     }
     backend = ReferenceBackend()
     arguments = {
-        "base": RuntimeDistribution("Normal", {"loc": 0.0, "scale": 1.0}),
+        "base": RuntimeDistribution(
+            family="Normal", arguments={"loc": 0.0, "scale": 1.0}
+        ),
         "transforms": "cube",
     }
     with pytest.raises(Exception, match="unknown transform"):

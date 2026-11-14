@@ -728,4 +728,7 @@ def test_f_the_reference_answers_the_prelude_draw() -> None:
     module = _module("F")
     entry = next(item for item in module.entries if item.name == "regression")
     assert [site.name for site in entry.sites] == ["tau", "y"]
-    assert RuntimeConfiguration((RuntimeSelection("core"),)).label == "core"
+    assert (
+        RuntimeConfiguration(selections=(RuntimeSelection(provider="core"),)).label
+        == "core"
+    )

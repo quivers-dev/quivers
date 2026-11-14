@@ -1004,8 +1004,10 @@ def _run_wrapped(
         configured[PARAMS_HANDLER] = {"kind": "param", "values": dict(parameters or {})}
     configured.update(foreign_handler_configuration(module))
     runtime = RuntimeConfiguration(
-        (RuntimeSelection("core", {"handlers": configured}),),
-        providers,
+        selections=(
+            RuntimeSelection(provider="core", options={"handlers": configured}),
+        ),
+        providers=providers,
     )
     result = run_named(
         extended,
@@ -1207,7 +1209,9 @@ def run_deduction(
         arguments,
         static_arguments=(IndexLiteral(value=extent, sort=binder.sort),),  # type: ignore[arg-type]
         runtime=RuntimeConfiguration(
-            (RuntimeSelection("core", {"handlers": configured}),)
+            selections=(
+                RuntimeSelection(provider="core", options={"handlers": configured}),
+            )
         ),
         fuel=fuel,
     )

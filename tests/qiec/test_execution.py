@@ -4,18 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import didactic.api as dx
 import pytest
 
 from quivers.dsl import Compiler, parse
 from quivers.qiec import (
     INT,
     CoreRuntimeProvider,
+    ExecutionTraceEvent,
+    ExecutionTraceRecorder,
     ExecutionFailure,
     RuntimeAttachments,
     RuntimeConfiguration,
     RuntimeProvider,
     RuntimeSelection,
     parse_static_arguments,
+    runtime_configuration_from_data,
     run_named,
 )
 from quivers.qiec.types import TypeExpr
@@ -108,9 +112,46 @@ def test_each_run_receives_fresh_runtime_attachments() -> None:
     assert witness.tables[0] is not witness.tables[1]
 
 
+def test_runtime_records_snapshot_options_and_preserve_live_providers() -> None:
+    """Record updates retain provider state and reject malformed replacements."""
+    options = {"seed": 3}
+    selection = RuntimeSelection(provider="core", options=options)
+    options["seed"] = 4
+    assert selection.options["seed"] == 3
+    witness = _AttachmentWitness()
+    config = RuntimeConfiguration(selections=(selection,), providers=(witness,))
+    assert config.with_(selections=()).instantiate() == (witness,)
+    with pytest.raises(dx.ValidationError, match="RuntimeProvider"):
+        config.with_(providers=("witness",))
+    with pytest.raises(dx.ValidationError, match="cannot be empty"):
+        selection.with_(provider="")
+    for item in ("", {"name": ""}):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            runtime_configuration_from_data({"providers": [item]})
+
+
+def test_trace_records_own_details_and_keep_collectors_independent() -> None:
+    """Trace mappings are snapshots and event lists are per recorder."""
+    detail = {"runtime": "core"}
+    event = ExecutionTraceEvent(
+        sequence=0, event="run.started", computation="answer", detail=detail
+    )
+    detail["runtime"] = "other"
+    first = ExecutionTraceRecorder()
+    second = ExecutionTraceRecorder()
+    first(event)
+    assert first.events == [event]
+    assert second.events == []
+    assert event.to_data()["detail"] == {"runtime": "core"}
+    with pytest.raises(TypeError):
+        event.detail["runtime"] = "other"
+    with pytest.raises(dx.ValidationError, match="ExecutionTraceEvent"):
+        first.with_(events=["run.started"])
+
+
 def test_unknown_provider_has_stable_diagnostic() -> None:
     module = _module("define answer() : Int !{} =\n    return 42\n")
-    runtime = RuntimeConfiguration((RuntimeSelection("missing"),))
+    runtime = RuntimeConfiguration(selections=(RuntimeSelection(provider="missing"),))
     with pytest.raises(ExecutionFailure) as error:
         run_named(module, "answer", runtime=runtime)
     assert error.value.diagnostic.code == "qiec-run-provider"
@@ -140,6 +181,8 @@ def test_explicit_provider_name_loads_installed_entry_point(monkeypatch) -> None
 
     monkeypatch.setattr(execution, "entry_points", lambda: Points((Point(),)))
     module = _module("define answer() : Int !{} =\n    return 42\n")
-    runtime = RuntimeConfiguration((RuntimeSelection("plugin-runtime", {"seed": 3}),))
+    runtime = RuntimeConfiguration(
+        selections=(RuntimeSelection(provider="plugin-runtime", options={"seed": 3}),)
+    )
     assert run_named(module, "answer", runtime=runtime).value == 42
     assert loaded_options == [{"seed": 3}]

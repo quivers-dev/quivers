@@ -307,49 +307,61 @@ def test_log_density_evaluates_through_the_reference_backend() -> None:
 def test_reference_densities_match_closed_forms(
     name: str, arguments: dict[str, object], point: object, expected: float
 ) -> None:
-    assert RuntimeDistribution(name, arguments).log_prob(point) == pytest.approx(
-        expected
-    )
+    assert RuntimeDistribution(family=name, arguments=arguments).log_prob(
+        point
+    ) == pytest.approx(expected)
 
 
 def test_reference_samples_land_in_the_support_and_are_seeded() -> None:
     rng = random.Random(3)
     draws = [
         RuntimeDistribution(
-            "Beta", {"concentration1": 2.0, "concentration0": 3.0}
+            family="Beta", arguments={"concentration1": 2.0, "concentration0": 3.0}
         ).sample(rng)
         for _ in range(20)
     ]
     assert all(0.0 < draw < 1.0 for draw in draws)
-    assert RuntimeDistribution("Categorical", {"probs": (0.0, 1.0)}).sample(rng) == 1
-    assert RuntimeDistribution("Bernoulli", {"probs": 1.0}).sample(rng) is True
+    assert (
+        RuntimeDistribution(
+            family="Categorical", arguments={"probs": (0.0, 1.0)}
+        ).sample(rng)
+        == 1
+    )
+    assert (
+        RuntimeDistribution(family="Bernoulli", arguments={"probs": 1.0}).sample(rng)
+        is True
+    )
     simplex = RuntimeDistribution(
-        "Dirichlet", {"concentration": (1.0, 2.0, 3.0)}
+        family="Dirichlet", arguments={"concentration": (1.0, 2.0, 3.0)}
     ).sample(rng)
     assert sum(simplex) == pytest.approx(1.0)  # type: ignore[arg-type]
-    first = RuntimeDistribution("Normal", {"loc": 0.0, "scale": 1.0}).sample(
-        random.Random(9)
-    )
-    second = RuntimeDistribution("Normal", {"loc": 0.0, "scale": 1.0}).sample(
-        random.Random(9)
-    )
+    first = RuntimeDistribution(
+        family="Normal", arguments={"loc": 0.0, "scale": 1.0}
+    ).sample(random.Random(9))
+    second = RuntimeDistribution(
+        family="Normal", arguments={"loc": 0.0, "scale": 1.0}
+    ).sample(random.Random(9))
     assert first == second
 
 
 def test_unknown_families_and_bad_parameters_are_reported() -> None:
     with pytest.raises(DistributionError, match="cannot sample Unheard"):
-        RuntimeDistribution("Unheard", {"df": 3.0}).sample(random.Random(0))
+        RuntimeDistribution(family="Unheard", arguments={"df": 3.0}).sample(
+            random.Random(0)
+        )
     with pytest.raises(DistributionError, match="cannot score Unheard"):
-        RuntimeDistribution("Unheard", {"df": 3.0}).log_prob(1.0)
+        RuntimeDistribution(family="Unheard", arguments={"df": 3.0}).log_prob(1.0)
     with pytest.raises(
         DistributionError,
         match="Wishart needs covariance_matrix, precision_matrix, or scale_tril",
     ):
-        RuntimeDistribution("Wishart", {"df": 3.0}).log_prob(((1.0, 0.0), (0.0, 1.0)))
+        RuntimeDistribution(family="Wishart", arguments={"df": 3.0}).log_prob(
+            ((1.0, 0.0), (0.0, 1.0))
+        )
     with pytest.raises(DistributionError, match="needs parameter 'scale'"):
-        RuntimeDistribution("Normal", {"loc": 0.0}).log_prob(0.0)
+        RuntimeDistribution(family="Normal", arguments={"loc": 0.0}).log_prob(0.0)
     with pytest.raises(DistributionError, match="probs or logits"):
-        RuntimeDistribution("Bernoulli", {}).log_prob(True)
+        RuntimeDistribution(family="Bernoulli", arguments={}).log_prob(True)
 
 
 def test_a_backend_can_be_installed_and_restored() -> None:
@@ -364,8 +376,14 @@ def test_a_backend_can_be_installed_and_restored() -> None:
     try:
         assert isinstance(previous, ReferenceBackend)
         assert distribution_backend().__class__ is Constant
-        assert RuntimeDistribution("Wishart", {"df": 3.0}).sample() == 42.0
-        assert RuntimeDistribution("Wishart", {"df": 3.0}).log_prob(0.0) == -1.0
+        assert (
+            RuntimeDistribution(family="Wishart", arguments={"df": 3.0}).sample()
+            == 42.0
+        )
+        assert (
+            RuntimeDistribution(family="Wishart", arguments={"df": 3.0}).log_prob(0.0)
+            == -1.0
+        )
     finally:
         install_distribution_backend(previous)
     assert distribution_backend() is previous

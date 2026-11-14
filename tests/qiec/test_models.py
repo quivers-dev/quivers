@@ -29,6 +29,7 @@ from quivers.qiec import (
 from quivers.qiec._models import QiecModel
 from quivers.qiec.serialization import SerializationError, dumps, loads
 from quivers.qiec.entries import EntryPoint, EntryRun
+from quivers.qiec.distributions import RuntimeDistribution
 from quivers.qiec.execution import ExecutionResult
 from quivers.qiec.program_runtime import DeductionRun, ProgramRun
 
@@ -183,3 +184,25 @@ def test_runtime_results_retain_live_values_and_gradients() -> None:
         program.with_(result="result")
     with pytest.raises(dx.ValidationError, match="EntryPoint"):
         invocation.with_(entry="entry")
+
+
+def test_runtime_distribution_owns_parameters_without_detaching_tensors() -> None:
+    """Mapping snapshots retain live tensors and validate replacement ranks."""
+    parameter = torch.tensor(2.0, dtype=torch.float64, requires_grad=True)
+    value = parameter * 3.0
+    arguments = {"loc": value, "scale": 1.0}
+    ranks = {"loc": 0, "scale": 0}
+    distribution = RuntimeDistribution(
+        family="Normal", arguments=arguments, ranks=ranks
+    )
+    arguments["loc"] = -1.0
+    ranks["loc"] = 7
+    assert distribution.arguments["loc"] is value
+    assert distribution.ranks["loc"] == 0
+    assert distribution.with_(batch=(2,)).arguments["loc"] is value
+    with pytest.raises(TypeError):
+        distribution.arguments["scale"] = 2.0
+    with pytest.raises(dx.ValidationError, match="ranks"):
+        distribution.with_(ranks={"loc": "scalar"})
+    value.backward()
+    assert parameter.grad.item() == 3.0

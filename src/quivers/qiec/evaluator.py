@@ -2148,17 +2148,19 @@ class Evaluator:
                     for dimension in split[1][len(split[1]) - record.event_rank :]
                 )
             return RuntimeDistribution(
-                value.name,
-                {
+                family=value.name,
+                arguments={
                     name: self._value(argument, environment)
                     for name, argument in value.arguments
                 },
-                tuple(_extent(axis) for axis in value.plate.batch),
-                tuple(_extent(axis) for axis in value.plate.event)[
+                batch=tuple(_extent(axis) for axis in value.plate.batch),
+                event=tuple(_extent(axis) for axis in value.plate.event)[
                     : max(len(value.plate.event) - record.event_rank, 0)
                 ],
-                {parameter.name: parameter.rank for parameter in record.parameters},
-                natural,
+                ranks={
+                    parameter.name: parameter.rank for parameter in record.parameters
+                },
+                natural=natural,
             )
         if isinstance(value, LogDensity):
             sampleable = self._value(value.sampleable, environment)

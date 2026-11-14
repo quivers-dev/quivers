@@ -385,10 +385,10 @@ define foreign_inside(seed : Int) : Int !{} =
     )
     module = _module(source)
     runtime = RuntimeConfiguration(
-        (
+        selections=(
             RuntimeSelection(
-                "core",
-                {
+                provider="core",
+                options={
                     "handlers": {
                         "record": {"kind": "scripted", "responses": {"note": [None]}}
                     }

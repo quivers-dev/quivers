@@ -15,9 +15,12 @@ closure or a tensor parameter into the module.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import didactic.api as dx
+
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.dsl import ast_nodes as surface
 from quivers.qiec.builtins import COMPUTE_APPLY, COMPUTE_EFFECT
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_type
@@ -44,8 +47,7 @@ if TYPE_CHECKING:
     from quivers.dsl.qiec_lowering import _Elaborator
 
 
-@dataclass(frozen=True, slots=True)
-class _StructuralSignature:
+class _StructuralSignature(QiecModel):
     """One signature's indexed term family.
 
     Parameters
@@ -60,9 +62,11 @@ class _StructuralSignature:
         The principal object sort.
     """
 
-    declaration: surface.SignatureDecl
-    sort: UserIndexSort
-    family: FamilyDecl
+    declaration: surface.SignatureDecl = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    sort: UserIndexSort = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    family: FamilyDecl = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     root: str
 
     def term(self, sort: str | None = None) -> TypeApplication:
@@ -86,18 +90,21 @@ class _StructuralSignature:
         )
 
 
-@dataclass(slots=True)
-class _StructuralComponent:
+class _StructuralComponent(QiecModel):
     """A host-backed computation and its lexical ``Compute`` instance."""
 
-    declaration: surface.EncoderDecl | surface.DecoderDecl | surface.LossDecl
+    declaration: surface.EncoderDecl | surface.DecoderDecl | surface.LossDecl = (
+        dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    )
     name: str
     role: str
-    argument: TypeExpr
-    result: TypeExpr
-    instance: NamedEffectInstance
-    handler: HandlerDef
-    signature: ComputationSignature | None = None
+    argument: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    instance: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    handler: HandlerDef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    signature: ComputationSignature | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def _option_number(options: tuple[surface.OptionEntry, ...], key: str) -> int | None:
@@ -224,10 +231,10 @@ class _StructuralElaboration:
             self.index_sorts[sort_name] = sort
             self.families[family_name] = family
             signatures[declaration.name] = _StructuralSignature(
-                declaration,
-                sort,
-                family,
-                _root_sort(declaration),
+                declaration=declaration,
+                sort=sort,
+                family=family,
+                root=_root_sort(declaration),
             )
         self._structural_signatures = signatures
 
@@ -333,13 +340,13 @@ class _StructuralElaboration:
         )
         self.handlers[handler.name] = handler
         components[name] = _StructuralComponent(
-            declaration,
-            name,
-            role,
-            argument,
-            result,
-            instance,
-            handler,
+            declaration=declaration,
+            name=name,
+            role=role,
+            argument=argument,
+            result=result,
+            instance=instance,
+            handler=handler,
         )
 
     def _declare_structural_signatures(self: _Elaborator) -> None:
@@ -360,7 +367,9 @@ class _StructuralElaboration:
             )
             self.registry.register_computation(signature)
             self.computation_signatures[component.name] = signature
-            component.signature = signature
+            self._structural_components[component.name] = component.with_(
+                signature=signature
+            )
 
         for declaration in self._items(surface.LossDecl):
             recognized = _reconstruction_loss(declaration)

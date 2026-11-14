@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Hashable, Mapping
+from collections.abc import Callable, Hashable, Mapping
 from functools import cache
 from inspect import get_annotations
 import sys
-from typing import Literal, TypeAliasType, Union, cast, get_args, get_origin
+from typing import (
+    Literal,
+    TypeAliasType,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_protocol_members,
+    is_protocol,
+)
 
 import didactic.api as dx
 
@@ -53,7 +62,8 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
     ------
     TypeError
         If the value does not inhabit its annotation, or the annotation
-        is outside the closed scalar, sequence, mapping, union, and model schema.
+        is outside the scalar, sequence, mapping, union, model, callable,
+        and protocol schema.
     """
     if annotation is HeldValue:
         return
@@ -95,6 +105,22 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
             for key, item in value.items():
                 validate_shape(key, key_type, path=f"{path}.key")
                 validate_shape(item, value_type, path=f"{path}[{key!r}]")
+            return
+    elif origin is Callable or annotation is Callable:
+        if callable(value):
+            return
+    elif is_protocol(annotation):
+        annotations = get_annotations(annotation, eval_str=True)
+        for name in get_protocol_members(annotation):
+            try:
+                member = getattr(value, name)
+            except AttributeError:
+                break
+            if name in annotations:
+                validate_shape(member, annotations[name], path=f"{path}.{name}")
+            elif callable(getattr(annotation, name, None)) and not callable(member):
+                break
+        else:
             return
     elif isinstance(annotation, type):
         primitive = annotation in {bool, bytes, float, int, str, type(None)}

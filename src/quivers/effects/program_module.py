@@ -21,7 +21,11 @@ compose by the kernel's own rules.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+
+import didactic.api as dx
+
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 
 from quivers.continuous.program_steps import (
     Call as CallStep,
@@ -114,9 +118,11 @@ ENTRY = "program"
 INPUT_NAME = "_x_input"
 
 
-@dataclass(frozen=True, slots=True)
-class HostStep:
+class HostStep(QiecModel):
     """One host part of the program, as the runtime provider serves it.
+
+    Kernel types and effect identities compare by value. The executable
+    program and its step specification retain their runtime identities.
 
     Parameters
     ----------
@@ -157,21 +163,23 @@ class HostStep:
         The step's position among the kernel's host steps.
     """
 
-    instance: EffectInstanceId
-    effect: EffectRef
+    instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    effect: EffectRef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     kind: str
-    spec: Step | None
+    spec: Step | None = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     environment: tuple[str, ...]
-    answer_type: TypeExpr
+    answer_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     site: str | None
-    program: MonadicProgram
+    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     scanned: bool
     position: int
 
 
-@dataclass(frozen=True, slots=True)
-class ProgramKernel:
+class ProgramKernel(QiecModel):
     """A program's computation with the record the runtime needs to serve it.
+
+    The checked module, host-step records, and effect instances compare
+    by value. Live programs, morphisms, and lookup tables retain identity.
 
     Parameters
     ----------
@@ -211,20 +219,28 @@ class ProgramKernel:
         for a continuous codomain, ``()`` otherwise.
     """
 
-    module: QiecModule
-    program: MonadicProgram
-    steps: tuple[HostStep, ...]
+    module: QiecModule = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    steps: tuple[HostStep, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     sites: tuple[str, ...]
-    site_types: dict[str, TypeExpr]
+    site_types: dict[str, TypeExpr] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     data: tuple[str, ...]
-    random: NamedEffectInstance
-    score: NamedEffectInstance
-    param: NamedEffectInstance
-    result_type: TypeExpr
-    locals: dict[str, Local] = field(default_factory=dict)
-    scanned: frozenset[str] = frozenset()
-    site_morphisms: dict[str, ContinuousMorphism] = field(default_factory=dict)
-    site_events: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    random: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    score: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    param: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    locals: dict[str, Local] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    scanned: frozenset[str] = dx.field(
+        default=frozenset(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    site_morphisms: dict[str, ContinuousMorphism] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    site_events: dict[str, tuple[int, ...]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
 def space_type(space: SetObject | ContinuousSpace) -> TypeExpr:
@@ -890,16 +906,16 @@ class _Builder:
         instance = self._instance(f"step_{position}", effect)
         self.steps.append(
             HostStep(
-                instance.entry.instance,
-                effect,
-                kind,
-                spec,
-                environment_names,
-                answer_type,
-                site,
-                program,
-                frame.scanned,
-                position,
+                instance=instance.entry.instance,
+                effect=effect,
+                kind=kind,
+                spec=spec,
+                environment=environment_names,
+                answer_type=answer_type,
+                site=site,
+                program=program,
+                scanned=frame.scanned,
+                position=position,
             )
         )
         request = EffectRequest(
@@ -1100,20 +1116,22 @@ class _Builder:
             computations=(computation, *self.helpers),
         )
         return ProgramKernel(
-            module,
-            program,
-            tuple(self.steps),
-            tuple(self.sites),
-            dict(self.site_types),
-            self.data,
-            self.random,
-            self.score,
-            self.param,
-            result_type,
-            {name: local for name in frame.order if (local := frame.lookup(name))},
-            frozenset(self.scanned),
-            dict(self.site_morphisms),
-            {
+            module=module,
+            program=program,
+            steps=tuple(self.steps),
+            sites=tuple(self.sites),
+            site_types=dict(self.site_types),
+            data=self.data,
+            random=self.random,
+            score=self.score,
+            param=self.param,
+            result_type=result_type,
+            locals={
+                name: local for name in frame.order if (local := frame.lookup(name))
+            },
+            scanned=frozenset(self.scanned),
+            site_morphisms=dict(self.site_morphisms),
+            site_events={
                 label: (
                     (int(getattr(morphism.codomain, "dim")),)
                     if isinstance(morphism.codomain, ContinuousSpace)

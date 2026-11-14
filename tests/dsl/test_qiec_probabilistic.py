@@ -47,10 +47,12 @@ define run(mu : Real) : Real * LogWeight !{} =
 """
 
 _RUNTIME = RuntimeConfiguration(
-    (
+    selections=(
         RuntimeSelection(
-            "core",
-            {"handlers": {"draw": {"kind": "draw"}, "accumulate": {"kind": "score"}}},
+            provider="core",
+            options={
+                "handlers": {"draw": {"kind": "draw"}, "accumulate": {"kind": "score"}}
+            },
         ),
     )
 )

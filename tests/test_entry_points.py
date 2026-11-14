@@ -60,6 +60,18 @@ export prog
 DATA = (0.1, 0.2, 0.3, 0.4)
 
 
+def test_a_program_accepts_an_explicit_default_core_selection() -> None:
+    """An explicit empty core configuration agrees with the default run."""
+    module = lower_qvr_to_qiec(parse(SOURCE))
+    runtime = RuntimeConfiguration(selections=(RuntimeSelection(provider="core"),))
+    seed_reference_rng(17)
+    expected = invoke_entry(module, "prog", arguments=(DATA,))
+    seed_reference_rng(17)
+    actual = invoke_entry(module, "prog", arguments=(DATA,), runtime=runtime)
+    assert actual.value == expected.value
+    assert actual.log_joint == expected.log_joint
+
+
 def test_a_unit_entry_retains_the_validated_runtime_result() -> None:
     """A Unit computation returns the reference machine's None value."""
     module = lower_qvr_to_qiec(parse("define done() : Unit !{} =\n    return unit\n"))
@@ -172,7 +184,9 @@ def test_invocation_refusals_carry_stable_codes() -> None:
         (
             dict(
                 arguments=(DATA,),
-                runtime=RuntimeConfiguration((RuntimeSelection("core", {"x": 1}),)),
+                runtime=RuntimeConfiguration(
+                    selections=(RuntimeSelection(provider="core", options={"x": 1}),)
+                ),
             ),
             "prog",
             "qiec-run-config",

@@ -602,7 +602,9 @@ class ReplSession:
                     f"runtime configuration not found: {path}", code="qiec-run-config"
                 )
             else:
-                self._runtime = RuntimeConfiguration((RuntimeSelection(specification),))
+                self._runtime = RuntimeConfiguration(
+                    selections=(RuntimeSelection(provider=specification),)
+                )
                 # Instantiate now so a misspelled provider fails at :runtime,
                 # not after the next computation has been prepared.
                 self._runtime.instantiate()
