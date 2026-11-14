@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- **CI retains test timings after failures.** Completed tests contribute scheduling durations even when another shard fails or times out. Slow shards have a 90-minute budget for the full sampling and recovery workloads.
 - **The IRT gallery allocates more posterior sampling.** Four chains each retain 4,000 draws after 1,000 warmup iterations. Rank-normalized split R-hat, bulk and tail effective sample size, divergence, and parameter-recovery requirements remain fixed.
 - **LDA backend comparisons use a double-precision reference.** The reference retains the fixed six-point corpus and comparison tolerance while evaluating its grouped token likelihood and Dirichlet priors in float64. An independent scalar calculation checks the joint and rejects a document-level topic mixture.
 - **Stan probe images require a successful compiler installation.** The image build checks the installer result and pins the CmdStan release, so an installation failure cannot produce a tagged image without a compiler.
