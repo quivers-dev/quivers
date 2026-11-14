@@ -20,9 +20,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import math
+from typing import cast
 
 import torch
 
+from quivers._values import HeldValue
 from quivers.continuous.morphisms import AnySpace, ContinuousMorphism
 from quivers.qiec.entries import HostValue
 from quivers.qiec.module import QiecModule
@@ -74,12 +76,12 @@ def _host(value: torch.Tensor) -> HostValue:
     return _nested(value.detach().cpu().tolist())
 
 
-def _tensor(value: HostValue) -> torch.Tensor:
+def _tensor(value: HeldValue) -> torch.Tensor:
     """A returned host value as a tensor.
 
     Parameters
     ----------
-    value : HostValue
+    value : HeldValue
         The value the run returned.
 
     Returns
@@ -96,7 +98,7 @@ def _tensor(value: HostValue) -> torch.Tensor:
         return value.reshape(1) if value.dim() == 0 else value
     if isinstance(value, Mapping):
         raise TypeError("a program returning a record has no tensor form")
-    tensor = torch.as_tensor(value, dtype=torch.get_default_dtype())
+    tensor = torch.as_tensor(cast(HostValue, value), dtype=torch.get_default_dtype())
     return tensor.reshape(1) if tensor.dim() == 0 else tensor
 
 

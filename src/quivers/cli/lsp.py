@@ -7,17 +7,24 @@ clients that prefer socket transport.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import argparse
 import sys
 
-try:
+if TYPE_CHECKING:
     from quivers.lsp import build_server
-except ModuleNotFoundError as error:
-    if error.name not in {"pygls", "lsprotocol"}:
-        raise
-    _LSP_UNAVAILABLE: ModuleNotFoundError | None = error
-else:
+
     _LSP_UNAVAILABLE = None
+else:
+    try:
+        from quivers.lsp import build_server
+    except ModuleNotFoundError as error:
+        if error.name not in {"pygls", "lsprotocol"}:
+            raise
+        _LSP_UNAVAILABLE: ModuleNotFoundError | None = error
+    else:
+        _LSP_UNAVAILABLE = None
 
 
 def main(args: argparse.Namespace) -> int:

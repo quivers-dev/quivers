@@ -1810,8 +1810,8 @@ def _elaborate_marginal_chain(
     weight = elaborator._primitive(
         "as_weight", (Var(local=binder),), node, (*path, "weight")
     )
-    assert state.score_cell[0] is not None
-    elaborator._add_score(state.score_cell[0], weight, scope, state, node)
+    assert state.score is not None
+    elaborator._add_score(state.score, weight, scope, state, node)
 
 
 def _positions_value(
@@ -2576,15 +2576,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 f"program {declaration.name!r} shares its name with a computation",
                 code="qiec-program",
             )
-        state = _ProgramState(declaration=declaration)
+        random = self._program_instance(RANDOM_INSTANCE, "Random")
+        score = self._program_instance(SCORE_INSTANCE, "Score")
+        state = _ProgramState(declaration=declaration, random=random, score=score)
         row = self._markov_rows.get(declaration.name)
         if row is not None:
             state.markov_row_cell[0], state.markov_entry_cell[0] = row
         self._program_state = state
-        random = self._program_instance(RANDOM_INSTANCE, "Random")
-        score = self._program_instance(SCORE_INSTANCE, "Score")
-        state.random_cell[0] = random
-        state.score_cell[0] = score
         scope = _Scope()
         self._program_parameters(declaration, scope, state)
         state.input_shapes.update(self._infer_input_shapes(declaration))
@@ -3157,7 +3155,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         sampled = self._sampled_type(distribution)
         state.uses_random_cell[0] = True
         request = self._sample_request(
-            state.random_cell[0], name, sampled, distribution, step, state
+            state.random, name, sampled, distribution, step, state
         )
         state.sites.append(
             ProgramSite(
@@ -3422,7 +3420,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     batch=distribution.plate.batch,
                 )
             )
-            self._add_score(state.score_cell[0], weight, scope, state, step)
+            self._add_score(state.score, weight, scope, state, step)
             return
         assert weight_scope.weight_type_cell[0] is not None
         if weight_scope.group is None:
@@ -4606,11 +4604,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         )
         params = self.instances.get(PARAMS_INSTANCE)
-        assert state.random_cell[0] is not None and state.score_cell[0] is not None
+        assert state.random is not None and state.score is not None
         for row_entry in signature.effects.entries:
-            if row_entry.instance == state.random_cell[0].entry.instance:
+            if row_entry.instance == state.random.entry.instance:
                 state.uses_random_cell[0] = True
-            elif row_entry.instance == state.score_cell[0].entry.instance:
+            elif row_entry.instance == state.score.entry.instance:
                 state.uses_score_cell[0] = True
             elif params is not None and row_entry.instance == params.entry.instance:
                 state.uses_params_cell[0] = True
@@ -4762,9 +4760,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             self._fail_kernel(step.call, error)
         params = self.instances.get(PARAMS_INSTANCE)
         for entry in call_type.effects.entries:
-            if entry.instance == state.random_cell[0].entry.instance:
+            if entry.instance == state.random.entry.instance:
                 state.uses_random_cell[0] = True
-            elif entry.instance == state.score_cell[0].entry.instance:
+            elif entry.instance == state.score.entry.instance:
                 state.uses_score_cell[0] = True
             elif params is not None and entry.instance == params.entry.instance:
                 state.uses_params_cell[0] = True
@@ -4998,7 +4996,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         weight_scope = _weight_scope(scope)
         if weight_scope is None:
-            self._add_score(state.score_cell[0], weight, scope, state, step)
+            self._add_score(state.score, weight, scope, state, step)
             return
         if weight_scope.group is not None:
             self._fail(
@@ -6091,24 +6089,22 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             return
         weight_local = self._bind_step(scope, None, result_type, helper, step)
         if weight_scope is None:
-            self._add_score(
-                state.score_cell[0], Var(local=weight_local), scope, state, step
-            )
+            self._add_score(state.score, Var(local=weight_local), scope, state, step)
             return
         assert weight_scope.weight_instance_cell[0] is not None
         assert outer_group is not None
-        weight: Value = Var(local=weight_local)
+        marginal_weight: Value = Var(local=weight_local)
         if projection is not None:
             # The inner group refines the outer: its per-position
             # marginals sum into the outer positions they project to.
-            weight = SegmentSum(
-                value=weight,
+            marginal_weight = SegmentSum(
+                value=marginal_weight,
                 index=projection,
                 groups=outer_group.size,
                 result_type=tensor_type(LOG_WEIGHT, (outer_group.size,)),
             )
         self._add_weight(
-            weight_scope.weight_instance_cell[0], weight, scope, state, step
+            weight_scope.weight_instance_cell[0], marginal_weight, scope, state, step
         )
 
     def _hoist_draws(
@@ -6260,7 +6256,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         sampled = self._sampled_type(distribution)
         state.uses_random_cell[0] = True
         request = self._sample_request(
-            state.random_cell[0], latent_name, sampled, distribution, step, state
+            state.random, latent_name, sampled, distribution, step, state
         )
         state.sites.append(
             ProgramSite(
@@ -10011,11 +10007,9 @@ class _ProgramState(QiecModel):
     template_objects
         The object parameters bound as objects of the body while the
         program elaborates.
-    random_cell
-        Owned one-element cell.
+    random
         The canonical ``Random`` instance.
-    score_cell
-        Owned one-element cell.
+    score
         The canonical ``Score`` instance.
     """
 
@@ -10086,12 +10080,8 @@ class _ProgramState(QiecModel):
     markov_entry_cell: list[str | None] = dx.field(
         default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    random_cell: list[NamedEffectInstance | None] = dx.field(
-        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
-    )  # type: ignore[assignment]
-    score_cell: list[NamedEffectInstance | None] = dx.field(
-        default_factory=lambda: [None], opaque=True, extras=OPAQUE_BY_IDENTITY
-    )  # type: ignore[assignment]
+    random: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    score: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 def _index_variables_in(terms: Sequence[StaticArgument]) -> frozenset[str]:

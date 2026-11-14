@@ -17,6 +17,8 @@ History persists at ``~/.config/quivers/history``.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import os
 import sys
 from collections.abc import Callable, Iterable
@@ -26,29 +28,45 @@ from quivers.cli.repl_complete import all_completions
 from quivers.cli.repl_session import Diagnostic, ReplResponse, ReplSession
 from quivers.dsl.pygments_lexer import QvrLexer
 
-try:
+if TYPE_CHECKING:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import CompleteEvent, Completer, Completion
     from prompt_toolkit.document import Document
     from prompt_toolkit.history import FileHistory
     from prompt_toolkit.lexers import PygmentsLexer
-except ModuleNotFoundError as error:
-    if error.name != "prompt_toolkit":
-        raise
-    _PROMPT_AVAILABLE = False
-else:
-    _PROMPT_AVAILABLE = True
 
-try:
+    _PROMPT_AVAILABLE = True
+else:
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+        from prompt_toolkit.document import Document
+        from prompt_toolkit.history import FileHistory
+        from prompt_toolkit.lexers import PygmentsLexer
+    except ModuleNotFoundError as error:
+        if error.name != "prompt_toolkit":
+            raise
+        _PROMPT_AVAILABLE = False
+    else:
+        _PROMPT_AVAILABLE = True
+
+if TYPE_CHECKING:
     from rich.console import Console
     from rich.markdown import Markdown
     from rich.syntax import Syntax
-except ModuleNotFoundError as error:
-    if error.name != "rich":
-        raise
-    _RICH_AVAILABLE = False
-else:
+
     _RICH_AVAILABLE = True
+else:
+    try:
+        from rich.console import Console
+        from rich.markdown import Markdown
+        from rich.syntax import Syntax
+    except ModuleNotFoundError as error:
+        if error.name != "rich":
+            raise
+        _RICH_AVAILABLE = False
+    else:
+        _RICH_AVAILABLE = True
 
 
 def run_plain(session: ReplSession) -> int:

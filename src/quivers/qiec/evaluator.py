@@ -2067,7 +2067,7 @@ class Evaluator:
         EvaluationError
             If execution fails, as in `evaluate`.
         """
-        runtime_environment = dict(environment or {})
+        runtime_environment: dict[Local, HeldValue] = dict(environment or {})
         context = CheckContext()
         for local in runtime_environment:
             context = context.extend(local)
@@ -2110,7 +2110,7 @@ class Evaluator:
         EvaluationError
             If execution fails, as in `evaluate`.
         """
-        runtime_environment = dict(environment or {})
+        runtime_environment: dict[Local, HeldValue] = dict(environment or {})
         manifest = HandlerManifest.from_registry(registry)
         self._validate_handler_manifest(manifest)
         self._begin_run()
@@ -2425,7 +2425,7 @@ class Evaluator:
     def _drive_computation(
         self,
         computation: Computation,
-        environment: dict[Local, object],
+        environment: dict[Local, HeldValue],
         stack: list[_Frame],
         resumption_path: tuple[int, ...],
     ) -> object:
@@ -2457,7 +2457,7 @@ class Evaluator:
     def _drive_value(
         self,
         value: object,
-        environment: dict[Local, object],
+        environment: dict[Local, HeldValue],
         stack: list[_Frame],
         resumption_path: tuple[int, ...],
         delimiter: _DelimiterFrame | None = None,
@@ -2468,7 +2468,7 @@ class Evaluator:
         ----------
         value : object
             The value being returned.
-        environment : dict[Local, object]
+        environment : dict[Local, HeldValue]
             Values in scope where the value was produced.
         stack : list[_Frame]
             The frame stack, mutated in place.
@@ -2497,7 +2497,7 @@ class Evaluator:
     def _run(  # noqa: C901, PLR0912, PLR0915
         self,
         current: Computation | _Returned,
-        environment: dict[Local, object],
+        environment: dict[Local, HeldValue],
         stack: list[_Frame],
         resumption_path: tuple[int, ...],
         delimiter: _DelimiterFrame | None = None,
@@ -2515,7 +2515,7 @@ class Evaluator:
         ----------
         current : Computation or _Returned
             The term to reduce, or the value flowing back into the stack.
-        environment : dict[Local, object]
+        environment : dict[Local, HeldValue]
             Values in scope.
         stack : list[_Frame]
             The machine's frame stack, mutated in place.
@@ -2540,7 +2540,7 @@ class Evaluator:
             a resumption breaks its grade, the budget runs out, or a host
             value fails validation.
         """
-        env = environment
+        env: dict[Local, HeldValue] = environment
         while True:
             self._tick()
             if isinstance(current, _Returned):
@@ -2752,8 +2752,8 @@ class Evaluator:
                 # the caller's frame has no further use, so it is left rather
                 # than kept beneath the callee, and a tail-recursive loop
                 # runs in constant stack.
-                if stack and isinstance(stack[-1], _CallFrame):
-                    finished = stack.pop()
+                if stack and isinstance(finished := stack[-1], _CallFrame):
+                    stack.pop()
                     self._emit_trace(
                         "call.returned",
                         {
@@ -2966,7 +2966,7 @@ class Evaluator:
     def _dispatch(
         self,
         request: RuntimeRequest,
-        environment: dict[Local, object],
+        environment: dict[Local, HeldValue],
         stack: list[_Frame],
         search_index: int,
     ) -> object:
@@ -3218,7 +3218,7 @@ class Evaluator:
         """
         if not isinstance(answer, ClauseComputation):
             return answer
-        env = dict(context._environment)
+        env: dict[Local, HeldValue] = dict(context._environment)
         env.update(answer.bindings)
         delimiter = _DelimiterFrame()
         stack = [*context._outer_stack, delimiter]
@@ -3234,7 +3234,7 @@ class Evaluator:
     def _evaluate_delimited(
         self,
         computation: Computation,
-        environment: dict[Local, object],
+        environment: dict[Local, HeldValue],
         stack: list[_Frame],
         protected: tuple[_Frame, ...],
         resumption_path: tuple[int, ...],

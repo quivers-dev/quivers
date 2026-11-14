@@ -24,6 +24,8 @@ themes never drift across surfaces.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import didactic.api as dx
 import tree_sitter
 from pygments.token import (
@@ -47,15 +49,21 @@ from quivers.dsl.pygments_lexer import (
     _TokenType,
 )
 
-try:
+if TYPE_CHECKING:
     from rich.style import Style
     from rich.text import Text
-except ModuleNotFoundError as error:
-    if error.name != "rich":
-        raise
-    _RICH_AVAILABLE = False
-else:
+
     _RICH_AVAILABLE = True
+else:
+    try:
+        from rich.style import Style
+        from rich.text import Text
+    except ModuleNotFoundError as error:
+        if error.name != "rich":
+            raise
+        _RICH_AVAILABLE = False
+    else:
+        _RICH_AVAILABLE = True
 
 # ---------------------------------------------------------------------------
 # semantic token vocabulary

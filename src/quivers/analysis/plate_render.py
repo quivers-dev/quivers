@@ -5,17 +5,25 @@ Each renderer consumes only `PlateGraph` and does not inspect the source AST.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from quivers.analysis.plate_graph import PlateGraph, PlateNode
 
-try:
+if TYPE_CHECKING:
     from rich.table import Table
     from rich.text import Text
-except ModuleNotFoundError as error:
-    if error.name != "rich":
-        raise
-    _RICH_AVAILABLE = False
-else:
+
     _RICH_AVAILABLE = True
+else:
+    try:
+        from rich.table import Table
+        from rich.text import Text
+    except ModuleNotFoundError as error:
+        if error.name != "rich":
+            raise
+        _RICH_AVAILABLE = False
+    else:
+        _RICH_AVAILABLE = True
 
 
 # ---------------------------------------------------------------------------

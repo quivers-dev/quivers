@@ -7,7 +7,7 @@ but never parser nodes, compiler objects, callbacks, or backend-specific data.
 
 from __future__ import annotations
 
-from quivers._values import OPAQUE_BY_VALUE
+from quivers._values import HeldValue, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 import didactic.api as dx
 
@@ -64,6 +64,12 @@ from quivers.qiec.types import (
     TypeVariable,
     render_static,
 )
+
+
+type _BinderMaps = tuple[
+    dict[str, TypeBinder], dict[str, IndexBinder], dict[str, EffectBinder]
+]
+"""The disjoint type, index, and effect namespaces of a telescope."""
 
 
 class NamedEffectInstance(QiecModel):
@@ -879,10 +885,7 @@ def _validate_named_static_scope(value: object, telescope: Telescope) -> None:
             },
         )
 
-    type Binders = tuple[
-        dict[str, TypeBinder], dict[str, IndexBinder], dict[str, EffectBinder]
-    ]
-    pending: list[tuple[object, Binders]] = [(value, bindings(telescope))]
+    pending: list[tuple[HeldValue, _BinderMaps]] = [(value, bindings(telescope))]
     while pending:
         node, (type_binders, index_binders, effect_binders) = pending.pop()
         if isinstance(node, TypeVariable) and node.identity is None:

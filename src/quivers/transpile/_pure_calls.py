@@ -145,14 +145,15 @@ def replace_locals(value: Value, replacements: Mapping[Local, Value]) -> Value:
                 return items
             return term
         if isinstance(term, _VALUE_RECORDS):
+            record = cast("Value | LetBinding", term)
             changes: dict[str, _ValueTerm] = {}
-            for name in type(term).__field_specs__:
-                current = getattr(term, name)
+            for name in type(record).__field_specs__:
+                current = getattr(record, name)
                 if isinstance(current, (tuple, *_VALUE_RECORDS)):
                     rewritten = rewrite(current)
                     if rewritten is not current:
                         changes[name] = rewritten
-            return term.with_(**changes) if changes else term
+            return record.with_(**changes) if changes else record
         return term
 
     return cast(Value, rewrite(value))

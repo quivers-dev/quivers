@@ -8,31 +8,44 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import argparse
 import json
 import sys
 import tempfile
 from pathlib import Path
 
-try:
+if TYPE_CHECKING:
     from jupyter_client.kernelspec import KernelSpecManager
-except ModuleNotFoundError as error:
-    if error.name != "jupyter_client":
-        raise
-    _JUPYTER_AVAILABLE = False
-else:
+
     _JUPYTER_AVAILABLE = True
-
-try:
-    from ipykernel.kernelapp import IPKernelApp
-
-    from quivers.kernel.quivers_kernel import QuiversKernel
-except ModuleNotFoundError as error:
-    if error.name not in {"ipykernel", "jupyter_client"}:
-        raise
-    _KERNEL_UNAVAILABLE: ModuleNotFoundError | None = error
 else:
+    try:
+        from jupyter_client.kernelspec import KernelSpecManager
+    except ModuleNotFoundError as error:
+        if error.name != "jupyter_client":
+            raise
+        _JUPYTER_AVAILABLE = False
+    else:
+        _JUPYTER_AVAILABLE = True
+
+if TYPE_CHECKING:
+    from ipykernel.kernelapp import IPKernelApp
+    from quivers.kernel.quivers_kernel import QuiversKernel
+
     _KERNEL_UNAVAILABLE = None
+else:
+    try:
+        from ipykernel.kernelapp import IPKernelApp
+
+        from quivers.kernel.quivers_kernel import QuiversKernel
+    except ModuleNotFoundError as error:
+        if error.name not in {"ipykernel", "jupyter_client"}:
+            raise
+        _KERNEL_UNAVAILABLE: ModuleNotFoundError | None = error
+    else:
+        _KERNEL_UNAVAILABLE = None
 
 
 KERNELSPEC = {

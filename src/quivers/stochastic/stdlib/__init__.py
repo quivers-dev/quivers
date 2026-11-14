@@ -23,9 +23,16 @@ weights.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import cast
+
+import torch
+
+from quivers._values import HeldValue
 from quivers.stochastic.agenda import (
     DeductionSystem,
     InferenceRule,
+    Item,
     Wildcard,
     cky_agenda,
     depth_first_agenda,
@@ -42,6 +49,27 @@ from quivers.stochastic.semiring import (
 # ---------------------------------------------------------------------------
 # Categorial grammars
 # ---------------------------------------------------------------------------
+
+
+def _copy_axioms(value: HeldValue) -> list[tuple[Item, torch.Tensor]]:
+    """Copy the explicit weighted axioms accepted by the library systems.
+
+    Parameters
+    ----------
+    value
+        An iterable of item and weight pairs.
+
+    Returns
+    -------
+    list[tuple[Item, torch.Tensor]]
+        The axioms in their input order, retaining each live weight.
+
+    Raises
+    ------
+    TypeError
+        If the input is not iterable.
+    """
+    return list(cast("Iterable[tuple[Item, torch.Tensor]]", value))
 
 
 _I, _J, _K = Wildcard(name="i"), Wildcard(name="j"), Wildcard(name="k")
@@ -156,7 +184,7 @@ def _is_sentence(item: tuple) -> bool:
 CCG = DeductionSystem(
     rules=tuple(_ccg_rules()),
     semiring=LOG_PROB,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=_is_sentence,
     agenda_factory=cky_agenda,
 )
@@ -166,7 +194,7 @@ CCG = DeductionSystem(
 AB = DeductionSystem(
     rules=tuple(_application_rules()),
     semiring=LOG_PROB,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=_is_sentence,
     agenda_factory=cky_agenda,
 )
@@ -216,7 +244,7 @@ def _stlc_rules() -> list[InferenceRule]:
 STLC = DeductionSystem(
     rules=tuple(_stlc_rules()),
     semiring=BOOLEAN,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] in ("synth", "check"),
     agenda_factory=depth_first_agenda,
 )
@@ -299,7 +327,7 @@ def _mltt_rules() -> list[InferenceRule]:
 MLTT = DeductionSystem(
     rules=tuple(_mltt_rules()),
     semiring=BOOLEAN,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "judges",
     agenda_factory=depth_first_agenda,
     max_iterations=10_000,
@@ -336,7 +364,7 @@ def _datalog_transitive_closure_rules() -> list[InferenceRule]:
 Datalog = DeductionSystem(
     rules=tuple(_datalog_transitive_closure_rules()),
     semiring=BOOLEAN,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "reach",
     agenda_factory=semi_naive_agenda,
 )
@@ -380,7 +408,7 @@ def _dijkstra_rules() -> list[InferenceRule]:
 Dijkstra = DeductionSystem(
     rules=tuple(_dijkstra_rules()),
     semiring=VITERBI,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "dist",
     agenda_factory=knuth_agenda,
 )
@@ -421,7 +449,7 @@ def _hmm_forward_rules() -> list[InferenceRule]:
 HMM = DeductionSystem(
     rules=tuple(_hmm_forward_rules()),
     semiring=LOG_PROB,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "alpha",
     agenda_factory=cky_agenda,
 )
@@ -431,7 +459,7 @@ HMM = DeductionSystem(
 ViterbiHMM = DeductionSystem(
     rules=tuple(_hmm_forward_rules()),
     semiring=VITERBI,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "alpha",
     agenda_factory=cky_agenda,
 )
@@ -467,7 +495,7 @@ def _edit_distance_rules() -> list[InferenceRule]:
 EditDistance = DeductionSystem(
     rules=tuple(_edit_distance_rules()),
     semiring=VITERBI,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "dist",
     agenda_factory=cky_agenda,
 )

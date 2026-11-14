@@ -95,12 +95,16 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
                     validate_shape(item, item_type, path=f"{path}[{index}]")
                 return
     elif origin in {list, set, frozenset}:
-        if isinstance(value, origin):
+        if isinstance(value, (list, set, frozenset)) and isinstance(
+            value, cast(type, origin)
+        ):
             for item in value:
                 validate_shape(item, arguments[0], path=f"{path}.member")
             return
     elif origin in {dict, Mapping}:
-        if isinstance(value, origin):
+        if isinstance(value, Mapping) and (
+            origin is Mapping or isinstance(value, dict)
+        ):
             key_type, value_type = arguments
             for key, item in value.items():
                 validate_shape(key, key_type, path=f"{path}.key")
@@ -109,7 +113,7 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
     elif origin is Callable or annotation is Callable:
         if callable(value):
             return
-    elif is_protocol(annotation):
+    elif isinstance(annotation, type) and is_protocol(annotation):
         annotations = get_annotations(annotation, eval_str=True)
         for name in get_protocol_members(annotation):
             try:

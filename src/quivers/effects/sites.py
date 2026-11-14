@@ -9,6 +9,9 @@ and input a strategy or a trace may want to read.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import cast
+
 import didactic.api as dx
 import torch
 
@@ -60,7 +63,8 @@ class TorchSampleable(ValueModel):
         didactic.ValidationError
             If the runtime fields have incompatible types.
         """
-        super().__init__(
+        initialize = cast("Callable[..., None]", super().__init__)
+        initialize(
             morphism=morphism,
             input=input,
             declared=morphism if declared is None else declared,
