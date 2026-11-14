@@ -31,6 +31,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from quivers.dsl.ast_nodes import (
+    ObjectEffectApply,
+    ObjectProduct,
+    ObjectSlash,
+    TypeName,
+)
+from quivers.stochastic._rule_system import RuleSystem
 from quivers.stochastic.categories import (
     AtomicCategory,
     Category,
@@ -40,8 +47,6 @@ from quivers.stochastic.categories import (
     SlashCategory,
     UnitCategory,
 )
-from quivers.stochastic._rule_system import RuleSystem
-
 
 # ================================================================
 # abstract base
@@ -1031,12 +1036,6 @@ def _match_pattern(
     variables : frozenset
         The set of variable names (from the rule's parameter list).
     """
-    from quivers.dsl.ast_nodes import (
-        ObjectEffectApply,
-        TypeName,
-        ObjectProduct,
-        ObjectSlash,
-    )
 
     if isinstance(pattern, TypeName):
         name = pattern.name
@@ -1117,12 +1116,6 @@ def _instantiate_pattern(
     Category or None
         The concrete category, or None if a variable is unbound.
     """
-    from quivers.dsl.ast_nodes import (
-        ObjectEffectApply,
-        TypeName,
-        ObjectProduct,
-        ObjectSlash,
-    )
 
     if isinstance(pattern, TypeName):
         if pattern.name in variables:
