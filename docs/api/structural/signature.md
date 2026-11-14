@@ -9,7 +9,7 @@ the `signature { ... }` declarations of the DSL at run time.
 
 Variables are [de Bruijn indices](https://en.wikipedia.org/wiki/De_Bruijn_index): a
 `BoundVar(i)` term carries an integer index, and binders push
-a fresh `ContextEntry(var_sort, embedding, type_term)` onto
+a fresh `ContextEntry(var_sort=sort, embedding=tensor, type_term=term)` onto
 an implicit context Γ tracked by the encoder / decoder
 runtime. Binder variables may carry an annotation sort:
 the variable's type is stored alongside its embedding in Γ.
