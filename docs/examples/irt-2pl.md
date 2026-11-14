@@ -61,29 +61,26 @@ Each response row identifies both a person and an item. For row indices
 `person_idx[n] = 2` and `item_idx[n] = 5`, the likelihood uses ability 2,
 difficulty 5, and discrimination 5. These [three parameters](https://mc-stan.org/docs/stan-users-guide/regression.html#multilevel-2pl-model)
 determine the response probability together [@stanRegression]. Priors help
-anchor the latent ability scale; ability and difficulty must be interpreted
+anchor the latent ability scale. Ability and difficulty must be interpreted
 on that same scale. [Posterior predictive](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks)
 response probabilities express their combined effect on the observed outcome.
 
 ## Walkthrough
 
 `Person` and `Item` index the respondent and question parameters. `Resp`
-indexes the observed respondent-item pairs; here it enumerates the full
+indexes the observed respondent-item pairs. Here it enumerates the full
 crossing of 100 persons and 20 items, though a design with missing pairs would
-simply list fewer rows. The Bernoulli family supplies the binary value type of each
+simply list fewer rows. The Bernoulli family provides the binary value type of each
 response, while `return p` returns real-valued probabilities, reflected in
 `Val : Real 1`. Indexing a response and describing its value are different
 roles, which the program's annotations should keep distinct.
 
-`ability`, `difficulty`, and `discrim` are plate-bound on `Person` and `Item`; `discrim` carries a LogNormal prior so it's positive by construction. The runtime supplies `person_idx` and `item_idx` at fit time, and the gather idiom `ability[person_idx]` / `difficulty[item_idx]` / `discrim[item_idx]` realizes the standard cross-classified design. The Bernoulli link `sigmoid(a * (theta - b))` is the canonical [logistic](https://en.wikipedia.org/wiki/Logistic_function) form of the 2PL response function. The observation is scored as `Bernoulli(logits=eta)`, from the linear predictor itself: where `eta` is large, `sigmoid(eta)` rounds to 1 in float32 and the log probability of a wrong response computed from it loses precision, while the logit form keeps it. `p = sigmoid(eta)` is still computed, for the program to return. BUGS has no Bernoulli given by its logits and refuses the program.
+`ability`, `difficulty`, and `discrim` are [plate](https://en.wikipedia.org/wiki/Plate_notation)-bound on `Person` and `Item`. `discrim` carries a LogNormal prior so it is positive by construction. The runtime provides `person_idx` and `item_idx` at fit time, and the gather idiom `ability[person_idx]` / `difficulty[item_idx]` / `discrim[item_idx]` realizes the standard cross-classified design. The Bernoulli link `sigmoid(a * (theta - b))` is the canonical [logistic](https://en.wikipedia.org/wiki/Logistic_function) form of the 2PL response function. The observation is scored as `Bernoulli(logits=eta)`, from the linear predictor itself: where `eta` is large, `sigmoid(eta)` rounds to 1 in float32 and the log probability of a wrong response computed from it loses precision, while the logit form keeps it. `p = sigmoid(eta)` is still computed, for the program to return. The [support matrix](../transpile-support.md) records backend coverage for this likelihood.
 
 ## Try it
 
 The blocks below simulate the full 100 x 20 response matrix, check the compiled
-log joint against a hand-written density, and then fit with SVI and NUTS. The
-program reads its data by name, so its input `x_in` is a single dummy row: that
-leading axis is a particle axis, and a longer one would score the whole data
-set once per row.
+log joint against a hand-written density, and then fit with [SVI](../guides/inference-svi.md) (stochastic variational inference) and [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler). The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
@@ -133,9 +130,7 @@ assert torch.allclose(compiled, oracle, rtol=1e-5)
 
 ### SVI fit
 
-The 2PL's location, scale, and sign are fixed only softly, by the Normal(0, 1)
-prior on ability, so the checks compare quantities that do not depend on that
-indeterminacy. Each ability is estimated from 20 binary responses, which bounds
+Positive discrimination fixes the orientation of the ability scale. The Normal(0, 1) ability prior anchors its location and scale. Correlations assess recovery without requiring identical locations and scales. Each ability is estimated from 20 binary responses, which bounds
 how well it can be recovered: the check asks for a correlation of at least 0.85
 between posterior-mean and true abilities. Each difficulty rests on 100
 responses, and the check asks for a correlation of at least 0.9. Finally, the
@@ -225,8 +220,6 @@ assert nuts_mae < 0.5 * baseline_mae
 
 ## Categorical perspective
 
-The 2PL is a Kleisli morphism over the Person + Item plate structure in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category. The plate-gather operations are pullbacks of indexed kernels along the response-row index maps `person_idx : Resp -> Person` and `item_idx : Resp -> Item`. [@giry1982categorical]
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. The ability and item-parameter priors compose with Bernoulli response kernels. Reindexing along `person_idx : Resp -> Person` and `item_idx : Resp -> Item` assigns each response its person's ability and its item's discrimination and difficulty. Conditional on those parameters, the response likelihood is the product over the response rows.
 
-## Sources and further reading
-
-- *A categorical approach to probability theory* [@giry1982categorical].
+Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative].
