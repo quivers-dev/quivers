@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+from collections.abc import Mapping
 import pathlib
 import sys
 
@@ -209,13 +210,17 @@ def signature_parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
     return names
 
 
-def constructor_parameters(node: ast.ClassDef) -> list[str]:
+def constructor_parameters(
+    node: ast.ClassDef, classes: Mapping[str, ast.ClassDef] | None = None
+) -> list[str]:
     """The parameter names a class's constructor takes.
 
     Parameters
     ----------
     node : ast.ClassDef
         The class to inspect.
+    classes : Mapping[str, ast.ClassDef] or None
+        Classes declared in the module, used to follow local base classes.
 
     Returns
     -------
@@ -233,10 +238,19 @@ def constructor_parameters(node: ast.ClassDef) -> list[str]:
         ast.unparse(decorator).startswith("dataclass")
         for decorator in node.decorator_list
     )
-    based = any(
-        ast.unparse(base).endswith(("Model", "TaggedUnion", "NamedTuple"))
-        for base in node.bases
-    )
+    pending = [ast.unparse(base) for base in node.bases]
+    visited: set[str] = set()
+    based = False
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        if name.endswith(("Model", "TaggedUnion", "NamedTuple")):
+            based = True
+            break
+        if classes is not None and name in classes:
+            pending.extend(ast.unparse(base) for base in classes[name].bases)
     if not decorated and not based:
         return []
     names: list[str] = []
@@ -279,6 +293,7 @@ def audit(path: pathlib.Path) -> list[tuple[str, int, list[str]]]:
     except SyntaxError, UnicodeDecodeError:
         return []
     findings: list[tuple[str, int, list[str]]] = []
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             continue
@@ -290,7 +305,7 @@ def audit(path: pathlib.Path) -> list[tuple[str, int, list[str]]]:
             continue
         have = documented_sections(doc)
         if isinstance(node, ast.ClassDef):
-            taken = constructor_parameters(node)
+            taken = constructor_parameters(node, classes)
             required = ["Parameters"] if taken else []
         else:
             taken = signature_parameters(node)
