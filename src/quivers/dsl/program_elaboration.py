@@ -3850,7 +3850,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             or a sample site's family's support is not the simplex.
         """
         system = self._deductions[parse.deduction]
-        if not system.normalized:
+        if not system.normalized_cell[0]:
             self._fail(
                 node,
                 f"parse binds production probabilities to {parse.deduction!r}, "
@@ -3860,13 +3860,17 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 code="qiec-program",
             )
         bound = {
-            group.label: group for group in system.groups if len(group.productions) > 1
+            group.label: group
+            for group in system.groups_cell[0]
+            if len(group.productions) > 1
         }
         values: dict[str, Value] = {}
         for binding in parse.bindings:
             group = bound.get(binding.label)
             if group is None:
-                single = any(item.label == binding.label for item in system.groups)
+                single = any(
+                    item.label == binding.label for item in system.groups_cell[0]
+                )
                 self._fail(
                     binding,
                     f"parse binds {binding.label!r}, "
