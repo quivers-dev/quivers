@@ -99,6 +99,16 @@ def __getattr__(name: str) -> Callable[[ReplSession], int]:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+_COMMAND_MODULES: dict[str, str] = {
+    "repl": "quivers.cli.repl",
+    "run": "quivers.cli.run",
+    "lsp": "quivers.cli.lsp",
+    "migrate": "quivers.cli.migrate",
+    "kernel": "quivers.kernel.install",
+    "transpile": "quivers.cli.transpile",
+}
+
+
 def main() -> int:
     """Run the ``qvr`` command line on ``sys.argv``.
 
@@ -367,30 +377,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.cmd == "check":
         return check_main(args.files, json_output=args.json, target=args.target)
-    if args.cmd == "repl":
-        from quivers.cli.repl import main as repl_main
-
-        return repl_main(args)
-    if args.cmd == "run":
-        from quivers.cli.run import main as run_main
-
-        return run_main(args)
-    if args.cmd == "lsp":
-        from quivers.cli.lsp import main as lsp_main
-
-        return lsp_main(args)
-    if args.cmd == "migrate":
-        from quivers.cli.migrate import main as migrate_main
-
-        return migrate_main(args)
-    if args.cmd == "kernel":
-        from quivers.kernel.install import main as kernel_main
-
-        return kernel_main(args)
-    if args.cmd == "transpile":
-        from quivers.cli.transpile import main as transpile_main
-
-        return transpile_main(args)
+    module_name = _COMMAND_MODULES.get(args.cmd)
+    if module_name is not None:
+        command: Callable[[argparse.Namespace], int] = importlib.import_module(
+            module_name
+        ).main
+        return command(args)
     parser.print_help(sys.stderr)
     return 2
 
