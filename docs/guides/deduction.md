@@ -343,7 +343,7 @@ A deduction declaration also elaborates to computations of the Quivers Indexed E
 Core (QIEC), the typed core language of QVR ([language reference](../reference/qvr/index.md)).
 This is how a `program` calls a deduction and how the reference machine, the
 library's interpreter for QIEC, scores one. The items become a closed family of
-terms. The rules become a recursive derivation that chooses rules and split points
+terms. With a lexicon, the rules become a recursive derivation that chooses rules and split points
 through a [`Search`](../developer/qiec.md#qvr-surface) effect and accumulates
 weights through a `Weight[K]` effect, and the entry returns the inside weight of the
 goal in the declared semiring, the number that
@@ -353,7 +353,11 @@ reads from the chart for the whole sentence. A program writes
 [`run_deduction`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.run_deduction)
 runs a deduction alone on the reference machine, and
 [`deduction_item`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.deduction_item)
-builds the axioms of a system without a lexicon.
+builds the axioms of a system without a lexicon. Such a system computes a weighted chart by
+repeatedly adding the axiom weights to rule contributions from the preceding chart. It compares
+all item weights before stopping, so a goal can depend on arbitrarily many rule applications
+within the declared constructor depth. A nonconvergent system raises an execution error when
+the caller's `fuel` budget is exhausted.
 
 ```python
 from quivers.dsl import Compiler
