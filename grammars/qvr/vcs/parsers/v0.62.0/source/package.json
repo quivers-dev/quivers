@@ -1,0 +1,43 @@
+{
+  "name": "tree-sitter-qvr",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Quivers DSL (.qvr)",
+  "license": "MIT",
+  "author": {
+    "name": "Aaron Steven White",
+    "email": "aaronstevenwhite@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quivers-dev/quivers.git",
+    "directory": "grammars/qvr"
+  },
+  "main": "bindings/node",
+  "types": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "parser",
+    "qvr",
+    "quivers"
+  ],
+  "files": [
+    "grammar.js",
+    "binding.gyp",
+    "prebuilds/**",
+    "bindings/node/*",
+    "queries/*",
+    "src/**"
+  ],
+  "tree-sitter": [
+    {
+      "scope": "source.qvr",
+      "file-types": [
+        "qvr"
+      ],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.0"
+  }
+}

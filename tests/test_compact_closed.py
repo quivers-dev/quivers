@@ -144,7 +144,7 @@ def test_dsl_dagger_method_call() -> None:
     object A : FinSet 3
     object B : FinSet 4
 
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define f_dag = f.dagger
     export f_dag
     """
@@ -194,7 +194,7 @@ def test_dsl_change_base_to_log_prob() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
 
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     define f_log = f.change_base(log_prob)
     export f_log
     """
@@ -211,7 +211,7 @@ def test_dsl_change_base_unknown_homomorphism_errors() -> None:
     src = """
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     define g = f.change_base(not_a_real_homomorphism)
     export g
     """
@@ -225,7 +225,7 @@ def test_dsl_change_base_to_boolean() -> None:
     src = """
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     define g = f.change_base(threshold)
     export g
     """
@@ -246,8 +246,8 @@ def test_dsl_dagger_chained_with_compose() -> None:
     object B : FinSet 3
     object Latent : FinSet 4
 
-    morphism emb_a : A -> Latent [role=latent]
-    morphism emb_b : B -> Latent [role=latent]
+    morphism emb_a : A -> Latent [role=parameter]
+    morphism emb_b : B -> Latent [role=parameter]
 
     define score = emb_a >> emb_b.dagger
     export score

@@ -179,8 +179,8 @@ def test_default_compose_uses_product_fuzzy() -> None:
     object A : FinSet 3
     object B : FinSet 3
     object C : FinSet 3
-    morphism f : A -> B [role=latent]
-    morphism g : B -> C [role=latent]
+    morphism f : A -> B [role=parameter]
+    morphism g : B -> C [role=parameter]
     define chain = f >> g
     export chain
     """

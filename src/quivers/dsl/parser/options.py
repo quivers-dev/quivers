@@ -5,7 +5,7 @@ Produces tuples of `OptionEntry` from the tree-sitter
 every surface shape:
 
 * ``[role]`` -> OptionFlag
-* ``role=latent`` -> OptionName
+* ``role=parameter`` -> OptionName
 * ``depth=8`` / ``scale=0.1`` -> OptionNumber
 * ``path="lex.tsv"`` -> OptionString
 * ``over=[a, b]`` -> OptionList

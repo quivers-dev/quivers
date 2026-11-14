@@ -125,7 +125,7 @@ from quivers.stochastic.schema import (
 
 
 _VALID_ROLES: frozenset[str] = frozenset(
-    {"latent", "observed", "kernel", "embed", "discretize", "let", "function"}
+    {"parameter", "observed", "kernel", "embed", "discretize", "let", "function"}
 )
 
 
@@ -226,9 +226,9 @@ _MORPHISM_OPTION_KEYS: frozenset[str] = frozenset(
 _COMMON_MORPHISM_OPTION_KEYS: frozenset[str] = frozenset({"role", "replicate"})
 
 _ROLE_OPTION_KEYS: dict[str, frozenset[str]] = {
-    # `_compile_latent_role` reads scale / init; a `~ Family(...)` init
+    # `_compile_parameter_role` reads scale / init; a `~ Family(...)` init
     # carries its axis-role clause through `_validate_family_axes`.
-    "latent": frozenset({"scale", "init", "over", "iid"}),
+    "parameter": frozenset({"scale", "init", "over", "iid"}),
     "observed": frozenset(),
     # `_make_continuous_morphism` threads these into the family.
     "kernel": frozenset(
@@ -458,7 +458,7 @@ class _DeclarationsMixin:
         """Install ``decl`` as the active composition rule for this module.
 
         ``decl.level`` advertises the algebraic level at which the rule
-        is offered (``algebra`` / ``semigroupoid`` / ``bilinear_form``
+        is offered (``algebra`` / ``semigroupoid`` / ``magmoid``
         / ``rule``). Two body forms:
 
         * empty body: ``decl.name`` references a rule in the registry;
@@ -499,7 +499,7 @@ class _DeclarationsMixin:
         required = {
             "algebra": Algebra,
             "semigroupoid": Semigroupoid,
-            "bilinear_form": Magmoid,
+            "magmoid": Magmoid,
             "rule": CompositionRule,
         }
         required_class = required.get(level, CompositionRule)
@@ -539,7 +539,7 @@ class _DeclarationsMixin:
         required_keys = {
             "algebra": {"tensor_op", "join", "unit", "zero"},
             "semigroupoid": {"tensor_op", "join"},
-            "bilinear_form": {"tensor_op", "join"},
+            "magmoid": {"tensor_op", "join"},
             "rule": {"tensor_op", "join"},
         }[level]
         missing = required_keys - set(entries)
@@ -937,7 +937,7 @@ class _DeclarationsMixin:
         signature, options, and initializer. The ``role`` option
         picks the runtime construction:
 
-        * ``role=latent``  : learnable algebraic morphism on finite
+        * ``role=parameter``  : learnable algebraic morphism on finite
           sets, optionally re-initialised by the algebra's auto
           recipe when ``init=auto`` is present.
         * ``role=observed``: fixed structural morphism whose tensor
@@ -960,7 +960,7 @@ class _DeclarationsMixin:
 
         When ``role`` is absent the morphism is a kernel: programs
         draw from kernels, so the parametric-Markov-kernel lowering
-        is the only sound default. Every other role (latent /
+        is the only sound default. Every other role (parameter /
         observed / embed / discretize / let) is always explicit.
         """
         display = ", ".join(decl.names)
@@ -996,8 +996,8 @@ class _DeclarationsMixin:
             if replicate is not None
             else [name]
         )
-        if role == "latent":
-            self._compile_latent_role(decl, name, names)
+        if role == "parameter":
+            self._compile_parameter_role(decl, name, names)
         elif role == "observed":
             self._compile_observed_role(decl, name, names)
         elif role == "kernel":
@@ -1156,7 +1156,7 @@ class _DeclarationsMixin:
 
     # role-specific lowerings ------------------------------------------
 
-    def _compile_latent_role(
+    def _compile_parameter_role(
         self,
         decl: MorphismDecl,
         name: str,

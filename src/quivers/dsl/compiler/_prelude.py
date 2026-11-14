@@ -78,7 +78,7 @@ from quivers.dsl.ast_nodes import (
 
 # Registry of composition rules the DSL knows about by name.
 # Each entry maps a user-facing keyword (the right-hand side of
-# ``algebra X``, ``semigroupoid X``, ``bilinear_form X``,
+# ``algebra X``, ``semigroupoid X``, ``magmoid X``,
 # ``composition_rule X``) to its concrete rule instance.  The
 # type is widened to ``CompositionRule`` (the common parent of
 # ``Algebra``, ``Semigroupoid``, and ``Magmoid``) so

@@ -102,6 +102,12 @@ GRAMMAR_ASSETS: dict[str, GrammarAsset] = {
         parser_c_sha256="48aaab9589adb57c8c1c517adfa4eeb206ac2192b795e92825ea36209d412e20",
         compiled_inputs_sha256="7c273ca205f8e27dc55ce5167f2f3e2ece947753fef9a52a7b02257eb23733bc",
     ),
+    "v0.62.0": GrammarAsset(
+        grammar_json_sha256="cd7b2f1015bd9c4acbd0c943de6a2b255449fc0dfde686a60c02393349b78dd7",
+        node_types_sha256="a3372ef2c0ba3c5aada4a70bb833723d038b6a31f2a52e425e0f55e9d7fff55f",
+        parser_c_sha256="22c4deecb689048a9cb510b89c0af708da4f03d326d4f2bd7843856a70b3bef2",
+        compiled_inputs_sha256="8f3a10111b43a4740361b664edccbcbd0fee30915e48d7c13586d7513f07300e",
+    ),
     "HEAD": GrammarAsset(
         grammar_json_sha256="cd7b2f1015bd9c4acbd0c943de6a2b255449fc0dfde686a60c02393349b78dd7",
         node_types_sha256="a3372ef2c0ba3c5aada4a70bb833723d038b6a31f2a52e425e0f55e9d7fff55f",
@@ -127,6 +133,7 @@ REVISION_SNAPSHOTS: dict[str, str] = {
     "v0.17.0": "v0.15.0",
     "v0.18.0": "v0.15.0",
     "v0.19.0": "v0.19.0",
+    "v0.62.0": "v0.62.0",
     "HEAD": "HEAD",
 }
 
@@ -147,6 +154,7 @@ SCHEMA_COMMITS: dict[str, str] = {
     "v0.17.0": "56fde386d73bc4667726dc29f4a17ceeae070ed2a3effd10695a69c41c0a3079",
     "v0.18.0": "56fde386d73bc4667726dc29f4a17ceeae070ed2a3effd10695a69c41c0a3079",
     "v0.19.0": "b4b20dd709fb0466384f12e5c9fbfaf959013a426bbb82ba0806a8d75ac2877e",
+    "v0.62.0": "2378d1a97cf516892cb9b4484300fb9cb91e40fc5a91b9131821c9dac43c65f4",
     "HEAD": "2378d1a97cf516892cb9b4484300fb9cb91e40fc5a91b9131821c9dac43c65f4",
 }
 

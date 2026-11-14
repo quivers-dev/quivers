@@ -23,7 +23,7 @@ from quivers.kernel.quivers_kernel import (
 SOURCE = """\
 object X : FinSet 3
 object Y : FinSet 4
-morphism f : X -> Y [role=latent]
+morphism f : X -> Y [role=parameter]
 """
 
 
@@ -54,11 +54,11 @@ def _kernel():  # type: ignore[no-untyped-def]
 def test_split_cell_groups_blank_separated_blocks() -> None:
     cell = (
         "object X : FinSet 3\nobject Y : FinSet 4\n"
-        "\nmorphism f : X -> Y [role=latent]\n"
+        "\nmorphism f : X -> Y [role=parameter]\n"
     )
     out = _split_cell(cell)
     assert "object X : FinSet 3\nobject Y : FinSet 4" in out
-    assert "morphism f : X -> Y [role=latent]" in out
+    assert "morphism f : X -> Y [role=parameter]" in out
 
 
 def test_split_cell_meta_lines_isolated() -> None:
@@ -154,7 +154,7 @@ def test_do_inspect_returns_decl_info() -> None:
     assert out["status"] == "ok"
     assert out["found"] is True
     rendered = out["data"]["text/plain"]
-    assert "morphism f : X -> Y [role=latent]" in rendered
+    assert "morphism f : X -> Y [role=parameter]" in rendered
 
 
 def test_do_inspect_unknown_name_not_found() -> None:

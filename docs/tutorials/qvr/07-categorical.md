@@ -38,8 +38,8 @@ composition product_fuzzy [level=algebra]
 object A : FinSet 3
 object B : FinSet 4
 object C : FinSet 2
-morphism f : A -> B [role=latent]
-morphism h : B -> C [role=latent]
+morphism f : A -> B [role=parameter]
+morphism h : B -> C [role=parameter]
 define g = h.change_base(softmax(C))
 define pipeline = f >> g
 export pipeline
@@ -70,17 +70,17 @@ An [`Algebra`](../../api/core/algebras.md) gives $\otimes$, $\oplus$ (the method
 
 ```
 CompositionRule
-    ├── Magmoid           (level bilinear_form: no associativity or identity)
+    ├── Magmoid           (level magmoid: no associativity or identity)
     ├── Semigroupoid      (level semigroupoid: associative, no identity)
     ├── Algebra           (level algebra: identity, unit, zero, meet, and negation)
     └── Semiring          (an Algebra and a Semigroupoid: associative with identity)
             └── IdempotentSemiring  (idempotent sum)
 ```
 
-Under a rule declared `semigroupoid` the morphisms form a [semicategory](https://ncatlab.org/nlab/show/semicategory), a category without identities [@tilson1987categories]. Under `bilinear_form` composition has no laws at all (the structure is a [magmoid](https://ncatlab.org/nlab/show/magmoid)). The eight semirings in the table are of class `Semiring`, so either level accepts them, and the other three are of class `Algebra` only. `identity(A)` and the operations `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)`, which bend, transpose, and loop the wires of a [compact closed category](https://ncatlab.org/nlab/show/compact+closed+category), need an `Algebra`. Under `composition material_impl [level=bilinear_form]`, `identity(A)` fails with
+Under a rule declared `semigroupoid` the morphisms form a [semicategory](https://ncatlab.org/nlab/show/semicategory), a category without identities [@tilson1987categories]. Under `magmoid` composition has no laws at all (the structure is a [magmoid](https://ncatlab.org/nlab/show/magmoid)). The eight semirings in the table are of class `Semiring`, so either level accepts them, and the other three are of class `Algebra` only. `identity(A)` and the operations `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)`, which bend, transpose, and loop the wires of a [compact closed category](https://ncatlab.org/nlab/show/compact+closed+category), need an `Algebra`. Under `composition material_impl [level=magmoid]`, `identity(A)` fails with
 
 ```text
-CompileError: line 3, col 11: identity: requires an algebra-level composition rule (one with an identity, a unit, and a zero); the module declares the bilinear_form 'MaterialImplication', which has none. Declare an algebra, as in `composition product_fuzzy [level=algebra]`, or drop the identity operation.
+CompileError: line 3, col 11: identity: requires an algebra-level composition rule (one with an identity, a unit, and a zero); the module declares the magmoid 'MaterialImplication', which has none. Declare an algebra, as in `composition product_fuzzy [level=algebra]`, or drop the identity operation.
 ```
 
 The rule `material_impl` uses the Reichenbach implication $a \to b = 1 - a + ab$ [@baczynski2008fuzzy] as $\otimes$ and the product as $\oplus$. That $\otimes$ is not associative, so the rule is a `Magmoid`, and composites under it must not be rebracketed. [Chapter 7 of the Python track](../python/07-composition-rules.md) covers the hierarchy in detail.
@@ -107,7 +107,7 @@ Both kinds are values: a `define` can bind them, `>>>` composes them, and `chang
 composition product_fuzzy [level=algebra]
 object A : FinSet 3
 object B : FinSet 4
-morphism f : A -> B [role=latent]
+morphism f : A -> B [role=parameter]
 
 define s = softmax(B)
 define pipeline = s >>> expectation

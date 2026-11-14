@@ -84,7 +84,7 @@ boundaries.
 composition product_fuzzy [level=algebra]
 object A : FinSet 3
 object B : FinSet 4
-morphism f : A -> B [role=latent]
+morphism f : A -> B [role=parameter]
 
 define s    = softmax(B)
 define pipe = s >>> expectation
@@ -199,7 +199,7 @@ Each module declares its rule with `composition` and a level:
 |---|---|---|
 | `composition X [level=algebra]` | `Algebra` (a `Semiring` qualifies) | `>>`, `@`, `identity(A)`, `f.dagger`, `f.trace(A)`, `cup(A)`, `cap(A)` |
 | `composition X [level=semigroupoid]` | `Semigroupoid` (a `Semiring` qualifies) | `>>`, `@` |
-| `composition X [level=bilinear_form]` | `Magmoid` | `>>`, `@` |
+| `composition X [level=magmoid]` | `Magmoid` | `>>`, `@` |
 | `composition X [level=rule]` | any `CompositionRule` | whatever the resolved rule's class allows |
 
 Using `identity`, `dagger`, `trace`, `cup`, or `cap` in a module whose rule is not an
@@ -218,31 +218,31 @@ composition my_sum_product [level=algebra]
     zero = 0.0
 
 object A : FinSet 3
-morphism f : A -> A [role=latent]
+morphism f : A -> A [role=parameter]
 define g = f >> f
 export g
 ```
 
 ```qvr
-composition average_rule [level=bilinear_form]
+composition average_rule [level=magmoid]
     tensor_op(a, b) = (a + b) * 0.5
     join(t) = sum(t)
 
 object A : FinSet 3
-morphism f : A -> A [role=latent]
+morphism f : A -> A [role=parameter]
 define g = f >> f
 export g
 ```
 
 The first rule is ordinary sum-product. The second averages its operands, which is
-not associative, so it is declared at the `bilinear_form` level. The entries each
+not associative, so it is declared at the `magmoid` level. The entries each
 level requires are:
 
 | Level | Required | Optional |
 |---|---|---|
 | `algebra` | `tensor_op`, `join`, `unit`, `zero` | `negation`, `meet` |
 | `semigroupoid` | `tensor_op`, `join` | |
-| `bilinear_form` | `tensor_op`, `join` | |
+| `magmoid` | `tensor_op`, `join` | |
 
 The compiler builds inline rules without checking any law. The Python constructors
 check a little. `CustomAlgebra` tests that the unit is a left and right identity for
@@ -261,17 +261,17 @@ $a \otimes b = 1 - a + a b$ [@baczynski2008fuzzy] with the product as its reduct
 $\bigoplus_j x_j = \prod_j x_j$:
 
 ```qvr
-composition material_impl [level=bilinear_form]
+composition material_impl [level=magmoid]
 object A : FinSet 3
 object B : FinSet 3
-morphism f : A -> B [role=latent]
-morphism g : B -> B [role=latent]
+morphism f : A -> B [role=parameter]
+morphism g : B -> B [role=parameter]
 define composed = f >> g
 export composed
 ```
 
 The library registers it as a `Magmoid`, since neither its $\otimes$ nor its
-composition is associative, so a module declares it at the `bilinear_form` level. For one-element objects composition is $\otimes$
+composition is associative, so a module declares it at the `magmoid` level. For one-element objects composition is $\otimes$
 itself, and with every score $0$ the two groupings give $(0 \otimes 0) \otimes 0 = 0$
 and $0 \otimes (0 \otimes 0) = 1$. Parenthesize chains under this rule explicitly. The transformation
 `material_implication` in the table above is a different object, an entrywise map
@@ -318,9 +318,9 @@ contraction op_apply (
     kernel : B * C -> D,
 ) : A -> D [rule=product_fuzzy, wiring="sp,sq,pqd->sd"]
 
-morphism a1 : A -> B [role=latent]
-morphism a2 : A -> C [role=latent]
-morphism k : B * C -> D [role=latent]
+morphism a1 : A -> B [role=parameter]
+morphism a2 : A -> C [role=parameter]
+morphism k : B * C -> D [role=parameter]
 define combined = op_apply(a1, a2, k)
 export combined
 ```

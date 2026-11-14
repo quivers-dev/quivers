@@ -184,8 +184,8 @@ composition product_fuzzy [level=algebra]
 object A : FinSet 2
 object B : FinSet 3
 object C : FinSet 4
-morphism g : A -> B [role=latent]
-morphism h : B -> C [role=latent]
+morphism g : A -> B [role=parameter]
+morphism h : B -> C [role=parameter]
 define f = gg >> hh where
     define gg = g
     define hh = h
@@ -239,7 +239,7 @@ def test_doc_comments_attach_to_declarations() -> None:
 
     #! Prior over responses.
     #! Second doc line.
-    morphism g : A -> A [role=latent]
+    morphism g : A -> A [role=parameter]
 
     #! Composite binding.
     define h = g >> g
@@ -278,7 +278,7 @@ composition product_fuzzy [level=algebra]
 object A : FinSet 2
 object B : FinSet 3
 object C : FinSet 4
-morphism f : A * B -> C [role=latent]
+morphism f : A * B -> C [role=parameter]
 define fc = f.{method}
 export fc
 """
@@ -317,7 +317,7 @@ def test_trace_compiles_with_expected_shape() -> None:
     object A : FinSet 3
     object X : FinSet 2
     object Y : FinSet 5
-    morphism f : A * X -> A * Y [role=latent]
+    morphism f : A * X -> A * Y [role=parameter]
     define g = f.trace(A)
     export g
     """

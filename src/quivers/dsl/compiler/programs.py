@@ -139,7 +139,7 @@ from quivers.dsl.compiler._options import (
     get_option_name_list,
     get_option_string,
     get_program_effects,
-    get_program_over_model,
+    get_program_posterior_model,
 )
 from quivers.dsl.compiler._deduction_terms import (
     LET_BOUND_VARIABLES_KEY,
@@ -1480,7 +1480,7 @@ def _infer_wiring_from_signature(
 # * ``marginalize`` steps read the grouping plate (``over``) and the
 #   pushforward ``reduction``.
 # * ``program`` declarations read the ``effects`` capability row and
-#   the posterior-block ``over`` model reference.
+#   the posterior-block ``posterior_of`` model reference.
 # * ``contraction`` declarations read the composition ``rule``, the
 #   explicit einsum ``wiring`` escape hatch, and the ``share`` list.
 _MULTIVARIATE_REAL_FAMILIES: frozenset[str] = frozenset(
@@ -1491,7 +1491,7 @@ _MULTIVARIATE_REAL_FAMILIES: frozenset[str] = frozenset(
 _SAMPLE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "iid_over"})
 _OBSERVE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"via", "over", "iid_over"})
 _MARGINALIZE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "reduction"})
-_PROGRAM_OPTION_KEYS: frozenset[str] = frozenset({"effects", "over"})
+_PROGRAM_OPTION_KEYS: frozenset[str] = frozenset({"effects", "posterior_of"})
 _CONTRACTION_OPTION_KEYS: frozenset[str] = frozenset({"rule", "wiring", "share"})
 
 
@@ -4537,20 +4537,20 @@ class _ProgramsMixin:
                 prog.add_module(f"_function_{callee}", function)
         if step_program:
             return prog
-        # Posterior-block routing: `[over=M]` programs go to the
+        # Posterior-block routing: `[posterior_of=M]` programs go to the
         # posterior registry rather than the morphism registry.
-        over_model = get_program_over_model(
+        posterior_model = get_program_posterior_model(
             decl.options,
             line=decl.line,
             col=decl.col,
         )
-        if over_model is not None:
+        if posterior_model is not None:
             if not hasattr(self, "_posteriors"):
                 self._posteriors = {}
-            if over_model not in self._morphisms:
+            if posterior_model not in self._morphisms:
                 raise CompileError(
-                    f"posterior block '[over={over_model}]' references "
-                    f"undefined model {over_model!r}",
+                    f"posterior block '[posterior_of={posterior_model}]' references "
+                    f"undefined model {posterior_model!r}",
                     decl.line,
                     decl.col,
                 )

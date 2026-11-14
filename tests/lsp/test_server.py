@@ -34,7 +34,7 @@ SAMPLE = """\
 #! A small demo module.
 object Alpha : FinSet 3
 object Beta : FinSet 4
-morphism f : Alpha -> Beta [role=latent]
+morphism f : Alpha -> Beta [role=parameter]
 """
 
 
@@ -177,7 +177,7 @@ def test_document_name_at_position() -> None:
     #   0: '#! A small demo module.'
     #   1: 'object Alpha : FinSet 3'
     #   2: 'object Beta : FinSet 4'
-    #   3: 'morphism f : Alpha -> Beta [role=latent]'
+    #   3: 'morphism f : Alpha -> Beta [role=parameter]'
     assert doc.name_at_position(1, 9) == "Alpha"
     assert doc.name_at_position(3, 9) == "f"
     assert doc.name_at_position(3, 14) == "Alpha"

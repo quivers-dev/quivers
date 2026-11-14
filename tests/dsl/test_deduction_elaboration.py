@@ -590,7 +590,7 @@ def test_forms_outside_the_elaboration_are_reported(
 
 def test_an_axiom_source_morphism_leaves_the_axioms_to_the_caller() -> None:
     source = PROVER.replace("depth=3]", "depth=3, axioms=lexer]").replace(
-        "\ndeduction", "\nmorphism lexer : Term -> Term [role=latent]\ndeduction"
+        "\ndeduction", "\nmorphism lexer : Term -> Term [role=parameter]\ndeduction"
     )
     module = _module(source)
     entry = next(item for item in module.computations if item.name == "Prover__run")

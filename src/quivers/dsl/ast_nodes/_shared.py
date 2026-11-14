@@ -45,7 +45,7 @@ class AxisSpec(dx.Model):
 # composition-level type alias used by CompositionDecl
 # ---------------------------------------------------------------------------
 
-type CompositionLevel = Literal["algebra", "semigroupoid", "bilinear_form", "rule"]
+type CompositionLevel = Literal["algebra", "semigroupoid", "magmoid", "rule"]
 """Algebraic level the file declares for its composition rule.
 
 The four levels correspond to the
@@ -56,7 +56,7 @@ The four levels correspond to the
 * ``"semigroupoid"`` requires a `Semigroupoid`
   (associative composition, no identity required); every `Semiring`
   algebra qualifies.
-* ``"bilinear_form"`` requires a `Magmoid`, a rule declared to satisfy
+* ``"magmoid"`` requires a `Magmoid`, a rule declared to satisfy
   no composition law.
 * ``"composition_rule"`` is permissive: any
   `CompositionRule` is accepted.
@@ -73,7 +73,7 @@ class OptionValue(dx.TaggedUnion, discriminator="kind"):
     Surface shapes:
 
     * Bare flag ``[role]`` -> `OptionFlag` (no value)
-    * ``role=latent`` -> `OptionName` (identifier)
+    * ``role=parameter`` -> `OptionName` (identifier)
     * ``depth=8`` / ``scale=0.1`` -> `OptionNumber`
     * ``path="lex.tsv"`` -> `OptionString`
     * ``over=[a, b]`` -> `OptionList`
@@ -88,7 +88,7 @@ class OptionFlag(OptionValue):
 
 
 class OptionName(OptionValue):
-    """A key bound to a bare identifier (e.g. ``role=latent``)."""
+    """A key bound to a bare identifier (e.g. ``role=parameter``)."""
 
     value: str
     kind: Literal["option_name"] = "option_name"

@@ -75,7 +75,7 @@ _CASES: list[tuple[str, str, list[tuple[str, str]]]] = [
         "identity under a magmoid",
         """
         object A : FinSet 2
-        composition material_impl [level=bilinear_form]
+        composition material_impl [level=magmoid]
         define i = identity(A)
         export i
         """,

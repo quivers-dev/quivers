@@ -893,9 +893,9 @@ syntax-highlighted.
 
 ```
 qvr> :watch f
-watch f => morphism f : Alpha -> Beta [role=latent]
+watch f => morphism f : Alpha -> Beta [role=parameter]
 qvr> object Gamma : FinSet 7
-qvr> morphism g : Alpha -> Gamma [role=latent]
+qvr> morphism g : Alpha -> Gamma [role=parameter]
 qvr> :watch g
 # both f and g are pinned; changing Alpha updates both
 ```
@@ -991,7 +991,7 @@ In [2]: :type backbone
 backbone :: Source * Target -> Combined
 
 In [3]: object Extra : FinSet 8
-        morphism g : Extra -> Combined [role=latent]
+        morphism g : Extra -> Combined [role=parameter]
 installed module: 19 binding(s)
 ```
 
@@ -1123,7 +1123,7 @@ Optional doc comment lines if the decl had `#!` doc-comment lines above it.
 
 <!-- compile: false -->
 ```qvr
-morphism f : Alpha -> Beta [role=latent]
+morphism f : Alpha -> Beta [role=parameter]
 ```
 
 ---

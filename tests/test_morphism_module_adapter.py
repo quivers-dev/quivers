@@ -137,8 +137,8 @@ def test_program_binding_let_composed_chain_compiles_and_runs() -> None:
     object B : FinSet 4
     object C : FinSet 4
 
-    morphism f : A -> B [role=latent]
-    morphism g : B -> C [role=latent]
+    morphism f : A -> B [role=parameter]
+    morphism g : B -> C [role=parameter]
 
     define h = f >> g
 
@@ -170,8 +170,8 @@ def test_program_binding_let_composed_chain_has_learnable_params() -> None:
     object B : FinSet 4
     object C : FinSet 4
 
-    morphism f : A -> B [role=latent]
-    morphism g : B -> C [role=latent]
+    morphism f : A -> B [role=parameter]
+    morphism g : B -> C [role=parameter]
 
     define h = f >> g
 
@@ -204,7 +204,7 @@ def test_parametric_program_with_morphism_typed_parameter_compiles() -> None:
     object A : FinSet 4
     object B : FinSet 4
 
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
 
     program p(k : Mor[A, B]) : A -> B
         sample out <- k
@@ -233,8 +233,8 @@ def test_fan_over_composed_morphism_compiles() -> None:
     object B : FinSet 4
     object C : FinSet 4
 
-    morphism f : A -> B [role=latent]
-    morphism g : B -> C [role=latent]
+    morphism f : A -> B [role=parameter]
+    morphism g : B -> C [role=parameter]
 
     define chain = f >> g
     define split = fan(chain, chain)

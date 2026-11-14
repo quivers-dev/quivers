@@ -21,9 +21,9 @@ contraction op_apply (
     kernel : B * C -> D,
 ) : A -> D [rule=product_fuzzy]
 
-morphism a1 : A -> B [role=latent]
-morphism a2 : A -> C [role=latent]
-morphism k : B * C -> D [role=latent]
+morphism a1 : A -> B [role=parameter]
+morphism a2 : A -> C [role=parameter]
+morphism k : B * C -> D [role=parameter]
 define r = op_apply(a1, a2, k)
 export r
 ```
@@ -82,7 +82,7 @@ contraction broadcast_mul (
     g : A -> B,
 ) : A -> B [rule=real]
 
-morphism f1 : A -> B [role=latent]
+morphism f1 : A -> B [role=parameter]
 define r = broadcast_mul(f1, f1)
 export r
 ```
@@ -117,9 +117,9 @@ contraction op_explicit (
     kernel : B * C -> D,
 ) : A -> D [rule=real, wiring="ab,ac,bcd->ad"]
 
-morphism a1 : A -> B [role=latent]
-morphism a2 : A -> C [role=latent]
-morphism k : B * C -> D [role=latent]
+morphism a1 : A -> B [role=parameter]
+morphism a2 : A -> C [role=parameter]
+morphism k : B * C -> D [role=parameter]
 define r = op_explicit(a1, a2, k)
 export r
 ```
@@ -155,9 +155,9 @@ object Scalar : FinSet 1
 object LeftFeature : FinSet 64
 object RightFeature : FinSet 64
 
-morphism embedding : Item -> LeftFeature [role=latent]
-morphism weights : LeftFeature -> RightFeature [role=latent]
-morphism target : RightFeature -> Scalar [role=latent]
+morphism embedding : Item -> LeftFeature [role=parameter]
+morphism weights : LeftFeature -> RightFeature [role=parameter]
+morphism target : RightFeature -> Scalar [role=parameter]
 
 # Score[i, 0] = sum_d sum_e E[i, d] * W[d, e] * T[e, 0]
 # LeftFeature and RightFeature are reduced; Item and Scalar remain.

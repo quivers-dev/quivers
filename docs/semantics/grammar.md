@@ -509,7 +509,7 @@ program_decl        := 'program' IDENT [ '(' param_list ')' ]
 composition_decl    := 'composition' IDENT
                        [ option_block ]
                        [ NEWLINE INDENT composition_rule_entry+ DEDENT ]
-# Option: level = algebra | semigroupoid | bilinear_form | rule.
+# Option: level = algebra | semigroupoid | magmoid | rule.
 
 composition_rule_entry
                     := IDENT '(' IDENT (',' IDENT)* ')' '=' let_arith

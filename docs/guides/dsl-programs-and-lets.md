@@ -366,11 +366,11 @@ intercepts and grouped marginalization.
 ### Derived quantities of the posterior {#posterior-blocks}
 
 A program can compute a derived quantity from the latent variables of another program,
-like Stan's generated quantities [@carpenter2017stan]. `over=` in its option block names
+like Stan's generated quantities [@carpenter2017stan]. `posterior_of=` in its option block names
 the model whose latents it reads, and its parameters name those latents. Its body must
 be pure (`effects=[Pure]`). Given data, its output is distributed as the pushforward of
 the model's posterior along it: draw the latents from the posterior given the data, then
-apply the program. In this one use, `over=` names a program rather than event axes.
+apply the program.
 
 ```qvr
 object Item : FinSet 2
@@ -380,15 +380,15 @@ program scored : Item -> Out
     sample logit <- Normal(loc=0.0, scale=1.0)
     return logit
 
-program success_prob(logit : Real) : Item -> Out [effects=[Pure], over=scored]
+program success_prob(logit : Real) : Item -> Out [effects=[Pure], posterior_of=scored]
     let prob = sigmoid(logit)
     return prob
 ```
 
 The parameter `logit` names the model's latent and gives its type, and at run time each
 posterior draw of the model's [trace](inference-foundations.md#trace-and-sample-sites)
-gives its value. An untyped parameter is read as an integer by the checked core, so a
-real-valued latent needs its `: Real` annotation.
+gives its value. An unannotated parameter inherits the type of the model's latent
+variable, including its vector dimensions.
 
 ## Event and batch axes: `over` and `iid_over` {#axis-role-clause-over-and-iid_over}
 
@@ -480,7 +480,7 @@ object K : FinSet 2
 object Out : Real 1
 
 # A matrix normal prior on a morphism's 3 x 2 tensor
-morphism W : D -> K [role=latent, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)
+morphism W : D -> K [role=parameter, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)
 
 program p : Out -> Out
     # A five-dimensional multivariate normal, then one per observation row
@@ -966,8 +966,8 @@ A conditional distribution whose parameters a network learns from the input is a
 ```qvr
 object X : FinSet 3
 object Y : FinSet 4
-morphism f : X -> Y [role=latent]
-morphism g : Y -> Y [role=latent]
+morphism f : X -> Y [role=parameter]
+morphism g : Y -> Y [role=parameter]
 
 define fg = f >> g
 
@@ -1010,11 +1010,11 @@ object In : FinSet 8
 object Out : FinSet 4
 
 # Default: weights initialized from a small-scale randn.
-morphism W_default : In -> Out [role=latent, scale=0.1]
+morphism W_default : In -> Out [role=parameter, scale=0.1]
 
 # init=auto: the initialization recipe of the module's Algebra,
 # applied after the sigmoid under product_fuzzy (the default).
-morphism W_auto : In -> Out [role=latent, init=auto]
+morphism W_auto : In -> Out [role=parameter, init=auto]
 
 export W_auto
 ```

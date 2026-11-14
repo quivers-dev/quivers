@@ -12,7 +12,7 @@ A rule's class states which laws it claims. Only `semigroupoid(...)` tests its c
 | `IdempotentSemiring` (the same) | a semiring whose $\oplus$ is idempotent | a category whose hom-sets are lattices |
 | `Algebra` (`algebra`) | an identity, with a unit, a zero, a meet, and a negation | identities, with composition that may depend on bracketing |
 | `Semigroupoid` (`semigroupoid`) | associativity, no identity | a [semicategory](https://ncatlab.org/nlab/show/semicategory) (semigroupoid) [@tilson1987categories] |
-| `Magmoid` (`bilinear_form`) | nothing | a [magmoid](https://ncatlab.org/nlab/show/magmoid): composition with no laws |
+| `Magmoid` (`magmoid`) | nothing | a [magmoid](https://ncatlab.org/nlab/show/magmoid): composition with no laws |
 | `CompositionRule` (`rule`) | nothing | the base class of the others |
 
 ```mermaid
@@ -138,7 +138,7 @@ for attribute in ("unit", "identity_tensor"):
         print(attribute, "is unavailable on", type(mi).__name__)
 ```
 
-In QVR, `identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)` fail to compile in a module whose rule is not an `Algebra`, such as an inline rule declared `[level=semigroupoid]` or `[level=bilinear_form]` ([chapter 7 of the QVR track](../qvr/07-categorical.md#composition-rules-and-their-laws)).
+In QVR, `identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)` fail to compile in a module whose rule is not an `Algebra`, such as an inline rule declared `[level=semigroupoid]` or `[level=magmoid]` ([chapter 7 of the QVR track](../qvr/07-categorical.md#composition-rules-and-their-laws)).
 
 ## Contractions of several tensors {#operadic-n-ary-contractions}
 
@@ -210,14 +210,14 @@ composition my_semi [level=semigroupoid]
     tensor_op(a, b) = a * b
     join(t)         = sum(t)
 
-composition my_bf [level=bilinear_form]
+composition my_bf [level=magmoid]
     tensor_op(a, b) = (a + b) * 0.5
     join(t)         = sum(t)
 
 composition product_fuzzy [level=rule]
 ```
 
-`level` is one of `algebra`, `semigroupoid`, `bilinear_form`, and `rule`. Without a body, the name selects a rule from the built-in catalog (`product_fuzzy`, `material_impl`, and the others), and the compiler checks that it has the declared level.
+`level` is one of `algebra`, `semigroupoid`, `magmoid`, and `rule`. Without a body, the name selects a rule from the built-in catalog (`product_fuzzy`, `material_impl`, and the others), and the compiler checks that it has the declared level.
 
 A `contraction` declares a named contraction of several morphisms:
 
@@ -226,9 +226,9 @@ object A : FinSet 4
 object B : FinSet 3
 object C : FinSet 5
 object D : FinSet 2
-morphism arg1_morph : A -> B [role=latent]
-morphism arg2_morph : A -> C [role=latent]
-morphism kernel_morph : B * C -> D [role=latent]
+morphism arg1_morph : A -> B [role=parameter]
+morphism arg2_morph : A -> C [role=parameter]
+morphism kernel_morph : B * C -> D [role=parameter]
 
 contraction op_apply (
     arg1 : A -> B,

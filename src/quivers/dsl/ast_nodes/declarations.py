@@ -249,11 +249,11 @@ class ObjectDecl(Statement):
 # ---------------------------------------------------------------------------
 
 type MorphismRole = Literal[
-    "latent", "observed", "kernel", "embed", "discretize", "let", "function"
+    "parameter", "observed", "kernel", "embed", "discretize", "let", "function"
 ]
 """Role attribute on a morphism declaration.
 
-``latent`` (default learnable point estimate), ``observed`` (fixed
+``parameter`` (learnable point estimate), ``observed`` (fixed
 structural input), ``kernel`` (parametric Markov kernel with a family
 prior), ``embed`` (FinSet -> ContinuousSpace boundary),
 ``discretize`` (ContinuousSpace -> FinSet boundary), ``let``
@@ -654,7 +654,7 @@ class ProgramDecl(Statement):
 
     Body is a sequence of program steps (``sample``, ``observe``,
     ``marginalize``, ``let``) terminated by a ``return`` step.
-    Effects, posterior-modifier (``over=<model>``), and
+    Effects, posterior-modifier (``posterior_of=<model>``), and
     parametric/concrete type-params live in the option block.
     """
 

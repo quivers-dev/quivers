@@ -26,7 +26,7 @@ from quivers.cli.repl_session import ReplSession, _META_COMMANDS
 SOURCE = """\
 object Alpha : FinSet 3
 object Beta : FinSet 4
-morphism f : Alpha -> Beta [role=latent]
+morphism f : Alpha -> Beta [role=parameter]
 """
 
 

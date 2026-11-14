@@ -43,9 +43,9 @@ object Item : FinSet 4
 object PredDim, ArgDim : FinSet 2
 object Judgment : FinSet 3
 
-morphism pred_embed : Item -> PredDim [role=latent]
-morphism arg_embed : Item -> ArgDim [role=latent]
-morphism interaction : (PredDim * ArgDim) -> Judgment [role=latent]
+morphism pred_embed : Item -> PredDim [role=parameter]
+morphism arg_embed : Item -> ArgDim [role=parameter]
+morphism interaction : (PredDim * ArgDim) -> Judgment [role=parameter]
 
 contraction bilinear_score (
     p : Item -> PredDim,
@@ -94,7 +94,7 @@ The `define` binding invokes the contraction on the three declared arrows. Each 
 
 ## Try it
 
-The source defines a deterministic score, not a probability model: its exported arrow is the contraction of the three declared arrows, whose `[role=latent]` tensors are learned parameters with entries in $(0, 1)$. The blocks below build the probabilistic model around the declared contraction in Python. Every entry of the two embeddings and of the interaction tensor gets an independent $\mathcal{N}(0, 1)$ prior, and each of several replicate judgments of every (item, scale point) cell is scored under $y_{r, i, g} \sim \mathcal{N}(s_{i, g}, \sigma^2)$ with $s$ computed by the compiled `bilinear_score` wiring. The model is built in Python because a QVR program cannot yet call a `contraction` or hold a third-order latent tensor it can index by three binders; the compiled contraction is available through the [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment's `contractions` mapping.
+The source defines a deterministic score, not a probability model: its exported arrow is the contraction of the three declared arrows, whose `[role=parameter]` tensors are learned parameters with entries in $(0, 1)$. The blocks below build the probabilistic model around the declared contraction in Python. Every entry of the two embeddings and of the interaction tensor gets an independent $\mathcal{N}(0, 1)$ prior, and each of several replicate judgments of every (item, scale point) cell is scored under $y_{r, i, g} \sim \mathcal{N}(s_{i, g}, \sigma^2)$ with $s$ computed by the compiled `bilinear_score` wiring. The model is built in Python because a QVR program cannot yet call a `contraction` or hold a third-order latent tensor it can index by three binders; the compiled contraction is available through the [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment's `contractions` mapping.
 
 ### Generating synthetic data
 

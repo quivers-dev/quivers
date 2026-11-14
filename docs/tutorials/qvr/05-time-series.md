@@ -130,13 +130,13 @@ The recursion stays in log space, so a chain of thousands of positions, whose pa
 
 ## Finite-state path composition
 
-The gallery file [`hmm.qvr`](../../examples/source/hmm.qvr) is not an HMM likelihood. Its export `hmm` composes three morphisms under the `product_fuzzy` composition rule, `initial >> repeat(transition) >> emission`. Under that rule a learnable table (`role=latent`) holds entries in $[0, 1]$, its rows are not normalized, and the composite is neither a forward probability nor a Viterbi score. Its second export, `hmm_program`, marginalizes a single state shared by the whole emitted sequence, and its `transition_rows` draw does not enter the likelihood. The `hmm` program of the previous section is the HMM.
+The gallery file [`hmm.qvr`](../../examples/source/hmm.qvr) is not an HMM likelihood. Its export `hmm` composes three morphisms under the `product_fuzzy` composition rule, `initial >> repeat(transition) >> emission`. Under that rule a learnable table (`role=parameter`) holds entries in $[0, 1]$, its rows are not normalized, and the composite is neither a forward probability nor a Viterbi score. Its second export, `hmm_program`, marginalizes a single state shared by the whole emitted sequence, and its `transition_rows` draw does not enter the likelihood. The `hmm` program of the previous section is the HMM.
 
 On a `morphism` declaration the axes of a prior are set by the options `over` (event axes) and `iid` (axes of independent replication), with `cod` and `dom` naming the codomain and domain:
 
 <!-- compile: false -->
 ```qvr
-morphism transition : State -> State [role=latent, over=cod, iid=dom] ~ Dirichlet(concentration=1.0)
+morphism transition : State -> State [role=parameter, over=cod, iid=dom] ~ Dirichlet(concentration=1.0)
 ```
 
 declares a row-stochastic matrix with an independent Dirichlet prior on each row, as `[over=State, iid_over=State]` does on a `sample` step. The [axis clause guide](../../guides/dsl-programs-and-lets.md#axis-role-clause-over-and-iid_over) and the [event shapes of each family](../../guides/continuous-families.md#event-rank-and-axis-role-syntax) give the rules.

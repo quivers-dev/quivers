@@ -133,7 +133,7 @@ class _ExpressionsMixin:
         kind = (
             "semigroupoid"
             if isinstance(rule, Semigroupoid)
-            else ("bilinear_form" if isinstance(rule, Magmoid) else "composition_rule")
+            else ("magmoid" if isinstance(rule, Magmoid) else "composition_rule")
         )
         raise CompileError(
             f"{op_name}: requires an algebra-level composition rule (one "

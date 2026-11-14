@@ -4,7 +4,7 @@ operadic contraction surface.
 Covers:
 
 * ``composition NAME [level=LEVEL]`` keyword + level matching against
-  the registry (``algebra`` / ``semigroupoid`` / ``bilinear_form`` /
+  the registry (``algebra`` / ``semigroupoid`` / ``magmoid`` /
   ``rule``).
 * Inline-bodied composition rules: ``composition NAME [level=LEVEL]``
   with an indented body of ``key (args) = expr`` entries.
@@ -51,11 +51,11 @@ def test_algebra_keyword_resolves_algebra() -> None:
     assert isinstance(m.morphism.algebra, Algebra)
 
 
-def test_bilinear_form_level_resolves_material_implication() -> None:
+def test_magmoid_level_resolves_material_implication() -> None:
     """``material_impl`` is a magmoid: neither associative nor unital,
-    so it sits at the ``bilinear_form`` level, the DSL's no-law level."""
+    so it sits at the ``magmoid`` level, the DSL's no-law level."""
     src = """
-    composition material_impl [level=bilinear_form]
+    composition material_impl [level=magmoid]
     object A : FinSet 2
     object B : FinSet 2
     morphism h : A -> B [role=observed] ~ from_data("H")
@@ -188,9 +188,9 @@ def test_inline_semigroupoid_body() -> None:
     assert rule.name == "my_semi"
 
 
-def test_inline_bilinear_form_body() -> None:
+def test_inline_magmoid_body() -> None:
     src = """
-    composition my_bf [level=bilinear_form]
+    composition my_bf [level=magmoid]
         tensor_op(a, b) = (a + b) * 0.5
         join(t) = sum(t)
     object A : FinSet 2
@@ -225,10 +225,10 @@ def test_inline_body_duplicate_entry_errors() -> None:
 
 
 _NON_ALGEBRA_HEADER = """
-composition material_impl [level=bilinear_form]
+composition material_impl [level=magmoid]
 object A : FinSet 3
 object B : FinSet 3
-morphism f : A -> B [role=latent]
+morphism f : A -> B [role=parameter]
 """
 
 
@@ -264,7 +264,7 @@ def test_algebra_ops_accepted_under_algebra() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
     object B : FinSet 3
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define i = identity(A)
     define d = f.dagger
     define c = cup(A)
@@ -376,7 +376,7 @@ def test_contraction_with_magmoid_rule() -> None:
     """A contraction can use any registered rule, including a
     magmoid such as ``material_impl``."""
     src = """
-    composition material_impl [level=bilinear_form]
+    composition material_impl [level=magmoid]
     object A : FinSet 2
     object B : FinSet 2
     object C : FinSet 2
@@ -437,8 +437,8 @@ def test_contraction_call_wrong_argument_count_errors() -> None:
     object A : FinSet 2
     object B : FinSet 2
 
-    morphism f : A -> B [role=latent]
-    morphism g : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
+    morphism g : A -> B [role=parameter]
 
     contraction binop (
         x : A -> B,
@@ -458,7 +458,7 @@ def test_contraction_invocation_argument_not_a_morphism_errors() -> None:
     object A : FinSet 2
     object B : FinSet 2
 
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
 
     contraction binop (
         x : A -> B,
@@ -486,7 +486,7 @@ def test_parametric_template_call_from_let() -> None:
     object A : FinSet 3
     object B : FinSet 3
 
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
 
     program p (k : Mor[A, B]) : A -> B
         sample out <- k
@@ -505,7 +505,7 @@ def test_parametric_template_call_wrong_arity_errors() -> None:
     object A : FinSet 2
     object B : FinSet 2
 
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
 
     program p (k : Mor[A, B], j : Mor[A, B]) : A -> B
         sample out <- k
@@ -541,7 +541,7 @@ def test_morphism_call_undefined_callee_errors() -> None:
     object A : FinSet 2
     object B : FinSet 2
 
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
 
     define bad = nothing(f)
     export bad

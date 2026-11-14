@@ -2855,7 +2855,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
     ) -> dict[str, TypeExpr] | None:
         """The latent types of the model a posterior block consumes.
 
-        A posterior block (``[over=model]``) names the model's latents as
+        A posterior block (``[posterior_of=model]``) names the model's latents as
         its parameters, so each parameter has the type of the model's
         site of that name: real for a real draw, a real vector for a
         vector draw, an index for a draw over a finite set.
@@ -2877,7 +2877,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             If the consumed model is not a program elaborated before the
             block.
         """
-        over = _option_entry(declaration.options, "over")
+        over = _option_entry(declaration.options, "posterior_of")
         if not isinstance(over, OptionName):
             return None
         latents = self._program_latent_types.get(over.value)

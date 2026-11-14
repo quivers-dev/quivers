@@ -36,7 +36,7 @@ def test_softmax_compiles() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(softmax(B))
     export g
     """
@@ -53,7 +53,7 @@ def test_l1_normalize_compiles() -> None:
     composition real [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(l1_normalize(B))
     export g
     """
@@ -69,7 +69,7 @@ def test_l2_normalize_compiles() -> None:
     composition real [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(l2_normalize(B))
     export g
     """
@@ -90,7 +90,7 @@ def test_bayes_invert_with_morphism_prior() -> None:
     object Unit : FinSet 1
     object A : FinSet 3
     morphism prior : Unit -> A [role=observed] ~ from_data("PRIOR")
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     define g = f.change_base(bayes_invert(prior))
     export g
     """
@@ -112,7 +112,7 @@ def test_bare_name_homomorphism_still_resolves() -> None:
     composition boolean [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(boolean_embedding)
     export g
     """
@@ -130,7 +130,7 @@ def test_bare_constructor_without_args_errors() -> None:
     composition real [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(softmax)
     export g
     """
@@ -143,7 +143,7 @@ def test_unknown_constructor_errors() -> None:
     composition real [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(not_a_real_constructor(B))
     export g
     """
@@ -156,7 +156,7 @@ def test_unknown_constructor_arg_errors() -> None:
     composition real [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(softmax(NotAnObject))
     export g
     """

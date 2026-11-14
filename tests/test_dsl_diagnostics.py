@@ -85,7 +85,7 @@ _ERROR_CASES: list[tuple[str, str, tuple[str, ...]]] = [
         "repeat-identifier-count",
         (
             "object A : FinSet 3\n"
-            "morphism g : A -> A [role=latent]\n"
+            "morphism g : A -> A [role=parameter]\n"
             "define h = repeat(g, n)\n"
             "export h\n"
         ),
@@ -105,7 +105,7 @@ _ERROR_CASES: list[tuple[str, str, tuple[str, ...]]] = [
         "top-level-let",
         (
             "object A : FinSet 3\n"
-            "morphism f : A -> A [role=latent]\n"
+            "morphism f : A -> A [role=parameter]\n"
             "let h = f >> f\n"
             "export h\n"
         ),
@@ -144,7 +144,7 @@ _ERROR_CASES: list[tuple[str, str, tuple[str, ...]]] = [
             "line 2",
             "unknown role 'latentt'",
             "'kernel'",
-            "'latent'",
+            "'parameter'",
             "'observed'",
         ),
     ),
@@ -154,7 +154,7 @@ _ERROR_CASES: list[tuple[str, str, tuple[str, ...]]] = [
         # option means nothing there and must not be swallowed.
         "scale-on-kernel-names-the-role-that-reads-it",
         ("object S : Real 4\nmorphism f : S -> S [scale=0.1] ~ Normal\nexport f\n"),
-        ("line 2", "'scale'", "not read by role=kernel", "role=latent"),
+        ("line 2", "'scale'", "not read by role=kernel", "role=parameter"),
     ),
     (
         "bins-on-kernel-names-the-role-that-reads-it",
@@ -165,10 +165,10 @@ _ERROR_CASES: list[tuple[str, str, tuple[str, ...]]] = [
         "param-source-on-latent-names-the-role-that-reads-it",
         (
             "object A : FinSet 3\n"
-            "morphism f : A -> A [role=latent, param_source=mlp]\n"
+            "morphism f : A -> A [role=parameter, param_source=mlp]\n"
             "export f\n"
         ),
-        ("line 2", "'param_source'", "not read by role=latent", "role=kernel"),
+        ("line 2", "'param_source'", "not read by role=parameter", "role=kernel"),
     ),
     (
         "typo-keyword",
@@ -216,8 +216,8 @@ def test_cut_compose_operator_is_a_parse_error(op: str) -> None:
     not parse; the diagnostic points at the operator's line."""
     source = (
         "object A : FinSet 3\n"
-        "morphism f : A -> A [role=latent]\n"
-        "morphism g : A -> A [role=latent]\n"
+        "morphism f : A -> A [role=parameter]\n"
+        "morphism g : A -> A [role=parameter]\n"
         f"define h = f {op} g\n"
         "export h\n"
     )

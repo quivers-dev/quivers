@@ -18,7 +18,7 @@ which combines soft relation scores and does not normalize rows.
 ```qvr
 composition log_prob [level=algebra]
 object A : FinSet 3
-morphism f : A -> A [role=latent]
+morphism f : A -> A [role=parameter]
 export f
 ```
 
@@ -32,7 +32,7 @@ the rule must belong to, and the compiler checks the registered rule against it:
 |---|---|---|
 | `algebra` | `Algebra` | an identity (a `Semiring` also claims associativity) |
 | `semigroupoid` | `Semigroupoid` | associativity (a `Semiring` also has an identity) |
-| `bilinear_form` | `Magmoid` | neither |
+| `magmoid` | `Magmoid` | neither |
 | `rule` | any `CompositionRule` | none required |
 
 No law is checked ([The hierarchy of composition rules](transformations.md#the-composition-rule-hierarchy)).
@@ -47,7 +47,7 @@ gives the denotation of each level.
 
 A rule can also be defined inline in an indented body, each entry a `let`-expression.
 An `algebra` body requires `tensor_op`, `join`, `unit`, and `zero`, and may add
-`negation` and `meet`, while `semigroupoid` and `bilinear_form` bodies require only
+`negation` and `meet`, while `semigroupoid` and `magmoid` bodies require only
 `tensor_op` and `join`. The compiler checks the entries against the level.
 
 ```qvr
@@ -58,7 +58,7 @@ composition my_sum_product [level=algebra]
     zero            = 0.0
 
 object A : FinSet 3
-morphism f : A -> A [role=latent]
+morphism f : A -> A [role=parameter]
 define g = f >> f
 export g
 ```
@@ -76,7 +76,7 @@ object Strings : FreeMonoid(X, max_length=4)   # words over X of length at most 
 object Atoms : {np, s, n}                      # a finite set of named elements
 object Cat : FreeResiduated(Atoms, depth=2, ops=[slash])
 
-morphism f : XY -> X [role=latent]
+morphism f : XY -> X [role=parameter]
 export f
 ```
 
@@ -94,14 +94,14 @@ A morphism's role, in its option block, decides what is stored and learned:
 
 | Role | What the declaration holds | Typical use |
 | --- | --- | --- |
-| `latent` without a family clause | a table of learnable parameters | a learned soft relation or weight table |
-| `latent` with `~ Family(...)` | program draws from the family; a learnable table in compositions | random values with a specified prior |
+| `parameter` without a family clause | a table of learnable parameters | a learned soft relation or weight table |
+| `parameter` with `~ Family(...)` | program draws from the family; a learnable table in compositions | random values with a specified prior |
 | `observed` | fixed data | a known relation |
 | `kernel`, or no role | a distribution for each input | random outputs given inputs |
 | `function` | a learned deterministic map | a neural network layer |
 | `discretize`, `embed` | a map between finite and continuous objects | binning, embedding |
 
-The role `latent` names a learnable table, not a latent random variable. A kernel's
+The role `parameter` names a learnable table. A kernel's
 learned parameters and a value drawn from the kernel are different things: changing a
 parameter changes the distribution, and a draw uses the current distribution.
 
@@ -111,10 +111,10 @@ object Y : FinSet 4
 object Z : FinSet 2
 
 # A learnable table
-morphism f : X -> Y [role=latent]
+morphism f : X -> Y [role=parameter]
 
 # The same with a given initialization scale
-morphism g : Y -> Z [role=latent, scale=0.3]
+morphism g : Y -> Z [role=parameter, scale=0.3]
 
 # Fixed data
 morphism h : X -> X [role=observed] ~ identity(X)
@@ -123,9 +123,9 @@ define fg = f >> g
 export fg
 ```
 
-### Latent morphism draws {#latent-morphism-prior}
+### Draws from a parameter morphism {#latent-morphism-prior}
 
-A `latent` declaration may end with `~ Family(args)`, which fixes the distribution of
+A `parameter` declaration may end with `~ Family(args)`, which fixes the distribution of
 a program draw using the given literal hyperparameters. A program step `sample v <- W`
 draws `v` from that family and scores it under it, on the compiled runtime, the
 reference machine, and every transpilation target that supports the declaration.
@@ -143,7 +143,7 @@ object D : FinSet 3
 object K : FinSet 2
 
 # A matrix-normal distribution for 3 x 2 tensor draws from W
-morphism W : D -> K [role=latent, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)
+morphism W : D -> K [role=parameter, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)
 export W
 ```
 
@@ -161,7 +161,7 @@ parameter directly.
 ```qvr
 object D : FinSet 3
 object K : FinSet 2
-morphism W : D -> K [role=latent, init=auto]
+morphism W : D -> K [role=parameter, init=auto]
 export W
 ```
 
@@ -907,8 +907,8 @@ object X : FinSet 3
 object Y : FinSet 4
 object Z : FinSet 2
 
-morphism f : X -> Y [role=latent]
-morphism g : Y -> Z [role=latent]
+morphism f : X -> Y [role=parameter]
+morphism g : Y -> Z [role=parameter]
 
 define fg = f >> g
 define gf = g << f    # the same composite as fg
@@ -936,7 +936,7 @@ domain must be a product of at least two factors.
 object X : FinSet 3
 object Y : FinSet 4
 object Z : FinSet 5
-morphism f : X * Y -> Z [role=latent]
+morphism f : X * Y -> Z [role=parameter]
 define g = f.curry_right    # g : X -> Y * Z
 export g
 ```

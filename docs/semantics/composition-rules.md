@@ -59,7 +59,7 @@ graph TD
 | Class | Level keyword | Claim |
 |---|---|---|
 | `CompositionRule` | `rule` | none |
-| `Magmoid` | `bilinear_form` | none |
+| `Magmoid` | `magmoid` | none |
 | `Semigroupoid` | `semigroupoid` | associative composition |
 | `Algebra` | `algebra` | identities, with a unit, a zero, a meet, and a negation |
 | `Semiring` | `algebra` or `semigroupoid` | the semiring laws, so composition is associative and has identities |
@@ -91,7 +91,7 @@ satisfies:
 
 The compiler allows `identity(A)`, `cup(A)`, `cap(A)`, `f.dagger`, and `f.trace(A)` only when the
 module's rule is an `Algebra`. In a module whose `composition` declaration has
-`[level=semigroupoid]`, `[level=bilinear_form]`, or `[level=rule]`, each of these raises a
+`[level=semigroupoid]`, `[level=magmoid]`, or `[level=rule]`, each of these raises a
 `CompileError`. The conditions under which these operations satisfy their equations are stated in
 [Expressions §3](expressions.md).
 
@@ -115,7 +115,7 @@ composition NAME [level=semigroupoid]
     join(t)         = E_⊕
 ```
 
-The bodies for `[level=bilinear_form]` and `[level=rule]` have the same two entries as
+The bodies for `[level=magmoid]` and `[level=rule]` have the same two entries as
 `semigroupoid`. A declaration without a `level` option has level `rule`. The built-in names are
 the eleven instances of [Semirings, t-norms, and change of base](algebras.md) (in snake case:
 `product_fuzzy`, `log_prob`, and so on), the de Morgan duals `reichenbach`, `boolean_dual`,

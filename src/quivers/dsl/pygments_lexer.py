@@ -83,9 +83,7 @@ _ALGEBRA_NAMES = frozenset(
 # Composition levels ride in ``[level=...]`` option values (e.g.
 # ``composition prod [level=algebra]``), so they are likewise
 # invisible to the grammar walker; the compiler validates membership.
-_COMPOSITION_LEVEL_NAMES = frozenset(
-    {"algebra", "semigroupoid", "bilinear_form", "rule"}
-)
+_COMPOSITION_LEVEL_NAMES = frozenset({"algebra", "semigroupoid", "magmoid", "rule"})
 
 _KEYWORD_TOKENS = _GRAMMAR_KEYWORDS
 _BUILTIN_FUNCTION_TOKENS = frozenset(

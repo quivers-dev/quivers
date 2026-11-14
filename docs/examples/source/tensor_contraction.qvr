@@ -28,9 +28,9 @@ object Item : FinSet 4
 object PredDim, ArgDim : FinSet 2
 object Judgment : FinSet 3
 
-morphism pred_embed : Item -> PredDim [role=latent]
-morphism arg_embed : Item -> ArgDim [role=latent]
-morphism interaction : (PredDim * ArgDim) -> Judgment [role=latent]
+morphism pred_embed : Item -> PredDim [role=parameter]
+morphism arg_embed : Item -> ArgDim [role=parameter]
+morphism interaction : (PredDim * ArgDim) -> Judgment [role=parameter]
 
 contraction bilinear_score (
     p : Item -> PredDim,
