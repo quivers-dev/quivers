@@ -26,10 +26,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
 
+import didactic.api as dx
 import torch
 
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.effects.base import EffectHandler, Installation, RunContext
 from quivers.effects.sites import TorchSampleable
 from quivers.qiec.builtins import (
@@ -51,8 +52,7 @@ from quivers.qiec.evaluator import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class SiteRequest:
+class SiteRequest(ValueModel):
     """What a strategy is given for one sample site.
 
     Parameters
@@ -72,10 +72,38 @@ class SiteRequest:
     """
 
     name: str
-    sampleable: TorchSampleable
-    given: torch.Tensor | None = None
-    seen: Mapping[str, TorchSampleable] = None  # type: ignore[assignment]
-    observation: torch.Tensor | None = None
+    sampleable: TorchSampleable = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    given: torch.Tensor | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    seen: Mapping[str, TorchSampleable] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    observation: torch.Tensor | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    @dx.model_validator()
+    def _check_runtime_fields(self) -> None:
+        """Validate sampleables, optional tensors, and the preceding-site mapping.
+
+        Raises
+        ------
+        TypeError
+            If a runtime field has an incompatible type.
+        """
+        if not isinstance(self.sampleable, TorchSampleable):
+            raise TypeError("site sampleable must be a TorchSampleable")
+        if any(
+            value is not None and not isinstance(value, torch.Tensor)
+            for value in (self.given, self.observation)
+        ):
+            raise TypeError("site given and observation must be tensors or None")
+        if not isinstance(self.seen, Mapping) or not all(
+            isinstance(name, str) and isinstance(value, TorchSampleable)
+            for name, value in self.seen.items()
+        ):
+            raise TypeError("site seen must map names to TorchSampleable values")
 
     def with_value(self, value: torch.Tensor) -> SiteRequest:
         """The same request with a value fixed.
@@ -90,7 +118,7 @@ class SiteRequest:
         SiteRequest
             The request with ``given`` set.
         """
-        return replace(self, given=value)
+        return self.with_(given=value)
 
 
 class Reparam(ABC):
@@ -189,8 +217,8 @@ class ReparamOrchestrator(EffectHandler):
                 return Forward()
             value, log_prob = strategy.apply(
                 SiteRequest(
-                    site,
-                    sampleable,
+                    name=site,
+                    sampleable=sampleable,
                     seen=dict(seen),
                     observation=run.observations.get(site),
                 )

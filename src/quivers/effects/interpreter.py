@@ -1249,8 +1249,8 @@ class _HostSteps:
             annotations["subsample_rows"] = rows
             drawing = _SubsampledMorphism(drawing, rows, factor)
         if drawing is morphism:
-            return TorchSampleable(morphism, inp)
-        return TorchSampleable(drawing, inp, declared=morphism)
+            return TorchSampleable(morphism=morphism, input=inp)
+        return TorchSampleable(morphism=drawing, input=inp, declared=morphism)
 
     def _parameters(
         self, site: str, morphism: ContinuousMorphism, context: ClauseContext

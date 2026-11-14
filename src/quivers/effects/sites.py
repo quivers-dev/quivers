@@ -9,15 +9,14 @@ and input a strategy or a trace may want to read.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
+import didactic.api as dx
 import torch
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.morphisms import ContinuousMorphism
 
 
-@dataclass(frozen=True, slots=True)
-class TorchSampleable:
+class TorchSampleable(ValueModel):
     """A morphism applied to an input, offered to the kernel as a sampleable.
 
     Parameters
@@ -34,14 +33,54 @@ class TorchSampleable:
         when no parameter store rebinds it.
     """
 
-    morphism: ContinuousMorphism
-    input: torch.Tensor
-    declared: ContinuousMorphism | None = None
+    morphism: ContinuousMorphism = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    input: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    declared: ContinuousMorphism = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
-    def __post_init__(self) -> None:
-        """Default the declared morphism to the drawing one."""
-        if self.declared is None:
-            object.__setattr__(self, "declared", self.morphism)
+    def __init__(
+        self,
+        *,
+        morphism: ContinuousMorphism,
+        input: torch.Tensor,
+        declared: ContinuousMorphism | None = None,
+    ) -> None:
+        """Construct a sampleable holding live runtime references by identity.
+
+        Parameters
+        ----------
+        morphism : ContinuousMorphism
+            The morphism used for sampling and scoring.
+        input : torch.Tensor
+            The tensor conditioning the morphism.
+        declared : ContinuousMorphism or None
+            The declared site morphism, defaulting to the sampling morphism.
+
+        Raises
+        ------
+        didactic.ValidationError
+            If the runtime fields have incompatible types.
+        """
+        super().__init__(
+            morphism=morphism,
+            input=input,
+            declared=morphism if declared is None else declared,
+        )
+
+    @dx.model_validator()
+    def _check_runtime_fields(self) -> None:
+        """Validate live morphisms and the conditioning tensor.
+
+        Raises
+        ------
+        TypeError
+            If either morphism or the input has an incompatible type.
+        """
+        if not isinstance(self.morphism, ContinuousMorphism) or not isinstance(
+            self.declared, ContinuousMorphism
+        ):
+            raise TypeError("sampleable morphisms must be ContinuousMorphism values")
+        if not isinstance(self.input, torch.Tensor):
+            raise TypeError("sampleable input must be a torch.Tensor")
 
     def rsample(self) -> torch.Tensor:
         """Draw a reparameterised sample.
