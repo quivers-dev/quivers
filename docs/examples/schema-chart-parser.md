@@ -2,7 +2,7 @@
 
 ## Overview
 
-A learnable [CKY](https://en.wikipedia.org/wiki/CYK_algorithm) chart parser assembled from pattern-polymorphic `schema` declarations rather than a `deduction` block. Two binary schemas give forward and backward application (the AB grammar core of the [Lambek calculus](https://doi.org/10.2307/2310058)); one unary schema adds the directional permutation of the commutative Lambek calculus LP. A `bundle` names the rule set, and `parser(...)` splices the bundle into a [`ChartParser`](../api/stochastic/parsers.md#quivers.stochastic.parsers.ChartParser) whose lexical category assignments and per-rule weights are learnable log-weights. [@lambek1958mathematics]
+A learnable [CKY](https://en.wikipedia.org/wiki/CYK_algorithm) chart parser assembled from pattern-polymorphic `schema` declarations rather than a `deduction` block. Two binary schemas give forward and backward application (the AB grammar core of the [Lambek calculus](https://doi.org/10.2307/2310058)). One unary schema adds the directional permutation of the commutative Lambek calculus LP. A `bundle` names the rule set, and `parser(...)` splices the bundle into a [`ChartParser`](../api/stochastic/parsers.md#quivers.stochastic.parsers.ChartParser) whose lexical category assignments and per-rule weights are learnable log-weights. [@lambek1958mathematics]
 
 ## QVR source
 
@@ -54,11 +54,11 @@ A schema is a reusable [rule template](custom-rules.md#understanding-the-model):
 The [phrase categories](https://www.nltk.org/book/ch08.html#context-free-grammar)
 `NP` and `N` denote noun phrases and nouns [@nltkSyntax2019]. Instantiating
 `X = NP` and `Y = N` gives the combination of `the : NP/N` with `dog : N`.
-A bundle names a list of templates; the finite category inventory determines
+A bundle names a list of templates. The finite category inventory determines
 which substitutions the compiler tries.
 
 The parser returns one aggregate score for all derivations reaching the
-sentence goal. This tells you how the model weights those analyses; without
+sentence goal. This tells you how the model weights those analyses. Without
 additional normalization it is not a probability over sentences. Comparing
 the chart and [reference-search score](../tutorials/qvr/11-parsing-and-search.md#2-compare-inside-scores) is useful because they calculate that
 same aggregate by different execution strategies.
@@ -79,15 +79,15 @@ per-rule log-weights.
 
 ## Walkthrough
 
-`object Atoms : {N, NP, S}` declares the category atoms as an enum set, and `object Cat : FreeResiduated(Atoms)` binds their [free residuated closure](../semantics/schemas.md#4-the-free-residuated-universe) as the universe the schema parameters range over. `object Token : {the, dog, cat, sleeps}` declares the terminal vocabulary; token indices follow declaration order, so `the` is token 0 and `sleeps` is token 3.
+`object Atoms : {N, NP, S}` declares the category atoms as an enum set, and `object Cat : FreeResiduated(Atoms)` binds their [free residuated closure](../semantics/schemas.md#4-the-free-residuated-universe) as the universe the schema parameters range over. `object Token : {the, dog, cat, sleeps}` declares the terminal vocabulary. Token indices follow declaration order, so `the` is token 0 and `sleeps` is token 3.
 
-Each `schema` declaration is a family of chart rules parameterized by typed meta-variables ([Schemas](../semantics/schemas.md#6-schema-declarations)). The arity is read off the domain shape: a product domain compiles to a [`PatternBinarySchema`](../api/stochastic/biclosed.md#quivers.stochastic.schema.PatternBinarySchema) that fires on adjacent chart cells, and any other domain compiles to a [`PatternUnarySchema`](../api/stochastic/biclosed.md#quivers.stochastic.schema.PatternUnarySchema) that fires on a single cell. QVR's slash convention is biclosed: in both `X / Y` and `X \ Y` the left operand is the result and the right operand is the argument, with the slash direction marking where the argument is sought. Thus `fwd_app` consumes a rightward functor and its right neighbor, `bwd_app` consumes a leftward functor and its left neighbor, and `perm` flips a functor's seek direction while fixing its result and argument, which is exactly the structural permutation that separates LP from the directional calculus.
+Each `schema` declaration is a family of chart rules parameterized by typed meta-variables ([Schemas](../semantics/schemas.md#6-schema-declarations)). The arity is read off the domain shape: a product domain compiles to a [`PatternBinarySchema`](../api/stochastic/biclosed.md#quivers.stochastic.schema.PatternBinarySchema) that fires on adjacent chart cells, and any other domain compiles to a [`PatternUnarySchema`](../api/stochastic/biclosed.md#quivers.stochastic.schema.PatternUnarySchema) that fires on a single cell. The slash syntax uses Steedman notation [@steedman2000syntactic]: in both `X / Y` and `X \ Y` the left operand is the result and the right operand is the argument, with the slash direction marking where the argument is sought. Thus `fwd_app` consumes a rightward functor and its right neighbor, `bwd_app` consumes a leftward functor and its left neighbor, and `perm` flips a functor's seek direction while fixing its result and argument, the directional conversion induced by exchange in LP.
 
-`bundle lp_rules : [fwd_app, bwd_app, perm]` binds the rule set as a first-class name ([Bundles](../semantics/schemas.md#7-bundles)). The `parser(...)` expression resolves each entry in `rules=` against declared rules, schema primitives, and bundles; a bundle reference is spliced, that is, replaced by its members exactly as if they had been listed verbatim.
+`bundle lp_rules : [fwd_app, bwd_app, perm]` binds the rule set as a first-class name ([Bundles](../semantics/schemas.md#7-bundles)). The `parser(...)` expression resolves each entry in `rules=` against declared rules, schema primitives, and bundles. A bundle reference is spliced, that is, replaced by its members exactly as if they had been listed verbatim.
 
-`parser(rules=[lp_rules], terminal=Token, start=S, depth=1)` builds the chart parser via [`ChartParser.from_schema`](../api/stochastic/parsers.md#quivers.stochastic.parsers.ChartParser.from_schema). The category atoms are inferred from the uniquely declared `FreeResiduated` object in scope, and `depth=1` bounds the [`CategorySystem`](../api/stochastic/categories.md#quivers.stochastic.categories.CategorySystem) to the atoms plus every depth-1 slash category, 21 categories in all. Instantiating the three schemas over this inventory yields a [`RuleSystem`](../api/stochastic/rules.md#quivers.stochastic._rule_system.RuleSystem) with 18 binary and 9 unary firings, each carrying its own learnable log-weight; the lexical axiom contributes a learnable `(4, 21)` token-to-category table whose rows are log-softmax normalized, so each token's entry is a log-probability over the 21 categories.
+`parser(rules=[lp_rules], terminal=Token, start=S, depth=1)` builds the chart parser via [`ChartParser.from_schema`](../api/stochastic/parsers.md#quivers.stochastic.parsers.ChartParser.from_schema). The category atoms are inferred from the uniquely declared `FreeResiduated` object in scope, and `depth=1` bounds the [`CategorySystem`](../api/stochastic/categories.md#quivers.stochastic.categories.CategorySystem) to the atoms plus every depth-1 slash category, 21 categories in all. Instantiating the three schemas over this inventory yields a [`RuleSystem`](../api/stochastic/rules.md#quivers.stochastic._rule_system.RuleSystem) with 18 binary and 9 unary firings, each carrying its own learnable log-weight. The lexical axiom contributes a learnable `(4, 21)` token-to-category table whose rows are log-softmax normalized, so each token's entry is a log-probability over the 21 categories.
 
-The QIEC lowering instantiates that same finite rule system as a deduction. Its recursive computation carries the expected ground category, chooses only rules that can produce it, chooses split points for binary rules, and adds lexical and rule weights through the core effects. Thus `run_deduction(module, "lp_parser", tokens=...)` computes the same inside weight as the classic chart. A transpile target without the search runtime rejects this computation under `qiec:capability:search:lp_parser__run`.
+The QIEC lowering instantiates that same finite rule system as a deduction. Its recursive computation carries the expected ground category, chooses only rules that can produce it, chooses split points for binary rules, and adds lexical and rule weights through the core effects. Thus `run_deduction(module, "lp_parser", tokens=...)` computes the same inside weight as the classic chart. Backend coverage is recorded in the [support matrix](../transpile-support.md).
 
 ## Try it
 
@@ -134,9 +134,9 @@ assert abs(checked.weight - classic) < 1e-6
 The parser is callable on integer token tensors, `(seq_len,)` for one sentence or `(batch, seq_len)` for a batch, and returns the inside log-weight of the `S`-rooted span covering the whole input. The score is differentiable in the lexical table and the per-rule weights.
 
 `run_deduction` exercises the QIEC view of the same parser. It handles the
-generated search and weight effects on the reference machine and returns the
+generated search and weight effects on the [reference machine](../developer/qiec.md#reference-evaluator) and returns the
 goal's inside weight. Pass an explicit parameter store when comparing after an
-optimizer step; the call above deliberately compares the shared initial
+optimizer step. The call above deliberately compares the shared initial
 weights before any fitting mutates the classic module.
 
 ### Recovering a length-conditional distribution
@@ -214,7 +214,7 @@ untouched.
 
 `parser(rules=...)` is syntactic sugar for the `chart_fold(...)` primitive,
 which builds the same inside computation from morphism-valued arguments rather
-than named schemas. Given a lexical kernel `emit : NT -> Tok` and a branching
+than named schemas. Given a lexical [kernel](https://en.wikipedia.org/wiki/Markov_kernel) `emit : NT -> Tok` and a branching
 kernel `grow : NT -> NT * NT`, `chart_fold` constructs an
 [`InsideAlgorithm`](../api/stochastic/inside.md#quivers.stochastic.inside.InsideAlgorithm)
 directly, so the rule tensors are user-declared morphisms rather than schema
@@ -232,8 +232,10 @@ define inside = chart_fold(lex=emit, binary=grow, start=0)
 export inside
 ```
 
-This form runs the inside recursion of a context-free grammar in [Chomsky normal form](https://en.wikipedia.org/wiki/Chomsky_normal_form), with `grow[A, B, C]` weighting the production A -> B C and `emit[A, t]` the production A -> t; `start=0` selects the root nonterminal by index. Both declarations default to [stochastic morphisms](../guides/stochastic.md#stochastic-morphisms), so each kernel is row-normalized on its own: for every nonterminal A, the binary weights sum to one over pairs (B, C), and the lexical weights sum to one over tokens t. A probabilistic context-free grammar instead requires the binary and lexical productions of A to share one distribution, summing to one jointly. With two separately normalized kernels each nonterminal carries a total mass of two, so the inside score is that of a weighted grammar rather than a sentence probability, and the length-conditional normalization above applies to it as well.
+This form runs the inside recursion of a context-free grammar in [Chomsky normal form](https://en.wikipedia.org/wiki/Chomsky_normal_form), with `grow[A, B, C]` weighting the production A -> B C and `emit[A, t]` the production A -> t. `start=0` selects the root nonterminal by index. Both declarations default to [stochastic morphisms](../guides/stochastic.md#stochastic-morphisms), so each kernel is row-normalized on its own: for every nonterminal A, the binary weights sum to one over pairs (B, C), and the lexical weights sum to one over tokens t. A probabilistic context-free grammar instead requires the binary and lexical productions of A to share one distribution, summing to one jointly. With two separately normalized kernels each nonterminal carries a total mass of two, so the inside score is that of a weighted grammar rather than a sentence probability, and the length-conditional normalization above applies to it as well.
 
 ## Categorical perspective
 
-A schema denotes a uniform family of morphisms indexed by substitutions of its parameters into the residuated universe ([Schemas](../semantics/schemas.md#6-schema-declarations)); instantiating the family over a finite [`CategorySystem`](../api/stochastic/categories.md#quivers.stochastic.categories.CategorySystem) is precisely the evaluation of a functor from category inventories to rule systems, and the union of schemas corresponds to the coproduct of the induced rule systems. Under QVR's biclosed convention `fwd_app` and `bwd_app` are the counits of the right and left residuation adjunctions, and `perm` is the structural isomorphism that a symmetric monoidal (rather than merely monoidal) base makes available. The bundle is denotationally inert: `parser(rules=[lp_rules])` and `parser(rules=[fwd_app, bwd_app, perm])` compile to the same rule system.
+A schema describes a family of rules obtained by substituting categories for its parameters. A finite [`CategorySystem`](../api/stochastic/categories.md#quivers.stochastic.categories.CategorySystem) restricts the substitutions used to instantiate that family. A bundle collects the resulting rules: `parser(rules=[lp_rules])` and `parser(rules=[fwd_app, bwd_app, perm])` compile to the same rule system.
+
+In a [biclosed monoidal category](https://ncatlab.org/nlab/show/closed+monoidal+category), the two slash types are internal function types for arguments on opposite sides. Application evaluates such a function against its argument. Formally, `fwd_app` and `bwd_app` are the counits of the two tensor-residuation adjunctions. A [symmetric](https://ncatlab.org/nlab/show/symmetric+monoidal+category) tensor also permits exchange, which induces the change of direction represented by `perm`. These interpretations concern the rule shapes. Independently learned numerical rule weights are not required to satisfy categorical coherence equations.
