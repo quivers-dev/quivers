@@ -9,7 +9,7 @@ U_u \sim \mathcal{N}(0, I_K), \quad V_m \sim \mathcal{N}(0, I_K), \quad
 r_{u, m} \mid U, V \sim \mathcal{N}(U_u^\top V_m, \sigma^2) \text{ for each observed } (u, m).
 $$
 
-Only observed cells enter the likelihood. The unobserved cells are predicted through the same inner product, so the quality of a fit is measured by how well it predicts ratings it never saw. Salakhutdinov and Mnih fix the prior and noise precisions or adapt them; this page places a weakly informative half-Cauchy prior on $\sigma$ and unit-scale priors on the factors.
+Only observed cells enter the likelihood. The unobserved cells are predicted through the same inner product, so the quality of a fit is measured by how well it predicts ratings it never saw. Salakhutdinov and Mnih fix the prior and noise precisions or adapt them. This page places a weakly informative half-Cauchy prior on $\sigma$ and unit-scale priors on the factors.
 
 ## QVR source
 
@@ -59,19 +59,19 @@ export pmf
 
 A user vector describes preferences and an item vector describes features. Their dot product is a predicted rating: matching coordinates reinforce one another, and opposite signs lower it. The latent coordinates are learned jointly, so their interpretation need not be fixed in advance.
 
-The data are a list of observed triples $(u_n, m_n, r_n)$ rather than a full matrix. Missing cells are not zeros; they are simply absent from the likelihood, and filling them with zeros would treat those zeros as observed ratings. Since the factors are shared across all of a user's ratings and all of an item's ratings, a user who rated a few items still gets a usable vector, and that is what makes completion possible.
+The data are a list of observed triples $(u_n, m_n, r_n)$ rather than a full matrix. Missing cells are not zeros. They are simply absent from the likelihood, and filling them with zeros would treat those zeros as observed ratings. Since the factors are shared across all of a user's ratings and all of an item's ratings, a user who rated a few items still gets a usable vector, and that is what makes completion possible.
 
 Different factor coordinates can produce the same predicted ratings: for any invertible $K \times K$ matrix $A$, replacing $U$ by $U A$ and $V$ by $V A^{-\top}$ leaves every inner product unchanged (the prior breaks this symmetry only partly). Fits are thus compared on predicted ratings, not on factor entries.
 
 ## Walkthrough
 
-`object User : FinSet 50` and `object Movie : FinSet 40` declare the two sides of the rating matrix, `object LatentDim : FinSet 2` the latent dimension $K$, and `object Rating : FinSet 800` the plate of observed ratings: 800 of the $50 \times 40 = 2000$ cells. `object Val : Real 1` is the value space of a rating.
+`object User : FinSet 50` and `object Movie : FinSet 40` declare the two sides of the rating matrix, `object LatentDim : FinSet 2` the latent dimension $K$, and `object Rating : FinSet 800` the [plate](https://en.wikipedia.org/wiki/Plate_notation) of observed ratings: 800 of the $50 \times 40 = 2000$ cells. `object Val : Real 1` is the value space of a rating.
 
-The three `sample` steps draw the noise scale and the two factor tables. `sample U : User <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=User]` draws one $K$-vector per user, and the `Movie` table is drawn the same way. The host data `user_idx` and `movie_idx` are integer vectors over the `Rating` plate, giving the user and item of each observed rating; the two gathers `U[user_idx]` and `V[movie_idx]` return `Rating`-by-`LatentDim` tables, and `sum(u_row * v_row)` reduces their last axis, giving each observed rating's score $U_{u_n}^\top V_{m_n}$. `observe r : Rating <- Normal(loc=score, scale=sigma)` scores the observed ratings and nothing else. The same per-row inner-product idiom appears in the [PPCA](ppca.md#walkthrough) example, where every cell of the matrix is observed.
+The three `sample` steps draw the noise scale and the two factor tables. `sample U : User <- Normal(loc=0.0, scale=1.0) [over=LatentDim, iid_over=User]` draws one $K$-vector per user, and the `Movie` table is drawn the same way. The input data `user_idx` and `movie_idx` are integer vectors over the `Rating` plate, giving the user and item of each observed rating. The two gathers `U[user_idx]` and `V[movie_idx]` return `Rating`-by-`LatentDim` tables, and `sum(u_row * v_row)` reduces their last axis, giving each observed rating's score $U_{u_n}^\top V_{m_n}$. `observe r : Rating <- Normal(loc=score, scale=sigma)` scores the observed ratings and nothing else. The same per-row inner-product idiom appears in the [PPCA](ppca.md#walkthrough) example, where every cell of the matrix is observed.
 
 ## Try it
 
-The blocks below simulate a rating matrix from the model, hide 60% of its cells, check the compiled joint against a hand-written density, fit by SVI and measure prediction error on the hidden cells against a global-mean baseline, and run a short NUTS chain on the same joint.
+The blocks below simulate a rating matrix from the model, hide 60% of its cells, check the compiled joint against a hand-written density, fit by [SVI](../guides/inference-svi.md) (stochastic variational inference) and measure prediction error on the hidden cells against a global-mean baseline, and run a short [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler) chain on the same joint.
 
 ### Generating synthetic data
 
@@ -100,7 +100,7 @@ observations = {"r": r, "user_idx": user_idx, "movie_idx": movie_idx}
 x_in = torch.zeros(1, 1)
 ```
 
-The program input `x_in` is a single row. The extent of the `Rating` plate comes from the observed ratings and their indices, and the scalar site `sigma` is drawn once per run rather than once per input row. Every cell of `full` is a draw from the model, but only the 800 cells in `observed` reach the program. The other 1200 are kept aside as a test set.
+The program input `x_in` is a single row. The extent of the `Rating` plate comes from the observed ratings and their indices, and the scalar site `sigma` is drawn once in that run. Each [input row is an independent run](../guides/inference-foundations.md#input-rows-are-independent-runs). Every cell of `full` is a draw from the model, but only the 800 cells in `observed` reach the program. The other 1200 are kept aside as a test set.
 
 ### Checking the joint density
 
@@ -123,7 +123,7 @@ print(f"log joint at the truth: {float(log_joint):.2f}")
 
 ### SVI fit
 
-Fit an [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) by [`SVI`](../api/inference/svi.md#svi), average the predicted rating matrix $U V^\top$ over 100 guide draws, and compute the root-mean-square error on the held-out cells. The baseline predicts every held-out cell by the mean observed rating; the noise scale $\sigma = 0.3$ is the floor no predictor can beat on average.
+Fit an [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) by [`SVI`](../api/inference/svi.md#svi), average the predicted rating matrix $U V^\top$ over 100 guide draws, and compute the root-mean-square error on the held-out cells. The baseline predicts every held-out cell by the mean observed rating. The noise scale $\sigma = 0.3$ is the floor no predictor can beat on average.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -157,11 +157,11 @@ assert model_rmse < 1.5 * true_sigma
 assert abs(fit_sigma - true_sigma) < 0.1
 ```
 
-The second assertion asks that the fit come within 50% of the noise floor on cells it never saw, which requires the user and item vectors themselves to be close to right, up to the invertible reparameterization noted above.
+The second assertion requires prediction error within 50% of the noise scale on the held-out cells. It assesses the product of the factors at those cells, not recovery of individual factor entries.
 
 ### NUTS posterior
 
-[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) runs on the same joint, with both factor tables and the noise scale latent. The chain below is short; a real analysis would run several chains and monitor predicted ratings rather than factor entries.
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) runs on the same joint, with both factor tables and the noise scale latent. The chain below is short. A real analysis would run several chains and monitor predicted ratings rather than factor entries.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -178,7 +178,7 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-Read as arrows in the real algebra, the factor tables are maps $U : \mathsf{User} \to \mathsf{LatentDim}$ and $V^\top : \mathsf{LatentDim} \to \mathsf{Movie}$, and the dense score matrix is their composite
+In the category of real matrices, whose composition is matrix multiplication, the factor tables are maps $U : \mathsf{User} \to \mathsf{LatentDim}$ and $V^\top : \mathsf{LatentDim} \to \mathsf{Movie}$, and the dense score matrix is their composite
 
 $$
 \mathsf{User} \xrightarrow{U} \mathsf{LatentDim} \xrightarrow{V^\top} \mathsf{Movie},
@@ -190,7 +190,3 @@ whose $(u, m)$ entry is $\sum_k U_{u,k} V_{m,k}$. The program never materializes
 
 - [Probabilistic PCA](ppca.md), the same inner-product mean with every cell observed and the per-item codes treated as latent factors of a covariance model.
 - [Bilinear Tensor Contraction](tensor-contraction.md), a three-way analogue of the bilinear score.
-
-## Sources and further reading
-
-- *Probabilistic Matrix Factorization* [@salakhutdinov2007pmf].
