@@ -22,7 +22,7 @@
 # is the plate the counts are observed over; the per-row arm
 # assignment reaches the model through the standard plate-gather
 # idiom (conc1[arm_idx]). The trial count n_trials is exogenous
-# data supplied at fit time through the observations dict, and Val
+# data provided at fit time through the observations dict, and Val
 # is the value space of the returned per-row success
 # concentration.
 #

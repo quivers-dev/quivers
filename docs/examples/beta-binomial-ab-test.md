@@ -2,7 +2,7 @@
 
 ## Overview
 
-A two-arm [A/B test](https://en.wikipedia.org/wiki/A/B_testing) on a binary conversion outcome with per-arm [Beta-Binomial](https://en.wikipedia.org/wiki/Beta-binomial_distribution) likelihood. Each arm carries an independent positive concentration pair $(c^{(1)}_j, c^{(0)}_j)$ under a heavy-tailed [HalfCauchy](https://en.wikipedia.org/wiki/Cauchy_distribution#Truncation_and_folding) prior; each measurement batch reports the successes out of a shared trial count $N$ under the concentrations of the arm it was assigned to.
+A two-arm [A/B test](https://en.wikipedia.org/wiki/A/B_testing) on a binary conversion outcome with per-arm [Beta-Binomial](https://en.wikipedia.org/wiki/Beta-binomial_distribution) likelihood. Each arm carries an independent positive concentration pair $(c^{(1)}_j, c^{(0)}_j)$ under a heavy-tailed [HalfCauchy](https://en.wikipedia.org/wiki/Cauchy_distribution#Truncation_and_folding) prior. Each measurement batch reports the successes out of a shared trial count $N$ under the concentrations of the arm it was assigned to. [@skellam1948binomial]
 
 Generative structure:
 
@@ -43,7 +43,7 @@ The Beta-Binomial integrates the latent per-batch conversion rate $p_n$ analytic
 # is the plate the counts are observed over; the per-row arm
 # assignment reaches the model through the standard plate-gather
 # idiom (conc1[arm_idx]). The trial count n_trials is exogenous
-# data supplied at fit time through the observations dict, and Val
+# data provided at fit time through the observations dict, and Val
 # is the value space of the returned per-row success
 # concentration.
 #
@@ -74,26 +74,23 @@ conversion rate while still varying substantially from day to day. The ratio
 controls how tightly batch rates cluster around that mean. A Binomial with
 one fixed rate would omit this extra batch variation.
 
-After fitting, compute the mean-rate difference between arms in each [posterior draw](../tutorials/qvr/01-first-model.md#inspect-the-posterior). Its distribution answers how uncertain the comparison remains; the
+After fitting, compute the mean-rate difference between arms in each [posterior draw](../tutorials/qvr/01-first-model.md#inspect-the-posterior). Its distribution answers how uncertain the comparison remains. The
 returned success concentration alone is not a conversion probability. Since
 the arm priors are independent, any shared behavior must come from the
 observations rather than a population-level pooling term.
 
 ## Walkthrough
 
-`object Arm : FinSet 2` is the plate the concentrations are allocated over, `object Batch : FinSet 40` is the plate the counts are observed over (20 batches per arm), and `object Val : Real 1` is the value space of what the program returns, so the signature reads `Batch -> Val`. The domain names the observation plate; the codomain names the space the returned value lives in, which for a real scalar is `Real 1`.
+`object Arm : FinSet 2` is the [plate](https://en.wikipedia.org/wiki/Plate_notation) the concentrations are allocated over, `object Batch : FinSet 40` is the plate the counts are observed over (20 batches per arm), and `object Val : Real 1` is the value space of what the program returns, so the signature reads `Batch -> Val`. The domain names the observation plate. The codomain names the space the returned value lives in, which for a real scalar is `Real 1`.
 
-The per-arm concentration parameters `conc1` and `conc0` have independent HalfCauchy priors with scale $2$. `let a = conc1[arm_idx]` and `let b = conc0[arm_idx]` gather each batch's pair through the exogenous arm-assignment vector, the same plate-gather idiom the [2PL IRT example](irt-2pl.md) uses for its cross-classified design. The `observe` step then scores the batch's successes under a Beta-Binomial likelihood with shared trial count `n_trials`, also supplied through host data. `return a` exposes the fitted per-batch success concentration; conversion probabilities can be summarized from `conc1 / (conc1 + conc0)` after drawing both sites.
+The per-arm concentration parameters `conc1` and `conc0` have independent HalfCauchy priors with scale $2$. `let a = conc1[arm_idx]` and `let b = conc0[arm_idx]` gather each batch's pair through the exogenous arm-assignment vector, the same indexed lookup the [2PL IRT example](irt-2pl.md) uses for its cross-classified design. The `observe` step then scores the batch's successes under a Beta-Binomial likelihood with shared trial count `n_trials`, also provided through input data. `return a` exposes the fitted per-batch success concentration. Conversion probabilities can be summarized from `conc1 / (conc1 + conc0)` after drawing both sites.
 
 ## Try it
 
 The blocks below simulate batches from the two arms, check the compiled log
 joint against a hand-written density, and then compare the arms: the quantity
 an A/B test reports is the posterior of the difference in mean conversion rate,
-`conc1 / (conc1 + conc0)` in arm B minus the same in arm A. The program reads
-its data by name, so its input `x_in` is a single dummy row: that leading axis
-is a particle axis, and a longer one would score the whole data set once per
-row.
+`conc1 / (conc1 + conc0)` in arm B minus the same in arm A. The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
@@ -124,7 +121,7 @@ observations = {"y": y, "arm_idx": arm_idx, "n_trials": torch.tensor(n_trials)}
 x_in = torch.zeros(1, 1)
 ```
 
-The trial count `n_trials` and the arm assignment `arm_idx` are both exogenous: the program never declares them, so the runtime resolves them from the observations dict at trace time and every backend takes them as data inputs.
+The trial count `n_trials` and the arm assignment `arm_idx` are both exogenous: the program never declares them, so the runtime resolves them from the observations mapping at trace time and every backend takes them as data inputs.
 
 ### Checking the log joint
 
@@ -155,8 +152,8 @@ assert torch.allclose(compiled, oracle, rtol=1e-6)
 
 ### SVI fit and arm comparison
 
-A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
-[`SVI`](../api/inference/svi.md), and the lift is computed in every guide draw.
+A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+[`SVI`](../api/inference/svi.md) (stochastic variational inference), and the lift is computed in every guide draw.
 Batch rates vary with a standard deviation near 0.07 around each arm's mean, so
 with 20 batches per arm the lift has a standard error near 0.025. The check asks
 that the posterior mean lift lie within 0.07 of the true 0.15 (about three
@@ -213,7 +210,3 @@ assert float((lift_nuts > 0).float().mean()) > 0.99
 ## Use cases
 
 This model is useful when binary successes are summarized per measurement batch and an explicit per-trial latent rate is unnecessary. The arms have independent concentration priors: there is no shared population-level hyperprior, so the specification does not shrink one arm toward the other.
-
-## Sources and further reading
-
-- *A Probability Distribution Derived from the Binomial Distribution by Regarding the Probability of Success as Variable between the Sets of Trials* [@skellam1948binomial].
