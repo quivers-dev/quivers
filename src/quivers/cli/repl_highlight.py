@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Any
 
 import didactic.api as dx
+import tree_sitter
 from pygments.token import (
     Comment,
     Keyword,
@@ -36,17 +37,17 @@ from pygments.token import (
     Punctuation,
     String,
 )
+from pygments.token import Text as PygmentsText
 
 from quivers.dsl.pygments_lexer import (
     _BUILTIN_FUNCTION_TOKENS,
     _BUILTIN_TYPE_TOKENS,
     _KEYWORD_TOKENS,
     _OPERATOR_TOKENS,
-    _TokenType,
     _load_parser,
     _node_kind_to_pygments_token,
+    _TokenType,
 )
-
 
 # ---------------------------------------------------------------------------
 # semantic token vocabulary
@@ -208,13 +209,24 @@ def tokenize(
             )
         ]
 
-    leaves: list[tuple[Any, str | None, str | None]] = []
+    leaves: list[tuple[tree_sitter.Node, str | None, str | None]] = []
 
     def walk(
-        node: Any,
+        node: tree_sitter.Node,
         parent_kind: str | None,
         field_name: str | None,
     ) -> None:
+        """Collect leaf nodes with their enclosing grammar context.
+
+        Parameters
+        ----------
+        node : tree_sitter.Node
+            The current syntax node.
+        parent_kind : str or None
+            Its enclosing node's grammar kind.
+        field_name : str or None
+            Its field in the enclosing node.
+        """
         if not node.children:
             leaves.append((node, parent_kind, field_name))
             return
@@ -478,7 +490,7 @@ def to_rich_text(
     return out
 
 
-def to_pygments_pairs(source: str) -> list[tuple[Any, str]]:
+def to_pygments_pairs(source: str) -> list[tuple[_TokenType, str]]:
     """Build ``(Pygments token, text)`` pairs suitable for prompt_toolkit.
 
     prompt_toolkit's PygmentsLexer wraps a Pygments Lexer that yields
@@ -495,17 +507,6 @@ def to_pygments_pairs(source: str) -> list[tuple[Any, str]]:
     list[tuple[pygments.token._TokenType, str]]
         One pair per span, in source order.
     """
-    from pygments.token import (
-        Comment,
-        Keyword,
-        Name,
-        Number,
-        Operator,
-        Punctuation,
-        String,
-        Text,
-    )
-
     mapping = {
         "comment": Comment,
         "keyword": Keyword,
@@ -518,11 +519,11 @@ def to_pygments_pairs(source: str) -> list[tuple[Any, str]]:
         "function": Name.Builtin,
         "namespace": String.Symbol,
         "decorator": Name.Decorator,
-        "error": Text,
+        "error": PygmentsText,
     }
-    out: list[tuple[Any, str]] = []
+    out: list[tuple[_TokenType, str]] = []
     for span in tokenize(source):
-        out.append((mapping.get(span.token, Text), span.text))
+        out.append((mapping.get(span.token, PygmentsText), span.text))
     return out
 
 

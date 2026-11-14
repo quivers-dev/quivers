@@ -36,6 +36,9 @@ from __future__ import annotations
 
 from typing import Callable
 
+import panproto
+
+from quivers.cli.migrations import _identity
 from quivers.cli.migrations import v0_2_0_to_v0_3_0 as _hop_2_3
 from quivers.cli.migrations import v0_3_0_to_v0_4_0 as _hop_3_4
 from quivers.cli.migrations import v0_4_0_to_v0_5_0 as _hop_4_5
@@ -47,18 +50,17 @@ from quivers.cli.migrations import v0_11_0_to_v0_14_0 as _hop_11_14
 from quivers.cli.migrations import v0_14_0_to_v0_15_0 as _hop_14_15
 from quivers.cli.migrations import v0_18_0_to_v0_19_0 as _hop_18_19
 from quivers.cli.migrations import v0_19_0_to_head as _hop_19_head
-from quivers.cli.migrations import _identity
 from quivers.cli.migrations._common import MigrationError
 from quivers.cli.migrations._manifest import SCHEMA_COMMITS, revisions_are_identical
 from quivers.cli.migrations._vcs import (
     BlameReport,
     DiffCoverageReport,
+    _open_repo,
     blame_kind,
     check_chain_coverage,
     commit_id_for,
     diff_coverage,
 )
-
 
 _Migrator = Callable[[bytes], bytes]
 
@@ -277,8 +279,6 @@ def vcs_coverage_report() -> list[DiffCoverageReport]:
             continue
         # Re-implement diff_coverage's body using the resolved
         # commit ids directly to avoid double-resolution.
-        from quivers.cli.migrations._vcs import _open_repo
-        import panproto
 
         repo = _open_repo()
         src_schema = repo.schema_at(from_id)

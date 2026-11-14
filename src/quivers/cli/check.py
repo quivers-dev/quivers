@@ -35,8 +35,8 @@ from typing import Literal
 import didactic.api as dx
 
 from quivers.dsl import (
-    Compiler,
     CompileError,
+    Compiler,
     ParseError,
     non_qiec_projection,
     parse,
@@ -48,7 +48,9 @@ from quivers.dsl.qiec_tooling import (
     qiec_diagnostic,
     qiec_module_name,
 )
-
+from quivers.transpile import UnsupportedConstruct
+from quivers.transpile.plan import checked_program_plan
+from quivers.transpile.qiec_ir import analyze_qiec_capabilities
 
 type CheckSeverity = Literal["error", "warning", "note"]
 """The severity of a `CheckDiagnostic`."""
@@ -242,10 +244,6 @@ def check_file(path: Path, *, target: str | None = None) -> list[CheckDiagnostic
         )
 
     if target is not None and compiler.qiec_module is not None:
-        from quivers.transpile import UnsupportedConstruct
-        from quivers.transpile.plan import checked_program_plan
-        from quivers.transpile.qiec_ir import analyze_qiec_capabilities
-
         capabilities = analyze_qiec_capabilities(compiler.qiec_module, target)
         for capability in capabilities:
             origin = capability.origin

@@ -4,20 +4,20 @@ another PPL.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from didactic.codegen._emitter import lookup_emitter
+
+from quivers.dsl.parser import parse
+from quivers.transpile import UnsupportedConstruct, available_targets, transpile
 
 if TYPE_CHECKING:
     import argparse
 
 
 def main(args: argparse.Namespace) -> int:
-    from quivers.dsl.parser import parse
-    from quivers.transpile import (
-        UnsupportedConstruct,
-        available_targets,
-        transpile,
-    )
 
     if getattr(args, "list_targets", False):
         for target in available_targets():
@@ -81,8 +81,6 @@ def main(args: argparse.Namespace) -> int:
                 flush=True,
             )
         else:
-            import sys
-
             sys.stdout.buffer.write(bytes_out)
             sys.stdout.buffer.write(b"\n")
 
@@ -92,7 +90,6 @@ def main(args: argparse.Namespace) -> int:
 def _extension_for(target: str) -> str:
     """Look up the registered backend's `file_extension`, falling back
     to the target name."""
-    from didactic.codegen._emitter import lookup_emitter
 
     emitter = lookup_emitter(f"qvr-{target}")
     if emitter is None:

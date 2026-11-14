@@ -181,9 +181,9 @@ def _env_completions(session: ReplSession, prefix: str) -> list[Completion]:
         if effect_name is not None:
             out.extend(
                 Completion(
-                    f"{instance_name}.{operation}",
-                    "function",
-                    f"operation of {effect_name}",
+                    text=f"{instance_name}.{operation}",
+                    kind="function",
+                    detail=f"operation of {effect_name}",
                 )
                 for operation in effect_operation_names(session.module, effect_name)
                 if operation.startswith(operation_prefix)

@@ -16,10 +16,9 @@ from quivers.cli.repl_session import Diagnostic
 from quivers.dsl import Compiler, ParseError, parse
 from quivers.dsl.ast_nodes import DefineDecl, Module, Statement
 from quivers.dsl.ast_nodes.qiec import (
-    QiecBinder,
     QiecBindComputation,
+    QiecBinder,
     QiecCaseComputation,
-    QiecIfComputation,
     QiecComputation,
     QiecComputationDecl,
     QiecEffectDecl,
@@ -29,15 +28,13 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecHandlerDecl,
     QiecHandlerOperationClause,
     QiecHandlerReturnClause,
+    QiecIfComputation,
     QiecLocalBinding,
     QiecSequenceComputation,
     QiecTypeName,
     QiecValueParameter,
 )
 from quivers.dsl.constraints import check_constraints
-from quivers.qiec.checking import KernelRegistry
-from quivers.qiec.module import validate_module
-from quivers.transpile.qiec_ir import analyze_qiec_capabilities
 from quivers.dsl.qiec_tooling import (
     QiecBinding,
     analyze_module,
@@ -46,6 +43,11 @@ from quivers.dsl.qiec_tooling import (
     qiec_module_name,
 )
 from quivers.qiec import QiecModule
+from quivers.qiec.checking import KernelRegistry
+from quivers.qiec.module import validate_module
+from quivers.transpile import UnsupportedConstruct
+from quivers.transpile.plan import checked_program_plan
+from quivers.transpile.qiec_ir import analyze_qiec_capabilities
 
 
 class EnvBinding(Protocol):
@@ -209,9 +211,6 @@ class DocumentState:
                 )
             )
         if not capabilities:
-            from quivers.transpile import UnsupportedConstruct
-            from quivers.transpile.plan import checked_program_plan
-
             try:
                 checked_program_plan(self.qiec_module, self.module, target)
             except UnsupportedConstruct as error:

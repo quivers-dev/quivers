@@ -8,15 +8,20 @@ by ``SampledComposition.log_prob``.
 """
 
 from __future__ import annotations
-from abc import ABC, abstractmethod
+
 import collections.abc
 import math
+from abc import ABC, abstractmethod
 from typing import cast
+
 import torch
 import torch.nn as nn
 from torch.distributions import constraints as _constraints
+
+from quivers.continuous.spaces import ContinuousSpace, Euclidean, ProductSpace
+from quivers.core.morphisms import Morphism
+from quivers.core.morphisms import Morphism as _CatMorphism
 from quivers.core.objects import SetObject
-from quivers.continuous.spaces import ContinuousSpace
 
 type AnySpace = SetObject | ContinuousSpace
 """A space a morphism maps between: a finite set or a continuous space."""
@@ -571,7 +576,6 @@ class ContinuousMorphism(nn.Module, ABC):
         """Composition via ancestral sampling: self >> other."""
         if isinstance(other, ContinuousMorphism):
             return SampledComposition(self, other)
-        from quivers.core.morphisms import Morphism
 
         if isinstance(other, Morphism):
             return SampledComposition(self, DiscreteAsContinuous(other))
@@ -579,7 +583,6 @@ class ContinuousMorphism(nn.Module, ABC):
 
     def __rrshift__(self, other: object) -> ContinuousMorphism:
         """Handle discrete_morphism >> continuous_morphism."""
-        from quivers.core.morphisms import Morphism
 
         if isinstance(other, Morphism):
             return SampledComposition(DiscreteAsContinuous(other), self)
@@ -589,7 +592,6 @@ class ContinuousMorphism(nn.Module, ABC):
         """Independent product: self @ other."""
         if isinstance(other, ContinuousMorphism):
             return ProductContinuousMorphism(self, other)
-        from quivers.core.morphisms import Morphism
 
         if isinstance(other, Morphism):
             return ProductContinuousMorphism(self, DiscreteAsContinuous(other))
@@ -1033,7 +1035,6 @@ class FanOutMorphism(ContinuousMorphism):
     """
 
     def __init__(self, components: list) -> None:
-        from quivers.core.morphisms import Morphism as _CatMorphism
 
         if not components:
             raise ValueError("fan-out requires at least one component")
@@ -1198,7 +1199,6 @@ class DiscreteAsContinuous(ContinuousMorphism):
     """
 
     def __init__(self, inner: object) -> None:
-        from quivers.core.morphisms import Morphism
 
         if not isinstance(inner, Morphism):
             raise TypeError(f"expected a discrete Morphism, got {type(inner).__name__}")
@@ -1305,7 +1305,6 @@ def _combine_spaces(a: AnySpace, b: AnySpace) -> AnySpace:
     For two continuous spaces, returns a ProductSpace.
     For mixed types, wraps discrete spaces as Euclidean(1).
     """
-    from quivers.continuous.spaces import ProductSpace, Euclidean
 
     def _as_continuous(s: AnySpace) -> ContinuousSpace:
         if isinstance(s, ContinuousSpace):
