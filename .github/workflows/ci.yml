@@ -411,13 +411,13 @@ jobs:
   # unit tier; each shard runs its tests one at a time, since a single
   # recovery benchmark already uses every core of its runner.
   test-slow:
-    name: Test slow tier (shard ${{ matrix.shard }}/4)
+    name: Test slow tier (shard ${{ matrix.shard }}/6)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -446,7 +446,7 @@ jobs:
       - name: Run slow test shard
         run: >-
           python -m pytest tests/ -m slow -v
-          --splits 4 --group ${{ matrix.shard }}
+          --splits 6 --group ${{ matrix.shard }}
           --splitting-algorithm least_duration
           --store-durations --durations-path .test_durations
           --durations 25

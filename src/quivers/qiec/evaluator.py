@@ -16,6 +16,7 @@ handler boundary.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from collections.abc import Callable, Hashable, Mapping
 
 import didactic.api as dx
@@ -89,6 +90,42 @@ from quivers.qiec.substitution import (
 from quivers.qiec.checking import CheckContext, KernelRegistry, infer_computation
 from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.types import IndexLiteral, StaticArgument, TypeExpr
+
+
+@lru_cache(maxsize=256)
+def _instantiate_computation(
+    callee: NamedComputation, arguments: tuple[StaticArgument, ...]
+) -> tuple[tuple[Local, ...], Computation]:
+    """Reuse the immutable graph for one complete static instantiation.
+
+    Parameters
+    ----------
+    callee : NamedComputation
+        The complete declaration, including its body and telescope.
+    arguments : tuple[StaticArgument, ...]
+        Static arguments supplied by the call.
+
+    Returns
+    -------
+    tuple[tuple[Local, ...], Computation]
+        Instantiated parameters and body. No runtime bindings or handler
+        state enter this bounded cache.
+
+    Raises
+    ------
+    TypeError
+        If a static argument has the wrong kind.
+    ValueError
+        If the arguments do not instantiate the telescope.
+    """
+    substitution = instantiate_telescope(callee.telescope, arguments)
+    if not callee.telescope:
+        return callee.parameters, callee.body
+    parameters = tuple(
+        Local(name=parameter.name, type=substitute_type(parameter.type, substitution))
+        for parameter in callee.parameters
+    )
+    return parameters, substitute_computation(callee.body, substitution)
 
 
 type RuntimeValidator = Callable[[object], bool | None]
@@ -2729,8 +2766,8 @@ class Evaluator:
                         f"{current.callee}, which this evaluator has no body for"
                     )
                 try:
-                    substitution = instantiate_telescope(
-                        callee.telescope, current.static_arguments
+                    parameters, body = _instantiate_computation(
+                        callee, current.static_arguments
                     )
                 except (TypeError, ValueError) as error:
                     raise EvaluationError(
@@ -2744,13 +2781,6 @@ class Evaluator:
                     )
                 arguments = tuple(
                     self._value(argument, env) for argument in current.arguments
-                )
-                parameters = tuple(
-                    Local(
-                        name=parameter.name,
-                        type=substitute_type(parameter.type, substitution),
-                    )
-                    for parameter in callee.parameters
                 )
                 self._call_serial += 1
                 serial = self._call_serial
@@ -2789,7 +2819,7 @@ class Evaluator:
                     )
                 )
                 env = dict(zip(parameters, arguments, strict=True))
-                current = substitute_computation(callee.body, substitution)
+                current = body
                 continue
             if isinstance(current, NewInstance):
                 self._instance_serial += 1
