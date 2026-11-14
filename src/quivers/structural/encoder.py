@@ -49,11 +49,13 @@ the final per-vertex embeddings to one fixed-length vector.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Literal
 
+import didactic.api as dx
 import torch
 import torch.nn as nn
+
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 
 from .signature import (
     Constructor,
@@ -81,8 +83,7 @@ function once, ``"recurrent"`` left-folds it across a list-shaped
 signature, and ``"attention"`` gives each step the running prefix."""
 
 
-@dataclass(frozen=True)
-class PerOpFn:
+class PerOpFn(ValueModel):
     """A per-operation parametric function.
 
     ``mode`` is ``"plain"`` (algebra-hom), ``"recurrent"``
@@ -92,9 +93,8 @@ class PerOpFn:
     embedding; for ``recurrent`` / ``attention`` the framework
     threads ``state`` / ``prefix`` arguments alongside the children.
 
-    Held as a plain dataclass (not a didactic Model) because the
-    ``fn`` field is a Python callable that doesn't round-trip
-    through panproto's schema translation.
+    Function identity participates in equality and hashing. Copying
+    or updating the record retains the callable and its live parameters.
 
     Parameters
     ----------
@@ -118,9 +118,21 @@ class PerOpFn:
     op: str
     mode: PerOpMode
     args: tuple[str, ...]
-    fn: Callable[..., torch.Tensor]
+    fn: Callable[..., torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     state_var: str | None = None
     prefix_var: str | None = None
+
+    @dx.model_validator()
+    def _check_callable(self) -> None:
+        """Require a callable operation implementation.
+
+        Raises
+        ------
+        TypeError
+            If the operation implementation is not callable.
+        """
+        if not callable(self.fn):
+            raise TypeError("PerOpFn.fn must be callable")
 
 
 def make_default_op_fn(

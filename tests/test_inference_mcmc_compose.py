@@ -477,7 +477,7 @@ def test_every_component_leaves_the_gradient_of_its_state() -> None:
     )
     kernel._set_generator(torch.Generator().manual_seed(5))
     state = kernel.init(registry, model, torch.zeros(1, 1), {}, torch.zeros(1))
-    state.gibbs_values = {"z": recorded.sites["z"].value}
+    state = state.with_(gibbs_values={"z": recorded.sites["z"].value})
     for _ in range(30):
         state = kernel.step(state, potential.condition(state.gibbs_values))
         value, grad = potential.condition(state.gibbs_values).value_and_grad(

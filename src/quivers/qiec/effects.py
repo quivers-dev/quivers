@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Hashable
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.qiec._models import QiecModel
+import didactic.api as dx
+
 from collections.abc import Mapping
-from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
 
@@ -24,8 +28,7 @@ from quivers.qiec.types import (
 )
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class RowVariable:
+class RowVariable(QiecModel):
     """The open tail of an effect row, with the instances it excludes.
 
     Parameters
@@ -43,10 +46,13 @@ class RowVariable:
     """
 
     name: str
-    identity: RowVariableId
-    lacks: tuple[EffectInstanceId, ...] = ()
+    identity: RowVariableId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    lacks: tuple[EffectInstanceId, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Sort the lacks constraints and reject a malformed variable.
 
         Raises
@@ -59,7 +65,7 @@ class RowVariable:
         ordered = tuple(sorted(self.lacks, key=str))
         if len(set(ordered)) != len(ordered):
             raise ValueError("a row lacks constraint cannot repeat an instance")
-        object.__setattr__(self, "lacks", ordered)
+        self._normalize_field("lacks", ordered)
 
     def proves_lacks(self, instance: EffectInstanceId) -> bool:
         """Whether this tail is known not to contain `instance`.
@@ -77,35 +83,15 @@ class RowVariable:
         """
         return instance in self.lacks
 
-    def __eq__(self, other: object) -> bool:
-        """Compare by identity and constraints, ignoring the display name.
-
-        Parameters
-        ----------
-        other : object
-            The value to compare against.
+    def _local_key(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
+        """Key the fields that define this kernel object's identity.
 
         Returns
         -------
-        bool
-            True when `other` is a row variable with the same identity and
-            the same lacks constraints.
+        tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]
+            Its nominal fields and recursively compared children.
         """
-        return (
-            isinstance(other, RowVariable)
-            and self.identity == other.identity
-            and self.lacks == other.lacks
-        )
-
-    def __hash__(self) -> int:
-        """Hash the fields that `__eq__` compares.
-
-        Returns
-        -------
-        int
-            A hash of the identity and the lacks constraints.
-        """
-        return hash((self.identity, self.lacks))
+        return self._comparison_key(self.identity, self.lacks)
 
     def merge(self, other: RowVariable) -> RowVariable:
         """Unify two occurrences, accumulating their lacks constraints.
@@ -131,7 +117,7 @@ class RowVariable:
         if self.identity != other.identity:
             raise ValueError("cannot unify distinct row variables")
         merged = tuple(sorted(set((*self.lacks, *other.lacks)), key=str))
-        return RowVariable(self.name, self.identity, merged)
+        return RowVariable(name=self.name, identity=self.identity, lacks=merged)
 
     def with_lacks(self, instances: tuple[EffectInstanceId, ...]) -> RowVariable:
         """Return this variable with further instances excluded.
@@ -148,11 +134,10 @@ class RowVariable:
             A variable of the same identity carrying the wider constraint.
         """
         merged = tuple(sorted(set((*self.lacks, *instances)), key=str))
-        return RowVariable(self.name, self.identity, merged)
+        return RowVariable(name=self.name, identity=self.identity, lacks=merged)
 
 
-@dataclass(frozen=True, slots=True)
-class RowEntry:
+class RowEntry(QiecModel):
     """One lexical effect instance and the interface it implements.
 
     Parameters
@@ -164,12 +149,11 @@ class RowEntry:
         The saturated interface application the instance implements.
     """
 
-    instance: EffectInstanceId
-    effect: EffectRef
+    instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    effect: EffectRef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(frozen=True, slots=True)
-class EffectRow:
+class EffectRow(QiecModel):
     """A finite map from lexical instance IDs to interfaces plus a tail.
 
     Entries are sorted by stable identifier at construction time, so row
@@ -187,10 +171,15 @@ class EffectRow:
         entry.
     """
 
-    entries: tuple[RowEntry, ...] = ()
-    tail: RowVariable | None = None
+    entries: tuple[RowEntry, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    tail: RowVariable | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Sort the entries and reject a row that cannot be well formed.
 
         Raises
@@ -215,7 +204,7 @@ class EffectRow:
                 raise ValueError(
                     "an open row must prove its tail lacks every explicit instance"
                 )
-        object.__setattr__(self, "entries", ordered)
+        self._normalize_field("entries", ordered)
 
     def lookup(self, instance: EffectInstanceId) -> EffectRef | None:
         """The interface an instance implements in this row.
@@ -268,7 +257,7 @@ class EffectRow:
         EffectRow
             The extended row. When the row is open, its tail gains a lacks
             constraint for the new instance, which keeps the invariant
-            `__post_init__` enforces.
+            model validation enforces.
 
         Raises
         ------
@@ -285,7 +274,7 @@ class EffectRow:
         tail = self.tail
         if tail is not None and not tail.proves_lacks(entry.instance):
             tail = tail.with_lacks((entry.instance,))
-        return EffectRow((*self.entries, entry), tail)
+        return EffectRow(entries=(*self.entries, entry), tail=tail)
 
     def without(self, instance: EffectInstanceId) -> EffectRow:
         """Return this row with one instance discharged.
@@ -311,8 +300,10 @@ class EffectRow:
         if not self.contains(instance):
             raise KeyError(str(instance))
         return EffectRow(
-            tuple(entry for entry in self.entries if entry.instance != instance),
-            self.tail,
+            entries=tuple(
+                entry for entry in self.entries if entry.instance != instance
+            ),
+            tail=self.tail,
         )
 
     def union(self, other: EffectRow) -> EffectRow:
@@ -344,7 +335,7 @@ class EffectRow:
             tail = tail.with_lacks(
                 tuple(entry.instance for entry in (*self.entries, *other.entries))
             )
-        result = EffectRow(self.entries, tail)
+        result = EffectRow(entries=self.entries, tail=tail)
         for entry in other.entries:
             result = result.add(entry)
         return result
@@ -354,8 +345,7 @@ EMPTY_ROW = EffectRow()
 """The row of a computation that performs no effects."""
 
 
-@dataclass(frozen=True, slots=True)
-class RowSubstitution:
+class RowSubstitution(QiecModel):
     """A finite, occurs-checked substitution for stable row variables.
 
     Parameters
@@ -366,9 +356,12 @@ class RowSubstitution:
         replaces.
     """
 
-    bindings: tuple[tuple[RowVariableId, EffectRow], ...] = ()
+    bindings: tuple[tuple[RowVariableId, EffectRow], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Reject a substitution that is ambiguous or immediately cyclic.
 
         Raises
@@ -467,14 +460,13 @@ class RowSubstitution:
             raise ValueError("row substitution violates a lacks constraint")
         if resolved.tail is not None:
             resolved = EffectRow(
-                resolved.entries,
-                resolved.tail.with_lacks(row.tail.lacks),
+                entries=resolved.entries,
+                tail=resolved.tail.with_lacks(row.tail.lacks),
             )
-        return EffectRow(row.entries).union(resolved)
+        return EffectRow(entries=row.entries).union(resolved)
 
 
-@dataclass(frozen=True, slots=True)
-class RowUnification:
+class RowUnification(QiecModel):
     """The common row two rows unify to, and how their tails were bound.
 
     Parameters
@@ -486,8 +478,10 @@ class RowUnification:
         rows already agreed.
     """
 
-    row: EffectRow
-    substitution: RowSubstitution = RowSubstitution()
+    row: EffectRow = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    substitution: RowSubstitution = dx.field(
+        default=RowSubstitution(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def unify_effect_rows(left: EffectRow, right: EffectRow) -> RowUnification:
@@ -527,12 +521,12 @@ def unify_effect_rows(left: EffectRow, right: EffectRow) -> RowUnification:
         if left_entries[instance] != right_entries[instance]:
             raise ValueError("row entries disagree on an effect interface")
     left_only = tuple(
-        RowEntry(instance, effect)
+        RowEntry(instance=instance, effect=effect)
         for instance, effect in left_entries.items()
         if instance not in right_entries
     )
     right_only = tuple(
-        RowEntry(instance, effect)
+        RowEntry(instance=instance, effect=effect)
         for instance, effect in right_entries.items()
         if instance not in left_entries
     )
@@ -540,20 +534,20 @@ def unify_effect_rows(left: EffectRow, right: EffectRow) -> RowUnification:
     if left.tail is None and right.tail is None:
         if left_only or right_only:
             raise ValueError("closed effect rows do not unify")
-        return RowUnification(left)
+        return RowUnification(row=left)
 
     if left.tail is not None and right.tail is None:
         if left_only:
             raise ValueError("an open row has entries absent from the closed row")
-        replacement = EffectRow(right_only)
-        substitution = RowSubstitution(((left.tail.identity, replacement),))
+        replacement = EffectRow(entries=right_only)
+        substitution = RowSubstitution(bindings=((left.tail.identity, replacement),))
         if substitution.apply(left) != right:
             raise ValueError("row substitution violates a lacks constraint")
-        return RowUnification(right, substitution)
+        return RowUnification(row=right, substitution=substitution)
 
     if left.tail is None and right.tail is not None:
         result = unify_effect_rows(right, left)
-        return RowUnification(result.row, result.substitution)
+        return RowUnification(row=result.row, substitution=result.substitution)
 
     assert left.tail is not None and right.tail is not None
     if left.tail.identity == right.tail.identity:
@@ -562,7 +556,7 @@ def unify_effect_rows(left: EffectRow, right: EffectRow) -> RowUnification:
                 "two occurrences of one row variable have incompatible entries"
             )
         tail = left.tail.merge(right.tail)
-        return RowUnification(EffectRow(left.entries, tail))
+        return RowUnification(row=EffectRow(entries=left.entries, tail=tail))
 
     if any(entry.instance in left.tail.lacks for entry in right_only):
         raise ValueError("left row lacks an entry required by the right row")
@@ -575,35 +569,34 @@ def unify_effect_rows(left: EffectRow, right: EffectRow) -> RowUnification:
         *sorted(all_instances, key=str),
     )
     fresh = RowVariable(
-        "unified_tail",
-        fresh_identity,
-        tuple(
+        name="unified_tail",
+        identity=fresh_identity,
+        lacks=tuple(
             sorted(
                 set((*left.tail.lacks, *right.tail.lacks, *all_instances)),
                 key=str,
             )
         ),
     )
-    left_replacement = EffectRow(right_only, fresh)
-    right_replacement = EffectRow(left_only, fresh)
+    left_replacement = EffectRow(entries=right_only, tail=fresh)
+    right_replacement = EffectRow(entries=left_only, tail=fresh)
     substitution = RowSubstitution(
-        (
+        bindings=(
             (left.tail.identity, left_replacement),
             (right.tail.identity, right_replacement),
         )
     )
     unified_entries = tuple(
-        RowEntry(instance, effect)
+        RowEntry(instance=instance, effect=effect)
         for instance, effect in {**left_entries, **right_entries}.items()
     )
-    unified = EffectRow(unified_entries, fresh)
+    unified = EffectRow(entries=unified_entries, tail=fresh)
     if substitution.apply(left) != unified or substitution.apply(right) != unified:
         raise ValueError("row unification produced an inconsistent substitution")
-    return RowUnification(unified, substitution)
+    return RowUnification(row=unified, substitution=substitution)
 
 
-@dataclass(frozen=True, slots=True)
-class ComputationType:
+class ComputationType(QiecModel):
     """The type of a computation: its effect row and result type.
 
     Parameters
@@ -614,12 +607,11 @@ class ComputationType:
         The type of the value it returns.
     """
 
-    effects: EffectRow
-    result: TypeExpr
+    effects: EffectRow = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(frozen=True, slots=True)
-class ArgumentDef:
+class ArgumentDef(QiecModel):
     """One named, typed value argument of an operation.
 
     Parameters
@@ -631,11 +623,10 @@ class ArgumentDef:
     """
 
     name: str
-    type: TypeExpr
+    type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(frozen=True, slots=True)
-class OperationDef:
+class OperationDef(QiecModel):
     """One result-indexed request constructor in an effect interface.
 
     Parameters
@@ -655,13 +646,14 @@ class OperationDef:
         binders above.
     """
 
-    id: OperationId
+    id: OperationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    telescope: Telescope
-    arguments: tuple[ArgumentDef, ...]
-    result_type: TypeExpr
+    telescope: Telescope = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    arguments: tuple[ArgumentDef, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Validate the telescope and the argument names.
 
         Raises
@@ -675,8 +667,7 @@ class OperationDef:
             raise ValueError(f"duplicate argument in operation {self.name!r}")
 
 
-@dataclass(frozen=True, slots=True)
-class EffectDef:
+class EffectDef(QiecModel):
     """An operation interface.
 
     Identity is nominal: the declaration is fixed by its module and its
@@ -695,11 +686,12 @@ class EffectDef:
         The declared operations, unique by both identity and name.
     """
 
-    ref: EffectRef
-    telescope: Telescope
-    operations: tuple[OperationDef, ...]
+    ref: EffectRef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    telescope: Telescope = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    operations: tuple[OperationDef, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Validate the declaration against its operations.
 
         Raises
@@ -752,9 +744,9 @@ class EffectDef:
         """
         check_static_arguments(self.telescope, arguments)
         return EffectRef(
-            self.ref.id,
-            self.ref.name,
-            arguments,
+            id=self.ref.id,
+            name=self.ref.name,
+            arguments=arguments,
         )
 
     def matches(self, effect: EffectRef) -> bool:
@@ -814,8 +806,7 @@ class ResumptionGrade(str, Enum):
     UNRESTRICTED = "omega"
 
 
-@dataclass(frozen=True, slots=True)
-class HandlerClauseDef:
+class HandlerClauseDef(QiecModel):
     """One operation a handler covers, and how it may resume.
 
     Parameters
@@ -835,14 +826,17 @@ class HandlerClauseDef:
         "look up a callback": the declaration has to say so.
     """
 
-    operation: OperationId
-    grade: ResumptionGrade
-    parameters: tuple[Local, ...] = ()
-    body: Computation | None = None
+    operation: OperationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    grade: ResumptionGrade = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    parameters: tuple[Local, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    body: Computation | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class HandlerReturnClauseDef:
+class HandlerReturnClauseDef(QiecModel):
     """What a handler does with a value its computation returns.
 
     Separate from an operation clause because it answers a different
@@ -859,12 +853,11 @@ class HandlerReturnClauseDef:
         form: a handler that answers returns at all has to say how.
     """
 
-    binder: Local
-    body: Computation
+    binder: Local = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    body: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(frozen=True, slots=True)
-class HandlerDef:
+class HandlerDef(QiecModel):
     """Serializable type-and-coverage signature for a handler.
 
     An authored handler carries its clause bodies in the stable core; a
@@ -902,20 +895,27 @@ class HandlerDef:
         none does and a runtime provider supplies the behavior.
     """
 
-    id: HandlerId
+    id: HandlerId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    effect: EffectRef
-    clauses: tuple[HandlerClauseDef, ...]
-    input_type: TypeExpr
-    output_type: TypeExpr
-    introduced: EffectRow = EMPTY_ROW
+    effect: EffectRef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    clauses: tuple[HandlerClauseDef, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    input_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    output_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    introduced: EffectRow = dx.field(
+        default=EMPTY_ROW, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     total: bool = True
     forwards_unknown: bool = False
-    telescope: Telescope = ()
-    return_clause: HandlerReturnClauseDef | None = None
+    telescope: Telescope = dx.field(default=(), opaque=True, extras=OPAQUE_BY_VALUE)
+    return_clause: HandlerReturnClauseDef | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     implementation: Literal["authored", "foreign"] = "foreign"
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Validate the clause set against the coverage claim.
 
         Raises
@@ -980,8 +980,7 @@ class HandlerDef:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class EffectRequest:
+class EffectRequest(QiecModel):
     """A typed request allocated before filtering or handler dispatch.
 
     Parameters
@@ -1004,13 +1003,15 @@ class EffectRequest:
         The serialization discriminator; always ``"effect_request"``.
     """
 
-    instance: EffectInstanceId
-    effect: EffectRef
-    operation: OperationId
-    static_arguments: tuple[StaticArgument, ...]
-    arguments: tuple[Value, ...]
-    result_type: TypeExpr
-    origin: SiteProvenance
+    instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    effect: EffectRef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    operation: OperationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    static_arguments: tuple[StaticArgument, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    arguments: tuple[Value, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SiteProvenance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["effect_request"] = "effect_request"
 
 
@@ -1051,7 +1052,7 @@ def instantiate_effect(
         module,
         lexical_path,
     )
-    return RowEntry(instance, effect)
+    return RowEntry(instance=instance, effect=effect)
 
 
 def render_instance(

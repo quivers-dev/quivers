@@ -111,7 +111,11 @@ class TestLocScaleReparam:
         morphism = MixedInlineDistribution(
             R1, R1, [("var", 1), ("lit", 1.0)], _normal_builder
         )
-        site = SiteRequest("z", TorchSampleable(morphism, torch.zeros(4, 1)), seen={})
+        site = SiteRequest(
+            name="z",
+            sampleable=TorchSampleable(morphism=morphism, input=torch.zeros(4, 1)),
+            seen={},
+        )
         with pytest.raises(TypeError, match="_get_params"):
             LocScaleReparam().apply(site)
 
@@ -201,7 +205,11 @@ class TestConjugateReparam:
         child = MixedInlineDistribution(
             R1, R1, [("var", 1), ("lit", 0.5)], _normal_builder
         )
-        site = SiteRequest("y", TorchSampleable(child, torch.zeros(4, 1)), seen={})
+        site = SiteRequest(
+            name="y",
+            sampleable=TorchSampleable(morphism=child, input=torch.zeros(4, 1)),
+            seen={},
+        )
         with pytest.raises(KeyError, match="was not seen"):
             ConjugateReparam("z", "Normal", "Normal").apply(site)
 

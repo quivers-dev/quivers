@@ -720,8 +720,8 @@ class JointPlan:
         }
         axis = self._axis.copy()
         run = RunContext(
-            kernel,
-            host_value,
+            kernel=kernel,
+            validator=host_value,
             observations=dict(run_sites),
             supplied={name: values[name] for name in self._supplied},
             run_index=0,
@@ -730,14 +730,13 @@ class JointPlan:
             carries_run_axis=axis.carries,
             site_carries_run_axis=axis.site,
         )
-        store: dict[str, torch.Tensor] = {}
+        store = run.parameters
         for step in self._draws:
             assert isinstance(step.spec, Draw | Observe)
             morphism = step.program.step_module(step.spec)
             assert isinstance(morphism, ContinuousMorphism)
             for name, parameter in morphism.named_parameters():
                 store[f"{step.site}.{name}"] = parameter
-        run.parameters = store
 
         def parameters(
             site: str, morphism: ContinuousMorphism

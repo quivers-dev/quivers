@@ -41,15 +41,16 @@ site in declaration order.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 from typing import cast
 
+import didactic.api as dx
 import torch
 from torch.distributions import constraints as _constraints
 from torch.distributions.constraint_registry import biject_to
 from torch.distributions.transforms import Transform
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous._matrix import PositiveDefiniteTransform
 from quivers.effects.subsample import refuse_subsampling
 from quivers.continuous.plate import PlateDraw
@@ -179,8 +180,7 @@ def _require_one_run(x: torch.Tensor, consumer: str) -> None:
         )
 
 
-@dataclass(frozen=True)
-class LatentSite:
+class LatentSite(ValueModel):
     """Frozen record describing a single latent site.
 
     Attributes
@@ -223,9 +223,9 @@ class LatentSite:
     """
 
     name: str
-    morphism: ContinuousMorphism
-    support: _constraints.Constraint
-    bijector: Transform
+    morphism: ContinuousMorphism = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    support: _constraints.Constraint = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    bijector: Transform = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     constrained_dim: int
     unconstrained_dim: int
     is_plate: bool
@@ -234,6 +234,22 @@ class LatentSite:
     flat_offset: int
     flat_length: int
     plate_shape: tuple[int, ...] = ()
+
+    @dx.model_validator()
+    def _check_runtime_fields(self) -> None:
+        """Validate the live prior, support constraint, and bijector.
+
+        Raises
+        ------
+        TypeError
+            If a runtime field has an incompatible type.
+        """
+        if not isinstance(self.morphism, ContinuousMorphism):
+            raise TypeError("latent morphism must be a ContinuousMorphism")
+        if not isinstance(self.support, _constraints.Constraint):
+            raise TypeError("latent support must be a torch distribution constraint")
+        if not isinstance(self.bijector, Transform):
+            raise TypeError("latent bijector must be a torch distribution transform")
 
     @property
     def constrained_shape(self) -> tuple[int, ...]:

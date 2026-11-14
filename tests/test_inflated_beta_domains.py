@@ -16,7 +16,8 @@ def test_reference_inflated_beta_scores_impossible_branches(
     zoi: float, coi: float, value: float
 ) -> None:
     dist = RuntimeDistribution(
-        "ZeroOneInflatedBeta", {"mu": 0.5, "phi": 2.0, "zoi": zoi, "coi": coi}
+        family="ZeroOneInflatedBeta",
+        arguments={"mu": 0.5, "phi": 2.0, "zoi": zoi, "coi": coi},
     )
     mass = zoi * (1 - coi) if value == 0 else zoi * coi if value == 1 else 1 - zoi
     expected = math.log(mass) if mass > 0 else -math.inf
@@ -26,7 +27,8 @@ def test_reference_inflated_beta_scores_impossible_branches(
 @pytest.mark.parametrize("mu", [0.0, 1.0, -0.1, 1.1])
 def test_reference_inflated_beta_refuses_invalid_means_even_at_atoms(mu: float) -> None:
     dist = RuntimeDistribution(
-        "ZeroOneInflatedBeta", {"mu": mu, "phi": 2.0, "zoi": 1.0, "coi": 0.5}
+        family="ZeroOneInflatedBeta",
+        arguments={"mu": mu, "phi": 2.0, "zoi": 1.0, "coi": 0.5},
     )
     with pytest.raises(ValueError):
         dist.log_prob(0.0)

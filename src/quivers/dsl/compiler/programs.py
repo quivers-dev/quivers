@@ -6,12 +6,10 @@ compilation.
 """
 
 from __future__ import annotations
-import dataclasses
 import inspect
 from abc import abstractmethod
 import math
 from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
-from dataclasses import replace as _dc_replace
 from itertools import product as _cartesian_product
 from typing import Literal, cast
 import didactic.api as dx
@@ -173,6 +171,7 @@ from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec import QiecModule
+from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.terms import Computation, Local
 from quivers.qiec.families import FAMILIES
@@ -400,10 +399,8 @@ def _checked_local_extents(
             types.setdefault(node.name, set()).add(node.type)
         elif isinstance(node, tuple | list):
             pending.extend(node)
-        elif dataclasses.is_dataclass(node) and not isinstance(node, type):
-            pending.extend(
-                getattr(node, field.name) for field in dataclasses.fields(node)
-            )
+        elif isinstance(node, QiecModel):
+            pending.extend(getattr(node, name) for name in type(node).__field_specs__)
     extents: dict[str, tuple[int, ...]] = {}
     for name, bound in types.items():
         if len(bound) != 1:
@@ -7160,8 +7157,10 @@ class _ProgramsMixin:
                             f"DeductionSystem instances; got "
                             f"{type(d1).__name__}, {type(d2).__name__}"
                         )
+                    first = cast(DeductionSystem, d1)
+                    second = cast(DeductionSystem, d2)
 
-                    def _composed_injector(inp, _d1=d1, _d2=d2):
+                    def _composed_injector(inp, _d1=first, _d2=second):
                         # Run D1 to fixed point; lift each of its
                         # goal items (and their weights) into D2's
                         # axiom list. The implementation defers to
@@ -7175,14 +7174,10 @@ class _ProgramsMixin:
                         d2_axioms = list(_d2.axiom_injector(inp))
                         return d1_axioms + d2_axioms
 
-                    composed = _dc_replace(d2, axiom_injector=_composed_injector)
-                    # Carry across any submodules so the composed
-                    # system's ``.parameters()`` walks both factors.
-                    for attr in ("_axiom_module", "_rule_module"):
-                        for src in (d1, d2):
-                            mod = getattr(src, attr, None)
-                            if mod is not None:
-                                setattr(composed, attr, mod)
+                    composed = second.with_(
+                        axiom_injector=_composed_injector,
+                        modules={**first.modules, **second.modules},
+                    )
                     return composed
                 # Standard scalar / tensor builtins.
                 if func_name in _TENSOR_BUILTINS:

@@ -37,14 +37,18 @@ from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass, field
 from typing import Any
 
+import didactic.api as dx
 import torch
 
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.stochastic.productions import ProductionGroup, ProductionWeights
 from quivers.stochastic.semiring import ChartSemiring, LOG_PROB
 from quivers.structural.encoder import Encoder
+from quivers.structural.losses import LossRegistry
+from quivers.structural.signature import Signature
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +66,7 @@ or `Wildcard` placeholders in patterns.
 """
 
 
-@dataclass(frozen=True)
-class Wildcard:
+class Wildcard(dx.Model):
     """Pattern-position wildcard.
 
     A wildcard matches any value in the corresponding slot and
@@ -91,12 +94,13 @@ def make_wildcard(name: str) -> Wildcard:
     Wildcard
         The wildcard.
     """
-    return Wildcard(name)
+    return Wildcard(name=name)
 
 
-Pattern = tuple[Any, ...]
-"""A pattern is an item-shaped tuple that may contain `Wildcard`
-positions. A pattern matches an item if (a) the constructor name
+Pattern = tuple[Any, ...] | Wildcard
+"""A pattern is an item-shaped tuple with optional `Wildcard` positions,
+or a `Wildcard` matching the whole item. A tuple pattern matches an item
+if (a) the constructor name
 matches, (b) the arities match, (c) each non-wildcard slot is
 structurally equal to the corresponding item slot, and (d) all
 wildcards with the same name bind to equal values."""
@@ -107,8 +111,7 @@ Bindings = dict[str, Any]
 values they captured during pattern-matching."""
 
 
-@dataclass(frozen=True)
-class InferenceRule:
+class InferenceRule(QiecModel):
     """A weighted inference rule, that is, an arity-n hyperedge.
 
     Parameters
@@ -133,10 +136,19 @@ class InferenceRule:
     """
 
     name: str
-    premises: tuple[Pattern, ...]
-    conclusion: Pattern
-    weight_fn: Callable[[Bindings, tuple, ChartSemiring], Any] | None = None
-    side_condition: Callable[[Bindings], bool] | None = None
+    premises: tuple[tuple[HeldValue, ...] | Wildcard, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    conclusion: tuple[HeldValue, ...] | Wildcard = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    weight_fn: (
+        Callable[[Bindings, tuple[torch.Tensor, ...], ChartSemiring], torch.Tensor]
+        | None
+    ) = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
+    side_condition: Callable[[Bindings], bool] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
 def instantiate(pattern: Pattern, bindings: Bindings) -> Item:
@@ -582,7 +594,7 @@ class ChartView:
         attached encoder.
 
         Requires the originating `DeductionSystem` to carry an
-        ``_item_encoder`` attribute (set by the DSL compiler when
+        ``item_encoder`` field (set by the DSL compiler when
         the deduction's body declares ``encoder C``). Items are
         converted to [`quivers.structural.Term`][quivers.structural.Term] form on the fly.
 
@@ -974,8 +986,7 @@ type RuleCallback = Callable[
 (each with its chart weight), conclusion, and contribution."""
 
 
-@dataclass
-class AgendaResult:
+class AgendaResult(QiecModel):
     """The chart produced by an agenda-driven deduction.
 
     Attributes
@@ -994,16 +1005,24 @@ class AgendaResult:
         antecedent items in premise order, and its conclusion.
     """
 
-    chart: Chart
-    semiring: ChartSemiring
-    goal_items: list[tuple[Item, torch.Tensor]] = field(default_factory=list)
+    chart: Chart = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    semiring: ChartSemiring = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    goal_items: list[tuple[tuple[HeldValue, ...], torch.Tensor]] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     iterations: int = 0
-    applications: list[tuple[str, tuple[Item, ...], Item]] = field(default_factory=list)
-    encoder: Encoder | None = None
+    applications: list[
+        tuple[str, tuple[tuple[HeldValue, ...], ...], tuple[HeldValue, ...]]
+    ] = dx.field(default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY)
+    encoder: Encoder | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     # Sum of all rule-attached + chart-attached loss values fired
     # during this run, populated by `DeductionSystem.run` when a
     # loss registry is attached. `None` if no losses fired.
-    attached_loss: torch.Tensor | None = None
+    attached_loss: torch.Tensor | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
 def run_agenda(
@@ -1505,8 +1524,7 @@ def _full_extent_goal(
     return full_extent
 
 
-@dataclass
-class DeductionSystem:
+class DeductionSystem(QiecModel):
     """A weighted deductive system parameterized over its components.
 
     The system is parameterized by:
@@ -1526,18 +1544,53 @@ class DeductionSystem:
     semiring), MLTT type-checking (LIFO agenda, judgment items,
     Boolean semiring), and weighted Datalog (FIFO, atoms, any
     naturally-ordered semiring).
+
+    Attributes
+    ----------
+    name : str
+        The declaration name used to look up an attached loss registry.
+    modules : dict[str, torch.nn.Module]
+        Owned parameter modules, keyed by their stable parameter-name prefixes.
+    item_signature : Signature | None
+        The signature of structured items, when declared.
+    item_encoder : Encoder | None
+        The encoder used by chart embedding queries.
+    losses : dict[str, LossRegistry]
+        Shared loss registries keyed by deduction name. Compilation can attach
+        a registry after another program has captured this system.
     """
 
-    rules: tuple[InferenceRule, ...]
-    semiring: ChartSemiring
-    axiom_injector: Callable[[Any], list[tuple[Item, torch.Tensor]]]
-    goal: Callable[[Item], bool]
-    agenda_factory: Callable[[], Agenda] = FIFOAgenda
-    chart_factory: Callable[[], Chart] = HashChart
+    rules: tuple[InferenceRule, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    semiring: ChartSemiring = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    axiom_injector: Callable[[HeldValue], list[tuple[Item, torch.Tensor]]] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    goal: Callable[[Item], bool] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    agenda_factory: Callable[[], Agenda] = dx.field(
+        default=FIFOAgenda, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    chart_factory: Callable[..., Chart] = dx.field(
+        default=HashChart, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     max_iterations: int = 100_000
     tolerance: float = 0.0
-    productions: ProductionWeights | None = None
+    productions: ProductionWeights | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     production_refusal: str | None = None
+    name: str = ""
+    modules: dict[str, torch.nn.Module] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    item_signature: Signature | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    item_encoder: Encoder | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    losses: dict[str, LossRegistry] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def production_groups(self) -> tuple[ProductionGroup, ...]:
         """The system's productions, grouped by left-hand side.
@@ -1674,8 +1727,8 @@ class DeductionSystem:
             loss.
         """
         axioms = self.axiom_injector(input_value)
-        registry = getattr(self, "_loss_registry", None)
-        deduction_name = getattr(self, "_deduction_name", None)
+        registry = self.losses.get(self.name)
+        deduction_name = self.name
         rule_loss_acc: list[torch.Tensor] = []
 
         def _rule_callback(
@@ -1721,9 +1774,9 @@ class DeductionSystem:
             rule_callback=(_rule_callback if registry is not None else None),
         )
         # Propagate any attached item-encoder to the result.
-        comp = getattr(self, "_item_encoder", None)
+        comp = self.item_encoder
         if comp is not None:
-            result.encoder = comp
+            result = result.with_(encoder=comp)
         # Evaluate chart-attached losses on the completed chart.
         if registry is not None and deduction_name is not None:
             chart_env = {
@@ -1743,7 +1796,7 @@ class DeductionSystem:
             total = losses[0]
             for v in losses[1:]:
                 total = total + v
-            result.attached_loss = total
+            result = result.with_(attached_loss=total)
         return result
 
     def __call__(
@@ -1833,7 +1886,7 @@ class DeductionSystem:
             The learnable parameters.
         """
         for attr in ("_axiom_module", "_rule_module"):
-            mod = getattr(self, attr, None)
+            mod = self.modules.get(attr)
             if mod is not None and hasattr(mod, "parameters"):
                 yield from mod.parameters(recurse=recurse)
 
@@ -1857,7 +1910,7 @@ class DeductionSystem:
             The named learnable parameters.
         """
         for attr in ("_axiom_module", "_rule_module"):
-            mod = getattr(self, attr, None)
+            mod = self.modules.get(attr)
             if mod is not None and hasattr(mod, "named_parameters"):
                 sub_prefix = f"{prefix}.{attr}" if prefix else attr
                 for n, p in mod.named_parameters(

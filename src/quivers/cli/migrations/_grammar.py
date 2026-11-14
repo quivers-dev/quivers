@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ctypes
-from contextlib import contextmanager
 import hashlib
 import os
 import platform
@@ -13,6 +12,7 @@ import sys
 import tempfile
 import warnings
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import panproto
@@ -27,6 +27,11 @@ from quivers.cli.migrations._manifest import (
     verify_snapshot,
 )
 from quivers.dsl._grammar_build import _validate_native_manifest
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 
 _LIB_KEEPALIVE: dict[str, ctypes.CDLL] = {}
@@ -187,8 +192,6 @@ def _build_lock(cache_dir: Path) -> Iterator[None]:
     lock_path = cache_dir / "build.lock"
     with lock_path.open("a+b") as stream:
         if sys.platform == "win32":
-            import msvcrt
-
             stream.seek(0, os.SEEK_END)
             if stream.tell() == 0:
                 stream.write(b"\0")
@@ -201,8 +204,6 @@ def _build_lock(cache_dir: Path) -> Iterator[None]:
                 stream.seek(0)
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
         else:
-            import fcntl
-
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
             try:
                 yield

@@ -105,8 +105,8 @@ class TraceHandler(EffectHandler):
         self._occurrences = {}
         installations = [
             Installation(
-                kernel.random,
-                trace_handler(
+                instance=kernel.random,
+                runtime=trace_handler(
                     RANDOM,
                     (RANDOM_SAMPLE,),
                     self._recorder,
@@ -127,8 +127,8 @@ class TraceHandler(EffectHandler):
             self._steps[step.instance] = step
             installations.append(
                 Installation(
-                    instance,
-                    trace_handler(
+                    instance=instance,
+                    runtime=trace_handler(
                         step.effect,
                         (COMPUTE_APPLY,),
                         self._recorder,

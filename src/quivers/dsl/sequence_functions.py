@@ -203,7 +203,7 @@ class _SequenceFunctionElaboration:
                     REAL,
                     (
                         self._open_extent(f"{argument.name}_extent", state),
-                        IndexLiteral(width, NAT),
+                        IndexLiteral(value=width, sort=NAT),
                     ),
                 ),
                 "data",
@@ -218,7 +218,7 @@ class _SequenceFunctionElaboration:
             shape is None
             or shape[0] != REAL
             or len(shape[1]) != 2
-            or shape[1][1] != IndexLiteral(width, NAT)
+            or shape[1][1] != IndexLiteral(value=width, sort=NAT)
         ):
             self._fail(
                 node,
@@ -230,7 +230,7 @@ class _SequenceFunctionElaboration:
                 code="qiec-program",
             )
         length = shape[1][0]
-        serial = state.function_calls
+        serial = state.function_calls_cell[0]
         if kind == "positions":
             return self._position_table(
                 morphism, value, length, width, serial, scope, state, node
@@ -291,11 +291,11 @@ class _SequenceFunctionElaboration:
                 f"param_source=positions(N)",
                 code="qiec-program",
             )
-        d = IndexLiteral(width, NAT)
+        d = IndexLiteral(value=width, sort=NAT)
         row = tensor_type(REAL, (d,))
         table = self._declare_parameter(
             f"{name}_param_positions",
-            tensor_type(REAL, (IndexLiteral(count, NAT), d)),
+            tensor_type(REAL, (IndexLiteral(value=count, sort=NAT), d)),
             "weight",
             scope,
             state,
@@ -304,21 +304,42 @@ class _SequenceFunctionElaboration:
         )
         prefix = f"{name}${serial}"
         result = tensor_type(REAL, (length, d))
-        source = Local(f"{prefix}$x", result)
-        i = Local(f"{prefix}$i", INT)
-        k = Local(f"{prefix}$k", INT)
+        source = Local(name=f"{prefix}$x", type=result)
+        i = Local(name=f"{prefix}$i", type=INT)
+        k = Local(name=f"{prefix}$k", type=INT)
         path = ("programs", state.declaration.name, "functions", name, serial)
         entry = self._primitive(
             "add_real",
             (
-                Gather(Gather(Var(source), Var(i), row), Var(k), REAL),
-                Gather(Gather(Var(table), Var(i), row), Var(k), REAL),
+                Gather(
+                    value=Gather(
+                        value=Var(local=source), index=Var(local=i), result_type=row
+                    ),
+                    index=Var(local=k),
+                    result_type=REAL,
+                ),
+                Gather(
+                    value=Gather(
+                        value=Var(local=table), index=Var(local=i), result_type=row
+                    ),
+                    index=Var(local=k),
+                    result_type=REAL,
+                ),
             ),
             node,
             (*path, "add"),
         )
-        image = Comprehension(i, length, Comprehension(k, d, entry, row), result)
-        return LetValue((LetBinding(source, value),), image, result), result
+        image = Comprehension(
+            binder=i,
+            extent=length,
+            body=Comprehension(binder=k, extent=d, body=entry, result_type=row),
+            result_type=result,
+        )
+        return LetValue(
+            bindings=(LetBinding(binder=source, value=value),),
+            body=image,
+            result_type=result,
+        ), result
 
     def _self_attention(
         self: _Elaborator,
@@ -387,10 +408,10 @@ class _SequenceFunctionElaboration:
             )
         causal = causal_text == "true"
         head_width = out_width // heads
-        d = IndexLiteral(width, NAT)
-        m = IndexLiteral(out_width, NAT)
-        e = IndexLiteral(head_width, NAT)
-        h = IndexLiteral(heads, NAT)
+        d = IndexLiteral(value=width, sort=NAT)
+        m = IndexLiteral(value=out_width, sort=NAT)
+        e = IndexLiteral(value=head_width, sort=NAT)
+        h = IndexLiteral(value=heads, sort=NAT)
         in_row = tensor_type(REAL, (d,))
         model_row = tensor_type(REAL, (m,))
         sequence = tensor_type(REAL, (length, m))
@@ -420,106 +441,120 @@ class _SequenceFunctionElaboration:
             return weight, bias
 
         prefix = f"{name}${serial}"
-        source = Local(f"{prefix}$x", tensor_type(REAL, (length, d)))
-        i = Local(f"{prefix}$i", INT)
-        j = Local(f"{prefix}$j", INT)
-        g = Local(f"{prefix}$g", INT)
-        u = Local(f"{prefix}$u", INT)
-        col = Local(f"{prefix}$col", INT)
+        source = Local(name=f"{prefix}$x", type=tensor_type(REAL, (length, d)))
+        i = Local(name=f"{prefix}$i", type=INT)
+        j = Local(name=f"{prefix}$j", type=INT)
+        g = Local(name=f"{prefix}$g", type=INT)
+        u = Local(name=f"{prefix}$u", type=INT)
+        col = Local(name=f"{prefix}$col", type=INT)
 
         def prim(operator: str, *arguments: Value) -> Value:
             return self._primitive(operator, arguments, node, (*path, operator))
 
         def entry(table: Local, row: Value, column: Value, row_type: TypeExpr) -> Value:
-            return Gather(Gather(Var(table), row, row_type), column, REAL)
+            return Gather(
+                value=Gather(value=Var(local=table), index=row, result_type=row_type),
+                index=column,
+                result_type=REAL,
+            )
 
         def int_literal(number: int) -> Value:
-            return LiteralValue(number, INT)
+            return LiteralValue(value=number, type=INT)
 
         def real_literal(number: float) -> Value:
-            return LiteralValue(number, REAL)
+            return LiteralValue(value=number, type=REAL)
 
-        bindings: list[LetBinding] = [LetBinding(source, value)]
+        bindings: list[LetBinding] = [LetBinding(binder=source, value=value)]
         projected: dict[str, Local] = {}
         for role in ("query", "key", "value"):
             weight, bias = projection(role, d)
-            local = Local(f"{prefix}${role}", sequence)
+            local = Local(name=f"{prefix}${role}", type=sequence)
             bindings.append(
                 LetBinding(
-                    local,
-                    Comprehension(
-                        i,
-                        length,
-                        AffineMap(
-                            Var(weight),
-                            Var(bias),
-                            (Gather(Var(source), Var(i), in_row),),
-                            0,
-                            out_width,
-                            "identity",
-                            model_row,
+                    binder=local,
+                    value=Comprehension(
+                        binder=i,
+                        extent=length,
+                        body=AffineMap(
+                            weight=Var(local=weight),
+                            bias=Var(local=bias),
+                            sources=(
+                                Gather(
+                                    value=Var(local=source),
+                                    index=Var(local=i),
+                                    result_type=in_row,
+                                ),
+                            ),
+                            row_offset=0,
+                            rows=out_width,
+                            transform="identity",
+                            result_type=model_row,
                         ),
-                        sequence,
+                        result_type=sequence,
                     ),
                 )
             )
             projected[role] = local
         # Coordinate ``u`` of head ``g`` is model coordinate ``g e + u``.
         coordinate = prim(
-            "add_int", prim("mul_int", Var(g), int_literal(head_width)), Var(u)
+            "add_int",
+            prim("mul_int", Var(local=g), int_literal(head_width)),
+            Var(local=u),
         )
         score = prim(
             "mul_real",
             real_literal(1.0 / math.sqrt(head_width)),
             Reduction(
-                "sum",
-                Comprehension(
-                    u,
-                    e,
-                    prim(
+                operator="sum",
+                value=Comprehension(
+                    binder=u,
+                    extent=e,
+                    body=prim(
                         "mul_real",
-                        entry(projected["query"], Var(i), coordinate, model_row),
-                        entry(projected["key"], Var(j), coordinate, model_row),
+                        entry(projected["query"], Var(local=i), coordinate, model_row),
+                        entry(projected["key"], Var(local=j), coordinate, model_row),
                     ),
-                    tensor_type(REAL, (e,)),
+                    result_type=tensor_type(REAL, (e,)),
                 ),
-                REAL,
+                result_type=REAL,
             ),
         )
-        scores = Local(f"{prefix}$scores", position_row)
-        scores_value = Comprehension(j, length, score, position_row)
+        scores = Local(name=f"{prefix}$scores", type=position_row)
+        scores_value = Comprehension(
+            binder=j, extent=length, body=score, result_type=position_row
+        )
         if causal:
             # The weights over the positions ``j <= i``: the row's peak is
             # taken over them (a later position reads the score at ``i``,
             # which is among them), and a later position's exponent is
             # zero before its indicator zeroes it, so no term overflows.
-            peak = Local(f"{prefix}$peak", REAL)
-            visible = prim("le_int", Var(j), Var(i))
-            at_i = Gather(Var(scores), Var(i), REAL)
-            at_j = Gather(Var(scores), Var(j), REAL)
+            peak = Local(name=f"{prefix}$peak", type=REAL)
+            visible = prim("le_int", Var(local=j), Var(local=i))
+            at_i = Gather(value=Var(local=scores), index=Var(local=i), result_type=REAL)
+            at_j = Gather(value=Var(local=scores), index=Var(local=j), result_type=REAL)
             row_weights: Value = LetValue(
-                (
-                    LetBinding(scores, scores_value),
+                bindings=(
+                    LetBinding(binder=scores, value=scores_value),
                     LetBinding(
-                        peak,
-                        Reduction(
-                            "max",
-                            Comprehension(
-                                j,
-                                length,
-                                prim("select_real", visible, at_j, at_i),
-                                position_row,
+                        binder=peak,
+                        value=Reduction(
+                            operator="max",
+                            value=Comprehension(
+                                binder=j,
+                                extent=length,
+                                body=prim("select_real", visible, at_j, at_i),
+                                result_type=position_row,
                             ),
-                            REAL,
+                            result_type=REAL,
                         ),
                     ),
                 ),
-                Rowwise(
-                    "normalize",
-                    Comprehension(
-                        j,
-                        length,
-                        prim(
+                body=Rowwise(
+                    operator="normalize",
+                    value=Comprehension(
+                        binder=j,
+                        extent=length,
+                        body=prim(
                             "mul_real",
                             prim("bool_to_real", visible),
                             prim(
@@ -527,79 +562,86 @@ class _SequenceFunctionElaboration:
                                 prim(
                                     "select_real",
                                     visible,
-                                    prim("sub_real", at_j, Var(peak)),
+                                    prim("sub_real", at_j, Var(local=peak)),
                                     real_literal(0.0),
                                 ),
                             ),
                         ),
-                        position_row,
+                        result_type=position_row,
                     ),
-                    position_row,
+                    result_type=position_row,
                 ),
-                position_row,
+                result_type=position_row,
             )
         else:
-            row_weights = Rowwise("softmax", scores_value, position_row)
-        attention = Local(f"{prefix}$weights", weights_type)
+            row_weights = Rowwise(
+                operator="softmax", value=scores_value, result_type=position_row
+            )
+        attention = Local(name=f"{prefix}$weights", type=weights_type)
         bindings.append(
             LetBinding(
-                attention,
-                Comprehension(
-                    g,
-                    h,
-                    Comprehension(
-                        i,
-                        length,
-                        row_weights,
-                        tensor_type(REAL, (length, length)),
+                binder=attention,
+                value=Comprehension(
+                    binder=g,
+                    extent=h,
+                    body=Comprehension(
+                        binder=i,
+                        extent=length,
+                        body=row_weights,
+                        result_type=tensor_type(REAL, (length, length)),
                     ),
-                    weights_type,
+                    result_type=weights_type,
                 ),
             )
         )
         # Model coordinate ``col`` belongs to head ``col div e``.
-        head_of = prim("div_int", Var(col), int_literal(head_width))
-        context = Local(f"{prefix}$context", sequence)
+        head_of = prim("div_int", Var(local=col), int_literal(head_width))
+        context = Local(name=f"{prefix}$context", type=sequence)
         bindings.append(
             LetBinding(
-                context,
-                Comprehension(
-                    i,
-                    length,
-                    Comprehension(
-                        col,
-                        m,
-                        Reduction(
-                            "sum",
-                            Comprehension(
-                                j,
-                                length,
-                                prim(
+                binder=context,
+                value=Comprehension(
+                    binder=i,
+                    extent=length,
+                    body=Comprehension(
+                        binder=col,
+                        extent=m,
+                        body=Reduction(
+                            operator="sum",
+                            value=Comprehension(
+                                binder=j,
+                                extent=length,
+                                body=prim(
                                     "mul_real",
                                     Gather(
-                                        Gather(
-                                            Gather(
-                                                Var(attention),
-                                                head_of,
-                                                tensor_type(REAL, (length, length)),
+                                        value=Gather(
+                                            value=Gather(
+                                                value=Var(local=attention),
+                                                index=head_of,
+                                                result_type=tensor_type(
+                                                    REAL, (length, length)
+                                                ),
                                             ),
-                                            Var(i),
-                                            position_row,
+                                            index=Var(local=i),
+                                            result_type=position_row,
                                         ),
-                                        Var(j),
-                                        REAL,
+                                        index=Var(local=j),
+                                        result_type=REAL,
                                     ),
                                     entry(
-                                        projected["value"], Var(j), Var(col), model_row
+                                        projected["value"],
+                                        Var(local=j),
+                                        Var(local=col),
+                                        model_row,
                                     ),
                                 ),
-                                position_row,
+                                result_type=position_row,
                             ),
-                            REAL,
+                            result_type=REAL,
                         ),
-                        model_row,
+                        result_type=model_row,
                     ),
-                    sequence,
+                    result_type=sequence,
                 ),
             )
         )
@@ -624,20 +666,28 @@ class _SequenceFunctionElaboration:
             ),
         )
         image = Comprehension(
-            i,
-            length,
-            AffineMap(
-                Var(out_weight),
-                Var(out_bias),
-                (Gather(Var(context), Var(i), model_row),),
-                0,
-                out_width,
-                "identity",
-                model_row,
+            binder=i,
+            extent=length,
+            body=AffineMap(
+                weight=Var(local=out_weight),
+                bias=Var(local=out_bias),
+                sources=(
+                    Gather(
+                        value=Var(local=context),
+                        index=Var(local=i),
+                        result_type=model_row,
+                    ),
+                ),
+                row_offset=0,
+                rows=out_width,
+                transform="identity",
+                result_type=model_row,
             ),
-            sequence,
+            result_type=sequence,
         )
-        return LetValue(tuple(bindings), image, sequence), sequence
+        return LetValue(
+            bindings=tuple(bindings), body=image, result_type=sequence
+        ), sequence
 
 
 __all__ = []

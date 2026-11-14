@@ -38,14 +38,19 @@ References
 from __future__ import annotations
 
 import didactic.api as dx
+import panproto
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
+from quivers.core.algebras import PRODUCT_FUZZY
 from quivers.core.morphisms import Morphism, observed
 from quivers.core.morphisms import identity as id_morph
 from quivers.core.objects import FinSet, ProductSet, SetObject
-from quivers.core.algebras import PRODUCT_FUZZY
-from quivers.monadic.instances import _function_table
+from quivers.monadic.instances import (
+    _evaluation_morphism,
+    _function_space,
+    _function_table,
+)
 from quivers.monadic.typeclasses import Monad
 
 
@@ -97,7 +102,6 @@ class EffectSignature(dx.Model):
             ``Carrier``, and whose equations are the three monad
             laws (left/right unit, associativity).
         """
-        import panproto
 
         op_specs: list[dict] = []
         for op in self.operations:
@@ -304,7 +308,6 @@ class Handler(ValueModel):
         The morphism's domain is ``signature.to_theory()``; its
         codomain is the target monad's panproto theory.
         """
-        import panproto
 
         spec = {
             "id": f"quivers.handler.{self.signature.name}",
@@ -664,7 +667,6 @@ class FreeMonad(dx.Model):
 
         Derived from `lift_a2` and the function-space evaluator.
         """
-        from quivers.monadic.instances import _evaluation_morphism, _function_space
 
         fn_space = _function_space(A, B)
         return self.lift_a2(fn_space, A, B, _evaluation_morphism(A, B))

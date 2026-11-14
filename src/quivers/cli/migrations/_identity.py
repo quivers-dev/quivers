@@ -13,15 +13,32 @@ from quivers.cli.migrations._vcs import schemas_identical
 SOURCE_RULE_COVERAGE: frozenset[str] = frozenset()
 
 
-def validate_identity_pair(source_rev: str, target_rev: str) -> None:
-    """Prove that a declared byte-preserving edge is still an identity."""
-    # Import lazily because the migration registry imports this module while
-    # it is constructing `commit_id`.
-    from quivers.cli.migrations import commit_id
+def validate_identity_pair(
+    source_rev: str,
+    target_rev: str,
+    *,
+    resolve_commit: Callable[[str], str],
+) -> None:
+    """Prove that a declared byte-preserving edge is an identity.
+
+    Parameters
+    ----------
+    source_rev : str
+        The source grammar revision.
+    target_rev : str
+        The target grammar revision.
+    resolve_commit : Callable[[str], str]
+        The registry's validated schema-commit resolver.
+
+    Raises
+    ------
+    MigrationError
+        If a revision is unpinned or the grammar or schema differs.
+    """
 
     for revision in (source_rev, target_rev):
         expected = SCHEMA_COMMITS.get(revision)
-        actual = commit_id(revision)
+        actual = resolve_commit(revision)
         if expected is None or actual != expected:
             raise MigrationError(
                 f"identity hop {source_rev} -> {target_rev} has an unpinned "
@@ -45,15 +62,42 @@ def validate_identity_pair(source_rev: str, target_rev: str) -> None:
         )
 
 
-def migrate(source: bytes, source_rev: str, target_rev: str) -> bytes:
+def migrate(
+    source: bytes,
+    source_rev: str,
+    target_rev: str,
+    *,
+    resolve_commit: Callable[[str], str],
+) -> bytes:
     """Validate an identity edge and return target-parseable bytes unchanged.
 
     Identity hops remain explicit in the chain so release names do not
     collapse into a mutable ``HEAD`` alias. Both the parser-source hash and
     panproto schema identity are checked before the source is parsed using the
     target snapshot.
+
+    Parameters
+    ----------
+    source : bytes
+        The source document.
+    source_rev : str
+        Its grammar revision.
+    target_rev : str
+        The requested grammar revision.
+    resolve_commit : Callable[[str], str]
+        The registry's validated schema-commit resolver.
+
+    Returns
+    -------
+    bytes
+        The validated source bytes, unchanged.
+
+    Raises
+    ------
+    MigrationError
+        If the edge is not an identity or the target cannot parse the source.
     """
-    validate_identity_pair(source_rev, target_rev)
+    validate_identity_pair(source_rev, target_rev, resolve_commit=resolve_commit)
     try:
         schema = parse(target_rev, source)
     except Exception as error:
@@ -64,11 +108,48 @@ def migrate(source: bytes, source_rev: str, target_rev: str) -> bytes:
     return source
 
 
-def migrator(source_rev: str, target_rev: str) -> Callable[[bytes], bytes]:
-    """Bind an identity migrator to one explicit release edge."""
+def migrator(
+    source_rev: str,
+    target_rev: str,
+    *,
+    resolve_commit: Callable[[str], str],
+) -> Callable[[bytes], bytes]:
+    """Bind an identity migrator to one explicit release edge.
+
+    Parameters
+    ----------
+    source_rev : str
+        The source grammar revision.
+    target_rev : str
+        The target grammar revision.
+    resolve_commit : Callable[[str], str]
+        The registry's validated schema-commit resolver.
+
+    Returns
+    -------
+    Callable[[bytes], bytes]
+        The byte-preserving migration with its identity-pair metadata.
+    """
 
     def migrate_edge(source: bytes) -> bytes:
-        return migrate(source, source_rev, target_rev)
+        """Validate one source document on the bound edge.
+
+        Parameters
+        ----------
+        source : bytes
+            The source document.
+
+        Returns
+        -------
+        bytes
+            The validated bytes, unchanged.
+
+        Raises
+        ------
+        MigrationError
+            If identity or target-parse validation fails.
+        """
+        return migrate(source, source_rev, target_rev, resolve_commit=resolve_commit)
 
     setattr(migrate_edge, "_qvr_identity_pair", (source_rev, target_rev))
     return migrate_edge

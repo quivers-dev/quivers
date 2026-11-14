@@ -31,11 +31,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
 import threading
 from typing import Self
 
+import didactic.api as dx
 import torch
+
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.program_module import ProgramKernel
@@ -69,9 +72,10 @@ type SiteKey = tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]]
 its dynamic address frames, and its resumption path."""
 
 
-@dataclass(slots=True)
-class Contribution:
+class Contribution(QiecModel):
     """One score contribution that reached the run's accumulator.
+
+    The address and path compare by value; the tensor retains identity.
 
     Parameters
     ----------
@@ -88,10 +92,12 @@ class Contribution:
         path it was generated at.
     """
 
-    key: SiteKey
+    key: SiteKey = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     role: str
-    weight: torch.Tensor
-    path: tuple[str | int, ...] = ()
+    weight: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    path: tuple[str | int, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def _shared_value(label: str, value: torch.Tensor) -> torch.Tensor:
@@ -149,9 +155,11 @@ def _no_site_run_axis(label: str) -> bool:
     return False
 
 
-@dataclass(slots=True)
-class RunContext:
+class RunContext(QiecModel):
     """What one run shares with the handlers installed on it.
+
+    The checked kernel compares by value. Mutable per-run collections and
+    executable callbacks retain identity, including the shared parameter store.
 
     Parameters
     ----------
@@ -201,23 +209,47 @@ class RunContext:
         as the `SubsampleHandler` entries on the stack register them.
     """
 
-    kernel: ProgramKernel
-    validator: RuntimeValidator
-    contributions: list[Contribution] = field(default_factory=list)
-    interventions: set[SiteKey] = field(default_factory=set)
-    annotations: dict[str, dict[str, object]] = field(default_factory=dict)
-    parameters: dict[str, torch.Tensor] = field(default_factory=dict)
-    observations: dict[str, torch.Tensor] = field(default_factory=dict)
-    supplied: dict[str, torch.Tensor] = field(default_factory=dict)
-    occurrences: dict[str, int] = field(default_factory=dict)
-    reached: set[str] = field(default_factory=set)
+    kernel: ProgramKernel = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    validator: RuntimeValidator = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    contributions: list[Contribution] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    interventions: set[SiteKey] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    annotations: dict[str, dict[str, HeldValue]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    parameters: dict[str, torch.Tensor] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    observations: dict[str, torch.Tensor] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    supplied: dict[str, torch.Tensor] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    occurrences: dict[str, int] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    reached: set[str] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     run_index: int = 0
     runs: int = 1
-    slice_value: Callable[[str, torch.Tensor], torch.Tensor] = _shared_value
-    carries_run_axis: Callable[[MonadicProgram, str], bool] = _no_run_axis
-    site_carries_run_axis: Callable[[str], bool] = _no_site_run_axis
+    slice_value: Callable[[str, torch.Tensor], torch.Tensor] = dx.field(
+        default=_shared_value, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    carries_run_axis: Callable[[MonadicProgram, str], bool] = dx.field(
+        default=_no_run_axis, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    site_carries_run_axis: Callable[[str], bool] = dx.field(
+        default=_no_site_run_axis, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     vectorized: bool = False
-    subsamples: dict[str, torch.Tensor] = field(default_factory=dict)
+    subsamples: dict[str, torch.Tensor] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     @property
     def result_type(self) -> TypeExpr:
@@ -257,9 +289,11 @@ class RunContext:
         return (static, dynamic, path)
 
 
-@dataclass(frozen=True, slots=True)
-class Installation:
+class Installation(QiecModel):
     """One lexical handler a stack entry installs on a run.
+
+    The effect instance compares by value; the executable handler retains
+    identity.
 
     Parameters
     ----------
@@ -270,8 +304,8 @@ class Installation:
         The executable handler, whose definition joins the run's module.
     """
 
-    instance: NamedEffectInstance
-    runtime: RuntimeHandler
+    instance: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    runtime: RuntimeHandler = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
     def named(self, name: str) -> Installation:
         """The installation with its handler declared under a name.
@@ -294,12 +328,11 @@ class Installation:
             The installation with the renamed declaration, the rename
             carried into any per-installation factory the handler has.
         """
-        definition = replace(
-            self.runtime.definition,
+        definition = self.runtime.definition.with_(
             id=HandlerId.derive("run", name),
             name=name,
         )
-        runtime = replace(self.runtime, definition=definition)
+        runtime = self.runtime.with_(definition=definition)
         factory = self.runtime.context_factory
         if factory is not None:
 
@@ -311,10 +344,10 @@ class Installation:
                 RuntimeHandler
                     The handler the original factory builds, renamed.
                 """
-                return replace(factory(), definition=definition)
+                return factory().with_(definition=definition)
 
-            runtime.context_factory = context_factory
-        return Installation(self.instance, runtime)
+            runtime = runtime.with_(context_factory=context_factory)
+        return Installation(instance=self.instance, runtime=runtime)
 
 
 class EffectHandler(ABC):

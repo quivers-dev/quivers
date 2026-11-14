@@ -35,7 +35,9 @@ def test_hurdle_density_matches_high_precision_pmf(rate: float) -> None:
     dist = HurdlePoisson(
         torch.tensor(0.3, dtype=torch.float64), torch.tensor(rate, dtype=torch.float64)
     )
-    reference = RuntimeDistribution("HurdlePoisson", {"zero_prob": 0.3, "rate": rate})
+    reference = RuntimeDistribution(
+        family="HurdlePoisson", arguments={"zero_prob": 0.3, "rate": rate}
+    )
     with localcontext() as context:
         context.prec = 80
         r = Decimal(str(rate))
@@ -121,7 +123,9 @@ export p
 
 def test_reference_hurdle_samples_its_zero_rate_limit() -> None:
     rng = random.Random(119)
-    dist = RuntimeDistribution("HurdlePoisson", {"zero_prob": 0.3, "rate": 0.0})
+    dist = RuntimeDistribution(
+        family="HurdlePoisson", arguments={"zero_prob": 0.3, "rate": 0.0}
+    )
     draws = [dist.sample(rng) for _ in range(2000)]
     assert set(draws) == {0, 1}
     assert abs(draws.count(0) / 2000 - 0.3) < 6 * math.sqrt(0.21 / 2000)
@@ -132,7 +136,9 @@ def test_reference_hurdle_samples_its_zero_rate_limit() -> None:
 def test_reference_hurdle_refuses_invalid_parameters_before_either_branch(
     zero_prob: float, rate: float
 ) -> None:
-    dist = RuntimeDistribution("HurdlePoisson", {"zero_prob": zero_prob, "rate": rate})
+    dist = RuntimeDistribution(
+        family="HurdlePoisson", arguments={"zero_prob": zero_prob, "rate": rate}
+    )
     for value in [0, 1]:
         with pytest.raises(ValueError):
             dist.log_prob(value)

@@ -214,8 +214,12 @@ def test_a_program_becomes_a_computation_over_canonical_instances() -> None:
 def test_plates_type_the_sampled_tensors() -> None:
     module = _module(IID_PLATE)
     computation = next(item for item in module.computations if item.name == "prog")
-    assert computation.parameters[0].type == tensor_type(REAL, (IndexLiteral(3, NAT),))
-    assert computation.type.result == tensor_type(REAL, (IndexLiteral(3, NAT),))
+    assert computation.parameters[0].type == tensor_type(
+        REAL, (IndexLiteral(value=3, sort=NAT),)
+    )
+    assert computation.type.result == tensor_type(
+        REAL, (IndexLiteral(value=3, sort=NAT),)
+    )
     entry = program_entry(module, "prog")
     assert [axis.name for axis in entry.sites[0].batch] == ["N"]
 
@@ -232,7 +236,9 @@ def test_a_marginalization_block_becomes_an_enumerated_helper() -> None:
         "idx",
         "r",
     ]
-    assert helper.parameters[3].type == tensor_type(INT, (IndexLiteral(4, NAT),))
+    assert helper.parameters[3].type == tensor_type(
+        INT, (IndexLiteral(value=4, sort=NAT),)
+    )
     assert isinstance(helper.body, NewInstance)
     assert isinstance(helper.body.body, Handle)
     handler_names = {handler.name for handler in module.handlers}

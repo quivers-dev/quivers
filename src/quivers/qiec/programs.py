@@ -12,7 +12,10 @@ re-reading the source.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
+import didactic.api as dx
+
 from typing import Literal
 
 from quivers.qiec.identifiers import ComputationId, EffectInstanceId
@@ -47,8 +50,7 @@ type SiteKind = Literal["sample", "observe", "marginal"]
 """What a program step does at its site."""
 
 
-@dataclass(frozen=True, slots=True)
-class ProgramParameter:
+class ProgramParameter(QiecModel):
     """One parameter of an elaborated program.
 
     Parameters
@@ -72,15 +74,14 @@ class ProgramParameter:
     """
 
     name: str
-    role: ParameterRole
-    type: TypeExpr
-    axes: tuple[str, ...] = ()
+    role: ParameterRole = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    axes: tuple[str, ...] = dx.field(default=(), opaque=True, extras=OPAQUE_BY_VALUE)
     per_row: bool = False
     tag: Literal["program_parameter"] = "program_parameter"
 
 
-@dataclass(frozen=True, slots=True)
-class ProgramSite:
+class ProgramSite(QiecModel):
     """One probabilistic step of an elaborated program.
 
     Parameters
@@ -100,15 +101,18 @@ class ProgramSite:
     """
 
     name: str
-    kind: SiteKind
+    kind: SiteKind = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     family: str
-    batch: tuple[PlateAxis, ...] = ()
-    event: tuple[PlateAxis, ...] = ()
+    batch: tuple[PlateAxis, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    event: tuple[PlateAxis, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     tag: Literal["program_site"] = "program_site"
 
 
-@dataclass(frozen=True, slots=True)
-class ProgramEntry:
+class ProgramEntry(QiecModel):
     """The typed entry point a program declaration elaborates to.
 
     Parameters
@@ -139,14 +143,18 @@ class ProgramEntry:
     """
 
     name: str
-    computation: ComputationId
-    parameters: tuple[ProgramParameter, ...]
-    return_names: tuple[str, ...]
-    return_labels: tuple[str, ...] | None
-    sites: tuple[ProgramSite, ...]
-    random_instance: EffectInstanceId
-    score_instance: EffectInstanceId
-    telescope: Telescope = ()
+    computation: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    parameters: tuple[ProgramParameter, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    return_names: tuple[str, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    return_labels: tuple[str, ...] | None = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    sites: tuple[ProgramSite, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    random_instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    score_instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    telescope: Telescope = dx.field(default=(), opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["program_entry"] = "program_entry"
 
 

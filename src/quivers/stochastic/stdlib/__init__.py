@@ -23,9 +23,16 @@ weights.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import cast
+
+import torch
+
+from quivers._values import HeldValue
 from quivers.stochastic.agenda import (
     DeductionSystem,
     InferenceRule,
+    Item,
     Wildcard,
     cky_agenda,
     depth_first_agenda,
@@ -44,8 +51,29 @@ from quivers.stochastic.semiring import (
 # ---------------------------------------------------------------------------
 
 
-_I, _J, _K = Wildcard("i"), Wildcard("j"), Wildcard("k")
-_X, _Y, _Z = Wildcard("X"), Wildcard("Y"), Wildcard("Z")
+def _copy_axioms(value: HeldValue) -> list[tuple[Item, torch.Tensor]]:
+    """Copy the explicit weighted axioms accepted by the library systems.
+
+    Parameters
+    ----------
+    value
+        An iterable of item and weight pairs.
+
+    Returns
+    -------
+    list[tuple[Item, torch.Tensor]]
+        The axioms in their input order, retaining each live weight.
+
+    Raises
+    ------
+    TypeError
+        If the input is not iterable.
+    """
+    return list(cast("Iterable[tuple[Item, torch.Tensor]]", value))
+
+
+_I, _J, _K = Wildcard(name="i"), Wildcard(name="j"), Wildcard(name="k")
+_X, _Y, _Z = Wildcard(name="X"), Wildcard(name="Y"), Wildcard(name="Z")
 
 
 def _span(i: Wildcard, j: Wildcard, category: tuple | Wildcard) -> tuple:
@@ -156,7 +184,7 @@ def _is_sentence(item: tuple) -> bool:
 CCG = DeductionSystem(
     rules=tuple(_ccg_rules()),
     semiring=LOG_PROB,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=_is_sentence,
     agenda_factory=cky_agenda,
 )
@@ -166,7 +194,7 @@ CCG = DeductionSystem(
 AB = DeductionSystem(
     rules=tuple(_application_rules()),
     semiring=LOG_PROB,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=_is_sentence,
     agenda_factory=cky_agenda,
 )
@@ -190,17 +218,25 @@ def _stlc_rules() -> list[InferenceRule]:
         # against itself).
         InferenceRule(
             name="synth_to_check",
-            premises=(("synth", Wildcard("t"), Wildcard("A")),),
-            conclusion=("check", Wildcard("t"), Wildcard("A")),
+            premises=(("synth", Wildcard(name="t"), Wildcard(name="A")),),
+            conclusion=("check", Wildcard(name="t"), Wildcard(name="A")),
         ),
         # application: synth(f, A → B), check(a, A) |- synth(f a, B)
         InferenceRule(
             name="app_synth",
             premises=(
-                ("synth", Wildcard("f"), ("arrow", Wildcard("A"), Wildcard("B"))),
-                ("check", Wildcard("a"), Wildcard("A")),
+                (
+                    "synth",
+                    Wildcard(name="f"),
+                    ("arrow", Wildcard(name="A"), Wildcard(name="B")),
+                ),
+                ("check", Wildcard(name="a"), Wildcard(name="A")),
             ),
-            conclusion=("synth", ("app", Wildcard("f"), Wildcard("a")), Wildcard("B")),
+            conclusion=(
+                "synth",
+                ("app", Wildcard(name="f"), Wildcard(name="a")),
+                Wildcard(name="B"),
+            ),
         ),
     ]
 
@@ -208,7 +244,7 @@ def _stlc_rules() -> list[InferenceRule]:
 STLC = DeductionSystem(
     rules=tuple(_stlc_rules()),
     semiring=BOOLEAN,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] in ("synth", "check"),
     agenda_factory=depth_first_agenda,
 )
@@ -254,8 +290,15 @@ def _mltt_rules() -> list[InferenceRule]:
         # Encoded as: in_ctx(Γ, x, A) |- judges(Γ, x, A)
         InferenceRule(
             name="var",
-            premises=(("in_ctx", Wildcard("G"), Wildcard("x"), Wildcard("A")),),
-            conclusion=("judges", Wildcard("G"), Wildcard("x"), Wildcard("A")),
+            premises=(
+                ("in_ctx", Wildcard(name="G"), Wildcard(name="x"), Wildcard(name="A")),
+            ),
+            conclusion=(
+                "judges",
+                Wildcard(name="G"),
+                Wildcard(name="x"),
+                Wildcard(name="A"),
+            ),
         ),
         # application: judges(Γ, f, Π x:A. B), judges(Γ, a, A) |- judges(Γ, f a, B[a/x])
         # Simplified: B[a/x] = B (assuming no substitution for fragment).
@@ -264,17 +307,17 @@ def _mltt_rules() -> list[InferenceRule]:
             premises=(
                 (
                     "judges",
-                    Wildcard("G"),
-                    Wildcard("f"),
-                    ("pi", Wildcard("A"), Wildcard("B")),
+                    Wildcard(name="G"),
+                    Wildcard(name="f"),
+                    ("pi", Wildcard(name="A"), Wildcard(name="B")),
                 ),
-                ("judges", Wildcard("G"), Wildcard("a"), Wildcard("A")),
+                ("judges", Wildcard(name="G"), Wildcard(name="a"), Wildcard(name="A")),
             ),
             conclusion=(
                 "judges",
-                Wildcard("G"),
-                ("app", Wildcard("f"), Wildcard("a")),
-                Wildcard("B"),
+                Wildcard(name="G"),
+                ("app", Wildcard(name="f"), Wildcard(name="a")),
+                Wildcard(name="B"),
             ),
             side_condition=_app_term_depth_bound,
         ),
@@ -284,7 +327,7 @@ def _mltt_rules() -> list[InferenceRule]:
 MLTT = DeductionSystem(
     rules=tuple(_mltt_rules()),
     semiring=BOOLEAN,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "judges",
     agenda_factory=depth_first_agenda,
     max_iterations=10_000,
@@ -303,17 +346,17 @@ def _datalog_transitive_closure_rules() -> list[InferenceRule]:
         # base: edge(X, Y) |- reach(X, Y)
         InferenceRule(
             name="reach_base",
-            premises=(("edge", Wildcard("X"), Wildcard("Y")),),
-            conclusion=("reach", Wildcard("X"), Wildcard("Y")),
+            premises=(("edge", Wildcard(name="X"), Wildcard(name="Y")),),
+            conclusion=("reach", Wildcard(name="X"), Wildcard(name="Y")),
         ),
         # transitive: reach(X, Y), edge(Y, Z) |- reach(X, Z)
         InferenceRule(
             name="reach_step",
             premises=(
-                ("reach", Wildcard("X"), Wildcard("Y")),
-                ("edge", Wildcard("Y"), Wildcard("Z")),
+                ("reach", Wildcard(name="X"), Wildcard(name="Y")),
+                ("edge", Wildcard(name="Y"), Wildcard(name="Z")),
             ),
-            conclusion=("reach", Wildcard("X"), Wildcard("Z")),
+            conclusion=("reach", Wildcard(name="X"), Wildcard(name="Z")),
         ),
     ]
 
@@ -321,7 +364,7 @@ def _datalog_transitive_closure_rules() -> list[InferenceRule]:
 Datalog = DeductionSystem(
     rules=tuple(_datalog_transitive_closure_rules()),
     semiring=BOOLEAN,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "reach",
     agenda_factory=semi_naive_agenda,
 )
@@ -353,10 +396,10 @@ def _dijkstra_rules() -> list[InferenceRule]:
         InferenceRule(
             name="relax",
             premises=(
-                ("dist", Wildcard("u")),
-                ("edge", Wildcard("u"), Wildcard("v"), Wildcard("w")),
+                ("dist", Wildcard(name="u")),
+                ("edge", Wildcard(name="u"), Wildcard(name="v"), Wildcard(name="w")),
             ),
-            conclusion=("dist", Wildcard("v")),
+            conclusion=("dist", Wildcard(name="v")),
             weight_fn=_relax_weight,
         ),
     ]
@@ -365,7 +408,7 @@ def _dijkstra_rules() -> list[InferenceRule]:
 Dijkstra = DeductionSystem(
     rules=tuple(_dijkstra_rules()),
     semiring=VITERBI,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "dist",
     agenda_factory=knuth_agenda,
 )
@@ -394,11 +437,11 @@ def _hmm_forward_rules() -> list[InferenceRule]:
         InferenceRule(
             name="forward_step",
             premises=(
-                ("alpha", Wildcard("t_prev"), Wildcard("s_prev")),
-                ("trans", Wildcard("s_prev"), Wildcard("s_curr")),
-                ("emit", Wildcard("s_curr"), Wildcard("t_curr")),
+                ("alpha", Wildcard(name="t_prev"), Wildcard(name="s_prev")),
+                ("trans", Wildcard(name="s_prev"), Wildcard(name="s_curr")),
+                ("emit", Wildcard(name="s_curr"), Wildcard(name="t_curr")),
             ),
-            conclusion=("alpha", Wildcard("t_curr"), Wildcard("s_curr")),
+            conclusion=("alpha", Wildcard(name="t_curr"), Wildcard(name="s_curr")),
         ),
     ]
 
@@ -406,7 +449,7 @@ def _hmm_forward_rules() -> list[InferenceRule]:
 HMM = DeductionSystem(
     rules=tuple(_hmm_forward_rules()),
     semiring=LOG_PROB,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "alpha",
     agenda_factory=cky_agenda,
 )
@@ -416,7 +459,7 @@ HMM = DeductionSystem(
 ViterbiHMM = DeductionSystem(
     rules=tuple(_hmm_forward_rules()),
     semiring=VITERBI,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "alpha",
     agenda_factory=cky_agenda,
 )
@@ -435,16 +478,16 @@ def _edit_distance_rules() -> list[InferenceRule]:
         InferenceRule(
             name="match",
             premises=(
-                ("dist", Wildcard("i_p"), Wildcard("j_p")),
+                ("dist", Wildcard(name="i_p"), Wildcard(name="j_p")),
                 (
                     "match",
-                    Wildcard("i"),
-                    Wildcard("j"),
-                    Wildcard("i_p"),
-                    Wildcard("j_p"),
+                    Wildcard(name="i"),
+                    Wildcard(name="j"),
+                    Wildcard(name="i_p"),
+                    Wildcard(name="j_p"),
                 ),
             ),
-            conclusion=("dist", Wildcard("i"), Wildcard("j")),
+            conclusion=("dist", Wildcard(name="i"), Wildcard(name="j")),
         ),
     ]
 
@@ -452,7 +495,7 @@ def _edit_distance_rules() -> list[InferenceRule]:
 EditDistance = DeductionSystem(
     rules=tuple(_edit_distance_rules()),
     semiring=VITERBI,
-    axiom_injector=lambda axioms: list(axioms),
+    axiom_injector=_copy_axioms,
     goal=lambda item: isinstance(item, tuple) and item[0] == "dist",
     agenda_factory=cky_agenda,
 )

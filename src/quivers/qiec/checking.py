@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from dataclasses import dataclass, field
+
+import didactic.api as dx
+
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
 from quivers.qiec.effects import (
@@ -165,8 +169,7 @@ class KernelError(TypeError):
         self.code = code
 
 
-@dataclass(frozen=True, slots=True)
-class StaticScope:
+class StaticScope(QiecModel):
     """The three disjoint namespaces visible in a declaration body.
 
     Parameters
@@ -179,8 +182,12 @@ class StaticScope:
         Effect binder names in scope.
     """
 
-    types: tuple[tuple[str, Kind], ...] = ()
-    indices: tuple[tuple[str, IndexSort], ...] = ()
+    types: tuple[tuple[str, Kind], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    indices: tuple[tuple[str, IndexSort], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     effects: tuple[str, ...] = ()
 
     @property
@@ -244,7 +251,9 @@ class StaticScope:
                 effects.append(binder.name)
             else:  # pragma: no cover - closed binder union
                 raise KernelError(f"unknown binder in {subject}: {binder!r}")
-        return StaticScope(tuple(types), tuple(indices), tuple(effects))
+        return StaticScope(
+            types=tuple(types), indices=tuple(indices), effects=tuple(effects)
+        )
 
     def type_kind(self, name: str) -> Kind | None:
         """The kind of a type binder in scope.
@@ -282,8 +291,7 @@ class StaticScope:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class ComputationSignature:
+class ComputationSignature(QiecModel):
     """What a call needs to know about a computation it invokes.
 
     A signature rather than a declaration, and deliberately so: a call
@@ -308,16 +316,15 @@ class ComputationSignature:
         The row the computation performs, before instantiation.
     """
 
-    id: ComputationId
+    id: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    telescope: Telescope
-    parameters: tuple[TypeExpr, ...]
-    result: TypeExpr
-    effects: EffectRow
+    telescope: Telescope = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    parameters: tuple[TypeExpr, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    effects: EffectRow = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(slots=True)
-class KernelRegistry:
+class KernelRegistry(QiecModel):
     """Resolved declarations used by the reference checker.
 
     Every table is keyed by stable identity, so a lookup never depends on a
@@ -345,18 +352,30 @@ class KernelRegistry:
         rows in diagnostics.
     """
 
-    families: dict[FamilyId, FamilyDecl] = field(default_factory=dict)
-    constructors: dict[ConstructorId, ConstructorDecl] = field(default_factory=dict)
-    effects: dict[EffectId, EffectDef] = field(default_factory=dict)
-    operations: dict[OperationId, tuple[EffectDef, OperationDef]] = field(
-        default_factory=dict
+    families: dict[FamilyId, FamilyDecl] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    handlers: dict[HandlerId, HandlerDef] = field(default_factory=dict)
-    type_constructors: dict[TypeId, TypeConstructorRef] = field(default_factory=dict)
-    computations: dict[ComputationId, ComputationSignature] = field(
-        default_factory=dict
+    constructors: dict[ConstructorId, ConstructorDecl] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    instance_names: dict[EffectInstanceId, str] = field(default_factory=dict)
+    effects: dict[EffectId, EffectDef] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    operations: dict[OperationId, tuple[EffectDef, OperationDef]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    handlers: dict[HandlerId, HandlerDef] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    type_constructors: dict[TypeId, TypeConstructorRef] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    computations: dict[ComputationId, ComputationSignature] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    instance_names: dict[EffectInstanceId, str] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def _record_type_constructor(self, constructor: TypeConstructorRef) -> None:
         """Remember one type constructor's telescope, or confirm it.
@@ -804,7 +823,9 @@ class KernelRegistry:
                     "qiec-handler-body",
                 )
             context = CheckContext().with_resumption(
-                ResumptionType(resumed, output, handler.introduced)
+                ResumptionType(
+                    result=resumed, answer=output, effects=handler.introduced
+                )
             )
             for parameter, declared in zip(
                 clause.parameters, parameter_types, strict=True
@@ -990,8 +1011,7 @@ class KernelRegistry:
         raise KernelError(f"unknown indexed family type {type_.constructor.name!r}")
 
 
-@dataclass(frozen=True, slots=True)
-class ResumptionType:
+class ResumptionType(QiecModel):
     """The continuation available inside one handler clause body.
 
     A resumption is not a value and cannot be stored, so it is not a
@@ -1009,13 +1029,12 @@ class ResumptionType:
         The row resuming performs.
     """
 
-    result: TypeExpr
-    answer: TypeExpr
-    effects: EffectRow
+    result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    answer: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    effects: EffectRow = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(frozen=True, slots=True)
-class CheckContext:
+class CheckContext(QiecModel):
     """What is in scope at one point in a term being checked.
 
     Parameters
@@ -1032,11 +1051,21 @@ class CheckContext:
         Rigid variables currently active, tracked for the same reason.
     """
 
-    locals: tuple[Local, ...] = ()
-    givens: tuple[BranchGiven, ...] = ()
-    static_scopes: tuple[StaticScopeId, ...] = ()
-    static_variables: tuple[StaticVariableId, ...] = ()
-    resumption: ResumptionType | None = None
+    locals: tuple[Local, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    givens: tuple[BranchGiven, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    static_scopes: tuple[StaticScopeId, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    static_variables: tuple[StaticVariableId, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    resumption: ResumptionType | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     """The continuation, when checking a handler clause body.
 
     ``None`` everywhere else, which is what makes `resume` outside a
@@ -1065,11 +1094,11 @@ class CheckContext:
         if any(existing.name == local.name for existing in self.locals):
             raise KernelError(f"local already bound: {local.name!r}")
         return CheckContext(
-            (*self.locals, local),
-            self.givens,
-            self.static_scopes,
-            self.static_variables,
-            self.resumption,
+            locals=(*self.locals, local),
+            givens=self.givens,
+            static_scopes=self.static_scopes,
+            static_variables=self.static_variables,
+            resumption=self.resumption,
         )
 
     def with_givens(self, givens: tuple[BranchGiven, ...]) -> CheckContext:
@@ -1086,11 +1115,11 @@ class CheckContext:
             A context in which that evidence may be appealed to.
         """
         return CheckContext(
-            self.locals,
-            (*self.givens, *givens),
-            self.static_scopes,
-            self.static_variables,
-            self.resumption,
+            locals=self.locals,
+            givens=(*self.givens, *givens),
+            static_scopes=self.static_scopes,
+            static_variables=self.static_variables,
+            resumption=self.resumption,
         )
 
     def with_static_scope(
@@ -1125,11 +1154,11 @@ class CheckContext:
         if set(variables) & set(self.static_variables):
             raise KernelError("a case branch reused an active static variable")
         return CheckContext(
-            self.locals,
-            self.givens,
-            (*self.static_scopes, scope),
-            (*self.static_variables, *variables),
-            self.resumption,
+            locals=self.locals,
+            givens=self.givens,
+            static_scopes=(*self.static_scopes, scope),
+            static_variables=(*self.static_variables, *variables),
+            resumption=self.resumption,
         )
 
     def with_resumption(self, resumption: ResumptionType) -> CheckContext:
@@ -1150,11 +1179,11 @@ class CheckContext:
             reaching past it.
         """
         return CheckContext(
-            self.locals,
-            self.givens,
-            self.static_scopes,
-            self.static_variables,
-            resumption,
+            locals=self.locals,
+            givens=self.givens,
+            static_scopes=self.static_scopes,
+            static_variables=self.static_variables,
+            resumption=resumption,
         )
 
     def local_type(self, name: str) -> TypeExpr | None:
@@ -1214,10 +1243,10 @@ def _binder_variable(binder: TypeBinder | IndexBinder | EffectBinder) -> StaticA
         rigid one and substitution can reach it.
     """
     if isinstance(binder, TypeBinder):
-        return TypeVariable(binder.name, binder.kind)
+        return TypeVariable(name=binder.name, kind=binder.kind)
     if isinstance(binder, IndexBinder):
-        return IndexVariable(binder.name, binder.sort)
-    return EffectVariable(binder.name)
+        return IndexVariable(name=binder.name, sort=binder.sort)
+    return EffectVariable(name=binder.name)
 
 
 def _sort_matches(expected: IndexSort, actual: IndexSort) -> bool:
@@ -1544,9 +1573,9 @@ def _combine_substitutions(
         static namespaces.
     """
     return StaticSubstitution(
-        (*first.types, *second.types),
-        (*first.indices, *second.indices),
-        (*first.effects, *second.effects),
+        types=(*first.types, *second.types),
+        indices=(*first.indices, *second.indices),
+        effects=(*first.effects, *second.effects),
     )
 
 
@@ -1703,7 +1732,7 @@ def _checked_computation_type(
         effect mentions a rigid variable that does not survive out to
         this point.
     """
-    type_ = ComputationType(effects, result)
+    type_ = ComputationType(effects=effects, result=result)
     registry.validate_computation_type(type_)
     _check_static_variable_scope(result, context, subject="computation result type")
     for entry in effects.entries:
@@ -2113,7 +2142,9 @@ def _infer_table_map(
                 "a table map's block lies outside its table", "qiec-primitive"
             )
     expected: TypeExpr = (
-        REAL if value.rows == 1 else tensor_type(REAL, (IndexLiteral(value.rows, NAT),))
+        REAL
+        if value.rows == 1
+        else tensor_type(REAL, (IndexLiteral(value=value.rows, sort=NAT),))
     )
     if value.result_type != expected:
         raise KernelError(
@@ -2202,7 +2233,9 @@ def _infer_affine_map(
             "qiec-primitive",
         )
     expected: TypeExpr = (
-        REAL if value.rows == 1 else tensor_type(REAL, (IndexLiteral(value.rows, NAT),))
+        REAL
+        if value.rows == 1
+        else tensor_type(REAL, (IndexLiteral(value=value.rows, sort=NAT),))
     )
     if value.result_type != expected:
         raise KernelError(
@@ -2668,8 +2701,8 @@ def infer_value(
             for index in constructor.result_indices
         )
         expected_result = TypeApplication(
-            family.type_constructor,
-            (*parameter_arguments, *result_indices),
+            constructor=family.type_constructor,
+            arguments=(*parameter_arguments, *result_indices),
         )
         if value.result_type != expected_result:
             raise KernelError(
@@ -2835,7 +2868,11 @@ def _infer_computation(
     if isinstance(computation, Perform):
         effect, result = check_request(computation.request, registry, context)
         return _checked_computation_type(
-            EffectRow((RowEntry(computation.request.instance, effect),)),
+            EffectRow(
+                entries=(
+                    RowEntry(instance=computation.request.instance, effect=effect),
+                )
+            ),
             result,
             registry,
             context,
@@ -2934,7 +2971,10 @@ def _infer_computation(
             family,
             constructors,
             scrutinee_type,
-            tuple(BranchPattern(branch.constructor) for branch in computation.branches),
+            tuple(
+                BranchPattern(constructor=branch.constructor)
+                for branch in computation.branches
+            ),
         )
         if coverage.status is not CoverageStatus.COMPLETE:
             raise KernelError(
@@ -3323,8 +3363,7 @@ def _infer_new_instance(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class ResumptionUse:
+class ResumptionUse(dx.Model):
     """How many times a clause body may invoke its continuation.
 
     An interval rather than a count, because a `case` splits the paths
@@ -3363,7 +3402,7 @@ class ResumptionUse:
             if self.maximum is None or other.maximum is None
             else self.maximum + other.maximum
         )
-        return ResumptionUse(self.minimum + other.minimum, maximum)
+        return ResumptionUse(minimum=self.minimum + other.minimum, maximum=maximum)
 
     def join(self, other: ResumptionUse) -> ResumptionUse:
         """Alternation: one path or the other, so the interval widens.
@@ -3385,13 +3424,13 @@ class ResumptionUse:
             if self.maximum is None or other.maximum is None
             else max(self.maximum, other.maximum)
         )
-        return ResumptionUse(min(self.minimum, other.minimum), maximum)
+        return ResumptionUse(minimum=min(self.minimum, other.minimum), maximum=maximum)
 
 
-NEVER = ResumptionUse(0, 0)
+NEVER = ResumptionUse(minimum=0, maximum=0)
 """A computation that cannot invoke the continuation."""
 
-ONCE = ResumptionUse(1, 1)
+ONCE = ResumptionUse(minimum=1, maximum=1)
 """A computation that invokes the continuation exactly once."""
 
 

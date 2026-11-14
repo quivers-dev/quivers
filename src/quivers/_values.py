@@ -460,6 +460,28 @@ class ValueModel(dx.Model):
                 except TypeError as exc:
                     raise TypeError(f"{cls.__name__}.{name}: {exc}") from exc
 
+    def with_(self, **changes: HeldValue) -> Self:
+        """Return a validated update, including live opaque field values.
+
+        Parameters
+        ----------
+        **changes
+            Replacement field values, including tensors and callbacks held
+            by opaque fields.
+
+        Returns
+        -------
+        Self
+            A new model validated by the declared field and model validators.
+
+        Raises
+        ------
+        didactic.ValidationError
+            If a field is unknown or its replacement fails validation.
+        """
+        update = cast("Callable[..., Self]", super().with_)
+        return update(**changes)
+
     def _local_key(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
         """Split this model into its local key and its nested value models.
 

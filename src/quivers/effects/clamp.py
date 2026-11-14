@@ -52,8 +52,8 @@ class ClampHandler(EffectHandler):
         kernel = run.kernel
         return (
             Installation(
-                kernel.random,
-                condition_handler(
+                instance=kernel.random,
+                runtime=condition_handler(
                     {
                         name: run.slice_value(name, value)
                         for name, value in self.data.items()

@@ -43,7 +43,7 @@ def build_locator(
     params: list[torch.nn.Parameter] = []
     locations: dict[str, tuple[torch.nn.Module, str]] = {}
     for module_name in ("_axiom_module", "_rule_module"):
-        mod = getattr(ded, module_name, None)
+        mod = ded.modules.get(module_name)
         if mod is None:
             continue
         for path_in_mod, p in mod.named_parameters():

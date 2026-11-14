@@ -12,12 +12,15 @@ every family through its own library.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 import math
 import random
 from types import MappingProxyType
 from typing import Protocol
 
+import didactic.api as dx
+
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.qiec.reference_families import (
     DENSITIES as _STRUCTURED_DENSITIES,
     LOG_MASSES as _LOG_MASSES,
@@ -218,9 +221,12 @@ def _nest(entries: Mapping[tuple[int, ...], object], shape: Sequence[int]) -> ob
     return build((), 0)
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeDistribution:
+class RuntimeDistribution(QiecModel):
     """A constructed distribution, as host data.
+
+    Parameter mappings are owned snapshots compared by identity. Their
+    host values retain identity, including tensors and their gradients.
+    Plate extents and parameter ranks compare by value.
 
     Parameters
     ----------
@@ -244,16 +250,20 @@ class RuntimeDistribution:
     """
 
     family: str
-    arguments: Mapping[str, object]
+    arguments: Mapping[str, HeldValue] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     batch: tuple[int, ...] = ()
     event: tuple[int, ...] = ()
-    ranks: Mapping[str, int] = MappingProxyType({})
+    ranks: Mapping[str, int] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     natural: tuple[int, ...] = ()
 
-    def __post_init__(self) -> None:
-        """Freeze the arguments so a distribution value cannot drift."""
-        object.__setattr__(self, "arguments", MappingProxyType(dict(self.arguments)))
-        object.__setattr__(self, "ranks", MappingProxyType(dict(self.ranks)))
+    @dx.model_validator()
+    def _freeze_arguments(self) -> None:
+        """Snapshot the parameter mapping while retaining its host values."""
+        self._normalize_field("arguments", MappingProxyType(dict(self.arguments)))
 
     @property
     def plated(self) -> bool:
@@ -357,7 +367,12 @@ class RuntimeDistribution:
         batch = self.batch[remaining:] if remaining < len(self.batch) else ()
         event = self.event[max(remaining - len(self.batch), 0) :]
         return RuntimeDistribution(
-            self.family, arguments, batch, event, self.ranks, self.natural
+            family=self.family,
+            arguments=arguments,
+            batch=batch,
+            event=event,
+            ranks=self.ranks,
+            natural=self.natural,
         )
 
     def sample(self, rng: random.Random | None = None) -> object:

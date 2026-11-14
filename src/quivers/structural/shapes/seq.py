@@ -126,8 +126,8 @@ def rnn_encoder(sig: Signature | None = None, dim: int = 64) -> Encoder:
         return nil_const
 
     op_fns = {
-        "Nil": PerOpFn("Nil", "plain", (), nil_fn),
-        "Cons": PerOpFn("Cons", "plain", ("head", "tail"), cons_fn),
+        "Nil": PerOpFn(op="Nil", mode="plain", args=(), fn=nil_fn),
+        "Cons": PerOpFn(op="Cons", mode="plain", args=("head", "tail"), fn=cons_fn),
     }
     return Encoder(
         name="RNN",
@@ -252,9 +252,13 @@ def transformer_encoder(
         return nil_const
 
     op_fns = {
-        "Nil": PerOpFn("Nil", "plain", (), nil_fn),
+        "Nil": PerOpFn(op="Nil", mode="plain", args=(), fn=nil_fn),
         "Cons": PerOpFn(
-            "Cons", "attention", ("head", "tail"), cons_fn, prefix_var="prefix"
+            op="Cons",
+            mode="attention",
+            args=("head", "tail"),
+            fn=cons_fn,
+            prefix_var="prefix",
         ),
     }
     return Encoder(
@@ -299,8 +303,8 @@ def bow_encoder(sig: Signature | None = None, dim: int = 64) -> Encoder:
         return nil_const
 
     op_fns = {
-        "Nil": PerOpFn("Nil", "plain", (), nil_fn),
-        "Cons": PerOpFn("Cons", "plain", ("head", "tail"), cons_fn),
+        "Nil": PerOpFn(op="Nil", mode="plain", args=(), fn=nil_fn),
+        "Cons": PerOpFn(op="Cons", mode="plain", args=("head", "tail"), fn=cons_fn),
     }
     return Encoder(
         name="BoW",

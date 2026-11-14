@@ -588,7 +588,7 @@ class MetropolisKernel(MCMCKernel):
             If the proposal returns a candidate of the wrong shape or a
             correction that is not a scalar.
         """
-        self._evaluate_first(state, potential)
+        state = self._evaluate_first(state, potential)
         candidate, log_correction = self._proposal.propose(
             state.position, self._generator
         )

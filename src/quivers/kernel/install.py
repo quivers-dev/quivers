@@ -8,11 +8,44 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import argparse
 import json
 import sys
 import tempfile
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from jupyter_client.kernelspec import KernelSpecManager
+
+    _JUPYTER_AVAILABLE = True
+else:
+    try:
+        from jupyter_client.kernelspec import KernelSpecManager
+    except ModuleNotFoundError as error:
+        if error.name != "jupyter_client":
+            raise
+        _JUPYTER_AVAILABLE = False
+    else:
+        _JUPYTER_AVAILABLE = True
+
+if TYPE_CHECKING:
+    from ipykernel.kernelapp import IPKernelApp
+    from quivers.kernel.quivers_kernel import QuiversKernel
+
+    _KERNEL_UNAVAILABLE = None
+else:
+    try:
+        from ipykernel.kernelapp import IPKernelApp
+
+        from quivers.kernel.quivers_kernel import QuiversKernel
+    except ModuleNotFoundError as error:
+        if error.name not in {"ipykernel", "jupyter_client"}:
+            raise
+        _KERNEL_UNAVAILABLE: ModuleNotFoundError | None = error
+    else:
+        _KERNEL_UNAVAILABLE = None
 
 
 KERNELSPEC = {
@@ -57,7 +90,10 @@ def install_kernelspec(*, user: bool = True, prefix: str | None = None) -> Path:
     ImportError
         When ``jupyter_client`` is not installed.
     """
-    from jupyter_client.kernelspec import KernelSpecManager
+    if not _JUPYTER_AVAILABLE:
+        raise ModuleNotFoundError(
+            "Kernel installation requires quivers[repl]", name="jupyter_client"
+        )
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -75,6 +111,23 @@ def install_kernelspec(*, user: bool = True, prefix: str | None = None) -> Path:
 
 
 def main(args: argparse.Namespace) -> int:
+    """Install or launch the QVR kernel.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The kernel command and its installation or connection options.
+
+    Returns
+    -------
+    int
+        Zero on success or two for an unavailable command.
+
+    Raises
+    ------
+    ModuleNotFoundError
+        If kernel execution is requested without its dependencies.
+    """
     if args.kernel_cmd == "install":
         try:
             path = install_kernelspec(user=args.user, prefix=args.prefix)
@@ -87,17 +140,21 @@ def main(args: argparse.Namespace) -> int:
         sys.stdout.write(f"installed kernelspec to {path}\n")
         return 0
     if args.kernel_cmd == "run":
-        from ipykernel.kernelapp import IPKernelApp
-
-        from quivers.kernel.quivers_kernel import QuiversKernel
+        if _KERNEL_UNAVAILABLE is not None:
+            raise ModuleNotFoundError(
+                "Kernel execution requires quivers[repl]",
+                name=_KERNEL_UNAVAILABLE.name,
+            ) from _KERNEL_UNAVAILABLE
 
         IPKernelApp.launch_instance(kernel_class=QuiversKernel)
         return 0
     if args.kernel_cmd == "_run_f":
         # Called by Jupyter with a connection file path.
-        from ipykernel.kernelapp import IPKernelApp
-
-        from quivers.kernel.quivers_kernel import QuiversKernel
+        if _KERNEL_UNAVAILABLE is not None:
+            raise ModuleNotFoundError(
+                "Kernel execution requires quivers[repl]",
+                name=_KERNEL_UNAVAILABLE.name,
+            ) from _KERNEL_UNAVAILABLE
 
         IPKernelApp.launch_instance(
             kernel_class=QuiversKernel,

@@ -16,7 +16,8 @@ prompt_toolkit and the LSP both expose this to the user.
 from __future__ import annotations
 
 import glob
-from dataclasses import dataclass
+
+import didactic.api as dx
 
 from quivers.analysis.scope import (
     SCOPE_SEPARATOR,
@@ -41,9 +42,18 @@ from quivers.dsl.qiec_tooling import (
 from quivers.transpile import available_targets
 
 
-@dataclass(frozen=True)
-class Completion:
-    """One completion candidate."""
+class Completion(dx.Model):
+    """One immutable completion candidate.
+
+    Parameters
+    ----------
+    text : str
+        Insertion text.
+    kind : str
+        Candidate category, such as an environment name or command.
+    detail : str
+        Short description shown with the candidate.
+    """
 
     text: str
     kind: str  # "env", "keyword", "type", "function", "namespace", "command", "path"
@@ -159,7 +169,9 @@ def _env_completions(session: ReplSession, prefix: str) -> list[Completion]:
     # their top-level names and signature members through the same stream.
     for name, binding in qiec_binding_map(session.module).items():
         if name.startswith(prefix):
-            out.append(Completion(name, binding.semantic_kind, binding.kind))
+            out.append(
+                Completion(text=name, kind=binding.semantic_kind, detail=binding.kind)
+            )
 
     # ``perform`` addresses operations through a lexical instance, whose
     # interface is the module's own or the prelude's.
@@ -169,9 +181,9 @@ def _env_completions(session: ReplSession, prefix: str) -> list[Completion]:
         if effect_name is not None:
             out.extend(
                 Completion(
-                    f"{instance_name}.{operation}",
-                    "function",
-                    f"operation of {effect_name}",
+                    text=f"{instance_name}.{operation}",
+                    kind="function",
+                    detail=f"operation of {effect_name}",
                 )
                 for operation in effect_operation_names(session.module, effect_name)
                 if operation.startswith(operation_prefix)

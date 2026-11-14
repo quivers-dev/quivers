@@ -106,7 +106,7 @@ view = CG([
 ])
 
 log_weight = view.weight(("span", 0, 3, S))                       # -0.7
-all_S = view.enumerate(("span", Wildcard("i"), Wildcard("j"), S))
+all_S = view.enumerate(("span", Wildcard(name="i"), Wildcard(name="j"), S))
 
 (-log_weight).backward()   # gradients reach np_w and vp_w
 ```

@@ -15,23 +15,22 @@ implicit context Γ tracked by the encoder / decoder runtime.
 
 All structured value types in this module are didactic
 `didactic.api.Model` records, matching the quivers
-convention for schema-bearing data. The one opaque field is
-``Term.args``, whose element type mixes `Term` itself with raw data
-leaves, a recursive shape didactic cannot encode; `Term` is a
-`quivers._values.ValueModel`, so that field takes part in equality,
-hashing, copying, and pickling.
+convention for schema-bearing data. Recursive term arguments and scope
+entries use opaque value fields to preserve nested storage. Runtime
+embeddings use opaque identity fields to preserve tensors and autograd.
+`quivers._values.ValueModel` includes these fields in equality, hashing,
+copying, and pickling.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
 from typing import Literal
 
 import didactic.api as dx
 import torch
 
-from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 
 type DataLeaf = str | int | float | bytes | bool
 """A raw value at a data-sorted argument position of a `Term`.
@@ -506,30 +505,34 @@ def make_term(op: str, *args) -> Term:
 # ---------------------------------------------------------------------------
 
 
-# `ContextEntry` and `Context` are intentionally plain dataclasses
-# rather than didactic models: they hold raw torch tensors at every
-# scope position, and didactic's tuple-of-model encoding strips
-# per-instance opaque storage when entries are placed inside a
-# parent model's tuple field. They are runtime-only structures
-# (never serialised through panproto), so the schema-bearing
-# benefit of dx.Model doesn't apply here.
-
-
-@dataclass(frozen=True)
-class ContextEntry:
+class ContextEntry(ValueModel):
     """One scope entry on the binder stack.
 
     ``embedding`` is a runtime tensor; ``type_term`` is the binder's
-    annotation term captured at scope-extension time.
+    annotation term captured at scope-extension time. Tensor identity
+    participates in equality and hashing, preserving live autograd state.
     """
 
     var_sort: str
-    embedding: torch.Tensor
-    type_term: Term | None = None
+    embedding: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    type_term: Term | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
+
+    @dx.model_validator()
+    def _check_runtime_fields(self) -> None:
+        """Require a tensor embedding and an optional annotation term.
+
+        Raises
+        ------
+        TypeError
+            If an opaque field has an incompatible runtime type.
+        """
+        if not isinstance(self.embedding, torch.Tensor):
+            raise TypeError("ContextEntry.embedding must be a torch.Tensor")
+        if self.type_term is not None and not isinstance(self.type_term, Term):
+            raise TypeError("ContextEntry.type_term must be a Term or None")
 
 
-@dataclass(frozen=True)
-class Context:
+class Context(ValueModel):
     """The de-Bruijn scope context threaded through encoder and
     decoder runtimes.
 
@@ -537,7 +540,23 @@ class Context:
     returns the i-th entry from the top.
     """
 
-    entries: tuple[ContextEntry, ...] = ()
+    entries: tuple[ContextEntry, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    @dx.model_validator()
+    def _check_entries(self) -> None:
+        """Require an immutable tuple of scope entries.
+
+        Raises
+        ------
+        TypeError
+            If entries are not a tuple of ContextEntry models.
+        """
+        if not isinstance(self.entries, tuple) or not all(
+            isinstance(entry, ContextEntry) for entry in self.entries
+        ):
+            raise TypeError("Context.entries must be a tuple of ContextEntry models")
 
     def push(
         self,

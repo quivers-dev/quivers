@@ -32,10 +32,11 @@ converts an `SBCResult` for ArviZ's PIT-ECDF plots.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from fractions import Fraction
 import math
-from typing import Literal
+from typing import Literal, Protocol, cast
 
 import didactic.api as dx
 import torch
@@ -70,6 +71,81 @@ of each chain."""
 
 _INT64_MAX = 2**63 - 1
 _REFERENCE_CHUNK = 1024
+
+
+class _RngBackend(Protocol):
+    """The device-state operations used by a seeded calibration scope."""
+
+    def device_count(self) -> int:
+        """Return the number of available devices.
+
+        Returns
+        -------
+        int
+            Devices whose random state can be saved and restored.
+        """
+        ...
+
+    def set_rng_state(self, state: torch.Tensor, device: int) -> None:
+        """Set one device's generator state.
+
+        Parameters
+        ----------
+        state : torch.Tensor
+            State produced by a generator for this backend.
+        device : int
+            Index of the device whose state is set.
+        """
+        ...
+
+
+@contextmanager
+def _seeded_rng(seed: int) -> Iterator[None]:
+    """Isolate CPU and available accelerator random streams.
+
+    Local generators provide seeded states for the global generators used
+    by distribution samplers and fitting callbacks. Every modified state
+    is restored on exit, including when a callback raises.
+
+    Parameters
+    ----------
+    seed : int
+        Seed used independently on CPU and each available device.
+
+    Yields
+    ------
+    None
+        A scope in which global draws use the explicit seed.
+
+    Raises
+    ------
+    RuntimeError
+        If an available backend cannot construct or restore a generator.
+    """
+    backend_names = dict.fromkeys(
+        ("cuda", "mps", "xpu", "mtia", torch._C._get_privateuse1_backend_name())
+    )
+    with ExitStack() as stack:
+        stack.enter_context(torch.random.fork_rng(devices=[]))
+        backends: list[tuple[str, _RngBackend, range]] = []
+        for name in backend_names:
+            module = getattr(torch, name, None)
+            if module is None:
+                continue
+            backend = cast(_RngBackend, module)
+            devices = range(backend.device_count())
+            if not devices:
+                continue
+            stack.enter_context(
+                torch.random.fork_rng(devices=devices, device_type=name)
+            )
+            backends.append((name, backend, devices))
+        torch.set_rng_state(torch.Generator(device="cpu").manual_seed(seed).get_state())
+        for name, backend, devices in backends:
+            for index in devices:
+                generator = torch.Generator(device=torch.device(name, index))
+                backend.set_rng_state(generator.manual_seed(seed).get_state(), index)
+        yield
 
 
 class SBCResult(ValueModel):
@@ -787,9 +863,10 @@ def sbc(
     The procedure is reproducible from ``seed``: it derives three
     seeds per simulation, for the prior simulation, the fit, and the
     tie-breaks; the prior simulation and the fit run with Torch's
-    global generator forked and seeded, so neither depends on, nor
-    changes, the caller's random state, and a fit that draws from the
-    global generator is reproducible too.
+    CPU and available accelerator generators forked and initialized from
+    locally seeded generators. Neither scope depends on or changes the
+    caller's random state, and a fit that draws from global generators is
+    reproducible too. States are restored even if the fit raises.
 
     Parameters
     ----------
@@ -855,8 +932,7 @@ def sbc(
     kept: list[torch.Tensor] = []
     intervals: list[int] = []
     for simulation_seed, fit_seed, _ in seeds:
-        with torch.random.fork_rng():
-            torch.manual_seed(simulation_seed)
+        with _seeded_rng(simulation_seed):
             with torch.no_grad():
                 simulated = trace(model, x, observations=dict(host))
                 missing = sorted(observed - simulated.sites.keys())
@@ -876,8 +952,7 @@ def sbc(
             site.name: _site_value(simulated, site.name, site.constrained_shape)
             for site in registry.sites.values()
         }
-        with torch.random.fork_rng():
-            torch.manual_seed(fit_seed)
+        with _seeded_rng(fit_seed):
             posterior = _posterior_draws(
                 fit(dict(fit_data), fit_seed), x, num_guide_draws
             )

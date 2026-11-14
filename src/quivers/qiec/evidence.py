@@ -6,15 +6,17 @@ either reflexivity or a rigid branch given introduced by GADT elimination.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
+import didactic.api as dx
+
 from typing import Literal
 
 from quivers.qiec.identifiers import EqualityId
 from quivers.qiec.types import EqualityType
 
 
-@dataclass(frozen=True, slots=True)
-class Reflexivity:
+class Reflexivity(QiecModel):
     """Evidence that an equality holds because both sides are the same term.
 
     Parameters
@@ -25,12 +27,11 @@ class Reflexivity:
         The serialization discriminator; always ``"reflexivity"``.
     """
 
-    equality: EqualityType
+    equality: EqualityType = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["reflexivity"] = "reflexivity"
 
 
-@dataclass(frozen=True, slots=True)
-class BranchGiven:
+class BranchGiven(QiecModel):
     """Evidence granted by a case branch's constructor refinement.
 
     Parameters
@@ -43,8 +44,8 @@ class BranchGiven:
         The serialization discriminator; always ``"branch_given"``.
     """
 
-    id: EqualityId
-    equality: EqualityType
+    id: EqualityId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    equality: EqualityType = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["branch_given"] = "branch_given"
 
 

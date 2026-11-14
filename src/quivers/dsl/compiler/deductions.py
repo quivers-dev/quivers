@@ -1,11 +1,14 @@
 """Compiler mixin: deduction systems and lexicon loading."""
 
 from __future__ import annotations
+
 import math
 from collections.abc import Callable, Hashable
 from pathlib import Path
+
 import torch
 import torch.nn as nn
+
 from quivers.core.algebras import BOOLEAN
 from quivers.dsl.ast_nodes import (
     DeductionDecl,
@@ -15,50 +18,34 @@ from quivers.dsl.ast_nodes import (
     LexiconCategoryFixed,
     LexiconCategoryRestricted,
     LexiconCategoryWildcard,
-    LexiconEntry as _LexiconEntryAst,
     ObjectEffectApply,
     ObjectProduct,
     ObjectSlash,
     ProgramDecl,
     TypeName,
 )
-from quivers.stochastic.agenda import (
-    DeductionSystem,
-    InferenceRule,
-    Wildcard,
-    cky_agenda,
-    depth_first_agenda,
-    semi_naive_agenda,
+from quivers.dsl.ast_nodes import (
+    LetExprBinOp as _LetBinOp,
 )
-from quivers.stochastic.productions import (
-    Production,
-    ProductionKey,
-    ProductionWeights,
+from quivers.dsl.ast_nodes import (
+    LetExprCall as _LetCall,
 )
-from quivers.stochastic.semiring import (
-    BOOLEAN as SEMIRING_BOOLEAN,
-    COUNTING as SEMIRING_COUNTING,
-    LOG_PROB as SEMIRING_LOG_PROB,
-    VITERBI as SEMIRING_VITERBI,
+from quivers.dsl.ast_nodes import (
+    LetExprIndex as _LetIndex,
 )
-from quivers.dsl.compiler._options import (
-    check_option_keys,
-    find_option,
-    get_option_flag,
-    get_option_float,
-    get_option_int,
-    get_option_name,
+from quivers.dsl.ast_nodes import (
+    LetExprLambda as _LetLambda,
 )
-from quivers.dsl.compiler._deduction_terms import (
-    LET_BOUND_VARIABLES_KEY,
-    LET_CONSTRUCTORS_KEY,
-    RESERVED_TERM_TAGS,
-    TERM_ATOM_TAG,
-    TERM_LEAF_TAGS,
-    atom_term,
-    variable_name,
-    variable_term,
+from quivers.dsl.ast_nodes import (
+    LetExprList as _LetList,
 )
+from quivers.dsl.ast_nodes import (
+    LetExprVar as _LetVar,
+)
+from quivers.dsl.ast_nodes import (
+    LexiconEntry as _LexiconEntryAst,
+)
+from quivers.dsl.ast_nodes._shared import OptionName as _OptionName
 from quivers.dsl.compiler._deduction_positions import (
     is_pattern_variable,
     misplaced_positions,
@@ -70,10 +57,54 @@ from quivers.dsl.compiler._deduction_productions import (
     normalization_mode,
     production_groups,
 )
+from quivers.dsl.compiler._deduction_terms import (
+    LET_BOUND_VARIABLES_KEY,
+    LET_CONSTRUCTORS_KEY,
+    RESERVED_TERM_TAGS,
+    TERM_ATOM_TAG,
+    TERM_LEAF_TAGS,
+    atom_term,
+    variable_name,
+    variable_term,
+)
+from quivers.dsl.compiler._options import (
+    check_option_keys,
+    find_option,
+    get_option_flag,
+    get_option_float,
+    get_option_int,
+    get_option_name,
+)
 from quivers.dsl.compiler._prelude import CompileError
 from quivers.dsl.compiler.programs import _ProgramsMixin
 from quivers.dsl.parser import parse as _parse_qvr
-
+from quivers.stochastic.agenda import (
+    Bindings,
+    DeductionSystem,
+    InferenceRule,
+    Wildcard,
+    cky_agenda,
+    depth_first_agenda,
+    semi_naive_agenda,
+)
+from quivers.stochastic.agenda import instantiate as _instantiate
+from quivers.stochastic.productions import (
+    Production,
+    ProductionKey,
+    ProductionWeights,
+)
+from quivers.stochastic.semiring import (
+    BOOLEAN as SEMIRING_BOOLEAN,
+)
+from quivers.stochastic.semiring import (
+    COUNTING as SEMIRING_COUNTING,
+)
+from quivers.stochastic.semiring import (
+    LOG_PROB as SEMIRING_LOG_PROB,
+)
+from quivers.stochastic.semiring import (
+    VITERBI as SEMIRING_VITERBI,
+)
 
 # Category-side pattern carried by a lexicon entry: either a
 # wildcard variable (any identifier not declared as an atom) or a
@@ -222,31 +253,52 @@ def _category_depth(value: Hashable) -> int:
     )
 
 
-def _install_depth_guard(rule, depth_n: int) -> None:
+def _with_depth_guard(rule: InferenceRule, depth_n: int) -> InferenceRule:
     """Wrap ``rule.side_condition`` with a category-depth guard.
 
     The guard rejects firings whose *conclusion category* would
     have constructor depth strictly greater than ``depth_n`` after
     pattern instantiation. Composes with any pre-existing side
     condition the rule already carries (``AND``).
+
+    Parameters
+    ----------
+    rule
+        The inference rule whose conclusion depth is bounded.
+    depth_n
+        The largest accepted constructor depth.
+
+    Returns
+    -------
+    InferenceRule
+        A rule carrying the conjunction of both conditions.
     """
-    from quivers.stochastic.agenda import instantiate as _instantiate
 
     existing = rule.side_condition
     conclusion_pattern = rule.conclusion
 
-    def _depth_ok(bindings, _exist=existing, _pat=conclusion_pattern, _n=depth_n):
-        if _exist is not None and not _exist(bindings):
+    def _depth_ok(bindings: Bindings) -> bool:
+        """Check the rule's condition and the instantiated conclusion's depth.
+
+        Parameters
+        ----------
+        bindings
+            The variable bindings from matching the rule's premises.
+
+        Returns
+        -------
+        bool
+            Whether the existing condition and depth bound accept the match.
+        """
+        if existing is not None and not existing(bindings):
             return False
         try:
-            instantiated = _instantiate(_pat, bindings)
+            instantiated = _instantiate(conclusion_pattern, bindings)
         except KeyError:
             return True  # let the engine handle the missing binding downstream
-        return _category_depth(instantiated) <= _n
+        return _category_depth(instantiated) <= depth_n
 
-    # InferenceRule is @dataclass(frozen=True); we mutate via
-    # object.__setattr__ to install the new side condition.
-    object.__setattr__(rule, "side_condition", _depth_ok)
+    return rule.with_(side_condition=_depth_ok)
 
 
 def load_lexicon_tsv(
@@ -695,7 +747,7 @@ class _DeductionsMixin:
                 # numeral is a wildcard, whatever its spelling; a
                 # declared atom's name is always that atom.
                 if is_pattern_variable(texpr, frozen_atoms):
-                    return Wildcard(name)
+                    return Wildcard(name=name)
                 if name.isdigit():
                     return ("literal", int(name))
                 return atom_term(name)
@@ -749,7 +801,7 @@ class _DeductionsMixin:
                 children = tuple(_normalise_span(c) for c in pat[1:])
                 if len(children) == 3:
                     _lf_wildcard_counter["n"] += 1
-                    fresh = Wildcard(f"_lf_{_lf_wildcard_counter['n']}")
+                    fresh = Wildcard(name=f"_lf_{_lf_wildcard_counter['n']}")
                     return ("span", *children, fresh)
                 return ("span", *children)
             if isinstance(pat, tuple):
@@ -877,10 +929,6 @@ class _DeductionsMixin:
             parent_entry = find_option(sr.options, "parent")
             parent_name: str | None = None
             if parent_entry is not None:
-                from quivers.dsl.ast_nodes._shared import (
-                    OptionName as _OptionName,
-                )
-
                 if not isinstance(parent_entry.value, _OptionName):
                     raise CompileError(
                         f"deduction {decl.name!r}: rule {sr.name!r}: "
@@ -1021,14 +1069,6 @@ class _DeductionsMixin:
             # ``atoms``). The subsequent alpha-renaming pass
             # (``_normalise_binders``) replaces every such name with
             # a fresh canonical symbol.
-            from quivers.dsl.ast_nodes import (
-                LetExprCall as _LetCall,
-                LetExprVar as _LetVar,
-                LetExprBinOp as _LetBinOp,
-                LetExprList as _LetList,
-                LetExprIndex as _LetIndex,
-                LetExprLambda as _LetLambda,
-            )
 
             def _collect_bound_vars(node, acc: set[str]) -> None:
                 if isinstance(node, _LetCall):
@@ -1370,8 +1410,7 @@ class _DeductionsMixin:
         )
         if depth_bound is not None:
             depth_n = int(depth_bound)
-            for r in inference_rules:
-                _install_depth_guard(r, depth_n)
+            inference_rules = [_with_depth_guard(r, depth_n) for r in inference_rules]
 
         # ``tolerance=epsilon`` option exposes Kleene-star
         # convergence semantics for non-idempotent semirings with
@@ -1407,6 +1446,7 @@ class _DeductionsMixin:
             col=decl.col,
         )
         system = DeductionSystem(
+            name=decl.name,
             rules=tuple(inference_rules),
             semiring=semiring,
             axiom_injector=axiom_injector,
@@ -1425,12 +1465,12 @@ class _DeductionsMixin:
         # reach it (via `parse(NAME, …)`) can include its
         # parameters in their optimizer.
         if axiom_module is not None:
-            system._axiom_module = axiom_module  # type: ignore[attr-defined]
+            system.modules["_axiom_module"] = axiom_module
         # Stash the rule-weight module so its parameters appear in
         # ``model.parameters()`` of any Program that references
         # this deduction. Empty if no rule declared `#[learnable]`.
         if rule_param_dicts:
-            system._rule_module = rule_module  # type: ignore[attr-defined]
+            system.modules["_rule_module"] = rule_module
         # Attach a signature / encoder pairing, if declared. The
         # chart-query operations (`chart.embedding(pattern)`) consult
         # this attached encoder to compute on-demand item
@@ -1450,7 +1490,7 @@ class _DeductionsMixin:
                     decl.line,
                     decl.col,
                 )
-            system._item_signature = sigs[item_signature]  # type: ignore[attr-defined]
+            system = system.with_(item_signature=sigs[item_signature])
         item_encoder = get_option_name(
             decl.options,
             "encoder",
@@ -1465,7 +1505,7 @@ class _DeductionsMixin:
                     decl.line,
                     decl.col,
                 )
-            system._item_encoder = comps[item_encoder]  # type: ignore[attr-defined]
+            system = system.with_(item_encoder=comps[item_encoder])
         self._deductions[decl.name] = system
 
 

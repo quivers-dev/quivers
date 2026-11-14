@@ -47,10 +47,12 @@ define run(mu : Real) : Real * LogWeight !{} =
 """
 
 _RUNTIME = RuntimeConfiguration(
-    (
+    selections=(
         RuntimeSelection(
-            "core",
-            {"handlers": {"draw": {"kind": "draw"}, "accumulate": {"kind": "score"}}},
+            provider="core",
+            options={
+                "handlers": {"draw": {"kind": "draw"}, "accumulate": {"kind": "score"}}
+            },
         ),
     )
 )
@@ -70,7 +72,7 @@ def test_family_application_site_and_log_density_lower_to_typed_values() -> None
     model = next(item for item in module.computations if item.name == "model")
     request = model.body.first.request  # type: ignore[union-attr]
     site, distribution = request.arguments
-    assert site == SiteValue("x", site_type(REAL))
+    assert site == SiteValue(label="x", result_type=site_type(REAL))
     assert isinstance(distribution, DistributionValue)
     assert distribution.name == "Normal"
     assert [name for name, _ in distribution.arguments] == ["loc", "scale"]
@@ -165,13 +167,19 @@ define correlation() : Sampleable[Tensor[Real]([3, 3])] !{} =
     assert run_named(module, "scored").value == pytest.approx(math.log(0.8))
     simplex = next(item for item in module.computations if item.name == "simplex")
     assert simplex.type.result == sampleable_type(
-        tensor_type(REAL, (IndexLiteral(3, NatSort()),))
+        tensor_type(REAL, (IndexLiteral(value=3, sort=NatSort()),))
     )
     correlation = next(
         item for item in module.computations if item.name == "correlation"
     )
     assert correlation.type.result == sampleable_type(
-        tensor_type(REAL, (IndexLiteral(3, NatSort()), IndexLiteral(3, NatSort())))
+        tensor_type(
+            REAL,
+            (
+                IndexLiteral(value=3, sort=NatSort()),
+                IndexLiteral(value=3, sort=NatSort()),
+            ),
+        )
     )
 
 
@@ -199,7 +207,13 @@ def test_a_tensor_literal_against_the_wrong_expected_shape_is_rejected() -> None
     source = "define probe() : Sampleable[Tensor[Real]([2, 2])] !{} =\n    return LKJCholesky(2.0)\n"
     module = lower_qvr_to_qiec(parse(source), file_path="probe.qvr")
     assert module.computations[0].type.result == sampleable_type(
-        tensor_type(REAL, (IndexLiteral(2, NatSort()), IndexLiteral(2, NatSort())))
+        tensor_type(
+            REAL,
+            (
+                IndexLiteral(value=2, sort=NatSort()),
+                IndexLiteral(value=2, sort=NatSort()),
+            ),
+        )
     )
     source = (
         "define probe() : Real !{} =\n    let d = LKJCholesky(2.0)\n    return 1.0\n"

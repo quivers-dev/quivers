@@ -122,8 +122,8 @@ def tree_lstm_encoder(sig: Signature | None = None, dim: int = 64) -> Encoder:
         return gate * h + (1 - gate) * (0.5 * (left + right))
 
     op_fns = {
-        "Leaf": PerOpFn("Leaf", "plain", ("t",), leaf_fn),
-        "Node": PerOpFn("Node", "plain", ("b", "l", "r"), node_fn),
+        "Leaf": PerOpFn(op="Leaf", mode="plain", args=("t",), fn=leaf_fn),
+        "Node": PerOpFn(op="Node", mode="plain", args=("b", "l", "r"), fn=node_fn),
     }
     return Encoder(
         name="TreeLSTM",

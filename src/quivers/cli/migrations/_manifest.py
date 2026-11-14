@@ -8,13 +8,27 @@ the same change.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 
+import didactic.api as dx
 
-@dataclass(frozen=True, slots=True)
-class GrammarAsset:
+
+class GrammarAsset(dx.Model):
+    """Content identities of one immutable grammar snapshot.
+
+    Parameters
+    ----------
+    grammar_json_sha256 : str
+        Digest of the grammar JSON.
+    node_types_sha256 : str
+        Digest of the node-type declarations.
+    parser_c_sha256 : str
+        Digest of the generated C parser.
+    compiled_inputs_sha256 : str
+        Digest of the complete parser compilation inputs.
+    """
+
     grammar_json_sha256: str
     node_types_sha256: str
     parser_c_sha256: str
@@ -23,76 +37,76 @@ class GrammarAsset:
 
 GRAMMAR_ASSETS: dict[str, GrammarAsset] = {
     "v0.2.0": GrammarAsset(
-        "a3589f11b2b4b4845f0a8130649607355cd1bd63505c3ba72040666876bbca03",
-        "530eb0dd61b8963c6294ce34265336db6520dc927ad706aceed679b331eb7b57",
-        "9932756c394deb0a71f3e7718e9894fcc9d9396ccfd5e6771168d65c59d9a02d",
-        "2b451235635bfe315e0640b37c31291ac6955f6aced6c989436ee038f5ba8d06",
+        grammar_json_sha256="a3589f11b2b4b4845f0a8130649607355cd1bd63505c3ba72040666876bbca03",
+        node_types_sha256="530eb0dd61b8963c6294ce34265336db6520dc927ad706aceed679b331eb7b57",
+        parser_c_sha256="9932756c394deb0a71f3e7718e9894fcc9d9396ccfd5e6771168d65c59d9a02d",
+        compiled_inputs_sha256="2b451235635bfe315e0640b37c31291ac6955f6aced6c989436ee038f5ba8d06",
     ),
     "v0.3.0": GrammarAsset(
-        "2166403700088b266a46ab2d5fd288dcac16805cf6644f064ac7edd189bd4be2",
-        "17bea32a0e86f484e1400fc2e0861cd974abffe8951a9736de38fe6ea5eb14c7",
-        "0f0ceec9965c09f3dbf4083869ce9146529a54ccef3428f7dd8a872427e7941e",
-        "1d46811c1a344bda8f5d502c625554d1ea2a4ead60b666107b43a4f8f75e0b7e",
+        grammar_json_sha256="2166403700088b266a46ab2d5fd288dcac16805cf6644f064ac7edd189bd4be2",
+        node_types_sha256="17bea32a0e86f484e1400fc2e0861cd974abffe8951a9736de38fe6ea5eb14c7",
+        parser_c_sha256="0f0ceec9965c09f3dbf4083869ce9146529a54ccef3428f7dd8a872427e7941e",
+        compiled_inputs_sha256="1d46811c1a344bda8f5d502c625554d1ea2a4ead60b666107b43a4f8f75e0b7e",
     ),
     "v0.4.0": GrammarAsset(
-        "2f9e6286a72d5526fbd6fcbcc72a620f75b9804ae1060180e039694e24b0bdd6",
-        "360196e3408913c63db36c5f8200ccd98afb9722128949159a486e3c0430e469",
-        "adba4b436fc4816f46cded9513b2a3609b9b82cda22b773d8027ed19b9539d4c",
-        "1b04bc7166cfc2e0cbee2ce8fb0cc27be830d411b1ce95f99ef607b41a74a129",
+        grammar_json_sha256="2f9e6286a72d5526fbd6fcbcc72a620f75b9804ae1060180e039694e24b0bdd6",
+        node_types_sha256="360196e3408913c63db36c5f8200ccd98afb9722128949159a486e3c0430e469",
+        parser_c_sha256="adba4b436fc4816f46cded9513b2a3609b9b82cda22b773d8027ed19b9539d4c",
+        compiled_inputs_sha256="1b04bc7166cfc2e0cbee2ce8fb0cc27be830d411b1ce95f99ef607b41a74a129",
     ),
     "v0.5.0": GrammarAsset(
-        "16a2d2ab335edf25160bbeac0fa93f5491139c9ba4fd091ad172769fb62e058f",
-        "ba9e5ca906cacc8e8afdcb534f4f064ee81781b2b3b556c40eea5f50258e6830",
-        "c6520602f1933b3cb3217fae9b83786d3469d5db3857edbd3e3c5e215bc8b20e",
-        "0019176286e374d80471c3930d9c1baaa9b00b62467df17afefb006be2289f4e",
+        grammar_json_sha256="16a2d2ab335edf25160bbeac0fa93f5491139c9ba4fd091ad172769fb62e058f",
+        node_types_sha256="ba9e5ca906cacc8e8afdcb534f4f064ee81781b2b3b556c40eea5f50258e6830",
+        parser_c_sha256="c6520602f1933b3cb3217fae9b83786d3469d5db3857edbd3e3c5e215bc8b20e",
+        compiled_inputs_sha256="0019176286e374d80471c3930d9c1baaa9b00b62467df17afefb006be2289f4e",
     ),
     "v0.6.0": GrammarAsset(
-        "e384519a654880e10c32f2eef871597513eafbf911761433f78c31c616516de0",
-        "9ba270b4b303acd22a1d6fb136b42ceb46f23efef3089647357af786d117d02c",
-        "200813845596dc3185fb3a4977bec130c8cdbb181103e8c247fb1394ddbb1059",
-        "acf49f3be2399429661c149b679ca690d99b0a2dc94f463dd1f5936e36a53707",
+        grammar_json_sha256="e384519a654880e10c32f2eef871597513eafbf911761433f78c31c616516de0",
+        node_types_sha256="9ba270b4b303acd22a1d6fb136b42ceb46f23efef3089647357af786d117d02c",
+        parser_c_sha256="200813845596dc3185fb3a4977bec130c8cdbb181103e8c247fb1394ddbb1059",
+        compiled_inputs_sha256="acf49f3be2399429661c149b679ca690d99b0a2dc94f463dd1f5936e36a53707",
     ),
     "v0.7.0": GrammarAsset(
-        "5249be1f1fe6cb2253e712028a2e2013b2c0afc96ccdb94fe225b575e84303f0",
-        "ce638af8faefab881a90428b033eefa3b2bbd766e2d755a00b35c4280451916c",
-        "d713b001d009386a285c47b94fcae779ab5e16f5370570b7d445c0f952011c47",
-        "8948662ca1773562d563421cf5574c42c2cd7ed9bc7beef238adfa369181e52b",
+        grammar_json_sha256="5249be1f1fe6cb2253e712028a2e2013b2c0afc96ccdb94fe225b575e84303f0",
+        node_types_sha256="ce638af8faefab881a90428b033eefa3b2bbd766e2d755a00b35c4280451916c",
+        parser_c_sha256="d713b001d009386a285c47b94fcae779ab5e16f5370570b7d445c0f952011c47",
+        compiled_inputs_sha256="8948662ca1773562d563421cf5574c42c2cd7ed9bc7beef238adfa369181e52b",
     ),
     "v0.9.0": GrammarAsset(
-        "fe9188c219012f83fe3d7a1b06d8f2b0e189fbbe56e38ce6df4ae0a156851e01",
-        "48d938e234f479061c3f4e8b5547d3a427018c709276dcb7ccaeeb5d2ff88cac",
-        "2a2cac1958a8254d62e62605fc35487ac0b6c67560449687adccfb38f6f6176f",
-        "deccd74d60aa513689f1ea4b47e0dd86ab32719f935685458a0a47bd6d8cf6c1",
+        grammar_json_sha256="fe9188c219012f83fe3d7a1b06d8f2b0e189fbbe56e38ce6df4ae0a156851e01",
+        node_types_sha256="48d938e234f479061c3f4e8b5547d3a427018c709276dcb7ccaeeb5d2ff88cac",
+        parser_c_sha256="2a2cac1958a8254d62e62605fc35487ac0b6c67560449687adccfb38f6f6176f",
+        compiled_inputs_sha256="deccd74d60aa513689f1ea4b47e0dd86ab32719f935685458a0a47bd6d8cf6c1",
     ),
     "v0.11.0": GrammarAsset(
-        "7a2b858cbe3171e10faa85d7d48903b750ed3aa391c69de62e0cebe2e4af3068",
-        "9114383417ac38cf861f32f091f8c47826744c556aff9663cdcbedc826fcb6dc",
-        "7d5e2e81195073ca8bd419e90672e180f68cd8264934ae00da39b8d61c592a3c",
-        "c1b6e9465e442a9fc0452351dc3008c69e7f858dcdba1ebdbfdb271710f0869a",
+        grammar_json_sha256="7a2b858cbe3171e10faa85d7d48903b750ed3aa391c69de62e0cebe2e4af3068",
+        node_types_sha256="9114383417ac38cf861f32f091f8c47826744c556aff9663cdcbedc826fcb6dc",
+        parser_c_sha256="7d5e2e81195073ca8bd419e90672e180f68cd8264934ae00da39b8d61c592a3c",
+        compiled_inputs_sha256="c1b6e9465e442a9fc0452351dc3008c69e7f858dcdba1ebdbfdb271710f0869a",
     ),
     "v0.14.0": GrammarAsset(
-        "029b1612017ce9214d46433e7fe6247adc31cd031a74bae546cb2f1b0770be9d",
-        "e47c2b2530a48a09e6266216d022c115abfe9300240b387ace75067fedfa1fa9",
-        "014799053caecabba63dcd1603ccf160b065717b5019c5aca279c83fd8ae7b3d",
-        "efa947844bd465fe5ea53ea235e98a3cc07e68a86c82a94ca63ac568de854acd",
+        grammar_json_sha256="029b1612017ce9214d46433e7fe6247adc31cd031a74bae546cb2f1b0770be9d",
+        node_types_sha256="e47c2b2530a48a09e6266216d022c115abfe9300240b387ace75067fedfa1fa9",
+        parser_c_sha256="014799053caecabba63dcd1603ccf160b065717b5019c5aca279c83fd8ae7b3d",
+        compiled_inputs_sha256="efa947844bd465fe5ea53ea235e98a3cc07e68a86c82a94ca63ac568de854acd",
     ),
     "v0.15.0": GrammarAsset(
-        "f76a0d8c71f1d3a13c15c61b8594e6c679624f67d2e6534e1ba70d4c55f07260",
-        "47cb59716ba6abb5ab1d621e8a949854b6f61b2da676a60de2b594efb3f6dd9f",
-        "814b5b2dc75fbd7ade46fa02e5772299f51ecfa76a9cfc3e93cc0efc68771eba",
-        "ffae70e999fecc8ed33058ac2d680bc6d71c8bf7888bd8db0a33404693f4386b",
+        grammar_json_sha256="f76a0d8c71f1d3a13c15c61b8594e6c679624f67d2e6534e1ba70d4c55f07260",
+        node_types_sha256="47cb59716ba6abb5ab1d621e8a949854b6f61b2da676a60de2b594efb3f6dd9f",
+        parser_c_sha256="814b5b2dc75fbd7ade46fa02e5772299f51ecfa76a9cfc3e93cc0efc68771eba",
+        compiled_inputs_sha256="ffae70e999fecc8ed33058ac2d680bc6d71c8bf7888bd8db0a33404693f4386b",
     ),
     "v0.19.0": GrammarAsset(
-        "7a2463bb21935f683d7f977ec23ac91f5b84eda13826cc95c4e90bb76a32afa9",
-        "62f396e779b6ff7b19a51d17a20ce71886580defbdf5be87cd7c77b9bd831f84",
-        "48aaab9589adb57c8c1c517adfa4eeb206ac2192b795e92825ea36209d412e20",
-        "7c273ca205f8e27dc55ce5167f2f3e2ece947753fef9a52a7b02257eb23733bc",
+        grammar_json_sha256="7a2463bb21935f683d7f977ec23ac91f5b84eda13826cc95c4e90bb76a32afa9",
+        node_types_sha256="62f396e779b6ff7b19a51d17a20ce71886580defbdf5be87cd7c77b9bd831f84",
+        parser_c_sha256="48aaab9589adb57c8c1c517adfa4eeb206ac2192b795e92825ea36209d412e20",
+        compiled_inputs_sha256="7c273ca205f8e27dc55ce5167f2f3e2ece947753fef9a52a7b02257eb23733bc",
     ),
     "HEAD": GrammarAsset(
-        "cd7b2f1015bd9c4acbd0c943de6a2b255449fc0dfde686a60c02393349b78dd7",
-        "a3372ef2c0ba3c5aada4a70bb833723d038b6a31f2a52e425e0f55e9d7fff55f",
-        "22c4deecb689048a9cb510b89c0af708da4f03d326d4f2bd7843856a70b3bef2",
-        "8f3a10111b43a4740361b664edccbcbd0fee30915e48d7c13586d7513f07300e",
+        grammar_json_sha256="cd7b2f1015bd9c4acbd0c943de6a2b255449fc0dfde686a60c02393349b78dd7",
+        node_types_sha256="a3372ef2c0ba3c5aada4a70bb833723d038b6a31f2a52e425e0f55e9d7fff55f",
+        parser_c_sha256="22c4deecb689048a9cb510b89c0af708da4f03d326d4f2bd7843856a70b3bef2",
+        compiled_inputs_sha256="8f3a10111b43a4740361b664edccbcbd0fee30915e48d7c13586d7513f07300e",
     ),
 }
 
@@ -187,10 +201,10 @@ def verify_snapshot(snapshot: str, src_dir: Path) -> None:
             f"snapshot {snapshot!r} is absent from the grammar manifest"
         ) from error
     actual = GrammarAsset(
-        _sha256(src_dir / "grammar.json"),
-        _sha256(src_dir / "node-types.json"),
-        _sha256(src_dir / "parser.c"),
-        compiled_inputs_sha256(src_dir),
+        grammar_json_sha256=_sha256(src_dir / "grammar.json"),
+        node_types_sha256=_sha256(src_dir / "node-types.json"),
+        parser_c_sha256=_sha256(src_dir / "parser.c"),
+        compiled_inputs_sha256=compiled_inputs_sha256(src_dir),
     )
     if actual != expected:
         raise ValueError(

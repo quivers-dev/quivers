@@ -9,10 +9,10 @@ responsibilities.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn, cast
 
+import didactic.api as dx
 from didactic.extensions import LoweringRoute, lower_checked
 from didactic.gadt import (
     GADT,
@@ -25,6 +25,8 @@ from didactic.gadt import (
 )
 from panproto import GatError
 
+from quivers._values import HeldValue, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.dsl import ast_nodes as surface
 from quivers.qiec.canonical import (
     BUILTIN_TYPE_CONSTRUCTORS,
@@ -227,8 +229,7 @@ PROGRAM_CONTEXT_TYPES = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class QvrQiecSource:
+class QvrQiecSource(dx.Model):
     """A parsed QVR projection plus the identity absent from the AST root.
 
     Parameters
@@ -251,8 +252,7 @@ class QvrQiecSource:
     elaborate_programs: bool = True
 
 
-@dataclass(frozen=True, slots=True)
-class CheckedQvrQiec:
+class CheckedQvrQiec(QiecModel):
     """The checked result passed between Didactic's ordered stages.
 
     Parameters
@@ -261,7 +261,7 @@ class CheckedQvrQiec:
         The kernel module the stages produced.
     """
 
-    module: QiecModule
+    module: QiecModule = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 def has_qiec_surface(module: surface.Module) -> bool:
@@ -510,7 +510,7 @@ class QvrQiecLowerer:
         """
         module = _Elaborator(source).elaborate()
         validate_module(module)
-        return CheckedQvrQiec(module)
+        return CheckedQvrQiec(module=module)
 
     def lower(self, checked: CheckedQvrQiec, /) -> QiecModule:
         """Return the checked module.
@@ -590,15 +590,19 @@ def _last_axis_reduction(
     """
     element, dimensions = shape
     if len(dimensions) <= 1:
-        return Reduction(operator, value, element)
+        return Reduction(operator=operator, value=value, result_type=element)
     stem = "_".join(str(item) for item in path)
     name = f"__{stem}_row{len(dimensions)}"
     suffix = 0
     while name in occupied:
         suffix += 1
         name = f"__{stem}_row{len(dimensions)}_{suffix}"
-    binder = Local(name, INT)
-    row = Gather(value, Var(binder), tensor_type(element, dimensions[1:]))
+    binder = Local(name=name, type=INT)
+    row = Gather(
+        value=value,
+        index=Var(local=binder),
+        result_type=tensor_type(element, dimensions[1:]),
+    )
     inner = _last_axis_reduction(
         operator, row, (element, dimensions[1:]), path, occupied | {name}
     )
@@ -608,7 +612,9 @@ def _last_axis_reduction(
         if inner_shape is None
         else tensor_type(inner_shape[0], (dimensions[0], *inner_shape[1]))
     )
-    return Comprehension(binder, dimensions[0], inner, result)
+    return Comprehension(
+        binder=binder, extent=dimensions[0], body=inner, result_type=result
+    )
 
 
 def _rebuild_last_axis(
@@ -657,25 +663,29 @@ def _rebuild_last_axis(
             suffix += 1
             name = f"__{stem}_lead{axis}_{suffix}"
         taken.add(name)
-        binders.append(Local(name, INT))
+        binders.append(Local(name=name, type=INT))
     rows: list[Value] = []
     for tensor, extent in zip(tensors, extents, strict=True):
         row = tensor
         for axis, binder in enumerate(binders):
-            remaining = (*leading[axis + 1 :], IndexLiteral(extent, NAT))
-            row = Gather(row, Var(binder), tensor_type(element, remaining))
+            remaining = (*leading[axis + 1 :], IndexLiteral(value=extent, sort=NAT))
+            row = Gather(
+                value=row,
+                index=Var(local=binder),
+                result_type=tensor_type(element, remaining),
+            )
         rows.append(row)
-    width = IndexLiteral(len(picks), NAT)
+    width = IndexLiteral(value=len(picks), sort=NAT)
     body: Value = TensorValue(
-        tuple(_entry(rows[operand], entry, element) for operand, entry in picks),
-        tensor_type(element, (width,)),
+        items=tuple(_entry(rows[operand], entry, element) for operand, entry in picks),
+        result_type=tensor_type(element, (width,)),
     )
     for axis in reversed(range(len(leading))):
         body = Comprehension(
-            binders[axis],
-            leading[axis],
-            body,
-            tensor_type(element, (*leading[axis:], width)),
+            binder=binders[axis],
+            extent=leading[axis],
+            body=body,
+            result_type=tensor_type(element, (*leading[axis:], width)),
         )
     return body
 
@@ -701,7 +711,11 @@ def _rows_of(
     """
     row = value
     for axis, binder in enumerate(rows):
-        row = Gather(row, binder, tensor_type(REAL, dimensions[axis + 1 :]))
+        row = Gather(
+            value=row,
+            index=binder,
+            result_type=tensor_type(REAL, dimensions[axis + 1 :]),
+        )
     return row
 
 
@@ -724,7 +738,9 @@ def _entry(row: Value, position: int, element: TypeExpr) -> Value:
     """
     if isinstance(row, TensorValue):
         return row.items[position]
-    return Gather(row, LiteralValue(position, INT), element)
+    return Gather(
+        value=row, index=LiteralValue(value=position, type=INT), result_type=element
+    )
 
 
 class _PointwiseGatherError(ValueError):
@@ -813,7 +829,7 @@ def _pointwise_selection(
             suffix += 1
             name = f"__{stem}_pick{axis}_{suffix}"
         taken.add(name)
-        binders.append(Local(name, INT))
+        binders.append(Local(name=name, type=INT))
     entries: list[Value] = []
     for index, index_type in zip(indices, index_types, strict=True):
         if index_type == INT:
@@ -823,20 +839,27 @@ def _pointwise_selection(
         for axis, binder in enumerate(binders):
             remaining = shape[axis + 1 :]
             entry = Gather(
-                entry,
-                Var(binder),
-                INT if not remaining else tensor_type(INT, remaining),
+                value=entry,
+                index=Var(local=binder),
+                result_type=INT if not remaining else tensor_type(INT, remaining),
             )
         entries.append(entry)
     body: Value = source
     for axis, entry in enumerate(entries):
         rest = dimensions[axis + 1 :]
-        body = Gather(body, entry, element if not rest else tensor_type(element, rest))
+        body = Gather(
+            value=body,
+            index=entry,
+            result_type=element if not rest else tensor_type(element, rest),
+        )
     rest = dimensions[len(indices) :]
     for axis in reversed(range(len(shape))):
         outer = (*shape[axis:], *rest)
         body = Comprehension(
-            binders[axis], shape[axis], body, tensor_type(element, outer)
+            binder=binders[axis],
+            extent=shape[axis],
+            body=body,
+            result_type=tensor_type(element, outer),
         )
     return body
 
@@ -919,7 +942,10 @@ def lower_qvr_to_qiec(
             column=error.col,
         ) from error
     source = QvrQiecSource(
-        qiec_projection(module), module_name, file_path, elaborate_programs
+        syntax=qiec_projection(module),
+        module_name=module_name,
+        file_path=file_path,
+        elaborate_programs=elaborate_programs,
     )
     return lower_checked(
         source,
@@ -927,6 +953,32 @@ def lower_qvr_to_qiec(
         source_version=source_version,
         target_version=target_version,
     )
+
+
+def _authored_strings(syntax: surface.Module) -> frozenset[str]:
+    """Reserve source strings when choosing generated local names.
+
+    Parameters
+    ----------
+    syntax : surface.Module
+        The complete source projection, including later bindings.
+
+    Returns
+    -------
+    frozenset[str]
+        All string leaves of the syntax, including every authored name.
+    """
+    strings: set[str] = set()
+    pending: list[HeldValue] = [syntax]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            strings.add(value)
+        elif isinstance(value, tuple):
+            pending.extend(value)
+        elif isinstance(value, dx.Model):
+            pending.extend(getattr(value, name) for name in type(value).__field_specs__)
+    return frozenset(strings)
 
 
 def _module_name(file_path: str) -> str:
@@ -1449,6 +1501,7 @@ class _Elaborator(
         # Numbers the locals a lowering introduces to share a value, so
         # each such binder is unique across the module.
         self._shared_serial = 0
+        self._authored_names = _authored_strings(source.syntax)
         self._program_state: _ProgramState | None = None
         self._program_objects: dict[str, ObjectInfo] = {}
         self._program_morphisms: dict[str, surface.MorphismDecl] = {}
@@ -1510,16 +1563,16 @@ class _Elaborator(
         programs = self._declare_programs()
         computations = self._declare_computations()
         return QiecModule(
-            self.source.module_name,
-            QVR_SOURCE_VERSION,
-            tuple(self.index_sorts.values()),
-            tuple(self.families.values()),
-            tuple(self.constructors.values()),
-            tuple(self.effects.values()),
-            tuple(self.instances.values()),
-            tuple(self.handlers.values()),
-            (*deductions, *structural, *programs, *computations),
-            tuple(self.entries),
+            module=self.source.module_name,
+            source_protocol=QVR_SOURCE_VERSION,
+            index_sorts=tuple(self.index_sorts.values()),
+            families=tuple(self.families.values()),
+            constructors=tuple(self.constructors.values()),
+            effects=tuple(self.effects.values()),
+            instances=tuple(self.instances.values()),
+            handlers=tuple(self.handlers.values()),
+            computations=(*deductions, *structural, *programs, *computations),
+            entries=tuple(self.entries),
         )
 
     def _validate_indexed_language(self) -> None:
@@ -1534,7 +1587,13 @@ class _Elaborator(
                 tuple(self.families.values()),
                 tuple(self.constructors.values()),
             ).compile()
-        except (GADTDeclarationError, GatError, TypeError, ValueError) as error:
+        except (
+            GADTDeclarationError,
+            GatError,
+            TypeError,
+            ValueError,
+            dx.ValidationError,
+        ) as error:
             declarations = self._items(surface.QiecFamilyDecl) or self._items(
                 surface.QiecIndexDecl
             )
@@ -1585,11 +1644,13 @@ class _Elaborator(
                 constructor_names.add(constructor.name)
             try:
                 self.index_sorts[declaration.name] = UserIndexSort(
-                    declaration.name,
-                    tuple(item.name for item in declaration.constructors),
-                    tuple(len(item.arguments) for item in declaration.constructors),
+                    name=declaration.name,
+                    constructors=tuple(item.name for item in declaration.constructors),
+                    arities=tuple(
+                        len(item.arguments) for item in declaration.constructors
+                    ),
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-index")
         for declaration in declarations:
             current = self.index_sorts[declaration.name]
@@ -1643,11 +1704,11 @@ class _Elaborator(
                 for item in declaration.constructors
             )
             self.families[declaration.name] = FamilyDecl(
-                family_id,
-                declaration.name,
-                parameters,
-                indices,
-                constructor_ids,
+                id=family_id,
+                name=declaration.name,
+                parameters=parameters,
+                indices=indices,
+                constructors=constructor_ids,
             )
 
     def _declare_constructors(self) -> None:
@@ -1685,7 +1746,9 @@ class _Elaborator(
                 telescope = self._lower_telescope(authored.binders)
                 scope = (*family_scope, *telescope)
                 fields = tuple(
-                    FieldDef(f"arg{field_position}", self._lower_type(item, scope))
+                    FieldDef(
+                        name=f"arg{field_position}", type=self._lower_type(item, scope)
+                    )
                     for field_position, item in enumerate(authored.arguments)
                 )
                 result = self._lower_type(authored.result, scope)
@@ -1708,12 +1771,12 @@ class _Elaborator(
                         code="qiec-index",
                     )
                 constructor = ConstructorDecl(
-                    family.constructors[position],
-                    family.id,
-                    authored.name,
-                    telescope,
-                    fields,
-                    result.arguments[parameter_count:],
+                    id=family.constructors[position],
+                    family=family.id,
+                    name=authored.name,
+                    telescope=telescope,
+                    fields=fields,
+                    result_indices=result.arguments[parameter_count:],
                 )
                 self.constructors[authored.name] = constructor
 
@@ -1737,10 +1800,12 @@ class _Elaborator(
                 declaration.name,
             )
             telescope = self._lower_telescope(declaration.binders)
-            ref = EffectRef(effect_id, declaration.name)
+            ref = EffectRef(id=effect_id, name=declaration.name)
             try:
-                self.effects[declaration.name] = EffectDef(ref, telescope, ())
-            except (TypeError, ValueError) as error:
+                self.effects[declaration.name] = EffectDef(
+                    ref=ref, telescope=telescope, operations=()
+                )
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-handler")
 
     def _declare_effect_operations(self) -> None:
@@ -1772,30 +1837,30 @@ class _Elaborator(
                     authored_arguments = ()
                 lowered_operations.append(
                     OperationDef(
-                        OperationId.derive(
+                        id=OperationId.derive(
                             str(effect_id),
                             operation.name,
                         ),
-                        operation.name,
-                        operation_telescope,
-                        tuple(
+                        name=operation.name,
+                        telescope=operation_telescope,
+                        arguments=tuple(
                             ArgumentDef(
-                                f"arg{position}",
-                                self._lower_type(argument, operation_scope),
+                                name=f"arg{position}",
+                                type=self._lower_type(argument, operation_scope),
                             )
                             for position, argument in enumerate(authored_arguments)
                         ),
-                        self._lower_type(operation.result, operation_scope),
+                        result_type=self._lower_type(operation.result, operation_scope),
                     )
                 )
             operations = tuple(lowered_operations)
             try:
                 self.effects[declaration.name] = EffectDef(
-                    header.ref,
-                    telescope,
-                    operations,
+                    ref=header.ref,
+                    telescope=telescope,
+                    operations=operations,
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-handler")
 
     def _declare_instances(self) -> None:
@@ -1820,9 +1885,9 @@ class _Elaborator(
                 lexical_path=("instances", declaration.name),
             )
             self.instances[declaration.name] = NamedEffectInstance(
-                declaration.name,
-                entry,
-                self._origin(
+                name=declaration.name,
+                entry=entry,
+                origin=self._origin(
                     declaration,
                     ("instances", declaration.name),
                     "effect-instance",
@@ -1877,7 +1942,7 @@ class _Elaborator(
                 interface_substitution = instantiate_telescope(
                     definition.telescope, effect.arguments
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-handler")
             clauses: list[HandlerClauseDef] = []
             return_clause: HandlerReturnClauseDef | None = None
@@ -1892,14 +1957,14 @@ class _Elaborator(
                             f"return clause",
                             code="qiec-handler",
                         )
-                    binder = Local(clause.binder.name, input_type)
+                    binder = Local(name=clause.binder.name, type=input_type)
                     self._expected_result = output_type
                     return_clause = HandlerReturnClauseDef(
-                        binder,
-                        self._lower_computation(
+                        binder=binder,
+                        body=self._lower_computation(
                             clause.body,
                             telescope,
-                            CheckContext((binder,)),
+                            CheckContext(locals=(binder,)),
                             (*base, "body"),
                         ),
                     )
@@ -1943,7 +2008,7 @@ class _Elaborator(
                         ),
                         interface_substitution,
                     )
-                except (TypeError, ValueError) as error:
+                except (TypeError, ValueError, dx.ValidationError) as error:
                     self._fail_kernel(clause, error, fallback="qiec-handler")
                 # A signature-only clause binds nothing, because it has
                 # no body for a binder to be in scope of. Only an
@@ -1959,7 +2024,7 @@ class _Elaborator(
                         code="qiec-handler",
                     )
                 parameters = tuple(
-                    Local(authored.name, declared)
+                    Local(name=authored.name, type=declared)
                     for authored, declared in zip(
                         clause.parameters, parameter_types, strict=False
                     )
@@ -1975,8 +2040,10 @@ class _Elaborator(
                     else self._lower_computation(
                         clause.body,
                         clause_scope,
-                        CheckContext(parameters).with_resumption(
-                            ResumptionType(resumed, output_type, introduced)
+                        CheckContext(locals=parameters).with_resumption(
+                            ResumptionType(
+                                result=resumed, answer=output_type, effects=introduced
+                            )
                         ),
                         (*base, "body"),
                     )
@@ -1984,30 +2051,30 @@ class _Elaborator(
                 self._expected_result = None
                 clauses.append(
                     HandlerClauseDef(
-                        operation.id,
-                        ResumptionGrade(clause.grade),
-                        parameters,
-                        body,
+                        operation=operation.id,
+                        grade=ResumptionGrade(clause.grade),
+                        parameters=parameters,
+                        body=body,
                     )
                 )
             try:
                 handler = HandlerDef(
-                    HandlerId.derive(
+                    id=HandlerId.derive(
                         self.source.module_name, "handler", declaration.name
                     ),
-                    declaration.name,
-                    effect,
-                    tuple(clauses),
-                    input_type,
-                    output_type,
-                    introduced,
+                    name=declaration.name,
+                    effect=effect,
+                    clauses=tuple(clauses),
+                    input_type=input_type,
+                    output_type=output_type,
+                    introduced=introduced,
                     total=declaration.coverage == "total",
                     forwards_unknown=declaration.forwards_unknown,
                     telescope=telescope,
                     return_clause=return_clause,
                     implementation=declaration.implementation,
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-handler")
             self.handlers[declaration.name] = handler
 
@@ -2036,14 +2103,14 @@ class _Elaborator(
         for family in self.families.values():
             try:
                 self.registry.register_family(family)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(
                     family_nodes[family.name], error, fallback="qiec-index"
                 )
         for constructor in self.constructors.values():
             try:
                 self.registry.register_constructor(constructor)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(
                     family_nodes[self.registry.families[constructor.family].name],
                     error,
@@ -2056,7 +2123,7 @@ class _Elaborator(
                 continue
             try:
                 self.registry.register_effect(effect)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(
                     effect_nodes[effect.ref.name], error, fallback="qiec-kind"
                 )
@@ -2085,7 +2152,7 @@ class _Elaborator(
         for handler in self.handlers.values():
             try:
                 self.registry.register_handler(handler)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 node = handler_nodes.get(handler.name)
                 if node is None:
                     node = next(
@@ -2130,23 +2197,23 @@ class _Elaborator(
                 for parameter in declaration.parameters
             )
             signature = ComputationSignature(
-                ComputationId.derive(
+                id=ComputationId.derive(
                     self.source.module_name,
                     "computation",
                     declaration.name,
                 ),
-                declaration.name,
-                telescope,
-                parameters,
-                self._lower_type(declaration.result_type, telescope),
-                self._lower_row(
+                name=declaration.name,
+                telescope=telescope,
+                parameters=parameters,
+                result=self._lower_type(declaration.result_type, telescope),
+                effects=self._lower_row(
                     declaration.effects,
                     ("computations", declaration.name, "effects"),
                 ),
             )
             try:
                 self.registry.register_computation(signature)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-route")
             self.computation_signatures[declaration.name] = signature
 
@@ -2194,32 +2261,35 @@ class _Elaborator(
                     )
                 parameter_names.add(parameter.name)
             parameters = tuple(
-                Local(parameter.name, self._lower_type(parameter.type_expr, telescope))
+                Local(
+                    name=parameter.name,
+                    type=self._lower_type(parameter.type_expr, telescope),
+                )
                 for parameter in declaration.parameters
             )
-            context = CheckContext(parameters)
+            context = CheckContext(locals=parameters)
             path = ("computations", declaration.name, "body")
             self._expected_result = self._lower_type(declaration.result_type, telescope)
             body = self._lower_computation(declaration.body, telescope, context, path)
             self._expected_result = None
             computation = NamedComputation(
-                ComputationId.derive(
+                id=ComputationId.derive(
                     self.source.module_name,
                     "computation",
                     declaration.name,
                 ),
-                declaration.name,
-                telescope,
-                parameters,
-                body,
-                ComputationType(
-                    self._lower_row(
+                name=declaration.name,
+                telescope=telescope,
+                parameters=parameters,
+                body=body,
+                type=ComputationType(
+                    effects=self._lower_row(
                         declaration.effects,
                         ("computations", declaration.name, "effects"),
                     ),
-                    self._lower_type(declaration.result_type, telescope),
+                    result=self._lower_type(declaration.result_type, telescope),
                 ),
-                self._origin(
+                origin=self._origin(
                     declaration,
                     ("computations", declaration.name),
                     "computation",
@@ -2227,7 +2297,7 @@ class _Elaborator(
             )
             try:
                 actual = infer_computation(body, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration.body, error, fallback="qiec-kind")
             if actual.result != computation.type.result:
                 self._fail(
@@ -2288,13 +2358,17 @@ class _Elaborator(
                     if isinstance(binder.binder_kind, surface.QiecTypeKind)
                     else EFFECT
                 )
-                lowered.append(TypeBinder(name, kind, refinable))
+                lowered.append(TypeBinder(name=name, kind=kind, refinable=refinable))
             elif isinstance(binder, surface.QiecIndexBinder):
                 lowered.append(
-                    IndexBinder(name, self._lower_sort(binder.sort), refinable)
+                    IndexBinder(
+                        name=name,
+                        sort=self._lower_sort(binder.sort),
+                        refinable=refinable,
+                    )
                 )
             elif isinstance(binder, surface.QiecEffectBinder):
-                lowered.append(EffectBinder(name, refinable))
+                lowered.append(EffectBinder(name=name, refinable=refinable))
             else:  # pragma: no cover - closed source union
                 self._fail(binder, "unknown telescope binder", code="qiec-kind")
         return tuple(lowered)
@@ -2320,9 +2394,9 @@ class _Elaborator(
         if isinstance(sort, surface.QiecNatSort):
             return self.index_sorts.get("Nat", NAT)
         if isinstance(sort, surface.QiecShapeSort):
-            return ShapeSort(sort.rank)
+            return ShapeSort(rank=sort.rank)
         if isinstance(sort, surface.QiecContextSort):
-            return ContextSort(sort.signature)
+            return ContextSort(signature=sort.signature)
         if isinstance(sort, surface.QiecUserIndexSort):
             resolved = self.index_sorts.get(sort.name)
             if resolved is None:
@@ -2376,7 +2450,7 @@ class _Elaborator(
                 None,
             )
             if binder is not None:
-                return TypeVariable(binder.name, binder.kind)
+                return TypeVariable(name=binder.name, kind=binder.kind)
             primitive = {
                 "Unit": UNIT,
                 "Bool": BOOL,
@@ -2389,7 +2463,7 @@ class _Elaborator(
                 return primitive
             family = self.families.get(authored.name)
             if family is not None and not (*family.parameters, *family.indices):
-                return TypeApplication(family.type_constructor)
+                return TypeApplication(constructor=family.type_constructor)
             if authored.name in BUILTIN_TYPE_CONSTRUCTORS:
                 self._fail(
                     authored,
@@ -2438,7 +2512,9 @@ class _Elaborator(
                     "family indices must use index binders",
                     code="qiec-index",
                 )
-            return TypeApplication(family.type_constructor, (*parameters, *indices))
+            return TypeApplication(
+                constructor=family.type_constructor, arguments=(*parameters, *indices)
+            )
         if isinstance(authored, surface.QiecProductType):
             return product_type(
                 *(
@@ -2448,8 +2524,8 @@ class _Elaborator(
             )
         if isinstance(authored, surface.QiecFunctionType):
             return FunctionType(
-                self._lower_type(authored.parameter, scope, static_bindings),
-                self._lower_type(authored.result, scope, static_bindings),
+                parameter=self._lower_type(authored.parameter, scope, static_bindings),
+                result=self._lower_type(authored.result, scope, static_bindings),
             )
         self._fail(authored, "unknown type expression", code="qiec-kind")
 
@@ -2548,7 +2624,9 @@ class _Elaborator(
             self._lower_index(argument, binder.sort, scope, static_bindings)
             for argument, binder in zip(authored.indices, index_binders, strict=True)
         )
-        return TypeApplication(constructor, (*parameters, *indices))
+        return TypeApplication(
+            constructor=constructor, arguments=(*parameters, *indices)
+        )
 
     def _lower_static_argument(
         self,
@@ -2629,7 +2707,7 @@ class _Elaborator(
                 isinstance(item, EffectBinder) and item.name == authored.name
                 for item in scope
             ):
-                return EffectVariable(authored.name)
+                return EffectVariable(name=authored.name)
             definition = self._effect(authored.name)
             if definition is not None and not definition.telescope:
                 return definition.ref
@@ -2740,18 +2818,18 @@ class _Elaborator(
                         f"index {authored.name!r} has the wrong sort",
                         code="qiec-index",
                     )
-                return IndexVariable(authored.name, expected)
+                return IndexVariable(name=authored.name, sort=expected)
             if isinstance(expected, UserIndexSort):
                 try:
                     if expected.constructor_arity(authored.name) == 0:
-                        return IndexLiteral(authored.name, expected)
+                        return IndexLiteral(value=authored.name, sort=expected)
                 except ValueError:
                     pass
             self._fail(authored, f"unknown index {authored.name!r}", code="qiec-index")
         if isinstance(authored, surface.QiecIndexLiteral):
             try:
-                return IndexLiteral(authored.value, expected)
-            except (TypeError, ValueError) as error:
+                return IndexLiteral(value=authored.value, sort=expected)
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored, error, fallback="qiec-index")
         if isinstance(authored, surface.QiecIndexApplication):
             if not isinstance(expected, UserIndexSort):
@@ -2766,15 +2844,15 @@ class _Elaborator(
             )
             try:
                 return IndexConstructor(
-                    authored.constructor,
-                    arguments,
-                    expected,
+                    name=authored.constructor,
+                    arguments=arguments,
+                    sort=expected,
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored, error, fallback="qiec-index")
         if isinstance(authored, surface.QiecShapeIndex):
             return ShapeIndex(
-                tuple(
+                dimensions=tuple(
                     self._lower_index(item, NAT, scope, static_bindings)
                     for item in authored.dimensions
                 )
@@ -2825,7 +2903,7 @@ class _Elaborator(
         )
         try:
             return definition.apply(arguments)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(authored, error, fallback="qiec-kind")
 
     def _lower_row(
@@ -2892,15 +2970,17 @@ class _Elaborator(
                 lacks.append(instance.entry.instance)
             try:
                 tail = RowVariable(
-                    authored.tail,
-                    RowVariableId.derive(self.source.module_name, path, authored.tail),
-                    tuple(lacks),
+                    name=authored.tail,
+                    identity=RowVariableId.derive(
+                        self.source.module_name, path, authored.tail
+                    ),
+                    lacks=tuple(lacks),
                 )
-            except ValueError as error:
+            except (ValueError, dx.ValidationError) as error:
                 self._fail(authored, str(error), code="qiec-row")
         try:
-            return EffectRow(tuple(entries), tail)
-        except ValueError as error:
+            return EffectRow(entries=tuple(entries), tail=tail)
+        except (ValueError, dx.ValidationError) as error:
             self._fail(authored, str(error), code="qiec-row")
 
     def _lower_value(
@@ -2971,15 +3051,17 @@ class _Elaborator(
                 )
             )
             return ConstructorValue(
-                constructor.id,
-                static_arguments,
-                tuple(
+                constructor=constructor.id,
+                static_arguments=static_arguments,
+                fields=tuple(
                     self._lower_value(
                         value, scope, context, static_bindings, (*path, position)
                     )
                     for position, value in enumerate(authored.fields)
                 ),
-                self._lower_type(authored.result_type, scope, static_bindings),
+                result_type=self._lower_type(
+                    authored.result_type, scope, static_bindings
+                ),
             )
         if isinstance(authored, surface.LetExprVar):
             local = next(
@@ -2992,26 +3074,26 @@ class _Elaborator(
             )
             if local is None:
                 self._fail(authored, f"unbound local {authored.name!r}")
-            return Var(local)
+            return Var(local=local)
         if isinstance(authored, surface.LetExprLiteral):
             if authored.integral and expected != REAL:
-                return LiteralValue(int(authored.value), INT)
-            return LiteralValue(authored.value, REAL)
+                return LiteralValue(value=int(authored.value), type=INT)
+            return LiteralValue(value=authored.value, type=REAL)
         if isinstance(authored, surface.LetExprBool):
-            return LiteralValue(authored.value, BOOL)
+            return LiteralValue(value=authored.value, type=BOOL)
         if isinstance(authored, surface.LetExprUnit):
-            return LiteralValue(None, UNIT)
+            return LiteralValue(value=None, type=UNIT)
         if isinstance(authored, surface.LetExprString):
-            return LiteralValue(authored.value, STRING)
+            return LiteralValue(value=authored.value, type=STRING)
         if isinstance(authored, surface.LetExprUnaryOp):
             operand = self._lower_value(
                 authored.operand, scope, context, static_bindings, (*path, "operand")
             )
             if authored.op == "-" and isinstance(operand, LiteralValue):
                 if operand.type == INT:
-                    return LiteralValue(-cast(int, operand.value), INT)
+                    return LiteralValue(value=-cast(int, operand.value), type=INT)
                 if operand.type == REAL:
-                    return LiteralValue(-cast(float, operand.value), REAL)
+                    return LiteralValue(value=-cast(float, operand.value), type=REAL)
             operand_type = self._value_type(operand, context, authored)
             element, shape = self._broadcast_element(
                 authored, authored.op, (operand_type,)
@@ -3068,7 +3150,7 @@ class _Elaborator(
                 self._value_type(item, context, source)
                 for item, source in zip(items, authored.items, strict=True)
             )
-            return TupleValue(items, product_type(*types))
+            return TupleValue(items=items, result_type=product_type(*types))
         if isinstance(authored, surface.LetExprIndex):
             source = self._lower_value(
                 authored.array, scope, context, static_bindings, (*path, "array")
@@ -3107,7 +3189,11 @@ class _Elaborator(
                     f"{len(components)} components",
                     code="qiec-primitive",
                 )
-            return Projection(source, position, cast(TypeExpr, components[position]))
+            return Projection(
+                value=source,
+                position=position,
+                result_type=cast(TypeExpr, components[position]),
+            )
         if isinstance(authored, surface.LetExprCall):
             if authored.func in FAMILIES and authored.func not in _BUILTIN_PRIMITIVES:
                 return self._lower_family_application(
@@ -3164,7 +3250,11 @@ class _Elaborator(
                         f"builtin {authored.func!r} takes one Tensor[Real]",
                         code="qiec-primitive",
                     )
-                return Rowwise(_ROWWISE[authored.func], arguments[0], types[0])
+                return Rowwise(
+                    operator=_ROWWISE[authored.func],
+                    value=arguments[0],
+                    result_type=types[0],
+                )
             elements: list[TypeExpr] = []
             shape = None
             for item_type in types:
@@ -3275,14 +3365,15 @@ class _Elaborator(
         Returns
         -------
         Local
-            A local named ``__<stem>_<n>``, unique across the module.
+            A local named ``__<stem>_<n>``, unique across the module and
+            distinct from every authored name, including later bindings.
         """
         occupied = {local.name for local in context.locals}
         while True:
             self._shared_serial += 1
             name = f"__{stem}_{self._shared_serial}"
-            if name not in occupied:
-                return Local(name, type_)
+            if name not in occupied and name not in self._authored_names:
+                return Local(name=name, type=type_)
 
     def _let(
         self,
@@ -3326,7 +3417,11 @@ class _Elaborator(
         inner = context
         for binding in collected:
             inner = inner.extend(binding.binder)
-        return LetValue(collected, body, self._value_type(body, inner, authored))
+        return LetValue(
+            bindings=collected,
+            body=body,
+            result_type=self._value_type(body, inner, authored),
+        )
 
     def _lower_map(
         self,
@@ -3392,12 +3487,12 @@ class _Elaborator(
         outer = context
         if not _atomic(source_expr):
             shared = self._shared_local("map_source", source_type, context)
-            bindings.append(LetBinding(shared, source))
+            bindings.append(LetBinding(binder=shared, value=source))
             outer = context.extend(shared)
             source_expr = surface.LetExprVar(
                 name=shared.name, line=authored.line, col=authored.col
             )
-        index = Local(self._fresh_collection_index(outer, path), INT)
+        index = Local(name=self._fresh_collection_index(outer, path), type=INT)
         indexed = self._indexed_collection_item(
             source_expr,
             surface.LetExprVar(
@@ -3424,7 +3519,9 @@ class _Elaborator(
         )
         return self._let(
             bindings,
-            Comprehension(index, source_shape[1][0], body, result),
+            Comprehension(
+                binder=index, extent=source_shape[1][0], body=body, result_type=result
+            ),
             context,
             authored,
         )
@@ -3472,7 +3569,7 @@ class _Elaborator(
                     "not an Int value; specialize the extent before using length",
                     code="qiec-primitive",
                 )
-            return LiteralValue(int(extent.value), INT)
+            return LiteralValue(value=int(extent.value), type=INT)
         if authored.func == "fold":
             return self._lower_fold(
                 authored, scope, context, static_bindings, path, expected
@@ -3499,7 +3596,7 @@ class _Elaborator(
                     "logsumexp_over's lambda must return one Real per item",
                     code="qiec-primitive",
                 )
-            return Reduction("logsumexp", mapped, REAL)
+            return Reduction(operator="logsumexp", value=mapped, result_type=REAL)
         if authored.func == "filter":
             self._fail(
                 authored,
@@ -3620,13 +3717,13 @@ class _Elaborator(
             """
             nonlocal inner
             local = self._shared_local("fold_acc", value_type, inner)
-            bindings.append(LetBinding(local, value))
+            bindings.append(LetBinding(binder=local, value=value))
             inner = inner.extend(local)
-            return Var(local)
+            return Var(local=local)
 
         if not _atomic(source_expr):
             source_local = self._shared_local("fold_source", source_type, inner)
-            bindings.append(LetBinding(source_local, source))
+            bindings.append(LetBinding(binder=source_local, value=source))
             inner = inner.extend(source_local)
             source_expr = surface.LetExprVar(
                 name=source_local.name, line=authored.line, col=authored.col
@@ -3752,7 +3849,7 @@ class _Elaborator(
             )
         conversion = "weight_value" if local.type == LOG_WEIGHT else "int_to_real"
         return self._primitive(
-            conversion, (Var(local),), authored, (*path, "goal_weight", name)
+            conversion, (Var(local=local),), authored, (*path, "goal_weight", name)
         )
 
     def _lower_tensor_literal(
@@ -3870,12 +3967,14 @@ class _Elaborator(
         entry_type = types[0] if types else entry_hint
         inner = tensor_shape(entry_type)
         if inner is None:
-            result_type = tensor_type(entry_type, (IndexLiteral(len(items), NAT),))
+            result_type = tensor_type(
+                entry_type, (IndexLiteral(value=len(items), sort=NAT),)
+            )
         else:
             result_type = tensor_type(
-                inner[0], (IndexLiteral(len(items), NAT), *inner[1])
+                inner[0], (IndexLiteral(value=len(items), sort=NAT), *inner[1])
             )
-        value = TensorValue(items, result_type)
+        value = TensorValue(items=items, result_type=result_type)
         self._value_type(value, context, authored)
         return value
 
@@ -4004,11 +4103,11 @@ class _Elaborator(
                 self._event_type(record, arguments, context, authored, expected)
             )
         value = DistributionValue(
-            record.id,
-            record.name,
-            tuple(arguments),
-            result_type,
-            self._origin(authored, path, "distribution"),
+            family=record.id,
+            name=record.name,
+            arguments=tuple(arguments),
+            result_type=result_type,
+            origin=self._origin(authored, path, "distribution"),
         )
         self._value_type(value, context, authored)
         return value
@@ -4121,7 +4220,7 @@ class _Elaborator(
                 "argument or a binding annotated `: Site[T]`",
                 code="qiec-distribution",
             )
-        return SiteValue(authored.args[0].value, expected)
+        return SiteValue(label=authored.args[0].value, result_type=expected)
 
     def _lower_log_density(
         self,
@@ -4172,7 +4271,9 @@ class _Elaborator(
             authored.args[1], scope, context, static_bindings, (*path, 1), element
         )
         value = LogDensity(
-            sampleable, point, self._origin(authored, path, "log-density")
+            sampleable=sampleable,
+            value=point,
+            origin=self._origin(authored, path, "log-density"),
         )
         self._value_type(value, context, authored)
         return value
@@ -4206,7 +4307,7 @@ class _Elaborator(
         """
         try:
             return infer_value(value, self.registry, context)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(authored, error, fallback="qiec-primitive")
 
     def _numeric_primitive(
@@ -4342,11 +4443,11 @@ class _Elaborator(
             signature.result if shape is None else tensor_type(signature.result, shape)
         )
         return PrimitiveApplication(
-            signature.id,
-            name,
-            arguments,
-            result,
-            self._origin(authored, path, "primitive"),
+            primitive=signature.id,
+            name=name,
+            arguments=arguments,
+            result_type=result,
+            origin=self._origin(authored, path, "primitive"),
         )
 
     def _promoted(
@@ -4532,7 +4633,7 @@ class _Elaborator(
                         code="qiec-primitive",
                     )
                 result = tensor_type(element, (*index_shape[1], *rest))
-            value = Gather(value, index_value, result)
+            value = Gather(value=value, index=index_value, result_type=result)
             value_type = result
         return value
 
@@ -4691,8 +4792,8 @@ class _Elaborator(
                 shared.append(tensor)
                 continue
             local = self._shared_local(f"{name}_operand", tensor_type_, context)
-            bindings.append(LetBinding(local, tensor))
-            shared.append(Var(local))
+            bindings.append(LetBinding(binder=local, value=tensor))
+            shared.append(Var(local=local))
         body = _rebuild_last_axis(
             tuple(shared),
             tuple(extent for _, _, extent in shapes),
@@ -4791,8 +4892,8 @@ class _Elaborator(
         if isinstance(value, Var):
             return value
         local = self._shared_local(stem, type_, context)
-        bindings.append(LetBinding(local, value))
-        return Var(local)
+        bindings.append(LetBinding(binder=local, value=value))
+        return Var(local=local)
 
     def _lower_matmul(
         self,
@@ -4871,41 +4972,59 @@ class _Elaborator(
                 suffix += 1
                 name = f"__{stem}_{role}_{suffix}"
             taken.add(name)
-            return Local(name, INT)
+            return Local(name=name, type=INT)
 
         leading = left[:-1]
         lead_binders = [fresh(f"row{axis}") for axis in range(len(leading))]
         row: Value = a
         for axis, binder in enumerate(lead_binders):
-            row = Gather(row, Var(binder), tensor_type(REAL, left[axis + 1 :]))
+            row = Gather(
+                value=row,
+                index=Var(local=binder),
+                result_type=tensor_type(REAL, left[axis + 1 :]),
+            )
         inner = fresh("inner")
         column = fresh("column") if len(right) == 2 else None
         right_entry: Value = Gather(
-            b, Var(inner), REAL if column is None else tensor_type(REAL, right[1:])
+            value=b,
+            index=Var(local=inner),
+            result_type=REAL if column is None else tensor_type(REAL, right[1:]),
         )
         if column is not None:
-            right_entry = Gather(right_entry, Var(column), REAL)
+            right_entry = Gather(
+                value=right_entry, index=Var(local=column), result_type=REAL
+            )
         product = self._primitive(
             "mul_real",
-            (Gather(row, Var(inner), REAL), right_entry),
+            (Gather(value=row, index=Var(local=inner), result_type=REAL), right_entry),
             authored,
             (*path, "product"),
         )
         body: Value = Reduction(
-            "sum",
-            Comprehension(inner, left[-1], product, tensor_type(REAL, (left[-1],))),
-            REAL,
+            operator="sum",
+            value=Comprehension(
+                binder=inner,
+                extent=left[-1],
+                body=product,
+                result_type=tensor_type(REAL, (left[-1],)),
+            ),
+            result_type=REAL,
         )
         trailing: tuple[IndexTerm, ...] = ()
         if column is not None:
             trailing = (right[1],)
-            body = Comprehension(column, right[1], body, tensor_type(REAL, trailing))
+            body = Comprehension(
+                binder=column,
+                extent=right[1],
+                body=body,
+                result_type=tensor_type(REAL, trailing),
+            )
         for axis in reversed(range(len(leading))):
             body = Comprehension(
-                lead_binders[axis],
-                leading[axis],
-                body,
-                tensor_type(REAL, (*leading[axis:], *trailing)),
+                binder=lead_binders[axis],
+                extent=leading[axis],
+                body=body,
+                result_type=tensor_type(REAL, (*leading[axis:], *trailing)),
             )
         return self._let(bindings, body, context, authored)
 
@@ -4991,7 +5110,7 @@ class _Elaborator(
                 suffix += 1
                 local_name = f"__{stem}_{role}_{suffix}"
             taken.add(local_name)
-            return Local(local_name, INT)
+            return Local(name=local_name, type=INT)
 
         def entrywise(
             role: str, entry: Callable[[Value, tuple[Var, ...], Var], Value]
@@ -5003,20 +5122,26 @@ class _Elaborator(
             row: Value = source
             for axis, binder in enumerate(lead):
                 row = Gather(
-                    row, Var(binder), tensor_type(REAL, dimensions[axis + 1 :])
+                    value=row,
+                    index=Var(local=binder),
+                    result_type=tensor_type(REAL, dimensions[axis + 1 :]),
                 )
             body: Value = Comprehension(
-                position,
-                width,
-                entry(row, tuple(Var(binder) for binder in lead), Var(position)),
-                tensor_type(REAL, (width,)),
+                binder=position,
+                extent=width,
+                body=entry(
+                    row,
+                    tuple(Var(local=binder) for binder in lead),
+                    Var(local=position),
+                ),
+                result_type=tensor_type(REAL, (width,)),
             )
             for axis in reversed(range(len(leading))):
                 body = Comprehension(
-                    lead[axis],
-                    leading[axis],
-                    body,
-                    tensor_type(REAL, dimensions[axis:]),
+                    binder=lead[axis],
+                    extent=leading[axis],
+                    body=body,
+                    result_type=tensor_type(REAL, dimensions[axis:]),
                 )
             return body
 
@@ -5027,7 +5152,9 @@ class _Elaborator(
             for axis, row in enumerate(rows):
                 rest = leading[axis + 1 :]
                 value = Gather(
-                    value, row, REAL if not rest else tensor_type(REAL, rest)
+                    value=value,
+                    index=row,
+                    result_type=REAL if not rest else tensor_type(REAL, rest),
                 )
             return value
 
@@ -5043,8 +5170,8 @@ class _Elaborator(
             )
             bindings.append(
                 LetBinding(
-                    local,
-                    _last_axis_reduction(
+                    binder=local,
+                    value=_last_axis_reduction(
                         "mean",
                         rows_of,
                         (REAL, dimensions),
@@ -5056,18 +5183,21 @@ class _Elaborator(
             taken.add(local.name)
             return local
 
-        offset = LiteralValue(eps, REAL)
+        offset = LiteralValue(value=eps, type=REAL)
         if name == "layer_norm":
             mean = statistic("mean", source)
             centered_local = self._shared_local(f"{name}_centered", types[0], context)
             bindings.append(
                 LetBinding(
-                    centered_local,
-                    entrywise(
+                    binder=centered_local,
+                    value=entrywise(
                         "center",
                         lambda row, rows, position: self._primitive(
                             "sub_real",
-                            (Gather(row, position, REAL), at_row(Var(mean), rows)),
+                            (
+                                Gather(value=row, index=position, result_type=REAL),
+                                at_row(Var(local=mean), rows),
+                            ),
                             authored,
                             (*path, "center"),
                         ),
@@ -5075,14 +5205,22 @@ class _Elaborator(
                 )
             )
             taken.add(centered_local.name)
-            centered: Value = Var(centered_local)
+            centered: Value = Var(local=centered_local)
         else:
             centered = source
         squares = entrywise(
             "square",
             lambda row, rows, position: mul(
-                Gather(_rows_of(centered, rows, dimensions), position, REAL),
-                Gather(_rows_of(centered, rows, dimensions), position, REAL),
+                Gather(
+                    value=_rows_of(centered, rows, dimensions),
+                    index=position,
+                    result_type=REAL,
+                ),
+                Gather(
+                    value=_rows_of(centered, rows, dimensions),
+                    index=position,
+                    result_type=REAL,
+                ),
                 "square",
             ),
         )
@@ -5094,13 +5232,17 @@ class _Elaborator(
                 lambda row, rows, position: self._primitive(
                     "div_real",
                     (
-                        Gather(_rows_of(centered, rows, dimensions), position, REAL),
+                        Gather(
+                            value=_rows_of(centered, rows, dimensions),
+                            index=position,
+                            result_type=REAL,
+                        ),
                         self._primitive(
                             "sqrt",
                             (
                                 self._primitive(
                                     "add_real",
-                                    (at_row(Var(spread), rows), offset),
+                                    (at_row(Var(local=spread), rows), offset),
                                     authored,
                                     (*path, "offset"),
                                 ),
@@ -5268,7 +5410,7 @@ class _Elaborator(
                     f"factor cases label {labels}, not every index below {extent}",
                     code="qiec-primitive",
                 )
-            local = Local(binder.var, INT)
+            local = Local(name=binder.var, type=INT)
             inner = context.extend(local)
             ordered = sorted(authored.cases, key=lambda case: case.label)
             entries = tuple(
@@ -5291,17 +5433,18 @@ class _Elaborator(
                 )
             inner_shape = tensor_shape(types[0])
             result = (
-                tensor_type(types[0], (IndexLiteral(extent, NAT),))
+                tensor_type(types[0], (IndexLiteral(value=extent, sort=NAT),))
                 if inner_shape is None
                 else tensor_type(
-                    inner_shape[0], (IndexLiteral(extent, NAT), *inner_shape[1])
+                    inner_shape[0],
+                    (IndexLiteral(value=extent, sort=NAT), *inner_shape[1]),
                 )
             )
-            return TensorValue(entries, result)
+            return TensorValue(items=entries, result_type=result)
         body_context = context
         locals_: list[Local] = []
         for binder in binders:
-            local = Local(binder.var, INT)
+            local = Local(name=binder.var, type=INT)
             locals_.append(local)
             body_context = body_context.extend(local)
         assert authored.body is not None
@@ -5317,7 +5460,9 @@ class _Elaborator(
                 if inner_shape is None
                 else tensor_type(inner_shape[0], (extent, *inner_shape[1]))
             )
-            value = Comprehension(local, extent, value, result)
+            value = Comprehension(
+                binder=local, extent=extent, body=value, result_type=result
+            )
             value_type = result
         return value
 
@@ -5440,7 +5585,9 @@ class _Elaborator(
             path,
             expected,
         )
-        return self._let((LetBinding(shared, value),), body, context, authored)
+        return self._let(
+            (LetBinding(binder=shared, value=value),), body, context, authored
+        )
 
     @staticmethod
     def _render(type_: TypeExpr) -> str:
@@ -5493,7 +5640,7 @@ class _Elaborator(
         """
         if isinstance(authored, surface.QiecReturnComputation):
             return Return(
-                self._lower_value(
+                value=self._lower_value(
                     authored.value,
                     scope,
                     context,
@@ -5512,19 +5659,19 @@ class _Elaborator(
             )
             try:
                 inferred = infer_computation(first, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored.first, error)
             binder_type = (
                 inferred.result
                 if authored.binder.type_expr is None
                 else self._lower_type(authored.binder.type_expr, scope, static_bindings)
             )
-            binder = Local(authored.binder.name, binder_type)
+            binder = Local(name=authored.binder.name, type=binder_type)
             then_context = context.extend(binder)
             return Bind(
-                binder,
-                first,
-                self._lower_computation(
+                binder=binder,
+                first=first,
+                then=self._lower_computation(
                     authored.then,
                     scope,
                     then_context,
@@ -5542,14 +5689,14 @@ class _Elaborator(
             )
             try:
                 inferred = infer_computation(first, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored.first, error)
             name = self._fresh_sequence_name(context, path)
-            binder = Local(name, inferred.result)
+            binder = Local(name=name, type=inferred.result)
             return Bind(
-                binder,
-                first,
-                self._lower_computation(
+                binder=binder,
+                first=first,
+                then=self._lower_computation(
                     authored.then,
                     scope,
                     context.extend(binder),
@@ -5609,12 +5756,12 @@ class _Elaborator(
                     code="qiec-kind",
                 )
             return Perform(
-                EffectRequest(
-                    instance.entry.instance,
-                    instance.entry.effect,
-                    operation.id,
-                    static_arguments,
-                    tuple(
+                request=EffectRequest(
+                    instance=instance.entry.instance,
+                    effect=instance.entry.effect,
+                    operation=operation.id,
+                    static_arguments=static_arguments,
+                    arguments=tuple(
                         self._lower_value(
                             value,
                             scope,
@@ -5627,8 +5774,10 @@ class _Elaborator(
                             zip(request.arguments, parameter_types, strict=True)
                         )
                     ),
-                    result_type,
-                    SiteProvenance(self._origin(request, path, "effect-request")),
+                    result_type=result_type,
+                    origin=SiteProvenance(
+                        origin=self._origin(request, path, "effect-request")
+                    ),
                 )
             )
         if isinstance(authored, surface.QiecHandleComputation):
@@ -5673,10 +5822,10 @@ class _Elaborator(
             )
             self._expected_result = outer_expectation
             return Handle(
-                instance.entry.instance,
-                handler.id,
-                handled,
-                static_arguments,
+                instance=instance.entry.instance,
+                handler=handler.id,
+                computation=handled,
+                static_arguments=static_arguments,
             )
         if isinstance(authored, surface.QiecCaseComputation):
             return self._lower_case(authored, scope, context, path, static_bindings)
@@ -5709,7 +5858,7 @@ class _Elaborator(
             try:
                 then_type = infer_computation(then, self.registry, context)
                 otherwise_type = infer_computation(otherwise, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored, error)
             if then_type.result != otherwise_type.result:
                 self._fail(
@@ -5719,7 +5868,7 @@ class _Elaborator(
                     f"{self._render(otherwise_type.result)}; both must agree",
                     code="qiec-primitive",
                 )
-            return If(condition, then, otherwise)
+            return If(condition=condition, then=then, otherwise=otherwise)
         if isinstance(authored, surface.QiecPureBinding):
             if isinstance(authored.value, surface.LetExprLambda):
                 if authored.binder.type_expr is not None:
@@ -5762,18 +5911,18 @@ class _Elaborator(
             )
             try:
                 inferred = infer_value(value, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored.value, error)
             binder_type = (
                 inferred
                 if authored.binder.type_expr is None
                 else self._lower_type(authored.binder.type_expr, scope, static_bindings)
             )
-            binder = Local(authored.binder.name, binder_type)
+            binder = Local(name=authored.binder.name, type=binder_type)
             return Bind(
-                binder,
-                Return(value),
-                self._lower_computation(
+                binder=binder,
+                first=Return(value=value),
+                then=self._lower_computation(
                     authored.then,
                     scope,
                     context.extend(binder),
@@ -5783,8 +5932,8 @@ class _Elaborator(
             )
         if isinstance(authored, surface.QiecResumeComputation):
             return Resume(
-                (
-                    LiteralValue(None, UNIT)
+                value=(
+                    LiteralValue(value=None, type=UNIT)
                     if authored.value is None
                     else self._lower_value(
                         authored.value,
@@ -5794,7 +5943,7 @@ class _Elaborator(
                         (*path, "value"),
                     )
                 ),
-                self._origin(authored, path, "resume"),
+                origin=self._origin(authored, path, "resume"),
             )
         if isinstance(authored, surface.QiecInstanceComputation):
             return self._lower_local_instance(
@@ -5860,9 +6009,9 @@ class _Elaborator(
             lexical_path=path,
         )
         self.instances[authored.name] = NamedEffectInstance(
-            authored.name,
-            entry,
-            self._origin(authored, path, "effect-instance"),
+            name=authored.name,
+            entry=entry,
+            origin=self._origin(authored, path, "effect-instance"),
         )
         self.registry.instance_names[entry.instance] = authored.name
         try:
@@ -5878,10 +6027,10 @@ class _Elaborator(
             # whether lowering succeeded or failed.
             del self.instances[authored.name]
         return NewInstance(
-            entry.instance,
-            effect,
-            body,
-            self._origin(authored, path, "local-instance"),
+            instance=entry.instance,
+            effect=effect,
+            body=body,
+            origin=self._origin(authored, path, "local-instance"),
         )
 
     def _lower_call(
@@ -5949,21 +6098,21 @@ class _Elaborator(
         )
         try:
             substitution = instantiate_telescope(signature.telescope, static_arguments)
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(authored, error, fallback="qiec-kind")
         return Call(
-            signature.id,
-            authored.callee,
-            static_arguments,
-            tuple(
+            callee=signature.id,
+            name=authored.callee,
+            static_arguments=static_arguments,
+            arguments=tuple(
                 self._lower_value(
                     value, scope, context, static_bindings, (*path, position)
                 )
                 for position, value in enumerate(authored.arguments)
             ),
-            substitute_type(signature.result, substitution),
-            substitute_row(signature.effects, substitution),
-            self._origin(authored, path, "call"),
+            result_type=substitute_type(signature.result, substitution),
+            effects=substitute_row(signature.effects, substitution),
+            origin=self._origin(authored, path, "call"),
         )
 
     def _lower_traverse(
@@ -6086,7 +6235,7 @@ class _Elaborator(
             )
             try:
                 inferred = infer_computation(call, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(applied, error)
             if result_type is None:
                 result_type = inferred.result
@@ -6103,7 +6252,7 @@ class _Elaborator(
                 suffix += 1
                 name = f"{base}_{suffix}"
             occupied.add(name)
-            calls.append((Local(name, inferred.result), call))
+            calls.append((Local(name=name, type=inferred.result), call))
 
         assert result_type is not None
         inner = tensor_shape(result_type)
@@ -6113,12 +6262,15 @@ class _Elaborator(
             else tensor_type(inner[0], (extent, *inner[1]))
         )
         body: Computation = Return(
-            TensorValue(tuple(Var(local) for local, _call in calls), tensor_result)
+            value=TensorValue(
+                items=tuple(Var(local=local) for local, _call in calls),
+                result_type=tensor_result,
+            )
         )
         for local, call in reversed(calls):
-            body = Bind(local, call, body)
+            body = Bind(binder=local, first=call, then=body)
         if shared is not None:
-            body = Bind(shared, Return(source), body)
+            body = Bind(binder=shared, first=Return(value=source), then=body)
         return body
 
     def _lower_case(
@@ -6163,7 +6315,7 @@ class _Elaborator(
         )
         try:
             scrutinee_type = infer_value(scrutinee, self.registry, context)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(authored.scrutinee, error, fallback="qiec-index")
         if not isinstance(scrutinee_type, TypeApplication):
             self._fail(
@@ -6180,8 +6332,8 @@ class _Elaborator(
         for binder in motive_indices:
             motive_bindings.pop(binder.name, None)
         motive = CaseMotive(
-            motive_indices,
-            self._lower_type(
+            indices=motive_indices,
+            result_type=self._lower_type(
                 authored.motive.result_type,
                 (*scope, *motive_indices),
                 motive_bindings,
@@ -6241,9 +6393,9 @@ class _Elaborator(
                 branch_bindings[authored_binder.name] = skolem
             local_substitution = instantiate_telescope(constructor.telescope, skolems)
             substitution = StaticSubstitution(
-                (*parameter_substitution.types, *local_substitution.types),
-                (*parameter_substitution.indices, *local_substitution.indices),
-                (*parameter_substitution.effects, *local_substitution.effects),
+                types=(*parameter_substitution.types, *local_substitution.types),
+                indices=(*parameter_substitution.indices, *local_substitution.indices),
+                effects=(*parameter_substitution.effects, *local_substitution.effects),
             )
             if len(authored_branch.fields) != len(constructor.fields):
                 self._fail(
@@ -6289,25 +6441,25 @@ class _Elaborator(
                             f"branch field has type {annotated!r}, expected {expected!r}",
                             code="qiec-index",
                         )
-                local = Local(authored_field.name, expected)
+                local = Local(name=authored_field.name, type=expected)
                 fields.append(local)
                 branch_context = branch_context.extend(local)
             branches.append(
                 CaseBranch(
-                    constructor.id,
-                    skolems,
-                    tuple(fields),
-                    self._lower_computation(
+                    constructor=constructor.id,
+                    static_arguments=skolems,
+                    fields=tuple(fields),
+                    body=self._lower_computation(
                         authored_branch.body,
                         (*scope, *authored_binders),
                         branch_context,
                         (*path, "branch", position, "body"),
                         branch_bindings,
                     ),
-                    branch_scope,
+                    scope=branch_scope,
                 )
             )
-        return Case(scrutinee, motive, tuple(branches))
+        return Case(scrutinee=scrutinee, motive=motive, branches=tuple(branches))
 
     def _rename_binder(
         self,
@@ -6337,10 +6489,10 @@ class _Elaborator(
         """
 
         if isinstance(binder, TypeBinder):
-            return TypeBinder(name, binder.kind, binder.refinable)
+            return TypeBinder(name=name, kind=binder.kind, refinable=binder.refinable)
         if isinstance(binder, IndexBinder):
-            return IndexBinder(name, binder.sort, binder.refinable)
-        return EffectBinder(name, binder.refinable)
+            return IndexBinder(name=name, sort=binder.sort, refinable=binder.refinable)
+        return EffectBinder(name=name, refinable=binder.refinable)
 
     def _binder_variable(self, binder: TelescopeBinder) -> StaticArgument:
         """The variable a binder introduces.
@@ -6356,10 +6508,10 @@ class _Elaborator(
             A variable of the binder's own name and namespace, carrying no identity, so substitution can reach it.
         """
         if isinstance(binder, TypeBinder):
-            return TypeVariable(binder.name, binder.kind)
+            return TypeVariable(name=binder.name, kind=binder.kind)
         if isinstance(binder, IndexBinder):
-            return IndexVariable(binder.name, binder.sort)
-        return EffectVariable(binder.name)
+            return IndexVariable(name=binder.name, sort=binder.sort)
+        return EffectVariable(name=binder.name)
 
     def _fresh_sequence_name(
         self, context: CheckContext, path: tuple[str | int, ...]
@@ -6425,10 +6577,10 @@ class _Elaborator(
             If the body fails to check, or its result or row differs
             from the signature's.
         """
-        context = CheckContext(parameters)
+        context = CheckContext(locals=parameters)
         try:
             actual = infer_computation(body, self.registry, context)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(node, error, fallback="qiec-program")
         if actual.result != signature.result:
             self._fail(
@@ -6448,13 +6600,13 @@ class _Elaborator(
                 code="qiec-program",
             )
         return NamedComputation(
-            signature.id,
-            signature.name,
-            signature.telescope,
-            parameters,
-            body,
-            ComputationType(signature.effects, signature.result),
-            self._origin(node, path, "computation"),
+            id=signature.id,
+            name=signature.name,
+            telescope=signature.telescope,
+            parameters=parameters,
+            body=body,
+            type=ComputationType(effects=signature.effects, result=signature.result),
+            origin=self._origin(node, path, "computation"),
         )
 
     def _origin(
@@ -6482,13 +6634,13 @@ class _Elaborator(
             what the sites in it are.
         """
         return SourceOrigin(
-            self.source.module_name,
-            path,
-            role,
-            QVR_SOURCE_VERSION,
-            self.source.file_path,
-            getattr(node, "line", None),
-            getattr(node, "col", None),
+            module=self.source.module_name,
+            structural_path=path,
+            role=role,
+            source_protocol=QVR_SOURCE_VERSION,
+            file=self.source.file_path,
+            line=getattr(node, "line", None),
+            column=getattr(node, "col", None),
         )
 
     def _fail_kernel(

@@ -31,11 +31,12 @@ This module provides:
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 import itertools
 
+import didactic.api as dx
 import torch
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.core.objects import SetObject
 from quivers.core.morphisms import Morphism
 from quivers.core.algebras import IdempotentSemiring
@@ -43,16 +44,16 @@ from quivers.enriched._lattice import require_lattice
 from quivers.enriched.profunctors import Profunctor
 
 
-@dataclass
-class Presheaf:
+class Presheaf(ValueModel):
     """A V-valued presheaf on a collection of finite objects.
 
     Represents a functor F: C^op → V where C is a finite
     category (collection of objects with hom-sets between them).
     In the simplest case, F assigns a V-tensor to each object.
 
-    Holds a mutable ``dict[int, torch.Tensor]`` of values that grows during
-    yoneda extension; not a value type.
+    Holds the object sequence, tensor mapping, and algebra by identity.
+    The mapping remains mutable during Yoneda extension, and its tensors
+    retain their autograd histories. Record fields change through ``with_``.
 
     Parameters
     ----------
@@ -67,16 +68,35 @@ class Presheaf:
 
     Raises
     ------
-    TypeError
-        If ``algebra`` is not an `IdempotentSemiring`.
+    didactic.ValidationError
+        If the runtime fields have incompatible types or ``algebra`` is
+        not an `IdempotentSemiring`.
     """
 
-    objects: Sequence[SetObject]
-    values: dict[int, torch.Tensor]
-    algebra: IdempotentSemiring
+    objects: Sequence[SetObject] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    values: dict[int, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    algebra: IdempotentSemiring = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
-    def __post_init__(self) -> None:
-        self.algebra = require_lattice(self.algebra, "a V-presheaf")
+    @dx.model_validator()
+    def _check_presheaf(self) -> None:
+        """Validate the runtime objects, tensor mapping, and lattice.
+
+        Raises
+        ------
+        TypeError
+            If the object sequence, tensor mapping, or algebra has an
+            incompatible runtime type.
+        """
+        if not isinstance(self.objects, Sequence) or not all(
+            isinstance(obj, SetObject) for obj in self.objects
+        ):
+            raise TypeError("presheaf objects must be a sequence of SetObject values")
+        if not isinstance(self.values, dict) or not all(
+            isinstance(index, int) and isinstance(value, torch.Tensor)
+            for index, value in self.values.items()
+        ):
+            raise TypeError("presheaf values must map integer indices to tensors")
+        require_lattice(self.algebra, "a V-presheaf")
 
     def evaluate(self, index: int) -> torch.Tensor:
         """Evaluate the presheaf at object index.

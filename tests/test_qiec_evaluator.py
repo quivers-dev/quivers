@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import pytest
 
@@ -92,20 +92,20 @@ from quivers.qiec.types import (
     TypeApplication,
 )
 
-INT_SITE = TypeApplication(SITE_CONSTRUCTOR, (INT,))
-INT_SAMPLEABLE = TypeApplication(SAMPLEABLE_CONSTRUCTOR, (INT,))
+INT_SITE = TypeApplication(constructor=SITE_CONSTRUCTOR, arguments=(INT,))
+INT_SAMPLEABLE = TypeApplication(constructor=SAMPLEABLE_CONSTRUCTOR, arguments=(INT,))
 
 
 def _origin(index: int, role: str = "test") -> SiteProvenance:
     return SiteProvenance(
-        SourceOrigin(
-            "test",
-            ("body", index),
-            role,
-            "qvr-source/test",
-            "test.qvr",
-            index + 1,
-            1,
+        origin=SourceOrigin(
+            module="test",
+            structural_path=("body", index),
+            role=role,
+            source_protocol="qvr-source/test",
+            file="test.qvr",
+            line=index + 1,
+            column=1,
         )
     )
 
@@ -121,13 +121,13 @@ def _request(
     index: int = 0,
 ) -> EffectRequest:
     return EffectRequest(
-        instance,
-        effect,
-        operation,
-        tuple(static_arguments),
-        tuple(arguments),
-        result_type,
-        _origin(index, effect.name.lower()),
+        instance=instance,
+        effect=effect,
+        operation=operation,
+        static_arguments=tuple(static_arguments),
+        arguments=tuple(arguments),
+        result_type=result_type,
+        origin=_origin(index, effect.name.lower()),
     )
 
 
@@ -156,15 +156,15 @@ def _tracked_resource_handler(
 ) -> tuple[RuntimeHandler, list[str]]:
     """Build a per-installation resource with exact-once lifecycle assertions."""
     definition = HandlerDef(
-        HandlerId.derive("test", "tracked-resource", key),
-        f"tracked-resource-{key}",
-        state_effect(INT),
-        (
-            HandlerClauseDef(STATE_GET, ResumptionGrade.LINEAR),
-            HandlerClauseDef(STATE_PUT, ResumptionGrade.LINEAR),
+        id=HandlerId.derive("test", "tracked-resource", key),
+        name=f"tracked-resource-{key}",
+        effect=state_effect(INT),
+        clauses=(
+            HandlerClauseDef(operation=STATE_GET, grade=ResumptionGrade.LINEAR),
+            HandlerClauseDef(operation=STATE_PUT, grade=ResumptionGrade.LINEAR),
         ),
-        INT,
-        INT,
+        input_type=INT,
+        output_type=INT,
     )
     finalized: list[str] = []
 
@@ -183,10 +183,12 @@ def _tracked_resource_handler(
             finalized.append(mode)
 
         return RuntimeHandler(
-            definition,
-            {
-                STATE_GET: RuntimeClause(get, _int),
-                STATE_PUT: RuntimeClause(put, lambda value: value is None),
+            definition=definition,
+            clauses={
+                STATE_GET: RuntimeClause(invoke=get, result_validator=_int),
+                STATE_PUT: RuntimeClause(
+                    invoke=put, result_validator=lambda value: value is None
+                ),
             },
             input_validator=_int,
             output_validator=_int,
@@ -196,28 +198,37 @@ def _tracked_resource_handler(
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype, finalized
 
 
 def test_return_bind_and_case_have_one_structural_semantics() -> None:
-    local = Local("x", INT)
-    bound = Bind(local, Return(LiteralValue(2, INT)), Return(Var(local)))
+    local = Local(name="x", type=INT)
+    bound = Bind(
+        binder=local,
+        first=Return(value=LiteralValue(value=2, type=INT)),
+        then=Return(value=Var(local=local)),
+    )
     assert Evaluator().evaluate(bound) == 2
 
     constructor = ConstructorId.derive("test", "int")
-    field = Local("field", INT)
-    scrutinee = ConstructorValue(constructor, (), (LiteralValue(7, INT),), INT)
+    field = Local(name="field", type=INT)
+    scrutinee = ConstructorValue(
+        constructor=constructor,
+        static_arguments=(),
+        fields=(LiteralValue(value=7, type=INT),),
+        result_type=INT,
+    )
     case = Case(
-        scrutinee,
-        CaseMotive((), INT),
-        (
+        scrutinee=scrutinee,
+        motive=CaseMotive(indices=(), result_type=INT),
+        branches=(
             CaseBranch(
-                constructor,
-                (),
-                (field,),
-                Return(Var(field)),
-                StaticScopeId.derive("test", "runtime-case"),
+                constructor=constructor,
+                static_arguments=(),
+                fields=(field,),
+                body=Return(value=Var(local=field)),
+                scope=StaticScopeId.derive("test", "runtime-case"),
             ),
         ),
     )
@@ -228,13 +239,13 @@ def test_attachment_boundary_checks_identity_type_and_value() -> None:
     attachments = RuntimeAttachments()
     id = AttachmentId.derive("test", "integer")
     ref = attachments.bind_value(id, 3, INT, validator=_int, duplicable=True)
-    assert Evaluator(attachments).evaluate(Return(ref)) == 3
+    assert Evaluator(attachments).evaluate(Return(value=ref)) == 3
 
-    wrong_type = AttachmentRef(id, STRING)
+    wrong_type = AttachmentRef(attachment=id, type=STRING)
     with pytest.raises(RuntimeTypeMismatch, match="core reference expects"):
-        Evaluator(attachments).evaluate(Return(wrong_type))
+        Evaluator(attachments).evaluate(Return(value=wrong_type))
     with pytest.raises(MissingAttachmentError):
-        Evaluator().evaluate(Return(ref))
+        Evaluator().evaluate(Return(value=ref))
 
 
 def test_deep_resumption_reinstalls_the_matching_handler() -> None:
@@ -242,12 +253,14 @@ def test_deep_resumption_reinstalls_the_matching_handler() -> None:
     attachments = RuntimeAttachments()
     calls: list[object] = []
     definition = HandlerDef(
-        HandlerId.derive("test", "deep"),
-        "deep",
-        RANDOM,
-        (HandlerClauseDef(RANDOM_SAMPLE, ResumptionGrade.LINEAR),),
-        INT,
-        INT,
+        id=HandlerId.derive("test", "deep"),
+        name="deep",
+        effect=RANDOM,
+        clauses=(
+            HandlerClauseDef(operation=RANDOM_SAMPLE, grade=ResumptionGrade.LINEAR),
+        ),
+        input_type=INT,
+        output_type=INT,
     )
 
     def clause(request, resume, _context):
@@ -255,8 +268,8 @@ def test_deep_resumption_reinstalls_the_matching_handler() -> None:
         return resume(len(calls))
 
     handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
         duplicable_context=True,
@@ -264,11 +277,13 @@ def test_deep_resumption_reinstalls_the_matching_handler() -> None:
     _attach_handler(attachments, handler)
     first = _request(instance, RANDOM, RANDOM_SAMPLE, (), INT, index=1)
     second = _request(instance, RANDOM, RANDOM_SAMPLE, (), INT, index=2)
-    ignored = Local("ignored", INT)
+    ignored = Local(name="ignored", type=INT)
     computation = Handle(
-        instance,
-        definition.id,
-        Bind(ignored, Perform(first), Perform(second)),
+        instance=instance,
+        handler=definition.id,
+        computation=Bind(
+            binder=ignored, first=Perform(request=first), then=Perform(request=second)
+        ),
     )
 
     assert Evaluator(attachments).evaluate(computation) == 2
@@ -283,12 +298,14 @@ def test_clause_body_effects_run_only_in_the_outer_context() -> None:
     _attach_handler(attachments, scorer)
 
     definition = HandlerDef(
-        HandlerId.derive("test", "clause-outside"),
-        "clause-outside",
-        RANDOM,
-        (HandlerClauseDef(RANDOM_SAMPLE, ResumptionGrade.LINEAR),),
-        INT,
-        INT,
+        id=HandlerId.derive("test", "clause-outside"),
+        name="clause-outside",
+        effect=RANDOM,
+        clauses=(
+            HandlerClauseDef(operation=RANDOM_SAMPLE, grade=ResumptionGrade.LINEAR),
+        ),
+        input_type=INT,
+        output_type=INT,
     )
 
     def clause(_request_value, resume, context):
@@ -306,12 +323,12 @@ def test_clause_body_effects_run_only_in_the_outer_context() -> None:
             UNIT,
             index=4,
         )
-        assert context.evaluate(Perform(score)) is None
+        assert context.evaluate(Perform(request=score)) is None
         return resume(9)
 
     random_handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
         duplicable_context=True,
@@ -319,9 +336,13 @@ def test_clause_body_effects_run_only_in_the_outer_context() -> None:
     _attach_handler(attachments, random_handler)
     sample = _request(random_instance, RANDOM, RANDOM_SAMPLE, (), INT, index=3)
     computation = Handle(
-        score_instance,
-        scorer.definition.id,
-        Handle(random_instance, definition.id, Perform(sample)),
+        instance=score_instance,
+        handler=scorer.definition.id,
+        computation=Handle(
+            instance=random_instance,
+            handler=definition.id,
+            computation=Perform(request=sample),
+        ),
     )
 
     assert Evaluator(attachments).evaluate(computation) == 9
@@ -342,12 +363,14 @@ def test_clause_context_evaluate_finalizes_locally_installed_handlers(
     attachments = RuntimeAttachments()
     resource, finalized = _tracked_resource_handler(f"clause-evaluate-{fail_locally}")
     definition = HandlerDef(
-        HandlerId.derive("test", "clause-evaluate", fail_locally),
-        "clause-evaluate",
-        RANDOM,
-        (HandlerClauseDef(RANDOM_SAMPLE, ResumptionGrade.LINEAR),),
-        INT,
-        INT,
+        id=HandlerId.derive("test", "clause-evaluate", fail_locally),
+        name="clause-evaluate",
+        effect=RANDOM,
+        clauses=(
+            HandlerClauseDef(operation=RANDOM_SAMPLE, grade=ResumptionGrade.LINEAR),
+        ),
+        input_type=INT,
+        output_type=INT,
     )
     unhandled = _request(
         unhandled_instance,
@@ -359,8 +382,14 @@ def test_clause_context_evaluate_finalizes_locally_installed_handlers(
     )
 
     def clause(_request_value, resume, context):
-        body = Perform(unhandled) if fail_locally else Return(LiteralValue(1, INT))
-        local = Handle(resource_instance, resource.definition.id, body)
+        body = (
+            Perform(request=unhandled)
+            if fail_locally
+            else Return(value=LiteralValue(value=1, type=INT))
+        )
+        local = Handle(
+            instance=resource_instance, handler=resource.definition.id, computation=body
+        )
         if fail_locally:
             with pytest.raises(UnhandledEffectError):
                 context.evaluate(local)
@@ -369,8 +398,8 @@ def test_clause_context_evaluate_finalizes_locally_installed_handlers(
         return resume(7)
 
     handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
     )
@@ -384,7 +413,11 @@ def test_clause_context_evaluate_finalizes_locally_installed_handlers(
         INT,
         index=42,
     )
-    computation = Handle(random_instance, definition.id, Perform(request))
+    computation = Handle(
+        instance=random_instance,
+        handler=definition.id,
+        computation=Perform(request=request),
+    )
 
     assert Evaluator(attachments).evaluate(computation) == 7
     assert finalized == expected_finalization
@@ -405,16 +438,18 @@ def test_clause_computation_finalizes_locally_installed_handlers(
         f"clause-computation-{fail_locally}"
     )
     definition = HandlerDef(
-        HandlerId.derive("test", "clause-computation", fail_locally),
-        "clause-computation",
-        RANDOM,
-        (HandlerClauseDef(RANDOM_SAMPLE, ResumptionGrade.ZERO),),
-        INT,
-        INT,
+        id=HandlerId.derive("test", "clause-computation", fail_locally),
+        name="clause-computation",
+        effect=RANDOM,
+        clauses=(
+            HandlerClauseDef(operation=RANDOM_SAMPLE, grade=ResumptionGrade.ZERO),
+        ),
+        input_type=INT,
+        output_type=INT,
     )
     body = (
         Perform(
-            _request(
+            request=_request(
                 _instance(f"clause-answer-unhandled-{fail_locally}"),
                 RANDOM,
                 RANDOM_SAMPLE,
@@ -424,17 +459,21 @@ def test_clause_computation_finalizes_locally_installed_handlers(
             )
         )
         if fail_locally
-        else Return(LiteralValue(3, INT))
+        else Return(value=LiteralValue(value=3, type=INT))
     )
 
     def clause(_request_value, _resume, _context):
         return ClauseComputation(
-            Handle(resource_instance, resource.definition.id, body)
+            computation=Handle(
+                instance=resource_instance,
+                handler=resource.definition.id,
+                computation=body,
+            )
         )
 
     handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         output_validator=_int,
     )
     _attach_handler(attachments, resource)
@@ -447,7 +486,11 @@ def test_clause_computation_finalizes_locally_installed_handlers(
         INT,
         index=44,
     )
-    computation = Handle(random_instance, definition.id, Perform(request))
+    computation = Handle(
+        instance=random_instance,
+        handler=definition.id,
+        computation=Perform(request=request),
+    )
     evaluator = Evaluator(attachments)
     if fail_locally:
         with pytest.raises(UnhandledEffectError):
@@ -472,20 +515,22 @@ def test_resumption_finalizes_handlers_installed_after_execution_starts(
         f"resumed-continuation-{fail_after_resume}"
     )
     definition = HandlerDef(
-        HandlerId.derive("test", "resume-resource", fail_after_resume),
-        "resume-resource",
-        RANDOM,
-        (HandlerClauseDef(RANDOM_SAMPLE, ResumptionGrade.LINEAR),),
-        INT,
-        INT,
+        id=HandlerId.derive("test", "resume-resource", fail_after_resume),
+        name="resume-resource",
+        effect=RANDOM,
+        clauses=(
+            HandlerClauseDef(operation=RANDOM_SAMPLE, grade=ResumptionGrade.LINEAR),
+        ),
+        input_type=INT,
+        output_type=INT,
     )
 
     def clause(_request_value, resume, _context):
         return resume(7)
 
     handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
     )
@@ -499,10 +544,10 @@ def test_resumption_finalizes_handlers_installed_after_execution_starts(
         INT,
         index=45,
     )
-    selected = Local("resumed_resource_value", INT)
+    selected = Local(name="resumed_resource_value", type=INT)
     if fail_after_resume:
         resource_body = Perform(
-            _request(
+            request=_request(
                 _instance("resume-resource-unhandled"),
                 RANDOM,
                 RANDOM_SAMPLE,
@@ -512,13 +557,19 @@ def test_resumption_finalizes_handlers_installed_after_execution_starts(
             )
         )
     else:
-        resource_body = Return(Var(selected))
+        resource_body = Return(value=Var(local=selected))
     continuation = Bind(
-        selected,
-        Perform(request),
-        Handle(resource_instance, resource.definition.id, resource_body),
+        binder=selected,
+        first=Perform(request=request),
+        then=Handle(
+            instance=resource_instance,
+            handler=resource.definition.id,
+            computation=resource_body,
+        ),
     )
-    computation = Handle(random_instance, definition.id, continuation)
+    computation = Handle(
+        instance=random_instance, handler=definition.id, computation=continuation
+    )
     evaluator = Evaluator(attachments)
     if fail_after_resume:
         with pytest.raises(UnhandledEffectError):
@@ -535,20 +586,24 @@ def test_clause_body_cannot_recapture_itself_but_can_reach_outer_instance_handle
     attachments = RuntimeAttachments()
     events: list[str] = []
     outer_definition = HandlerDef(
-        HandlerId.derive("test", "outer-same-instance"),
-        "outer-same-instance",
-        RANDOM,
-        (HandlerClauseDef(RANDOM_SAMPLE, ResumptionGrade.LINEAR),),
-        INT,
-        INT,
+        id=HandlerId.derive("test", "outer-same-instance"),
+        name="outer-same-instance",
+        effect=RANDOM,
+        clauses=(
+            HandlerClauseDef(operation=RANDOM_SAMPLE, grade=ResumptionGrade.LINEAR),
+        ),
+        input_type=INT,
+        output_type=INT,
     )
     inner_definition = HandlerDef(
-        HandlerId.derive("test", "inner-same-instance"),
-        "inner-same-instance",
-        RANDOM,
-        (HandlerClauseDef(RANDOM_SAMPLE, ResumptionGrade.LINEAR),),
-        INT,
-        INT,
+        id=HandlerId.derive("test", "inner-same-instance"),
+        name="inner-same-instance",
+        effect=RANDOM,
+        clauses=(
+            HandlerClauseDef(operation=RANDOM_SAMPLE, grade=ResumptionGrade.LINEAR),
+        ),
+        input_type=INT,
+        output_type=INT,
     )
 
     def outer_clause(_request_value, resume, _context):
@@ -559,18 +614,22 @@ def test_clause_body_cannot_recapture_itself_but_can_reach_outer_instance_handle
 
     def inner_clause(_request_value, resume, context):
         events.append("inner")
-        assert context.evaluate(Perform(generated)) == 41
+        assert context.evaluate(Perform(request=generated)) == 41
         return resume(9)
 
     outer = RuntimeHandler(
-        outer_definition,
-        {RANDOM_SAMPLE: RuntimeClause(outer_clause, _int)},
+        definition=outer_definition,
+        clauses={
+            RANDOM_SAMPLE: RuntimeClause(invoke=outer_clause, result_validator=_int)
+        },
         input_validator=_int,
         output_validator=_int,
     )
     inner = RuntimeHandler(
-        inner_definition,
-        {RANDOM_SAMPLE: RuntimeClause(inner_clause, _int)},
+        definition=inner_definition,
+        clauses={
+            RANDOM_SAMPLE: RuntimeClause(invoke=inner_clause, result_validator=_int)
+        },
         input_validator=_int,
         output_validator=_int,
     )
@@ -578,9 +637,13 @@ def test_clause_body_cannot_recapture_itself_but_can_reach_outer_instance_handle
     _attach_handler(attachments, inner)
     original = _request(instance, RANDOM, RANDOM_SAMPLE, (), INT, index=22)
     computation = Handle(
-        instance,
-        outer_definition.id,
-        Handle(instance, inner_definition.id, Perform(original)),
+        instance=instance,
+        handler=outer_definition.id,
+        computation=Handle(
+            instance=instance,
+            handler=inner_definition.id,
+            computation=Perform(request=original),
+        ),
     )
 
     assert Evaluator(attachments).evaluate(computation) == 9
@@ -650,9 +713,13 @@ def test_forwarding_trace_observes_draw_reply_in_lexical_order() -> None:
     _attach_handler(attachments, trace)
     request = _random_request(attachments, instance, index=5)
     computation = Handle(
-        instance,
-        draw.definition.id,
-        Handle(instance, trace.definition.id, Perform(request)),
+        instance=instance,
+        handler=draw.definition.id,
+        computation=Handle(
+            instance=instance,
+            handler=trace.definition.id,
+            computation=Perform(request=request),
+        ),
     )
 
     assert Evaluator(attachments).evaluate(computation) == 7
@@ -677,12 +744,16 @@ def test_condition_supplies_value_and_emits_explicit_score() -> None:
         _attach_handler(attachments, handler)
     request = _random_request(attachments, random_instance, index=6)
     computation = Handle(
-        score_instance,
-        score.definition.id,
-        Handle(
-            random_instance,
-            draw.definition.id,
-            Handle(random_instance, condition.definition.id, Perform(request)),
+        instance=score_instance,
+        handler=score.definition.id,
+        computation=Handle(
+            instance=random_instance,
+            handler=draw.definition.id,
+            computation=Handle(
+                instance=random_instance,
+                handler=condition.definition.id,
+                computation=Perform(request=request),
+            ),
         ),
     )
 
@@ -696,9 +767,9 @@ def test_condition_supplies_value_and_emits_explicit_score() -> None:
     # A fresh dynamic installation must not inherit the previous run's seen
     # set; otherwise a now-unused observation would be silently accepted.
     empty_body = Handle(
-        random_instance,
-        condition.definition.id,
-        Return(LiteralValue(0, INT)),
+        instance=random_instance,
+        handler=condition.definition.id,
+        computation=Return(value=LiteralValue(value=0, type=INT)),
     )
     with pytest.raises(InvalidHandlerError, match="unused observations"):
         evaluator.evaluate(empty_body)
@@ -730,9 +801,13 @@ def test_condition_rejects_unused_observation_names() -> None:
         _attach_handler(attachments, handler)
     request = _random_request(attachments, random_instance, index=7)
     computation = Handle(
-        random_instance,
-        draw.definition.id,
-        Handle(random_instance, condition.definition.id, Perform(request)),
+        instance=random_instance,
+        handler=draw.definition.id,
+        computation=Handle(
+            instance=random_instance,
+            handler=condition.definition.id,
+            computation=Perform(request=request),
+        ),
     )
     with pytest.raises(InvalidHandlerError, match="unused observations"):
         Evaluator(attachments).evaluate(computation)
@@ -753,16 +828,20 @@ def test_replay_policies_keep_scoring_explicit() -> None:
     _attach_handler(attachments, replay)
     request = _random_request(attachments, instance, index=8)
     computation = Handle(
-        instance,
-        draw.definition.id,
-        Handle(instance, replay.definition.id, Perform(request)),
+        instance=instance,
+        handler=draw.definition.id,
+        computation=Handle(
+            instance=instance,
+            handler=replay.definition.id,
+            computation=Perform(request=request),
+        ),
     )
     evaluator = Evaluator(attachments)
     assert evaluator.evaluate(computation) == 11
     empty_body = Handle(
-        instance,
-        replay.definition.id,
-        Return(LiteralValue(0, INT)),
+        instance=instance,
+        handler=replay.definition.id,
+        computation=Return(value=LiteralValue(value=0, type=INT)),
     )
     with pytest.raises(InvalidHandlerError, match="unused replay values"):
         evaluator.evaluate(empty_body)
@@ -800,15 +879,15 @@ def test_condition_and_replay_bookkeeping_is_per_dynamic_installation() -> None:
         index=27,
     )
     nested_condition = Handle(
-        score_instance,
-        score.definition.id,
-        Handle(
-            outer_random,
-            condition.definition.id,
-            Handle(
-                inner_random,
-                condition.definition.id,
-                Perform(condition_request),
+        instance=score_instance,
+        handler=score.definition.id,
+        computation=Handle(
+            instance=outer_random,
+            handler=condition.definition.id,
+            computation=Handle(
+                instance=inner_random,
+                handler=condition.definition.id,
+                computation=Perform(request=condition_request),
             ),
         ),
     )
@@ -817,9 +896,13 @@ def test_condition_and_replay_bookkeeping_is_per_dynamic_installation() -> None:
 
     replay_request = _random_request(attachments, inner_random, index=28)
     nested_replay = Handle(
-        outer_random,
-        replay.definition.id,
-        Handle(inner_random, replay.definition.id, Perform(replay_request)),
+        instance=outer_random,
+        handler=replay.definition.id,
+        computation=Handle(
+            instance=inner_random,
+            handler=replay.definition.id,
+            computation=Perform(request=replay_request),
+        ),
     )
     with pytest.raises(InvalidHandlerError, match="unused replay values"):
         Evaluator(attachments).evaluate(nested_replay)
@@ -850,20 +933,24 @@ def test_state_get_put_and_final_state() -> None:
         instance,
         applied_state,
         STATE_PUT,
-        (LiteralValue(4, INT),),
+        (LiteralValue(value=4, type=INT),),
         UNIT,
         index=10,
     )
-    old = Local("old", INT)
-    ignored = Local("ignored", UNIT)
+    old = Local(name="old", type=INT)
+    ignored = Local(name="ignored", type=UNIT)
     body = Bind(
-        old,
-        Perform(get),
-        Bind(ignored, Perform(put), Return(Var(old))),
+        binder=old,
+        first=Perform(request=get),
+        then=Bind(
+            binder=ignored,
+            first=Perform(request=put),
+            then=Return(value=Var(local=old)),
+        ),
     )
 
     assert Evaluator(attachments).evaluate(
-        Handle(instance, handler.definition.id, body)
+        Handle(instance=instance, handler=handler.definition.id, computation=body)
     ) == (1, 4)
     assert cell.value == 4
 
@@ -886,40 +973,62 @@ def test_state_context_is_fresh_for_nested_and_reused_installations() -> None:
         inner,
         effect,
         STATE_PUT,
-        (LiteralValue(5, INT),),
+        (LiteralValue(value=5, type=INT),),
         UNIT,
         index=29,
     )
     inner_get = _request(inner, effect, STATE_GET, (), INT, index=30)
     outer_get = _request(outer, effect, STATE_GET, (), INT, index=31)
-    ignored_put = Local("nested_put", UNIT)
-    inner_value = Local("nested_inner_value", INT)
+    ignored_put = Local(name="nested_put", type=UNIT)
+    inner_value = Local(name="nested_inner_value", type=INT)
     inner_body = Bind(
-        ignored_put,
-        Perform(inner_put),
-        Perform(inner_get),
+        binder=ignored_put,
+        first=Perform(request=inner_put),
+        then=Perform(request=inner_get),
     )
     body = Bind(
-        inner_value,
-        Handle(inner, handler.definition.id, inner_body),
-        Perform(outer_get),
+        binder=inner_value,
+        first=Handle(
+            instance=inner, handler=handler.definition.id, computation=inner_body
+        ),
+        then=Perform(request=outer_get),
     )
     evaluator = Evaluator(attachments)
-    assert evaluator.evaluate(Handle(outer, handler.definition.id, body)) == 0
+    assert (
+        evaluator.evaluate(
+            Handle(instance=outer, handler=handler.definition.id, computation=body)
+        )
+        == 0
+    )
     assert published.value == 0
 
     outer_put = _request(
         outer,
         effect,
         STATE_PUT,
-        (LiteralValue(9, INT),),
+        (LiteralValue(value=9, type=INT),),
         UNIT,
         index=32,
     )
-    changed = Bind(ignored_put, Perform(outer_put), Perform(outer_get))
-    assert evaluator.evaluate(Handle(outer, handler.definition.id, changed)) == 9
+    changed = Bind(
+        binder=ignored_put,
+        first=Perform(request=outer_put),
+        then=Perform(request=outer_get),
+    )
     assert (
-        evaluator.evaluate(Handle(outer, handler.definition.id, Perform(outer_get)))
+        evaluator.evaluate(
+            Handle(instance=outer, handler=handler.definition.id, computation=changed)
+        )
+        == 9
+    )
+    assert (
+        evaluator.evaluate(
+            Handle(
+                instance=outer,
+                handler=handler.definition.id,
+                computation=Perform(request=outer_get),
+            )
+        )
         == 0
     )
     assert published.value == 0
@@ -979,29 +1088,39 @@ def test_score_and_weight_accumulators_are_per_dynamic_installation() -> None:
             )
         )
     )
-    ignored_unit = Local("nested_score_unit", UNIT)
-    ignored_answer = Local("nested_score_answer", STRING)
+    ignored_unit = Local(name="nested_score_unit", type=UNIT)
+    ignored_answer = Local(name="nested_score_answer", type=STRING)
     inner_score_body = Bind(
-        ignored_unit,
-        Perform(score_requests[1]),
-        Return(LiteralValue("inner", STRING)),
+        binder=ignored_unit,
+        first=Perform(request=score_requests[1]),
+        then=Return(value=LiteralValue(value="inner", type=STRING)),
     )
     outer_score_body = Bind(
-        ignored_unit,
-        Perform(score_requests[0]),
-        Bind(
-            ignored_answer,
-            Handle(inner_score, score.definition.id, inner_score_body),
-            Bind(
-                ignored_unit,
-                Perform(score_requests[2]),
-                Return(LiteralValue("outer", STRING)),
+        binder=ignored_unit,
+        first=Perform(request=score_requests[0]),
+        then=Bind(
+            binder=ignored_answer,
+            first=Handle(
+                instance=inner_score,
+                handler=score.definition.id,
+                computation=inner_score_body,
+            ),
+            then=Bind(
+                binder=ignored_unit,
+                first=Perform(request=score_requests[2]),
+                then=Return(value=LiteralValue(value="outer", type=STRING)),
             ),
         ),
     )
     evaluator = Evaluator(attachments)
     assert (
-        evaluator.evaluate(Handle(outer_score, score.definition.id, outer_score_body))
+        evaluator.evaluate(
+            Handle(
+                instance=outer_score,
+                handler=score.definition.id,
+                computation=outer_score_body,
+            )
+        )
         == "outer"
     )
     assert published_score.total == 7
@@ -1013,7 +1132,7 @@ def test_score_and_weight_accumulators_are_per_dynamic_installation() -> None:
             instance,
             weight_effect,
             WEIGHT_ADD,
-            (LiteralValue(value, INT),),
+            (LiteralValue(value=value, type=INT),),
             UNIT,
             index=36 + offset,
         )
@@ -1026,26 +1145,34 @@ def test_score_and_weight_accumulators_are_per_dynamic_installation() -> None:
         )
     )
     inner_weight_body = Bind(
-        ignored_unit,
-        Perform(weight_requests[1]),
-        Return(LiteralValue("inner", STRING)),
+        binder=ignored_unit,
+        first=Perform(request=weight_requests[1]),
+        then=Return(value=LiteralValue(value="inner", type=STRING)),
     )
     outer_weight_body = Bind(
-        ignored_unit,
-        Perform(weight_requests[0]),
-        Bind(
-            ignored_answer,
-            Handle(inner_weight, weight.definition.id, inner_weight_body),
-            Bind(
-                ignored_unit,
-                Perform(weight_requests[2]),
-                Return(LiteralValue("outer", STRING)),
+        binder=ignored_unit,
+        first=Perform(request=weight_requests[0]),
+        then=Bind(
+            binder=ignored_answer,
+            first=Handle(
+                instance=inner_weight,
+                handler=weight.definition.id,
+                computation=inner_weight_body,
+            ),
+            then=Bind(
+                binder=ignored_unit,
+                first=Perform(request=weight_requests[2]),
+                then=Return(value=LiteralValue(value="outer", type=STRING)),
             ),
         ),
     )
     assert (
         evaluator.evaluate(
-            Handle(outer_weight, weight.definition.id, outer_weight_body)
+            Handle(
+                instance=outer_weight,
+                handler=weight.definition.id,
+                computation=outer_weight_body,
+            )
         )
         == "outer"
     )
@@ -1055,9 +1182,9 @@ def test_score_and_weight_accumulators_are_per_dynamic_installation() -> None:
     assert (
         evaluator.evaluate(
             Handle(
-                outer_score,
-                score.definition.id,
-                Return(LiteralValue("clean", STRING)),
+                instance=outer_score,
+                handler=score.definition.id,
+                computation=Return(value=LiteralValue(value="clean", type=STRING)),
             )
         )
         == "clean"
@@ -1085,7 +1212,11 @@ def test_parameterized_builtin_handler_uses_the_applied_interface() -> None:
         INT,
         index=20,
     )
-    computation = Handle(instance, handler.definition.id, Perform(request))
+    computation = Handle(
+        instance=instance,
+        handler=handler.definition.id,
+        computation=Perform(request=request),
+    )
     registry = KernelRegistry()
     registry.register_effect(STATE_EFFECT)
     registry.register_handler(handler.definition)
@@ -1116,9 +1247,9 @@ def test_generic_handler_static_arguments_drive_runtime_dispatch() -> None:
     )
     static_arguments = tuple(INT for _binder in handler.definition.telescope)
     computation = Handle(
-        instance,
-        handler.definition.id,
-        Perform(request),
+        instance=instance,
+        handler=handler.definition.id,
+        computation=Perform(request=request),
         static_arguments=static_arguments,
     )
     registry = KernelRegistry()
@@ -1141,22 +1272,22 @@ def test_generic_handler_static_arguments_drive_runtime_dispatch() -> None:
     with pytest.raises(InvalidHandlerError, match="disagree about the interface"):
         Evaluator(attachments).evaluate(
             Handle(
-                instance,
-                handler.definition.id,
-                Perform(mismatched),
+                instance=instance,
+                handler=handler.definition.id,
+                computation=Perform(request=mismatched),
                 static_arguments=static_arguments,
             )
         )
 
 
 def test_checked_evaluation_uses_the_typed_runtime_environment() -> None:
-    local = Local("input", INT)
-    computation = Return(Var(local))
+    local = Local(name="input", type=INT)
+    computation = Return(value=Var(local=local))
     registry = KernelRegistry()
 
     assert Evaluator().evaluate_checked(computation, registry, {local: 7}) == 7
 
-    mistyped_local = Local("input", STRING)
+    mistyped_local = Local(name="input", type=STRING)
     with pytest.raises(KernelError, match="unbound or mistyped local 'input'"):
         Evaluator().evaluate_checked(
             computation,
@@ -1178,13 +1309,12 @@ def test_checked_evaluation_rejects_handler_id_collision_with_divergent_definiti
         expose_final=False,
         key="manifest-state",
     )
-    divergent_definition = replace(
-        expected.definition,
+    divergent_definition = expected.definition.with_(
         name="same-id-different-definition",
     )
     divergent = RuntimeHandler(
-        divergent_definition,
-        expected.clauses,
+        definition=divergent_definition,
+        clauses=expected.clauses,
         return_clause=expected.return_clause,
         input_validator=expected.input_validator,
         output_validator=expected.output_validator,
@@ -1200,16 +1330,25 @@ def test_checked_evaluation_rejects_handler_id_collision_with_divergent_definiti
         INT,
         index=23,
     )
-    computation = Handle(instance, expected.definition.id, Perform(request))
+    computation = Handle(
+        instance=instance,
+        handler=expected.definition.id,
+        computation=Perform(request=request),
+    )
     registry = KernelRegistry()
     registry.register_effect(STATE_EFFECT)
     registry.register_handler(expected.definition)
+    definitions = dict(registry.handlers)
+    manifest = HandlerManifest(definitions=definitions)
+    definitions.clear()
+    assert manifest.definitions[expected.definition.id] is expected.definition
+    assert manifest == HandlerManifest.from_registry(registry)
 
     # The ergonomic evaluator can execute deliberately unchecked core.
     assert Evaluator(attachments).evaluate(computation) == 1
     checked = Evaluator(
         attachments,
-        handler_manifest=HandlerManifest.from_registry(registry),
+        handler_manifest=manifest,
     )
     with pytest.raises(InvalidHandlerError, match="checked definition"):
         checked.evaluate(computation)
@@ -1231,16 +1370,20 @@ def test_abort_is_zero_shot_and_discards_the_bind_continuation() -> None:
         instance,
         ABORT_EFFECT.apply((STRING,)),
         ABORT_ABORT,
-        (LiteralValue("stop", STRING),),
+        (LiteralValue(value="stop", type=STRING),),
         INT,
         static_arguments=(INT,),
         index=11,
     )
-    never = Local("never", INT)
-    body = Bind(never, Perform(request), Return(LiteralValue(999, INT)))
+    never = Local(name="never", type=INT)
+    body = Bind(
+        binder=never,
+        first=Perform(request=request),
+        then=Return(value=LiteralValue(value=999, type=INT)),
+    )
     assert Evaluator(attachments).evaluate(
-        Handle(instance, handler.definition.id, body)
-    ) == Aborted("stop")
+        Handle(instance=instance, handler=handler.definition.id, computation=body)
+    ) == Aborted(error="stop")
 
 
 def test_choose_uses_multi_shot_resumption_and_tracks_branch_addresses() -> None:
@@ -1287,20 +1430,26 @@ def test_choose_uses_multi_shot_resumption_and_tracks_branch_addresses() -> None
         index=12,
     )
     random_request = _random_request(attachments, random_instance, index=13)
-    selected = Local("selected", INT)
-    ignored = Local("draw", INT)
+    selected = Local(name="selected", type=INT)
+    ignored = Local(name="draw", type=INT)
     body = Bind(
-        selected,
-        Perform(choose_request),
-        Bind(ignored, Perform(random_request), Return(Var(selected))),
+        binder=selected,
+        first=Perform(request=choose_request),
+        then=Bind(
+            binder=ignored,
+            first=Perform(request=random_request),
+            then=Return(value=Var(local=selected)),
+        ),
     )
     computation = Handle(
-        random_instance,
-        draw.definition.id,
-        Handle(
-            random_instance,
-            trace.definition.id,
-            Handle(choose_instance, choose.definition.id, body),
+        instance=random_instance,
+        handler=draw.definition.id,
+        computation=Handle(
+            instance=random_instance,
+            handler=trace.definition.id,
+            computation=Handle(
+                instance=choose_instance, handler=choose.definition.id, computation=body
+            ),
         ),
     )
 
@@ -1320,15 +1469,15 @@ def test_multishot_branches_fork_from_one_pristine_handler_snapshot() -> None:
     )
     applied_state = state_effect(INT)
     state_definition = HandlerDef(
-        HandlerId.derive("test", "forkable-state"),
-        "forkable-state",
-        applied_state,
-        (
-            HandlerClauseDef(STATE_GET, ResumptionGrade.LINEAR),
-            HandlerClauseDef(STATE_PUT, ResumptionGrade.LINEAR),
+        id=HandlerId.derive("test", "forkable-state"),
+        name="forkable-state",
+        effect=applied_state,
+        clauses=(
+            HandlerClauseDef(operation=STATE_GET, grade=ResumptionGrade.LINEAR),
+            HandlerClauseDef(operation=STATE_PUT, grade=ResumptionGrade.LINEAR),
         ),
-        INT,
-        INT,
+        input_type=INT,
+        output_type=INT,
     )
     fork_sources: list[int] = []
 
@@ -1349,10 +1498,12 @@ def test_multishot_branches_fork_from_one_pristine_handler_snapshot() -> None:
             return make_state_handler(cell["value"])
 
         return RuntimeHandler(
-            state_definition,
-            {
-                STATE_GET: RuntimeClause(get, _int),
-                STATE_PUT: RuntimeClause(put, lambda value: value is None),
+            definition=state_definition,
+            clauses={
+                STATE_GET: RuntimeClause(invoke=get, result_validator=_int),
+                STATE_PUT: RuntimeClause(
+                    invoke=put, result_validator=lambda value: value is None
+                ),
             },
             input_validator=_int,
             output_validator=_int,
@@ -1362,7 +1513,7 @@ def test_multishot_branches_fork_from_one_pristine_handler_snapshot() -> None:
         )
 
     state = make_state_handler(0)
-    state.context_factory = lambda: make_state_handler(0)
+    state = state.with_(context_factory=lambda: make_state_handler(0))
     _attach_handler(attachments, choose)
     _attach_handler(attachments, state)
     choices = attachments.bind_value(
@@ -1393,26 +1544,32 @@ def test_multishot_branches_fork_from_one_pristine_handler_snapshot() -> None:
         state_instance,
         applied_state,
         STATE_PUT,
-        (LiteralValue(1, INT),),
+        (LiteralValue(value=1, type=INT),),
         UNIT,
         index=26,
     )
-    selected = Local("selected", INT)
-    before = Local("before", INT)
-    ignored = Local("put", UNIT)
+    selected = Local(name="selected", type=INT)
+    before = Local(name="before", type=INT)
+    ignored = Local(name="put", type=UNIT)
     body = Bind(
-        selected,
-        Perform(choose_request),
-        Bind(
-            before,
-            Perform(get_request),
-            Bind(ignored, Perform(put_request), Return(Var(before))),
+        binder=selected,
+        first=Perform(request=choose_request),
+        then=Bind(
+            binder=before,
+            first=Perform(request=get_request),
+            then=Bind(
+                binder=ignored,
+                first=Perform(request=put_request),
+                then=Return(value=Var(local=before)),
+            ),
         ),
     )
     computation = Handle(
-        choose_instance,
-        choose.definition.id,
-        Handle(state_instance, state.definition.id, body),
+        instance=choose_instance,
+        handler=choose.definition.id,
+        computation=Handle(
+            instance=state_instance, handler=state.definition.id, computation=body
+        ),
     )
 
     assert Evaluator(attachments).evaluate(computation) == (0, 0)
@@ -1443,15 +1600,15 @@ def test_multishot_handler_contexts_finalize_exactly_once(
     )
     effect = state_effect(INT)
     definition = HandlerDef(
-        HandlerId.derive("test", "resource-state", raise_on_return),
-        "resource-state",
-        effect,
-        (
-            HandlerClauseDef(STATE_GET, ResumptionGrade.LINEAR),
-            HandlerClauseDef(STATE_PUT, ResumptionGrade.LINEAR),
+        id=HandlerId.derive("test", "resource-state", raise_on_return),
+        name="resource-state",
+        effect=effect,
+        clauses=(
+            HandlerClauseDef(operation=STATE_GET, grade=ResumptionGrade.LINEAR),
+            HandlerClauseDef(operation=STATE_PUT, grade=ResumptionGrade.LINEAR),
         ),
-        INT,
-        INT,
+        input_type=INT,
+        output_type=INT,
     )
     created: list[int] = []
     finalized: dict[int, str] = {}
@@ -1483,10 +1640,12 @@ def test_multishot_handler_contexts_finalize_exactly_once(
             finalized[label] = mode
 
         return RuntimeHandler(
-            definition,
-            {
-                STATE_GET: RuntimeClause(get, _int),
-                STATE_PUT: RuntimeClause(put, lambda value: value is None),
+            definition=definition,
+            clauses={
+                STATE_GET: RuntimeClause(invoke=get, result_validator=_int),
+                STATE_PUT: RuntimeClause(
+                    invoke=put, result_validator=lambda value: value is None
+                ),
             },
             return_clause=finish,
             input_validator=_int,
@@ -1499,7 +1658,7 @@ def test_multishot_handler_contexts_finalize_exactly_once(
         )
 
     resource = make_context(0, tracked=False)
-    resource.context_factory = lambda: make_context(0)
+    resource = resource.with_(context_factory=lambda: make_context(0))
     _attach_handler(attachments, choose)
     _attach_handler(attachments, resource)
     choices = attachments.bind_value(
@@ -1519,9 +1678,13 @@ def test_multishot_handler_contexts_finalize_exactly_once(
         index=39,
     )
     computation = Handle(
-        choose_instance,
-        choose.definition.id,
-        Handle(resource_instance, resource.definition.id, Perform(request)),
+        instance=choose_instance,
+        handler=choose.definition.id,
+        computation=Handle(
+            instance=resource_instance,
+            handler=resource.definition.id,
+            computation=Perform(request=request),
+        ),
     )
     evaluator = Evaluator(attachments)
     if raise_on_return:
@@ -1536,20 +1699,22 @@ def test_multishot_handler_contexts_finalize_exactly_once(
 
 def test_mutable_duplicable_handler_requires_a_fork_context() -> None:
     definition = HandlerDef(
-        HandlerId.derive("test", "missing-fork"),
-        "missing-fork",
-        RANDOM,
-        (HandlerClauseDef(RANDOM_SAMPLE, ResumptionGrade.LINEAR),),
-        INT,
-        INT,
+        id=HandlerId.derive("test", "missing-fork"),
+        name="missing-fork",
+        effect=RANDOM,
+        clauses=(
+            HandlerClauseDef(operation=RANDOM_SAMPLE, grade=ResumptionGrade.LINEAR),
+        ),
+        input_type=INT,
+        output_type=INT,
     )
     with pytest.raises(InvalidHandlerError, match="needs fork_context"):
         RuntimeHandler(
-            definition,
-            {
+            definition=definition,
+            clauses={
                 RANDOM_SAMPLE: RuntimeClause(
-                    lambda _request, resume, _context: resume(1),
-                    _int,
+                    invoke=lambda _request, resume, _context: resume(1),
+                    result_validator=_int,
                 )
             },
             duplicable_context=True,
@@ -1594,9 +1759,13 @@ def test_unrestricted_resumption_rejects_captured_mutable_state() -> None:
         index=14,
     )
     computation = Handle(
-        choose_instance,
-        choose.definition.id,
-        Handle(state_instance, state.definition.id, Perform(request)),
+        instance=choose_instance,
+        handler=choose.definition.id,
+        computation=Handle(
+            instance=state_instance,
+            handler=state.definition.id,
+            computation=Perform(request=request),
+        ),
     )
     with pytest.raises(NonDuplicableContinuationError, match="State.run"):
         Evaluator(attachments).evaluate(computation)
@@ -1629,16 +1798,16 @@ def test_resumption_grades_are_enforced_in_every_execution(
 ) -> None:
     instance = _instance(f"grade-{grade.value}")
     definition = HandlerDef(
-        HandlerId.derive("test", "grade", grade.value),
-        f"grade-{grade.value}",
-        RANDOM,
-        (HandlerClauseDef(RANDOM_SAMPLE, grade),),
-        INT,
-        INT,
+        id=HandlerId.derive("test", "grade", grade.value),
+        name=f"grade-{grade.value}",
+        effect=RANDOM,
+        clauses=(HandlerClauseDef(operation=RANDOM_SAMPLE, grade=grade),),
+        input_type=INT,
+        output_type=INT,
     )
     handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         duplicable_context=True,
     )
     attachments = RuntimeAttachments()
@@ -1646,7 +1815,11 @@ def test_resumption_grades_are_enforced_in_every_execution(
     request = _request(instance, RANDOM, RANDOM_SAMPLE, (), INT, index=15)
     with pytest.raises(ResumptionUsageError, match=message):
         Evaluator(attachments).evaluate(
-            Handle(instance, definition.id, Perform(request))
+            Handle(
+                instance=instance,
+                handler=definition.id,
+                computation=Perform(request=request),
+            )
         )
 
 
@@ -1663,7 +1836,11 @@ def test_random_handler_validates_the_resumed_result() -> None:
     request = _random_request(attachments, instance, index=16)
     with pytest.raises(RuntimeTypeMismatch, match="result of operation"):
         Evaluator(attachments).evaluate(
-            Handle(instance, handler.definition.id, Perform(request))
+            Handle(
+                instance=instance,
+                handler=handler.definition.id,
+                computation=Perform(request=request),
+            )
         )
 
 
@@ -1684,7 +1861,7 @@ def test_weight_accumulates_with_caller_supplied_semiring_operation() -> None:
         instance,
         weight_effect,
         WEIGHT_ADD,
-        (LiteralValue(2, INT),),
+        (LiteralValue(value=2, type=INT),),
         UNIT,
         index=17,
     )
@@ -1692,19 +1869,23 @@ def test_weight_accumulates_with_caller_supplied_semiring_operation() -> None:
         instance,
         weight_effect,
         WEIGHT_ADD,
-        (LiteralValue(3, INT),),
+        (LiteralValue(value=3, type=INT),),
         UNIT,
         index=18,
     )
-    left = Local("left", UNIT)
-    right = Local("right", UNIT)
+    left = Local(name="left", type=UNIT)
+    right = Local(name="right", type=UNIT)
     body = Bind(
-        left,
-        Perform(first),
-        Bind(right, Perform(second), Return(LiteralValue("done", STRING))),
+        binder=left,
+        first=Perform(request=first),
+        then=Bind(
+            binder=right,
+            first=Perform(request=second),
+            then=Return(value=LiteralValue(value="done", type=STRING)),
+        ),
     )
     assert Evaluator(attachments).evaluate(
-        Handle(instance, handler.definition.id, body)
+        Handle(instance=instance, handler=handler.definition.id, computation=body)
     ) == ("done", 6)
     assert accumulator.contributions == [2, 3]
 
@@ -1782,4 +1963,4 @@ def test_unhandled_effect_is_explicit() -> None:
         index=19,
     )
     with pytest.raises(UnhandledEffectError):
-        Evaluator().evaluate(Perform(request))
+        Evaluator().evaluate(Perform(request=request))

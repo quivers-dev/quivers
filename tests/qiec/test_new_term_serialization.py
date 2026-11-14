@@ -40,7 +40,12 @@ from quivers.qiec.terms import (
 )
 
 
-_ORIGIN = SourceOrigin("example", ("path",), "call", "qvr-source/v0.19")
+_ORIGIN = SourceOrigin(
+    module="example",
+    structural_path=("path",),
+    role="call",
+    source_protocol="qvr-source/v0.19",
+)
 
 
 def _bodies() -> dict[str, Computation]:
@@ -53,20 +58,20 @@ def _bodies() -> dict[str, Computation]:
     """
     return {
         "call": Call(
-            ComputationId.derive("example", "helper"),
-            "helper",
-            (),
-            (),
-            INT,
-            EMPTY_ROW,
-            _ORIGIN,
+            callee=ComputationId.derive("example", "helper"),
+            name="helper",
+            static_arguments=(),
+            arguments=(),
+            result_type=INT,
+            effects=EMPTY_ROW,
+            origin=_ORIGIN,
         ),
-        "resume": Resume(LiteralValue(1, INT), _ORIGIN),
+        "resume": Resume(value=LiteralValue(value=1, type=INT), origin=_ORIGIN),
         "new_instance": NewInstance(
-            EffectInstanceId.derive("example", "cell"),
-            EffectRef(EffectId.derive("example", "State"), "State"),
-            Return(LiteralValue(0, INT)),
-            _ORIGIN,
+            instance=EffectInstanceId.derive("example", "cell"),
+            effect=EffectRef(id=EffectId.derive("example", "State"), name="State"),
+            body=Return(value=LiteralValue(value=0, type=INT)),
+            origin=_ORIGIN,
         ),
     }
 
@@ -87,15 +92,19 @@ def _module(label: str, body: Computation) -> QiecModule:
         A module holding exactly that computation.
     """
     computation = NamedComputation(
-        ComputationId.derive("example", label),
-        label,
-        (),
-        (),
-        body,
-        ComputationType(EMPTY_ROW, INT),
-        _ORIGIN,
+        id=ComputationId.derive("example", label),
+        name=label,
+        telescope=(),
+        parameters=(),
+        body=body,
+        type=ComputationType(effects=EMPTY_ROW, result=INT),
+        origin=_ORIGIN,
     )
-    return QiecModule("example", "qvr-source/v0.19", computations=(computation,))
+    return QiecModule(
+        module="example",
+        source_protocol="qvr-source/v0.19",
+        computations=(computation,),
+    )
 
 
 @pytest.mark.parametrize("label", sorted(_bodies()))

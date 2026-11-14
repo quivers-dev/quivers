@@ -174,10 +174,10 @@ def test_manifest_identity_drift_is_checked_for_v09_alias(
     assert ("v0.9.0", "v0.10.0") in IDENTITY_PAIRS
     original = _identity.grammar_identity
     changed = _manifest.GrammarAsset(
-        "0" * 64,
-        "1" * 64,
-        "2" * 64,
-        "3" * 64,
+        grammar_json_sha256="0" * 64,
+        node_types_sha256="1" * 64,
+        parser_c_sha256="2" * 64,
+        compiled_inputs_sha256="3" * 64,
     )
     monkeypatch.setattr(
         _identity,
@@ -203,7 +203,7 @@ def test_coverage_gate_rejects_identity_migrator_on_additive_edge(
     monkeypatch.setitem(
         MIGRATORS,
         ("v0.11.0", "v0.14.0"),
-        _identity.migrator("v0.11.0", "v0.14.0"),
+        _identity.migrator("v0.11.0", "v0.14.0", resolve_commit=commit_id),
     )
     with pytest.raises(MigrationError, match="identity migrators do not match"):
         vcs_coverage_report()
@@ -443,9 +443,7 @@ def test_identity_hop_rejects_schema_delta(
 
     with pytest.raises(MigrationError, match="panproto schema delta"):
         _identity.migrate(
-            b"bundle demo : [first]\n",
-            "v0.17.0",
-            "v0.18.0",
+            b"bundle demo : [first]\n", "v0.17.0", "v0.18.0", resolve_commit=commit_id
         )
 
 
@@ -454,10 +452,10 @@ def test_identity_hop_rejects_parser_hash_delta(
 ) -> None:
     original = _identity.grammar_identity
     changed = _manifest.GrammarAsset(
-        "0" * 64,
-        "1" * 64,
-        "2" * 64,
-        "3" * 64,
+        grammar_json_sha256="0" * 64,
+        node_types_sha256="1" * 64,
+        parser_c_sha256="2" * 64,
+        compiled_inputs_sha256="3" * 64,
     )
     monkeypatch.setattr(
         _identity,
@@ -467,15 +465,15 @@ def test_identity_hop_rejects_parser_hash_delta(
 
     with pytest.raises(MigrationError, match="parser/grammar delta"):
         _identity.migrate(
-            b"bundle demo : [first]\n",
-            "v0.17.0",
-            "v0.18.0",
+            b"bundle demo : [first]\n", "v0.17.0", "v0.18.0", resolve_commit=commit_id
         )
 
 
 def test_identity_hop_validates_target_parse() -> None:
     with pytest.raises(MigrationError, match="does not parse under identity target"):
-        _identity.migrate(b"\x00\x00\x00", "v0.17.0", "v0.18.0")
+        _identity.migrate(
+            b"\x00\x00\x00", "v0.17.0", "v0.18.0", resolve_commit=commit_id
+        )
 
 
 @pytest.mark.parametrize(

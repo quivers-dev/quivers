@@ -274,7 +274,8 @@ def test_rule_weights_are_keyed_by_their_bindings() -> None:
     store: dict[str, float] = {}
     with torch.no_grad():
         for rule_name, parameters in (
-            (name, module_) for name, module_ in classic._rule_module.named_children()
+            (name, module_)
+            for name, module_ in classic.modules["_rule_module"].named_children()
         ):
             for key, parameter in parameters.items():
                 parameter.fill_(0.25 if rule_name == "rule_fwd_app" else -0.5)
@@ -286,7 +287,7 @@ def test_rule_weights_are_keyed_by_their_bindings() -> None:
     }
     classic_keys = {
         f"{rule_name}.{key}"
-        for rule_name, parameters in classic._rule_module.named_children()
+        for rule_name, parameters in classic.modules["_rule_module"].named_children()
         for key in parameters.keys()
     }
     assert classic_keys == {

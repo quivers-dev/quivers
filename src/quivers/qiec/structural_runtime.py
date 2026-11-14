@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+import didactic.api as dx
 import torch
 
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.qiec.builtins import compute_handler
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_shape
 from quivers.qiec.effects import EffectRef, HandlerDef
@@ -17,7 +19,6 @@ from quivers.qiec.evaluator import (
 from quivers.qiec.execution import (
     ExecutionResult,
     RuntimeConfiguration,
-    RuntimeProvider,
     RuntimeValidator,
     run_named,
 )
@@ -58,8 +59,7 @@ def _tensor_value(type_: TypeExpr, value: object) -> bool:
     return True
 
 
-@dataclass(frozen=True, slots=True)
-class StructuralRuntimeProvider(RuntimeProvider):
+class StructuralRuntimeProvider(QiecModel):
     """PyTorch components and validators for one structural invocation.
 
     Parameters
@@ -73,8 +73,10 @@ class StructuralRuntimeProvider(RuntimeProvider):
         The provider name recorded in execution results and traces.
     """
 
-    runtimes: tuple[RuntimeHandler, ...]
-    term_types: frozenset[TypeId]
+    runtimes: tuple[RuntimeHandler, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    term_types: frozenset[TypeId] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str = "structural"
 
     def attach(self, module: QiecModule, attachments: RuntimeAttachments) -> None:
@@ -199,7 +201,7 @@ def _validator_for(
         not cover ``type_``.
     """
 
-    provider = StructuralRuntimeProvider((), term_types)
+    provider = StructuralRuntimeProvider(runtimes=(), term_types=term_types)
     return provider.validator_for(type_)
 
 
@@ -236,8 +238,7 @@ def structural_handler_definition(
         answer_type=result,
         key=f"structural-{instance_name}-{computation_name}",
     )
-    return replace(
-        runtime.definition,
+    return runtime.definition.with_(
         name=f"__structural_{instance_name}_{computation_name}",
     )
 
@@ -401,14 +402,16 @@ def structural_runtime_provider(
             answer_type=result_type,
             key=f"structural-{instance.name}-{component_name}",
         )
-        runtime.definition = structural_handler_definition(
-            instance.entry.effect,
-            result_type,
-            instance_name=instance.name,
-            computation_name=component_name,
+        runtime = runtime.with_(
+            definition=structural_handler_definition(
+                instance.entry.effect,
+                result_type,
+                instance_name=instance.name,
+                computation_name=component_name,
+            )
         )
         runtimes.append(runtime)
-    return StructuralRuntimeProvider(tuple(runtimes), term_types)
+    return StructuralRuntimeProvider(runtimes=tuple(runtimes), term_types=term_types)
 
 
 def structural_runtime_configuration(

@@ -21,7 +21,11 @@ compose by the kernel's own rules.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+
+import didactic.api as dx
+
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 
 from quivers.continuous.program_steps import (
     Call as CallStep,
@@ -114,9 +118,11 @@ ENTRY = "program"
 INPUT_NAME = "_x_input"
 
 
-@dataclass(frozen=True, slots=True)
-class HostStep:
+class HostStep(QiecModel):
     """One host part of the program, as the runtime provider serves it.
+
+    Kernel types and effect identities compare by value. The executable
+    program and its step specification retain their runtime identities.
 
     Parameters
     ----------
@@ -157,21 +163,23 @@ class HostStep:
         The step's position among the kernel's host steps.
     """
 
-    instance: EffectInstanceId
-    effect: EffectRef
+    instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    effect: EffectRef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     kind: str
-    spec: Step | None
+    spec: Step | None = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     environment: tuple[str, ...]
-    answer_type: TypeExpr
+    answer_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     site: str | None
-    program: MonadicProgram
+    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     scanned: bool
     position: int
 
 
-@dataclass(frozen=True, slots=True)
-class ProgramKernel:
+class ProgramKernel(QiecModel):
     """A program's computation with the record the runtime needs to serve it.
+
+    The checked module, host-step records, and effect instances compare
+    by value. Live programs, morphisms, and lookup tables retain identity.
 
     Parameters
     ----------
@@ -211,20 +219,28 @@ class ProgramKernel:
         for a continuous codomain, ``()`` otherwise.
     """
 
-    module: QiecModule
-    program: MonadicProgram
-    steps: tuple[HostStep, ...]
+    module: QiecModule = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    steps: tuple[HostStep, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     sites: tuple[str, ...]
-    site_types: dict[str, TypeExpr]
+    site_types: dict[str, TypeExpr] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     data: tuple[str, ...]
-    random: NamedEffectInstance
-    score: NamedEffectInstance
-    param: NamedEffectInstance
-    result_type: TypeExpr
-    locals: dict[str, Local] = field(default_factory=dict)
-    scanned: frozenset[str] = frozenset()
-    site_morphisms: dict[str, ContinuousMorphism] = field(default_factory=dict)
-    site_events: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    random: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    score: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    param: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    locals: dict[str, Local] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    scanned: frozenset[str] = dx.field(
+        default=frozenset(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    site_morphisms: dict[str, ContinuousMorphism] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    site_events: dict[str, tuple[int, ...]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
 def space_type(space: SetObject | ContinuousSpace) -> TypeExpr:
@@ -245,7 +261,7 @@ def space_type(space: SetObject | ContinuousSpace) -> TypeExpr:
     if isinstance(space, ProductSpace):
         return product_type(*(space_type(component) for component in space.components))
     if isinstance(space, ContinuousSpace):
-        return tensor_type(REAL, (IndexLiteral(int(space.dim), NAT),))
+        return tensor_type(REAL, (IndexLiteral(value=int(space.dim), sort=NAT),))
     return INT
 
 
@@ -266,7 +282,9 @@ def _origin(path: tuple[str | int, ...], role: str, module: str) -> SourceOrigin
     SourceOrigin
         The origin, carrying no file position.
     """
-    return SourceOrigin(module, path, role, SOURCE_PROTOCOL)
+    return SourceOrigin(
+        module=module, structural_path=path, role=role, source_protocol=SOURCE_PROTOCOL
+    )
 
 
 def _arg_reads(args: tuple[StepArgument, ...] | None) -> tuple[str, ...]:
@@ -386,7 +404,7 @@ class _Body:
             candidate = f"{name}#{serial}"
             serial += 1
         self.used.add(candidate)
-        return Local(candidate, type_)
+        return Local(name=candidate, type=type_)
 
 
 class _Frame:
@@ -487,7 +505,10 @@ def _row(binds: Sequence[tuple[Local, Computation]]) -> list[RowEntry]:
     for _local, computation in binds:
         if isinstance(computation, Perform):
             entries: tuple[RowEntry, ...] = (
-                RowEntry(computation.request.instance, computation.request.effect),
+                RowEntry(
+                    instance=computation.request.instance,
+                    effect=computation.request.effect,
+                ),
             )
         elif isinstance(computation, Call):
             entries = computation.effects.entries
@@ -518,7 +539,7 @@ def _chain(
     """
     body = tail
     for local, computation in reversed(binds):
-        body = Bind(local, computation, body)
+        body = Bind(binder=local, first=computation, then=body)
     return body
 
 
@@ -766,7 +787,9 @@ class _Builder:
             effect, module=self.module, lexical_path=("instances", name)
         )
         instance = NamedEffectInstance(
-            name, entry, _origin(("instances", name), "effect-instance", self.module)
+            name=name,
+            entry=entry,
+            origin=_origin(("instances", name), "effect-instance", self.module),
         )
         self.instances.append(instance)
         return instance
@@ -831,7 +854,9 @@ class _Builder:
             assert local is not None
             locals_.append(local)
         type_ = product_type(*(local.type for local in locals_))
-        value = TupleValue(tuple(Var(local) for local in locals_), type_)
+        value = TupleValue(
+            items=tuple(Var(local=local) for local in locals_), result_type=type_
+        )
         return names, value, type_
 
     def _host(
@@ -874,35 +899,39 @@ class _Builder:
         environment_names, environment, environment_type = self._environment(
             frame, reads
         )
-        effect = EffectRef(COMPUTE.id, COMPUTE.name, (environment_type, answer_type))
+        effect = EffectRef(
+            id=COMPUTE.id, name=COMPUTE.name, arguments=(environment_type, answer_type)
+        )
         position = len(self.steps)
         instance = self._instance(f"step_{position}", effect)
         self.steps.append(
             HostStep(
-                instance.entry.instance,
-                effect,
-                kind,
-                spec,
-                environment_names,
-                answer_type,
-                site,
-                program,
-                frame.scanned,
-                position,
+                instance=instance.entry.instance,
+                effect=effect,
+                kind=kind,
+                spec=spec,
+                environment=environment_names,
+                answer_type=answer_type,
+                site=site,
+                program=program,
+                scanned=frame.scanned,
+                position=position,
             )
         )
         request = EffectRequest(
-            instance.entry.instance,
-            effect,
-            COMPUTE_APPLY,
-            (),
-            (environment,),
-            answer_type,
-            SiteProvenance(
-                _origin(("steps", position, "host"), "effect-request", self.module)
+            instance=instance.entry.instance,
+            effect=effect,
+            operation=COMPUTE_APPLY,
+            static_arguments=(),
+            arguments=(environment,),
+            result_type=answer_type,
+            origin=SiteProvenance(
+                origin=_origin(
+                    ("steps", position, "host"), "effect-request", self.module
+                )
             ),
         )
-        return self._bind(frame, name, answer_type, Perform(request))
+        return self._bind(frame, name, answer_type, Perform(request=request))
 
     def _sample(
         self,
@@ -964,7 +993,7 @@ class _Builder:
             # label with the occurrence the run counts, which a host step
             # supplies.
             site = Var(
-                self._host(
+                local=self._host(
                     frame,
                     f"__site_{label}",
                     "site",
@@ -976,20 +1005,22 @@ class _Builder:
                 )
             )
         else:
-            site = SiteValue(label, site_type(type_))
+            site = SiteValue(label=label, result_type=site_type(type_))
         request = EffectRequest(
-            self.random.entry.instance,
-            self.random.entry.effect,
-            RANDOM_SAMPLE,
-            (type_,),
-            (site, Var(sampleable)),
-            type_,
-            SiteProvenance(_origin(("sites", label), "effect-request", self.module)),
+            instance=self.random.entry.instance,
+            effect=self.random.entry.effect,
+            operation=RANDOM_SAMPLE,
+            static_arguments=(type_,),
+            arguments=(site, Var(local=sampleable)),
+            result_type=type_,
+            origin=SiteProvenance(
+                origin=_origin(("sites", label), "effect-request", self.module)
+            ),
         )
         if label not in self.site_types:
             self.sites.append(label)
         self.site_types[label] = type_
-        return self._bind(frame, label, type_, Perform(request))
+        return self._bind(frame, label, type_, Perform(request=request))
 
     def _add_score(self, frame: _Frame, weight: Local, position: int) -> None:
         """Add a ``Score.add`` of a bound weight.
@@ -1004,18 +1035,20 @@ class _Builder:
             The score's host step's position, for the request's origin.
         """
         request = EffectRequest(
-            self.score.entry.instance,
-            self.score.entry.effect,
-            SCORE_ADD,
-            (),
-            (Var(weight),),
-            UNIT,
-            SiteProvenance(
-                _origin(("steps", position, "score"), "effect-request", self.module)
+            instance=self.score.entry.instance,
+            effect=self.score.entry.effect,
+            operation=SCORE_ADD,
+            static_arguments=(),
+            arguments=(Var(local=weight),),
+            result_type=UNIT,
+            origin=SiteProvenance(
+                origin=_origin(
+                    ("steps", position, "score"), "effect-request", self.module
+                )
             ),
         )
         unit = frame.body.local(f"__score_{position}", UNIT)
-        frame.body.binds.append((unit, Perform(request)))
+        frame.body.binds.append((unit, Perform(request=request)))
 
     def build(self) -> ProgramKernel:
         """Encode the program.
@@ -1054,41 +1087,51 @@ class _Builder:
                     frame,
                     name,
                     components[index],
-                    Return(Projection(Var(split), index, components[index])),
+                    Return(
+                        value=Projection(
+                            value=Var(local=split),
+                            position=index,
+                            result_type=components[index],
+                        )
+                    ),
                 )
         self._steps(frame, program)
         result, result_type = _result(frame, program)
         computation = NamedComputation(
-            ComputationId.derive(self.module, "computation", ENTRY),
-            ENTRY,
-            (),
-            tuple(parameters),
-            _chain(body.binds, Return(result)),
-            ComputationType(EffectRow(tuple(_row(body.binds))), result_type),
-            _origin(("computations", ENTRY), "computation", self.module),
+            id=ComputationId.derive(self.module, "computation", ENTRY),
+            name=ENTRY,
+            telescope=(),
+            parameters=tuple(parameters),
+            body=_chain(body.binds, Return(value=result)),
+            type=ComputationType(
+                effects=EffectRow(entries=tuple(_row(body.binds))), result=result_type
+            ),
+            origin=_origin(("computations", ENTRY), "computation", self.module),
         )
         module = QiecModule(
-            self.module,
-            SOURCE_PROTOCOL,
+            module=self.module,
+            source_protocol=SOURCE_PROTOCOL,
             effects=(RANDOM_EFFECT, SCORE_EFFECT, PARAM_EFFECT, COMPUTE_EFFECT),
             instances=tuple(self.instances),
             computations=(computation, *self.helpers),
         )
         return ProgramKernel(
-            module,
-            program,
-            tuple(self.steps),
-            tuple(self.sites),
-            dict(self.site_types),
-            self.data,
-            self.random,
-            self.score,
-            self.param,
-            result_type,
-            {name: local for name in frame.order if (local := frame.lookup(name))},
-            frozenset(self.scanned),
-            dict(self.site_morphisms),
-            {
+            module=module,
+            program=program,
+            steps=tuple(self.steps),
+            sites=tuple(self.sites),
+            site_types=dict(self.site_types),
+            data=self.data,
+            random=self.random,
+            score=self.score,
+            param=self.param,
+            result_type=result_type,
+            locals={
+                name: local for name in frame.order if (local := frame.lookup(name))
+            },
+            scanned=frozenset(self.scanned),
+            site_morphisms=dict(self.site_morphisms),
+            site_events={
                 label: (
                     (int(getattr(morphism.codomain, "dim")),)
                     if isinstance(morphism.codomain, ContinuousSpace)
@@ -1163,7 +1206,8 @@ class _Builder:
             # contracted against the input, and the result is bound
             # like a let.
             shape = tuple(
-                IndexLiteral(int(extent), NAT) for extent in categorical.codomain.shape
+                IndexLiteral(value=int(extent), sort=NAT)
+                for extent in categorical.codomain.shape
             )
             self._host(
                 frame,
@@ -1200,7 +1244,14 @@ class _Builder:
             )
             for index, name in enumerate(spec.names):
                 self._bind(
-                    frame, name, REAL, Return(Projection(Var(parts), index, REAL))
+                    frame,
+                    name,
+                    REAL,
+                    Return(
+                        value=Projection(
+                            value=Var(local=parts), position=index, result_type=REAL
+                        )
+                    ),
                 )
 
     def _enter(
@@ -1230,10 +1281,12 @@ class _Builder:
         inner = _Frame(frame.body, frame, frame.scanned)
         if callee._params is None:
             (argument,) = arguments
-            self._bind(inner, INPUT_NAME, argument.type, Return(Var(argument)))
+            self._bind(
+                inner, INPUT_NAME, argument.type, Return(value=Var(local=argument))
+            )
             return inner
         for name, argument in zip(callee._params, arguments, strict=True):
-            self._bind(inner, name, argument.type, Return(Var(argument)))
+            self._bind(inner, name, argument.type, Return(value=Var(local=argument)))
         if _reads_input(callee):
             self._host(
                 inner,
@@ -1274,7 +1327,7 @@ class _Builder:
         inner = self._enter(frame, callee, arguments)
         self._steps(inner, callee)
         result, result_type = _result(inner, callee)
-        self._bind(frame, spec.name, result_type, Return(result))
+        self._bind(frame, spec.name, result_type, Return(value=result))
 
     def _scan(self, frame: _Frame, program: MonadicProgram, spec: Scan) -> None:
         """Encode a scan: a recursive helper running the step per position.
@@ -1401,7 +1454,7 @@ class _Builder:
         # A let's local is typed nominally; the state the step returns is
         # read back at the state's type, which the recursion carries.
         following = Var(
-            self._host(
+            local=self._host(
                 step_frame,
                 "__scan_next",
                 "scan_state",
@@ -1415,7 +1468,7 @@ class _Builder:
         if states is not None:
             following_states = (
                 Var(
-                    self._host(
+                    local=self._host(
                         step_frame,
                         "__scan_states_next",
                         "scan_collect",
@@ -1428,45 +1481,47 @@ class _Builder:
             )
         # The helper's row is what one position performs, which is also
         # what the recursion performs.
-        row = EffectRow(tuple(_row(body.binds)))
+        row = EffectRow(entries=tuple(_row(body.binds)))
         origin = _origin(("scans", helper_name), "call", self.module)
         recur = Call(
-            identity,
-            helper_name,
-            (),
-            (
+            callee=identity,
+            name=helper_name,
+            static_arguments=(),
+            arguments=(
                 PrimitiveApplication(
-                    primitive("add_int").id,
-                    "add_int",
-                    (Var(position), LiteralValue(1, INT)),
-                    INT,
-                    _origin(
+                    primitive=primitive("add_int").id,
+                    name="add_int",
+                    arguments=(Var(local=position), LiteralValue(value=1, type=INT)),
+                    result_type=INT,
+                    origin=_origin(
                         ("scans", helper_name, "successor"), "primitive", self.module
                     ),
                 ),
-                Var(sequence),
-                Var(count),
+                Var(local=sequence),
+                Var(local=count),
                 following,
                 *following_states,
-                *(Var(local) for local in passed),
+                *(Var(local=local) for local in passed),
             ),
-            result_type,
-            row,
-            origin,
+            result_type=result_type,
+            effects=row,
+            origin=origin,
         )
         finished = PrimitiveApplication(
-            primitive("eq_int").id,
-            "eq_int",
-            (Var(position), Var(count)),
-            BOOL,
-            _origin(("scans", helper_name, "finished"), "primitive", self.module),
+            primitive=primitive("eq_int").id,
+            name="eq_int",
+            arguments=(Var(local=position), Var(local=count)),
+            result_type=BOOL,
+            origin=_origin(
+                ("scans", helper_name, "finished"), "primitive", self.module
+            ),
         )
         self.helpers.append(
             NamedComputation(
-                identity,
-                helper_name,
-                (),
-                (
+                id=identity,
+                name=helper_name,
+                telescope=(),
+                parameters=(
                     position,
                     sequence,
                     count,
@@ -1474,13 +1529,15 @@ class _Builder:
                     *(() if states is None else (states,)),
                     *passed,
                 ),
-                If(
-                    finished,
-                    Return(Var(state if states is None else states)),
-                    _chain(body.binds, recur),
+                body=If(
+                    condition=finished,
+                    then=Return(value=Var(local=state if states is None else states)),
+                    otherwise=_chain(body.binds, recur),
                 ),
-                ComputationType(row, result_type),
-                _origin(("computations", helper_name), "computation", self.module),
+                type=ComputationType(effects=row, result=result_type),
+                origin=_origin(
+                    ("computations", helper_name), "computation", self.module
+                ),
             )
         )
         self._bind(
@@ -1488,20 +1545,20 @@ class _Builder:
             spec.name,
             result_type,
             Call(
-                identity,
-                helper_name,
-                (),
-                (
-                    LiteralValue(0, INT),
-                    Var(source),
-                    Var(length),
-                    Var(initial),
-                    *(() if gathered is None else (Var(gathered),)),
-                    *(Var(local) for local in carried),
+                callee=identity,
+                name=helper_name,
+                static_arguments=(),
+                arguments=(
+                    LiteralValue(value=0, type=INT),
+                    Var(local=source),
+                    Var(local=length),
+                    Var(local=initial),
+                    *(() if gathered is None else (Var(local=gathered),)),
+                    *(Var(local=local) for local in carried),
                 ),
-                result_type,
-                row,
-                origin,
+                result_type=result_type,
+                effects=row,
+                origin=origin,
             ),
         )
 
@@ -1525,7 +1582,9 @@ def _component_type(program: MonadicProgram, index: int) -> TypeExpr:
     assert program._param_dims is not None
     assert program._param_is_continuous is not None
     if program._param_is_continuous[index]:
-        return tensor_type(REAL, (IndexLiteral(program._param_dims[index], NAT),))
+        return tensor_type(
+            REAL, (IndexLiteral(value=program._param_dims[index], sort=NAT),)
+        )
     return INT
 
 
@@ -1557,9 +1616,11 @@ def _result(frame: _Frame, program: MonadicProgram) -> tuple[Value, TypeExpr]:
             raise ValueError(f"return variable {name!r} is not bound in the program")
         locals_.append(local)
     if program._return_is_single:
-        return Var(locals_[0]), locals_[0].type
+        return Var(local=locals_[0]), locals_[0].type
     type_ = product_type(*(local.type for local in locals_))
-    return TupleValue(tuple(Var(local) for local in locals_), type_), type_
+    return TupleValue(
+        items=tuple(Var(local=local) for local in locals_), result_type=type_
+    ), type_
 
 
 def program_kernel(program: MonadicProgram, data: Sequence[str] = ()) -> ProgramKernel:

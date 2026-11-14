@@ -24,9 +24,10 @@ themes never drift across surfaces.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
+import didactic.api as dx
+import tree_sitter
 from pygments.token import (
     Comment,
     Keyword,
@@ -36,17 +37,33 @@ from pygments.token import (
     Punctuation,
     String,
 )
+from pygments.token import Text as PygmentsText
 
 from quivers.dsl.pygments_lexer import (
     _BUILTIN_FUNCTION_TOKENS,
     _BUILTIN_TYPE_TOKENS,
     _KEYWORD_TOKENS,
     _OPERATOR_TOKENS,
-    _TokenType,
     _load_parser,
     _node_kind_to_pygments_token,
+    _TokenType,
 )
 
+if TYPE_CHECKING:
+    from rich.style import Style
+    from rich.text import Text
+
+    _RICH_AVAILABLE = True
+else:
+    try:
+        from rich.style import Style
+        from rich.text import Text
+    except ModuleNotFoundError as error:
+        if error.name != "rich":
+            raise
+        _RICH_AVAILABLE = False
+    else:
+        _RICH_AVAILABLE = True
 
 # ---------------------------------------------------------------------------
 # semantic token vocabulary
@@ -109,8 +126,7 @@ colours a token alike."""
 _PUNCT = {"(", ")", "[", "]", "{", "}", ",", ":", "."}
 
 
-@dataclass(frozen=True)
-class Span:
+class Span(dx.Model):
     """One styled run of source.
 
     Parameters
@@ -209,13 +225,24 @@ def tokenize(
             )
         ]
 
-    leaves: list[tuple[Any, str | None, str | None]] = []
+    leaves: list[tuple[tree_sitter.Node, str | None, str | None]] = []
 
     def walk(
-        node: Any,
+        node: tree_sitter.Node,
         parent_kind: str | None,
         field_name: str | None,
     ) -> None:
+        """Collect leaf nodes with their enclosing grammar context.
+
+        Parameters
+        ----------
+        node : tree_sitter.Node
+            The current syntax node.
+        parent_kind : str or None
+            Its enclosing node's grammar kind.
+        field_name : str or None
+            Its field in the enclosing node.
+        """
         if not node.children:
             leaves.append((node, parent_kind, field_name))
             return
@@ -428,11 +455,8 @@ def to_rich_text(
     *,
     env_kinds: dict[str, str] | None = None,
     link_action: str | None = None,
-) -> Any:
+) -> Text:
     """Build a `rich.text.Text` from the highlighted source.
-
-    Rich is imported lazily so that importing this module does
-    not pull rich in for callers that need only raw spans.
 
     If ``link_action`` is set (e.g. ``"info"``), identifiers that the
     grammar or env classified as something meaningful (type / function
@@ -456,10 +480,16 @@ def to_rich_text(
     -------
     rich.text.Text
         The styled text.
-    """
-    from rich.style import Style
-    from rich.text import Text
 
+    Raises
+    ------
+    ModuleNotFoundError
+        If the optional Rich dependency is absent.
+    """
+    if not _RICH_AVAILABLE:
+        raise ModuleNotFoundError(
+            "Rich syntax highlighting requires quivers[repl]", name="rich"
+        )
     out = Text()
     interesting = {"type", "function", "namespace"}
     for span in tokenize(source, env_kinds=env_kinds):
@@ -479,7 +509,7 @@ def to_rich_text(
     return out
 
 
-def to_pygments_pairs(source: str) -> list[tuple[Any, str]]:
+def to_pygments_pairs(source: str) -> list[tuple[_TokenType, str]]:
     """Build ``(Pygments token, text)`` pairs suitable for prompt_toolkit.
 
     prompt_toolkit's PygmentsLexer wraps a Pygments Lexer that yields
@@ -496,17 +526,6 @@ def to_pygments_pairs(source: str) -> list[tuple[Any, str]]:
     list[tuple[pygments.token._TokenType, str]]
         One pair per span, in source order.
     """
-    from pygments.token import (
-        Comment,
-        Keyword,
-        Name,
-        Number,
-        Operator,
-        Punctuation,
-        String,
-        Text,
-    )
-
     mapping = {
         "comment": Comment,
         "keyword": Keyword,
@@ -519,11 +538,11 @@ def to_pygments_pairs(source: str) -> list[tuple[Any, str]]:
         "function": Name.Builtin,
         "namespace": String.Symbol,
         "decorator": Name.Decorator,
-        "error": Text,
+        "error": PygmentsText,
     }
-    out: list[tuple[Any, str]] = []
+    out: list[tuple[_TokenType, str]] = []
     for span in tokenize(source):
-        out.append((mapping.get(span.token, Text), span.text))
+        out.append((mapping.get(span.token, PygmentsText), span.text))
     return out
 
 

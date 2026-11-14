@@ -43,25 +43,26 @@ Applications of Categories*, 10 (2005).
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 
+import didactic.api as dx
 import torch
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.core.objects import FinSet
 from quivers.core.morphisms import Morphism
 from quivers.core.algebras import IdempotentSemiring
 from quivers.enriched._lattice import require_lattice
 
 
-@dataclass
-class Weight:
+class Weight(ValueModel):
     """A V-valued presheaf on a finite indexing category.
 
     Represents a weight functor W: J → V where J is a finite set of
     indices, and W assigns a V-value (scalar in the algebra's lattice)
     to each index.
 
-    Holds a ``torch.Tensor`` of values; not a value type.
+    The tensor and algebra are held by identity. Immutable record updates
+    retain the live tensor and its autograd history.
 
     Parameters
     ----------
@@ -73,19 +74,30 @@ class Weight:
 
     Raises
     ------
-    TypeError
-        If ``algebra`` is not an `IdempotentSemiring`.
-    ValueError
-        If ``values`` is not one-dimensional.
+    didactic.ValidationError
+        If ``algebra`` is not an `IdempotentSemiring` or ``values`` is
+        not a one-dimensional tensor.
     """
 
-    values: torch.Tensor
-    algebra: IdempotentSemiring
+    values: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    algebra: IdempotentSemiring = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _check_weight(self) -> None:
+        """Validate the weight tensor and enrichment algebra.
+
+        Raises
+        ------
+        TypeError
+            If the values are not a tensor or the algebra is not a lattice.
+        ValueError
+            If the weight tensor is not one-dimensional.
+        """
+        if not isinstance(self.values, torch.Tensor):
+            raise TypeError("weight values must be a torch.Tensor")
         if self.values.ndim != 1:
             raise ValueError(f"weight values must be 1D, got shape {self.values.shape}")
-        self.algebra = require_lattice(self.algebra, "a weight")
+        require_lattice(self.algebra, "a weight")
 
     @property
     def size(self) -> int:

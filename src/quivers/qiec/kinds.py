@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
+import didactic.api as dx
+
 from typing import Literal
 
 
-@dataclass(frozen=True, slots=True)
-class TypeKind:
+class TypeKind(QiecModel):
     """The kind of types.
 
     Parameters
@@ -19,8 +21,7 @@ class TypeKind:
     tag: Literal["type"] = "type"
 
 
-@dataclass(frozen=True, slots=True)
-class EffectKind:
+class EffectKind(QiecModel):
     """The kind of effect interfaces.
 
     Parameters
@@ -32,8 +33,7 @@ class EffectKind:
     tag: Literal["effect"] = "effect"
 
 
-@dataclass(frozen=True, slots=True)
-class RowKind:
+class RowKind(QiecModel):
     """The kind of effect rows.
 
     Parameters
@@ -45,8 +45,7 @@ class RowKind:
     tag: Literal["row"] = "row"
 
 
-@dataclass(frozen=True, slots=True)
-class ArrowKind:
+class ArrowKind(QiecModel):
     """The kind of a constructor from one kind to another.
 
     Parameters
@@ -59,8 +58,8 @@ class ArrowKind:
         The serialization discriminator; always ``"arrow"``.
     """
 
-    domain: Kind
-    codomain: Kind
+    domain: Kind = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    codomain: Kind = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["arrow"] = "arrow"
 
 
@@ -75,8 +74,7 @@ ROW = RowKind()
 """The kind of effect rows."""
 
 
-@dataclass(frozen=True, slots=True)
-class NatSort:
+class NatSort(QiecModel):
     """The sort of natural-number indices.
 
     Parameters
@@ -88,8 +86,7 @@ class NatSort:
     tag: Literal["nat"] = "nat"
 
 
-@dataclass(frozen=True, slots=True)
-class ShapeSort:
+class ShapeSort(QiecModel):
     """The sort of shapes, optionally restricted to a fixed rank.
 
     Parameters
@@ -105,7 +102,8 @@ class ShapeSort:
     rank: int | None = None
     tag: Literal["shape"] = "shape"
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Reject a negative rank.
 
         Raises
@@ -117,8 +115,7 @@ class ShapeSort:
             raise ValueError("shape rank cannot be negative")
 
 
-@dataclass(frozen=True, slots=True)
-class ContextSort:
+class ContextSort(QiecModel):
     """A logic-program context indexed by a stable signature name.
 
     Parameters
@@ -133,8 +130,7 @@ class ContextSort:
     tag: Literal["context"] = "context"
 
 
-@dataclass(frozen=True, slots=True)
-class UserIndexSort:
+class UserIndexSort(QiecModel):
     """A closed user-defined index datatype.
 
     Constructor names are part of the sort identity.  Open index sorts are
@@ -157,11 +153,12 @@ class UserIndexSort:
     """
 
     name: str
-    constructors: tuple[str, ...]
-    arities: tuple[int, ...] = ()
+    constructors: tuple[str, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    arities: tuple[int, ...] = dx.field(default=(), opaque=True, extras=OPAQUE_BY_VALUE)
     tag: Literal["user"] = "user"
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Default the arities and reject a malformed sort.
 
         Raises
@@ -178,7 +175,7 @@ class UserIndexSort:
         if len(set(self.constructors)) != len(self.constructors):
             raise ValueError(f"duplicate constructors in index sort {self.name!r}")
         if not self.arities:
-            object.__setattr__(self, "arities", (0,) * len(self.constructors))
+            self._normalize_field("arities", (0,) * len(self.constructors))
         if len(self.arities) != len(self.constructors):
             raise ValueError("index constructor arities must align with constructors")
         if any(arity < 0 for arity in self.arities):
@@ -221,8 +218,7 @@ SHAPE = ShapeSort()
 """The sort of static tensor shapes."""
 
 
-@dataclass(frozen=True, slots=True)
-class TypeBinder:
+class TypeBinder(QiecModel):
     """A telescope binder for a type or effect-kinded static argument.
 
     Parameters
@@ -239,13 +235,12 @@ class TypeBinder:
     """
 
     name: str
-    kind: Kind = TYPE
+    kind: Kind = dx.field(default=TYPE, opaque=True, extras=OPAQUE_BY_VALUE)
     refinable: bool = False
     tag: Literal["type"] = "type"
 
 
-@dataclass(frozen=True, slots=True)
-class IndexBinder:
+class IndexBinder(QiecModel):
     """A telescope binder for an index argument.
 
     Parameters
@@ -262,13 +257,12 @@ class IndexBinder:
     """
 
     name: str
-    sort: IndexSort
+    sort: IndexSort = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     refinable: bool = False
     tag: Literal["index"] = "index"
 
 
-@dataclass(frozen=True, slots=True)
-class EffectBinder:
+class EffectBinder(QiecModel):
     """A telescope binder for an effect argument.
 
     Parameters

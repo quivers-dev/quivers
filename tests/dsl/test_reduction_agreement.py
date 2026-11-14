@@ -504,7 +504,7 @@ export m
 def test_an_open_extent_must_agree_across_the_data_it_shapes() -> None:
     program = loads(_GATHER)
     monadic = program.morphism
-    extent = IndexVariable("n", NAT)
+    extent = IndexVariable(name="n", sort=NAT)
     monadic.host_data_types = {
         "a": tensor_type(REAL, (extent,)),
         "b": tensor_type(REAL, (extent,)),

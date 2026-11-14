@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
 from typing import Literal, NoReturn, cast
 
 import didactic.api as dx
 import torch
 
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.qiec.execution import (
     ExecutionDiagnostic,
     ExecutionFailure,
@@ -115,8 +116,7 @@ class EntryPoint(dx.Model):
     sites: tuple[str, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class EntryRun:
+class EntryRun(QiecModel):
     """What invoking an entry point produced.
 
     Parameters
@@ -132,10 +132,10 @@ class EntryRun:
         The underlying execution result, with its trace.
     """
 
-    entry: EntryPoint
-    value: HostValue
+    entry: EntryPoint = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     log_joint: float | None
-    result: ExecutionResult
+    result: ExecutionResult = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
     def to_data(self) -> dict[str, object]:
         """Render the run as JSON-compatible data.
@@ -299,9 +299,9 @@ def entry_point(module: QiecModule, name: str) -> EntryPoint:
     available = ", ".join(point.name for point in entry_points(module)) or "(none)"
     raise ExecutionFailure(
         ExecutionDiagnostic(
-            "qiec-run-computation",
-            f"unknown entry point {name!r}; available: {available}",
-            name,
+            code="qiec-run-computation",
+            message=f"unknown entry point {name!r}; available: {available}",
+            computation=name,
         )
     )
 
@@ -391,7 +391,7 @@ def invoke_entry(
         )
         return EntryRun(
             entry=entry,
-            value=cast(HostValue, result.value),
+            value=result.value,
             log_joint=None,
             result=result,
         )
@@ -400,9 +400,14 @@ def invoke_entry(
         if static_arguments
         else ()
     )
-    if runtime is not None and runtime.selections not in (
-        RuntimeConfiguration().selections,
-        (),
+    if (
+        runtime is not None
+        and runtime.selections
+        and (
+            len(runtime.selections) != 1
+            or runtime.selections[0].provider != "core"
+            or runtime.selections[0].options
+        )
     ):
         _refuse(
             name,
@@ -413,10 +418,10 @@ def invoke_entry(
     if len(arguments) > len(program.parameters):
         raise ExecutionFailure(
             ExecutionDiagnostic(
-                "qiec-run-arity",
-                f"program {name!r} takes {len(program.parameters)} parameters, "
+                code="qiec-run-arity",
+                message=f"program {name!r} takes {len(program.parameters)} parameters, "
                 f"got {len(arguments)} positional arguments",
-                name,
+                computation=name,
             )
         )
     supplied: dict[str, HostValue] = {}
@@ -434,9 +439,9 @@ def invoke_entry(
     if missing:
         raise ExecutionFailure(
             ExecutionDiagnostic(
-                "qiec-run-arity",
-                f"program {name!r} is missing parameter(s) {', '.join(missing)}",
-                name,
+                code="qiec-run-arity",
+                message=f"program {name!r} is missing parameter(s) {', '.join(missing)}",
+                computation=name,
             )
         )
     unknown = [
@@ -467,8 +472,7 @@ def invoke_entry(
     # entry's result is the program's value at the program's type,
     # instantiated at the extents the run fixed.
     extents = static_arguments_for(program, supplied, statics)
-    result = replace(
-        run.result,
+    result = run.result.with_(
         computation=name,
         value=run.value,
         result_type=substitute_type(
@@ -484,7 +488,7 @@ def invoke_entry(
     )
     return EntryRun(
         entry=entry,
-        value=cast(HostValue, run.value),
+        value=run.value,
         log_joint=run.log_joint,
         result=result,
     )
@@ -505,7 +509,9 @@ def _refuse(name: str, message: str) -> NoReturn:
     ExecutionFailure
         Always, with code ``qiec-run-config``.
     """
-    raise ExecutionFailure(ExecutionDiagnostic("qiec-run-config", message, name))
+    raise ExecutionFailure(
+        ExecutionDiagnostic(code="qiec-run-config", message=message, computation=name)
+    )
 
 
 def parse_bindings(items: Sequence[str]) -> dict[str, HostValue]:

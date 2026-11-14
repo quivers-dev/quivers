@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import didactic.api as dx
 
 from quivers.qiec import (
     BOOL,
@@ -33,7 +34,24 @@ from quivers.qiec.substitution import StaticSubstitution, substitute_value
 from quivers.qiec.terms import Local, LiteralData
 from quivers.qiec.types import TypeVariable, product_type
 
-ORIGIN = SourceOrigin("primitives", ("test",), "primitive", "test")
+ORIGIN = SourceOrigin(
+    module="primitives",
+    structural_path=("test",),
+    role="primitive",
+    source_protocol="test",
+)
+
+
+def test_primitive_signature_updates_validate_recursive_types() -> None:
+    """Primitive signatures compare typed fields and reject malformed updates."""
+    signature = primitive("add_real")
+    assert signature == signature.with_(parameters=(REAL, REAL))
+    assert hash(signature) == hash(signature.with_(parameters=(REAL, REAL)))
+    assert signature != signature.with_(result=INT)
+    with pytest.raises(dx.ValidationError, match="parameters"):
+        signature.with_(parameters=(REAL, "Real"))
+    with pytest.raises(dx.ValidationError):
+        signature.with_(capability="unknown")
 
 
 def _apply(name: str, *arguments: LiteralData) -> PrimitiveApplication:
@@ -53,14 +71,14 @@ def _apply(name: str, *arguments: LiteralData) -> PrimitiveApplication:
     """
     signature = primitive(name)
     return PrimitiveApplication(
-        signature.id,
-        name,
-        tuple(
-            LiteralValue(argument, parameter)
+        primitive=signature.id,
+        name=name,
+        arguments=tuple(
+            LiteralValue(value=argument, type=parameter)
             for argument, parameter in zip(arguments, signature.parameters, strict=True)
         ),
-        signature.result,
-        ORIGIN,
+        result_type=signature.result,
+        origin=ORIGIN,
     )
 
 
@@ -99,12 +117,12 @@ def test_primitives_check_and_evaluate(
     """A well-typed application infers the registry's result type and runs."""
     application = _apply(name, *arguments)
     assert infer_value(application, KernelRegistry()) == primitive(name).result
-    assert Evaluator().evaluate(Return(application)) == expected
+    assert Evaluator().evaluate(Return(value=application)) == expected
 
 
 def test_integer_division_by_zero_is_an_evaluation_error() -> None:
     with pytest.raises(EvaluationError, match="div_int"):
-        Evaluator().evaluate(Return(_apply("div_int", 1, 0)))
+        Evaluator().evaluate(Return(value=_apply("div_int", 1, 0)))
 
 
 def test_primitive_applications_are_checked_against_the_registry() -> None:
@@ -114,46 +132,65 @@ def test_primitive_applications_are_checked_against_the_registry() -> None:
     with pytest.raises(KernelError, match="takes 2 argument"):
         infer_value(
             PrimitiveApplication(
-                signature.id, "add_int", (LiteralValue(1, INT),), INT, ORIGIN
+                primitive=signature.id,
+                name="add_int",
+                arguments=(LiteralValue(value=1, type=INT),),
+                result_type=INT,
+                origin=ORIGIN,
             ),
             registry,
         )
     with pytest.raises(KernelError, match="argument 1 of primitive"):
         infer_value(
             PrimitiveApplication(
-                signature.id,
-                "add_int",
-                (LiteralValue(1, INT), LiteralValue(1.0, REAL)),
-                INT,
-                ORIGIN,
+                primitive=signature.id,
+                name="add_int",
+                arguments=(
+                    LiteralValue(value=1, type=INT),
+                    LiteralValue(value=1.0, type=REAL),
+                ),
+                result_type=INT,
+                origin=ORIGIN,
             ),
             registry,
         )
     with pytest.raises(KernelError, match="produces"):
         infer_value(
             PrimitiveApplication(
-                signature.id,
-                "add_int",
-                (LiteralValue(1, INT), LiteralValue(2, INT)),
-                REAL,
-                ORIGIN,
+                primitive=signature.id,
+                name="add_int",
+                arguments=(
+                    LiteralValue(value=1, type=INT),
+                    LiteralValue(value=2, type=INT),
+                ),
+                result_type=REAL,
+                origin=ORIGIN,
             ),
             registry,
         )
     with pytest.raises(KernelError, match="identity of another"):
         infer_value(
             PrimitiveApplication(
-                primitive("sub_int").id,
-                "add_int",
-                (LiteralValue(1, INT), LiteralValue(2, INT)),
-                INT,
-                ORIGIN,
+                primitive=primitive("sub_int").id,
+                name="add_int",
+                arguments=(
+                    LiteralValue(value=1, type=INT),
+                    LiteralValue(value=2, type=INT),
+                ),
+                result_type=INT,
+                origin=ORIGIN,
             ),
             registry,
         )
     with pytest.raises(KernelError, match="unknown primitive"):
         infer_value(
-            PrimitiveApplication(signature.id, "add_complex", (), INT, ORIGIN),
+            PrimitiveApplication(
+                primitive=signature.id,
+                name="add_complex",
+                arguments=(),
+                result_type=INT,
+                origin=ORIGIN,
+            ),
             registry,
         )
 
@@ -161,39 +198,53 @@ def test_primitive_applications_are_checked_against_the_registry() -> None:
 def test_tuples_and_projections_check_evaluate_and_round_trip() -> None:
     registry = KernelRegistry()
     pair = TupleValue(
-        (LiteralValue(1, INT), LiteralValue("x", STRING)), product_type(INT, STRING)
+        items=(LiteralValue(value=1, type=INT), LiteralValue(value="x", type=STRING)),
+        result_type=product_type(INT, STRING),
     )
     assert infer_value(pair, registry) == product_type(INT, STRING)
-    second = Projection(pair, 1, STRING)
+    second = Projection(value=pair, position=1, result_type=STRING)
     assert infer_value(second, registry) == STRING
-    assert Evaluator().evaluate(Return(pair)) == (1, "x")
-    assert Evaluator().evaluate(Return(second)) == "x"
-    assert loads(dumps(Return(second))) == Return(second)
-    assert loads(dumps(Return(_apply("add_int", 1, 2)))) == Return(
-        _apply("add_int", 1, 2)
+    assert Evaluator().evaluate(Return(value=pair)) == (1, "x")
+    assert Evaluator().evaluate(Return(value=second)) == "x"
+    assert loads(dumps(Return(value=second))) == Return(value=second)
+    assert loads(dumps(Return(value=_apply("add_int", 1, 2)))) == Return(
+        value=_apply("add_int", 1, 2)
     )
 
     with pytest.raises(KernelError, match="not the claimed"):
-        infer_value(TupleValue(pair.items, product_type(INT, INT)), registry)
+        infer_value(
+            TupleValue(items=pair.items, result_type=product_type(INT, INT)), registry
+        )
     with pytest.raises(KernelError, match="outside a product"):
-        infer_value(Projection(pair, 2, INT), registry)
+        infer_value(Projection(value=pair, position=2, result_type=INT), registry)
     with pytest.raises(KernelError, match="non-product"):
-        infer_value(Projection(LiteralValue(1, INT), 0, INT), registry)
+        infer_value(
+            Projection(
+                value=LiteralValue(value=1, type=INT), position=0, result_type=INT
+            ),
+            registry,
+        )
     with pytest.raises(KernelError, match="not the claimed"):
-        infer_value(Projection(pair, 0, BOOL), registry)
+        infer_value(Projection(value=pair, position=0, result_type=BOOL), registry)
 
 
 def test_substitution_reaches_tuple_and_primitive_argument_types() -> None:
     """Static substitution rewrites the types inside the new value forms."""
-    variable = TypeVariable("A")
-    local = Local("x", variable)
-    pair = TupleValue((Var(local), LiteralValue(1, INT)), product_type(variable, INT))
+    variable = TypeVariable(name="A")
+    local = Local(name="x", type=variable)
+    pair = TupleValue(
+        items=(Var(local=local), LiteralValue(value=1, type=INT)),
+        result_type=product_type(variable, INT),
+    )
     substitution = StaticSubstitution(types=(("A", REAL),))
     rewritten = substitute_value(pair, substitution)
     assert rewritten == TupleValue(
-        (Var(Local("x", REAL)), LiteralValue(1, INT)), product_type(REAL, INT)
+        items=(Var(local=Local(name="x", type=REAL)), LiteralValue(value=1, type=INT)),
+        result_type=product_type(REAL, INT),
     )
-    projected = substitute_value(Projection(pair, 0, variable), substitution)
-    assert projected == Projection(rewritten, 0, REAL)
-    context = CheckContext().extend(Local("x", REAL))
+    projected = substitute_value(
+        Projection(value=pair, position=0, result_type=variable), substitution
+    )
+    assert projected == Projection(value=rewritten, position=0, result_type=REAL)
+    context = CheckContext().extend(Local(name="x", type=REAL))
     assert infer_value(projected, KernelRegistry(), context) == REAL

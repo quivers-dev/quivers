@@ -195,7 +195,8 @@ def fit(
     predictor_data : torch.Tensor or None
         Input passed to ``predictor`` on each SVI step.
     seed : int
-        The torch seed set before inference.
+        Seed for compilation and inference. The caller's CPU random state
+        is restored on return or failure.
 
     Returns
     -------
@@ -211,148 +212,152 @@ def fit(
         or HMC; ``num_warmup``, ``num_samples``, or ``num_chains`` to
         SVI).
     """
-    if method == "svi":
-        given = [
-            name
-            for name, value in (
-                ("num_warmup", num_warmup),
-                ("num_samples", num_samples),
-                ("num_chains", num_chains),
-            )
-            if value is not None
-        ]
-        if given:
+    with torch.random.fork_rng(devices=[]):
+        torch.random.set_rng_state(torch.Generator().manual_seed(seed).get_state())
+        if method == "svi":
+            given = [
+                name
+                for name, value in (
+                    ("num_warmup", num_warmup),
+                    ("num_samples", num_samples),
+                    ("num_chains", num_chains),
+                )
+                if value is not None
+            ]
+            if given:
+                raise ValueError(
+                    f"fit: {', '.join(given)} count MCMC iterations, and "
+                    "method='svi' runs none; give the optimization steps as "
+                    "num_steps"
+                )
+        elif num_steps is not None:
             raise ValueError(
-                f"fit: {', '.join(given)} count MCMC iterations, and "
-                "method='svi' runs none; give the optimization steps as "
-                "num_steps"
+                f"fit: num_steps counts SVI optimization steps, and method={method!r} "
+                "runs MCMC; give num_warmup, num_samples, and num_chains"
             )
-    elif num_steps is not None:
-        raise ValueError(
-            f"fit: num_steps counts SVI optimization steps, and method={method!r} "
-            "runs MCMC; give num_warmup, num_samples, and num_chains"
-        )
-    if isinstance(family, str):
-        if family not in families:
+        if isinstance(family, str):
+            if family not in families:
+                raise ValueError(
+                    f"fit: unknown family {family!r}; choices are {sorted(families)}"
+                )
+            family_obj = families[family]
+        else:
+            family_obj = family
+
+        parsed = formula_from_data(formula, data)
+        predictor_name = "neural_eta" if predictor is not None else None
+        if predictor is not None and predictor_data is None:
             raise ValueError(
-                f"fit: unknown family {family!r}; choices are {sorted(families)}"
+                "fit: predictor_data is required when predictor is supplied"
             )
-        family_obj = families[family]
-    else:
-        family_obj = family
+        if predictor is None and predictor_data is not None:
+            raise ValueError("fit: predictor_data requires predictor")
+        if (
+            predictor is not None
+            and method != "svi"
+            and any(parameter.requires_grad for parameter in predictor.parameters())
+        ):
+            raise ValueError(
+                "fit: a trainable external predictor requires method='svi'; "
+                "freeze its parameters before using NUTS or HMC"
+            )
+        lens = FormulaToQVRModule(
+            family_obj,
+            fixed_prior=fixed_prior,
+            random_scale_prior=random_scale_prior,
+            user_priors=priors,
+            reparameterize=reparameterize,
+            binomial_trials=binomial_trials,
+            thresholds_by=thresholds_by,
+            mixture_components=mixture_components,
+            predictor_name=predictor_name,
+        )
+        module, _ = lens.forward(parsed)
+        compiler = Compiler(module)
+        program_runtime = compiler.compile()
+        morphism = program_runtime.morphism
+        if not isinstance(morphism, MonadicProgram):
+            raise TypeError(
+                f"fit: compiled morphism has type "
+                f"{type(morphism).__name__}, expected MonadicProgram"
+            )
+        program = morphism
 
-    parsed = formula_from_data(formula, data)
-    predictor_name = "neural_eta" if predictor is not None else None
-    if predictor is not None and predictor_data is None:
-        raise ValueError("fit: predictor_data is required when predictor is supplied")
-    if predictor is None and predictor_data is not None:
-        raise ValueError("fit: predictor_data requires predictor")
-    if (
-        predictor is not None
-        and method != "svi"
-        and any(parameter.requires_grad for parameter in predictor.parameters())
-    ):
-        raise ValueError(
-            "fit: a trainable external predictor requires method='svi'; "
-            "freeze its parameters before using NUTS or HMC"
-        )
-    lens = FormulaToQVRModule(
-        family_obj,
-        fixed_prior=fixed_prior,
-        random_scale_prior=random_scale_prior,
-        user_priors=priors,
-        reparameterize=reparameterize,
-        binomial_trials=binomial_trials,
-        thresholds_by=thresholds_by,
-        mixture_components=mixture_components,
-        predictor_name=predictor_name,
-    )
-    module, _ = lens.forward(parsed)
-    compiler = Compiler(module)
-    program_runtime = compiler.compile()
-    morphism = program_runtime.morphism
-    if not isinstance(morphism, MonadicProgram):
-        raise TypeError(
-            f"fit: compiled morphism has type "
-            f"{type(morphism).__name__}, expected MonadicProgram"
-        )
-    program = morphism
+        observations: dict[str, torch.Tensor] = {}
+        observations.update(lens.fixed_column_observations(parsed))
+        response_name = parsed.response_name
+        observations[response_name] = torch.as_tensor(
+            parsed.response_values.copy(), dtype=torch.float32
+        ).reshape(-1)
+        for group, codes in parsed.group_indices.items():
+            observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
+                list(codes), dtype=torch.long
+            )
+        if family_obj.name == "binomial":
+            trials = _binomial_trial_tensor(
+                data, binomial_trials, n_obs=parsed.response_values.shape[0]
+            )
+            response = observations[response_name]
+            _validate_binomial_response(response, trials, caller="fit")
+            if isinstance(binomial_trials, str):
+                observations[_qvr_name(binomial_trials)] = trials
+        if predictor is not None:
+            assert predictor_data is not None
+            assert predictor_name is not None
+            predictor_categories = (
+                FormulaToQVRModule._category_count(parsed, family="categorical")
+                if family_obj.name == "categorical"
+                else None
+            )
+            observations[predictor_name] = _predictor_output(
+                predictor,
+                predictor_data,
+                n_obs=parsed.response_values.shape[0],
+                n_categories=predictor_categories,
+            ).detach()
+        else:
+            predictor_categories = None
 
-    observations: dict[str, torch.Tensor] = {}
-    observations.update(lens.fixed_column_observations(parsed))
-    response_name = parsed.response_name
-    observations[response_name] = torch.as_tensor(
-        parsed.response_values.copy(), dtype=torch.float32
-    ).reshape(-1)
-    for group, codes in parsed.group_indices.items():
-        observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
-            list(codes), dtype=torch.long
-        )
-    if family_obj.name == "binomial":
-        trials = _binomial_trial_tensor(
-            data, binomial_trials, n_obs=parsed.response_values.shape[0]
-        )
-        response = observations[response_name]
-        _validate_binomial_response(response, trials, caller="fit")
-        if isinstance(binomial_trials, str):
-            observations[_qvr_name(binomial_trials)] = trials
-    if predictor is not None:
-        assert predictor_data is not None
-        assert predictor_name is not None
-        predictor_categories = (
-            FormulaToQVRModule._category_count(parsed, family="categorical")
-            if family_obj.name == "categorical"
-            else None
-        )
-        observations[predictor_name] = _predictor_output(
-            predictor,
-            predictor_data,
-            n_obs=parsed.response_values.shape[0],
-            n_categories=predictor_categories,
-        ).detach()
-    else:
-        predictor_categories = None
+        if method == "svi":
+            posterior = _fit_svi(
+                program,
+                observations,
+                1000 if num_steps is None else num_steps,
+                learning_rate=learning_rate,
+                guide_cls=guide,
+                predictor=predictor,
+                predictor_data=predictor_data,
+                predictor_name=predictor_name,
+                predictor_categories=predictor_categories,
+            )
+        else:
+            posterior = _fit_mcmc(
+                program,
+                observations,
+                sampler=method,
+                num_warmup=500 if num_warmup is None else num_warmup,
+                num_samples=1000 if num_samples is None else num_samples,
+                num_chains=4 if num_chains is None else num_chains,
+                seed=seed,
+            )
 
-    torch.manual_seed(seed)
-    if method == "svi":
-        posterior = _fit_svi(
-            program,
-            observations,
-            1000 if num_steps is None else num_steps,
-            learning_rate=learning_rate,
-            guide_cls=guide,
+        return BayesianFit(
+            formula=parsed,
+            family=family_obj,
+            program=program,
+            posterior=posterior,
+            observations=observations,
+            reparameterize=reparameterize,
+            binomial_trials=binomial_trials,
+            thresholds_by=thresholds_by,
+            mixture_components=mixture_components,
+            fixed_prior=fixed_prior,
+            random_scale_prior=random_scale_prior,
+            priors=dict(priors or {}),
             predictor=predictor,
             predictor_data=predictor_data,
             predictor_name=predictor_name,
-            predictor_categories=predictor_categories,
         )
-    else:
-        posterior = _fit_mcmc(
-            program,
-            observations,
-            sampler=method,
-            num_warmup=500 if num_warmup is None else num_warmup,
-            num_samples=1000 if num_samples is None else num_samples,
-            num_chains=4 if num_chains is None else num_chains,
-        )
-
-    return BayesianFit(
-        formula=parsed,
-        family=family_obj,
-        program=program,
-        posterior=posterior,
-        observations=observations,
-        reparameterize=reparameterize,
-        binomial_trials=binomial_trials,
-        thresholds_by=thresholds_by,
-        mixture_components=mixture_components,
-        fixed_prior=fixed_prior,
-        random_scale_prior=random_scale_prior,
-        priors=dict(priors or {}),
-        predictor=predictor,
-        predictor_data=predictor_data,
-        predictor_name=predictor_name,
-    )
 
 
 def formula_to_qvr(
@@ -411,14 +416,47 @@ def formula_to_qvr(
     return source
 
 
-def _fit_mcmc(program, observations, *, sampler, num_warmup, num_samples, num_chains):
-    """Run NUTS / HMC on the compiled program."""
+def _fit_mcmc(
+    program: MonadicProgram,
+    observations: dict[str, torch.Tensor],
+    *,
+    sampler: Literal["nuts", "hmc"],
+    num_warmup: int,
+    num_samples: int,
+    num_chains: int,
+    seed: int,
+) -> MCMCResult:
+    """Run seeded NUTS or HMC on the compiled program.
+
+    Parameters
+    ----------
+    program
+        Compiled formula program.
+    observations
+        Data indexed by observed site name.
+    sampler
+        Hamiltonian transition kernel.
+    num_warmup
+        Warmup transitions per chain.
+    num_samples
+        Retained transitions per chain.
+    num_chains
+        Independent chains.
+    seed
+        Seed from which the driver derives each chain's stream.
+
+    Returns
+    -------
+    MCMCResult
+        Retained samples and sampler statistics.
+    """
     kernel = NUTSKernel() if sampler == "nuts" else HMCKernel()
     mcmc = MCMC(
         kernel=kernel,
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=num_chains,
+        seed=seed,
     )
     # One run of the program: its observation rows come from the data
     # through the formula's plate, not from the input's rows.

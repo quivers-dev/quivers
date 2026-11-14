@@ -17,6 +17,7 @@ from typing import Any
 
 from ipykernel.kernelbase import Kernel
 
+from quivers.cli.repl_complete import all_completions
 from quivers.cli.repl_session import ReplSession
 
 
@@ -133,7 +134,6 @@ class QuiversKernel(Kernel):
         }
 
     def do_complete(self, code: str, cursor_pos: int) -> dict[str, Any]:
-        from quivers.cli.repl_complete import all_completions
 
         prefix = _prefix_at(code, cursor_pos)
         completions = all_completions(self.repl, prefix)

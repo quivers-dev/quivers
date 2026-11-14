@@ -13,7 +13,11 @@ it like any other before it runs.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+
+import didactic.api as dx
+
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY
+from quivers.qiec._models import QiecModel
 
 from quivers.qiec.builtins import PARAM_GET, RANDOM_SAMPLE, SCORE_ADD
 from quivers.qiec.canonical import LOG_WEIGHT, tensor_shape
@@ -73,8 +77,7 @@ ACCUMULATE_HANDLER = "__program_accumulate"
 PARAMS_HANDLER = "__program_params"
 
 
-@dataclass(frozen=True, slots=True)
-class ProgramRun:
+class ProgramRun(QiecModel):
     """What running a program on the reference machine produced.
 
     Parameters
@@ -88,9 +91,9 @@ class ProgramRun:
         The underlying execution result, with its trace.
     """
 
-    value: object
+    value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     log_joint: float
-    result: ExecutionResult
+    result: ExecutionResult = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
 def program_entry(module: QiecModule, name: str) -> ProgramEntry:
@@ -261,7 +264,7 @@ def _wrapped_module(
     computation = _computation(module, entry.computation)
     answer: TypeExpr = computation.type.result
     statics: tuple[StaticArgument, ...] = tuple(
-        IndexVariable(binder.name, binder.sort)
+        IndexVariable(name=binder.name, sort=binder.sort)
         for binder in computation.telescope
         if isinstance(binder, IndexBinder)
     )
@@ -293,46 +296,49 @@ def _wrapped_module(
             The declaration, scoring into the ``score`` instance.
         """
         return HandlerDef(
-            HandlerId.derive(module.module, "handler", handler_name),
-            handler_name,
-            random.entry.effect,
-            (HandlerClauseDef(RANDOM_SAMPLE, ResumptionGrade.LINEAR),),
-            answer,
-            answer,
-            EffectRow((score.entry,)),
+            id=HandlerId.derive(module.module, "handler", handler_name),
+            name=handler_name,
+            effect=random.entry.effect,
+            clauses=(
+                HandlerClauseDef(operation=RANDOM_SAMPLE, grade=ResumptionGrade.LINEAR),
+            ),
+            input_type=answer,
+            output_type=answer,
+            introduced=EffectRow(entries=(score.entry,)),
             total=total,
             implementation="foreign",
             telescope=computation.telescope,
         )
 
     accumulate = HandlerDef(
-        HandlerId.derive(module.module, "handler", ACCUMULATE_HANDLER),
-        ACCUMULATE_HANDLER,
-        score.entry.effect,
-        (HandlerClauseDef(SCORE_ADD, ResumptionGrade.LINEAR),),
-        answer,
-        product_type(answer, LOG_WEIGHT),
-        EffectRow(),
+        id=HandlerId.derive(module.module, "handler", ACCUMULATE_HANDLER),
+        name=ACCUMULATE_HANDLER,
+        effect=score.entry.effect,
+        clauses=(HandlerClauseDef(operation=SCORE_ADD, grade=ResumptionGrade.LINEAR),),
+        input_type=answer,
+        output_type=product_type(answer, LOG_WEIGHT),
+        introduced=EffectRow(),
         total=True,
         implementation="foreign",
         telescope=computation.telescope,
     )
     result_type = answer
     parameters = tuple(
-        Local(parameter.name, parameter.type) for parameter in computation.parameters
+        Local(name=parameter.name, type=parameter.type)
+        for parameter in computation.parameters
     )
     call = Call(
-        computation.id,
-        computation.name,
-        statics,
-        tuple(Var(parameter) for parameter in parameters),
-        result_type,
-        computation.type.effects,
-        SourceOrigin(
-            module.module,
-            ("programs", name, role, "call"),
-            "call",
-            module.source_protocol,
+        callee=computation.id,
+        name=computation.name,
+        static_arguments=statics,
+        arguments=tuple(Var(local=parameter) for parameter in parameters),
+        result_type=result_type,
+        effects=computation.type.effects,
+        origin=SourceOrigin(
+            module=module.module,
+            structural_path=("programs", name, role, "call"),
+            role="call",
+            source_protocol=module.source_protocol,
         ),
     )
     performed = {entry.instance for entry in computation.type.effects.entries}
@@ -344,40 +350,60 @@ def _wrapped_module(
         if sampling:
             condition = random_handler(CONDITION_HANDLER, False)
             draw = random_handler(DRAW_HANDLER, True)
-            body = Handle(random.entry.instance, condition.id, body, statics)
-            body = Handle(random.entry.instance, draw.id, body, statics)
+            body = Handle(
+                instance=random.entry.instance,
+                handler=condition.id,
+                computation=body,
+                static_arguments=statics,
+            )
+            body = Handle(
+                instance=random.entry.instance,
+                handler=draw.id,
+                computation=body,
+                static_arguments=statics,
+            )
             handlers.extend((condition, draw))
         else:
             replay = random_handler(REPLAY_HANDLER, True)
-            body = Handle(random.entry.instance, replay.id, body, statics)
+            body = Handle(
+                instance=random.entry.instance,
+                handler=replay.id,
+                computation=body,
+                static_arguments=statics,
+            )
             handlers.append(replay)
     if random.entry.instance in performed or score.entry.instance in performed:
-        body = Handle(score.entry.instance, accumulate.id, body, statics)
+        body = Handle(
+            instance=score.entry.instance,
+            handler=accumulate.id,
+            computation=body,
+            static_arguments=statics,
+        )
         handlers.append(accumulate)
     else:
         # A program scoring nothing has the zero log joint.
-        answered = Local("__answer", answer)
+        answered = Local(name="__answer", type=answer)
         body = Bind(
-            answered,
-            body,
-            Return(
-                TupleValue(
-                    (
-                        Var(answered),
+            binder=answered,
+            first=body,
+            then=Return(
+                value=TupleValue(
+                    items=(
+                        Var(local=answered),
                         PrimitiveApplication(
-                            primitive("as_weight").id,
-                            "as_weight",
-                            (LiteralValue(0.0, REAL),),
-                            LOG_WEIGHT,
-                            SourceOrigin(
-                                module.module,
-                                ("programs", name, role, "zero"),
-                                "primitive",
-                                module.source_protocol,
+                            primitive=primitive("as_weight").id,
+                            name="as_weight",
+                            arguments=(LiteralValue(value=0.0, type=REAL),),
+                            result_type=LOG_WEIGHT,
+                            origin=SourceOrigin(
+                                module=module.module,
+                                structural_path=("programs", name, role, "zero"),
+                                role="primitive",
+                                source_protocol=module.source_protocol,
                             ),
                         ),
                     ),
-                    product_type(answer, LOG_WEIGHT),
+                    result_type=product_type(answer, LOG_WEIGHT),
                 )
             ),
         )
@@ -386,36 +412,44 @@ def _wrapped_module(
         # A program calling a deduction reads learned weights through
         # the module's parameter store, which the wrapper serves.
         store = HandlerDef(
-            HandlerId.derive(module.module, "handler", PARAMS_HANDLER),
-            PARAMS_HANDLER,
-            params.effect,
-            (HandlerClauseDef(PARAM_GET, ResumptionGrade.LINEAR),),
-            product_type(answer, LOG_WEIGHT),
-            product_type(answer, LOG_WEIGHT),
-            EffectRow(),
+            id=HandlerId.derive(module.module, "handler", PARAMS_HANDLER),
+            name=PARAMS_HANDLER,
+            effect=params.effect,
+            clauses=(
+                HandlerClauseDef(operation=PARAM_GET, grade=ResumptionGrade.LINEAR),
+            ),
+            input_type=product_type(answer, LOG_WEIGHT),
+            output_type=product_type(answer, LOG_WEIGHT),
+            introduced=EffectRow(),
             total=True,
             implementation="foreign",
             telescope=computation.telescope,
         )
-        body = Handle(params.instance, store.id, body, statics)
+        body = Handle(
+            instance=params.instance,
+            handler=store.id,
+            computation=body,
+            static_arguments=statics,
+        )
         handlers.append(store)
     wrapper_name = f"__{role}_{name}"
     wrapper = NamedComputation(
-        ComputationId.derive(module.module, "computation", wrapper_name),
-        wrapper_name,
-        computation.telescope,
-        parameters,
-        body,
-        ComputationType(EffectRow(), product_type(result_type, LOG_WEIGHT)),
-        SourceOrigin(
-            module.module,
-            ("programs", name, role),
-            "computation",
-            module.source_protocol,
+        id=ComputationId.derive(module.module, "computation", wrapper_name),
+        name=wrapper_name,
+        telescope=computation.telescope,
+        parameters=parameters,
+        body=body,
+        type=ComputationType(
+            effects=EffectRow(), result=product_type(result_type, LOG_WEIGHT)
+        ),
+        origin=SourceOrigin(
+            module=module.module,
+            structural_path=("programs", name, role),
+            role="computation",
+            source_protocol=module.source_protocol,
         ),
     )
-    extended = replace(
-        module,
+    extended = module.with_(
         handlers=(*module.handlers, *handlers),
         computations=(*module.computations, wrapper),
     )
@@ -622,7 +656,7 @@ def static_arguments_for(
                 )
             arguments.append(supplied)
             continue
-        literal = IndexLiteral(found, binder.sort)  # type: ignore[arg-type]
+        literal = IndexLiteral(value=found, sort=binder.sort)  # type: ignore[arg-type]
         if supplied is not None and supplied != literal:
             raise KeyError(
                 f"static argument {binder.name!r} of program {entry.name!r} is "
@@ -893,10 +927,10 @@ def _refuse_unmapped_data(
             continue
         raise ExecutionFailure(
             ExecutionDiagnostic(
-                "qiec-run-type",
-                f"datum {parameter.name!r} has {supplied} axes, but the program "
+                code="qiec-run-type",
+                message=f"datum {parameter.name!r} has {supplied} axes, but the program "
                 f"reads it at type {render_static(parameter.type)}: {note}",
-                entry.name,
+                computation=entry.name,
             )
         )
 
@@ -970,8 +1004,10 @@ def _run_wrapped(
         configured[PARAMS_HANDLER] = {"kind": "param", "values": dict(parameters or {})}
     configured.update(foreign_handler_configuration(module))
     runtime = RuntimeConfiguration(
-        (RuntimeSelection("core", {"handlers": configured}),),
-        providers,
+        selections=(
+            RuntimeSelection(provider="core", options={"handlers": configured}),
+        ),
+        providers=providers,
     )
     result = run_named(
         extended,
@@ -983,7 +1019,7 @@ def _run_wrapped(
         observer=observer,
     )
     value, weight = result.value  # type: ignore[misc]
-    return ProgramRun(value, float(weight), result)  # type: ignore[arg-type]
+    return ProgramRun(value=value, log_joint=float(weight), result=result)  # type: ignore[arg-type]
 
 
 def foreign_handler_configuration(module: QiecModule) -> dict[str, object]:
@@ -1078,8 +1114,7 @@ def _deduction_handler(name: str) -> tuple[str, str] | None:
     return None
 
 
-@dataclass(frozen=True, slots=True)
-class DeductionRun:
+class DeductionRun(QiecModel):
     """The outcome of running a deduction on the reference machine.
 
     Parameters
@@ -1091,8 +1126,8 @@ class DeductionRun:
         The machine's full result, with its trace.
     """
 
-    weight: object
-    result: ExecutionResult
+    weight: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    result: ExecutionResult = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
 def run_deduction(
@@ -1172,13 +1207,15 @@ def run_deduction(
         extended,
         wrapper_name,
         arguments,
-        static_arguments=(IndexLiteral(extent, binder.sort),),  # type: ignore[arg-type]
+        static_arguments=(IndexLiteral(value=extent, sort=binder.sort),),  # type: ignore[arg-type]
         runtime=RuntimeConfiguration(
-            (RuntimeSelection("core", {"handlers": configured}),)
+            selections=(
+                RuntimeSelection(provider="core", options={"handlers": configured}),
+            )
         ),
         fuel=fuel,
     )
-    return DeductionRun(result.value, result)
+    return DeductionRun(weight=result.value, result=result)
 
 
 def deduction_item(
@@ -1224,7 +1261,10 @@ def deduction_item(
         )
     family = next(item for item in module.families if item.id == constructor.family)
     return RuntimeConstructor(
-        constructor.id, (), tuple(fields), TypeApplication(family.type_constructor, ())
+        constructor=constructor.id,
+        static_arguments=(),
+        fields=tuple(fields),
+        result_type=TypeApplication(constructor=family.type_constructor, arguments=()),
     )
 
 
@@ -1248,58 +1288,63 @@ def _deduction_wrapper(
     """
     params = _params_entry(module, computation.type.effects)
     statics: tuple[StaticArgument, ...] = tuple(
-        IndexVariable(binder.name, binder.sort)
+        IndexVariable(name=binder.name, sort=binder.sort)
         for binder in computation.telescope
         if isinstance(binder, IndexBinder)
     )
     if params is None:
         return module, computation.name
     store = HandlerDef(
-        HandlerId.derive(module.module, "handler", PARAMS_HANDLER),
-        PARAMS_HANDLER,
-        params.effect,
-        (HandlerClauseDef(PARAM_GET, ResumptionGrade.LINEAR),),
-        computation.type.result,
-        computation.type.result,
-        EffectRow(),
+        id=HandlerId.derive(module.module, "handler", PARAMS_HANDLER),
+        name=PARAMS_HANDLER,
+        effect=params.effect,
+        clauses=(HandlerClauseDef(operation=PARAM_GET, grade=ResumptionGrade.LINEAR),),
+        input_type=computation.type.result,
+        output_type=computation.type.result,
+        introduced=EffectRow(),
         total=True,
         implementation="foreign",
         telescope=computation.telescope,
     )
     parameters = tuple(
-        Local(parameter.name, parameter.type) for parameter in computation.parameters
+        Local(name=parameter.name, type=parameter.type)
+        for parameter in computation.parameters
     )
     call = Call(
-        computation.id,
-        computation.name,
-        statics,
-        tuple(Var(parameter) for parameter in parameters),
-        computation.type.result,
-        computation.type.effects,
-        SourceOrigin(
-            module.module,
-            ("deductions", computation.name, "wrapper", "call"),
-            "call",
-            module.source_protocol,
+        callee=computation.id,
+        name=computation.name,
+        static_arguments=statics,
+        arguments=tuple(Var(local=parameter) for parameter in parameters),
+        result_type=computation.type.result,
+        effects=computation.type.effects,
+        origin=SourceOrigin(
+            module=module.module,
+            structural_path=("deductions", computation.name, "wrapper", "call"),
+            role="call",
+            source_protocol=module.source_protocol,
         ),
     )
     wrapper_name = f"__deduction_{computation.name}"
     wrapper = NamedComputation(
-        ComputationId.derive(module.module, "computation", wrapper_name),
-        wrapper_name,
-        computation.telescope,
-        parameters,
-        Handle(params.instance, store.id, call, statics),
-        ComputationType(EffectRow(), computation.type.result),
-        SourceOrigin(
-            module.module,
-            ("deductions", computation.name, "wrapper"),
-            "computation",
-            module.source_protocol,
+        id=ComputationId.derive(module.module, "computation", wrapper_name),
+        name=wrapper_name,
+        telescope=computation.telescope,
+        parameters=parameters,
+        body=Handle(
+            instance=params.instance,
+            handler=store.id,
+            computation=call,
+            static_arguments=statics,
+        ),
+        type=ComputationType(effects=EffectRow(), result=computation.type.result),
+        origin=SourceOrigin(
+            module=module.module,
+            structural_path=("deductions", computation.name, "wrapper"),
+            role="computation",
+            source_protocol=module.source_protocol,
         ),
     )
-    extended = replace(
-        module,
+    extended = module.with_(
         handlers=(*module.handlers, store),
         computations=(*module.computations, wrapper),
     )

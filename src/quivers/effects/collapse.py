@@ -81,7 +81,9 @@ class CollapseHandler(EffectHandler):
             key=f"collapse-{id(self):x}",
             input_type=run.result_type,
             output_type=run.result_type,
-            introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+            introduced=EffectRow(
+                entries=(RowEntry(instance=score_instance, effect=SCORE),)
+            ),
             total=False,
         )
 
@@ -151,9 +153,14 @@ class CollapseHandler(EffectHandler):
             return Forward()
 
         runtime = RuntimeHandler(
-            definition, {RANDOM_SAMPLE: RuntimeClause(sample, run.validator)}
+            definition=definition,
+            clauses={
+                RANDOM_SAMPLE: RuntimeClause(
+                    invoke=sample, result_validator=run.validator
+                )
+            },
         )
-        return (Installation(kernel.random, runtime),)
+        return (Installation(instance=kernel.random, runtime=runtime),)
 
 
 def collapse(pairs: dict[str, str] | None = None) -> CollapseHandler:

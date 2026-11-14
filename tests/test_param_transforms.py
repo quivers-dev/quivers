@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 
+import didactic.api as dx
 import pytest
 import torch
 import torch.nn.functional as F
@@ -172,12 +173,12 @@ def test_paramspec_accepts_bijector_transform() -> None:
 
 
 def test_paramspec_unknown_string_raises() -> None:
-    with pytest.raises(ValueError, match="unknown transform"):
+    with pytest.raises(dx.ValidationError, match="unknown transform"):
         ParamSpec(name="x", transform="not_a_transform")
 
 
 def test_paramspec_wrong_type_raises() -> None:
-    with pytest.raises(TypeError, match="string key or a Bijector"):
+    with pytest.raises(dx.ValidationError, match="string key or a Bijector"):
         ParamSpec(name="x", transform=3.14)  # type: ignore[arg-type]
 
 
@@ -427,9 +428,7 @@ def test_every_registered_family_transform_resolves_to_bijector() -> None:
 
 
 def test_paramspec_frozen() -> None:
-    """`ParamSpec` is a frozen dataclass; direct attribute
-    assignment raises.
-    """
+    """Parameter model fields require immutable updates."""
     p = ParamSpec(name="scale", transform="softplus")
     with pytest.raises(Exception):
         p.name = "other"  # type: ignore[misc]

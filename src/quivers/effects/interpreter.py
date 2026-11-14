@@ -1249,8 +1249,8 @@ class _HostSteps:
             annotations["subsample_rows"] = rows
             drawing = _SubsampledMorphism(drawing, rows, factor)
         if drawing is morphism:
-            return TorchSampleable(morphism, inp)
-        return TorchSampleable(drawing, inp, declared=morphism)
+            return TorchSampleable(morphism=morphism, input=inp)
+        return TorchSampleable(morphism=drawing, input=inp, declared=morphism)
 
     def _parameters(
         self, site: str, morphism: ContinuousMorphism, context: ClauseContext
@@ -1277,25 +1277,25 @@ class _HostSteps:
             qualified = f"{site}.{name}"
             shape = tuple(int(extent) for extent in parameter.shape)
             type_ = tensor_type(
-                REAL, tuple(IndexLiteral(extent, NAT) for extent in shape)
+                REAL, tuple(IndexLiteral(value=extent, sort=NAT) for extent in shape)
             )
             request = EffectRequest(
-                kernel.param.entry.instance,
-                kernel.param.entry.effect,
-                PARAM_GET,
-                (type_,),
-                (LiteralValue(qualified, STRING),),
-                type_,
-                SiteProvenance(
-                    SourceOrigin(
-                        kernel.module.module,
-                        ("sites", site, "parameters", name),
-                        "effect-request",
-                        SOURCE_PROTOCOL,
+                instance=kernel.param.entry.instance,
+                effect=kernel.param.entry.effect,
+                operation=PARAM_GET,
+                static_arguments=(type_,),
+                arguments=(LiteralValue(value=qualified, type=STRING),),
+                result_type=type_,
+                origin=SiteProvenance(
+                    origin=SourceOrigin(
+                        module=kernel.module.module,
+                        structural_path=("sites", site, "parameters", name),
+                        role="effect-request",
+                        source_protocol=SOURCE_PROTOCOL,
                     )
                 ),
             )
-            value = context.evaluate(Perform(request))
+            value = context.evaluate(Perform(request=request))
             assert isinstance(value, torch.Tensor)
             values[name] = value
         return values
@@ -1668,10 +1668,10 @@ def _handle_chain(installations: list[Installation], inner: Computation) -> Comp
     body = inner
     for installation in reversed(installations):
         body = Handle(
-            installation.instance.entry.instance,
-            installation.runtime.definition.id,
-            body,
-            (),
+            instance=installation.instance.entry.instance,
+            handler=installation.runtime.definition.id,
+            computation=body,
+            static_arguments=(),
         )
     return body
 
@@ -2402,8 +2402,8 @@ def _run_once(
         if "@" not in label:
             axis.given(program, label, _site_carries(kernel, label, value))
     run = RunContext(
-        kernel,
-        host_value,
+        kernel=kernel,
+        validator=host_value,
         observations=dict(sites),
         supplied=supplied,
         run_index=run_index,
@@ -2436,17 +2436,17 @@ def _run_once(
         assert isinstance(weight, torch.Tensor | float | int)
         run.contributions.append(
             Contribution(
-                run.key_of(request),
-                request.core.origin.origin.role,
-                torch.as_tensor(weight),
-                request.core.origin.origin.structural_path,
+                key=run.key_of(request),
+                role=request.core.origin.origin.role,
+                weight=torch.as_tensor(weight),
+                path=request.core.origin.origin.structural_path,
             )
         )
 
     accumulator, _ = score_handler(
         answer_type=result_type, observer=record, key="run-accumulator"
     )
-    score_installations = [Installation(kernel.score, accumulator)]
+    score_installations = [Installation(instance=kernel.score, runtime=accumulator)]
     random_installations: list[Installation] = []
     param_installations: list[Installation] = []
     user_random: list[Installation] = []
@@ -2471,8 +2471,8 @@ def _run_once(
         finishers.append(handler)
     random_installations.append(
         Installation(
-            kernel.random,
-            draw_scoring_handler(
+            instance=kernel.random,
+            runtime=draw_scoring_handler(
                 score_instance=kernel.score.entry.instance,
                 result_validator=host_value,
                 answer_type=result_type,
@@ -2487,8 +2487,8 @@ def _run_once(
         }
         random_installations.append(
             Installation(
-                kernel.random,
-                condition_handler(
+                instance=kernel.random,
+                runtime=condition_handler(
                     clamped,
                     score_instance=kernel.score.entry.instance,
                     result_validator=host_value,
@@ -2500,7 +2500,7 @@ def _run_once(
             )
         )
     random_installations.extend(user_random)
-    store: dict[str, torch.Tensor] = {}
+    store = run.parameters
     for step in kernel.steps:
         if step.kind != "draw" or step.site is None:
             continue
@@ -2509,12 +2509,11 @@ def _run_once(
         assert isinstance(morphism, ContinuousMorphism)
         for name, parameter in morphism.named_parameters():
             store[f"{step.site}.{name}"] = parameter
-    run.parameters = store
     param_installations.insert(
         0,
         Installation(
-            kernel.param,
-            param_handler(
+            instance=kernel.param,
+            runtime=param_handler(
                 lambda name, _request: store[name],
                 result_validator=host_value,
                 answer_type=result_type,
@@ -2530,12 +2529,14 @@ def _run_once(
             if item.entry.instance == step.instance
         )
         introduced = (
-            EffectRow((kernel.param.entry,)) if step.kind == "draw" else EffectRow()
+            EffectRow(entries=(kernel.param.entry,))
+            if step.kind == "draw"
+            else EffectRow()
         )
         step_installations.append(
             Installation(
-                instance,
-                compute_handler(
+                instance=instance,
+                runtime=compute_handler(
                     steps.function(step),
                     effect=step.effect,
                     result_validator=host_value,
@@ -2547,15 +2548,20 @@ def _run_once(
         )
     entry = kernel.module.computations[0]
     arguments = [x, *(data[name] for name in kernel.data)]
-    parameters = [Local(local.name, local.type) for local in entry.parameters]
+    parameters = [Local(name=local.name, type=local.type) for local in entry.parameters]
     call = Call(
-        entry.id,
-        entry.name,
-        (),
-        tuple(Var(parameter) for parameter in parameters),
-        result_type,
-        entry.type.effects,
-        SourceOrigin(kernel.module.module, ("run", "call"), "call", SOURCE_PROTOCOL),
+        callee=entry.id,
+        name=entry.name,
+        static_arguments=(),
+        arguments=tuple(Var(local=parameter) for parameter in parameters),
+        result_type=result_type,
+        effects=entry.type.effects,
+        origin=SourceOrigin(
+            module=kernel.module.module,
+            structural_path=("run", "call"),
+            role="call",
+            source_protocol=SOURCE_PROTOCOL,
+        ),
     )
     # A handler is installed only over an effect the entry performs:
     # a program with no draw performs neither Random nor Param, and
@@ -2581,17 +2587,22 @@ def _run_once(
     ]
     body = _handle_chain(installations, call)
     wrapper = NamedComputation(
-        ComputationId.derive(kernel.module.module, "computation", RUN),
-        RUN,
-        (),
-        tuple(parameters),
-        body,
-        ComputationType(EffectRow(), result_type),
-        SourceOrigin(kernel.module.module, ("run",), "computation", SOURCE_PROTOCOL),
+        id=ComputationId.derive(kernel.module.module, "computation", RUN),
+        name=RUN,
+        telescope=(),
+        parameters=tuple(parameters),
+        body=body,
+        type=ComputationType(effects=EffectRow(), result=result_type),
+        origin=SourceOrigin(
+            module=kernel.module.module,
+            structural_path=("run",),
+            role="computation",
+            source_protocol=SOURCE_PROTOCOL,
+        ),
     )
     module = QiecModule(
-        kernel.module.module,
-        kernel.module.source_protocol,
+        module=kernel.module.module,
+        source_protocol=kernel.module.source_protocol,
         effects=kernel.module.effects,
         instances=kernel.module.instances,
         handlers=tuple(

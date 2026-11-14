@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
+import didactic.api as dx
+
 
 from quivers.qiec.identifiers import ConstructorId, FamilyId, TypeId
 from quivers.qiec.kinds import Telescope, validate_telescope
 from quivers.qiec.types import StaticArgument, TypeConstructorRef, TypeExpr
 
 
-@dataclass(frozen=True, slots=True)
-class FieldDef:
+class FieldDef(QiecModel):
     """One named, typed field of a constructor.
 
     Parameters
@@ -22,11 +24,10 @@ class FieldDef:
     """
 
     name: str
-    type: TypeExpr
+    type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
-@dataclass(frozen=True, slots=True)
-class FamilyDecl:
+class FamilyDecl(QiecModel):
     """A closed or opaque indexed data family.
 
     ``parameters`` are uniform across every constructor.  ``indices`` may be
@@ -52,14 +53,17 @@ class FamilyDecl:
         admits coverage checking; an opaque one does not.
     """
 
-    id: FamilyId
+    id: FamilyId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    parameters: Telescope
-    indices: Telescope
-    constructors: tuple[ConstructorId, ...]
+    parameters: Telescope = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    indices: Telescope = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    constructors: tuple[ConstructorId, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
     closed: bool = True
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Reject a family whose binders or constructors are malformed.
 
         Raises
@@ -92,14 +96,13 @@ class FamilyDecl:
             apart.
         """
         return TypeConstructorRef(
-            TypeId.derive("family", str(self.id)),
-            self.name,
-            (*self.parameters, *self.indices),
+            id=TypeId.derive("family", str(self.id)),
+            name=self.name,
+            telescope=(*self.parameters, *self.indices),
         )
 
 
-@dataclass(frozen=True, slots=True)
-class ConstructorDecl:
+class ConstructorDecl(QiecModel):
     """One GADT constructor.
 
     Constructor-local telescope binders are rigid skolems while a branch is
@@ -125,14 +128,17 @@ class ConstructorDecl:
         matching refines the scrutinee's type.
     """
 
-    id: ConstructorId
-    family: FamilyId
+    id: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    family: FamilyId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
-    telescope: Telescope
-    fields: tuple[FieldDef, ...]
-    result_indices: tuple[StaticArgument, ...]
+    telescope: Telescope = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    fields: tuple[FieldDef, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_indices: tuple[StaticArgument, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Reject a constructor whose telescope or fields are malformed.
 
         Raises

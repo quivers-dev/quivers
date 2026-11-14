@@ -20,7 +20,7 @@ migrations package:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import didactic.api as dx
 import panproto
 
 from quivers.cli.migrations._assets import vcs_root
@@ -74,8 +74,7 @@ def commit_id_for(ref: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class DiffCoverageReport:
+class DiffCoverageReport(dx.Model):
     """The schema diff between two revisions, classified against a
     hop's declared converters.
 
@@ -302,8 +301,7 @@ def check_chain_coverage(
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class BlameReport:
+class BlameReport(dx.Model):
     """Where in the grammar's history a rule first appeared or was
     last seen.
 

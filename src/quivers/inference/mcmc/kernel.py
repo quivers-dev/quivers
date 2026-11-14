@@ -25,12 +25,13 @@ import copy
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 
+import didactic.api as dx
 import torch
 from torch.distributions import Distribution
 from torch.distributions import constraints as _constraints
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.program_steps import Draw, Observe
 from quivers.continuous.param_transforms import _validate_parameter, positive_parameter
 from quivers.continuous.programs import MonadicProgram
@@ -189,9 +190,12 @@ of such values. These are exactly the values a checkpoint stores and
 checkpoint executes no code."""
 
 
-@dataclass
-class KernelState:
-    """Mutable container for one chain's MCMC state.
+class KernelState(ValueModel):
+    """One chain's MCMC state with immutable field updates.
+
+    Tensors and mappings are held by identity. A transition returns a
+    state with its own counters and density fields, retaining the runtime
+    references that remain part of the chain.
 
     Attributes
     ----------
@@ -235,15 +239,46 @@ class KernelState:
         those of the potential conditioned on these values.
     """
 
-    position: torch.Tensor
-    log_density: torch.Tensor
-    grad_log_density: torch.Tensor
+    position: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    log_density: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    grad_log_density: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     step_count: int = 0
     accept_count: int = 0
     diverged: bool = False
-    extras: dict = field(default_factory=dict)
-    stats: dict[str, float] = field(default_factory=dict)
-    gibbs_values: dict[str, torch.Tensor] = field(default_factory=dict)
+    extras: dict[str, StateValue] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    stats: dict[str, float] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    gibbs_values: dict[str, torch.Tensor] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    @dx.model_validator()
+    def _check_runtime_fields(self) -> None:
+        """Validate the state tensors and runtime mapping types.
+
+        Raises
+        ------
+        TypeError
+            If a tensor or mapping has an incompatible runtime type.
+        """
+        for name in ("position", "log_density", "grad_log_density"):
+            if not isinstance(getattr(self, name), torch.Tensor):
+                raise TypeError(f"KernelState.{name} must be a torch.Tensor")
+        for name in ("extras", "stats", "gibbs_values"):
+            value = getattr(self, name)
+            if not isinstance(value, dict) or not all(
+                isinstance(k, str) for k in value
+            ):
+                raise TypeError(f"KernelState.{name} must be a string-keyed dictionary")
+        if not all(isinstance(value, (int, float)) for value in self.stats.values()):
+            raise TypeError("KernelState.stats must contain numeric statistics")
+        if not all(
+            isinstance(value, torch.Tensor) for value in self.gibbs_values.values()
+        ):
+            raise TypeError("KernelState.gibbs_values must contain tensors")
 
     def state_dict(self) -> dict[str, StateValue]:
         """The state as a dictionary a checkpoint can store.
@@ -339,17 +374,20 @@ class KernelState:
                     f"KernelState.from_state_dict: statistic {key!r} is not a float"
                 )
             floats[key] = value
-        return cls(
-            position=position,
-            log_density=log_density,
-            grad_log_density=grad,
-            step_count=step_count,
-            accept_count=accept_count,
-            diverged=diverged,
-            extras=dict(extras),
-            stats=floats,
-            gibbs_values=values,
-        )
+        try:
+            return cls(
+                position=position,
+                log_density=log_density,
+                grad_log_density=grad,
+                step_count=step_count,
+                accept_count=accept_count,
+                diverged=diverged,
+                extras=dict(extras),
+                stats=floats,
+                gibbs_values=values,
+            )
+        except dx.ValidationError as error:
+            raise ValueError(f"KernelState.from_state_dict: {error}") from error
 
 
 class PotentialFn:
@@ -805,8 +843,8 @@ class MCMCKernel(ABC):
         self.is_adapting = flag
 
     @staticmethod
-    def _evaluate_first(state: KernelState, potential: PotentialFn) -> None:
-        """Fill in the log-density and gradient of a chain's first state.
+    def _evaluate_first(state: KernelState, potential: PotentialFn) -> KernelState:
+        """Return a first state with its log-density and gradient evaluated.
 
         A kernel's `init` returns a state whose log-density and
         gradient are placeholders, since the potential is not known to
@@ -819,11 +857,16 @@ class MCMCKernel(ABC):
             The state a transition starts from.
         potential : PotentialFn
             The target.
+
+        Returns
+        -------
+        KernelState
+            An evaluated state for the first transition, otherwise ``state``.
         """
         if state.step_count == 0:
             ld, g = potential.value_and_grad(state.position)
-            state.log_density = ld
-            state.grad_log_density = g
+            return state.with_(log_density=ld, grad_log_density=g)
+        return state
 
     @abstractmethod
     def init(
@@ -835,8 +878,8 @@ class MCMCKernel(ABC):
         initial_position: torch.Tensor,
     ) -> KernelState:
         """Build the starting `KernelState` from the supplied
-        initial flat unconstrained vector. The initial gradient is
-        evaluated here so `step` can re-use it."""
+        initial flat unconstrained vector. The first transition evaluates
+        the initial density and gradient before using them."""
 
     @abstractmethod
     def step(

@@ -80,12 +80,31 @@ def test_adam_fit_allocates_lexicon_and_rule_params():
         steps=5,
         lr=1e-2,
     )
-    lex_params = list(ded._axiom_module.parameters())
-    rule_params = list(ded._rule_module.parameters())
+    lex_params = list(ded.modules["_axiom_module"].parameters())
+    rule_params = list(ded.modules["_rule_module"].parameters())
     # 3 lexicon entries × 1 scalar = 3 params.
     assert len(lex_params) == 3, f"expected 3 lex params, got {len(lex_params)}"
     # fwd_app + bwd_app each fire once on a single binding tuple.
     assert len(rule_params) == 2, f"expected 2 rule params, got {len(rule_params)}"
+
+
+def test_updated_deduction_retains_learned_parameters_and_gradients() -> None:
+    """An immutable rule update retains the system's learned parameter modules."""
+    torch.manual_seed(0)
+    original = _load_ab()
+    updated = original.with_(rules=tuple(original.rules))
+    score = updated(["the", "dog", "runs"]).goal_weight()
+    score.backward()
+    original_parameters = dict(original.named_parameters())
+    updated_parameters = dict(updated.named_parameters())
+    assert len(original_parameters) == 5
+    assert original_parameters.keys() == updated_parameters.keys()
+    for name, parameter in original_parameters.items():
+        assert parameter is updated_parameters[name]
+        assert parameter.grad is not None
+        torch.testing.assert_close(parameter.grad, torch.ones_like(parameter))
+    assert list(original.with_(modules={}).parameters()) == []
+    assert len(list(original.parameters())) == 5
 
 
 def test_map_prior_regulariser_shrinks_params():
@@ -220,12 +239,11 @@ def test_compose_chains_deduction_systems():
     # programs.py and behaves as expected. As a smoke test, call
     # the composed system on an empty input — both injectors
     # return empty lists, the composed chart should be empty.
-    from dataclasses import replace as _dc_replace
 
     def _composed_injector(inp, _d1=d1, _d2=d2):
         return list(_d1(inp).goal_items) + list(_d2.axiom_injector(inp))
 
-    composed = _dc_replace(d2, axiom_injector=_composed_injector)
+    composed = d2.with_(axiom_injector=_composed_injector)
     chart = composed([])
     # Smoke: no items, no error.
     assert sum(1 for _ in chart.chart.items()) == 0

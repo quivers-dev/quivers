@@ -10,12 +10,13 @@ conversions come from ``FAMILY_META``.
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Iterable
 from typing import Callable, Literal
 
+import didactic.api as dx
 import panproto
 
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
     Expr,
     MorphismDecl,
@@ -827,7 +828,7 @@ class BUGSRenderer(RendererBase):
         dr_id = self._fresh(ctx, "dr")
         ctx.sb.vertex(dr_id, "deterministic_relation")
         ctx.sb.edge(body_id, dr_id, "deterministic_relation")
-        lhs_id = self._emit_indexed_name(ctx, name, (_LoopRef(loop_var),), ())
+        lhs_id = self._emit_indexed_name(ctx, name, (_LoopRef(name=loop_var),), ())
         ctx.sb.edge(dr_id, lhs_id, "variable")
         prev_plate = ctx.enclosing_plate
         prev_loops = ctx.enclosing_loop_names
@@ -1230,7 +1231,7 @@ class BUGSRenderer(RendererBase):
         lhs_id = self._emit_indexed_name(
             ctx,
             name,
-            tuple(_LoopRef(n) for n in (column_loop, *loop_names)),
+            tuple(_LoopRef(name=n) for n in (column_loop, *loop_names)),
             (),
         )
         ctx.sb.edge(dr_id, lhs_id, "variable")
@@ -1285,7 +1286,7 @@ class BUGSRenderer(RendererBase):
         rhs_id = self._emit_indexed_name(
             ctx,
             name,
-            (symbol, *(_LoopRef(n) for n in loop_names)),
+            (symbol, *(_LoopRef(name=n) for n in loop_names)),
             (),
         )
         ctx.sb.edge(dr_id, rhs_id, "value")
@@ -2157,7 +2158,7 @@ class BUGSRenderer(RendererBase):
         return self._emit_indexed_name(
             ctx,
             name,
-            tuple(_LoopRef(n) for n in loop_names),
+            tuple(_LoopRef(name=n) for n in loop_names),
             event_slices,
         )
 
@@ -2404,7 +2405,7 @@ class BUGSRenderer(RendererBase):
                 via_inner = ctx.enclosing_loop_names[-1]
                 auto_leading.append(
                     _IndexPiece.shifted(
-                        _IndexPiece.indexed(ctx.via, (_LoopRef(via_inner),))
+                        _IndexPiece.indexed(ctx.via, (_LoopRef(name=via_inner),))
                     )
                 )
                 continue
@@ -2510,7 +2511,7 @@ class BUGSRenderer(RendererBase):
                     via_inner = ctx.enclosing_loop_names[-1]
                     sub.append(
                         _IndexPiece.shifted(
-                            _IndexPiece.indexed(ctx.via, (_LoopRef(via_inner),))
+                            _IndexPiece.indexed(ctx.via, (_LoopRef(name=via_inner),))
                         )
                     )
                     continue
@@ -2849,15 +2850,13 @@ def _as_bugs_ctx(ctx: RenderContext) -> _BugsCtx:
     return ctx
 
 
-@dataclasses.dataclass(frozen=True)
-class _LoopRef:
+class _LoopRef(dx.Model):
     """A bare-identifier reference to a for-loop variable."""
 
     name: str
 
 
-@dataclasses.dataclass(frozen=True)
-class _IndexPiece:
+class _IndexPiece(ValueModel):
     """One piece of an index list, post-substitution.
 
     Either a bare identifier (`ident`), a number literal, or an
@@ -2866,7 +2865,23 @@ class _IndexPiece:
 
     kind: Literal["ident", "number", "indexed", "shifted"]
     text: str
-    children: tuple[_IndexPiece | _LoopRef, ...] = ()
+    children: tuple[_IndexPiece | _LoopRef, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    @dx.model_validator()
+    def _validate_children(self) -> None:
+        """Require index fragments or loop references as recursive children.
+
+        Raises
+        ------
+        TypeError
+            If a child is not an index fragment or loop reference.
+        """
+        if not isinstance(self.children, tuple) or not all(
+            isinstance(child, (_IndexPiece, _LoopRef)) for child in self.children
+        ):
+            raise TypeError("index children must be index pieces or loop references")
 
     @classmethod
     def ident(cls, name: str) -> _IndexPiece:

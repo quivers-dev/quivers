@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import torch.nn as nn
 from quivers.dsl.markov_chains import chain_cells
 from quivers.continuous.deterministic import LearnedFunction
@@ -349,17 +348,17 @@ class Compiler(
         if module is None:
             raise ExecutionFailure(
                 ExecutionDiagnostic(
-                    "qiec-run-module",
-                    "the source has no checked module and no entry points",
-                    name,
+                    code="qiec-run-module",
+                    message="the source has no checked module and no entry points",
+                    computation=name,
                 )
             )
         if module.gap and not any(point.name == name for point in entry_points(module)):
             raise ExecutionFailure(
                 ExecutionDiagnostic(
-                    "qiec-program-gap",
-                    f"entry point {name!r} was not lowered: {module.gap}",
-                    name,
+                    code="qiec-program-gap",
+                    message=f"entry point {name!r} was not lowered: {module.gap}",
+                    computation=name,
                 )
             )
         return entry_point(module, name)
@@ -393,13 +392,12 @@ class Compiler(
         except QiecDiagnosticError as error:
             if error.code != GAP_CODE:
                 raise
-            return replace(
-                lower_qvr_to_qiec(
-                    module,
-                    module_name=self._qiec_module_name,
-                    file_path=self._qiec_file_path,
-                    elaborate_programs=False,
-                ),
+            return lower_qvr_to_qiec(
+                module,
+                module_name=self._qiec_module_name,
+                file_path=self._qiec_file_path,
+                elaborate_programs=False,
+            ).with_(
                 gap=error.message,
             )
 
@@ -479,8 +477,7 @@ class Compiler(
         # rule-attached and chart-attached losses automatically.
         if program.losses is not None:
             for name, system in program.deductions.items():
-                system._loss_registry = program.losses  # type: ignore[attr-defined]
-                system._deduction_name = name  # type: ignore[attr-defined]
+                system.losses[name] = program.losses
         return program
 
     def _attach_host_data_types(self, module: QiecModule) -> None:

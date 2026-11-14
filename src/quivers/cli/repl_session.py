@@ -12,10 +12,11 @@ writes to stdout. That keeps it fully testable from pytest.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import re
-import json
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,30 +26,6 @@ from typing import Any, Literal
 
 import didactic.api as dx
 
-from quivers.core.objects import FinSet
-from quivers.dsl import (
-    Compiler,
-    CompileError,
-    ParseError,
-    parse,
-)
-from quivers.dsl.ast_nodes import (
-    ExportDecl,
-    ExprCompose,
-    ExprIdent,
-    ExprTensorProduct,
-    LetStep,
-    MarginalizeStep,
-    Module,
-    ObserveStep,
-    ProgramStep,
-    SampleStep,
-    Statement,
-    ObjectDecl,
-    ObjectExpr,
-    TypeFromExpr,
-    TypeName,
-)
 from quivers.analysis.chain_shape import ChainShape
 from quivers.analysis.plate_graph import build_plate_graph
 from quivers.analysis.plate_render import (
@@ -65,9 +42,6 @@ from quivers.analysis.scope import (
     resolve_scoped_path,
     scope_children,
 )
-from quivers.dsl.constraints import Violation, check_constraints
-from quivers.dsl.emit import draw_call_to_source, module_to_source
-from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.cli.repl_browse import (
     _children_for_bundle,
     _children_for_contraction,
@@ -82,11 +56,38 @@ from quivers.cli.repl_browse import (
     _children_for_signature,
     _children_for_space,
 )
+from quivers.core.objects import FinSet
+from quivers.dsl import (
+    CompileError,
+    Compiler,
+    ParseError,
+    parse,
+)
+from quivers.dsl.ast_nodes import (
+    ExportDecl,
+    ExprCompose,
+    ExprIdent,
+    ExprTensorProduct,
+    LetStep,
+    MarginalizeStep,
+    Module,
+    ObjectDecl,
+    ObjectExpr,
+    ObserveStep,
+    ProgramStep,
+    SampleStep,
+    Statement,
+    TypeFromExpr,
+    TypeName,
+)
 from quivers.dsl.ast_nodes.qiec import (
     QiecComputationDecl,
     QiecEffectDecl,
     QiecHandlerDecl,
 )
+from quivers.dsl.constraints import Violation, check_constraints
+from quivers.dsl.emit import draw_call_to_source, module_to_source
+from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_tooling import (
     analyze_module,
     prelude_effect,
@@ -98,28 +99,28 @@ from quivers.dsl.qiec_tooling import (
     qualified_operation_signature,
     render_effect,
 )
-from quivers.qiec.checking import KernelRegistry
-from quivers.transpile import UnsupportedConstruct, available_targets, transpile
-from quivers.transpile.qiec_ir import analyze_qiec_capabilities
-from quivers.qiec.effects import render_row
-from quivers.qiec.module import inferred_computation_type, validate_module
 from quivers.qiec import (
     EntryRun,
     ExecutionDiagnostic,
     ExecutionFailure,
     ExecutionResult,
     HostValue,
+    QiecModule,
     RuntimeConfiguration,
     RuntimeSelection,
-    QiecModule,
     entry_points,
     invoke_entry,
     load_runtime_configuration,
     parse_bindings,
     render_entry,
 )
+from quivers.qiec.checking import KernelRegistry
+from quivers.qiec.effects import render_row
 from quivers.qiec.entries import json_value
-
+from quivers.qiec.module import inferred_computation_type, validate_module
+from quivers.transpile import UnsupportedConstruct, available_targets, transpile
+from quivers.transpile.plan import checked_program_plan
+from quivers.transpile.qiec_ir import analyze_qiec_capabilities
 
 Severity = Literal["error", "warning", "info", "ok"]
 
@@ -411,9 +412,6 @@ class ReplSession:
                     )
                 )
             if not capabilities:
-                from quivers.transpile import UnsupportedConstruct
-                from quivers.transpile.plan import checked_program_plan
-
                 try:
                     checked_program_plan(
                         analysis.qiec_module, module, self.options.target
@@ -604,7 +602,9 @@ class ReplSession:
                     f"runtime configuration not found: {path}", code="qiec-run-config"
                 )
             else:
-                self._runtime = RuntimeConfiguration((RuntimeSelection(specification),))
+                self._runtime = RuntimeConfiguration(
+                    selections=(RuntimeSelection(provider=specification),)
+                )
                 # Instantiate now so a misspelled provider fails at :runtime,
                 # not after the next computation has been prepared.
                 self._runtime.instantiate()
@@ -709,7 +709,7 @@ class ReplSession:
             )
         except (ValueError, KeyError) as error:
             self._last_failure = ExecutionDiagnostic(
-                "qiec-run-config", str(error), name
+                code="qiec-run-config", message=str(error), computation=name
             )
             return _err(str(error), code="qiec-run-config")
         except ExecutionFailure as error:
@@ -2296,7 +2296,6 @@ def _render_step_flow(graph, lines: dict[str, str]) -> str:  # type: ignore[no-u
 
 
 def _has_command(name: str) -> bool:
-    import shutil
 
     return shutil.which(name) is not None
 

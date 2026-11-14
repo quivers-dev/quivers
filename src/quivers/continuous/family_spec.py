@@ -24,15 +24,17 @@ duplicating itself across three modules.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Hashable
 from typing import Literal
 
+import didactic.api as dx
 import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.bijectors import Bijector
+from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.param_transforms import (
     TRANSFORM_TO_BIJECTOR,
     closed_interval_clamp,
@@ -106,16 +108,12 @@ def _validate_transform(value: str | Bijector) -> str | Bijector:
     )
 
 
-@dataclass(frozen=True, eq=False)
-class ParamSpec:
+class ParamSpec(ValueModel):
     """Spec for a single parameter of a distribution family.
 
-    A plain frozen dataclass rather than a
-    `dx.Model` because `transform` accepts a
-    [`Bijector`][quivers.continuous.bijectors.Bijector] instance,
-    and the didactic model surface admits only registered scalar
-    types in a union field. String-typed transforms retain a stable
-    identity for panproto-side introspection via `transform_name`.
+    Parameter specifications compare by identity. Their transforms retain
+    live bijector references, and string transforms expose their registry
+    keys through ``transform_name``. Field updates use ``with_``.
 
     Attributes
     ----------
@@ -139,14 +137,40 @@ class ParamSpec:
     """
 
     name: str
-    transform: str | Bijector
+    transform: str | Bijector = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     kind: ParamKind = "scalar"
-    inline_bounds: tuple[float, float] | None = None
+    inline_bounds: tuple[float, float] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
-    def __post_init__(self) -> None:
-        # Validate the transform before storing the immutable field.
-        validated = _validate_transform(self.transform)
-        object.__setattr__(self, "transform", validated)
+    @dx.model_validator()
+    def _validate_parameter(self) -> None:
+        """Validate the transform and optional interval.
+
+        Raises
+        ------
+        TypeError
+            If the transform or bounds have the wrong runtime type.
+        ValueError
+            If a string transform is absent from the registry.
+        """
+        _validate_transform(self.transform)
+        if self.inline_bounds is not None and (
+            not isinstance(self.inline_bounds, tuple)
+            or len(self.inline_bounds) != 2
+            or not all(isinstance(bound, (int, float)) for bound in self.inline_bounds)
+        ):
+            raise TypeError("inline_bounds must be a pair of numbers or None")
+
+    def _local_key(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
+        """Compare parameter specifications by their own identity.
+
+        Returns
+        -------
+        tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]
+            The instance identity with no recursively compared children.
+        """
+        return (id(self),), ()
 
     @property
     def bijector(self) -> Bijector:
@@ -211,18 +235,12 @@ inference rule.
 """
 
 
-@dataclass(frozen=True)
-class FamilySpec:
+class FamilySpec(ValueModel):
     """Single source of truth for a distribution family.
 
-    Implemented as a plain ``@dataclass(frozen=True)`` rather than
-    a `didactic.api.Model` because several fields are
-    Python callables (``fixed_factory_override``,
-    ``mixed_builder_override``) or class objects
-    (``conditional_class_override``) that don't translate to a
-    panproto sort. `ParamSpec` is similarly a plain frozen
-    dataclass since its `transform` field accepts a `Bijector`
-    instance that has no didactic scalar registration.
+    Runtime classes, constraints, and builder callables retain their
+    identities. Parameter specifications retain their identity within
+    the ordered parameter tuple.
 
     Used by:
 
@@ -237,13 +255,13 @@ class FamilySpec:
     name: str
     """DSL key. Programs reference this name in ``<- F(args)`` lines."""
 
-    dist_class: type
+    dist_class: type[D.Distribution] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     """The underlying `torch.distributions` class."""
 
-    params: tuple[ParamSpec, ...]
+    params: tuple[ParamSpec, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     """Ordered parameter specs, matching the dist's positional / keyword API."""
 
-    support: _constraints.Constraint
+    support: _constraints.Constraint = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     """Output support, used by variational guides to pick a bijector."""
 
     discrete: bool = False
@@ -260,19 +278,61 @@ class FamilySpec:
     # Dirichlet's vector concentration, MultivariateNormal's
     # covariance, etc.). Populated as functions by the registering
     # module if needed.
-    fixed_factory_override: Callable | None = field(default=None, repr=False)
+    fixed_factory_override: Callable[..., ContinuousMorphism] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     """Override for the all-literal ``FixedDistribution`` factory."""
 
-    mixed_builder_override: Callable | None = field(default=None, repr=False)
+    mixed_builder_override: Callable[[list[torch.Tensor]], D.Distribution] | None = (
+        dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
+    )
     """Override for the mixed-mode dist builder
     ``(list[Tensor]) -> Distribution``."""
 
-    conditional_class_override: type | None = field(default=None, repr=False)
+    conditional_class_override: type | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     """Override for the conditional class (used by Categorical,
     Bernoulli, MultivariateNormal, etc.)."""
 
+    @dx.model_validator()
+    def _validate_runtime_fields(self) -> None:
+        """Require distribution classes, parameter records, and runtime builders.
+
+        Raises
+        ------
+        TypeError
+            If a class, support, parameter tuple, or builder is malformed.
+        """
+        if not isinstance(self.dist_class, type) or not issubclass(
+            self.dist_class, D.Distribution
+        ):
+            raise TypeError(
+                "dist_class must be a torch.distributions.Distribution class"
+            )
+        if not isinstance(self.params, tuple) or not all(
+            isinstance(param, ParamSpec) for param in self.params
+        ):
+            raise TypeError("params must be a tuple of ParamSpec values")
+        if not isinstance(self.support, _constraints.Constraint):
+            raise TypeError("support must be a torch distribution constraint")
+        for builder in (self.fixed_factory_override, self.mixed_builder_override):
+            if builder is not None and not callable(builder):
+                raise TypeError("family builders must be callable or None")
+        if self.conditional_class_override is not None and not isinstance(
+            self.conditional_class_override, type
+        ):
+            raise TypeError("conditional_class_override must be a class or None")
+
     @property
     def param_names(self) -> tuple[str, ...]:
+        """Return parameter names in constructor order.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Names shared by the inline and conditional constructors.
+        """
         return tuple(p.name for p in self.params)
 
 

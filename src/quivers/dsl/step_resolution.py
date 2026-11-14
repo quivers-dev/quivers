@@ -9,9 +9,9 @@ absent from the QVR wire representation.
 
 from __future__ import annotations
 
-import dataclasses
 import inspect as _inspect
 
+import didactic.api as dx
 import torch.distributions as _td
 
 from quivers.dsl.ast_nodes import (
@@ -159,8 +159,7 @@ class StepResolutionError(ValueError):
         return [f"{kind}: {self.explanation}" for kind in self.kinds]
 
 
-@dataclasses.dataclass(frozen=True)
-class ResolvedDist:
+class ResolvedDist(dx.Model):
     """The (family, args) pair a sample / observe step resolves to.
 
     ``family`` is the canonical QVR family name, exactly as it would
@@ -173,6 +172,17 @@ class ResolvedDist:
     when a sample resolves through a morphism declaration, the
     transpiled output can reference both the underlying family and the
     original morphism name (some backends prefer one or the other).
+
+    Parameters
+    ----------
+    family : str
+        Canonical distribution family name.
+    args : tuple[str or float, ...]
+        Resolved positional arguments in the backend wire representation.
+    original_morphism_name : str
+        Source name from which this distribution was resolved.
+    via : tuple[str, ...]
+        Intermediate aliases visited during resolution.
     """
 
     family: str

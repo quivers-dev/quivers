@@ -10,8 +10,11 @@ record changing first.
 from __future__ import annotations
 
 import inspect
+import copy
 from typing import cast
 
+import didactic.api as dx
+import pytest
 import torch.distributions.constraints as c
 
 from quivers.qiec import BOOL, INT, REAL
@@ -191,3 +194,27 @@ def test_lookup_rejects_unknown_families() -> None:
     else:  # pragma: no cover - the assertion is the test
         raise AssertionError("unknown family accepted")
     assert isinstance(family("Normal"), DistributionFamily)
+
+
+def test_registry_models_freeze_spellings_and_validate_immutable_updates() -> None:
+    """Family updates retain recursive types and reject inconsistent metadata."""
+    normal = family("Normal")
+    targets = {"pyro": "Normal", "stan": "normal"}
+    record = normal.with_(targets=targets)
+    targets["stan"] = "wrong"
+    assert record.targets["stan"] == "normal"
+    reordered = normal.with_(targets={"stan": "normal", "pyro": "Normal"})
+    assert reordered == record
+    assert hash(reordered) == hash(record)
+    assert copy.copy(record) == record
+    assert record.with_(element=INT) != record
+    with pytest.raises(dx.ValidationError, match="repeats a parameter"):
+        record.with_(parameters=(record.parameters[0], record.parameters[0]))
+    with pytest.raises(dx.ValidationError, match="rank below"):
+        record.with_(event_rank=1, event_sources=("loc",))
+    with pytest.raises(dx.ValidationError, match="targets must map"):
+        record.with_(targets={"stan": 1})
+    with pytest.raises(dx.ValidationError, match="element"):
+        record.with_(element="Real")
+    with pytest.raises(dx.ValidationError):
+        record.parameters[0].with_(rank="scalar")

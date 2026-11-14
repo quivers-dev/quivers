@@ -34,6 +34,11 @@ The result is a [`BayesianFit`](../api/formulas/fit.md), a frozen
 [`MCMCResult`](../api/inference/mcmc.md) or a [`Guide`](../api/inference/guide.md)),
 and `.observations` (the observations dict used for inference).
 
+The `seed` argument to [`fit`](../api/formulas/fit.md) controls both model
+initialization and inference. Compilation and fitting run in an isolated CPU
+random state, and the caller's state is restored even if fitting raises an error.
+For MCMC, the same argument initializes the driver's independent chain streams.
+
 <!-- python: skip -->
 ```python
 print(result.qvr_source)                    # canonical .qvr source
@@ -254,6 +259,11 @@ runs the loop for a program, an input with one row, and a fit
 `(num_chains, num_draws, ...)` draws from a custom sampler. The example
 below checks a fit that samples the closed-form posterior of a
 Normal mean, so its ranks should look uniform.
+
+Each simulation and fit uses an independently derived seed. CPU and available
+accelerator random states are restored when either scope exits, including when a
+fit raises an error. A callback that draws from a global Torch generator is thus
+reproducible without changing the caller's random stream.
 
 ```python
 import torch

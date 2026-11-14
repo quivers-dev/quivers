@@ -36,6 +36,9 @@ from __future__ import annotations
 
 from typing import Callable
 
+import panproto
+
+from quivers.cli.migrations import _identity
 from quivers.cli.migrations import v0_2_0_to_v0_3_0 as _hop_2_3
 from quivers.cli.migrations import v0_3_0_to_v0_4_0 as _hop_3_4
 from quivers.cli.migrations import v0_4_0_to_v0_5_0 as _hop_4_5
@@ -47,18 +50,17 @@ from quivers.cli.migrations import v0_11_0_to_v0_14_0 as _hop_11_14
 from quivers.cli.migrations import v0_14_0_to_v0_15_0 as _hop_14_15
 from quivers.cli.migrations import v0_18_0_to_v0_19_0 as _hop_18_19
 from quivers.cli.migrations import v0_19_0_to_head as _hop_19_head
-from quivers.cli.migrations import _identity
 from quivers.cli.migrations._common import MigrationError
 from quivers.cli.migrations._manifest import SCHEMA_COMMITS, revisions_are_identical
 from quivers.cli.migrations._vcs import (
     BlameReport,
     DiffCoverageReport,
+    _open_repo,
     blame_kind,
     check_chain_coverage,
     commit_id_for,
     diff_coverage,
 )
-
 
 _Migrator = Callable[[bytes], bytes]
 
@@ -85,6 +87,62 @@ CHAIN: tuple[str, ...] = (
 first, with ``"HEAD"`` (the current grammar) always last."""
 
 
+# Commit-id index: maps each `CHAIN` release name to its
+# panproto VCS commit id, computed once at module-import time.
+# Released tags resolve directly; releases whose grammar is byte-
+# identical to a predecessor share that predecessor's commit;
+# the explicit final ``HEAD`` entry resolves to the VCS head.
+_COMMIT_IDS: dict[str, str] = {}
+
+
+def _build_commit_index() -> dict[str, str]:
+    """Resolve `CHAIN` through its explicit schema-commit manifest."""
+    if set(CHAIN) != set(SCHEMA_COMMITS):
+        raise MigrationError(
+            "migration chain and schema-commit manifest have different revisions"
+        )
+    out: dict[str, str] = {}
+    for ref in CHAIN:
+        expected = SCHEMA_COMMITS[ref]
+        resolved = commit_id_for(ref)
+        if resolved and resolved != expected:
+            raise MigrationError(
+                f"schema ref {ref!r} resolves to {resolved}, but the migration "
+                f"manifest pins {expected}"
+            )
+        # Some releases deliberately share a schema commit and therefore
+        # have no separate panproto tag. The manifest is the only permitted
+        # alias mechanism; never infer an alias from tag ordering.
+        out[ref] = expected
+    return out
+
+
+def commit_id(ref: str) -> str:
+    """Resolve a release name to its pinned panproto VCS commit id.
+
+    The commit ids come from the schema-commit manifest and are
+    computed once, on first call.
+
+    Parameters
+    ----------
+    ref : str
+        A release name in `CHAIN`, such as ``"v0.19.0"`` or ``"HEAD"``.
+
+    Returns
+    -------
+    str
+        The commit id, or ``""`` when ``ref`` is not in `CHAIN`.
+
+    Raises
+    ------
+    MigrationError
+        When the manifest disagrees with `CHAIN` or with the VCS tags.
+    """
+    if not _COMMIT_IDS:
+        _COMMIT_IDS.update(_build_commit_index())
+    return _COMMIT_IDS.get(ref, "")
+
+
 MIGRATORS: dict[tuple[str, str], _Migrator] = {
     ("v0.2.0", "v0.3.0"): _hop_2_3.migrate,
     ("v0.3.0", "v0.4.0"): _hop_3_4.migrate,
@@ -92,13 +150,21 @@ MIGRATORS: dict[tuple[str, str], _Migrator] = {
     ("v0.5.0", "v0.6.0"): _hop_5_6.migrate,
     ("v0.6.0", "v0.7.0"): _hop_6_7.migrate,
     ("v0.7.0", "v0.9.0"): _hop_7_9.migrate,
-    ("v0.9.0", "v0.10.0"): _identity.migrator("v0.9.0", "v0.10.0"),
+    ("v0.9.0", "v0.10.0"): _identity.migrator(
+        "v0.9.0", "v0.10.0", resolve_commit=commit_id
+    ),
     ("v0.10.0", "v0.11.0"): _hop_10_11.migrate,
     ("v0.11.0", "v0.14.0"): _hop_11_14.migrate,
     ("v0.14.0", "v0.15.0"): _hop_14_15.migrate,
-    ("v0.15.0", "v0.16.0"): _identity.migrator("v0.15.0", "v0.16.0"),
-    ("v0.16.0", "v0.17.0"): _identity.migrator("v0.16.0", "v0.17.0"),
-    ("v0.17.0", "v0.18.0"): _identity.migrator("v0.17.0", "v0.18.0"),
+    ("v0.15.0", "v0.16.0"): _identity.migrator(
+        "v0.15.0", "v0.16.0", resolve_commit=commit_id
+    ),
+    ("v0.16.0", "v0.17.0"): _identity.migrator(
+        "v0.16.0", "v0.17.0", resolve_commit=commit_id
+    ),
+    ("v0.17.0", "v0.18.0"): _identity.migrator(
+        "v0.17.0", "v0.18.0", resolve_commit=commit_id
+    ),
     ("v0.18.0", "v0.19.0"): _hop_18_19.migrate,
     ("v0.19.0", "HEAD"): _hop_19_head.migrate,
 }
@@ -178,62 +244,6 @@ def _validate_registry() -> frozenset[tuple[str, str]]:
     return declared_identity
 
 
-# Commit-id index: maps each `CHAIN` release name to its
-# panproto VCS commit id, computed once at module-import time.
-# Released tags resolve directly; releases whose grammar is byte-
-# identical to a predecessor share that predecessor's commit;
-# the explicit final ``HEAD`` entry resolves to the VCS head.
-_COMMIT_IDS: dict[str, str] = {}
-
-
-def _build_commit_index() -> dict[str, str]:
-    """Resolve `CHAIN` through its explicit schema-commit manifest."""
-    if set(CHAIN) != set(SCHEMA_COMMITS):
-        raise MigrationError(
-            "migration chain and schema-commit manifest have different revisions"
-        )
-    out: dict[str, str] = {}
-    for ref in CHAIN:
-        expected = SCHEMA_COMMITS[ref]
-        resolved = commit_id_for(ref)
-        if resolved and resolved != expected:
-            raise MigrationError(
-                f"schema ref {ref!r} resolves to {resolved}, but the migration "
-                f"manifest pins {expected}"
-            )
-        # Some releases deliberately share a schema commit and therefore
-        # have no separate panproto tag. The manifest is the only permitted
-        # alias mechanism; never infer an alias from tag ordering.
-        out[ref] = expected
-    return out
-
-
-def commit_id(ref: str) -> str:
-    """Resolve a release name to its pinned panproto VCS commit id.
-
-    The commit ids come from the schema-commit manifest and are
-    computed once, on first call.
-
-    Parameters
-    ----------
-    ref : str
-        A release name in `CHAIN`, such as ``"v0.19.0"`` or ``"HEAD"``.
-
-    Returns
-    -------
-    str
-        The commit id, or ``""`` when ``ref`` is not in `CHAIN`.
-
-    Raises
-    ------
-    MigrationError
-        When the manifest disagrees with `CHAIN` or with the VCS tags.
-    """
-    if not _COMMIT_IDS:
-        _COMMIT_IDS.update(_build_commit_index())
-    return _COMMIT_IDS.get(ref, "")
-
-
 def vcs_coverage_report() -> list[DiffCoverageReport]:
     """Check every registered hop against the grammar's schema diff.
 
@@ -260,7 +270,7 @@ def vcs_coverage_report() -> list[DiffCoverageReport]:
         from_ref = CHAIN[i]
         to_ref = CHAIN[i + 1]
         if (from_ref, to_ref) in identity_pairs:
-            _identity.validate_identity_pair(from_ref, to_ref)
+            _identity.validate_identity_pair(from_ref, to_ref, resolve_commit=commit_id)
         decl = COVERAGE.get((from_ref, to_ref), frozenset())
         from_id = commit_id(from_ref)
         to_id = commit_id(to_ref)
@@ -277,8 +287,6 @@ def vcs_coverage_report() -> list[DiffCoverageReport]:
             continue
         # Re-implement diff_coverage's body using the resolved
         # commit ids directly to avoid double-resolution.
-        from quivers.cli.migrations._vcs import _open_repo
-        import panproto
 
         repo = _open_repo()
         src_schema = repo.schema_at(from_id)
@@ -356,7 +364,7 @@ def compose_migration(from_ref: str, to_ref: str) -> _Migrator:
     """
     pairs = _chain_slice(from_ref, to_ref)
     if not pairs:
-        return _identity.migrator(from_ref, to_ref)
+        return _identity.migrator(from_ref, to_ref, resolve_commit=commit_id)
     missing = [pair for pair in pairs if pair not in MIGRATORS]
     if missing:
         raise MigrationError(

@@ -30,7 +30,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import ClassVar
+from importlib import import_module
+from typing import TYPE_CHECKING, ClassVar
 
 import didactic.api as dx
 import torch
@@ -41,9 +42,12 @@ from quivers.continuous.programs import MonadicProgram
 from quivers.effects.subsample import active_subsets
 from quivers.inference.registry import LatentRegistry
 
-# A module reference, resolved at call time: the effects package imports
-# this module while `quivers.inference.trace` is still initializing.
-import quivers.inference.trace as _trace
+# Module lookup bypasses the package's same-named function export and
+# retains the module while the effects and inference packages initialize.
+if TYPE_CHECKING:
+    import quivers.inference.trace as _trace
+else:
+    _trace = import_module("quivers.inference.trace")
 
 
 class GuideDraw(ValueModel):

@@ -206,14 +206,15 @@ this order, in which each group imports only from the groups before it:
 5. `data/` and `formulas/`, on group 4.
 6. `cli/`, on group 4, and then `lsp/` and `kernel/`, on `cli/`.
 
-Imports inside functions add further edges, among them `categorical/` to
-`enriched/`, `core/` to `stochastic/`, and `cli/` to `lsp/` and `kernel/`.
+Deferred package exports break import cycles between compiler, deduction,
+inference, and stochastic modules. CLI commands load their implementations
+when selected.
 
 ## Design principles
 
 - **Tensors as morphisms:** a morphism between finite sets is a PyTorch tensor, so automatic differentiation and GPU execution come from PyTorch.
 - **Values are didactic models:** record values (AST nodes, `SetObject` and `ContinuousSpace` variants, syntactic categories, rule systems, the arrow instances) are frozen [didactic](https://pypi.org/project/didactic/) `dx.Model` values, with structural equality, JSON round trips, and checks that relate several fields. Recursive sums are `dx.TaggedUnion` roots with a `kind` discriminator.
-- **Mutable tensor holders:** `Presheaf`, `Weight`, `SampleSite`, and `Trace` hold tensors that inference updates in place, and are Python dataclasses.
+- **Runtime fields retain identity:** [`Presheaf`](../api/enriched/yoneda.md), [`Weight`](../api/enriched/weighted_limits.md), [`SampleSite`](../api/effects/trace_types.md), and [`Trace`](../api/effects/trace_types.md) are immutable models whose tensor fields retain their live references and gradients. Mutable mappings remain mutable, and `with_` constructs a validated field update.
 - **Lazy composition:** composing morphisms builds a graph, and the tensor is computed when it is read.
 - **Checked types:** constructors and the compiler check domains and codomains before any tensor is evaluated. Constraints that depend on runtime data are checked when the data arrive.
 - **PyTorch modules:** every morphism has a `.module()` method that returns an `nn.Module`, so it trains in an ordinary PyTorch loop.

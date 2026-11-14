@@ -9,12 +9,15 @@ consequently never become serializable QIEC fields.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
 from enum import Enum
 import math
 import operator
 from typing import cast
 
+import didactic.api as dx
+
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import (
     ELEMENT,
     ELEMENT_BINDER,
@@ -71,27 +74,33 @@ from quivers.qiec.types import (
 _constructor = builtin_constructor
 
 _A_BINDER = ELEMENT_BINDER
-_K_BINDER = TypeBinder("k")
-_P_BINDER = TypeBinder("payload")
-_S_BINDER = TypeBinder("state")
-_ANSWER_BINDER = TypeBinder("answer")
+_K_BINDER = TypeBinder(name="k")
+_P_BINDER = TypeBinder(name="payload")
+_S_BINDER = TypeBinder(name="state")
+_ANSWER_BINDER = TypeBinder(name="answer")
 A = ELEMENT
-K = TypeVariable("k")
-PAYLOAD = TypeVariable("payload")
-STATE = TypeVariable("state")
-ANSWER = TypeVariable("answer")
+K = TypeVariable(name="k")
+PAYLOAD = TypeVariable(name="payload")
+STATE = TypeVariable(name="state")
+ANSWER = TypeVariable(name="answer")
 
 CHOICES_CONSTRUCTOR = _constructor("Choices", _A_BINDER)
 CHOICE_RESULTS_CONSTRUCTOR = _constructor("ChoiceResults", _A_BINDER)
 STATE_RESULT_CONSTRUCTOR = _constructor("StateResult", _A_BINDER, _S_BINDER)
 WEIGHTED_RESULT_CONSTRUCTOR = _constructor("WeightedResult", _A_BINDER, _K_BINDER)
 
-SITE_A = TypeApplication(SITE_CONSTRUCTOR, (A,))
-SAMPLEABLE_A = TypeApplication(SAMPLEABLE_CONSTRUCTOR, (A,))
-CHOICES_A = TypeApplication(CHOICES_CONSTRUCTOR, (A,))
-CHOICE_RESULTS_A = TypeApplication(CHOICE_RESULTS_CONSTRUCTOR, (A,))
-STATE_RESULT = TypeApplication(STATE_RESULT_CONSTRUCTOR, (ANSWER, STATE))
-WEIGHTED_RESULT = TypeApplication(WEIGHTED_RESULT_CONSTRUCTOR, (ANSWER, K))
+SITE_A = TypeApplication(constructor=SITE_CONSTRUCTOR, arguments=(A,))
+SAMPLEABLE_A = TypeApplication(constructor=SAMPLEABLE_CONSTRUCTOR, arguments=(A,))
+CHOICES_A = TypeApplication(constructor=CHOICES_CONSTRUCTOR, arguments=(A,))
+CHOICE_RESULTS_A = TypeApplication(
+    constructor=CHOICE_RESULTS_CONSTRUCTOR, arguments=(A,)
+)
+STATE_RESULT = TypeApplication(
+    constructor=STATE_RESULT_CONSTRUCTOR, arguments=(ANSWER, STATE)
+)
+WEIGHTED_RESULT = TypeApplication(
+    constructor=WEIGHTED_RESULT_CONSTRUCTOR, arguments=(ANSWER, K)
+)
 
 
 def _effect_ref(name: str) -> EffectRef:
@@ -108,7 +117,7 @@ def _effect_ref(name: str) -> EffectRef:
         The declaration reference, in the ``prelude`` namespace so it
         names the same interface in every module.
     """
-    return EffectRef(EffectId.derive("prelude", name), name)
+    return EffectRef(id=EffectId.derive("prelude", name), name=name)
 
 
 def _operation_id(effect: EffectRef, name: str) -> OperationId:
@@ -135,15 +144,18 @@ RANDOM = _effect_ref("Random")
 RANDOM_SAMPLE = _operation_id(RANDOM, "sample")
 """``Random.sample``: draw a value of type ``A`` at a site from a ``Sampleable[A]``."""
 RANDOM_EFFECT = EffectDef(
-    RANDOM,
-    (),
-    (
+    ref=RANDOM,
+    telescope=(),
+    operations=(
         OperationDef(
-            RANDOM_SAMPLE,
-            "sample",
-            (_A_BINDER,),
-            (ArgumentDef("site", SITE_A), ArgumentDef("sampleable", SAMPLEABLE_A)),
-            A,
+            id=RANDOM_SAMPLE,
+            name="sample",
+            telescope=(_A_BINDER,),
+            arguments=(
+                ArgumentDef(name="site", type=SITE_A),
+                ArgumentDef(name="sampleable", type=SAMPLEABLE_A),
+            ),
+            result_type=A,
         ),
     ),
 )
@@ -154,9 +166,17 @@ SCORE = _effect_ref("Score")
 SCORE_ADD = _operation_id(SCORE, "add")
 """``Score.add``: add one ``LogWeight`` to the running score."""
 SCORE_EFFECT = EffectDef(
-    SCORE,
-    (),
-    (OperationDef(SCORE_ADD, "add", (), (ArgumentDef("weight", LOG_WEIGHT),), UNIT),),
+    ref=SCORE,
+    telescope=(),
+    operations=(
+        OperationDef(
+            id=SCORE_ADD,
+            name="add",
+            telescope=(),
+            arguments=(ArgumentDef(name="weight", type=LOG_WEIGHT),),
+            result_type=UNIT,
+        ),
+    ),
 )
 """The declaration of :data:`SCORE`."""
 
@@ -167,16 +187,18 @@ STATE_GET = _operation_id(STATE_EFFECT_REF, "get")
 STATE_PUT = _operation_id(STATE_EFFECT_REF, "put")
 """``State.put``: overwrite the cell."""
 STATE_EFFECT = EffectDef(
-    STATE_EFFECT_REF,
-    (_S_BINDER,),
-    (
-        OperationDef(STATE_GET, "get", (), (), STATE),
+    ref=STATE_EFFECT_REF,
+    telescope=(_S_BINDER,),
+    operations=(
         OperationDef(
-            STATE_PUT,
-            "put",
-            (),
-            (ArgumentDef("value", STATE),),
-            UNIT,
+            id=STATE_GET, name="get", telescope=(), arguments=(), result_type=STATE
+        ),
+        OperationDef(
+            id=STATE_PUT,
+            name="put",
+            telescope=(),
+            arguments=(ArgumentDef(name="value", type=STATE),),
+            result_type=UNIT,
         ),
     ),
 )
@@ -187,15 +209,15 @@ ABORT = _effect_ref("Abort")
 ABORT_ABORT = _operation_id(ABORT, "abort")
 """``Abort.abort``: stop the computation with an error payload."""
 ABORT_EFFECT = EffectDef(
-    ABORT,
-    (_P_BINDER,),
-    (
+    ref=ABORT,
+    telescope=(_P_BINDER,),
+    operations=(
         OperationDef(
-            ABORT_ABORT,
-            "abort",
-            (_A_BINDER,),
-            (ArgumentDef("error", PAYLOAD),),
-            A,
+            id=ABORT_ABORT,
+            name="abort",
+            telescope=(_A_BINDER,),
+            arguments=(ArgumentDef(name="error", type=PAYLOAD),),
+            result_type=A,
         ),
     ),
 )
@@ -206,15 +228,15 @@ CHOOSE = _effect_ref("Choose")
 CHOOSE_CHOOSE = _operation_id(CHOOSE, "choose")
 """``Choose.choose``: pick one of a collection of alternatives."""
 CHOOSE_EFFECT = EffectDef(
-    CHOOSE,
-    (),
-    (
+    ref=CHOOSE,
+    telescope=(),
+    operations=(
         OperationDef(
-            CHOOSE_CHOOSE,
-            "choose",
-            (_A_BINDER,),
-            (ArgumentDef("alternatives", CHOICES_A),),
-            A,
+            id=CHOOSE_CHOOSE,
+            name="choose",
+            telescope=(_A_BINDER,),
+            arguments=(ArgumentDef(name="alternatives", type=CHOICES_A),),
+            result_type=A,
         ),
     ),
 )
@@ -225,37 +247,37 @@ WEIGHT = _effect_ref("Weight")
 WEIGHT_ADD = _operation_id(WEIGHT, "add")
 """``Weight.add``: fold one weight into the running total in the handler's semiring."""
 WEIGHT_EFFECT = EffectDef(
-    WEIGHT,
-    (_K_BINDER,),
-    (
+    ref=WEIGHT,
+    telescope=(_K_BINDER,),
+    operations=(
         OperationDef(
-            WEIGHT_ADD,
-            "add",
-            (),
-            (ArgumentDef("weight", K),),
-            UNIT,
+            id=WEIGHT_ADD,
+            name="add",
+            telescope=(),
+            arguments=(ArgumentDef(name="weight", type=K),),
+            result_type=UNIT,
         ),
     ),
 )
 """The declaration of :data:`WEIGHT`; :func:`weight_effect` applies it."""
 
-_X_BINDER = TypeBinder("input")
-INPUT = TypeVariable("input")
+_X_BINDER = TypeBinder(name="input")
+INPUT = TypeVariable(name="input")
 
 COMPUTE = _effect_ref("Compute")
 """``Compute[X, A]``: the prelude interface for a host computation; see :data:`COMPUTE_EFFECT`."""
 COMPUTE_APPLY = _operation_id(COMPUTE, "apply")
 """``Compute.apply``: run the host computation on an argument of type ``X``."""
 COMPUTE_EFFECT = EffectDef(
-    COMPUTE,
-    (_X_BINDER, _ANSWER_BINDER),
-    (
+    ref=COMPUTE,
+    telescope=(_X_BINDER, _ANSWER_BINDER),
+    operations=(
         OperationDef(
-            COMPUTE_APPLY,
-            "apply",
-            (),
-            (ArgumentDef("argument", INPUT),),
-            ANSWER,
+            id=COMPUTE_APPLY,
+            name="apply",
+            telescope=(),
+            arguments=(ArgumentDef(name="argument", type=INPUT),),
+            result_type=ANSWER,
         ),
     ),
 )
@@ -272,15 +294,15 @@ PARAM = _effect_ref("Param")
 PARAM_GET = _operation_id(PARAM, "get")
 """``Param.get``: read a learned parameter by name."""
 PARAM_EFFECT = EffectDef(
-    PARAM,
-    (),
-    (
+    ref=PARAM,
+    telescope=(),
+    operations=(
         OperationDef(
-            PARAM_GET,
-            "get",
-            (_A_BINDER,),
-            (ArgumentDef("name", STRING),),
-            A,
+            id=PARAM_GET,
+            name="get",
+            telescope=(_A_BINDER,),
+            arguments=(ArgumentDef(name="name", type=STRING),),
+            result_type=A,
         ),
     ),
 )
@@ -530,13 +552,16 @@ def _handler_def(
         behavior is a runtime attachment, so the declaration is foreign.
     """
     return HandlerDef(
-        HandlerId.derive("prelude", name, key),
-        name,
-        effect,
-        tuple(HandlerClauseDef(operation, grade) for operation, grade in clauses),
-        input_type,
-        output_type,
-        introduced,
+        id=HandlerId.derive("prelude", name, key),
+        name=name,
+        effect=effect,
+        clauses=tuple(
+            HandlerClauseDef(operation=operation, grade=grade)
+            for operation, grade in clauses
+        ),
+        input_type=input_type,
+        output_type=output_type,
+        introduced=introduced,
         total=total,
         telescope=telescope,
     )
@@ -758,11 +783,15 @@ def draw_handler(
             if draw is not None
             else _default_draw(sampleable)
         )
-        return TailResume(value)
+        return TailResume(value=value)
 
     return RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)},
+        definition=definition,
+        clauses={
+            RANDOM_SAMPLE: RuntimeClause(
+                invoke=sample, result_validator=result_validator
+            )
+        },
         duplicable_context=duplicable_context,
     )
 
@@ -1082,27 +1111,57 @@ def enumerate_handler(
         return _reshape(marginals, widest)
 
     return RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)},
+        definition=definition,
+        clauses={
+            RANDOM_SAMPLE: RuntimeClause(
+                invoke=sample, result_validator=result_validator
+            )
+        },
         duplicable_context=True,
     )
 
 
-@dataclass(slots=True)
-class ScoreAccumulator:
+class ScoreAccumulator(QiecModel):
     """Mutable result owned by one installed Score handler.
+
+    The one-element state cell and contribution list retain identity.
 
     Parameters
     ----------
-    total
-        The running combination of every contribution so far, starting at
-        the handler's identity.
+    contents
+        A one-element list holding the running total, starting at the
+        handler's identity. The ``total`` property reads its value.
     contributions
         Every contribution in the order it was added.
     """
 
-    total: object
-    contributions: list[object] = field(default_factory=list)
+    contents: list[HeldValue] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    contributions: list[HeldValue] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    @dx.model_validator()
+    def _validate_cell(self) -> None:
+        """Require one stored total.
+
+        Raises
+        ------
+        ValueError
+            If the cell does not hold exactly one value.
+        """
+        if len(self.contents) != 1:
+            raise ValueError("a score accumulator needs exactly one total")
+
+    @property
+    def total(self) -> HeldValue:
+        """The accumulated total.
+
+        Returns
+        -------
+        HeldValue
+            The current value of the owned state cell.
+        """
+        return self.contents[0]
 
 
 def score_handler(
@@ -1151,10 +1210,12 @@ def score_handler(
         the accumulator each installation publishes into when its
         computation completes.
     """
-    accumulator = ScoreAccumulator(identity)
+    accumulator = ScoreAccumulator(contents=[identity])
     checked_total = total_validator or weight_validator
     output_type = (
-        TypeApplication(WEIGHTED_RESULT_CONSTRUCTOR, (answer_type, LOG_WEIGHT))
+        TypeApplication(
+            constructor=WEIGHTED_RESULT_CONSTRUCTOR, arguments=(answer_type, LOG_WEIGHT)
+        )
         if expose_total
         else answer_type
     )
@@ -1177,7 +1238,7 @@ def score_handler(
             A handler with its own state, so two installations of this
             declaration do not share it.
         """
-        local = ScoreAccumulator(identity)
+        local = ScoreAccumulator(contents=[identity])
 
         def add(
             request: RuntimeRequest,
@@ -1210,10 +1271,10 @@ def score_handler(
             (weight,) = _expect_arguments(request, 1, definition.name)
             _require(weight, weight_validator, LOG_WEIGHT, "score contribution")
             local.contributions.append(weight)
-            local.total = combine(local.total, weight)
+            local.contents[0] = combine(local.total, weight)
             if observer is not None:
                 observer(request, weight)
-            return TailResume(None)
+            return TailResume(value=None)
 
         def finish(value: object, _context: ClauseContext) -> object:
             """Answer the handled computation's return.
@@ -1235,12 +1296,12 @@ def score_handler(
 
         def publish() -> None:
             """Copy this installation's total and contributions to the accumulator."""
-            accumulator.total = local.total
+            accumulator.contents[0] = local.total
             accumulator.contributions[:] = local.contributions
 
         return RuntimeHandler(
-            definition,
-            {SCORE_ADD: RuntimeClause(add, _unit)},
+            definition=definition,
+            clauses={SCORE_ADD: RuntimeClause(invoke=add, result_validator=_unit)},
             return_clause=finish,
             input_validator=answer_validator,
             output_validator=(
@@ -1253,7 +1314,7 @@ def score_handler(
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype, accumulator
 
 
@@ -1388,31 +1449,30 @@ def _emit_score(
         dynamic_path = request.core.origin.dynamic_path
     else:
         dynamic_path = (*request.core.origin.dynamic_path, *request.dynamic_path)
-    generated_origin = request.core.origin.__class__(
-        SourceOrigin(
-            source.module,
-            (*source.structural_path, "generated", role),
-            role,
-            source.source_protocol,
-            source.file,
-            source.line,
-            source.column,
+    generated_origin = request.core.origin.with_(
+        origin=SourceOrigin(
+            module=source.module,
+            structural_path=(*source.structural_path, "generated", role),
+            role=role,
+            source_protocol=source.source_protocol,
+            file=source.file,
+            line=source.line,
+            column=source.column,
         ),
-        dynamic_path,
-        request.core.origin.resumption_path,
-        "duplicate",
-        parents,
+        dynamic_path=dynamic_path,
+        relation="duplicate",
+        parents=parents,
     )
     context.evaluate(
         Perform(
-            EffectRequest(
-                score_instance,
-                SCORE,
-                SCORE_ADD,
-                (),
-                (weight_ref,),
-                UNIT,
-                generated_origin,
+            request=EffectRequest(
+                instance=score_instance,
+                effect=SCORE,
+                operation=SCORE_ADD,
+                static_arguments=(),
+                arguments=(weight_ref,),
+                result_type=UNIT,
+                origin=generated_origin,
             )
         )
     )
@@ -1470,7 +1530,9 @@ def condition_handler(
         key=key,
         input_type=answer_type,
         output_type=answer_type,
-        introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+        introduced=EffectRow(
+            entries=(RowEntry(instance=score_instance, effect=SCORE),)
+        ),
         total=False,
         telescope=_generic_binders(answer_type=answer_type),
     )
@@ -1539,7 +1601,7 @@ def condition_handler(
                 weight_validator,
                 role="condition-score",
             )
-            return TailResume(value)
+            return TailResume(value=value)
 
         def finish(value: object, _context: ClauseContext) -> object:
             """Answer the handled computation's return.
@@ -1573,14 +1635,18 @@ def condition_handler(
             return value
 
         return RuntimeHandler(
-            definition,
-            {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)},
+            definition=definition,
+            clauses={
+                RANDOM_SAMPLE: RuntimeClause(
+                    invoke=sample, result_validator=result_validator
+                )
+            },
             return_clause=finish,
             mutable_context=True,
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype
 
 
@@ -1663,7 +1729,7 @@ def replay_handler(
     if policy is ReplayPolicy.CLAMP_AND_SCORE and score_instance is None:
         raise ValueError("scored replay requires a Score effect instance")
     introduced = (
-        EffectRow((RowEntry(score_instance, SCORE),))
+        EffectRow(entries=(RowEntry(instance=score_instance, effect=SCORE),))
         if score_instance is not None and policy is ReplayPolicy.CLAMP_AND_SCORE
         else EffectRow()
     )
@@ -1770,7 +1836,7 @@ def replay_handler(
                     weight_validator,
                     role="replay-score",
                 )
-            return TailResume(value)
+            return TailResume(value=value)
 
         def finish(value: object, _context: ClauseContext) -> object:
             """Answer the handled computation's return.
@@ -1802,20 +1868,26 @@ def replay_handler(
             return value
 
         return RuntimeHandler(
-            definition,
-            {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)},
+            definition=definition,
+            clauses={
+                RANDOM_SAMPLE: RuntimeClause(
+                    invoke=sample, result_validator=result_validator
+                )
+            },
             return_clause=finish,
             mutable_context=True,
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype
 
 
-@dataclass(frozen=True, slots=True)
-class TraceEvent:
+class TraceEvent(QiecModel):
     """One recorded request and the value produced for it.
+
+    Addresses and identifiers compare by value. Host arguments and the
+    result retain identity, including their tensor gradients.
 
     Parameters
     ----------
@@ -1834,16 +1906,17 @@ class TraceEvent:
         How the value was produced, such as ``"forwarded"``.
     """
 
-    address: tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]]
-    instance: EffectInstanceId
-    operation: OperationId
-    arguments: tuple[object, ...]
-    result: object
+    address: tuple[str, tuple[tuple[str, str | int], ...], tuple[int, ...]] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    operation: OperationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    arguments: tuple[HeldValue, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    result: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     mode: str
 
 
-@dataclass(slots=True)
-class TraceRecorder:
+class TraceRecorder(QiecModel):
     """Ordered trace; repeated dynamic addresses remain observable as events.
 
     Parameters
@@ -1852,7 +1925,9 @@ class TraceRecorder:
         The recorded events, in order; empty to start.
     """
 
-    events: list[TraceEvent] = field(default_factory=list)
+    events: list[TraceEvent] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def record(self, request: RuntimeRequest, result: object, *, mode: str) -> object:
         """Record one request and the value produced for it.
@@ -1874,12 +1949,12 @@ class TraceRecorder:
         """
         self.events.append(
             TraceEvent(
-                request.address,
-                request.instance,
-                request.operation,
-                request.arguments,
-                result,
-                mode,
+                address=request.address,
+                instance=request.instance,
+                operation=request.operation,
+                arguments=request.arguments,
+                result=result,
+                mode=mode,
             )
         )
         return result
@@ -1971,7 +2046,9 @@ def trace_handler(
                 handler's reply.
             """
             return Forward(
-                lambda result: recorder.record(request, result, mode="forwarded")
+                on_response=lambda result: recorder.record(
+                    request, result, mode="forwarded"
+                )
             )
 
         try:
@@ -2036,27 +2113,52 @@ def trace_handler(
                 assert hook is not None
                 return hook(result)
 
-            return Forward(validate_and_record)
+            return Forward(on_response=validate_and_record)
 
-        return RuntimeClause(checked_clause, validator)
+        return RuntimeClause(invoke=checked_clause, result_validator=validator)
 
     return RuntimeHandler(
-        definition,
-        {operation: make_clause(operation) for operation in operation_tuple},
+        definition=definition,
+        clauses={operation: make_clause(operation) for operation in operation_tuple},
     )
 
 
-@dataclass(slots=True)
-class StateCell:
+class StateCell(QiecModel):
     """The mutable cell owned by one installed State handler.
+
+    The one-element container retains identity through record updates.
 
     Parameters
     ----------
-    value
-        The current state.
+    contents
+        A one-element list holding the current state. The ``value``
+        property reads it.
     """
 
-    value: object
+    contents: list[HeldValue] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+    @dx.model_validator()
+    def _validate_cell(self) -> None:
+        """Require one stored state.
+
+        Raises
+        ------
+        ValueError
+            If the cell does not hold exactly one value.
+        """
+        if len(self.contents) != 1:
+            raise ValueError("a state cell needs exactly one value")
+
+    @property
+    def value(self) -> HeldValue:
+        """The current state.
+
+        Returns
+        -------
+        HeldValue
+            The value held by this installation.
+        """
+        return self.contents[0]
 
 
 def state_handler(
@@ -2102,7 +2204,7 @@ def state_handler(
         If ``initial`` does not inhabit ``state_type``.
     """
     _require(initial, state_validator, state_type, "initial state")
-    cell = StateCell(initial)
+    cell = StateCell(contents=[initial])
     effect = state_effect(state_type)
     definition = _handler_def(
         "State.run",
@@ -2114,7 +2216,10 @@ def state_handler(
         key=key,
         input_type=answer_type,
         output_type=(
-            TypeApplication(STATE_RESULT_CONSTRUCTOR, (answer_type, state_type))
+            TypeApplication(
+                constructor=STATE_RESULT_CONSTRUCTOR,
+                arguments=(answer_type, state_type),
+            )
             if expose_final
             else answer_type
         ),
@@ -2133,7 +2238,7 @@ def state_handler(
             A handler with its own state, so two installations of this
             declaration do not share it.
         """
-        local = StateCell(initial)
+        local = StateCell(contents=[initial])
 
         def get(
             request: RuntimeRequest,
@@ -2162,7 +2267,7 @@ def state_handler(
                 If the request carries any argument.
             """
             _expect_arguments(request, 0, definition.name)
-            return TailResume(local.value)
+            return TailResume(value=local.value)
 
         def put(
             request: RuntimeRequest,
@@ -2194,8 +2299,8 @@ def state_handler(
             """
             (new_value,) = _expect_arguments(request, 1, definition.name)
             _require(new_value, state_validator, state_type, "state update")
-            local.value = new_value
-            return TailResume(None)
+            local.contents[0] = new_value
+            return TailResume(value=None)
 
         def finish(value: object, _context: ClauseContext) -> object:
             """Answer the handled computation's return.
@@ -2217,13 +2322,13 @@ def state_handler(
 
         def publish() -> None:
             """Copy this installation's final state to the shared cell."""
-            cell.value = local.value
+            cell.contents[0] = local.value
 
         return RuntimeHandler(
-            definition,
-            {
-                STATE_GET: RuntimeClause(get, state_validator),
-                STATE_PUT: RuntimeClause(put, _unit),
+            definition=definition,
+            clauses={
+                STATE_GET: RuntimeClause(invoke=get, result_validator=state_validator),
+                STATE_PUT: RuntimeClause(invoke=put, result_validator=_unit),
             },
             return_clause=finish,
             input_validator=answer_validator,
@@ -2237,13 +2342,14 @@ def state_handler(
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype, cell
 
 
-@dataclass(frozen=True, slots=True)
-class Aborted:
+class Aborted(QiecModel):
     """The default answer of an abort handler, wrapping the abort payload.
+
+    The host payload retains its identity.
 
     Parameters
     ----------
@@ -2251,12 +2357,12 @@ class Aborted:
         The payload the computation aborted with.
     """
 
-    error: object
+    error: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
 def abort_handler(
     *,
-    on_abort: Callable[[object], object] = Aborted,
+    on_abort: Callable[[object], object] = lambda error: Aborted(error=error),
     result_validator: RuntimeValidator = lambda _value: True,
     error_type: TypeExpr = PAYLOAD,
     input_type: TypeExpr = ANSWER,
@@ -2346,8 +2452,10 @@ def abort_handler(
         return on_abort(error)
 
     return RuntimeHandler(
-        definition,
-        {ABORT_ABORT: RuntimeClause(abort, result_validator)},
+        definition=definition,
+        clauses={
+            ABORT_ABORT: RuntimeClause(invoke=abort, result_validator=result_validator)
+        },
         output_validator=output_validator,
         duplicable_context=duplicable_context,
     )
@@ -2402,7 +2510,9 @@ def choose_handler(
         ((CHOOSE_CHOOSE, ResumptionGrade.UNRESTRICTED),),
         key=key,
         input_type=answer_type,
-        output_type=TypeApplication(CHOICE_RESULTS_CONSTRUCTOR, (answer_type,)),
+        output_type=TypeApplication(
+            constructor=CHOICE_RESULTS_CONSTRUCTOR, arguments=(answer_type,)
+        ),
         telescope=_generic_binders(answer_type=answer_type),
     )
 
@@ -2456,8 +2566,12 @@ def choose_handler(
         return tuple(flattened)
 
     return RuntimeHandler(
-        definition,
-        {CHOOSE_CHOOSE: RuntimeClause(choose, choice_validator)},
+        definition=definition,
+        clauses={
+            CHOOSE_CHOOSE: RuntimeClause(
+                invoke=choose, result_validator=choice_validator
+            )
+        },
         return_clause=lambda value, _context: (value,),
         input_validator=answer_validator,
         output_validator=(
@@ -2605,28 +2719,58 @@ def search_handler(
         return value[1]
 
     return RuntimeHandler(
-        definition,
-        {operation: RuntimeClause(choose, alternative_validator)},
+        definition=definition,
+        clauses={
+            operation: RuntimeClause(
+                invoke=choose, result_validator=alternative_validator
+            )
+        },
         return_clause=finish,
         duplicable_context=True,
     )
 
 
-@dataclass(slots=True)
-class WeightAccumulator:
+class WeightAccumulator(QiecModel):
     """Mutable result owned by one installed Weight handler.
+
+    The one-element state cell and contribution list retain identity.
 
     Parameters
     ----------
-    total
-        The running combination of every contribution so far, starting at
-        the handler's identity.
+    contents
+        A one-element list holding the running total, starting at the
+        handler's identity. The ``total`` property reads its value.
     contributions
         Every contribution in the order it was added.
     """
 
-    total: object
-    contributions: list[object] = field(default_factory=list)
+    contents: list[HeldValue] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    contributions: list[HeldValue] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    @dx.model_validator()
+    def _validate_cell(self) -> None:
+        """Require one stored total.
+
+        Raises
+        ------
+        ValueError
+            If the cell does not hold exactly one value.
+        """
+        if len(self.contents) != 1:
+            raise ValueError("a weight accumulator needs exactly one total")
+
+    @property
+    def total(self) -> HeldValue:
+        """The accumulated total.
+
+        Returns
+        -------
+        HeldValue
+            The current value of the owned state cell.
+        """
+        return self.contents[0]
 
 
 def weight_handler(
@@ -2678,7 +2822,7 @@ def weight_handler(
         the accumulator each installation publishes into when its
         computation completes.
     """
-    accumulator = WeightAccumulator(identity)
+    accumulator = WeightAccumulator(contents=[identity])
     checked_total = total_validator or weight_validator
     effect = weight_effect(weight_type)
     definition = _handler_def(
@@ -2688,7 +2832,10 @@ def weight_handler(
         key=key,
         input_type=answer_type,
         output_type=(
-            TypeApplication(WEIGHTED_RESULT_CONSTRUCTOR, (answer_type, weight_type))
+            TypeApplication(
+                constructor=WEIGHTED_RESULT_CONSTRUCTOR,
+                arguments=(answer_type, weight_type),
+            )
             if expose_total
             else answer_type
         ),
@@ -2714,9 +2861,11 @@ def weight_handler(
             declaration do not share it.
         """
         local = (
-            WeightAccumulator(identity)
+            WeightAccumulator(contents=[identity])
             if seed is None
-            else WeightAccumulator(seed.total, list(seed.contributions))
+            else WeightAccumulator(
+                contents=[seed.total], contributions=list(seed.contributions)
+            )
         )
 
         def add(
@@ -2753,8 +2902,8 @@ def weight_handler(
             (weight,) = _expect_arguments(request, 1, definition.name)
             _require(weight, weight_validator, weight_type, "semiring weight")
             local.contributions.append(weight)
-            local.total = combine(local.total, weight)
-            return TailResume(None)
+            local.contents[0] = combine(local.total, weight)
+            return TailResume(value=None)
 
         def finish(value: object, _context: ClauseContext) -> object:
             """Answer the handled computation's return.
@@ -2776,7 +2925,7 @@ def weight_handler(
 
         def publish() -> None:
             """Copy this installation's total and contributions to the accumulator."""
-            accumulator.total = local.total
+            accumulator.contents[0] = local.total
             accumulator.contributions[:] = local.contributions
 
         def fork(_handler: RuntimeHandler) -> RuntimeHandler:
@@ -2795,8 +2944,8 @@ def weight_handler(
             return make_context(local)
 
         return RuntimeHandler(
-            definition,
-            {WEIGHT_ADD: RuntimeClause(add, _unit)},
+            definition=definition,
+            clauses={WEIGHT_ADD: RuntimeClause(invoke=add, result_validator=_unit)},
             return_clause=finish,
             input_validator=answer_validator,
             output_validator=(
@@ -2811,7 +2960,7 @@ def weight_handler(
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype, accumulator
 
 
@@ -2860,7 +3009,9 @@ def draw_scoring_handler(
         key=key,
         input_type=answer_type,
         output_type=answer_type,
-        introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+        introduced=EffectRow(
+            entries=(RowEntry(instance=score_instance, effect=SCORE),)
+        ),
         telescope=_generic_binders(answer_type=answer_type),
     )
 
@@ -2905,11 +3056,15 @@ def draw_scoring_handler(
             weight_validator,
             role="draw-score",
         )
-        return TailResume(value)
+        return TailResume(value=value)
 
     return RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)},
+        definition=definition,
+        clauses={
+            RANDOM_SAMPLE: RuntimeClause(
+                invoke=sample, result_validator=result_validator
+            )
+        },
     )
 
 
@@ -2995,10 +3150,15 @@ def intervene_handler(
         )
         if on_intervene is not None:
             on_intervene(request, value)
-        return TailResume(value)
+        return TailResume(value=value)
 
     return RuntimeHandler(
-        definition, {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)}
+        definition=definition,
+        clauses={
+            RANDOM_SAMPLE: RuntimeClause(
+                invoke=sample, result_validator=result_validator
+            )
+        },
     )
 
 
@@ -3043,7 +3203,9 @@ def reweight_handler(
         key=key,
         input_type=answer_type,
         output_type=answer_type,
-        introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+        introduced=EffectRow(
+            entries=(RowEntry(instance=score_instance, effect=SCORE),)
+        ),
         telescope=_generic_binders(answer_type=answer_type),
     )
 
@@ -3088,9 +3250,12 @@ def reweight_handler(
             weight_validator,
             role=request.core.origin.origin.role,
         )
-        return TailResume(None)
+        return TailResume(value=None)
 
-    return RuntimeHandler(definition, {SCORE_ADD: RuntimeClause(add, _unit)})
+    return RuntimeHandler(
+        definition=definition,
+        clauses={SCORE_ADD: RuntimeClause(invoke=add, result_validator=_unit)},
+    )
 
 
 def block_handler(
@@ -3142,7 +3307,9 @@ def block_handler(
         key=key,
         input_type=answer_type,
         output_type=answer_type,
-        introduced=EffectRow((RowEntry(score_instance, SCORE),)),
+        introduced=EffectRow(
+            entries=(RowEntry(instance=score_instance, effect=SCORE),)
+        ),
         total=False,
         telescope=_generic_binders(answer_type=answer_type),
     )
@@ -3191,10 +3358,15 @@ def block_handler(
             weight_validator,
             role="block-score",
         )
-        return TailResume(value)
+        return TailResume(value=value)
 
     return RuntimeHandler(
-        definition, {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)}
+        definition=definition,
+        clauses={
+            RANDOM_SAMPLE: RuntimeClause(
+                invoke=sample, result_validator=result_validator
+            )
+        },
     )
 
 
@@ -3271,10 +3443,15 @@ def compute_handler(
             If the request does not carry exactly one argument.
         """
         (argument,) = _expect_arguments(request, 1, definition.name)
-        return TailResume(function(argument, context))
+        return TailResume(value=function(argument, context))
 
     return RuntimeHandler(
-        definition, {COMPUTE_APPLY: RuntimeClause(apply, result_validator)}
+        definition=definition,
+        clauses={
+            COMPUTE_APPLY: RuntimeClause(
+                invoke=apply, result_validator=result_validator
+            )
+        },
     )
 
 
@@ -3356,9 +3533,14 @@ def param_handler(
         _require(
             value, result_validator, request.core.result_type, f"parameter {name!r}"
         )
-        return TailResume(value)
+        return TailResume(value=value)
 
-    return RuntimeHandler(definition, {PARAM_GET: RuntimeClause(get, result_validator)})
+    return RuntimeHandler(
+        definition=definition,
+        clauses={
+            PARAM_GET: RuntimeClause(invoke=get, result_validator=result_validator)
+        },
+    )
 
 
 __all__ = [

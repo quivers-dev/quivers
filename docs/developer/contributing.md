@@ -245,8 +245,10 @@ Recursive sums are `dx.TaggedUnion` roots discriminated by a `kind: Literal[...]
 components), `@dx.derived` declares a computed field, and `__axioms__` states invariants across
 fields.
 
-Some classes that hold mutable tensors or runtime state are plain dataclasses, for instance
-`Presheaf`, `Weight`, `SampleSite`, and `Trace`.
+Models that hold tensors, callables, or mutable runtime state declare those fields
+with `dx.field(opaque=True)` and an explicit equality policy. Live runtime objects
+compare by identity. Recursive immutable children compare by value. Constructors
+and `with_` validate field updates while preserving tensor references and gradients.
 
 ### Exports
 

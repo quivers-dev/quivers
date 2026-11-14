@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
+import didactic.api as dx
+
 
 from quivers.qiec.effects import (
     EffectRequest,
@@ -73,8 +76,7 @@ from quivers.qiec.types import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class StaticSubstitution:
+class StaticSubstitution(QiecModel):
     """A deterministic substitution split by static namespace.
 
     Parameters
@@ -88,11 +90,18 @@ class StaticSubstitution:
         other effect variables.
     """
 
-    types: tuple[tuple[str, TypeExpr], ...] = ()
-    indices: tuple[tuple[str, IndexTerm], ...] = ()
-    effects: tuple[tuple[str, EffectRef | EffectVariable], ...] = ()
+    types: tuple[tuple[str, TypeExpr], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    indices: tuple[tuple[str, IndexTerm], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    effects: tuple[tuple[str, EffectRef | EffectVariable], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_record(self) -> None:
         """Reject a substitution that binds one name twice.
 
         Raises
@@ -183,7 +192,7 @@ def instantiate_telescope(
         index sort.
     """
     types, indices, effects = check_static_arguments(telescope, arguments)
-    return StaticSubstitution(types, indices, effects)
+    return StaticSubstitution(types=types, indices=indices, effects=effects)
 
 
 def substitute_index(term: IndexTerm, substitution: StaticSubstitution) -> IndexTerm:
@@ -207,13 +216,15 @@ def substitute_index(term: IndexTerm, substitution: StaticSubstitution) -> Index
         return substitution.index(term.name) or term
     if isinstance(term, IndexConstructor):
         return IndexConstructor(
-            term.name,
-            tuple(substitute_index(arg, substitution) for arg in term.arguments),
-            term.sort,
+            name=term.name,
+            arguments=tuple(
+                substitute_index(arg, substitution) for arg in term.arguments
+            ),
+            sort=term.sort,
         )
     if isinstance(term, ShapeIndex):
         return ShapeIndex(
-            tuple(
+            dimensions=tuple(
                 substitute_index(dimension, substitution)
                 for dimension in term.dimensions
             )
@@ -239,9 +250,11 @@ def substitute_effect(effect: EffectRef, substitution: StaticSubstitution) -> Ef
         an interface rather than selecting a different one.
     """
     return EffectRef(
-        effect.id,
-        effect.name,
-        tuple(substitute_static(arg, substitution) for arg in effect.arguments),
+        id=effect.id,
+        name=effect.name,
+        arguments=tuple(
+            substitute_static(arg, substitution) for arg in effect.arguments
+        ),
     )
 
 
@@ -261,12 +274,12 @@ def substitute_plate(plate: PlateShape, substitution: StaticSubstitution) -> Pla
         The plate with every axis size substituted.
     """
     return PlateShape(
-        tuple(
-            PlateAxis(axis.name, substitute_index(axis.size, substitution))
+        batch=tuple(
+            PlateAxis(name=axis.name, size=substitute_index(axis.size, substitution))
             for axis in plate.batch
         ),
-        tuple(
-            PlateAxis(axis.name, substitute_index(axis.size, substitution))
+        event=tuple(
+            PlateAxis(name=axis.name, size=substitute_index(axis.size, substitution))
             for axis in plate.event
         ),
     )
@@ -299,19 +312,21 @@ def substitute_type(type_: TypeExpr, substitution: StaticSubstitution) -> TypeEx
         return type_
     if isinstance(type_, TypeApplication):
         return TypeApplication(
-            type_.constructor,
-            tuple(substitute_static(arg, substitution) for arg in type_.arguments),
+            constructor=type_.constructor,
+            arguments=tuple(
+                substitute_static(arg, substitution) for arg in type_.arguments
+            ),
         )
     if isinstance(type_, FunctionType):
         return FunctionType(
-            substitute_type(type_.parameter, substitution),
-            substitute_type(type_.result, substitution),
+            parameter=substitute_type(type_.parameter, substitution),
+            result=substitute_type(type_.result, substitution),
         )
     if isinstance(type_, EqualityType):
         return EqualityType(
-            type_.kind,
-            substitute_static(type_.left, substitution),
-            substitute_static(type_.right, substitution),
+            kind=type_.kind,
+            left=substitute_static(type_.left, substitution),
+            right=substitute_static(type_.right, substitution),
         )
     raise TypeError(f"unknown type term {type_!r}")
 
@@ -372,11 +387,14 @@ def substitute_row(row: EffectRow, substitution: StaticSubstitution) -> EffectRo
         rather than by this substitution.
     """
     return EffectRow(
-        tuple(
-            RowEntry(entry.instance, substitute_effect(entry.effect, substitution))
+        entries=tuple(
+            RowEntry(
+                instance=entry.instance,
+                effect=substitute_effect(entry.effect, substitution),
+            )
             for entry in row.entries
         ),
-        row.tail,
+        tail=row.tail,
     )
 
 
@@ -412,9 +430,9 @@ def instantiate_operation(
     """
     local = instantiate_telescope(operation.telescope, arguments)
     substitution = StaticSubstitution(
-        (*outer.types, *local.types),
-        (*outer.indices, *local.indices),
-        (*outer.effects, *local.effects),
+        types=(*outer.types, *local.types),
+        indices=(*outer.indices, *local.indices),
+        effects=(*outer.effects, *local.effects),
     )
     parameter_types = tuple(
         substitute_type(argument.type, substitution) for argument in operation.arguments
@@ -448,14 +466,14 @@ def substitute_evidence(
         If the evidence is of an unknown class.
     """
     equality = EqualityType(
-        evidence.equality.kind,
-        substitute_static(evidence.equality.left, substitution),
-        substitute_static(evidence.equality.right, substitution),
+        kind=evidence.equality.kind,
+        left=substitute_static(evidence.equality.left, substitution),
+        right=substitute_static(evidence.equality.right, substitution),
     )
     if isinstance(evidence, Reflexivity):
-        return Reflexivity(equality)
+        return Reflexivity(equality=equality)
     if isinstance(evidence, BranchGiven):
-        return BranchGiven(evidence.id, equality)
+        return BranchGiven(id=evidence.id, equality=equality)
     raise TypeError(f"unknown equality evidence {evidence!r}")
 
 
@@ -483,156 +501,175 @@ def substitute_value(value: Value, substitution: StaticSubstitution) -> Value:
     """
     if isinstance(value, Var):
         return Var(
-            Local(value.local.name, substitute_type(value.local.type, substitution))
+            local=Local(
+                name=value.local.name,
+                type=substitute_type(value.local.type, substitution),
+            )
         )
     if isinstance(value, LiteralValue):
-        return LiteralValue(value.value, substitute_type(value.type, substitution))
+        return LiteralValue(
+            value=value.value, type=substitute_type(value.type, substitution)
+        )
     if isinstance(value, ConstructorValue):
         return ConstructorValue(
-            value.constructor,
-            tuple(
+            constructor=value.constructor,
+            static_arguments=tuple(
                 substitute_static(argument, substitution)
                 for argument in value.static_arguments
             ),
-            tuple(substitute_value(field, substitution) for field in value.fields),
-            substitute_type(value.result_type, substitution),
+            fields=tuple(
+                substitute_value(field, substitution) for field in value.fields
+            ),
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, EvidenceValue):
-        return EvidenceValue(substitute_evidence(value.evidence, substitution))
+        return EvidenceValue(evidence=substitute_evidence(value.evidence, substitution))
     if isinstance(value, AttachmentRef):
         return AttachmentRef(
-            value.attachment, substitute_type(value.type, substitution)
+            attachment=value.attachment, type=substitute_type(value.type, substitution)
         )
     if isinstance(value, TransportValue):
         return TransportValue(
-            substitute_evidence(value.evidence, substitution),
-            substitute_value(value.value, substitution),
-            substitute_type(value.target_type, substitution),
+            evidence=substitute_evidence(value.evidence, substitution),
+            value=substitute_value(value.value, substitution),
+            target_type=substitute_type(value.target_type, substitution),
         )
     if isinstance(value, PrimitiveApplication):
         return PrimitiveApplication(
-            value.primitive,
-            value.name,
-            tuple(substitute_value(item, substitution) for item in value.arguments),
-            substitute_type(value.result_type, substitution),
-            value.origin,
+            primitive=value.primitive,
+            name=value.name,
+            arguments=tuple(
+                substitute_value(item, substitution) for item in value.arguments
+            ),
+            result_type=substitute_type(value.result_type, substitution),
+            origin=value.origin,
         )
     if isinstance(value, TupleValue):
         return TupleValue(
-            tuple(substitute_value(item, substitution) for item in value.items),
-            substitute_type(value.result_type, substitution),
+            items=tuple(substitute_value(item, substitution) for item in value.items),
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, TensorValue):
         return TensorValue(
-            tuple(substitute_value(item, substitution) for item in value.items),
-            substitute_type(value.result_type, substitution),
+            items=tuple(substitute_value(item, substitution) for item in value.items),
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, Projection):
         return Projection(
-            substitute_value(value.value, substitution),
-            value.position,
-            substitute_type(value.result_type, substitution),
+            value=substitute_value(value.value, substitution),
+            position=value.position,
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, DistributionValue):
         return DistributionValue(
-            value.family,
-            value.name,
-            tuple(
+            family=value.family,
+            name=value.name,
+            arguments=tuple(
                 (name, substitute_value(argument, substitution))
                 for name, argument in value.arguments
             ),
-            substitute_type(value.result_type, substitution),
-            value.origin,
-            substitute_plate(value.plate, substitution),
+            result_type=substitute_type(value.result_type, substitution),
+            origin=value.origin,
+            plate=substitute_plate(value.plate, substitution),
         )
     if isinstance(value, Gather):
         return Gather(
-            substitute_value(value.value, substitution),
-            substitute_value(value.index, substitution),
-            substitute_type(value.result_type, substitution),
+            value=substitute_value(value.value, substitution),
+            index=substitute_value(value.index, substitution),
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, WeightSum):
-        return WeightSum(substitute_value(value.value, substitution))
+        return WeightSum(value=substitute_value(value.value, substitution))
     if isinstance(value, SegmentSum):
         return SegmentSum(
-            substitute_value(value.value, substitution),
-            substitute_value(value.index, substitution),
-            substitute_index(value.groups, substitution),
-            substitute_type(value.result_type, substitution),
+            value=substitute_value(value.value, substitution),
+            index=substitute_value(value.index, substitution),
+            groups=substitute_index(value.groups, substitution),
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, KernelMatrix):
         return KernelMatrix(
-            substitute_value(value.inputs, substitution),
-            value.kernel,
-            value.length_scale,
-            value.jitter,
-            substitute_type(value.result_type, substitution),
+            inputs=substitute_value(value.inputs, substitution),
+            kernel=value.kernel,
+            length_scale=value.length_scale,
+            jitter=value.jitter,
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, AffineMap):
         return AffineMap(
-            substitute_value(value.weight, substitution),
-            substitute_value(value.bias, substitution),
-            tuple(substitute_value(item, substitution) for item in value.sources),
-            value.row_offset,
-            value.rows,
-            value.transform,
-            substitute_type(value.result_type, substitution),
+            weight=substitute_value(value.weight, substitution),
+            bias=substitute_value(value.bias, substitution),
+            sources=tuple(
+                substitute_value(item, substitution) for item in value.sources
+            ),
+            row_offset=value.row_offset,
+            rows=value.rows,
+            transform=value.transform,
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, TableMap):
         return TableMap(
-            substitute_value(value.table, substitution),
-            substitute_value(value.index, substitution),
-            value.row_offset,
-            value.rows,
-            value.transform,
-            substitute_type(value.result_type, substitution),
+            table=substitute_value(value.table, substitution),
+            index=substitute_value(value.index, substitution),
+            row_offset=value.row_offset,
+            rows=value.rows,
+            transform=value.transform,
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, Reduction):
         return Reduction(
-            value.operator,
-            substitute_value(value.value, substitution),
-            substitute_type(value.result_type, substitution),
+            operator=value.operator,
+            value=substitute_value(value.value, substitution),
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, Rowwise):
         return Rowwise(
-            value.operator,
-            substitute_value(value.value, substitution),
-            substitute_type(value.result_type, substitution),
+            operator=value.operator,
+            value=substitute_value(value.value, substitution),
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, Comprehension):
         return Comprehension(
-            Local(value.binder.name, substitute_type(value.binder.type, substitution)),
-            substitute_index(value.extent, substitution),
-            substitute_value(value.body, substitution),
-            substitute_type(value.result_type, substitution),
+            binder=Local(
+                name=value.binder.name,
+                type=substitute_type(value.binder.type, substitution),
+            ),
+            extent=substitute_index(value.extent, substitution),
+            body=substitute_value(value.body, substitution),
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, LetValue):
         return LetValue(
-            tuple(
+            bindings=tuple(
                 LetBinding(
-                    Local(
-                        binding.binder.name,
-                        substitute_type(binding.binder.type, substitution),
+                    binder=Local(
+                        name=binding.binder.name,
+                        type=substitute_type(binding.binder.type, substitution),
                     ),
-                    substitute_value(binding.value, substitution),
+                    value=substitute_value(binding.value, substitution),
                 )
                 for binding in value.bindings
             ),
-            substitute_value(value.body, substitution),
-            substitute_type(value.result_type, substitution),
+            body=substitute_value(value.body, substitution),
+            result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, LogDensity):
         return LogDensity(
-            substitute_value(value.sampleable, substitution),
-            substitute_value(value.value, substitution),
-            value.origin,
-            tuple(
-                PlateAxis(axis.name, substitute_index(axis.size, substitution))
+            sampleable=substitute_value(value.sampleable, substitution),
+            value=substitute_value(value.value, substitution),
+            origin=value.origin,
+            batch=tuple(
+                PlateAxis(
+                    name=axis.name, size=substitute_index(axis.size, substitution)
+                )
                 for axis in value.batch
             ),
         )
     if isinstance(value, SiteValue):
-        return SiteValue(value.label, substitute_type(value.result_type, substitution))
+        return SiteValue(
+            label=value.label,
+            result_type=substitute_type(value.result_type, substitution),
+        )
     raise TypeError(f"unknown value term {value!r}")
 
 
@@ -658,18 +695,18 @@ def substitute_request(
         move.
     """
     return EffectRequest(
-        request.instance,
-        substitute_effect(request.effect, substitution),
-        request.operation,
-        tuple(
+        instance=request.instance,
+        effect=substitute_effect(request.effect, substitution),
+        operation=request.operation,
+        static_arguments=tuple(
             substitute_static(argument, substitution)
             for argument in request.static_arguments
         ),
-        tuple(
+        arguments=tuple(
             substitute_value(argument, substitution) for argument in request.arguments
         ),
-        substitute_type(request.result_type, substitution),
-        request.origin,
+        result_type=substitute_type(request.result_type, substitution),
+        origin=request.origin,
     )
 
 
@@ -702,7 +739,7 @@ def substitute_computation(
         The computation with every static position substituted.
         Identities are preserved throughout: a call still names the same
         callee, a handle the same handler, and an allocation the same
-        instance.
+        instance. An empty substitution returns the immutable graph itself.
 
     Raises
     ------
@@ -710,86 +747,101 @@ def substitute_computation(
         If the computation, or a term nested in it, is of an unknown
         class.
     """
+    if (
+        isinstance(
+            computation,
+            Return | Bind | Perform | Handle | Case | Call | Resume | NewInstance | If,
+        )
+        and not substitution.types
+        and not substitution.indices
+        and not substitution.effects
+    ):
+        return computation
     if isinstance(computation, Return):
-        return Return(substitute_value(computation.value, substitution))
+        return Return(value=substitute_value(computation.value, substitution))
     if isinstance(computation, Bind):
         return Bind(
-            Local(
-                computation.binder.name,
-                substitute_type(computation.binder.type, substitution),
+            binder=Local(
+                name=computation.binder.name,
+                type=substitute_type(computation.binder.type, substitution),
             ),
-            substitute_computation(computation.first, substitution),
-            substitute_computation(computation.then, substitution),
+            first=substitute_computation(computation.first, substitution),
+            then=substitute_computation(computation.then, substitution),
         )
     if isinstance(computation, Perform):
-        return Perform(substitute_request(computation.request, substitution))
+        return Perform(request=substitute_request(computation.request, substitution))
     if isinstance(computation, Handle):
         return Handle(
-            computation.instance,
-            computation.handler,
-            substitute_computation(computation.computation, substitution),
-            tuple(
+            instance=computation.instance,
+            handler=computation.handler,
+            computation=substitute_computation(computation.computation, substitution),
+            static_arguments=tuple(
                 substitute_static(argument, substitution)
                 for argument in computation.static_arguments
             ),
         )
     if isinstance(computation, Case):
         return Case(
-            substitute_value(computation.scrutinee, substitution),
-            CaseMotive(
-                computation.motive.indices,
-                substitute_type(computation.motive.result_type, substitution),
+            scrutinee=substitute_value(computation.scrutinee, substitution),
+            motive=CaseMotive(
+                indices=computation.motive.indices,
+                result_type=substitute_type(
+                    computation.motive.result_type, substitution
+                ),
             ),
-            tuple(
+            branches=tuple(
                 CaseBranch(
-                    branch.constructor,
-                    tuple(
+                    constructor=branch.constructor,
+                    static_arguments=tuple(
                         substitute_static(argument, substitution)
                         for argument in branch.static_arguments
                     ),
-                    tuple(
-                        Local(field.name, substitute_type(field.type, substitution))
+                    fields=tuple(
+                        Local(
+                            name=field.name,
+                            type=substitute_type(field.type, substitution),
+                        )
                         for field in branch.fields
                     ),
-                    substitute_computation(branch.body, substitution),
-                    branch.scope,
+                    body=substitute_computation(branch.body, substitution),
+                    scope=branch.scope,
                 )
                 for branch in computation.branches
             ),
         )
     if isinstance(computation, If):
         return If(
-            substitute_value(computation.condition, substitution),
-            substitute_computation(computation.then, substitution),
-            substitute_computation(computation.otherwise, substitution),
+            condition=substitute_value(computation.condition, substitution),
+            then=substitute_computation(computation.then, substitution),
+            otherwise=substitute_computation(computation.otherwise, substitution),
         )
     if isinstance(computation, Call):
         return Call(
-            computation.callee,
-            computation.name,
-            tuple(
+            callee=computation.callee,
+            name=computation.name,
+            static_arguments=tuple(
                 substitute_static(argument, substitution)
                 for argument in computation.static_arguments
             ),
-            tuple(
+            arguments=tuple(
                 substitute_value(argument, substitution)
                 for argument in computation.arguments
             ),
-            substitute_type(computation.result_type, substitution),
-            substitute_row(computation.effects, substitution),
-            computation.origin,
+            result_type=substitute_type(computation.result_type, substitution),
+            effects=substitute_row(computation.effects, substitution),
+            origin=computation.origin,
         )
     if isinstance(computation, Resume):
         return Resume(
-            substitute_value(computation.value, substitution),
-            computation.origin,
+            value=substitute_value(computation.value, substitution),
+            origin=computation.origin,
         )
     if isinstance(computation, NewInstance):
         return NewInstance(
-            computation.instance,
-            substitute_effect(computation.effect, substitution),
-            substitute_computation(computation.body, substitution),
-            computation.origin,
+            instance=computation.instance,
+            effect=substitute_effect(computation.effect, substitution),
+            body=substitute_computation(computation.body, substitution),
+            origin=computation.origin,
         )
     raise TypeError(f"unknown computation term {computation!r}")
 

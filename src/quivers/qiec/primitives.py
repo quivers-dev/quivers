@@ -12,11 +12,14 @@ each host runtime carries the same table in its own language.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 import math
 from types import MappingProxyType
 from typing import Literal
 
+import didactic.api as dx
+
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.qiec.identifiers import PrimitiveId
 from quivers.qiec.canonical import LOG_WEIGHT
 from quivers.qiec.types import BOOL, INT, REAL, STRING, TypeExpr
@@ -35,8 +38,7 @@ type PrimitiveCapability = Literal[
 """The feature a target must support to render a primitive."""
 
 
-@dataclass(frozen=True, slots=True)
-class PrimitiveSignature:
+class PrimitiveSignature(QiecModel):
     """One primitive's name, types, and the capability a backend needs for it.
 
     Parameters
@@ -52,8 +54,8 @@ class PrimitiveSignature:
     """
 
     name: str
-    parameters: tuple[TypeExpr, ...]
-    result: TypeExpr
+    parameters: tuple[TypeExpr, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     capability: PrimitiveCapability
 
     @property
@@ -333,7 +335,9 @@ def _signature(
     tuple[PrimitiveSignature, Callable[..., object]]
         The signature and implementation, ready for the tables below.
     """
-    return PrimitiveSignature(name, parameters, result, capability), implementation
+    return PrimitiveSignature(
+        name=name, parameters=parameters, result=result, capability=capability
+    ), implementation
 
 
 _ENTRIES: tuple[tuple[PrimitiveSignature, Callable[..., object]], ...] = (

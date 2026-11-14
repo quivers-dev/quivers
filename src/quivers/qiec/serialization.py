@@ -9,22 +9,10 @@ callbacks, modules, mappings, and unknown future node tags are rejected.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import MISSING, fields, is_dataclass
 from enum import Enum
-from functools import cache
 import json
 import math
-import sys
-from typing import (
-    Any,
-    Literal,
-    TypeAliasType,
-    Union,
-    cast,
-    get_args,
-    get_origin,
-    get_type_hints,
-)
+from typing import cast
 
 from quivers.qiec.coverage import (
     BranchPattern,
@@ -33,6 +21,7 @@ from quivers.qiec.coverage import (
     CoverageStatus,
     Reachability,
 )
+from quivers.qiec._models import QiecModel, field_types, validate_shape
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
 from quivers.qiec.effects import (
     ArgumentDef,
@@ -128,9 +117,6 @@ from quivers.qiec.terms import (
     Comprehension,
     LetBinding,
     LetValue,
-    Computation,
-    LiteralData,
-    Value,
     Var,
 )
 from quivers.qiec.types import (
@@ -305,7 +291,7 @@ _NODE_CLASSES = (
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}
 _ENUMS = {_class_tag(class_): class_ for class_ in _ENUM_CLASSES}
-_NODES: dict[str, type[object]] = {
+_NODES: dict[str, type[QiecModel]] = {
     _class_tag(class_): class_ for class_ in _NODE_CLASSES
 }
 
@@ -355,21 +341,21 @@ def _encode(value: object) -> JsonValue:
         return {"$tuple": [_encode(item) for item in value]}
     if callable(value):
         raise SerializationError("host callables cannot enter stable QIEC")
-    if is_dataclass(value) and not isinstance(value, type):
+    if isinstance(value, QiecModel):
         tag = _class_tag(type(value))
         if tag not in _NODES:
             raise SerializationError(
-                f"runtime or unregistered dataclass cannot enter stable QIEC: {tag!r}"
+                f"runtime or unregistered model cannot enter stable QIEC: {tag!r}"
             )
         return {
             "$type": tag,
             "fields": [
-                {"name": field.name, "value": _encode(getattr(value, field.name))}
-                for field in fields(value)
+                {"name": name, "value": _encode(getattr(value, name))}
+                for name in type(value).__field_specs__
             ],
         }
     raise SerializationError(
-        f"runtime value of type {type(value).__module__}.{type(value).__qualname__} "
+        f"runtime or unregistered value of type {type(value).__module__}.{type(value).__qualname__} "
         "cannot enter stable QIEC"
     )
 
@@ -399,181 +385,6 @@ def _exact_keys(value: dict[str, JsonValue], expected: set[str], subject: str) -
             f"malformed {subject}: expected keys {sorted(expected)!r}, "
             f"got {sorted(value)!r}"
         )
-
-
-@cache
-def _resolved_field_types(class_: type[object]) -> dict[str, object]:
-    """Resolve one allowlisted record's annotations, including cyclic aliases.
-
-    Parameters
-    ----------
-    class_ : type
-        The record whose fields to resolve.
-
-    Returns
-    -------
-    dict[str, object]
-        Field name to its resolved annotation. Memoised, since resolution
-        walks the module namespace and the same records are decoded
-        repeatedly.
-
-    Raises
-    ------
-    SerializationError
-        If an annotation cannot be resolved, which means a name the
-        record refers to is not importable at runtime.
-    """
-
-    namespace = dict(vars(sys.modules[class_.__module__]))
-    # ``effects`` imports ``Value`` only while type checking to break its
-    # runtime import cycle with ``terms``.  Supply every recursive wire alias
-    # explicitly so runtime validation sees the same schema as the checker.
-    namespace.update(
-        {
-            "Computation": Computation,
-            "LiteralData": LiteralData,
-            "Value": Value,
-        }
-    )
-    try:
-        return cast(
-            dict[str, object],
-            get_type_hints(class_, globalns=namespace, localns=namespace),
-        )
-    except Exception as error:  # pragma: no cover - an internal schema defect
-        raise SerializationError(
-            f"cannot resolve wire schema for {_class_tag(class_)!r}: {error}"
-        ) from error
-
-
-def _shape_name(annotation: object) -> str:
-    """A readable name for an annotation, for use in a diagnostic.
-
-    Parameters
-    ----------
-    annotation : object
-        The annotation to name.
-
-    Returns
-    -------
-    str
-        The alias's own name where there is one, and otherwise the
-        annotation's string form with the ``typing.`` prefix trimmed.
-    """
-    if isinstance(annotation, TypeAliasType):
-        return annotation.__name__
-    return str(annotation).removeprefix("typing.")
-
-
-def _validate_runtime_shape(
-    value: object,
-    annotation: object,
-    *,
-    path: str,
-) -> None:
-    """Reject decoded values that do not inhabit their declared wire type.
-
-    Parameters
-    ----------
-    value : object
-        The decoded value.
-    annotation : object
-        The field's declared type.
-    path : str
-        Where in the payload this value sits, for the diagnostic.
-
-    Raises
-    ------
-    SerializationError
-        If the value does not inhabit the annotation. Decoding checks the
-        shape as well as the tags, so a payload whose field carries the
-        right tag but the wrong contents is refused rather than becoming
-        a record that fails later somewhere less informative.
-
-    Notes
-    -----
-    A kernel record is checked once, when :func:`_decode` builds it: its
-    fields were validated against their own annotations then, so a field
-    holding a record checks only the record's class here and does not
-    descend again. Descending would check every node once per ancestor,
-    which is quadratic in the depth of a computation.
-    """
-
-    if annotation is Any:
-        return
-    if isinstance(annotation, TypeAliasType):
-        _validate_runtime_shape(value, annotation.__value__, path=path)
-        return
-
-    origin = get_origin(annotation)
-    arguments = get_args(annotation)
-    if origin is Literal:
-        if not any(
-            type(value) is type(candidate) and value == candidate
-            for candidate in arguments
-        ):
-            raise SerializationError(
-                f"invalid field {path}: expected {_shape_name(annotation)}, "
-                f"got {type(value).__name__}"
-            )
-        return
-    if origin is Union:
-        for candidate in arguments:
-            try:
-                _validate_runtime_shape(value, candidate, path=path)
-            except SerializationError:
-                continue
-            return
-        raise SerializationError(
-            f"invalid field {path}: expected {_shape_name(annotation)}, "
-            f"got {type(value).__name__}"
-        )
-    if origin is tuple:
-        if not isinstance(value, tuple):
-            raise SerializationError(
-                f"invalid field {path}: expected {_shape_name(annotation)}, "
-                f"got {type(value).__name__}"
-            )
-        if len(arguments) == 2 and arguments[1] is Ellipsis:
-            for position, item in enumerate(value):
-                _validate_runtime_shape(
-                    item,
-                    arguments[0],
-                    path=f"{path}[{position}]",
-                )
-            return
-        if len(value) != len(arguments):
-            raise SerializationError(
-                f"invalid field {path}: expected a {len(arguments)}-item tuple, "
-                f"got {len(value)} items"
-            )
-        for position, (item, item_type) in enumerate(
-            zip(value, arguments, strict=True)
-        ):
-            _validate_runtime_shape(
-                item,
-                item_type,
-                path=f"{path}[{position}]",
-            )
-        return
-
-    if annotation is None:
-        annotation = type(None)
-    if isinstance(annotation, type):
-        primitive = annotation in {bool, bytes, float, int, str, type(None)}
-        matches = (
-            type(value) is annotation if primitive else isinstance(value, annotation)
-        )
-        if not matches:
-            raise SerializationError(
-                f"invalid field {path}: expected {_shape_name(annotation)}, "
-                f"got {type(value).__name__}"
-            )
-        return
-
-    raise SerializationError(
-        f"unsupported wire-schema annotation {_shape_name(annotation)} at {path}"
-    )
 
 
 def _decode(value: JsonValue) -> object:
@@ -659,8 +470,8 @@ def _decode(value: JsonValue) -> object:
         if not isinstance(encoded_fields, list):
             raise SerializationError("kernel node fields must be an array")
         class_ = _NODES[tag]
-        class_fields = fields(cast(Any, class_))
-        expected_names = [field.name for field in class_fields]
+        class_fields = class_.__field_specs__
+        expected_names = list(class_fields)
         actual_names: list[str] = []
         arguments: dict[str, object] = {}
         for encoded_field in encoded_fields:
@@ -678,21 +489,21 @@ def _decode(value: JsonValue) -> object:
             raise SerializationError(
                 f"fields for {tag!r} must be {expected_names!r}, got {actual_names!r}"
             )
-        tag_field = next((field for field in class_fields if field.name == "tag"), None)
-        if tag_field is not None and tag_field.default is not MISSING:
+        tag_field = class_fields.get("tag")
+        if tag_field is not None and not tag_field.is_required:
             actual_tag = arguments["tag"]
-            if actual_tag != tag_field.default:
+            expected_tag = tag_field.make_default()
+            if actual_tag != expected_tag:
                 raise SerializationError(
                     f"invalid literal tag for {tag!r}: expected "
-                    f"{tag_field.default!r}, got {actual_tag!r}"
+                    f"{expected_tag!r}, got {actual_tag!r}"
                 )
-        annotations = _resolved_field_types(class_)
+        annotations = field_types(class_)
         for name, argument in arguments.items():
-            _validate_runtime_shape(
-                argument,
-                annotations[name],
-                path=f"{tag}.{name}",
-            )
+            try:
+                validate_shape(argument, annotations[name], path=f"{tag}.{name}")
+            except TypeError as error:
+                raise SerializationError(str(error)) from error
         try:
             factory = cast(Callable[..., object], class_)
             return factory(**arguments)

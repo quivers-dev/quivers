@@ -313,7 +313,7 @@ def oracle_values(
 # ---------------------------------------------------------------------------
 
 
-I, J, K, X, Y = (Wildcard(n) for n in ("i", "j", "k", "x", "y"))
+I, J, K, X, Y = (Wildcard(name=n) for n in ("i", "j", "k", "x", "y"))
 
 
 def g_shared_premise() -> tuple[list[tuple[Term, float]], list[OracleRule]]:

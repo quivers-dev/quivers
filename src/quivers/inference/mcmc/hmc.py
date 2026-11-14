@@ -720,7 +720,9 @@ class _HamiltonianKernel(MCMCKernel):
                 cov = self._welford.covariance()
                 self._mass.set_inverse(cov)
 
-    def _prepare_transition(self, state: KernelState, potential: PotentialFn) -> None:
+    def _prepare_transition(
+        self, state: KernelState, potential: PotentialFn
+    ) -> KernelState:
         """Evaluate the first state and run a pending step-size
         initialization.
 
@@ -731,10 +733,16 @@ class _HamiltonianKernel(MCMCKernel):
             gradient are filled in on the chain's first transition.
         potential : PotentialFn
             The target.
+
+        Returns
+        -------
+        KernelState
+            The state with the density and gradient needed by the transition.
         """
-        self._evaluate_first(state, potential)
+        state = self._evaluate_first(state, potential)
         if self.is_adapting and self._pending_step_size_init:
             self._restart_step_size(state, potential, self._step_size)
+        return state
 
     def _restart_step_size(
         self, state: KernelState, potential: PotentialFn, step_size: float
@@ -1042,7 +1050,7 @@ class HMCKernel(_HamiltonianKernel):
             Metropolis acceptance probability.
         """
         assert self._mass is not None, "HMCKernel.init was not called"
-        self._prepare_transition(state, potential)
+        state = self._prepare_transition(state, potential)
         z0 = state.position
         ld0 = state.log_density
         g0 = state.grad_log_density
@@ -1467,7 +1475,7 @@ class NUTSKernel(_HamiltonianKernel):
             depth under ``"tree_depth"``.
         """
         assert self._mass is not None, "NUTSKernel.init was not called"
-        self._prepare_transition(state, potential)
+        state = self._prepare_transition(state, potential)
         z = state.position
         ld = state.log_density
         g = state.grad_log_density

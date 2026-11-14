@@ -1843,8 +1843,6 @@ class ConditionalBernoulli(ContinuousMorphism):
         param_source: ParamSource | None = None,
         param_source_option: str | None = None,
     ) -> None:
-        from quivers.core.objects import SetObject
-
         if not isinstance(codomain, SetObject) or codomain.size != 2:
             raise ValueError(
                 f"ConditionalBernoulli requires a FinSet(2) codomain, got {codomain!r}"
@@ -1945,8 +1943,6 @@ class ConditionalCategorical(ContinuousMorphism):
         param_source: ParamSource | None = None,
         param_source_option: str | None = None,
     ) -> None:
-        from quivers.core.objects import SetObject
-
         if not isinstance(codomain, SetObject):
             raise ValueError(
                 f"ConditionalCategorical requires a FinSet codomain, got {codomain!r}"

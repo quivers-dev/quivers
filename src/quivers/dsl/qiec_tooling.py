@@ -8,14 +8,15 @@ other QVR declarations in the same source module with their compiler.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 import re
 
 import didactic.api as dx
 
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.dsl.ast_nodes import Module, ProgramDecl, Statement
 from quivers.dsl.ast_nodes.program_steps import CallStep, MarginalizeStep
 from quivers.dsl.ast_nodes.qiec import (
@@ -91,8 +92,7 @@ QIEC_DIAGNOSTIC_CODES = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class QiecToolingDiagnostic:
+class QiecToolingDiagnostic(dx.Model):
     """A frontend-neutral QIEC diagnostic."""
 
     message: str
@@ -101,15 +101,16 @@ class QiecToolingDiagnostic:
     col: int = 0
 
 
-@dataclass(frozen=True, slots=True)
-class QiecBinding:
+class QiecBinding(QiecModel):
     """One source-level name exposed to completion and navigation."""
 
     name: str
     kind: QiecBindingKind
-    declaration: object
-    owner: Statement
-    scope: tuple[int, int] | None = None
+    declaration: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    owner: Statement = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    scope: tuple[int, int] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     """The 1-based line range the binding is visible over.
 
     ``None`` for a module-level declaration, which is visible throughout.
@@ -198,16 +199,19 @@ class QiecBinding:
         return "variable"
 
 
-@dataclass(slots=True)
-class ToolingAnalysis:
+class ToolingAnalysis(QiecModel):
     """The two elaboration products needed by user-facing tools."""
 
-    compiler: Compiler
-    env: dict[str, Any]
-    non_qiec_module: Module
-    qiec_module: QiecModule | None
-    qiec_diagnostics: tuple[QiecToolingDiagnostic, ...]
-    compile_error: CompileError | None
+    compiler: Compiler = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    env: dict[str, HeldValue] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    non_qiec_module: Module = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    qiec_module: QiecModule | None = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    qiec_diagnostics: tuple[QiecToolingDiagnostic, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    compile_error: CompileError | None = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
 def is_qiec_statement(statement: Statement) -> bool:
@@ -387,31 +391,86 @@ def qiec_bindings(module: Module) -> tuple[QiecBinding, ...]:
     out: list[QiecBinding] = []
     for statement in module.statements:
         if isinstance(statement, QiecIndexDecl):
-            out.append(QiecBinding(statement.name, "index", statement, statement))
+            out.append(
+                QiecBinding(
+                    name=statement.name,
+                    kind="index",
+                    declaration=statement,
+                    owner=statement,
+                )
+            )
             out.extend(
                 QiecBinding(
-                    constructor.name, "index-constructor", constructor, statement
+                    name=constructor.name,
+                    kind="index-constructor",
+                    declaration=constructor,
+                    owner=statement,
                 )
                 for constructor in statement.constructors
             )
         elif isinstance(statement, QiecFamilyDecl):
-            out.append(QiecBinding(statement.name, "family", statement, statement))
+            out.append(
+                QiecBinding(
+                    name=statement.name,
+                    kind="family",
+                    declaration=statement,
+                    owner=statement,
+                )
+            )
             out.extend(
-                QiecBinding(constructor.name, "constructor", constructor, statement)
+                QiecBinding(
+                    name=constructor.name,
+                    kind="constructor",
+                    declaration=constructor,
+                    owner=statement,
+                )
                 for constructor in statement.constructors
             )
         elif isinstance(statement, QiecEffectDecl):
-            out.append(QiecBinding(statement.name, "effect", statement, statement))
+            out.append(
+                QiecBinding(
+                    name=statement.name,
+                    kind="effect",
+                    declaration=statement,
+                    owner=statement,
+                )
+            )
             out.extend(
-                QiecBinding(operation.name, "operation", operation, statement)
+                QiecBinding(
+                    name=operation.name,
+                    kind="operation",
+                    declaration=operation,
+                    owner=statement,
+                )
                 for operation in statement.operations
             )
         elif isinstance(statement, QiecEffectInstanceDecl):
-            out.append(QiecBinding(statement.name, "instance", statement, statement))
+            out.append(
+                QiecBinding(
+                    name=statement.name,
+                    kind="instance",
+                    declaration=statement,
+                    owner=statement,
+                )
+            )
         elif isinstance(statement, QiecHandlerDecl):
-            out.append(QiecBinding(statement.name, "handler", statement, statement))
+            out.append(
+                QiecBinding(
+                    name=statement.name,
+                    kind="handler",
+                    declaration=statement,
+                    owner=statement,
+                )
+            )
         elif isinstance(statement, QiecComputationDecl):
-            out.append(QiecBinding(statement.name, "computation", statement, statement))
+            out.append(
+                QiecBinding(
+                    name=statement.name,
+                    kind="computation",
+                    declaration=statement,
+                    owner=statement,
+                )
+            )
     return tuple(out)
 
 
@@ -493,11 +552,11 @@ def _walk_computation_bindings(
     if isinstance(computation, QiecPureBinding | QiecBindComputation):
         out.append(
             QiecBinding(
-                computation.binder.name,
-                "local",
-                computation.binder,
-                owner,
-                _computation_span(computation.then),
+                name=computation.binder.name,
+                kind="local",
+                declaration=computation.binder,
+                owner=owner,
+                scope=_computation_span(computation.then),
             )
         )
         if isinstance(computation, QiecBindComputation):
@@ -507,11 +566,11 @@ def _walk_computation_bindings(
     if isinstance(computation, QiecInstanceComputation):
         out.append(
             QiecBinding(
-                computation.name,
-                "scoped-instance",
-                computation,
-                owner,
-                _computation_span(computation.body),
+                name=computation.name,
+                kind="scoped-instance",
+                declaration=computation,
+                owner=owner,
+                scope=_computation_span(computation.body),
             )
         )
         _walk_computation_bindings(computation.body, owner, out)
@@ -531,7 +590,13 @@ def _walk_computation_bindings(
         for branch in computation.branches:
             span = _computation_span(branch.body)
             out.extend(
-                QiecBinding(field.name, "branch-binder", field, owner, span)
+                QiecBinding(
+                    name=field.name,
+                    kind="branch-binder",
+                    declaration=field,
+                    owner=owner,
+                    scope=span,
+                )
                 for field in branch.fields
             )
             _walk_computation_bindings(branch.body, owner, out)
@@ -563,11 +628,11 @@ def qiec_local_bindings(module: Module) -> tuple[QiecBinding, ...]:
         if isinstance(statement, QiecComputationDecl):
             out.extend(
                 QiecBinding(
-                    parameter.name,
-                    "parameter",
-                    parameter,
-                    statement,
-                    _computation_span(statement.body),
+                    name=parameter.name,
+                    kind="parameter",
+                    declaration=parameter,
+                    owner=statement,
+                    scope=_computation_span(statement.body),
                 )
                 for parameter in statement.parameters
             )
@@ -578,11 +643,11 @@ def qiec_local_bindings(module: Module) -> tuple[QiecBinding, ...]:
                     span = _computation_span(clause.body)
                     out.append(
                         QiecBinding(
-                            clause.binder.name,
-                            "parameter",
-                            clause.binder,
-                            statement,
-                            span,
+                            name=clause.binder.name,
+                            kind="parameter",
+                            declaration=clause.binder,
+                            owner=statement,
+                            scope=span,
                         )
                     )
                     _walk_computation_bindings(clause.body, statement, out)
@@ -593,7 +658,13 @@ def qiec_local_bindings(module: Module) -> tuple[QiecBinding, ...]:
                     continue
                 span = _computation_span(clause.body)
                 out.extend(
-                    QiecBinding(parameter.name, "parameter", parameter, statement, span)
+                    QiecBinding(
+                        name=parameter.name,
+                        kind="parameter",
+                        declaration=parameter,
+                        owner=statement,
+                        scope=span,
+                    )
                     for parameter in clause.parameters
                 )
                 _walk_computation_bindings(clause.body, statement, out)
