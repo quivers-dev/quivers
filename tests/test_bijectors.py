@@ -46,14 +46,14 @@ def _jacobian_consistency(b: Bijector, x: torch.Tensor, atol: float = 1e-5) -> N
 
 
 def test_identity() -> None:
-    x = torch.randn(5)
+    x = torch.randn(5, generator=torch.Generator().manual_seed(0))
     b = IdentityBijector()
     _round_trip(b, x)
     torch.testing.assert_close(b.forward_log_det_jacobian(x), torch.zeros_like(x))
 
 
 def test_exp_log_inverses() -> None:
-    x = torch.randn(7)
+    x = torch.randn(7, generator=torch.Generator().manual_seed(0))
     e = ExpBijector()
     log = LogBijector()
     _round_trip(e, x)
@@ -62,13 +62,13 @@ def test_exp_log_inverses() -> None:
 
 
 def test_exp_jacobian_is_identity_in_log_space() -> None:
-    x = torch.randn(5)
+    x = torch.randn(5, generator=torch.Generator().manual_seed(0))
     e = ExpBijector()
     torch.testing.assert_close(e.forward_log_det_jacobian(x), x)
 
 
 def test_sigmoid_logit_inverses() -> None:
-    x = torch.randn(7)
+    x = torch.randn(7, dtype=torch.float64, generator=torch.Generator().manual_seed(0))
     s = SigmoidBijector()
     lo = LogitBijector()
     _round_trip(s, x)
@@ -94,7 +94,7 @@ def test_softplus_round_trip() -> None:
 
 
 def test_affine_round_trip_and_jacobian() -> None:
-    x = torch.randn(5)
+    x = torch.randn(5, generator=torch.Generator().manual_seed(0))
     a = AffineBijector(scale=2.5, shift=1.0)
     _round_trip(a, x)
     expected_log_det = math.log(2.5)
@@ -112,19 +112,63 @@ def test_affine_rejects_nonpositive_scale() -> None:
 
 
 def test_compose_chain_rule() -> None:
-    x = torch.randn(5)
+    """Affine–sigmoid composition obeys the scalar derivative in both tails."""
+    x = torch.cat(
+        (
+            torch.randn(
+                5, dtype=torch.float64, generator=torch.Generator().manual_seed(0)
+            ),
+            torch.tensor(
+                [-6.0, -1.5727, -0.1232, 3.5870, -1.8313, 1.5987, 6.0],
+                dtype=torch.float64,
+            ),
+        )
+    )
     inner = AffineBijector(scale=2.0, shift=1.0)
     outer = SigmoidBijector()
     c = ComposeBijector(outer, inner)
     _round_trip(c, x)
-    expected_fwd = inner.forward_log_det_jacobian(x) + outer.forward_log_det_jacobian(
-        inner.forward(x)
+    expected_fwd = torch.tensor(
+        [
+            math.log(2.0) - z - 2.0 * math.log1p(math.exp(-z))
+            for z in (2.0 * x + 1.0).tolist()
+        ],
+        dtype=x.dtype,
     )
     torch.testing.assert_close(
         c.forward_log_det_jacobian(x),
         expected_fwd,
         atol=1e-5,
         rtol=1e-5,
+    )
+    _jacobian_consistency(c, x)
+    assert not torch.allclose(
+        c.forward(x), ComposeBijector(inner, outer).forward(x), atol=1e-5, rtol=1e-5
+    )
+    assert not torch.allclose(
+        expected_fwd,
+        outer.forward_log_det_jacobian(inner.forward(x)),
+        atol=1e-5,
+        rtol=1e-5,
+    )
+
+
+def test_composed_sigmoid_float32_preserves_the_rounded_forward_value() -> None:
+    """The inverse matches scalar logit of the represented float32 probability."""
+    x = torch.tensor([3.5870], dtype=torch.float32)
+    composed = ComposeBijector(SigmoidBijector(), AffineBijector(scale=2.0, shift=1.0))
+    y = composed.forward(x)
+    torch.testing.assert_close(y, torch.sigmoid(2.0 * x + 1.0), rtol=0, atol=0)
+    probability = float(y[0])
+    expected = torch.tensor(
+        [(math.log(probability) - math.log1p(-probability) - 1.0) / 2.0],
+        dtype=torch.float32,
+    )
+    torch.testing.assert_close(
+        composed.inverse(y),
+        expected,
+        rtol=4 * torch.finfo(torch.float32).eps,
+        atol=0,
     )
 
 
@@ -138,8 +182,7 @@ def test_inverse_swaps_forward_and_inverse() -> None:
 
 
 def test_stick_breaking_sums_to_one() -> None:
-    torch.manual_seed(0)
-    x = torch.randn(11, 4)
+    x = torch.randn(11, 4, generator=torch.Generator().manual_seed(0))
     sb = StickBreakingBijector()
     y = sb.forward(x)
     assert y.shape == torch.Size([11, 5])
@@ -148,8 +191,7 @@ def test_stick_breaking_sums_to_one() -> None:
 
 
 def test_stick_breaking_round_trip() -> None:
-    torch.manual_seed(0)
-    x = torch.randn(7, 3)
+    x = torch.randn(7, 3, generator=torch.Generator().manual_seed(0))
     sb = StickBreakingBijector()
     y = sb.forward(x)
     x_back = sb.inverse(y)
@@ -157,7 +199,7 @@ def test_stick_breaking_round_trip() -> None:
 
 
 def test_compose_inverse_jacobian_chain_rule() -> None:
-    x = torch.randn(5)
+    x = torch.randn(5, dtype=torch.float64, generator=torch.Generator().manual_seed(0))
     c = ComposeBijector(SigmoidBijector(), AffineBijector(scale=1.5, shift=0.0))
     y = c.forward(x)
     fwd = c.forward_log_det_jacobian(x)
