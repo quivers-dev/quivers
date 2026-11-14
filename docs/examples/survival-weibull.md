@@ -2,7 +2,7 @@
 
 ## Overview
 
-A parametric [survival regression](https://en.wikipedia.org/wiki/Survival_analysis) with a [Weibull](https://en.wikipedia.org/wiki/Weibull_distribution) baseline hazard and right-censored follow-up [@klein2003survival]. Each item carries a covariate `x_i`, an observed time `t_i`, and an event indicator. The covariate multiplies the hazard by `exp(alpha + beta * x_i)`, the [proportional-hazards](https://en.wikipedia.org/wiki/Proportional_hazards_model) form, and the shape `k` governs whether the hazard decreases (k < 1), stays constant (k = 1, exponential), or increases (k > 1) with elapsed time. Rows whose event was observed contribute the Weibull density; censored rows contribute the probability of surviving past the end of follow-up.
+A parametric [survival regression](https://en.wikipedia.org/wiki/Survival_analysis) with a [Weibull](https://en.wikipedia.org/wiki/Weibull_distribution) baseline hazard and right-censored follow-up [@klein2003survival]. Each item carries a covariate `x_i`, an observed time `t_i`, and an event indicator. The covariate multiplies the hazard by `exp(alpha + beta * x_i)`, the [proportional-hazards](https://en.wikipedia.org/wiki/Proportional_hazards_model) form, and the shape `k` governs whether the hazard decreases (k < 1), stays constant (k = 1, exponential), or increases (k > 1) with elapsed time. Rows whose event was observed contribute the Weibull density. Censored rows contribute the probability of surviving past the end of follow-up.
 
 ## QVR source
 
@@ -11,7 +11,7 @@ A parametric [survival regression](https://en.wikipedia.org/wiki/Survival_analys
 #
 # A parametric survival regression with a Weibull baseline and
 # right-censored follow-up. Each item has a covariate x_i, an
-# observed time t_i (supplied as log_t = log t_i), and an event
+# observed time t_i (provided as log_t = log t_i), and an event
 # indicator d_i: 1 when the event was observed at t_i, 0 when
 # follow-up ended at t_i without it.
 #
@@ -83,8 +83,8 @@ survival probability `P(T > t) = exp(-H(t))` [@stanSurvival]. Both cases are
 
 ## Walkthrough
 
-The identifiers `x` and `log_t` are host data: they are never bound inside the
-program, so the runtime reads them from the observations dict. The times enter
+The identifiers `x` and `log_t` are input data: they are never bound inside the
+program, so the runtime reads them from the observations mapping. The times enter
 on the log scale, so `H(t) = exp(eta + k * log t)` and `log(k / t) = log k -
 log t` need no positivity constraint on the data. The event
 indicator `event` is observed data too, bound by the `observe` step.
@@ -102,10 +102,10 @@ and for the Weibull `h(t) / H(t) = k / t`. The `observe event` step scores
 `event * log(k / t)`, which is nonzero only on event rows. The sum is
 `d * log h(t) - H(t)` per row: the Weibull log density on event rows and the
 log survival function `-H(t)` on censored rows. This is an identity of
-likelihoods, not a claim that the indicator is Poisson distributed; the
+likelihoods, not a claim that the indicator is Poisson distributed. The
 posterior over `alpha`, `beta`, and `k` is the censored Weibull posterior,
 which the Try-it block below checks against the direct formula. A forward run of
-the program draws the indicator from the Poisson kernel rather than simulating
+the program draws the indicator from the Poisson [kernel](https://en.wikipedia.org/wiki/Markov_kernel) rather than simulating
 event and censoring times, so the synthetic data below is generated in torch
 from the Weibull model.
 
@@ -113,19 +113,17 @@ The censoring times themselves never enter the program. Under independent,
 non-informative censoring their distribution does not depend on `alpha`, `beta`,
 or `k`, so it contributes only a constant to the log posterior.
 
-The program returns `beta`, a scalar real, so the declared codomain is `Val : Real 1`: the value space of what comes back. `Item` names the plate extent of the observed rows and appears in the signature only as the domain.
+`return beta` exposes the real log hazard ratio for the covariate. `Item` indexes the observed records.
 
 ## Try it
 
 The blocks below simulate censored survival data, check the compiled log joint
 against a hand-written censored Weibull log likelihood, and recover the
-parameters with SVI and NUTS. The program reads its data by name, so its input
-`x_in` is a single dummy row: that leading axis is a particle axis, and a longer
-one would score the whole data set once per row.
+parameters with [SVI](../guides/inference-svi.md) (stochastic variational inference) and [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler). The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
-Event times come from the model; censoring times come from an independent
+Event times come from the model. Censoring times come from an independent
 Exponential(0.3) follow-up process, which censors roughly a quarter of the rows.
 
 ```python
@@ -183,7 +181,7 @@ assert abs(float(naive - compiled)) > 1.0
 
 ### SVI fit
 
-A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by
 [`SVI`](../api/inference/svi.md). With about 145 observed events, the standard
 errors are near 0.1 for `alpha` and `beta` and near 0.1 for `k`, so the check
 asks each posterior mean to sit within 0.3 of the truth.
@@ -230,9 +228,4 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-Each item's event time is a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) from the covariate to the positive reals, the Weibull kernel with hazard `k * t**(k - 1) * exp(eta)`. Right censoring observes that kernel through a coarser map: an event row observes the time itself, while a censored row observes only the event `T > t`, whose probability is the kernel's survival function. The program does not build that coarsened kernel directly; it scores the same likelihood through the Poisson kernel `H(t) |-> Poisson(H(t))` evaluated at the indicator, plus the event-row factor `k / t`. At `k = 1` the kernel is exponential and the hazard is constant in time. [@giry1982categorical]
-
-## Sources and further reading
-
-- *Survival Analysis: Techniques for Censored and Truncated Data* [@klein2003survival].
-- *The Fitting of Exponential, Weibull and Extreme Value Distributions to Complex Censored Survival Data Using GLIM* [@aitkin1980glim].
+Each item's event time is a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) from the covariate to the positive reals, the Weibull kernel with hazard `k * t**(k - 1) * exp(eta)`. Right censoring observes that kernel through a coarser map: an event row observes the time itself, while a censored row observes only the event `T > t`, whose probability is the kernel's survival function. The program does not build that coarsened kernel directly. It scores the same likelihood through the Poisson kernel `H(t) |-> Poisson(H(t))` evaluated at the indicator, plus the event-row factor `k / t`. At `k = 1` the kernel is exponential and the hazard is constant in time. [@giry1982categorical]

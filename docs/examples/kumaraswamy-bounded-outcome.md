@@ -2,7 +2,7 @@
 
 ## Overview
 
-A regression on a $(0, 1)$-bounded response with the [Kumaraswamy distribution](https://en.wikipedia.org/wiki/Kumaraswamy_distribution) as the likelihood. Unlike the Beta distribution, its CDF and quantile are available in elementary power functions, which can make inverse-CDF sampling inexpensive. The covariate enters through the first shape parameter under a log link, so the fitted response stays inside the unit interval for every value of the predictor.
+A regression on a $(0, 1)$-bounded response with the [Kumaraswamy distribution](https://en.wikipedia.org/wiki/Kumaraswamy_distribution) as the likelihood. Unlike the Beta distribution, its CDF and quantile are available in elementary power functions, which can make inverse-CDF sampling inexpensive. The covariate enters through the first shape parameter under a log link, so the fitted response stays inside the unit interval for every value of the predictor. [@kumaraswamy1980bounded]
 
 Generative structure:
 
@@ -42,7 +42,7 @@ The Kumaraswamy density is $f(y; a, b) = a b\, y^{a - 1} (1 - y^a)^{b - 1}$ on $
 #   a_n     = exp(gamma_0 + gamma_1 * x_n)       per-row first shape
 #   y_n     ~ Kumaraswamy(a_n, b)
 #
-# The predictor x is exogenous data supplied at fit time through
+# The predictor x is exogenous data provided at fit time through
 # the observations dict. Resp is the plate the responses are
 # observed over and Val is the value space of the returned
 # per-row shape.
@@ -69,7 +69,7 @@ export kumaraswamy_regression
 ## Understanding the model
 
 The response must lie strictly between zero and one. The two positive shape
-parameters determine where mass lies inside that interval; at `a = b = 1`
+parameters determine where mass lies inside that interval. At `a = b = 1`
 the distribution is uniform. The predictor changes `a` through an exponential,
 so a coefficient describes a change in log shape rather than a direct change
 in the response mean.
@@ -82,17 +82,14 @@ different predictor values can be more interpretable than comparing the raw
 
 ## Walkthrough
 
-`object Resp : FinSet 200` is the plate the responses are observed over, and `object Val : Real 1` is the value space of what the program returns, so the signature reads `Resp -> Val`. The domain names the plate; the codomain names the space the returned value lives in, which for a real scalar is `Real 1`.
+`object Resp : FinSet 200` is the [plate](https://en.wikipedia.org/wiki/Plate_notation) the responses are observed over, and `object Val : Real 1` is the value space of what the program returns, so the signature reads `Resp -> Val`. The domain names the plate. The codomain names the space the returned value lives in, which for a real scalar is `Real 1`.
 
-`sample b <- HalfNormal(2.0)` gives the global second shape parameter a weakly-informative positive prior. The uniform Kumaraswamy occurs at $a = b = 1$; a half-Normal is not centered specifically on that value. The two coefficients carry unit-Normal priors, `let eta = gamma_0 + gamma_1 * x` binds the linear predictor over the exogenous covariate `x`, and `let a = exp(eta)` maps it into the positive first shape parameter. `return a` exposes the per-row fitted shape. The implied mean is $E[Y_n] = b\,B(1 + 1/a_n, b)$; this parameterization has no standard one-number concentration equal to `1 / (1 + 1 / b)`.
+`sample b <- HalfNormal(2.0)` gives the global second shape parameter a weakly informative positive prior. The uniform Kumaraswamy occurs at $a = b = 1$. A half-Normal is not centered specifically on that value. The two coefficients carry unit-Normal priors, `let eta = gamma_0 + gamma_1 * x` binds the linear predictor over the exogenous covariate `x`, and `let a = exp(eta)` maps it into the positive first shape parameter. `return a` exposes the per-row fitted shape. The implied mean is $E[Y_n] = b\,B(1 + 1/a_n, b)$. This parameterization has no standard one-number concentration equal to `1 / (1 + 1 / b)`.
 
 ## Try it
 
 The blocks below simulate from the model, check the compiled log joint against
-a hand-written density, and then recover the parameters with SVI and NUTS. The
-program reads its data by name, so its input `x_in` is a single dummy row: that
-leading axis is a particle axis, and a longer one would score the whole data
-set once per row.
+a hand-written density, and then recover the parameters with [SVI](../guides/inference-svi.md) (stochastic variational inference) and [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler). The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
@@ -145,7 +142,7 @@ assert torch.allclose(compiled, oracle, rtol=1e-5)
 
 ### SVI fit
 
-A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by
 [`SVI`](../api/inference/svi.md). With 200 rows the standard errors are near 0.085 for `gamma_0`, 0.06 for
 `gamma_1`, and 0.15 for `b`, so the tolerances are about four standard errors:
 0.35, 0.25, and 0.6.
@@ -195,7 +192,3 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 ## Use cases
 
 Any bounded-outcome regression where the analyst needs efficient quantile evaluation: financial fraction-of-volume forecasting, biology fraction-of-population modeling, fraction-positive A/B testing where the closed-form quantile speeds Bayesian decision-making. Drop-in alternative to Beta regression when downstream operations are quantile-based rather than moment-based.
-
-## Sources and further reading
-
-- *A generalized probability density function for double-bounded random processes* [@kumaraswamy1980bounded].

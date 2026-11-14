@@ -80,7 +80,7 @@ regime, so the model also covers a series with no change.
 
 The [`marginalize`](../reference/qvr/probabilistic-programs.md#exact-marginalization) block binds `tau` to each element of `Tau` in turn. Inside it, the [factor expression](../guides/dsl-programs-and-lets.md#factor-expressions-assembling-indexed-tensors) `factor t : Step in real(min(max(t - tau, 0), 1))` builds the regime indicator: it is `0` for `t <= tau` and `1` for `t > tau`, since `t` and `tau` are integers. The per-step rate selects `rate_before` or `rate_after` through that indicator, and `observe y : Step <- Poisson(rate=rate)` scores the whole series under the candidate switch. `[reduction=logsumexp]` then adds the uniform log prior to each candidate's total and log-sum-exps over `Tau`, which is the sum displayed above in log space. `Step` and `Tau` have the same extent because every step is a candidate switch location.
 
-The program returns `rate_after`, a scalar real, so the declared codomain is `Val : Real 1`: the value space of what comes back. `Step` names the plate extent of the observed counts and appears in the signature only as the domain.
+`return rate_after` exposes the real rate after the switch. `Step` indexes the observed counts.
 
 ## Try it
 
@@ -173,7 +173,7 @@ assert true_tau in credible_set.tolist()
 
 ### SVI fit
 
-Fit the two rates with a mean-field [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide); `tau` has no guide site because the program sums it out. The rate tolerances are about three posterior standard deviations, `sqrt(rate / n)` for a regime of `n` steps: `0.8` for the 41 pre-change steps and `0.6` for the 23 post-change steps. The posterior over `tau` implied by the fit averages each candidate's conditional probability over guide draws of the rates, and it should agree with the exact posterior up to a [total variation distance](https://en.wikipedia.org/wiki/Total_variation_distance_of_probability_measures) of `0.1`.
+Fit the two rates with a [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide). `tau` has no guide site because the program sums it out. The rate tolerances are about three posterior standard deviations, `sqrt(rate / n)` for a regime of `n` steps: `0.8` for the 41 pre-change steps and `0.6` for the 23 post-change steps. The posterior over `tau` implied by the fit averages each candidate's conditional probability over guide draws of the rates, and it should agree with the exact posterior up to a [total variation distance](https://en.wikipedia.org/wiki/Total_variation_distance_of_probability_measures) of `0.1`.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -208,7 +208,7 @@ assert tv_distance < 0.1
 
 ### NUTS posterior
 
-With `tau` summed out, the two rates are the only latent sites, and [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them under the exact marginal likelihood. Every gradient evaluates all 64 candidate switches, so the run is short and its trees shallow; the posterior over two rates is close to Gaussian, and the same rate tolerances apply. A longer, multi-chain run is needed for calibrated intervals.
+With `tau` summed out, the two rates are the only latent sites, and [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them under the exact marginal likelihood. Every gradient evaluates all 64 candidate switches, so the run is short and its trees shallow. The posterior over two rates is close to Gaussian, and the same rate tolerances apply. A longer, multi-chain run is needed for calibrated intervals.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -228,10 +228,6 @@ assert abs(nuts_after - true_rate_after) < 0.6
 
 ## Categorical perspective
 
-The model is a Kleisli morphism in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) whose denotation is the joint $p(r_1)\, p(r_2) \sum_{\tau} p(\tau) \prod_t \mathrm{Poisson}(y_t \mid r(t; \tau, r_1, r_2))$. The `marginalize` block is the pushforward of the joint over $\mathrm{Tau} \times$ data along the projection that forgets $\tau$: a finite sum, so the marginal is exact rather than a relaxation of the discrete switch. [@giry1982categorical]
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. Before observing the series, drawing the rates, switch, and counts defines a joint probability distribution. Summing over the switch is a [pushforward](https://en.wikipedia.org/wiki/Pushforward_measure), the measure obtained by mapping an outcome to its rates and counts and forgetting $\tau$. Its density is $p(r_1)\,p(r_2)\sum_\tau p(\tau)\prod_t\mathrm{Poisson}(y_t\mid r(t;\tau,r_1,r_2))$. This finite sum marginalizes the discrete switch exactly.
 
-## Sources and further reading
-
-- *Hierarchical Bayesian Analysis of Changepoint Problems* [@carlin1992changepoint].
-- *Latent Discrete Parameters*, Stan User's Guide [@stanLatentDiscrete].
-- *A categorical approach to probability theory* [@giry1982categorical].
+Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative].

@@ -3,21 +3,13 @@
 ## Overview
 
 This example places four views of a reading experiment in one checked module.
-A schema-backed categorial parser sums over the derivations of a sentence; a
-structural autoencoder learns codes for logical forms; an indexed family
-separates observed from missing reading times under a contamination measure;
-and a hierarchical reading-time program puts a prior on its intercept through
+A schema-backed categorial parser sums over the derivations of a sentence. A
+structural autoencoder learns codes for logical forms. An indexed family
+separates observed from missing reading times under a contamination measure. And a hierarchical reading-time program puts a prior on its intercept through
 an authored handler, pools participant and item effects, and marginalizes an
 item-level analysis exactly.
 
-The module's point is not that one inference algorithm should fit every
-component at once. Its point is that each component has a typed entry, the
-calls among them form one inspected graph, and an unsupported deployment
-target must name the exact boundary it cannot preserve. The components are
-also deliberately independent in one respect: the reading-time program does
-not read the autoencoder's codes, so nothing here amortizes inference over
-the response model. The autoencoder is trained only by its own
-reconstruction loss.
+Each component has a typed entry, and calls between entries form a checked computation graph. The reading-time program does not use the autoencoder codes. The autoencoder parameters are trained by reconstruction loss, so this specification does not amortize inference for the reading-time model.
 
 [Open the complete QVR source](qiec/amortized-bayesian-semantics.qvr).
 
@@ -25,7 +17,7 @@ reconstruction loss.
 
 Read the response model one trial at a time. The trial belongs to one
 participant and one item, so [two index lookups](../tutorials/qvr/09-indexed-data.md#5-transfer-the-pattern-to-statistical-data) select the corresponding
-random effects. An item can have two analyses; all trials for that item
+random effects. An item can have two analyses. All trials for that item
 share its analysis, so their evidence is combined before [summing over the two possibilities](../tutorials/qvr/04-marginalize.md#hierarchical-mixtures-with-grouping). The parser contributes a different source of evidence,
 the summed weight of the sentence's derivations.
 
@@ -118,8 +110,8 @@ define complete[s : Availability](measurement : Measurement(s), location : Real,
             return value
 ```
 
-The observed branch scores a supplied value. The missing branch draws a
-predictive value under the parameters supplied to it; posterior prediction
+The observed branch scores a provided value. The missing branch draws a
+predictive value under the parameters provided to it. Posterior prediction
 requires those parameters to come from a posterior. `contamination` uses the
 measure algebra to mix a 95% Normal component with a 5% Student-t component
 on three degrees of freedom, with density
@@ -172,9 +164,7 @@ request, the clause, and the resumption.
 
 The parser instantiates three schemas over the depth-one free residuated
 inventory on $\{N, NP, S\}$, that is, the three atoms and the eighteen
-categories $A/B$ and $A\backslash B$ with atomic $A$ and $B$ (in this
-source's notation `X \ Y` takes its `Y` argument on the left and returns
-`X`):
+categories $A/B$ and $A\backslash B$ with atomic $A$ and $B$. In Steedman notation, used here, the result comes first: `X \ Y` takes its `Y` argument on the left and returns `X` [@steedman2000syntactic]. The schemas are
 
 - `fwd_app`: $X/Y,\ Y \vdash X$;
 - `bwd_app`: $Y,\ X\backslash Y \vdash X$;
@@ -187,12 +177,12 @@ weights every derivation counts once, so the inside weight of a sentence is
 the log of its number of `S`-rooted derivations: 6 for two tokens, 45 for
 three, 378 for four. The checked search entry sums those derivations under a
 `Weight[LogWeight]` handler by explicit enumeration, so its cost grows with
-that count; the Try-it uses a two-token sentence for that reason.
+that count. The Try-it uses a two-token sentence for that reason.
 
 The structural head lowers `Enc`, `Dec`, and `Dec__nll` to typed `Compute`
 requests, with `reconstruct` as their composed loss. These entries use
 different runtime capabilities. The core provider can run the authored
-handler and the parser search; the structural loss also needs the compiled
+handler and the parser search. The structural loss also needs the compiled
 PyTorch attachments. A transpiler must preserve the capability of every entry
 the selected program can reach.
 
@@ -290,7 +280,7 @@ print("inside log weight:", parser_weight)
 ### The reading-time joint against a hand-written density
 
 Replaying every latent at known values and scoring the program on the
-reference machine with
+[reference machine](../developer/qiec.md#reference-evaluator) with
 [`run_program`](../api/qiec/program_runtime.md#quivers.qiec.program_runtime.run_program)
 must give the density written out above, term by term, with raw
 `torch.distributions`. The data are drawn from the model itself at those
@@ -389,12 +379,7 @@ print(f"grouped minus per-trial marginal: {float(grouped - ungrouped):.2f} nats"
 assert abs(float(grouped - ungrouped)) > 1.0
 ```
 
-The two numbers agree to round-off, so the parser factor, the half-Student-t
-scales, the non-centered effects, the handler-located intercept, the grouped
-analysis marginal, and the contamination density at the held-out draw are each
-the term the display above states. The last check shows why `over=Item`
-matters: treating each trial's analysis as its own latent changes the score by
-hundreds of nats on these data.
+The total log densities agree to round-off at this draw. The calculation includes the parser weight, half-Student-t scales, non-centered effects, handler-transformed intercept, grouped analysis marginal, and contamination density. Treating each trial’s analysis as its own latent changes the score by hundreds of nats on these data, distinguishing it from the shared item analysis.
 
 Check target boundaries before choosing a backend:
 
@@ -405,7 +390,7 @@ qvr run docs/examples/qiec/amortized-bayesian-semantics.qvr --list
 ```
 
 The target check reports the search and neural-attachment requirements it
-cannot preserve. Those diagnostics are part of the example: the module keeps
+cannot preserve. The module keeps
 a complete graph while each deployment selects only a supported entry and
 provider set.
 
@@ -415,7 +400,7 @@ First, replace `log_milliseconds` with a handler resuming with
 `-0.91 + 0.5 * z` and confirm that the prior moves to the seconds scale while
 the model text is unchanged. Second, replace the item-level `logsumexp` with
 `mean` and state the different estimand. Third, add a product group over item
-and experimental list; the corresponding `via=[item_idx, list_idx]` should
+and experimental list. The corresponding `via=[item_idx, list_idx]` should
 make the shared latent explicit. Finally, connect the autoencoder to the
 response model, for instance by predicting each item's analysis probabilities
 from the code of its logical form, and check which encoder parameters then

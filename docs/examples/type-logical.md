@@ -1,5 +1,9 @@
 # Type-Logical Grammar (Lambek calculus)
 
+## Overview
+
+This example is a weighted chart parser whose every rule is a theorem of the associative Lambek calculus L [@lambek1958mathematics]. Categories are built from the atoms `S`, `NP`, `N` with the two slashes and the product, and a chart item `span(I, J, X)` records that the words in `[I, J)` derive `X`. Because each rule is an L-theorem and the chart only combines adjacent spans in order, everything the chart derives is L-derivable: the parser is a sound fragment of L. It is not complete, since L also proves sequents that need hypothetical reasoning, and a sequent requiring that reasoning is given below.
+
 ## QVR source
 
 ```qvr
@@ -74,10 +78,6 @@ program fit_grammar : Term -> LogWeight
 export fit_grammar
 ```
 
-## Overview
-
-This example is a weighted chart parser whose every rule is a theorem of the associative Lambek calculus L [@lambek1958mathematics]. Categories are built from the atoms `S`, `NP`, `N` with the two slashes and the product, and a chart item `span(I, J, X)` records that the words in `[I, J)` derive `X`. Because each rule is an L-theorem and the chart only combines adjacent spans in order, everything the chart derives is L-derivable: the parser is a sound fragment of L. It is not complete, since L also proves sequents that need hypothetical reasoning, and the page shows one such sequent that the chart misses.
-
 ## Understanding the model
 
 L is a logic of ordered resources. A sequent `X_1, ..., X_n |- Y` holds when the words typed `X_1` through `X_n`, in that order and each used exactly once, form an expression of type `Y`. L has no structural rules: it cannot reorder premises (exchange), drop one (weakening), or reuse one (contraction). A chart over spans enforces two of those restrictions by construction, since a binary rule combines two adjacent spans and its conclusion covers exactly their union. What the chart cannot enforce by itself is that the *category* bookkeeping respects resources: a rule `Tns(A, B) |- A` would discard the `B` resource while keeping its words in the span, which is weakening in disguise. Every rule here passes a stricter test, namely that its premises entail its conclusion in L.
@@ -86,7 +86,7 @@ The lexicon uses this to do linguistic work. `that` has type `(N\N)/(S/NP)`, so 
 
 ## Walkthrough
 
-The source uses Lambek's argument-under convention throughout. `Fwd(A, B)` is `A/B`, a functor that seeks a `B` on its right; `Bwd(B, A)` is `B\A`, a functor that seeks a `B` on its left; `Tns(A, B)` is the product `A*B`. In that notation the residuation laws read `A*B |- C` iff `A |- C/B` iff `B |- A\C`.
+The source uses Lambek's argument-under convention throughout. `Fwd(A, B)` is `A/B`, a functor that seeks a `B` on its right. `Bwd(B, A)` is `B\A`, a functor that seeks a `B` on its left. `Tns(A, B)` is the product `A*B`. In that notation the residuation laws read `A*B |- C` iff `A |- C/B` iff `B |- A\C`.
 
 | Rule | Sequent | Cut-free L derivation |
 |---|---|---|
@@ -94,13 +94,13 @@ The source uses Lambek's argument-under convention throughout. `Fwd(A, B)` is `A
 | `bwd_app` | `B, B\A \|- A` | `\L` on the axioms |
 | `fwd_comp` | `A/B, B/C \|- A/C` | `A/B, B/C, C \|- A` by `/L` twice, then `/R` |
 | `bwd_comp` | `C\B, B\A \|- C\A` | `C, C\B, B\A \|- A` by `\L` twice, then `\R` |
-| `raise_subj` | `NP \|- S/(NP\S)` | `NP, NP\S \|- S` by `\L`, then `/R`; the instance of type raising `A \|- B/(A\B)` at `A = NP`, `B = S` |
+| `raise_subj` | `NP \|- S/(NP\S)` | `NP, NP\S \|- S` by `\L`, then `/R`. The instance of type raising `A \|- B/(A\B)` at `A = NP`, `B = S` |
 | `prod_intro` | `A, B \|- A*B` | `*R` |
-| `curry` | `C/(A*B) \|- (C/B)/A` | `A, B \|- A*B` by `*R`, so `C/(A*B), A, B \|- C` by `/L`; then `/R` twice |
+| `curry` | `C/(A*B) \|- (C/B)/A` | `A, B \|- A*B` by `*R`, so `C/(A*B), A, B \|- C` by `/L`. Then `/R` twice |
 
 Composition and type raising are the standard derived rules of L [@lambek1958mathematics; @moortgat1997categorial]. The order in `curry` matters: the argument adjacent to the functor, `A`, becomes the outer argument, so `C/(A*B)` becomes `(C/B)/A` and not `(C/A)/B`. The converse `(C/B)/A |- C/(A*B)` is also an L-theorem, but adding it as a rule would close a cycle between the two forms, so the fragment keeps one direction.
 
-Pattern variables (single uppercase letters such as `A`, `B`, `I`, `J`) bind at firing time. Type raising is stated at one instance because a rule's conclusion may only mention variables its premises bind: the general schema `A |- B/(A\B)` leaves `B` free. The `depth=4` option bounds the constructor depth of a rule's conclusion category; it is what keeps `prod_intro` from building ever-deeper products over a span, and the lexicon's deepest derived category, the curried `((NP\S)/NP)/NP`, sits at that bound. No rule closes a cycle, so the chart needs no `#[bounded]` rule and no convergence tolerance.
+Pattern variables (single uppercase letters such as `A`, `B`, `I`, `J`) bind at firing time. Type raising is stated at one instance because a rule's conclusion may only mention variables its premises bind: the general schema `A |- B/(A\B)` leaves `B` free. The `depth=4` option bounds the constructor depth of a rule's conclusion category. It is what keeps `prod_intro` from building ever-deeper products over a span, and the lexicon's deepest derived category, the curried `((NP\S)/NP)/NP`, sits at that bound. No rule closes a cycle, so the chart needs no `#[bounded]` rule and no convergence tolerance.
 
 `fit_grammar` is the probabilistic program over the grammar: it parses the data parameter `sentence` and scores the chart's goal weight, $\log Z(s; \mathbf{w}) = \log \sum_d \exp \langle \mathbf{w}, \phi(d) \rangle$, the log-sum over every derivation $d$ of `S` over the whole input of the learnable lexicon and rule log-weights it uses. A learnable rule's log-weight is allocated per binding of its category variables ([§2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)). Firings with the same category bindings at different span positions share that weight.
 
@@ -275,7 +275,7 @@ for sentence, expected in [("Kim sleeps", 2), ("Kim admires Lee", 3), ("Kim give
 
 ### Recovering a distribution over sentences
 
-The goal weight $Z(s; \mathbf{w})$ is unnormalized. Conditioning on sentence length makes it a distribution: $p(s \mid |s| = n, \mathbf{w}) = Z(s; \mathbf{w}) / \sum_{|s'| = n} Z(s'; \mathbf{w})$, the distribution that [`sample_corpus`](../api/stochastic/deduction/sample.md#quivers.stochastic.deduction.sample.sample_corpus) draws from exactly by enumerating yields. The block draws every learnable log-weight from a Normal(0, 1) prior, samples 2,000 three-word sentences, refits the weights from zero by MAP under the same prior, and requires the fitted distribution over the grammatical yields to lie within total-variation distance 0.05 of the generating one. Individual weights are not identified (a sentence's probability depends only on sums of weights along its derivations), so the assertion is on the distribution, which is.
+The goal weight $Z(s; \mathbf{w})$ is unnormalized. Conditioning on sentence length makes it a distribution: $p(s \mid |s| = n, \mathbf{w}) = Z(s; \mathbf{w}) / \sum_{|s'| = n} Z(s'; \mathbf{w})$, the distribution that [`sample_corpus`](../api/stochastic/deduction/sample.md#quivers.stochastic.deduction.sample.sample_corpus) draws from exactly by enumerating yields. The block draws every learnable log-weight from a Normal(0, 1) prior, samples 2,000 three-word sentences, refits the weights from zero by [MAP](https://en.wikipedia.org/wiki/Maximum_a_posteriori_estimation) (maximum a posteriori) under the same prior, and requires the fitted distribution over the grammatical yields to lie within total-variation distance 0.05 of the generating one. Individual weights are not identified (a sentence's probability depends only on sums of weights along its derivations), so the assertion is on the distribution, which is.
 
 ```python
 from quivers.stochastic.deduction import sample_corpus
@@ -333,8 +333,8 @@ assert tv(fitted_probs, true_probs) < 0.05
 
 ## Categorical perspective
 
-L is the internal language of a [residuated monoid](https://ncatlab.org/nlab/show/residuated+lattice) or, proof-relevantly, of a [biclosed monoidal category](https://ncatlab.org/nlab/show/closed+monoidal+category): the product `*` is the monoidal tensor and the two slashes are its right adjoints, `- * B -| -/B` and `A * - -| A\-`. Application is the counit of these adjunctions, composition is composition of internal homs, and `curry` is one direction of the isomorphism `C/(A*B) ≅ (C/B)/A`. The chart computes, for each span, a finite set of objects reachable from the lexical types by these maps, weighted in the [LogProb semiring](../semantics/algebras.md); because the category has no symmetry, diagonal, or projections, no chart item can permute, copy, or discard a word.
+L is the internal language of a [residuated monoid](https://ncatlab.org/nlab/show/residuated+lattice) or, proof-relevantly, of a [biclosed monoidal category](https://ncatlab.org/nlab/show/closed+monoidal+category): the product `*` is the monoidal tensor and the two slashes are its right adjoints, `- * B -| -/B` and `A * - -| A\-`. Application is the [counit](https://ncatlab.org/nlab/show/adjunction) of these adjunctions, composition is composition of internal homs, and `curry` is one direction of the isomorphism `C/(A*B) ≅ (C/B)/A`. The chart computes, for each span, a finite set of objects reachable from the lexical types by these maps, weighted in the [LogProb semiring](../semantics/algebras.md). Because the category has no symmetry, diagonal, or projections, no chart item can permute, copy, or discard a word.
 
 ## Connections to other formalisms
 
-The application rules alone give AB grammar ([custom rules](custom-rules.md)); adding composition and type raising gives the core of combinatory categorial grammar ([CCG](ccg.md)), whose crossed composition rules are not L-theorems. The [multimodal example](multimodal-tlg.md) extends this fragment with unary modalities whose structural rule licenses the medial extraction that L rejects here, and the [quantifier-scope example](quantifier-scope.md) adds logical forms.
+The application rules alone give AB grammar ([custom rules](custom-rules.md)). Adding composition and type raising gives the core of combinatory categorial grammar ([CCG](ccg.md)), whose crossed composition rules are not L-theorems. The [multimodal example](multimodal-tlg.md) extends this fragment with unary modalities whose structural rule licenses the medial extraction that L rejects here, and the [quantifier-scope example](quantifier-scope.md) adds logical forms.

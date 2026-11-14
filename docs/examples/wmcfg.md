@@ -1,5 +1,16 @@
 # Weighted Multiple Context-Free Grammar
 
+## Overview
+
+A Multiple Context-Free Grammar (MCFG) [@seki1991mcfg] generalizes a context-free grammar by letting a nonterminal derive a *tuple* of strings rather than one string. Each nonterminal $A$ has a fixed rank $k(A) \ge 1$, the number of components it derives, and a production combines its premises' components by a *linear* yield function: every component is used exactly once and in a fixed order. The rank-1 case is CFG. Ranks $\ge 2$ represent discontinuous constituents. This example attaches a learnable log-weight to every production, giving a weighted MCFG whose chart computes the inside weight $\log Z(s) = \log \sum_d \exp \langle \mathbf{w}, \phi(d) \rangle$.
+
+The grammar covers Swiss German cross-serial verb clusters, Shieber's evidence that natural language is not context-free [@shieber1985evidence]. In
+
+> mer d'chind em Hans es huus lönd hälfe aastriiche
+> ("we let the children help Hans paint the house")
+
+the $i$-th object is governed by the $i$-th verb: *lönd* ("let") takes the accusative *d'chind*, *hälfe* ("help") the dative *em Hans*, and *aastriiche* ("paint") the accusative *es huus*. The dependencies cross instead of nesting, and case agreement makes the crossing visible in the string. Shieber shows that intersecting Swiss German with a regular language yields the pattern $w\,a^m b^n x\,c^m d^n y$, which is not context-free. A CFG can thus at best approximate this construction, while an MCFG generates it directly.
+
 ## QVR source
 
 ```qvr
@@ -90,17 +101,6 @@ program score_sentence : Term -> LogWeight
 export score_sentence
 ```
 
-## Overview
-
-A Multiple Context-Free Grammar (MCFG) [@seki1991mcfg] generalizes a context-free grammar by letting a nonterminal derive a *tuple* of strings rather than one string. Each nonterminal $A$ has a fixed rank $k(A) \ge 1$, the number of components it derives, and a production combines its premises' components by a *linear* yield function: every component is used exactly once and in a fixed order. The rank-1 case is CFG; ranks $\ge 2$ represent discontinuous constituents. This example attaches a learnable log-weight to every production, giving a weighted MCFG whose chart computes the inside weight $\log Z(s) = \log \sum_d \exp \langle \mathbf{w}, \phi(d) \rangle$.
-
-The grammar covers Swiss German cross-serial verb clusters, Shieber's evidence that natural language is not context-free [@shieber1985evidence]. In
-
-> mer d'chind em Hans es huus lönd hälfe aastriiche
-> ("we let the children help Hans paint the house")
-
-the $i$-th object is governed by the $i$-th verb: *lönd* ("let") takes the accusative *d'chind*, *hälfe* ("help") the dative *em Hans*, and *aastriiche* ("paint") the accusative *es huus*. The dependencies cross instead of nesting, and case agreement makes the crossing visible in the string. Shieber shows that intersecting Swiss German with a regular language yields the pattern $w\,a^m b^n x\,c^m d^n y$, which is not context-free; a CFG can thus at best approximate this construction, while an MCFG generates it directly.
-
 ## Understanding the model
 
 A [context-free chart item](pcfg.md#understanding-the-model) covers one
@@ -132,21 +132,21 @@ recovers.
 
 ## Walkthrough
 
-`object Term : FinSet 16` indexes the deduction's domain and codomain; the chart reasons symbolically over constructor-tagged tuples, so its cardinality is incidental.
+`object Term : FinSet 16` indexes the deduction's domain and codomain. The chart reasons symbolically over constructor-tagged tuples, so its cardinality is incidental.
 
-`dat_np` and `acc_np` build case-marked noun phrases from an article and a noun, as in *em Hans* (dative) and *es huus* (accusative); *d'chind* is an accusative noun phrase in one word. The noun category is spelled `Noun` rather than `N` because an atom's spelling cannot double as a pattern variable.
+`dat_np` and `acc_np` build case-marked noun phrases from an article and a noun, as in *em Hans* (dative) and *es huus* (accusative). *d'chind* is an accusative noun phrase in one word. The noun category is spelled `Noun` rather than `N` because an atom's spelling cannot double as a pattern variable.
 
-`vc_acc_base` and `vc_dat_base` pair the innermost object with its verb. Their two premises are unconstrained in position, so the chart holds a `vc` item for every case-matched object-verb pair in the input; only pairs that the later productions can place survive into a derivation of `S`. `vc_acc` and `vc_dat` are the recursive productions above: the shared variables `J`, `K`, `M`, `P` say that the new object ends where the inner objects begin, the inner objects end where the outer pair's first component ends, and the new verb ends where the inner verbs begin.
+`vc_acc_base` and `vc_dat_base` pair the innermost object with its verb. Their two premises are unconstrained in position, so the chart holds a `vc` item for every case-matched object-verb pair in the input. Only pairs that the later productions can place survive into a derivation of `S`. `vc_acc` and `vc_dat` are the recursive productions above: the shared variables `J`, `K`, `M`, `P` say that the new object ends where the inner objects begin, the inner objects end where the outer pair's first component ends, and the new verb ends where the inner verbs begin.
 
 `fin_acc` and `fin_dat` require the finite verb to sit exactly between the objects and the infinitives (`span(K, M, ...)`), which closes the discontinuity, and `clause` attaches the subject *mer*. Every production is linear: each premise interval appears exactly once in the conclusion, in input order.
 
 Every production and lexical entry carries `#[learnable]`. A learnable rule's log-weight is keyed by the binding of its category variables, the variables that do not fill a chart-position slot ([Weighted Deduction Fragment §2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)), and is allocated the first time that binding fires. Span positions are not part of the key, so one production firing at different positions reads one weight.
 
-The `score_sentence` program connects the grammar to a probabilistic program: `parse(WMCFG, sentence)` runs the deduction on an observed sentence, and `score log_Z = chart.goal_weight()` adds $\log Z(s)$ to the program's log-joint. That is an unnormalized factor; the fit below divides by the length-$n$ total explicitly.
+The `score_sentence` program connects the grammar to a probabilistic program: `parse(WMCFG, sentence)` runs the deduction on an observed sentence, and `score log_Z = chart.goal_weight()` adds $\log Z(s)$ to the program's log-joint. That is an unnormalized factor. The fit below divides by the length-$n$ total explicitly.
 
 ## DSL features
 
-- **Tuple-valued chart items** for nonterminals of rank $\ge 2$. The `vc(I1, J1, I2, J2)` item is a four-position structural pattern; the chart engine pattern-matches it the same way it does the rank-1 `span(I, J, X)`.
+- **Tuple-valued chart items** for nonterminals of rank $\ge 2$. The `vc(I1, J1, I2, J2)` item is a four-position structural pattern. The chart engine pattern-matches it the same way it does the rank-1 `span(I, J, X)`.
 - **Linear yield functions** as ordinary sequent rules. Concatenation and interleaving of components are expressed by where each position variable appears in the premises and the conclusion.
 - **Three-premise rules**: `vc_acc`, `vc_dat`, `fin_acc`, and `fin_dat` each combine three chart items.
 - **`#[learnable]` weights on every production**, lexicon entries and rules alike.
@@ -286,7 +286,7 @@ assert kl_fitted < 0.05 and kl_fitted < 0.25 * kl_initial
 
 `cross_serial` agrees with brute-force enumeration over the vocabulary at
 length five, where the 161,051 candidate strings are still cheap enough to
-parse; the gallery's grammar tests check that agreement. With 2,000 draws over
+parse. With 2,000 draws over
 28 outcomes, the sampling error of the maximum-likelihood fit is near
 $27 / (2 \cdot 2000) \approx 0.007$ nats, so a divergence below 0.05 indicates
 that the fit has recovered the distribution. The weights themselves are not
@@ -294,6 +294,6 @@ identifiable, so the check is on the distribution over strings.
 
 ## Categorical perspective
 
-An MCFG production with $k$-component nonterminals is a hyperedge in a directed hypergraph whose nodes are tuple-positioned chart items. When the derivation sum converges and the evaluation computes it correctly, the chart represents the total weight of derivations [@goodman1999semiring]; each derivation contributes the sum of the log-weights of its rule firings. Cross-serial dependencies are recovered by the linear yield function that interleaves an outer object-verb pair with the two components of the inner `vc` item.
+An MCFG production with $k$-component nonterminals is a hyperedge in a directed hypergraph whose nodes are tuple-positioned chart items. When the derivation sum converges and the evaluation computes it correctly, the chart represents the total weight of derivations [@goodman1999semiring]. Each derivation contributes the sum of the log-weights of its rule firings. Cross-serial dependencies are recovered by the linear yield function that interleaves an outer object-verb pair with the two components of the inner `vc` item.
 
 The framework imposes no built-in commitment to rank-1 (CFG) items. Weighted MCFG, LCFRS, and their probabilistic variants share the same chart implementation: only the rule patterns and their conclusion arities change.

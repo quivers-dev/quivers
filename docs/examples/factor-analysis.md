@@ -2,13 +2,13 @@
 
 ## Overview
 
-[Factor analysis](https://en.wikipedia.org/wiki/Factor_analysis) ([@spearman1904intelligence]; [@bartholomew2011latent]) explains a $D$-dimensional observation as a linear transformation of a $K$-dimensional latent factor plus noise that is independent across coordinates and has its own scale in each coordinate:
+[Factor analysis](https://en.wikipedia.org/wiki/Factor_analysis) [@spearman1904intelligence; @bartholomew2011latent] explains a $D$-dimensional observation as a linear transformation of a $K$-dimensional latent factor plus noise that is independent across coordinates and has its own scale in each coordinate:
 
 $$
 z_i \sim \mathcal{N}(0, I_K), \quad y_i \mid z_i \sim \mathcal{N}\bigl(W z_i, \mathrm{diag}(\psi_1^2, \ldots, \psi_D^2)\bigr).
 $$
 
-The scale $\psi_d$ is the uniqueness of coordinate $d$: the part of its variation that the common factors do not explain. Integrating the factors out gives $y_i \sim \mathcal{N}(0, W W^\top + \mathrm{diag}(\psi^2))$. The loadings are identified only up to a $K \times K$ rotation, but the implied covariance and the uniquenesses themselves are identified. [Probabilistic PCA](ppca.md) is the special case $\psi_1 = \cdots = \psi_D = \sigma$; the free diagonal is what lets factor analysis treat a precise measurement and a noisy one differently.
+The residual standard deviation is $\psi_d$, and its variance $\psi_d^2$ is the *uniqueness* of coordinate $d$, the variation not explained by the common factors. Integrating the factors out gives $y_i \sim \mathcal{N}(0, W W^\top + \mathrm{diag}(\psi^2))$. Orthogonal rotations of the loadings leave this covariance unchanged. Identifying the uniquenesses separately from the common-factor covariance requires additional rank conditions. [Probabilistic PCA](ppca.md) is the special case $\psi_1=\cdots=\psi_D=\sigma$.
 
 ## QVR source
 
@@ -72,15 +72,15 @@ The same object declaration can identify an axis in several roles. Read the posi
 | `sample W : ObsDim <- ... [over=LatentDim]` | A table with one row per observed coordinate: the loading matrix. |
 | `sample psi : ObsDim <- ...` | One positive uniqueness per observed coordinate. |
 | `observe y : Resp <- Normal(...)` | One scored response per cell of the flattened data matrix. |
-| `program ... : Resp -> Val` | A response-indexed program returning real values; `Val` is `Real 1`. |
+| `program ... : Resp -> Val` | A response-indexed program returning real values. `Val` is `Real 1`. |
 
-`object Item : FinSet 400` and `object ObsDim : FinSet 6` give the data matrix its $400 \times 6$ shape, and `object Resp : FinSet 2400` is that matrix flattened into one response per cell. The host data `item_idx` and `obs_idx` record which item and which coordinate each response belongs to.
+`object Item : FinSet 400` and `object ObsDim : FinSet 6` give the data matrix its $400 \times 6$ shape, and `object Resp : FinSet 2400` is that matrix flattened into one response per cell. The input data `item_idx` and `obs_idx` record which item and which coordinate each response belongs to.
 
 `sample psi : ObsDim <- HalfCauchy(scale=2.5)` draws one uniqueness per coordinate. The two gathers `Z[item_idx]` and `W[obs_idx]` return `Resp`-by-`LatentDim` tables, and `sum(z_row * w_row)` reduces their last axis, giving each response's mean $\sum_k Z_{i,k} W_{d,k}$. The third gather, `psi[obs_idx]`, gives each response the uniqueness of its own coordinate, and that per-row scale is the only line in which this program differs from the [PPCA program](ppca.md#walkthrough).
 
 ## Try it
 
-The blocks below simulate a data matrix whose coordinates have quite different uniquenesses, check the compiled joint against a hand-written density, fit the model by SVI and check that it recovers $\psi$ and the implied covariance, fit the PPCA program to the same data for contrast, and run a short NUTS chain.
+The blocks below simulate a data matrix whose coordinates have quite different uniquenesses, check the compiled joint against a hand-written density, fit the model by [SVI](../guides/inference-svi.md) (stochastic variational inference) and check that it recovers $\psi$ and the implied covariance, fit the PPCA program to the same data for contrast, and run a short [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler) chain.
 
 ### Generating synthetic data
 
@@ -111,7 +111,7 @@ observations = {"y": y, "item_idx": item_idx, "obs_idx": obs_idx}
 x_in = torch.zeros(1, 1)
 ```
 
-The program input `x_in` is a single row; the extent of the `Resp` plate comes from the observed responses and their indices. The uniquenesses range over a factor of six, so a single shared noise scale cannot describe these data well.
+The program input `x_in` is a single row. The extent of the `Resp` [plate](https://en.wikipedia.org/wiki/Plate_notation) comes from the observed responses and their indices. The residual standard deviations range over a factor of six, so a single shared noise scale cannot describe these data well.
 
 ### Checking the joint density
 
@@ -177,7 +177,7 @@ With 400 items, the sample covariance is itself about 11% (in relative Frobenius
 
 ### Contrast with PPCA
 
-The [PPCA program](ppca.md) declares the same objects and host data, so it can be fitted to the same responses. Its single noise scale has to compromise between the precise and the noisy coordinates.
+The [PPCA program](ppca.md) declares the same objects and input data, so it can be fitted to the same responses. Its single noise scale has to compromise between the precise and the noisy coordinates.
 
 ```python
 ppca = load("docs/examples/source/ppca.qvr").morphism
@@ -193,7 +193,7 @@ assert fa_error < ppca_error
 
 ### NUTS posterior
 
-[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) runs on the same joint, with the factor scores, the loadings, and the uniquenesses all latent. The chain below is short; the rotation invariance makes $W$ itself mix poorly, so a real analysis would monitor rotation-invariant summaries such as $\psi$ and the implied covariance across several chains.
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) runs on the same joint, with the factor scores, loadings, and residual scales all latent. The chain below is short. The rotation invariance makes $W$ itself mix poorly, so a real analysis would monitor rotation-invariant summaries such as $\psi$ and the implied covariance across several chains.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -210,14 +210,9 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-As in [PPCA](ppca.md#categorical-perspective), the response mean at $(i, d)$ is the $(i, d)$ entry of the real-algebra composite $Z\,W^\top : \mathsf{Item} \to \mathsf{ObsDim}$, computed row by row after both arrows are pulled back to the response plate along `item_idx` and `obs_idx`. The two models differ only in the Gaussian kernel that follows the mean: PPCA uses one scale for every coordinate, while factor analysis uses the scale $\psi$ pulled back along `obs_idx`, a diagonal kernel on $\mathbb{R}^{\mathsf{ObsDim}}$. Integrating $Z$ out then gives $\mathcal{N}(0, W W^\top + \mathrm{diag}(\psi^2))$ for each item.
+As in [PPCA](ppca.md#categorical-perspective), the response mean at $(i, d)$ is the $(i, d)$ entry of the [matrix composite](../semantics/algebras.md) $Z\,W^\top : \mathsf{Item} \to \mathsf{ObsDim}$, computed row by row after both arrows are pulled back to the response plate along `item_idx` and `obs_idx`. The two models differ only in the Gaussian [kernel](https://en.wikipedia.org/wiki/Markov_kernel) that follows the mean: PPCA uses one scale for every coordinate, while factor analysis uses the scale $\psi$ pulled back along `obs_idx`, a diagonal kernel on $\mathbb{R}^{\mathsf{ObsDim}}$. Integrating $Z$ out then gives $\mathcal{N}(0, W W^\top + \mathrm{diag}(\psi^2))$ for each item.
 
 ## See also
 
 - [Probabilistic PCA](ppca.md), the special case with one shared noise scale.
 - [DSL Guide: Hierarchical Bayesian Models](../guides/programs-hierarchical.md) for further plate-indexed models.
-
-## Sources and further reading
-
-- *"General Intelligence," Objectively Determined and Measured* [@spearman1904intelligence].
-- *Latent Variable Models and Factor Analysis: A Unified Approach* [@bartholomew2011latent].

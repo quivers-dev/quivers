@@ -8,7 +8,7 @@ $$
 s_{i,g} \;=\; \sum_{b}\sum_{c} P_{i,b}\, A_{i,c}\, W_{b,c,g}.
 $$
 
-In quivers this three-way join is a single `contraction` declaration: an [operad](https://ncatlab.org/nlab/show/operad)-style n-ary morphism that combines typed input arrows under a named composition rule. The einsum wiring is inferred from the typed signature, so the source spells out only which arrow plugs into which wire.
+In quivers this three-way join is a single `contraction` declaration: an operation with several typed inputs, as in an [operad](https://ncatlab.org/nlab/show/operad) that combines typed input arrows under a named composition rule. The einsum wiring is inferred from the typed signature, so the source spells out only which arrow plugs into which wire.
 
 ## QVR source
 
@@ -62,12 +62,12 @@ export plausibility
 
 For each item and judgment, the score considers every pair of predicate
 and argument features. Multiplying their two coordinates by the matching
-interaction coefficient gives one contribution; summing all feature pairs
+interaction coefficient gives one contribution. Summing all feature pairs
 gives the final score. A two-dimensional predicate and argument thus
 contribute four terms to each judgment score.
 
 The `Item` index survives because the calculation produces an answer for
-each item; `Judgment` survives because each item has several scores.
+each item. `Judgment` survives because each item has several scores.
 `PredDim` and `ArgDim` disappear because they are summed out. This is the
 meaning of the [wiring specification](../tutorials/python/07-composition-rules.md#operadic-n-ary-contractions), independently of whether the resulting
 score later becomes a Gaussian mean, a classification logit, or another
@@ -88,13 +88,13 @@ contraction bilinear_score (
 ) : Item -> Judgment [rule=real]
 ```
 
-The required `rule=` option references a registered composition rule; `real` is the ordinary sum-product [semiring](https://en.wikipedia.org/wiki/Semiring) on $\mathbb{R}$, so contracted axes are joined by multiply-then-sum, exactly a [`torch.einsum`](https://docs.pytorch.org/docs/stable/generated/torch.einsum.html). The compiler infers the wiring from the typed signature: `PredDim` and `ArgDim` each appear in two inputs but not in the output, so both are contracted; `Item` and `Judgment` appear in the output, so both propagate. The inferred spec is `ab, ac, bcd -> ad`. For contractions the inference cannot express, the option block also admits a `share=[...]` clause (keep a listed axis out of contraction) and a `wiring="..."` clause (verbatim einsum escape hatch); see the [contractions guide](../guides/dsl-contractions.md).
+The required `rule=` option references a registered composition rule. `real` is the ordinary sum-product [semiring](https://en.wikipedia.org/wiki/Semiring) on $\mathbb{R}$, so contracted axes are joined by multiply-then-sum, exactly a [`torch.einsum`](https://docs.pytorch.org/docs/stable/generated/torch.einsum.html). The compiler infers the wiring from the typed signature: `PredDim` and `ArgDim` each appear in two inputs but not in the output, so both are contracted. `Item` and `Judgment` appear in the output, so both propagate. The inferred spec is `ab, ac, bcd -> ad`. For contractions the inference cannot express, the option block also admits a `share=[...]` clause (keep a listed axis out of contraction) and a `wiring="..."` clause (verbatim einsum escape hatch). See the [contractions guide](../guides/dsl-contractions.md).
 
-The `define` binding invokes the contraction on the three declared arrows. Each call site checks the argument count and per-argument shape against the declared wires, then runs the wiring and returns a fresh arrow with the declared `Item -> Judgment` typing; that arrow is what the module exports. Note that a multi-line input list takes a trailing comma before the closing parenthesis.
+The `define` binding invokes the contraction on the three declared arrows. Each call site checks the argument count and per-argument shape against the declared wires, then runs the wiring and returns a fresh arrow with the declared `Item -> Judgment` typing. That arrow is what the module exports. Note that a multi-line input list takes a trailing comma before the closing parenthesis.
 
 ## Try it
 
-The source defines a deterministic score, not a probability model: its exported arrow is the contraction of the three declared arrows, whose `[role=parameter]` tensors are learned parameters with entries in $(0, 1)$. The blocks below build the probabilistic model around the declared contraction in Python. Every entry of the two embeddings and of the interaction tensor gets an independent $\mathcal{N}(0, 1)$ prior, and each of several replicate judgments of every (item, scale point) cell is scored under $y_{r, i, g} \sim \mathcal{N}(s_{i, g}, \sigma^2)$ with $s$ computed by the compiled `bilinear_score` wiring. The model is built in Python because a QVR program cannot yet call a `contraction` or hold a third-order latent tensor it can index by three binders; the compiled contraction is available through the [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment's `contractions` mapping.
+The source defines a deterministic score, not a probability model: its exported arrow is the contraction of the three declared arrows, whose `[role=parameter]` tensors are learned parameters with entries in $(0, 1)$. The blocks below build the probabilistic model around the declared contraction in Python. Every entry of the two embeddings and of the interaction tensor gets an independent $\mathcal{N}(0, 1)$ prior, and each of several replicate judgments of every (item, scale point) cell is scored under $y_{r, i, g} \sim \mathcal{N}(s_{i, g}, \sigma^2)$ with $s$ computed by the compiled `bilinear_score` wiring. The model is built in Python because a QVR program cannot yet call a `contraction` or hold a third-order latent tensor it can index by three binders. The compiled contraction is available through the [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment's `contractions` mapping.
 
 ### Generating synthetic data
 
@@ -234,7 +234,7 @@ print(f"log joint at the truth: {float(log_joint):.2f}")
 
 ### SVI fit
 
-Fit an [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) by [`SVI`](../api/inference/svi.md#svi) and push 200 guide draws through the contraction. The embeddings and the interaction tensor are not identified: any invertible change of basis in `PredDim` or `ArgDim`, undone in the interaction tensor, leaves every score unchanged. The score tensor is identified, so the check compares fitted scores with true ones, next to the per-cell mean of the replicate judgments as a baseline.
+Fit an [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) by [`SVI`](../api/inference/svi.md#svi) (stochastic variational inference) and push 200 guide draws through the contraction. The embeddings and the interaction tensor are not identified: any invertible change of basis in `PredDim` or `ArgDim`, undone in the interaction tensor, leaves every score unchanged. The score tensor is identified, so the check compares fitted scores with true ones, next to the per-cell mean of the replicate judgments as a baseline.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -266,11 +266,11 @@ print(f"score RMSE: fitted {fit_rmse:.3f}, replicate means {cell_mean_rmse:.3f}"
 assert fit_rmse < 0.15
 ```
 
-Each cell has 50 judgments with noise scale 0.5, so its replicate mean has a standard error of about 0.07, and the tolerance allows about twice that. With four items and three scale points, the contraction places no real constraint on the twelve scores (the embeddings and interaction tensor have more free entries than there are cells), so the fit should not be expected to beat the replicate means; the check is that the declared contraction, fitted through its factors, reproduces the scores the data identify.
+Each cell has 50 judgments with noise scale 0.5, so its replicate mean has a standard error of about 0.07, and the tolerance allows about twice that. With four items and three scale points, the contraction places no real constraint on the twelve scores (the embeddings and interaction tensor have more free entries than there are cells), so the fit should not be expected to beat the replicate means. The check is that the declared contraction, fitted through its factors, reproduces the scores the data identify.
 
 ### NUTS posterior
 
-Because the priors are declared inside the program, [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets it directly. The chain below is short; the non-identified factors mix poorly, so a real analysis would monitor the scores rather than the factor entries, across several chains.
+Because the priors are declared inside the program, [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets it directly. The chain below is short. The non-identified factors mix poorly, so a real analysis would monitor the scores rather than the factor entries, across several chains.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -287,14 +287,10 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-Binary composition `>>` is the 2-ary case of a wider operadic structure: a `contraction` denotes an n-ary morphism in the [multicategory](https://ncatlab.org/nlab/show/multicategory) of tensor spaces over the active composition rule, with the wiring specification fixing which axes are joined and which survive to the output (see [Composition Rules § 4](../semantics/composition-rules.md#4-operadic-contractions) for the denotation). The bilinear score is the case $n = 3$: two argument tensors over a shared `Item` axis and a kernel over the two embedding axes, folded under $\otimes$ and joined under $\bigoplus$ of the sum-product semiring. Here the three inputs share two different feature axes, which the explicit wiring contracts in one operation.
+Binary composition `>>` is the 2-ary case of a wider operadic structure: a `contraction` denotes an n-ary morphism in the [multicategory](https://ncatlab.org/nlab/show/multicategory) of tensor spaces over the active composition rule, with the wiring specification fixing which axes are joined and which survive to the output (see [Composition Rules § 4](../semantics/composition-rules.md#4-operadic-contractions) for the denotation). The bilinear score is the case $n = 3$: two argument tensors over a shared `Item` axis and a [kernel](https://en.wikipedia.org/wiki/Markov_kernel) over the two embedding axes, multiplied with $\otimes$ and summed over the contracted axes with $\bigoplus$, the multiplication and addition of the sum-product semiring. Here the three inputs share two different feature axes, which the explicit wiring contracts in one operation.
 
 ## See also
 
 - [DSL Contractions](../guides/dsl-contractions.md) for declaration syntax, wiring inference, and the `share=` / `wiring=` clauses.
 - [Composition Rules § 4](../semantics/composition-rules.md#4-operadic-contractions) for the categorical semantics of operadic contractions.
 - [Probabilistic Matrix Factorization](pmf.md) for the two-way analogue, an inner-product score written as a QVR program over observed (user, item) pairs.
-
-## Sources and further reading
-
-- *Reasoning With Neural Tensor Networks for Knowledge Base Completion* [@socher2013tensor].

@@ -48,20 +48,20 @@ where $y_t$ is the token that follows position $t$. Because $x_t$ is one-hot, th
 
 ## Walkthrough
 
-- `object Vocab : Real 6` is the space of one-hot tokens and `object Logits : Real 6` the space of next-token logits over the same six-token vocabulary; `object Hidden : Real 8` is the hidden state.
-- `morphism cell ... [role=function, output=tanh]` is the recurrence: an affine map of the concatenated input and previous state, followed by `tanh`. `role=function` makes it a deterministic function with point-estimated weights rather than a random kernel, so it has no sample site.
+- `object Vocab : Real 6` is the space of one-hot tokens and `object Logits : Real 6` the space of next-token logits over the same six-token vocabulary. `object Hidden : Real 8` is the hidden state.
+- `morphism cell ... [role=function, output=tanh]` is the recurrence: an affine map of the concatenated input and previous state, followed by `tanh`. `role=function` makes it a deterministic function with point-estimated weights rather than a random [kernel](https://en.wikipedia.org/wiki/Markov_kernel), so it has no [sample site](../guides/inference-foundations.md#trace-and-sample-sites).
 - `morphism lm_head ... [role=function]` is the affine readout to logits.
 - `program rnn_step` is one position: it updates the state, observes the next token under `Categorical(logits=logits)`, and returns the new state.
-- `define run_all = scan(rnn_step)` runs the step along the sequence from a zero initial state; the observation `next_token` is scored at every position, at the sites `next_token@0`, `next_token@1`, and so on.
+- `define run_all = scan(rnn_step)` runs the step along the sequence from a zero initial state. The observation `next_token` is scored at every position, at the sites `next_token@0`, `next_token@1`, and so on.
 - `program rnn_lm` is the exported program: one draw from the scan, which is deterministic apart from its observations.
 
 ## Try it
 
-The first block checks the compiled runtime and the reference machine against an independent float64 implementation of the Elman recurrence; the second fits the network by maximum likelihood and checks what it has learned. The tolerances in both were fixed before the first run.
+The first block checks the compiled runtime and the [reference machine](../developer/qiec.md#reference-evaluator) against an independent float64 implementation of the Elman recurrence. The second fits the network by maximum likelihood and checks what it has learned.
 
 ### The log joint against a hand-written recurrence
 
-`oracle` recomputes one run's log joint from the learned functions' weights with a plain torch loop. The compiled runtime (float32) must match it to a relative 1e-5 and the reference machine, given the same weights as data, to 1e-9. An oracle that drops the `tanh` must disagree by more than 1e-3, which shows the first comparison can tell the two recurrences apart.
+`oracle` recomputes one run's log joint from the learned functions' weights with a plain torch loop. The compiled runtime (float32) must match it to a relative 1e-5 and the reference machine, given the same weights as data, to 1e-9. A reference calculation that drops the `tanh` must disagree by more than 1e-3, which shows the first comparison can tell the two recurrences apart.
 
 ```python
 import math
@@ -181,9 +181,6 @@ assert contrast > 1.0
 
 ## Categorical perspective
 
-`cell` and `lm_head` are morphisms of the deterministic subcategory of the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]: each is a Dirac kernel at its output. [`scan(rnn_step)`](../guides/dsl-declarations.md#scan-temporal-recurrence) is the left [fold](https://ncatlab.org/nlab/show/fold) of the step along the sequence, and the only non-deterministic part of the run is the observation at each position, a sub-probability kernel in $\mathcal{G}_{\le 1}$ that weights the run by the likelihood of its next token.
+A deterministic function defines a [Dirac kernel](https://en.wikipedia.org/wiki/Dirac_measure), which puts all probability at its output. A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical].
 
-## Sources and further reading
-
-- *Finding structure in time* [@elman1990finding].
-- *A categorical approach to probability theory* [@giry1982categorical].
+`cell` and `lm_head` are deterministic functions. A [fold](https://en.wikipedia.org/wiki/Fold_(higher-order_function)) applies a state update successively along a sequence. `scan(rnn_step)` uses the token input and previous hidden state at each position. Scoring a next token multiplies the run weight by its Categorical probability. The scored transition is a subprobability kernel because each token probability is at most one. It belongs to the extension that permits mass below one, rather than to the probability-kernel category itself [@staton2017commutative].

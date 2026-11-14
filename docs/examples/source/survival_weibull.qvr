@@ -2,7 +2,7 @@
 #
 # A parametric survival regression with a Weibull baseline and
 # right-censored follow-up. Each item has a covariate x_i, an
-# observed time t_i (supplied as log_t = log t_i), and an event
+# observed time t_i (provided as log_t = log t_i), and an event
 # indicator d_i: 1 when the event was observed at t_i, 0 when
 # follow-up ended at t_i without it.
 #

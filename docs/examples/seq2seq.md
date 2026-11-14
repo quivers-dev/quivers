@@ -2,7 +2,7 @@
 
 ## Overview
 
-A sequence-to-sequence model scores a target sequence given a source sequence [@sutskever2014sequence]. In the encoder-decoder Transformer [@vaswani2017attention] an encoder attends across the whole source, a decoder attends across the target positions up to its own under a causal mask, and cross-attention lets each target position read the encoder's output before a readout scores the target token there. This source states one such layer of each kind over fixed windows, a source of five positions and a target of four, with every weight a sample site under a Normal prior, so the model is Bayesian over its weights. The attention layers are [`factor` comprehensions](../reference/qvr/types-and-indexed-families.md#pure-expressions) over the declared position objects. The page checks the program's joint density against a hand-written Transformer on both execution paths and checks the decoder's causality. It fits nothing.
+A sequence-to-sequence model scores a target sequence given a source sequence [@sutskever2014sequence]. In the encoder-decoder Transformer [@vaswani2017attention] an encoder attends across the whole source, a decoder attends across the target positions up to its own under a causal mask, and cross-attention lets each target position read the encoder's output before a readout scores the target token there. This source states one such layer of each kind over fixed windows, a source of five positions and a target of four, with every weight a [sample site](../guides/inference-foundations.md#trace-and-sample-sites) under a Normal prior, so the model is Bayesian over its weights. The attention layers are [`factor` comprehensions](../reference/qvr/types-and-indexed-families.md#pure-expressions) over the declared position objects. The examples compare the program's joint density against a hand-written Transformer on both execution paths and check the decoder's causality. The weights are not fitted.
 
 ## QVR source
 
@@ -98,25 +98,25 @@ $$
 
 where $\mathrm{Attn}_{\le}$ lets target position $i$ attend only to positions $j \le i$. The decoder reads `previous`, the target shifted right by one behind a start token, so the token it scores at position $p$ is never among the inputs it can attend to: the log probability of the target factors over positions given the source and the target's prefix. The readout reuses the embedding $E$, a tied output layer. The causal mask subtracts $10^6$ from the scores of the positions after $i$, whose softmax weight is then exactly zero in floating point.
 
-Every weight carries a prior, `Normal(0, 1)` for the embeddings and positions and `Normal(0, 0.5)` for the nine projections, so the program's log joint is the priors plus the target's log likelihood, and the data are one (source, target) pair per run. A corpus of pairs would need a plate over pairs so that the pairs share one draw of the weights; this source scores a single pair.
+Every weight carries a prior, `Normal(0, 1)` for the embeddings and positions and `Normal(0, 0.5)` for the nine projections, so the program's log joint is the priors plus the target's log likelihood, and the data are one (source, target) pair per run. A corpus of pairs would need a [plate](https://en.wikipedia.org/wiki/Plate_notation) over pairs so that the pairs share one draw of the weights. This source scores a single pair.
 
 ## Walkthrough
 
 - `object Token : FinSet 6`, `object SrcPos : FinSet 5`, `object TgtPos : FinSet 4`, and `object Emb : FinSet 4` are the vocabulary, the two windows, and the embedding width. Because the windows are declared objects, every table is a comprehension over them.
 - The twelve `sample` steps draw the embedding, the two position tables, and the query, key, and value projections of the three attention layers.
-- `int(source[p])` reads the token at source position `p` from the data and indexes the embedding with it; `previous` and `target` are data in the same way.
+- `int(source[p])` reads the token at source position `p` from the data and indexes the embedding with it. `previous` and `target` are data in the same way.
 - `softmax` acts along the last axis, so `softmax(S_enc)` normalizes each query position's scores over the key positions.
 - `mask` is 1 exactly when `j <= i`, from the integer clamp `min(1, max(0, i - j + 1))`.
 - `observe target : TgtPos <- Categorical(logits=logits)` scores the target token at every target position.
-- The program transpiles to Pyro, NumPyro, PyMC, and Edward2. Stan refuses the row-wise `softmax` of a comprehension, and the other targets refuse `Categorical(logits=...)`. This page does not check that those four emissions score the same density as the program.
+- The [support matrix](../transpile-support.md) records backend coverage for the attention and observation operations.
 
 ## Try it
 
-The checks below come from a verification script whose tolerances were fixed before it was first run. Two of its first runs failed for defects in the script, not in the program, and were fixed without changing a tolerance: the oracle's prior used Python-float scales, which torch turns into float32 tensors, so its log density was off by about 3e-8 per weight matrix and the reference-machine comparison failed at a relative 1.3e-9; and the causality check compared the observed site's log probability, which is the sum over positions, rather than the per-position log probabilities.
+The independent calculation uses float64 scales in the Normal priors and compares per-position log probabilities for the causality test. Python-float scales can be converted to float32 before promotion: in this calculation that changed the prior density by about 3e-8 per weight matrix and the reference comparison by a relative 1.3e-9. Summing the log probabilities over positions would hide which prefix positions changed.
 
 ### The log joint against a hand-written Transformer
 
-At three traced draws of the weights, each with its own random source and target, the compiled runtime's log joint must equal an oracle written with torch matrix products and an explicit softmax, in float64, to a relative 1e-5, and the reference machine, given the same weights as sites, to 1e-9. Three wrong oracles must each differ by more than a relative 1e-3 at every draw: the decoder without its causal mask, the model without cross-attention, and cross-attention whose queries read the decoder input `Y` rather than its state `G`.
+At three traced draws of the weights, each with its own random source and target, the compiled runtime's log joint must equal a reference calculation written with torch matrix products and an explicit softmax, in float64, to a relative 1e-5, and the [reference machine](../developer/qiec.md#reference-evaluator), given the same weights as sites, to 1e-9. Three alternative calculations must each differ by more than a relative 1e-3 at every draw: the decoder without its causal mask, the model without cross-attention, and cross-attention whose queries read the decoder input `Y` rather than its state `G`.
 
 ```python
 import math
@@ -248,10 +248,6 @@ assert not torch.isclose(lp_a[2], lp_b[2], atol=1e-6) and not torch.isclose(lp_a
 
 ## Categorical perspective
 
-The program is a Kleisli morphism of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical] from the target window to itself: a prior over the weights composed with a likelihood kernel from weights and data to target tokens. Inside that kernel every comprehension is a deterministic map between finite-dimensional real vector spaces indexed by the declared objects, and the three attention layers differ only in which tables they read and in the mask. The causal mask is what makes the target's likelihood factor into a product of conditionals, each a kernel from the source and the target's prefix to one token, and the causality check above tests that factorization at a point.
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a distribution to each input. Composing kernels by integration is composition in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the Giry monad [@giry1982categorical]. Here the weight prior composes with a [kernel](https://en.wikipedia.org/wiki/Markov_kernel) from weights, source tokens, and target prefixes to target tokens. The comprehensions inside this kernel are deterministic maps between finite-dimensional vector spaces indexed by the declared objects. The attention layers differ in which tables they read and in their masks.
 
-## Sources and further reading
-
-- *Sequence to sequence learning with neural networks* [@sutskever2014sequence].
-- *Attention is all you need* [@vaswani2017attention].
-- *A categorical approach to probability theory* [@giry1982categorical].
+The causal mask makes each token distribution depend only on the source and the target prefix, giving an autoregressive product of conditionals. Scoring observed targets weights the prior by that product, so the complete scored program denotes an unnormalized measure [@staton2017commutative]. The output tensor contains token indices. `TgtPos` in the declared signature names the target-position index, not the six-token vocabulary.

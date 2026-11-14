@@ -1,9 +1,8 @@
 # Custom Rules
 #
 # An AB grammar (Ajdukiewicz-Bar-Hillel) plus harmonic
-# composition, illustrating that every rule in a deduction block
-# is a sequent declared in the DSL itself; there are no built-in
-# named rule schemas.
+# composition. Each rule is declared directly as a sequent in
+# the deduction body. Reusable schemas provide another declaration form.
 #
 # Deduction:
 #

@@ -10,9 +10,9 @@ $$
 y_j \sim \mathcal{N}(\mu + \theta_j, s_j^2).
 $$
 
-The posterior mean of each school's effect lies between its own estimate $y_j$ and the common mean, and how far it moves depends on $\tau$ relative to $s_j$: this is partial pooling. When $\tau$ is inferred, the data decide how much to pool; when $\tau$ is fixed, the analyst does.
+The posterior mean of each school's effect lies between its own estimate $y_j$ and the common mean, and how far it moves depends on $\tau$ relative to $s_j$: this is partial pooling. When $\tau$ is inferred, the data decide how much to pool. When $\tau$ is fixed, the analyst does.
 
-The example states this model with a [parametric program template](../guides/dsl-programs-and-lets.md#parametric-programs). The template `school_effects` declares the [non-centered parametrization](https://doi.org/10.1214/088342307000000014) of a set of effects once [@papaspiliopoulos2007parametrization], typed over a scalar `spread : Real` and a plate `K : FinSet`. The host program `pooled` instantiates it at a sampled spread `tau`, and the hosts `pooled_tight` and `pooled_loose` instantiate it at the fixed spreads 2 and 20. A labeled return tuple names each host's outputs.
+The example states this model with a [parametric program template](../guides/dsl-programs-and-lets.md#parametric-programs). The template `school_effects` declares the [non-centered parametrization](https://doi.org/10.1214/088342307000000014) of a set of effects once [@papaspiliopoulos2007parametrization], typed over a scalar `spread : Real` and a [plate](https://en.wikipedia.org/wiki/Plate_notation) `K : FinSet`. The host program `pooled` instantiates it at a sampled spread `tau`, and the hosts `pooled_tight` and `pooled_loose` instantiate it at the fixed spreads 2 and 20. A labeled return tuple names each host's outputs.
 
 ## QVR source
 
@@ -85,34 +85,34 @@ export pooled
 
 ## Understanding the model
 
-A program template is a reusable local model. Calling it creates a set of random draws with [site names](../tutorials/python/05-variational-inference.md#tracing-the-model) prefixed by the call site, just as calling a function creates separate local bindings. The `spread` argument determines how far each school's effect can lie from the common mean; a smaller spread imposes stronger [pooling](../tutorials/qvr/03-hierarchical.md#eight-schools-centered) toward it.
+A program template is a reusable local model. Calling it creates a set of random draws with [site names](../tutorials/python/05-variational-inference.md#tracing-the-model) prefixed by the call site, just as calling a function creates separate local bindings. The `spread` argument determines how far each school's effect can lie from the common mean. A smaller spread imposes stronger [pooling](../tutorials/qvr/03-hierarchical.md#eight-schools-centered) toward it.
 
-The three hosts differ only in that argument. In `pooled` it is the latent `tau`, so its posterior, and with it the amount of pooling, is learned from how much the estimates vary beyond what their standard errors explain. In `pooled_tight` it is fixed at 2, smaller than every standard error in the example, so the school effects are pulled almost all the way to the common mean. In `pooled_loose` it is fixed at 20, larger than every standard error, so each school's effect stays close to its own estimate. These two bracket the adaptive model; they are not alternative estimates of the same quantity.
+The three enclosing programs differ in their treatment of the spread. In `pooled` it is the latent `tau`, so its posterior, and with it the amount of pooling, is learned from how much the estimates vary beyond what their standard errors explain. In `pooled_tight` it is fixed at 2, smaller than every standard error in the example, so the school effects are pulled almost all the way to the common mean. In `pooled_loose` it is fixed at 20, larger than every standard error, so each school's effect stays close to its own estimate. These two bracket the adaptive model. Their posterior estimates answer the same school-effect questions under different pooling assumptions.
 
-The standard errors `se` are host data, as in Rubin's analysis, where each school's estimate comes with a standard error computed from its own experiment. They are not inferred, and that is what lets the model separate within-school noise from between-school variation.
+The standard errors `se` are input data, as in Rubin's analysis, where each school's estimate comes with a standard error computed from its own experiment. They are not inferred, and that is what lets the model separate within-school noise from between-school variation.
 
 ## Walkthrough
 
-`school_effects` is a parametric program: its parameter list carries typed parameters rather than data parameters, so it is a computation over the extent of `K` and the real `spread`. The draw `sample theta <- school_effects(tau, School)` substitutes `tau` for `spread` and `School` for `K`, then runs an alpha-renamed copy of the body in the host program: the local `z` becomes `theta$z` and the return variable `effect` becomes `theta` itself, on the reference machine, the torch runtime, and every transpile target alike (which spell the site `theta__z`). An argument may be a literal, as in the two fixed-spread hosts, or a value sampled earlier in the host, as in `pooled`.
+`school_effects` is a parametric program: its parameter list carries typed parameters rather than data parameters, so it is a computation over the extent of `K` and the real `spread`. The draw `sample theta <- school_effects(tau, School)` substitutes `tau` for `spread` and `School` for `K`, then runs an alpha-renamed copy of the body in the host program: the local `z` becomes `theta$z` and the return variable `effect` becomes `theta` itself, on the [reference machine](../developer/qiec.md#reference-evaluator), the torch runtime, and every transpile target alike. An argument may be a literal, as in the two fixed-spread hosts, or a value sampled earlier in the host, as in `pooled`.
 
-The non-centered form routes `spread` through the `let` arithmetic (`effect = spread * z`) rather than through the scale of a plate draw, so the sampled latent is the standardized `z` and the effect is a deterministic function of it. With few or noisy schools, the posterior of $\tau$ often reaches near zero, where the centered form $\theta_j \sim \mathcal{N}(0, \tau^2)$ produces a funnel that is hard to sample; the non-centered form avoids it [@papaspiliopoulos2007parametrization].
+The non-centered form routes `spread` through the `let` arithmetic (`effect = spread * z`) rather than through the scale of a plate draw, so the sampled latent is the standardized `z` and the effect is a deterministic function of it. With few or noisy schools, the posterior of $\tau$ often reaches near zero, where the centered form $\theta_j \sim \mathcal{N}(0, \tau^2)$ produces a funnel that is hard to sample. The non-centered form can improve this geometry when the data weakly constrain the effects [@papaspiliopoulos2007parametrization].
 
 `let school_mean = mu + theta` adds the common mean, and `observe y : School <- Normal(loc=school_mean, scale=se)` scores each school's estimate against its own known standard error.
 
 `object School : FinSet 40` is the plate the estimates are observed over, while `object Effect : Real 1` and `object Mean : Real 1` are the value spaces of the two returned quantities. Each host program is thus declared `School -> Effect * Mean`: its domain is the school plate and its codomain is the product space its labeled return tuple inhabits. The template's own signature `K -> Effect` follows the same reading, with the plate left as the type-parameter `K` the call site fixes.
 
-`return (effects: theta, mean: mu)` labels the output tuple. The compiled program's [`rsample`](../api/continuous/programs.md) returns a dict keyed by the labels (`effects`, `mean`) rather than by the internal variable names, and [`log_joint`](../api/continuous/programs.md) accepts intermediates keyed either way. `export pooled` selects which host the compiled module wraps; the [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment holds all three.
+`return (effects: theta, mean: mu)` labels the output tuple. The compiled program's [`rsample`](../api/continuous/programs.md) returns a dict keyed by the labels (`effects`, `mean`) rather than by the internal variable names, and [`log_joint`](../api/continuous/programs.md) accepts intermediates keyed either way. `export pooled` selects which host the compiled module wraps. The [`Compiler`](../api/dsl/compiler.md#quivers.dsl.compiler.Compiler) environment holds all three.
 
 ## DSL features
 
-- **Typed program parameters**: `(spread : Real, K : FinSet)` declares a parametric template; admissible parameter kinds are `Real`, `Nat`, `FinSet`, `Space`, `Object`, and `Mor[A, B]`.
+- **Typed program parameters**: `(spread : Real, K : FinSet)` declares a parametric template. Admissible parameter kinds are `Real`, `Nat`, `FinSet`, `Space`, `Object`, and `Mor[A, B]`.
 - **Template instantiation**: `sample v <- template(args)` inlines the substituted, alpha-renamed body at the call site, with literal or sampled arguments.
 - **Labeled return tuple**: `return (label: var, ...)` names the program's outputs on the compiled output path.
 - **`export`**: selects the module's exported morphism among the declared candidates.
 
 ## Try it
 
-The blocks below simulate 40 schools from the adaptive model, check its compiled joint against a hand-written density, fit all three hosts by SVI, check that the adaptive fit recovers the common mean and the spread and predicts the true effects better than the raw estimates, check that the fixed spreads bracket its shrinkage, and run a short NUTS chain on the adaptive model. The model's scalar sites (`mu`, `tau`) combine with `School`-shaped sites, so the program input is a single row, `torch.zeros(1, 1)`; the plate's extent comes from the observed estimates.
+The blocks below simulate 40 schools from the adaptive model, check its compiled joint against a hand-written density, fit all three hosts by [SVI](../guides/inference-svi.md) (stochastic variational inference), check that the adaptive fit recovers the common mean and the spread and predicts the true effects better than the raw estimates, check that the fixed spreads bracket its shrinkage, and run a short [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler) chain on the adaptive model. The model's scalar sites (`mu`, `tau`) combine with `School`-shaped sites, so the program input is a single row, `torch.zeros(1, 1)`. The plate's extent comes from the observed estimates.
 
 ### Generating synthetic data
 
@@ -225,7 +225,7 @@ The tolerances on $\mu$ and $\tau$ are about two standard errors for 40 schools 
 
 ### NUTS posterior
 
-[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) runs on the adaptive model, with $\mu$, $\tau$, and the standardized effects latent. The chain below is short; a real analysis would run several chains and check their diagnostics, especially for $\tau$.
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) runs on the adaptive model, with $\mu$, $\tau$, and the standardized effects latent. The chain below is short. A real analysis would run several chains and check their diagnostics, especially for $\tau$.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -242,10 +242,6 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-A parametric program denotes a dependent kernel $\Pi (p_1 : P_1) \ldots \Pi (p_n : P_n).\ \mathbf{Kern}(\mathrm{dom}(p), \mathrm{cod}(p))$ in the indexed family of [Kleisli](https://ncatlab.org/nlab/show/Kleisli+category) arrows of the [Giry monad](https://doi.org/10.1007/BFb0092872) over the parameter category; each call site realizes a section of the family at the supplied arguments [@giry1982categorical]. A literal argument picks one section. A sampled argument, as in `pooled`, composes the family with the kernel that draws the argument: the result is the mixture of the sections over the posterior of `tau`, which is the precise sense in which the adaptive model averages over amounts of pooling instead of fixing one. The labeled return tuple names the projections out of each host's product codomain.
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. A parameterized program gives a family $\{K_p : \mathrm{dom}(p) \to \mathcal{G}(\mathrm{cod}(p))\}_{p \in P}$ of sampling kernels, where $P$ is the set of admissible arguments and $\mathcal{G}(X)$ is the space of probability measures on $X$. Multiple arguments range over the corresponding product of parameter sets. A literal argument selects one member of the family. Drawing `tau` from its prior $\pi$ and then sampling from $K_\tau$ gives the mixture $\int K_\tau\,\pi(d\tau)$.
 
-## Sources and further reading
-
-- *Estimation in Parallel Randomized Experiments* [@rubin1981parallel].
-- *A General Framework for the Parametrization of Hierarchical Models* [@papaspiliopoulos2007parametrization].
-- *A categorical approach to probability theory* [@giry1982categorical].
+Observations weight this joint and determine a posterior over `tau`. Averaging posterior predictions uses that posterior, whereas the generative composition above uses the prior [@staton2017commutative]. The labeled return tuple names the projections from the product of returned values.

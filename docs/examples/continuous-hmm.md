@@ -2,7 +2,7 @@
 
 ## Overview
 
-A continuous state-space model is a hidden Markov model whose hidden state is a real vector: the state evolves by a Gaussian Markov chain and each observation is Gaussian given the state at its position. This source writes the two conditionals as Normal kernels with the default linear parameter source, so each maps its input affinely to both the mean and the log-scale of a diagonal Normal, and the noise of each step can depend on the state. A [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) whose cell draws the next state and scores that position's observation makes the whole state path the program's latent, one site per position. The page checks the program's joint density on both execution paths and, at weights that make the model linear-Gaussian, checks the posterior mode of the state path against the Rauch-Tung-Striebel smoother [@rauch1965smoothing]. Two variational checks of the posterior failed and are reported below.
+A continuous state-space model is a hidden Markov model whose hidden state is a real vector: the state evolves by a Gaussian Markov chain and each observation is Gaussian given the state at its position. This source writes the two conditionals as Normal kernels with the default linear parameter source, so each maps its input affinely to both the mean and the log-scale of a diagonal Normal, and the noise of each step can depend on the state. A [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) whose cell draws the next state and scores that position's observation makes the whole state path the program's latent, one site per position. The examples compare the program's joint density on both execution paths and, at weights that make the model linear-Gaussian, compare the posterior mode of the state path against the Rauch-Tung-Striebel smoother [@rauch1965smoothing]. Two variational checks of the posterior failed and are reported below.
 
 ## QVR source
 
@@ -13,10 +13,11 @@ A continuous state-space model is a hidden Markov model whose hidden state is a 
 # Gaussian Markov chain and each position's observation is Gaussian given
 # that position's state. Both kernels take the default linear parameter
 # source, so each maps its input affinely to the mean and the log-scale
-# of a diagonal Normal; the noise therefore varies with the state. The
+# of a diagonal Normal; the noise thus varies with the state. The
 # scan's entries only set the length of the sequence.
 #
 # Generative structure (s_{-1} = 0):
+# Normal arguments below are mean and standard deviation.
 #
 #   s_t  ~ Normal(A s_{t-1} + a, diag exp(B s_{t-1} + b))
 #   o_t  ~ Normal(C s_t + c, diag exp(D s_t + d))
@@ -51,27 +52,27 @@ With $s_{-1} = 0$, the program scores
 
 $$
 \begin{aligned}
-s_t &\sim \mathcal{N}\bigl(A s_{t-1} + a, \operatorname{diag} \exp(B s_{t-1} + b)\bigr), \\
-o_t &\sim \mathcal{N}\bigl(C s_t + c, \operatorname{diag} \exp(D s_t + d)\bigr),
+s_t &\sim \mathcal{N}\bigl(A s_{t-1} + a, \operatorname{diag} \exp(2(B s_{t-1} + b))\bigr), \\
+o_t &\sim \mathcal{N}\bigl(C s_t + c, \operatorname{diag} \exp(2(D s_t + d))\bigr),
 \end{aligned}
 $$
 
-where the learned weight of `transition` is the stacked matrix $[A; B]$ with bias $[a; b]$, and likewise $[C; D]$ and $[c; d]$ for `emission`. When $B$ and $D$ are zero the noise is constant and the model is the linear-Gaussian state-space model of the [Kalman filter](linear-gaussian-ssm.md) [@kalman1960filtering], whose state posterior is Gaussian with means the smoother computes. With $B$ or $D$ nonzero the model is heteroscedastic, and its posterior has no closed form. The program has no driver; the scan's entries, `Tick`, only set the length of the sequence. Each input row is one run, with the states drawn at the sites `s@0`, `s@1`, and so on and the observations `o` scored at every position.
+Here the second argument of $\mathcal{N}$ is the covariance. The networks output log standard deviations, so doubling them before exponentiation gives the diagonal variances.
+
+The learned weight of `transition` is the stacked matrix $[A; B]$ with bias $[a; b]$, and likewise $[C; D]$ and $[c; d]$ for `emission`. When $B$ and $D$ are zero the noise is constant and the model is the linear-Gaussian state-space model of the [Kalman filter](linear-gaussian-ssm.md) [@kalman1960filtering], whose state posterior is Gaussian with means the smoother computes. With $B$ or $D$ nonzero the model is heteroscedastic, and its posterior has no closed form. The program has no driver. The scan's entries, `Tick`, only set the length of the sequence. Each input row is one run, with the states drawn at the sites `s@0`, `s@1`, and so on and the observations `o` scored at every position.
 
 ## Walkthrough
 
 - `morphism transition : State -> State ~ Normal` and `morphism emission : State -> Obs ~ Normal` have no parameter source declared, so each takes the default linear one: one affine map from the input to the concatenated mean and log-scale.
 - `program step(u_t, s_prev)` ignores `u_t`, draws `s` from the transition at the previous state, observes `o` under the emission at `s`, and returns `s`.
-- `define run_all = scan(step)` threads the state from zero; `program continuous_hmm` draws the path and returns its last state.
-- No transpile target lowers a scan, so every target refuses this program with `scan:no-lowering`. The program runs on the PyTorch runtime and on the reference machine, which takes the weights as data.
+- `define run_all = scan(step)` threads the state from zero. `program continuous_hmm` draws the path and returns its last state.
+- The program runs on the PyTorch runtime and the [reference evaluator](../developer/qiec.md#reference-evaluator). Backend coverage is recorded in the [support matrix](../transpile-support.md).
 
 ## Try it
 
-The first check's tolerances were fixed before it was first run. The second was added after the variational checks failed, and the section says how.
-
 ### The log joint against a hand-written recursion
 
-At a traced draw of the state path on two runs of length 7, the compiled runtime's log joint must equal a float64 loop over positions to a relative 1e-5, and the reference machine to 1e-9. An oracle whose emission reads the previous state and an oracle that drops the transition term must each differ by more than a relative 1e-3.
+At a traced draw of the state path on two runs of length 7, the compiled runtime's log joint must equal a float64 loop over positions to a relative 1e-5, and the reference machine to 1e-9. A reference calculation whose emission reads the previous state and a reference calculation that drops the transition term must each differ by more than a relative 1e-3.
 
 ```python
 import math
@@ -173,7 +174,7 @@ for r in range(runs):
 
 The kernels are set to a known generator: the seeded initial weights, with the log-scale rows zeroed and their biases set so that the transition's scale is 0.3 and the emission's 0.1. The model is then linear-Gaussian, a path of 10 states and its observations are simulated from it, and with the weights frozen L-BFGS maximizes the log joint over the state path. For a Gaussian posterior the mode is the mean, so the result must match the smoother's means within 1e-3 at every coordinate, while a smoother with the transition matrix transposed must differ from it by more than 1e-3 somewhere.
 
-This check was not fixed in advance. It was first run as a diagnostic after the two checks described below failed, measured a largest deviation of 8.8e-5, and its 1e-3 tolerance was set after that run.
+The fitted mode differs from the smoother by at most 8.8e-5, below the 1e-3 comparison tolerance. This agreement at a fixed linear-Gaussian setting is a density diagnostic. It does not establish that the variational fit below approximates the posterior accurately.
 
 ```python
 def set_generator(model: torch.nn.Module) -> None:
@@ -263,17 +264,13 @@ assert separation > 1e-3
 
 ### Variational checks that failed
 
-Two checks of the posterior by SVI with a mean-field Normal guide (1500 Adam steps at learning rate 0.02, 400 posterior draws) were fixed in advance on the same generator and data, and both failed.
+Two checks of the posterior by [SVI](../guides/inference-svi.md) (stochastic variational inference) with a [mean-field](../guides/inference-svi.md) Normal guide (1500 Adam steps at learning rate 0.02, 400 posterior draws) used the same generator and data, and both failed.
 
-1. The first required the posterior-mean path to be closer to the true path than the prior-mean path, by an RMSE ratio below 0.5. The ratio was 0.69 (RMSE 0.169 against 0.245). The prior-mean path is already close to the true one, and the threshold was not calibrated against what the observations can add, which is why the smoother replaced it.
-2. The second required every coordinate of the SVI posterior mean to lie within four Monte Carlo standard errors plus 0.02 of the smoother's mean. A mean-field Gaussian guide has the exact posterior means at its optimum when the posterior is Gaussian, so this checks that the fit reached that optimum. The largest deviation was 0.108, 1.58 times its tolerance. The posterior mode above agrees with the smoother to 8.8e-5, so the model's density is right and the shortfall is the stochastic optimization's; a longer or better-tuned fit was not tried, and the page makes no claim for SVI here.
+1. The first required the posterior-mean path to be closer to the true path than the prior-mean path, by an RMSE ratio below 0.5. The ratio was 0.69 (RMSE 0.169 against 0.245). The prior-mean path is already close to the true one, and the threshold was not calibrated against what the observations can add, so the ratio alone does not diagnose an error in the density.
+2. The second required every coordinate of the SVI posterior mean to lie within four Monte Carlo standard errors plus 0.02 of the smoother's mean. A mean-field Gaussian guide has the exact posterior means at its optimum when the posterior is Gaussian, so this checks that the fit reached that optimum. The largest deviation was 0.108, 1.58 times its tolerance. The posterior mode above agrees with the smoother to 8.8e-5, but this agreement does not identify the cause of the variational error. The reported SVI fit fails its posterior-mean criterion.
 
 ## Categorical perspective
 
-`transition : State -> State` and `emission : State -> Obs` are Kleisli morphisms of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical], and `scan(step)` is the cell's composite along the sequence in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category), weighted at each position by the observation's likelihood. At weights with $B = D = 0$ both kernels are affine maps with Gaussian noise, which are closed under that composition and under conditioning; the smoother computes the resulting Gaussian, and the mode check above is a check of that closure in the program.
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. `transition : State -> State` and `emission : State -> Obs` assign Gaussian distributions to their inputs. `scan(step)` composes the state transitions along the sequence and scores each observation at its state. When $B=D=0$, the log-scales are constant and the means are affine. Conditioning then gives a Gaussian state-path posterior, and the smoother computes its mean and mode.
 
-## Sources and further reading
-
-- *A new approach to linear filtering and prediction problems* [@kalman1960filtering].
-- *Maximum likelihood estimates of linear dynamic systems* [@rauch1965smoothing].
-- *A categorical approach to probability theory* [@giry1982categorical].
+Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative].

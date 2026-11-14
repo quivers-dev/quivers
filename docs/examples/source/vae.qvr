@@ -8,6 +8,7 @@
 # q(z | y) used to train both networks by the ELBO.
 #
 # Generative structure:
+# Normal arguments below are mean and standard deviation.
 #
 #   z_n            ~ Normal(0, I)                    latent code
 #   mu(z), s(z)    = decoder MLP(z)                  one tanh layer

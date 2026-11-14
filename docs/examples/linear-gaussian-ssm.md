@@ -2,7 +2,7 @@
 
 ## Overview
 
-A linear-Gaussian [state-space model](https://en.wikipedia.org/wiki/State-space_representation) explains a sequence of noisy observations by a hidden state that evolves linearly under Gaussian noise. Given the model's matrices and noise scales, the posterior over the state path is Gaussian, and the [Kalman filter](https://doi.org/10.1115/1.3662552) [@kalman1960filtering] followed by the [Rauch-Tung-Striebel smoother](https://doi.org/10.2514/3.3166) [@rauch1965smoothing] computes its means and variances exactly. This source states the model with a [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) whose cell draws the next state given the previous one, so the program's latent is the whole coupled state path. The transition and emission maps are [learned deterministic functions](../guides/dsl-declarations.md#function), affine maps with point-estimated weights, and the two noise scales are sites of the program. The page checks the program's joint density against a hand-written one and its posterior against the smoother.
+A linear-Gaussian [state-space model](https://en.wikipedia.org/wiki/State-space_representation) explains a sequence of noisy observations by a hidden state that evolves linearly under Gaussian noise. Given the model's matrices and noise scales, the posterior over the state path is Gaussian, and the [Kalman filter](https://doi.org/10.1115/1.3662552) [@kalman1960filtering] followed by the [Rauch-Tung-Striebel smoother](https://doi.org/10.2514/3.3166) [@rauch1965smoothing] computes its means and variances exactly. This source states the model with a [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) whose cell draws the next state given the previous one, so the program's latent is the whole coupled state path. The transition and emission maps are [learned deterministic functions](../guides/dsl-declarations.md#function), affine maps with point-estimated weights, and the two noise scales are sites of the program. The examples compare the program's joint density against a hand-written one and its posterior against the smoother.
 
 ## QVR source
 
@@ -49,25 +49,25 @@ o_t &= C s_t + c + r\, f_t, & f_t &\sim \mathcal{N}(0, I),
 \end{aligned}
 $$
 
-with half-Normal priors on the scales $q$ and $r$. The transition reads the concatenation $[u_t; s_{t-1}]$, so the learned weight of `transition` is the block matrix $[B\ A]$ and its bias is $b$; the weight and bias of `emission` are $C$ and $c$. Each input row is one run: a sequence of drivers, with the state path drawn at the sites `s@0`, `s@1`, and so on, and the observations `o` scored at every position.
+with half-Normal priors on the scales $q$ and $r$. The transition reads the concatenation $[u_t; s_{t-1}]$, so the learned weight of `transition` is the block matrix $[B\ A]$ and its bias is $b$. The weight and bias of `emission` are $C$ and $c$. Each input row is one run: a sequence of drivers, with the state path drawn at the sites `s@0`, `s@1`, and so on, and the observations `o` scored at every position.
 
-The process noise is isotropic, $Q = q^2 I$, and so is the observation noise, $R = r^2 I$. With $A$, $B$, $b$, $C$, $c$, $q$, and $r$ fixed, the state path's posterior given the observations is Gaussian, and the smoother gives its means exactly. That is the check below: the program's posterior, sampled by NUTS, against the smoother.
+The process noise is isotropic, $Q = q^2 I$, and so is the observation noise, $R = r^2 I$. With $A$, $B$, $b$, $C$, $c$, $q$, and $r$ fixed, the state path's posterior given the observations is Gaussian, and the smoother gives its means exactly. That is the check below: the program's posterior, sampled by [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler), against the smoother.
 
 ## Walkthrough
 
 - `object Driver : Real 1`, `object State : Real 2`, and `object Obs : Real 2` are the driver, state, and observation spaces.
 - `morphism transition : Driver * State -> State [role=function]` is the affine map $[u_t; s_{t-1}] \mapsto B u_t + A s_{t-1} + b$, and `emission` is $s_t \mapsto C s_t + c$. Both are deterministic with point-estimated weights.
-- `program step` is one position: it draws the next state around the transition's mean at scale `q`, and observes `o` around the emission's mean at scale `r`. The scales `q` and `r` are not parameters of `step`; the cell reads them from the scanning program, so every position shares them.
+- `program step` is one position: it draws the next state around the transition's mean at scale `q`, and observes `o` around the emission's mean at scale `r`. The scales `q` and `r` are not parameters of `step`. The cell reads them from the scanning program, so every position shares them.
 - `define run_all = scan(step)` threads the state from zero along the drivers. `program ssm` draws the two scales and then the path.
-- No transpile target lowers a scan, so every target refuses this program with `scan:no-lowering`. The program runs on the PyTorch runtime and the reference machine.
+- The program runs on the PyTorch runtime and the [reference evaluator](../developer/qiec.md#reference-evaluator). Backend coverage is recorded in the [support matrix](../transpile-support.md).
 
 ## Try it
 
-The checks below come from a verification script whose tolerances were fixed before it was first run. Both blocks set the learned functions to known matrices.
+Both blocks set the learned functions to known matrices.
 
 ### The log joint against a hand-written recursion
 
-With the weights at the known matrices, the compiled runtime's log joint at fixed values of `q`, `r`, the state path, and the observations must equal a float64 loop over positions to a relative 1e-5, and the reference machine, given the weights as data, to 1e-9. An oracle with the two noise scales swapped must disagree by more than a relative 1e-3, which shows the first comparison can tell them apart.
+With the weights at the known matrices, the compiled runtime's log joint at fixed values of `q`, `r`, the state path, and the observations must equal a float64 loop over positions to a relative 1e-5, and the reference machine, given the weights as data, to 1e-9. A reference calculation with the two noise scales swapped must disagree by more than a relative 1e-3, which shows the first comparison can tell them apart.
 
 ```python
 import math
@@ -228,10 +228,6 @@ What this demonstrates is narrow and exact: at known matrices and scales, the pr
 
 ## Categorical perspective
 
-The cell `step` is a Kleisli morphism $\mathrm{Driver} \otimes \mathrm{State} \to \mathrm{State}$ of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical], weighted by the likelihood of the observation it scores, and `scan(step)` composes it along the drivers in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category). Linear maps with Gaussian noise are closed under that composition and under conditioning, which is why the composite's posterior is the Gaussian the smoother computes.
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. The state transition and observation distributions are probability kernels. With the driver held fixed, composing affine Gaussian transitions and conditioning on Gaussian observations gives a Gaussian distribution over the state path, which the smoother computes. The sampling cell takes a driver and a state, $\mathrm{Driver}\times\mathrm{State}$, and returns a state. `scan(step)` repeats this transition along the driver sequence.
 
-## Sources and further reading
-
-- *A new approach to linear filtering and prediction problems* [@kalman1960filtering].
-- *Maximum likelihood estimates of linear dynamic systems* [@rauch1965smoothing].
-- *A categorical approach to probability theory* [@giry1982categorical].
+Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative].

@@ -12,7 +12,7 @@
 #   beta_1  ~ Normal(0, 2)               slope
 #   y_n     ~ Normal(beta_0 + beta_1 * x_n, sigma)
 #
-# The predictor x is exogenous data: an (N,) tensor supplied at
+# The predictor x is exogenous data: an (N,) tensor provided at
 # fit time via the observations dict alongside the response y.
 # The runtime's host-data channel binds free variables in let
 # expressions from undeclared keys in the observations dict.

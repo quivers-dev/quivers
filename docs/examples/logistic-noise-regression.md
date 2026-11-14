@@ -2,7 +2,7 @@
 
 ## Overview
 
-A linear regression whose additive observation noise follows the [Logistic distribution](https://en.wikipedia.org/wiki/Logistic_distribution) rather than the conventional Normal. The Logistic distribution is symmetric and unimodal with exponential tails, which are heavier than Gaussian tails.
+A linear regression whose additive observation noise follows the [Logistic distribution](https://en.wikipedia.org/wiki/Logistic_distribution) rather than the conventional Normal. The Logistic distribution is symmetric and unimodal with exponential tails, which are heavier than Gaussian tails. [@balakrishnan1992logistic]
 
 Generative structure:
 
@@ -26,7 +26,7 @@ The Logistic density is $f(y; \mu, s) = \frac{e^{-(y - \mu)/s}}{s \bigl(1 + e^{-
 # Logistic distribution rather than the conventional Normal. The
 # Logistic distribution is symmetric and unimodal with
 # exponential tails, which are heavier than Gaussian tails. It
-# is thus a simple robust alternative when the response has
+# is thus a heavier-tailed alternative when the response has
 # more tail mass than a Normal error model allows.
 #
 # Generative structure:
@@ -56,7 +56,7 @@ export logistic_noise_regression
 
 ## Understanding the model
 
-Despite its name, this is a regression for a continuous response. [Binary logistic regression](../tutorials/qvr/02-glms.md#logistic-regression) uses a sigmoid-linked Bernoulli probability; this model
+Despite its name, this is a regression for a continuous response. [Binary logistic regression](../tutorials/qvr/02-glms.md#logistic-regression) uses a sigmoid-linked Bernoulli probability. This model
 instead adds a continuous Logistic-distributed error to a line. Its scale
 `s` is not its standard deviation: the latter is `s * pi / sqrt(3)`.
 
@@ -64,21 +64,18 @@ The inverse-CDF data generator turns a uniform probability into a Logistic
 error. Posterior coefficient draws describe uncertainty about the mean line,
 while predictive draws add those errors. To compare it with Normal regression,
 inspect the distribution of residuals or [replicated extremes](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) as well as the
-mean fit; changing a noise family primarily changes the tail assumptions.
+mean fit. Changing a noise family primarily changes the tail assumptions.
 
 ## Walkthrough
 
-Two scalar regression coefficients carry Normal priors; the noise scale $s$ uses `HalfNormal(2)`. The linear predictor `mu` is bound by a `let` so the renderer materialises a deterministic relation in the transformed-parameters block (Stan, BUGS, JAGS) or as a `mu = ...` line in the trace-style backends (NumPyro, Pyro, PyMC). The observation noise is `Logistic(mu, scale)`, with the QVR family name `Logistic` translating to each backend's spelling through `FAMILY_META.target_names`.
+The two regression coefficients have Normal priors, and the noise scale has a half-Normal prior with scale 2. The `let mu = ...` expression computes the linear predictor. `observe` evaluates the Logistic density at each response with that location and the shared scale. Backend coverage is recorded in the [support matrix](../transpile-support.md).
 
-The program returns `scale`, a scalar real, so the declared codomain is `Val : Real 1`: the value space of what comes back. `Resp` names the plate extent of the response, sized at 64 rows, and appears in the signature only as the domain.
+`return scale` exposes the positive noise scale. `Resp` indexes the 64 observed responses.
 
 ## Try it
 
 The blocks below simulate from the model, check the compiled log joint against
-a hand-written density, and then recover the parameters with SVI and NUTS. The
-program reads its data by name, so its input `x_in` is a single dummy row: that
-leading axis is a particle axis, and a longer one would score the whole data
-set once per row.
+a hand-written density, and then recover the parameters with [SVI](../guides/inference-svi.md) (stochastic variational inference) and [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler). The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
@@ -126,7 +123,7 @@ assert torch.allclose(compiled, oracle, rtol=1e-5)
 
 ### SVI fit
 
-A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by
 [`SVI`](../api/inference/svi.md). With 64 rows and Logistic scale 0.4 (a residual standard deviation near
 0.73), the coefficients' standard errors are near 0.09 and the scale's near
 0.04, so the tolerances are about four standard errors: 0.35 for each
@@ -177,7 +174,3 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 ## Use cases
 
 Approximation to Normal regression when the analyst suspects modest excess mass at moderate residuals: the Logistic has heavier asymptotic tails than a Normal with the same variance. Common surrogate for the logistic-noise discrete-choice family ($Y_n = \mathbb{1}[\mu_n + \varepsilon_n > 0]$ with $\varepsilon_n$ Logistic recovers binary logistic regression).
-
-## Sources and further reading
-
-- *Handbook of the Logistic Distribution* [@balakrishnan1992logistic].

@@ -4,7 +4,7 @@
 
 A stochastic autoencoder on simply typed lambda terms, built from the four structural declarations: a `signature` fixing the multi-sorted term algebra, an [`Encoder`](../api/structural/encoder.md#quivers.structural.encoder.Encoder) folding each term bottom-up into one fixed-width code vector, a [`Decoder`](../api/structural/decoder.md#quivers.structural.decoder.Decoder) corecursively expanding a code back into a term, and a loss head scoring the round trip by reconstruction negative log-likelihood.
 
-This example wires all four declarations together in one module. It shows the keyword-led encoder body (an explicit `op` rule alongside compiler-scaffolded defaults), the per-encoder / per-decoder `dim` override, a binder that threads a [de Bruijn](https://en.wikipedia.org/wiki/De_Bruijn_index) type annotation through the recursion, and a loss attached to a named site via `[on=...]`. The `#!` doc comments attach to the declaration that follows and are carried on its AST node's `docs` field.
+This example wires all four declarations together in one module. It shows the keyword-led encoder body (an explicit `op` rule alongside compiler-scaffolded defaults), the per-encoder / per-decoder `dim` override, a binder that threads a [de Bruijn](https://en.wikipedia.org/wiki/De_Bruijn_index) type annotation through the recursion, and a loss attached to a named site via `[on=...]`. The `#!` comments describe the following declaration.
 
 ## QVR source
 
@@ -85,7 +85,7 @@ signature STLC
         Lam : binds (x : Term : ty : Type) in (body : Term) -> Term
 ```
 
-`Term` and `Type` are `object` sorts, decoded recursively; `Name` is a `data` sort whose closed `vocab` supplies the tokens the decoder samples and scores leaves from. `Term` deliberately omits its `dim`: each encoder or decoder over the signature must then supply one via a `dim Term = 24` body entry, and the compiler raises when neither the signature nor the block does. The `Lam` binder introduces a `Term`-sorted variable annotated by a `Type`; the framework threads that annotation through a typed de Bruijn context during both encoding and decoding.
+`Term` and `Type` are `object` sorts, decoded recursively. `Name` is a `data` sort whose closed `vocab` provides the tokens the decoder samples and scores leaves from. `Term` deliberately omits its `dim`: each encoder or decoder over the signature must then provide one via a `dim Term = 24` body entry, and the compiler raises when neither the signature nor the block does. The `Lam` binder introduces a `Term`-sorted variable annotated by a `Type`. The framework threads that annotation through a typed de Bruijn context during both encoding and decoding.
 
 ### The encoder
 
@@ -97,7 +97,7 @@ encoder Enc : STLC
     var_init Term from Type as ty |-> ty
 ```
 
-Every encoder body entry is keyword-led. The `op` keyword introduces a per-operation rewrite rule: `App`'s two child embeddings are summed and passed through `relu`. Operators without a rule (`Const`, `Base`, `Lam`) receive a compiler-scaffolded 2-layer MLP with the correct per-argument dimensions, so a body may override as few or as many operations as the model demands. The `var_init` entry sets the embedding a `Lam`-bound variable enters the context with; here the type annotation's embedding is passed through unchanged.
+Every encoder body entry is keyword-led. The `op` keyword introduces a per-operation rewrite rule: `App`'s two child embeddings are summed and passed through `relu`. Operators without a rule (`Const`, `Base`, `Lam`) receive a compiler-scaffolded 2-layer MLP with the correct per-argument dimensions, so a body may override as few or as many operations as the model demands. The `var_init` entry sets the embedding a `Lam`-bound variable enters the context with. Here the type annotation's embedding is passed through unchanged.
 
 ### The decoder
 
@@ -118,9 +118,9 @@ loss reconstruct [weight=1.0, on=decoder(Dec)]
     -Dec.log_prob(term, Enc(term))
 ```
 
-A `loss` declaration registers a weighted scalar head in the module's [`LossRegistry`](../api/structural/losses.md#quivers.structural.losses.LossRegistry). The body is compiled as a let-expression closure over an environment: `Enc` and `Dec` resolve to the compiled module's own artifacts, while `term` is supplied by the caller at evaluation time. The `on=decoder(Dec)` option attaches the entry to a named site, so a training driver may evaluate it selectively via [`evaluate_on`](../api/structural/losses.md#quivers.structural.losses.LossRegistry.evaluate_on); `weight=1.0` sets the multiplier applied by [`evaluate`](../api/structural/losses.md#quivers.structural.losses.LossRegistry.evaluate).
+A `loss` declaration registers a weighted scalar head in the module's [`LossRegistry`](../api/structural/losses.md#quivers.structural.losses.LossRegistry). The body is compiled as a let-expression closure over an environment: `Enc` and `Dec` resolve to the compiled module's own artifacts, while `term` is provided by the caller at evaluation time. The `on=decoder(Dec)` option attaches the entry to a named site, so a training driver may evaluate it selectively via [`evaluate_on`](../api/structural/losses.md#quivers.structural.losses.LossRegistry.evaluate_on). `weight=1.0` sets the multiplier applied by [`evaluate`](../api/structural/losses.md#quivers.structural.losses.LossRegistry.evaluate).
 
-The same declarations lower to a checked QIEC graph. `STLC` becomes an opaque term family indexed by `Term`, `Type`, and `Name`; `Enc`, `Dec`, and `Dec__nll` become typed host-computation requests; and `reconstruct` calls `Enc` followed by `Dec__nll`. `program.run("reconstruct", term)` supplies the compiled PyTorch modules for those requests and validates their host results against the checked types. Its result is the same tensor as `losses.evaluate({"term": term})`, including the autograd edges to encoder and decoder parameters. The encoder and decoder are registered submodules, so `program.parameters()` and `program.state_dict()` expose their learned tensors. Targets without a structural provider reject the named computation under `qiec:capability:neural-attachment`.
+The same declarations lower to a checked QIEC graph. `STLC` becomes an opaque term family indexed by `Term`, `Type`, and `Name`. `Enc`, `Dec`, and `Dec__nll` become typed host-computation requests. And `reconstruct` calls `Enc` followed by `Dec__nll`. `program.run("reconstruct", term)` provides the compiled PyTorch modules for those requests and validates their host results against the checked types. Its result is the same tensor as `losses.evaluate({"term": term})`, including the autograd edges to encoder and decoder parameters. The encoder and decoder are registered submodules, so `program.parameters()` and `program.state_dict()` expose their learned tensors. The [support matrix](../transpile-support.md) records which targets can execute these structural computations.
 
 ## Try it
 
@@ -153,7 +153,7 @@ print("reconstruction root op:", recon.op)
 
 ### Score and train the round trip
 
-[`Decoder.log_prob`](../api/structural/decoder.md) scores an observed term against a code vector; the registry's `evaluate` sums every registered loss under a caller-supplied environment, and `prog.run("reconstruct", term)` computes the same loss through the checked `reconstruct -> Enc -> Dec__nll` graph. The block first asserts that the two paths agree on every term. It then trains the encoder and decoder on six distinct terms, two of which bind variables (one with a nested binder whose body refers to the outer variable, de Bruijn index 1), and checks reconstruction two ways: the decoder must assign each training term probability above 0.99 given its own code, and 20 independent decodes of each code must reproduce the term exactly, compared as full trees with [`Term.to_tuple`](../api/structural/signature.md#quivers.structural.signature.Term.to_tuple) so that binders and indices count. Two held-out terms are reported separately.
+[`Decoder.log_prob`](../api/structural/decoder.md) scores an observed term against a code vector. The registry's `evaluate` sums every registered loss under a caller-provided environment, and `prog.run("reconstruct", term)` computes the same loss through the checked `reconstruct -> Enc -> Dec__nll` graph. The block first asserts that the two paths agree on every term. It then trains the encoder and decoder on six distinct terms, two of which bind variables (one with a nested binder whose body refers to the outer variable, de Bruijn index 1), and checks reconstruction two ways: the decoder must assign each training term probability above 0.99 given its own code, and 20 independent decodes of each code must reproduce the term exactly, compared as full trees with [`Term.to_tuple`](../api/structural/signature.md#quivers.structural.signature.Term.to_tuple) so that binders and indices count. Two held-out terms are reported separately.
 
 ```python
 import torch
@@ -224,7 +224,9 @@ The six training terms are reconstructed exactly, binders and de Bruijn indices 
 
 ## Categorical perspective
 
-The encoder is a [Σ-algebra homomorphism](https://ncatlab.org/nlab/show/algebra+over+an+endofunctor) $T_\Sigma \to \mathrm{Vec}_D$: the framework supplies the recursion over the term tree, and the analyst supplies (or accepts scaffolds for) one parametric function per operation. The decoder is a [Kleisli coalgebra](https://ncatlab.org/nlab/show/coalgebra+over+an+endofunctor) $\mathrm{Vec}_D \to \mathrm{Kern}(T_\Sigma)$, corecursively generating a distribution over terms with a per-term `log_prob`. Their composite is a stochastic endomorphism on $T_\Sigma$, and the loss head scores how far that endomorphism sits from the identity on the observed term.
+An encoder recursively replaces each constructor by its vector operation. For an ordinary signature $\Sigma$, this is the [fold](https://ncatlab.org/nlab/show/catamorphism) from the initial term algebra $T_\Sigma$ to the chosen vector algebra $\mathrm{Vec}_D$, and it satisfies the corresponding algebra-homomorphism equations [@meijer1991functional]. With binders, the recursion also carries the typed variable context described in [structural semantics](../semantics/structural.md).
+
+The decoder unfolds a vector by choosing a constructor and producing child vectors. Its one-step operation has the form of a probabilistic [coalgebra](https://ncatlab.org/nlab/show/coalgebra+over+an+endofunctor). Recursing with the depth bound yields a [kernel](https://en.wikipedia.org/wiki/Markov_kernel) $\mathrm{Vec}_D\to\mathcal{G}(T_\Sigma)$ on the supported terms, where $\mathcal{G}$ denotes probability measures. Composing encoding and decoding gives a stochastic map $T_\Sigma\to\mathcal{G}(T_\Sigma)$. The reconstruction loss is the negative log probability of the observed term under that map, not a metric distance between functions.
 
 ## See also
 

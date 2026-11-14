@@ -2,7 +2,7 @@
 
 ## Overview
 
-A multi-output beta regression [@ferrari2004beta] for response variables on the open unit interval. Each output dimension carries its own logit-link coefficients and precision; the per-cell mean is mapped through the [sigmoid](https://en.wikipedia.org/wiki/Logistic_function) link to the unit interval, and the [Beta](https://en.wikipedia.org/wiki/Beta_distribution) likelihood is reparameterized in mean / precision form.
+A multi-output beta regression [@ferrari2004beta] for response variables on the open unit interval. Each output dimension carries its own logit-link coefficients and precision. The per-cell mean is mapped through the [sigmoid](https://en.wikipedia.org/wiki/Logistic_function) link to the unit interval, and the [Beta](https://en.wikipedia.org/wiki/Beta_distribution) likelihood is reparameterized in mean / precision form.
 
 ## QVR source
 
@@ -55,8 +55,7 @@ export beta_regression
 
 A fraction such as time spent on a task must stay between zero and one.
 A [linear predictor](../tutorials/qvr/02-glms.md#logistic-regression) cannot ensure this, so `sigmoid` converts it to a valid
-mean. With `mu = 0.5`, increasing `phi` concentrates outcomes near one-half;
-with the same `phi`, changing `mu` moves their center. Exact zeros and ones
+mean. With `mu = 0.5`, increasing `phi` concentrates outcomes near one-half. With the same `phi`, changing `mu` moves their center. Exact zeros and ones
 need a different observation model or an explicit boundary treatment.
 
 For multiple outputs, [`out_idx`](../tutorials/qvr/09-indexed-data.md#5-transfer-the-pattern-to-statistical-data) tells each flattened response row which
@@ -67,21 +66,18 @@ scientific question is about differences on the original response scale.
 
 ## Walkthrough
 
-Per-output coefficient plates `beta_0 : Out` and `beta_1 : Out` carry one coefficient per response dimension; per-output precision `phi : Out` permits heterogeneous dispersion across the response axis. The per-cell linear predictor `eta = b0 + b1 * x` is mapped to the unit interval via `mu = sigmoid(eta)`. The mean / precision form of the Beta is `Beta(mu * phi, (1 - mu) * phi)`, giving mean `mu` and variance `mu * (1 - mu) / (1 + phi)`. Plate-gathers `beta_0[out_idx]`, `beta_1[out_idx]`, `phi[out_idx]` broadcast each output's coefficients across its share of the flat `Resp` plate, 100 rows per output.
+Per-output coefficient plates `beta_0 : Out` and `beta_1 : Out` carry one coefficient per response dimension. Per-output precision `phi : Out` permits heterogeneous dispersion across the response axis. The per-cell linear predictor `eta = b0 + b1 * x` is mapped to the unit interval via `mu = sigmoid(eta)`. The mean / precision form of the Beta is `Beta(mu * phi, (1 - mu) * phi)`, giving mean `mu` and variance `mu * (1 - mu) / (1 + phi)`. Plate-gathers `beta_0[out_idx]`, `beta_1[out_idx]`, `phi[out_idx]` broadcast each output's coefficients across its share of the flat `Resp` [plate](https://en.wikipedia.org/wiki/Plate_notation), 100 rows per output.
 
 The complementary concentration is evaluated as `sigmoid(-eta) * phi`. The identity
 `1 - sigmoid(eta) = sigmoid(-eta)` preserves the model, while direct evaluation of
 the right side avoids subtracting a rounded value of one at large positive predictors.
 
-The program returns `beta_1`, an `Out`-indexed plate of real scalars, so the declared codomain is `Val : Real 1`: the per-row value space of the returned coefficients. `Resp` names the plate extent of the response and appears in the signature only as the domain.
+`return beta_1` exposes one real slope per output. `Out` indexes those slopes, and `Resp` indexes observations.
 
 ## Try it
 
 The blocks below simulate from the model, check the compiled log joint against
-a hand-written density, and then recover the parameters with SVI and NUTS. The
-program reads its data by name, so its input `x_in` is a single dummy row: that
-leading axis is a particle axis, and a longer one would score the whole data
-set once per row.
+a hand-written density, and then recover the parameters with [SVI](../guides/inference-svi.md) (stochastic variational inference) and [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler). The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
@@ -129,7 +125,7 @@ assert torch.allclose(compiled, oracle, rtol=1e-5)
 
 ### SVI fit
 
-A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by
 [`SVI`](../api/inference/svi.md). With 100 rows per output and precisions of
 10 to 20, each coefficient's posterior standard deviation is below 0.1, so the
 check asks every coefficient's posterior mean to sit within 0.3 of the truth.
@@ -184,9 +180,6 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The model is a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category) in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s Kleisli category whose codomain factors through the [unit interval](https://en.wikipedia.org/wiki/Unit_interval). Each cell's Beta likelihood is a `1 -> G((0, 1))` kernel whose mean is given by `sigmoid` [@giry1982categorical]. The gather `beta_1[out_idx]` reindexes the coefficients along the index map `Resp -> Out`, assigning each response the coefficient for its output.
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. Each response's Beta [kernel](https://en.wikipedia.org/wiki/Markov_kernel) maps its covariates and parameters to a distribution on the open unit interval $(0,1)$, with mean given by `sigmoid`. The gather `beta_1[out_idx]` is [reindexing](https://ncatlab.org/nlab/show/reindexing): precomposition with the map `Resp -> Out`, assigning each response the coefficient for its output.
 
-
-## Model reference
-
-- Silvia Ferrari and Francisco Cribari-Neto. 2004. Beta regression for modeling rates and proportions. *Journal of Applied Statistics*, 31(7):799–815.
+Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative].

@@ -2,7 +2,7 @@
 
 ## Overview
 
-A stacked, or deep, recurrent network [@graves2013speech] feeds the whole state sequence of one recurrence to a second recurrence above it, so the upper layer reads a learned representation of each prefix rather than the raw tokens. This source has two Elman layers with `tanh`. The lower [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) returns its state at every position (`outputs=all`), that sequence is what the upper scan runs over, and the upper state at each position scores the token after it. The weights are draws, so the model is Bayesian over them.
+A stacked, or deep, recurrent network [@graves2013speech] feeds the whole state sequence of one recurrence to a second recurrence above it, so the upper layer reads a learned representation of each prefix rather than the raw tokens. This source has two Elman layers with `tanh`. The lower [`scan`](../guides/dsl-declarations.md#scan-temporal-recurrence) returns its state at every position (`outputs=all`), that sequence is what the upper scan runs over, and the upper state at each position scores the token after it. The weights are draws, so the model is Bayesian over them. [@elman1990finding]
 
 ## QVR source
 
@@ -70,19 +70,19 @@ $$
 \log p = \log p(U_1, W_1, U_2, W_2, V) + \sum_{t=1}^{T} \log \mathrm{softmax}(V b_t)_{x_{t+1}},
 $$
 
-with independent Normal priors on the weights, and returns $b_T$. The upper layer at position $t$ reads $a_t$, the lower state at the same position; that is what `outputs=all` provides, since a scan without it returns only its final state.
+with independent Normal priors on the weights, and returns $b_T$. The upper layer at position $t$ reads $a_t$, the lower state at the same position. That is what `outputs=all` provides, since a scan without it returns only its final state.
 
 ## Walkthrough
 
-- `lower_step` updates the lower state and observes nothing; `upper_step` reads one lower state, updates the upper state, and observes `next_token`.
+- `lower_step` updates the lower state and observes nothing. `upper_step` reads one lower state, updates the upper state, and observes `next_token`.
 - `scan(lower_step, outputs=all)` maps the token sequence to the sequence of lower states, and `>> scan(upper_step)` runs the upper recurrence over it.
-- The exported program draws the five weight matrices and runs the composite; each input row is one window, with `next_token` the token after each position.
+- The exported program draws the five weight matrices and runs the composite. Each input row is one window, with `next_token` the token after each position.
 
 ## Try it
 
-The blocks check the program against an independent float64 implementation of the two layers. Every tolerance was fixed before the first run.
+The blocks check the program against an independent float64 implementation of the two layers.
 
-### Shared oracle
+### Shared reference calculation
 
 `oracle` computes one window's log joint, priors included, and the final upper state. Its keyword switch gives a deliberately wrong model whose upper recurrence reads the lower layer's final state at every position.
 
@@ -124,7 +124,7 @@ def oracle(w, x, nxt, *, upper_reads_final_lower_state=False):
 
 ### The compiled runtime
 
-At a traced draw of the weights, for three windows, the log joint matches the oracle to a relative 1e-5 and the returned upper state to 1e-5 absolute. The block also prints how far the final-lower-state oracle lies from the runtime: 1.5e-2 and 2.0e-2 (relative) on windows 0 and 2, and 4.6e-4 on window 1. The margin fixed in advance for this comparison was 1e-3, so it fails on window 1: there the prior terms dominate the joint and the likelihood difference between the two models is small. The agreement check on that window still holds at 1e-5, 46 times tighter than the gap, but this page does not claim the 1e-3 margin on every window.
+At a traced draw of the weights, for three windows, the log joint matches the reference calculation to a relative 1e-5 and the returned upper state to 1e-5 absolute. The block also prints how far the final-lower-state reference calculation lies from the runtime: 1.5e-2 and 2.0e-2 (relative) on windows 0 and 2, and 4.6e-4 on window 1. The specified margin for this comparison was 1e-3, so it fails on window 1: there the prior terms dominate the joint and the likelihood difference between the two models is small. The agreement check on that window still holds at 1e-5, 46 times tighter than the gap, but the 1e-3 margin does not hold on every window.
 
 ```python
 program = load("docs/examples/source/stacked_rnn_lm.qvr")
@@ -160,7 +160,7 @@ for row in range(3):
 
 ### The reference machine
 
-At fixed weights, the reference machine's log joint and returned state match the oracle to 1e-9.
+At fixed weights, the [reference machine](../developer/qiec.md#reference-evaluator)'s log joint and returned state match the reference calculation to 1e-9.
 
 ```python
 weights = {
@@ -186,7 +186,7 @@ check("3 reference final state", error <= 1e-9, f"max abs error {error:.2e}")
 
 ### Gradients through the upper layer
 
-The lower recurrent weights `W1` reach the likelihood only through the upper layer. The gradient of the compiled log joint with respect to them matches the oracle's autograd gradient (relative 1e-4, absolute 1e-6).
+The lower recurrent weights `W1` reach the likelihood only through the upper layer. The gradient of the compiled log joint with respect to them matches the reference calculation's autograd gradient (relative 1e-4, absolute 1e-6).
 
 ```python
 clamped = {n: weights[n].float().unsqueeze(0) for n in SCALES}
@@ -203,10 +203,6 @@ check("5 gradient wrt W1", ok, f"max abs diff {float((grad[0].double() - referen
 
 ## Categorical perspective
 
-`scan(lower_step, outputs=all)` is a scan in the functional-programming sense, a left [fold](https://ncatlab.org/nlab/show/fold) that keeps its intermediate states, so it maps sequences to sequences and composes with a second fold by `>>` in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]. The observations in the upper cell are the only factors that weight a run.
+A deterministic function defines a [Dirac kernel](https://en.wikipedia.org/wiki/Dirac_measure), which puts all probability at its output. A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical].
 
-## Sources and further reading
-
-- *Speech recognition with deep recurrent neural networks* [@graves2013speech].
-- *Finding structure in time* [@elman1990finding].
-- *A categorical approach to probability theory* [@giry1982categorical].
+`scan(lower_step, outputs=all)` retains the intermediate states of a [fold](https://en.wikipedia.org/wiki/Fold_(higher-order_function)), so its output is a sequence. The composition operator `>>` passes that sequence to the upper fold. The upper cell scores the observed tokens, multiplying their predicted probabilities into the run weight. The scored transition is a subprobability [kernel](https://en.wikipedia.org/wiki/Markov_kernel) because each token probability is at most one. It belongs to the extension that permits mass below one, rather than to the probability-kernel category itself [@staton2017commutative].

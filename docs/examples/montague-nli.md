@@ -6,7 +6,7 @@ A two-stage natural-language-inference architecture built entirely in QVR's
 weighted-deduction fragment: a Montague-style grammar derives a logical form
 for every token span, then an entailment prover closes those logical forms
 under three syllogistic rules. The model declares everything through `atoms`,
-`binders`, and `rule` sequents; QVR does not build in either the grammar
+`binders`, and `rule` sequents. QVR does not build in either the grammar
 formalism or the proof system.
 
 The two halves share one term language, so the prover's items are literally the terms the grammar builds. That is what lets a single Adam step move the lexicon's log-weights in response to an entailment error.
@@ -123,7 +123,7 @@ deduction Montague : Term -> Term [semiring=LogProb, start=S, depth=12]
 # while the existential is false. The inference is valid only
 # under existential import, so the rule takes ``Nonempty(P)`` as a
 # second premise rather than smuggling the assumption in. A caller
-# that wants the inference must supply that premise.
+# that wants the inference must provide that premise.
 
 deduction Prover : Term -> Term [semiring=LogProb, depth=12]
     atoms Claim, Every, Some, Nonempty, App, Var
@@ -157,13 +157,13 @@ export fit_grammar
 ## Understanding the model
 
 Start with two sentences: “every dog is an animal” and “every animal barks.”
-The grammar builds `Every(DOG, ANIMAL)` and `Every(ANIMAL, BARK)`; the prover
-can then derive `Every(DOG, BARK)`. Parsing supplies the [logical forms](term-autoencoder.md#understanding-the-model) that
+The grammar builds `Every(DOG, ANIMAL)` and `Every(ANIMAL, BARK)`. The prover
+can then derive `Every(DOG, BARK)`. Parsing provides the [logical forms](term-autoencoder.md#understanding-the-model) that
 the prover uses as premises.
 
 The grammar's weight follows its logical form into the proof, so a derived
 claim can depend differentiably on lexical parameters. Derivability depends
-on the supplied rules and premises: deriving “some dog barks,” for instance,
+on the provided rules and premises: deriving “some dog barks,” for instance,
 requires evidence that dogs exist as well as a universal statement about them.
 An absent derivation can reflect a missing premise or rule.
 
@@ -182,11 +182,11 @@ rule: a conclusion cannot call a function, no chart item is normalized on
 entry, and a `binders` declaration only alpha-renames lexical logical forms at
 compile time.
 
-Thus a determiner cannot denote a continuation-form lambda term such as `Lam(P, Lam(Q, App(forall_t, ...)))` and rely on later beta-reduction against its arguments. Nothing would reduce the redex; the chart would carry `App(App(Lam(...), dog_LF), bark_LF)` forever, and no prover rule could pattern-match through the unreduced application to find the quantifier.
+Thus a determiner cannot denote a continuation-form lambda term such as `Lam(P, Lam(Q, App(forall_t, ...)))` and rely on later beta-reduction against its arguments. Nothing would reduce the redex. The chart would carry `App(App(Lam(...), dog_LF), bark_LF)` forever, and no prover rule could pattern-match through the unreduced application to find the quantifier.
 
-The grammar thus builds the sentence logical form in normal form directly, in the [generalized quantifier](https://en.wikipedia.org/wiki/Generalized_quantifier) style of Barwise and Cooper [@barwise1981quantifiers]: a determiner denotes a relation between two sets, written here as the binary constructors `Every(P, Q)` and `Some(P, Q)`. Both determiners have category `Det`; their lexical constants distinguish their force. The shared `det_np` rule retains that constant in `App(D, P)`, and the `every_s` and `some_s` rules select the appropriate constructor by matching `every_q` or `some_q` inside that logical form. The restrictor and scope remain lambda terms. The binder declaration gives `Lam(x, App(dog_p, Var(x)))` a canonical representation shared by terms that differ only in the bound variable's name. See [@montague1973quantification] for the type-driven compositionality this fragment instantiates.
+The grammar thus builds the sentence logical form in normal form directly, in the [generalized quantifier](https://en.wikipedia.org/wiki/Generalized_quantifier) style of Barwise and Cooper [@barwise1981quantifiers]: a determiner denotes a relation between two sets, written here as the binary constructors `Every(P, Q)` and `Some(P, Q)`. Both determiners have category `Det`. Their lexical constants distinguish their force. The shared `det_np` rule retains that constant in `App(D, P)`, and the `every_s` and `some_s` rules select the appropriate constructor by matching `every_q` or `some_q` inside that logical form. The restrictor and scope remain lambda terms. The binder declaration gives `Lam(x, App(dog_p, Var(x)))` a canonical representation shared by terms that differ only in the bound variable's name. See [@montague1973quantification] for the type-driven compositionality this fragment instantiates.
 
-Two consequences follow, and both are visible in the source. First, `every` and `some` make a semantic contribution through `every_q` and `some_q`; unlike a category split, this factorization keeps their shared syntax in one rule. Second, the article and the copula are semantically vacuous, so `art_n` and `cop_nom` pass the noun's predicate through unchanged, which is what makes `every dog is an animal` and `every animal barks` come out as `Every(DOG, ANIMAL)` and `Every(ANIMAL, BARK)` over the *same* `ANIMAL` term.
+Two consequences follow, and both are visible in the source. First, `every` and `some` make a semantic contribution through `every_q` and `some_q`. Unlike a category split, this factorization keeps their shared syntax in one rule. Second, the article and the copula are semantically vacuous, so `art_n` and `cop_nom` pass the noun's predicate through unchanged, which is what makes `every dog is an animal` and `every animal barks` come out as `Every(DOG, ANIMAL)` and `Every(ANIMAL, BARK)` over the *same* `ANIMAL` term.
 
 ### The prover
 
@@ -196,11 +196,11 @@ $$\mathtt{Every}(P, Q) \;=\; \forall x.\, P(x) \to Q(x), \qquad \mathtt{Some}(P,
 
 All three rules are classically valid on that reading. `barbara` (every $P$ is $Q$, every $Q$ is $R$, thus every $P$ is $R$) needs no existence assumption. `darii` (some $P$ is $Q$, every $Q$ is $R$, thus some $P$ is $R$) is valid because the existential premise carries its own witness.
 
-The `ex_import` rule takes both `Every(P, Q)` and `Nonempty(P)` as premises to derive `Some(P, Q)`. On the standard first-order reading, “every dog barks” is true even if there are no dogs, while “some dog barks” requires a dog. The second premise supplies this [existential import](https://en.wikipedia.org/wiki/Square_of_opposition#Existential_import). The Python example supplies it for `DOG`.
+The `ex_import` rule takes both `Every(P, Q)` and `Nonempty(P)` as premises to derive `Some(P, Q)`. On the standard first-order reading, “every dog barks” is true even if there are no dogs, while “some dog barks” requires a dog. The second premise provides this [existential import](https://en.wikipedia.org/wiki/Square_of_opposition#Existential_import). The Python example provides it for `DOG`.
 
 ### The fit program, and what `Term` and `LogWeight` each name
 
-An [object](../guides/dsl-declarations.md#object) name in QVR has no fixed reading; the position it occupies is what gives it one, and the two objects declared here sit in different positions. `Term : FinSet 8` is the carrier the two deductions range over, so it is an index set, and its cardinality is incidental: rules match constructor-tagged tuples symbolically rather than enumerating elements of `Term`. `LogWeight : Real 1` occupies the codomain slot of the program signature instead, which names the *value space* of what the program returns. `fit_grammar` runs the chart, reads off [`goal_weight`](../api/stochastic/agenda.md#quivers.stochastic.agenda.ChartView.goal_weight), and returns that inside log-marginal at the start symbol, one real number, so the value space is `Real 1` and the signature reads `Term -> LogWeight`. Writing `Term -> Term` would instead claim the program returns a chart-item index, which is a category error the compiler cannot catch, since its only condition on `return` is that the name be bound and it never compares the returned value against the declared codomain. The sentence itself is not read from the domain: `sentence` is a free name in the body, which the elaborator lifts into a data parameter of the program (with the sentence length as a static extent), and a caller supplies the token sequence under that name.
+`Term : FinSet 8` declares the deduction carrier, but the chart matches constructor-tagged items symbolically. `fit_grammar` returns the real inside log-weight from [`goal_weight`](../api/stochastic/agenda.md#quivers.stochastic.agenda.ChartView.goal_weight), so its codomain is `LogWeight : Real 1`. The caller passes `sentence` as a data parameter containing the token sequence.
 
 ## Try it
 
@@ -261,7 +261,7 @@ Every logical form printed there is in normal form: its head is `Every` or `Some
 
 The prover takes an axiom list of `(item, log_weight)` pairs. Seeding `Claim(premise_lf)` at the *grammar's* goal weight for that premise, rather than at a constant, is what puts the lexicon's parameters into the prover's chart: the weight of every derived claim is a sum that includes it, so a gradient at `Claim(hypothesis_lf)` reaches back through the grammar.
 
-The NLI corpus below is three entailments and one non-entailment. The third pair is the interesting one. It is licensed only by the explicit `Nonempty(DOG)` premise, which asserts that the dog predicate has a witness; without it, `every dog barks` would not entail `some dog barks`, and the prover would (correctly) derive nothing.
+The NLI corpus below is three entailments and one non-entailment. The third pair is the interesting one. It is licensed only by the explicit `Nonempty(DOG)` premise, which asserts that the dog predicate has a witness. Without it, `every dog barks` would not entail `some dog barks`, and the prover would (correctly) derive nothing.
 
 ```python
 def noun_pred(noun):
@@ -368,11 +368,11 @@ for premises, nonempty, hypothesis, label in nli:
     print(f"share of closure on {' '.join(hypothesis)!r} = {share:.3f}  (label {label})")
 ```
 
-The final loop reports, per pair, the hypothesis's share of the prover's closure: the probability that a claim drawn from the closure in proportion to its weight is the hypothesis. That is not a probability of entailment. Entailment here is decided symbolically: the prover's rules are valid, so a finite score means the hypothesis follows from the premises, and the share only says how the learned weights distribute mass over the claims that follow (premises included). The loss raises the hypothesis's share for the three entailed pairs, which is the whole of the training signal. The non-entailed pair stays at `0.000` for every parameter value, because no rule derives its claim; it serves as a soundness check. A contradiction or neutral training signal would need a component that can put weight on a hypothesis the premises do not entail, such as a learned classifier over premise and hypothesis, and a sound prover is not such a component.
+The final loop reports, per pair, the hypothesis's share of the prover's closure: the probability that a claim drawn from the closure in proportion to its weight is the hypothesis. That is not a probability of entailment. Entailment here is decided symbolically: the prover's rules are valid, so a finite score means the hypothesis follows from the premises, and the share only says how the learned weights distribute mass over the claims that follow (premises included). The loss raises the hypothesis's share for the three entailed pairs, which is the whole of the training signal. The non-entailed pair stays at `0.000` for every parameter value, because no rule derives its claim. It serves as a soundness check. A contradiction or neutral training signal would need a component that can put weight on a hypothesis the premises do not entail, such as a learned classifier over premise and hypothesis, and a sound prover is not such a component.
 
 ### NUTS posterior
 
-[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples the grammar's log-weights. [`nuts_program_from_deduction`](../api/stochastic/deduction.md#quivers.stochastic.deduction.nuts_program_from_deduction) lifts every learnable parameter into a [`Normal`](../api/continuous/families.md) sample site and adds the corpus score $\sum_n \log Z(s_n; \mathbf{w})$ to the joint via a `score` step, so the target density is proportional to the prior times $\prod_n Z(s_n; \mathbf{w})$. The goal weight is not normalized over sentences, so this is the posterior of a model whose likelihood is the chart score itself; for a generative reading of the grammar the normalizer would also depend on $\mathbf{w}$ (the helper's documentation discusses the difference).
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples the grammar's log-weights. [`nuts_program_from_deduction`](../api/stochastic/deduction.md#quivers.stochastic.deduction.nuts_program_from_deduction) lifts every learnable parameter into a [`Normal`](../api/continuous/families.md) [sample site](../guides/inference-foundations.md#trace-and-sample-sites) and adds the corpus score $\sum_n \log Z(s_n; \mathbf{w})$ to the joint via a `score` step, so the target density is proportional to the prior times $\prod_n Z(s_n; \mathbf{w})$. This target multiplies the prior by unnormalized sentence weights. A normalized generative likelihood would also divide each weight by a normalizer that depends on $\mathbf{w}$.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -393,22 +393,17 @@ print("divergences:", int(result.divergence_counts.sum()))
 
 ## Categorical perspective
 
-Each `deduction` block denotes a weighted relation in the [agenda-based deduction semiring](../semantics/composition-rules.md): an arrow $\mathrm{Term} \to \mathrm{Term}$ in the [LogProb algebra](../semantics/algebras.md) whose underlying tensor is the chart of derivable items keyed by their derivation log-weights.
+Each deduction assigns weights to derivable chart items using the [LogProb semiring](../semantics/algebras.md): addition of log weights combines premises, and log-sum-exp combines alternative derivations. The chart is a weighted collection of items. Its symbolic constructors do not by themselves define a dense tensor arrow $\mathrm{Term}\to\mathrm{Term}$.
 
-The two deductions are chained by hand rather than by a `compose(...)` step, and the reason is worth stating. `compose(D1, D2)` lifts `D1`'s *goal items* into `D2`'s axiom list, which is the right operation only when the two systems agree on an item algebra. Here they do not: the grammar's goal items are `span(0, n, S, phi)` five-tuples, while the prover's rules match `Claim(phi)`. Feeding the former to the latter yields a chart in which no rule can fire. Passing `Claim(phi)` explicitly, weighted by the grammar's goal weight, is the composite that actually typechecks, and it preserves the property that matters: the prover's score is a differentiable function of the grammar's lexicon weights, so gradient descent on an entailment error is gradient descent on the lexicon.
+`compose(D1, D2)` passes `D1`'s goal items to `D2` as axioms. The grammar produces `span(0, n, S, phi)` items, but the prover's rules match `Claim(phi)`, so the helper wraps each logical form in `Claim` and retains its grammar weight. This conversion lets the prover's rules apply and preserves differentiation through the grammar weights: an entailment loss can train the lexicon.
 
 ## Limitations
 
 The fragment is deliberately small, and one limit is structural rather than
 incidental. The deduction system does not perform beta reduction, so the
 grammar cannot use continuation-form determiner denotations and recover a
-readable logical form; it builds the normal form directly instead. A grammar
+readable logical form. It builds the normal form directly instead. A grammar
 that needed higher-order denotations, such as quantifier raising or the scope
 ambiguities encoded by the
 [quantifier-scope example](quantifier-scope.md), would have to encode reduction
 in its rules or categories rather than rely on the runtime to normalize.
-
-## Sources and further reading
-
-- *Generalized quantifiers and natural language* [@barwise1981quantifiers].
-- *The Proper Treatment of Quantification in Ordinary English* [@montague1973quantification].

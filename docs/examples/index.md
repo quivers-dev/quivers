@@ -1,16 +1,8 @@
 # Examples Gallery
 
-`.qvr` programs spanning probabilistic regressions, latent-variable
-models, state-space models, language models, encoder-decoder networks,
-weighted deductions, and QIEC computations. Most full pages include a
-`## Try it` section; CI executes runnable documentation blocks and skips blocks
-marked as illustrative. Pages with current model limitations identify them
-directly.
+QVR programs for probabilistic regression, latent-variable models, state-space models, language models, structured outputs, and [weighted deduction](../guides/deduction.md). Familiarity with Python, PyTorch, and basic Bayesian modeling is useful.
 
-The measured transpilation corpus lives under `docs/examples/source/`. Mixed
-QIEC case studies whose purpose is reference-machine execution live under
-`docs/examples/qiec/`, so adding one does not silently expand the promised
-backend matrix.
+The [transpilation support matrix](../transpile-support.md) records which backends accept each source under `docs/examples/source/`. The [reference evaluator](../developer/qiec.md#reference-evaluator) executes the QIEC programs under `docs/examples/qiec/`.
 
 ## Choose a first example
 
@@ -22,11 +14,7 @@ Start with [Bayesian regression](bayesian-regression.md) to connect unknown
 The [conceptual introduction](../getting-started/concepts.md) defines the
 probability and composition vocabulary along that route.
 
-For structured language models, begin with [PCFG](pcfg.md) to learn chart
-items and weighted derivations, then move to [rule schemas](schema-chart-parser.md)
-or the [term autoencoder](term-autoencoder.md). Read each page's limitations:
-some sources illustrate a model's wiring or one conditional component rather
-than implementing every feature suggested by a historical filename.
+[PCFG](pcfg.md) introduces chart items and weighted derivations. [Rule schemas](schema-chart-parser.md) instantiate reusable rules over a category inventory, and the [term autoencoder](term-autoencoder.md) learns vector representations of structured terms.
 
 ## Language feature map
 
@@ -42,14 +30,11 @@ particular statistical family.
 | per-row exact marginalization with gathered weights | [Latent Dirichlet Allocation](lda.md) | `over`, `via`, a gathered prior, and the per-token reduction |
 | program templates and subprogram calls | [Parametric Partial Pooling](parametric-pooling.md) | static object arguments, prefixed sites, labeled tuple return |
 | learned deterministic functions threaded by a scan | [Vanilla RNN LM](vanilla-rnn-lm.md) | per-position observation sites and maximum-likelihood training |
-| network kernel computation | [Bayesian Neural Network](bnn.md) | MLP parameter source and reference-machine boundary |
+| network [kernel](https://en.wikipedia.org/wiki/Markov_kernel) computation | [Bayesian Neural Network](bnn.md) | MLP parameter source and reference-machine boundary |
 | measure-algebra families | [Bayesian Semantics Case Study](bayesian-semantics-case-study.md) | heterogeneous `Mixture` value used for scoring and prediction |
 | finite collection traversal, indexed effects, nested computation calls, lexical uncertainty | [Lexical-Uncertainty RSA](qiec/lexical-uncertainty-rsa.qvr) | `map`/`fold` normalization, `traverse` over worlds and lexica, lexical marginalization, observed-or-predicted interpretation |
 
-The generated [transpilation support matrix](../transpile-support.md) records
-whether each measured source reaches each backend. A successful
-reference-machine run and a successful transpile are distinct claims; the
-examples state both where they differ.
+Execution by the reference evaluator and translation to a backend require different capabilities. A source can run in the reference evaluator even when a target cannot translate one of its operations.
 
 ## Integrated QIEC case study
 
@@ -66,7 +51,7 @@ examples state both where they differ.
 
 ## Regressions
 
-- [Bayesian Linear Regression](bayesian-regression.md): Normal likelihood with Normal-prior coefficients and a HalfCauchy noise scale, recovered by SVI and NUTS.
+- [Bayesian Linear Regression](bayesian-regression.md): Normal likelihood with Normal-prior coefficients and a HalfCauchy noise scale, recovered by [SVI](../guides/inference-svi.md) (stochastic variational inference) and [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler).
 - [Multi-Output Beta Regression](beta-regression.md): Beta response on the unit interval with a logit-link mean and a per-output precision.
 - [Gamma Regression](gamma-regression.md): log-link Gamma GLM with a per-category intercept, slope, and shape.
 - [Horseshoe Sparse Regression](horseshoe-regression.md): dense multiple regression whose coefficients carry the horseshoe's global-local shrinkage, recovering a sparse truth.
@@ -84,7 +69,7 @@ examples state both where they differ.
 
 - [Bayesian Factor Analysis](factor-analysis.md): latent factors and loadings with a free uniqueness per observed coordinate.
 - [Probabilistic Principal Component Analysis](ppca.md): the factor model with one isotropic noise scale, checked against its principal-subspace solution.
-- [Latent Dirichlet Allocation](lda.md): one topic per token, summed out exactly; checked against a per-token mixture and separated from a document-level one.
+- [Latent Dirichlet Allocation](lda.md): one topic per token, summed out exactly. Checked against a per-token mixture and separated from a document-level one.
 - [Bayesian Gaussian Mixture Model](mixture-model.md): mixing weights, locations, and scales inferred under a closed-form mixture likelihood.
 - [Variational Autoencoder](vae.md): a neural decoder fitted with an amortized encoder guide.
 - [Bayesian Neural Network](bnn.md): a one-hidden-layer tanh regression network whose weights are sample sites.
@@ -95,13 +80,13 @@ examples state both where they differ.
 
 ## State-space and time-series models
 
-- [AR(1) Time Series](ar1.md): the first-order autoregressive model under its exact stationary likelihood.
+- [AR(1) Time Series](ar1.md): the first-order autoregressive model under its likelihood conditional on the first observation.
 - [Bayesian Change-Point Detection](changepoint.md): a Poisson rate switching at a discrete change point that is marginalized exactly.
-- [Stochastic Volatility](stochastic-volatility.md): a coupled log-volatility path from a stationary start; the joint is checked, parameter recovery is not demonstrated.
+- [Stochastic Volatility](stochastic-volatility.md): a coupled log-volatility path from a stationary start. The joint is checked, parameter recovery is not demonstrated.
 - [Linear-Gaussian State-Space Model](linear-gaussian-ssm.md): a scanned state path whose NUTS posterior matches the Rauch-Tung-Striebel smoother.
 - [Hidden Markov Model](hmm.md): a discrete chain summed out by the forward algorithm, checked against path enumeration and fitted by maximum likelihood.
 - [Continuous State-Space Model](continuous-hmm.md): a Gaussian Markov chain with state-dependent noise, whose posterior mode matches the smoother at linear-Gaussian weights.
-- [Deep Markov Model](deep-markov.md): network-parameterized transition and emission kernels threaded by a scan; the joint is checked, inference is not demonstrated.
+- [Deep Markov Model](deep-markov.md): network-parameterized transition and emission kernels threaded by a scan. The joint is checked, inference is not demonstrated.
 
 ## Language models
 

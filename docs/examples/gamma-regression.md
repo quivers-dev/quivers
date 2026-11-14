@@ -8,8 +8,7 @@ A Bayesian [Gamma](https://en.wikipedia.org/wiki/Gamma_distribution)
 concentrations. Each of K = 3 categories has its own intercept, slope, and
 shape. The log link sets the mean `mu = exp(eta)`, and the shape `nu` fixes the
 coefficient of variation at `1 / sqrt(nu)`, so the variance `mu**2 / nu` grows
-with the square of the mean. That constant coefficient of variation is what
-separates a Gamma GLM from a log-Normal or Normal regression on the same data.
+with the square of the mean. A constant-variance Normal regression does not have this mean-variance relationship. A log-Normal regression with fixed log-scale also has constant coefficient of variation, so that property alone does not distinguish it from a Gamma GLM.
 
 ## QVR source
 
@@ -61,7 +60,7 @@ export gamma_regression
 A Gamma observation is a strictly positive amount. Under the
 `Gamma(concentration, rate)` convention its mean is `concentration / rate` and
 its variance is `concentration / rate**2`. Setting `concentration = nu` and
-`rate = nu / mu` therefore gives mean `mu` and variance `mu**2 / nu`: the
+`rate = nu / mu` thus gives mean `mu` and variance `mu**2 / nu`: the
 regression controls the mean through `eta`, while the shape controls how
 dispersed the responses are around it, independently of the mean.
 
@@ -80,18 +79,12 @@ family's rate parameter. The Gamma(2, 0.5) prior on the shape has mean 4 and a
 long right tail, so it admits both very noisy responses (`nu` near 1, an
 exponential-like spread) and tightly concentrated ones.
 
-The program returns `beta_1`, a `Cat`-indexed plate of real scalars, so the
-declared codomain is `Val : Real 1`: the per-row value space of the returned
-coefficients. `Resp` names the plate extent of the response and appears in the
-signature only as the domain.
+`return beta_1` exposes one real slope per category. `Cat` indexes those slopes, and `Resp` indexes observations.
 
 ## Try it
 
 The blocks below simulate from the model, check the compiled log joint against
-a hand-written density, and then recover the parameters with SVI and NUTS. The
-program reads its data by name, so its input `x_in` is a single dummy row: that
-leading axis is a particle axis, and a longer one would score the whole data
-set once per row.
+a hand-written density, and then recover the parameters with [SVI](../guides/inference-svi.md) (stochastic variational inference) and [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler). The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
@@ -153,7 +146,7 @@ assert torch.allclose(compiled, oracle, rtol=1e-5)
 
 ### SVI fit
 
-A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by
 [`SVI`](../api/inference/svi.md). With 100 rows per category, the posterior
 standard deviation of a coefficient is at most about `1 / sqrt(nu * N)`, roughly
 0.07 for the noisiest category, so the check asks every coefficient's posterior
@@ -208,15 +201,6 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-Each response row is a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category)
-of the [Giry monad](https://doi.org/10.1007/BFb0092872) from the row's covariate
-and category to the positive reals: the deterministic link `x |-> exp(eta)`
-followed by the `Gamma(nu, nu / mu)` kernel. The plate gathers
-`beta_0[cat_idx]` and `shape[cat_idx]` are pullbacks of the `Cat`-indexed
-plates along the index map `Resp -> Cat` carried by the runtime index, so the
-joint is the tensor product of the per-row kernels over `Resp`, conditional on
-the per-category parameters. [@giry1982categorical]
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. Given the category parameters, each response uses the deterministic link `mu = exp(eta)` followed by `Gamma(nu, nu / mu)`. The gathers `beta_0[cat_idx]` and `shape[cat_idx]` reindex the category parameters along `Resp -> Cat`: each response reads the parameters of its category. Conditional independence gives the product of these response kernels over `Resp`.
 
-## Sources and further reading
-
-- *Generalized Linear Models* [@nelder1972glm].
+Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative].

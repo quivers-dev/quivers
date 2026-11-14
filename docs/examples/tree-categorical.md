@@ -104,13 +104,13 @@ A binary tree assigns a probability to a leaf by multiplying the branch probabil
 
 Each verb has its own three split logits, drawn around shared population logits $a_s$ with spread $\sigma_v$. The data inform each verb's logits through that verb's responses, and the population logits through all verbs together.
 
-The model has no free per-class offset. With one, the four class offsets could absorb any change in the population split logits and leave the likelihood unchanged, so the splits would not be identified; and since the tree's leaf probabilities already sum to one, an offset would also require renormalizing. Keeping the tree as the only source of class probabilities makes every parameter identified from per-verb class frequencies.
+The model has no separate offset for each class. Such offsets would require renormalization and could trade off with the population split logits. Interior class probabilities determine the three split probabilities, but they do not separately identify each population logit, scale, and standardized verb effect. The hierarchical priors regularize that decomposition.
 
 ## Walkthrough
 
 ### What the four objects name
 
-`Verb` indexes the verbs and `Class` the four leaves. `Resp` is the plate of observed class labels, and the host datum `verb_idx` maps each label to its verb. `LeafProb : Real 4` is the value space of the returned rows of leaf probabilities, one real coordinate per class.
+`Verb` indexes the verbs and `Class` the four leaves. `Resp` is the [plate](https://en.wikipedia.org/wiki/Plate_notation) of observed class labels, and the input datum `verb_idx` maps each label to its verb. `LeafProb : Real 4` is the value space of the returned rows of leaf probabilities, one real coordinate per class.
 
 ### Split logits
 
@@ -142,11 +142,11 @@ The multi-binder form `factor v_1 : I_1, ..., v_n : I_n in <body>` constructs a 
 
 ### Why factor and not a plate
 
-A plate-bound draw such as `sample e_root : Verb <- Normal(...)` and a factor expression are not interchangeable. The plate draws an `|Verb|`-shaped tensor of independent samples from one kernel; the factor evaluates a deterministic body once per index and assembles the results. Use `factor` when cells need different expressions in upstream latents, as the four leaves do here.
+A plate-bound draw such as `sample e_root : Verb <- Normal(...)` and a factor expression are not interchangeable. The plate draws an `|Verb|`-shaped tensor of independent samples from one [kernel](https://en.wikipedia.org/wiki/Markov_kernel). The factor evaluates a deterministic body once per index and assembles the results. Use `factor` when cells need different expressions in upstream latents, as the four leaves do here.
 
 ## Try it
 
-The blocks below simulate labels from the model, check the compiled joint against a hand-written Categorical log density, fit by SVI and check the recovered leaf probabilities, and run a short NUTS chain on the same joint. The program's scalar sites (the population logits and `sigma_v`) combine with `Verb`-shaped sites, so the program input is a single row, `torch.zeros(1, 1)`; the `Resp` plate's extent comes from the observed labels.
+The blocks below simulate labels from the model, check the compiled joint against a hand-written Categorical log density, fit by [SVI](../guides/inference-svi.md) (stochastic variational inference) and check the recovered leaf probabilities, and run a short [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler) chain on the same joint. The program's scalar sites (the population logits and `sigma_v`) combine with `Verb`-shaped sites, so the program input is a single row, `torch.zeros(1, 1)`. The `Resp` plate's extent comes from the observed labels.
 
 ### Generating synthetic data
 
@@ -268,7 +268,7 @@ The split tolerance reflects that the population logits are informed by only 12 
 
 ### NUTS posterior
 
-[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets the same joint; every site has an explicit prior, so no parameter lift is needed. The chain below is short; a real analysis would run several chains and check their diagnostics.
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets the same joint. Every site has an explicit prior, so no parameter lift is needed. The chain below is short. A real analysis would run several chains and check their diagnostics.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel

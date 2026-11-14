@@ -4,7 +4,7 @@
 # Logistic distribution rather than the conventional Normal. The
 # Logistic distribution is symmetric and unimodal with
 # exponential tails, which are heavier than Gaussian tails. It
-# is thus a simple robust alternative when the response has
+# is thus a heavier-tailed alternative when the response has
 # more tail mass than a Normal error model allows.
 #
 # Generative structure:

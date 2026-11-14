@@ -94,10 +94,10 @@ Poisson branch, so its probability is `1 - pi_zero`. The body is evaluated at `z
 `rate`. The two log densities are combined by log-sum-exp with log weights
 `log(pi_zero)` and `log(1 - pi_zero)`, which both execution paths and every
 target that renders the block compute from the logit as `log sigmoid(eta_zero)`
-and `log sigmoid(-eta_zero)`; a probability formed with `sigmoid` in a `let`
+and `log sigmoid(-eta_zero)`. A probability formed with `sigmoid` in a `let`
 would lose its complement's digits in single precision once `|eta_zero|` passes
 about 10. For a positive count the first branch has
-log density `-inf`; log-sum-exp discards it and leaves
+log density `-inf`. Log-sum-exp discards it and leaves
 `log(1 - pi_zero) + log Poisson(y | rate)`, with finite gradients. Writing the
 gate as `real(z) * rate` rather than `(1 - s) * rate` with a structural-zero indicator
 `s` also lets a transpiler fold the off atom's rate to the literal `0`, so no
@@ -105,15 +105,13 @@ target differentiates `0 * rate` at a positive count.
 
 The gate is a `Bernoulli` indicator, whose value is a `Bool`. `real(z)` maps it to the number `0` or `1`, so on the two atoms the gated rate is exactly `0` or `rate`.
 
-The program returns `beta_rate`, an `Out`-indexed plate of real scalars, so the declared codomain is `Val : Real 1`: the per-row value space of the returned coefficients. `Resp` names the flattened response plate (200 rows for each of the two outputs) and appears in the signature only as the domain.
+`return beta_rate` exposes one real rate slope per output. `Resp` indexes the flattened response table, with 200 observations for each of two outputs.
 
 ## Try it
 
 The blocks below simulate ZIP data, check the compiled marginal against the
-closed-form ZIP log likelihood, and then recover the parameters with SVI and
-NUTS. The program reads its data by name, so its input `x_in` is a single dummy
-row: that leading axis is a particle axis, and a longer one would score the
-whole data set once per row.
+closed-form ZIP log likelihood, and then recover the parameters with [SVI](../guides/inference-svi.md) (stochastic variational inference) and
+[NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler). The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
@@ -183,7 +181,7 @@ assert all(torch.isfinite(g).all() for g in grads)
 
 ### SVI fit
 
-A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by
 [`SVI`](../api/inference/svi.md). The rate coefficients are well determined by
 the positive counts, with standard errors near 0.1, so they are checked to
 within 0.4 of the truth (about four standard errors). The structural-zero
@@ -255,8 +253,4 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-The marginalized indicator is a two-object coproduct: one summand maps to `Poisson(0)`, the Dirac kernel at zero, and the other to `Poisson(rate)`. The marginal is the convex combination of the two kernels with weights `(pi, 1 - pi)`, which log-sum-exp computes in log space. The family named at the head fixes those weights; the atoms it is scored on are fixed by the marginalization contract.
-
-## Sources and further reading
-
-- *Zero-Inflated Poisson Regression, With an Application to Defects in Manufacturing* [@lambert1992zip].
+The indicator has two outcomes. Conditional on the structural-zero outcome, the response [kernel](https://en.wikipedia.org/wiki/Markov_kernel) is `Poisson(0)`, a [Dirac measure](https://en.wikipedia.org/wiki/Dirac_measure) concentrated at zero. Conditional on the other outcome, it is `Poisson(rate)`. Marginalizing the indicator gives the convex combination of these kernels with weights `(pi, 1 - pi)` [@lambert1992zip]. The two outcomes form a disjoint union, or [coproduct](https://ncatlab.org/nlab/show/coproduct), of one-point spaces. The Bernoulli prior assigns their weights, and log-sum-exp computes the mixture in log space.

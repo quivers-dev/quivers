@@ -19,7 +19,7 @@
 #   a_n     = exp(gamma_0 + gamma_1 * x_n)       per-row first shape
 #   y_n     ~ Kumaraswamy(a_n, b)
 #
-# The predictor x is exogenous data supplied at fit time through
+# The predictor x is exogenous data provided at fit time through
 # the observations dict. Resp is the plate the responses are
 # observed over and Val is the value space of the returned
 # per-row shape.

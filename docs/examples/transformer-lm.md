@@ -74,27 +74,27 @@ h = u + \mathrm{Attn}(\mathrm{LN}(u)), \qquad
 z_t = h_t + \mathrm{FF}(\mathrm{LN}(h_t)),
 $$
 
-and scores the token after position $t$ under $\mathrm{softmax}(W_o \mathrm{LN}(z_t) + b_o)$. In each of the two heads, position $i$ forms scores $q_i \cdot k_j / \sqrt{8}$ against the keys of positions $j \le i$, normalizes them by a softmax over those positions only, and takes the weighted sum of their values; the heads' outputs are laid end to end and projected. Because position $i$ reads nothing after it, the logits at position $i$ depend only on the tokens up to $i$, which is what makes it a language model: the next token is scored from its prefix.
+and scores the token after position $t$ under $\mathrm{softmax}(W_o \mathrm{LN}(z_t) + b_o)$. In each of the two heads, position $i$ forms scores $q_i \cdot k_j / \sqrt{8}$ against the keys of positions $j \le i$, normalizes them by a softmax over those positions only, and takes the weighted sum of their values. The heads' outputs are laid end to end and projected. Because position $i$ reads nothing after it, the logits at position $i$ depend only on the tokens up to $i$, which is what makes it a language model: the next token is scored from its prefix.
 
 Attention is the only stage that mixes positions. The embedding, the feed-forward block, and the readout act on each position separately, and the source runs them as [scans](../guides/dsl-declarations.md#scan-temporal-recurrence) whose cells ignore their state, `scan(..., outputs=all)`, which bind the whole sequence of per-position values. Each input row is one sequence of any length up to 32, the size of the position table.
 
 ## Walkthrough
 
-- `embed` and `lm_head` are affine `role=function` morphisms; `ff` is a one-hidden-layer network of width 32 with `relu`, from `param_source=mlp(32)`.
-- `positions` adds the `t`-th row of a learned 32-row table to position `t`; `attn` is two-head causal self-attention. Both are sequence functions: they are called in a `let` on the whole table of positions, not one position at a time.
+- `embed` and `lm_head` are affine `role=function` morphisms. `ff` is a one-hidden-layer network of width 32 with `relu`, from `param_source=mlp(32)`.
+- `positions` adds the `t`-th row of a learned 32-row table to position `t`. `attn` is two-head causal self-attention. Both are sequence functions: they are called in a `let` on the whole table of positions, not one position at a time.
 - `embed_step` returns the embedding and ignores `s_prev`, so `define embedded = scan(embed_step, outputs=all)` is the embedding applied at every position.
-- `let h = u + attn(layer_norm(u))` is the attention sublayer with its residual; `layer_norm` normalizes each row.
-- `head_step` applies the feed-forward sublayer with its residual, the final layer norm, and the readout to one position, and observes `next_token` there; `scored(h)` runs it along `h`.
-- Every weight is a point estimate: the program has no sample site, and its log joint is the log likelihood of the next tokens.
-- No transpile target lowers a scan, so every target refuses this program with `scan:no-lowering`. The program runs on the PyTorch runtime and the reference machine.
+- `let h = u + attn(layer_norm(u))` is the attention sublayer with its residual. `layer_norm` normalizes each row.
+- `head_step` applies the feed-forward sublayer with its residual, the final layer norm, and the readout to one position, and observes `next_token` there. `scored(h)` runs it along `h`.
+- Every weight is a point estimate: the program has no [sample site](../guides/inference-foundations.md#trace-and-sample-sites), and its log joint is the log likelihood of the next tokens.
+- The program runs on the PyTorch runtime and the [reference evaluator](../developer/qiec.md#reference-evaluator). Backend coverage is recorded in the [support matrix](../transpile-support.md).
 
 ## Try it
 
-The checks below come from a verification script whose tolerances were fixed before it was first run. The first block checks the log joint against an independent implementation, the second checks causality, and the third fits the model on a task that needs attention.
+The first block checks the log joint against an independent implementation, the second checks causality, and the third fits the model on a task that needs attention.
 
 ### The log joint against a hand-written Transformer
 
-`oracle` recomputes one sequence's log joint from the compiled weights with plain Python loops over positions, heads, and coordinates, in float64. The weights are first scrambled to standard deviation 0.5, so that every sublayer moves the result. On sequences of lengths 1, 5, 9, and 12 and on a batch of two runs of length 7, the compiled runtime (float32) must match the oracle to a relative 1e-5 and the reference machine, given the same weights as data, to 1e-9. Three wrong oracles must each differ from the right one by more than 1e-5 on every sequence: one without the causal mask, one whose mask lets each position see one position ahead, and one without position vectors. On a single position every mask is the same mask, so there only the position check applies.
+`oracle` recomputes one sequence's log joint from the compiled weights with plain Python loops over positions, heads, and coordinates, in float64. The weights are first scrambled to standard deviation 0.5, so that every sublayer moves the result. On sequences of lengths 1, 5, 9, and 12 and on a batch of two runs of length 7, the compiled runtime (float32) must match the reference calculation to a relative 1e-5 and the reference machine, given the same weights as data, to 1e-9. Three alternative calculations must each differ from the right one by more than 1e-5 on every sequence: one without the causal mask, one whose mask lets each position see one position ahead, and one without position vectors. On a single position every mask is the same mask, so there only the position check applies.
 
 ```python
 import math
@@ -262,9 +262,9 @@ assert all(unchanged[:5]) and not any(unchanged[5:])
 
 ### Maximum-likelihood fitting on a task that needs attention
 
-Each training sequence repeats a random three-token pattern, so from position 2 on the next token is the token two positions back. A model that scores one position from that position's own token and place cannot predict it; a model that attends to earlier positions can. The model is fitted by Adam (learning rate 0.01) for 400 steps, each on a fresh batch of 24 sequences of length 9, and the check, fixed in advance, is the mean negative log likelihood over positions 2 and on of 32 held-out sequences: below 0.1 nats for the model, and above 1.0 nats for the same program with the line `let h = u + attn(layer_norm(u))` replaced by `let h = u`, fitted the same way. A uniform predictor scores $\log 8 \approx 2.08$.
+Each training sequence repeats a random three-token pattern, so from position 2 on the next token is the token two positions back. A model that scores one position from that position's own token and place cannot predict it. A model that attends to earlier positions can. The model is fitted by Adam (learning rate 0.01) for 400 steps, each on a fresh batch of 24 sequences of length 9, and the criterion is the mean negative log likelihood over positions 2 and on of 32 held-out sequences: below 0.1 nats for the model, and above 1.0 nats for the same program with the line `let h = u + attn(layer_norm(u))` replaced by `let h = u`, fitted the same way. A uniform predictor scores $\log 8 \approx 2.08$.
 
-The first design of this experiment failed its check, and the experiment was changed before this one was run. It fitted a fixed set of 24 sequences for 300 steps. The model memorized them (training NLL 0.14 nats per token) and did worse than chance on held-out sequences, 2.78 nats against the 0.1 threshold, while the control passed at 5.93. Drawing a fresh batch at every step, so that no sequence is seen twice, is the change; the thresholds are those of the first design. Under it the model scores 0.0028 nats on the held-out positions and the control 2.10. Fitting both took about seventeen minutes on the machine the check was run on, since the runtime evaluates each sequence's scans separately.
+With a fixed corpus of 24 sequences and 300 training steps, the model reaches training NLL 0.14 nats per token but fails the held-out threshold: 2.78 nats against 0.1. The control scores 5.93, above its required 1.0. With a freshly sampled batch at each step and 400 training steps, the model scores 0.0028 nats and the control 2.10 on held-out positions. Fresh sampling reduces memorization of a fixed corpus, though a finite pattern space permits repeated sequences.
 
 ```python
 def corpus(count, length, generator):
@@ -313,11 +313,6 @@ assert without_attention > 1.0
 
 ## Categorical perspective
 
-Every stage is a deterministic morphism, a Dirac kernel in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]. The per-position stages are maps of a single position lifted to sequences, which is what a scan whose cell ignores its state computes. Self-attention is not such a lift: it is a map on sequences whose value at position $i$ factors through the prefix ending at $i$, and the causality check above is a direct test of that factorization. The observation at each position is the only factor that weights a run.
+A deterministic function defines a [Dirac kernel](https://en.wikipedia.org/wiki/Dirac_measure), which puts all probability at its output. A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical].
 
-## Sources and further reading
-
-- *Attention is all you need* [@vaswani2017attention].
-- *On layer normalization in the Transformer architecture* [@xiong2020layer].
-- *Layer normalization* [@ba2016layer].
-- *A categorical approach to probability theory* [@giry1982categorical].
+The positionwise stages are functions lifted to sequences: each applies the same map to one position. Self-attention instead reads a table of positions. Its causal mask restricts the output at position $i$ to the prefix ending at $i$, and the causality check compares outputs after perturbing a suffix. Observations multiply the predicted token probabilities into the run weight. The scored transition is a subprobability [kernel](https://en.wikipedia.org/wiki/Markov_kernel) because each token probability is at most one. It belongs to the extension that permits mass below one, rather than to the probability-kernel category itself [@staton2017commutative].

@@ -1,5 +1,15 @@
 # Bayesian Linear Regression
 
+## Overview
+
+[Bayesian linear regression](https://en.wikipedia.org/wiki/Bayesian_linear_regression) places priors on the coefficients of a linear model and conditions on observed responses:
+
+$$
+\sigma \sim \mathrm{HalfCauchy}(2),\quad \beta_0 \sim \mathcal{N}(0, 5),\quad \beta_1 \sim \mathcal{N}(0, 2),\quad y_n \mid x_n \sim \mathcal{N}(\beta_0 + \beta_1\,x_n,\ \sigma).
+$$
+
+Here each Normal is parameterized by its mean and standard deviation. The predictor $x$ is exogenous input data provided alongside the response at fit time. The runtime binds free identifiers in `let` expressions from undeclared keys in the observations mapping.
+
 ## QVR source
 
 ```qvr
@@ -17,7 +27,7 @@
 #   beta_1  ~ Normal(0, 2)               slope
 #   y_n     ~ Normal(beta_0 + beta_1 * x_n, sigma)
 #
-# The predictor x is exogenous data: an (N,) tensor supplied at
+# The predictor x is exogenous data: an (N,) tensor provided at
 # fit time via the observations dict alongside the response y.
 # The runtime's host-data channel binds free variables in let
 # expressions from undeclared keys in the observations dict.
@@ -38,16 +48,6 @@ program bayesian_regression : Resp -> Val
 export bayesian_regression
 ```
 
-## Overview
-
-[Bayesian linear regression](https://en.wikipedia.org/wiki/Bayesian_linear_regression) places priors on the coefficients of a linear model and conditions on observed responses:
-
-$$
-\sigma \sim \mathrm{HalfCauchy}(2),\quad \beta_0 \sim \mathcal{N}(0, 5),\quad \beta_1 \sim \mathcal{N}(0, 2),\quad y_n \mid x_n \sim \mathcal{N}(\beta_0 + \beta_1\,x_n,\ \sigma).
-$$
-
-The predictor $x$ is exogenous host data supplied alongside the response at fit time; the runtime binds free identifiers in `let` expressions from undeclared keys in the observations dict.
-
 ## Understanding the model
 
 Suppose `x` is study time and `y` is a test score. The intercept describes
@@ -56,20 +56,20 @@ unit of study time, and `sigma` describes variation around the line. The
 model puts distributions on all three because finite data leave them uncertain.
 
 Each [posterior draw](../tutorials/python/05-variational-inference.md#posterior-inference) specifies a possible line and noise level. Comparing
-slopes across draws gives uncertainty about the association; generating a
+slopes across draws gives uncertainty about the association. Generating a
 [new response](../tutorials/python/08-analysis-pipelines.md#posterior-predictive-checks) adds observation noise as well. An interval for a future score
 is thus different from an interval for the mean line. Neither calculation
 alone establishes a causal effect of study time.
 
 ## Walkthrough
 
-`object Resp : FinSet 64` declares the response index: a 64 element finite set that the observed response is indexed by, so `y` carries one row per element and has shape `(64,)`. A `FinSet` names the plate, not the values on it; the value type of `y` comes from the family it is observed under, and `Normal` makes those values real. `object Val : Real 1` names the value space the program returns: `return y` hands back a plate of real scalars, so the codomain is the per-row value space `Real 1`, not the index set `Resp`. The signature `program bayesian_regression : Resp -> Val` is thus a [Kleisli morphism](https://ncatlab.org/nlab/show/Kleisli+category) in the [probability monad](https://ncatlab.org/nlab/show/probability+monad) that scores observed responses under the model's joint kernel.
+`Resp : FinSet 64` indexes the 64 observed responses. The Normal family determines their real-valued type, and `return y` returns those responses. `Val : Real 1` records the scalar type in the declared output annotation. The [program guide](../guides/dsl-programs-and-lets.md) explains how index annotations and value types differ.
 
 The three `sample` lines draw the prior parameters as global scalars: `sample sigma <- HalfCauchy(2.0)` puts a heavy-tailed positive prior on the noise scale, and `sample beta_0 <- Normal(0.0, 5.0)`, `sample beta_1 <- Normal(0.0, 2.0)` give the intercept and slope independent Gaussian priors with a wider spread on the intercept than on the slope.
 
-`let mu = beta_0 + beta_1 * x` builds the linear predictor. `x` is not declared as a sample site or a program parameter; it is a free identifier resolved at run time from the host-data channel (the `observations` dict).
+`let mu = beta_0 + beta_1 * x` builds the linear predictor. `x` is not declared as a [sample site](../guides/inference-foundations.md#trace-and-sample-sites) or a program parameter. It is a free identifier resolved at run time from the host-data channel (the `observations` dict).
 
-`observe y : Resp <- Normal(mu, sigma)` scores the observed response under the Gaussian likelihood, accumulating $\log p(y \mid \mu, \sigma)$ into the program's score effect. `return y` projects the program's joint kernel onto the response site, and `export bayesian_regression` makes the program addressable from the loader.
+`observe y : Resp <- Normal(mu, sigma)` scores the observed response under the Gaussian likelihood, accumulating $\log p(y \mid \mu, \sigma)$ into the program's score effect. `return y` projects the program's joint [kernel](https://en.wikipedia.org/wiki/Markov_kernel) onto the response site, and `export bayesian_regression` makes the program addressable from the loader.
 
 ## DSL features
 
@@ -77,17 +77,14 @@ The three `sample` lines draw the prior parameters as global scalars: `sample si
 - **`<-` (bind)**: Samples a random variable from a distribution. Subsequent statements can depend on the sampled value.
 - **Distribution constructors**: `Normal`, `HalfCauchy`, `Exponential`, `Beta`, `Categorical`, etc.
 - **`let`**: Deterministic computation over random variables. The result is a derived random variable.
-- **`observe`**: Scores supplied data, multiplying the unnormalized model weight by the observation likelihood. Inference approximates the normalized posterior.
+- **`observe`**: Scores provided data, multiplying the unnormalized model weight by the observation likelihood. Inference approximates the normalized posterior.
 - **`return`**: Designates the program's output value.
 - **Arithmetic on random variables**: `+`, `-`, `*`, `/` are supported directly.
 
 ## Try it
 
 The blocks below simulate from the model, check the compiled log joint against
-a hand-written density, and then recover the parameters with SVI and NUTS. The
-program reads its data by name, so its input `x_in` is a single dummy row: that
-leading axis is a particle axis, and a longer one would score the whole data
-set once per row.
+a hand-written density, and then recover the parameters with [SVI](../guides/inference-svi.md) (stochastic variational inference) and [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler). The input `x_in` has one row, representing one [run over the full data set](../guides/inference-foundations.md#input-rows-are-independent-runs).
 
 ### Generating synthetic data
 
@@ -129,7 +126,7 @@ assert torch.allclose(compiled, oracle, rtol=1e-5)
 
 ### SVI fit
 
-A mean-field [`AutoNormalGuide`](../api/inference/guide.md) is fit by
+A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by
 [`SVI`](../api/inference/svi.md). With 64 rows and noise scale 0.5, the coefficients' standard errors are near
 `0.5 / sqrt(64) = 0.0625` and the noise scale's near `0.5 / sqrt(128) = 0.044`,
 so the tolerances are four standard errors: 0.25 for each coefficient and 0.18
@@ -179,11 +176,13 @@ print(f"divergences: {int(result.divergence_counts.sum())}")
 
 ## Categorical perspective
 
-A probabilistic program is a Kleisli morphism $A \to TB$ in the probability monad, where $T$ maps a set to its space of distributions. The `<-` bind operator is Kleisli composition: running $f : A \to TB$ and then $g : B \to TC$ yields $(g \circ_K f) : A \to TC$. In this example, the prior (sampling $\beta_0$, $\beta_1$, $\sigma$) composes with the likelihood ($\mathrm{Normal}(\mu, \sigma)$) via monadic bind, producing a joint distribution over parameters and observations. The `observe` statement weights this joint by the supplied observation density. Normalization defines the posterior $P(\theta \mid y) \propto P(y \mid \theta) \cdot P(\theta)$ by Bayes' rule; executing the statement alone does not compute that normalization. Scored computations are thus interpreted as weighted measures, not necessarily normalized probability kernels. Inference algorithms (VI, MCMC) are computational methods for evaluating the resulting integrals.
+A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. Writing $T B$ for the space of probability measures on $B$, sampling from $f : A \to T B$ and then from $g : B \to T C$ gives their composite $g \circ_K f : A \to T C$. The prior draws of $\beta_0$, $\beta_1$, and $\sigma$ compose with the Normal response kernel to define a joint distribution over parameters and observations.
+
+Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative]. Bayes' rule defines the posterior $P(\theta \mid y) \propto P(y \mid \theta)P(\theta)$ when the normalizing constant is finite and positive. Executing `observe` does not compute that constant. Variational inference and MCMC approximate quantities under this posterior.
 
 ## Graphical-model view
 
-A probabilistic program is a procedural encoding of a graphical model. Each `<-` statement is a node; each `observe` statement is an observed variable. In this example: $\beta_0$, $\beta_1$, and $\sigma$ are root nodes (no parents), $\mu$ is computed from $\beta_0$, $\beta_1$, and $x$, and $y$ depends on $\mu$ and $\sigma$.
+A probabilistic program is a procedural encoding of a graphical model. Each `<-` statement is a node. Each `observe` statement is an observed variable. In this example: $\beta_0$, $\beta_1$, and $\sigma$ are root nodes (no parents), $\mu$ is computed from $\beta_0$, $\beta_1$, and $x$, and $y$ depends on $\mu$ and $\sigma$.
 
 The same model specification can be fitted with SVI, HMC, or NUTS.
 
