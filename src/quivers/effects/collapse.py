@@ -153,7 +153,12 @@ class CollapseHandler(EffectHandler):
             return Forward()
 
         runtime = RuntimeHandler(
-            definition, {RANDOM_SAMPLE: RuntimeClause(sample, run.validator)}
+            definition,
+            {
+                RANDOM_SAMPLE: RuntimeClause(
+                    invoke=sample, result_validator=run.validator
+                )
+            },
         )
         return (Installation(kernel.random, runtime),)
 

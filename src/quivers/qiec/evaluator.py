@@ -16,12 +16,12 @@ handler boundary.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from collections.abc import Callable, Hashable, Mapping
+from dataclasses import dataclass, replace
 
 import didactic.api as dx
 
-from quivers._values import OPAQUE_BY_VALUE
+from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec._models import QiecModel
 from quivers.qiec.effects import (
     EffectRequest,
@@ -246,9 +246,11 @@ class RuntimeConstructor:
     result_type: TypeExpr
 
 
-@dataclass(frozen=True, slots=True)
-class AttachmentBinding:
+class AttachmentBinding(QiecModel):
     """One host value attached to an otherwise serializable core term.
+
+    The value and validator retain identity; its checked type compares
+    by value.
 
     ``duplicable`` is a semantic assertion about the host value, not merely a
     promise that ``copy.copy`` happens to work.  Multi-shot resumptions reject
@@ -266,15 +268,16 @@ class AttachmentBinding:
         Whether an unrestricted resumption may capture the value.
     """
 
-    value: object
-    type: TypeExpr
-    validator: RuntimeValidator
+    value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    validator: RuntimeValidator = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     duplicable: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeClause:
+class RuntimeClause(QiecModel):
     """Executable operation clause and validator for the resumed value.
+
+    Both executable callables retain identity.
 
     Parameters
     ----------
@@ -285,8 +288,10 @@ class RuntimeClause:
         The predicate every value resumed through this clause must pass.
     """
 
-    invoke: OperationClause
-    result_validator: RuntimeValidator
+    invoke: OperationClause = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    result_validator: RuntimeValidator = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
 def _identity_return(value: object, _context: ClauseContext) -> object:
@@ -450,9 +455,10 @@ class RuntimeHandler:
             raise InvalidHandlerError("a mutable duplicable handler needs fork_context")
 
 
-@dataclass(slots=True)
-class RuntimeAttachments:
+class RuntimeAttachments(QiecModel):
     """Process-local values and handlers keyed by stable core identifiers.
+
+    Each record owns fresh mutable tables whose identities survive updates.
 
     Parameters
     ----------
@@ -462,8 +468,12 @@ class RuntimeAttachments:
         Runtime handlers by handler identity.
     """
 
-    values: dict[AttachmentId, AttachmentBinding] = field(default_factory=dict)
-    handlers: dict[HandlerId, RuntimeHandler] = field(default_factory=dict)
+    values: dict[AttachmentId, AttachmentBinding] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    handlers: dict[HandlerId, RuntimeHandler] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def bind_value(
         self,
@@ -510,7 +520,9 @@ class RuntimeAttachments:
             If the validator rejects the value.
         """
         _validate(value, validator, type, f"attachment {attachment}")
-        binding = AttachmentBinding(value, type, validator, duplicable)
+        binding = AttachmentBinding(
+            value=value, type=type, validator=validator, duplicable=duplicable
+        )
         previous = self.values.get(attachment)
         if previous is not None:
             same_binding = (
@@ -553,9 +565,11 @@ class RuntimeAttachments:
         return id
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeRequest:
+class RuntimeRequest(QiecModel):
     """An evaluated request supplied to a process-local handler clause.
+
+    The core request and address compare by value. Host arguments retain
+    their tuple's identity and the live values it holds.
 
     Parameters
     ----------
@@ -571,10 +585,12 @@ class RuntimeRequest:
         recursive iterations yields two addresses.
     """
 
-    core: EffectRequest
-    arguments: tuple[object, ...]
+    core: EffectRequest = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    arguments: tuple[HeldValue, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     resumption_path: tuple[int, ...]
-    dynamic_path: tuple[DynamicAddressFrame, ...] = ()
+    dynamic_path: tuple[DynamicAddressFrame, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     @property
     def instance(self) -> EffectInstanceId:
@@ -625,9 +641,10 @@ class RuntimeRequest:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class ClauseComputation:
+class ClauseComputation(QiecModel):
     """Ask the evaluator to run a structural clause body outside the handler.
+
+    The computation compares by value; host bindings retain identity.
 
     Host values introduced by a handler must first be installed through
     :meth:`ClauseContext.attach`; arbitrary callback closures do not enter the
@@ -641,13 +658,16 @@ class ClauseComputation:
         Locals the computation refers to, each with its evaluated value.
     """
 
-    computation: Computation
-    bindings: tuple[tuple[Local, object], ...] = ()
+    computation: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    bindings: tuple[tuple[Local, HeldValue], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class Forward:
+class Forward(QiecModel):
     """Forward a request to an outer handler, optionally observing its reply.
+
+    The optional response hook retains identity.
 
     Parameters
     ----------
@@ -656,12 +676,15 @@ class Forward:
         resumed computation, or ``None`` to forward blindly.
     """
 
-    on_response: ResponseHook | None = None
+    on_response: ResponseHook | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class TailResume:
+class TailResume(QiecModel):
     """Resume a clause's continuation in place, on the machine's own stack.
+
+    The resumed host value retains identity, including tensor gradients.
 
     A foreign clause that answers with this resumes once, exactly as an
     authored ``resume(value)`` in tail position does: the captured frames
@@ -678,22 +701,24 @@ class TailResume:
         What the resumed operation supplies.
     """
 
-    value: object
+    value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
-class ContinuationFrame:
+class ContinuationFrame(QiecModel):
     """One frame of the reference evaluator's explicit continuation stack.
 
     The evaluator creates and consumes every frame. A handler clause sees
     frames only through the :class:`ClauseContext` and :class:`Resumption`
     the evaluator hands it, and never inspects or builds one itself; the
     class exists so those two constructors can name the stack they capture.
+
+    Frame subclasses compare checked kernel terms by value and retain live
+    environments, handler state, and callbacks by identity.
     """
 
     __slots__ = ()
 
 
-@dataclass(frozen=True, slots=True)
 class _BindFrame(ContinuationFrame):
     """A continuation frame awaiting the first half of a bind.
 
@@ -707,13 +732,14 @@ class _BindFrame(ContinuationFrame):
         The bindings in scope for ``then``.
     """
 
-    binder: Local
-    then: Computation
-    environment: Mapping[Local, object]
+    binder: Local = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    then: Computation = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    environment: Mapping[Local, HeldValue] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class _HandlerLifecycle:
+class _HandlerLifecycle(QiecModel):
     """One installation's finalization state, shared by every frame for it.
 
     Parameters
@@ -725,8 +751,10 @@ class _HandlerLifecycle:
         a list so frozen frames can share and update it.
     """
 
-    handler: RuntimeHandler
-    finalized: list[bool] = field(default_factory=lambda: [False])
+    handler: RuntimeHandler = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    finalized: list[bool] = dx.field(
+        default_factory=lambda: [False], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def exit(self) -> None:
         """Finalize the handler because its computation completed.
@@ -756,7 +784,6 @@ class _HandlerLifecycle:
             self.handler.on_drop()
 
 
-@dataclass(frozen=True, slots=True)
 class _HandlerFrame(ContinuationFrame):
     """A stack frame marking an installed handler.
 
@@ -772,10 +799,12 @@ class _HandlerFrame(ContinuationFrame):
         The bindings in scope where the handler was installed.
     """
 
-    instance: EffectInstanceId
-    lifecycle: _HandlerLifecycle
-    definition: HandlerDef
-    environment: Mapping[Local, object]
+    instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    lifecycle: _HandlerLifecycle = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    definition: HandlerDef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    environment: Mapping[Local, HeldValue] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     @property
     def handler(self) -> RuntimeHandler:
@@ -790,7 +819,6 @@ class _HandlerFrame(ContinuationFrame):
         return self.lifecycle.handler
 
 
-@dataclass(frozen=True, slots=True)
 class _ResponseHookFrame(ContinuationFrame):
     """A stack frame observing the answer to a forwarded request.
 
@@ -800,10 +828,9 @@ class _ResponseHookFrame(ContinuationFrame):
         Called with the answer as it passes back through this frame.
     """
 
-    hook: ResponseHook
+    hook: ResponseHook = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
-@dataclass(frozen=True, slots=True, eq=False)
 class _DelimiterFrame(ContinuationFrame):
     """Stop a nested clause evaluation before consuming its outer context.
 
@@ -811,6 +838,16 @@ class _DelimiterFrame(ContinuationFrame):
     installs its own delimiter, and a value reaching one must return to
     exactly the host frame that installed it.
     """
+
+    def _local_key(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
+        """Compare delimiters by the host invocation that installed them.
+
+        Returns
+        -------
+        tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]
+            The delimiter's identity and no recursive child values.
+        """
+        return ((id(self),), ())
 
 
 class _HostUnwind(BaseException):
@@ -839,7 +876,6 @@ class _HostUnwind(BaseException):
         self.value = value
 
 
-@dataclass(frozen=True, slots=True)
 class _CallFrame(ContinuationFrame):
     """A stack frame marking an entered named computation.
 
@@ -856,13 +892,14 @@ class _CallFrame(ContinuationFrame):
         The caller's bindings, restored when the call returns.
     """
 
-    callee: ComputationId
+    callee: ComputationId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     name: str
     serial: int
-    environment: Mapping[Local, object]
+    environment: Mapping[Local, HeldValue] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
 
-@dataclass(frozen=True, slots=True)
 class _InstanceFrame(ContinuationFrame):
     """A stack frame marking a live local effect instance.
 
@@ -875,11 +912,10 @@ class _InstanceFrame(ContinuationFrame):
         repeated allocations of one site reached through recursion.
     """
 
-    instance: EffectInstanceId
+    instance: EffectInstanceId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     serial: int
 
 
-@dataclass(frozen=True, slots=True)
 class _ClauseFrame(ContinuationFrame):
     """A stack frame beneath an authored clause body while it runs.
 
@@ -902,14 +938,15 @@ class _ClauseFrame(ContinuationFrame):
         the answer.
     """
 
-    resumption: Resumption
-    definition: HandlerDef
-    handler: RuntimeHandler
-    environment: Mapping[Local, object]
+    resumption: Resumption = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    definition: HandlerDef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    handler: RuntimeHandler = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    environment: Mapping[Local, HeldValue] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     resumption_path: tuple[int, ...]
 
 
-@dataclass(frozen=True, slots=True)
 class _AnswerFrame(ContinuationFrame):
     """A stack frame beneath an authored return clause body while it runs.
 
@@ -919,10 +956,9 @@ class _AnswerFrame(ContinuationFrame):
         The handler frame whose return clause is running.
     """
 
-    handler: _HandlerFrame
+    handler: _HandlerFrame = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
-@dataclass(frozen=True, slots=True)
 class _PathFrame(ContinuationFrame):
     """A stack frame restoring the resumption address after a shot.
 
@@ -935,8 +971,7 @@ class _PathFrame(ContinuationFrame):
     resumption_path: tuple[int, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class _Returned:
+class _Returned(QiecModel):
     """A value flowing back into the stack, as the machine's other state.
 
     Parameters
@@ -945,11 +980,10 @@ class _Returned:
         The host value being returned.
     """
 
-    value: object
+    value: HeldValue = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
 
-@dataclass(frozen=True, slots=True)
-class _Continue:
+class _Continue(QiecModel):
     """An instruction from dispatch to keep driving in the caller's loop.
 
     Parameters
@@ -962,8 +996,10 @@ class _Continue:
         The address to continue under.
     """
 
-    current: Computation | _Returned
-    environment: dict[Local, object]
+    current: Computation | _Returned = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    environment: dict[Local, HeldValue] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     resumption_path: tuple[int, ...]
 
 
@@ -2393,7 +2429,7 @@ class Evaluator:
             If a frame's finalizer or return clause fails.
         """
         return self._run(
-            _Returned(value), environment, stack, resumption_path, delimiter
+            _Returned(value=value), environment, stack, resumption_path, delimiter
         )
 
     def _run(  # noqa: C901, PLR0912, PLR0915
@@ -2455,7 +2491,7 @@ class Evaluator:
                         raise _HostUnwind(frame, value)
                     return value
                 if isinstance(frame, _ResponseHookFrame):
-                    current = _Returned(frame.hook(value))
+                    current = _Returned(value=frame.hook(value))
                     continue
                 if isinstance(frame, _BindFrame):
                     env = dict(frame.environment)
@@ -2495,7 +2531,7 @@ class Evaluator:
                         frame.definition.implementation == "authored"
                         and authored is not None
                     ):
-                        stack.append(_AnswerFrame(frame))
+                        stack.append(_AnswerFrame(handler=frame))
                         env = dict(frame.environment)
                         env[authored.binder] = value
                         current = authored.body
@@ -2514,7 +2550,7 @@ class Evaluator:
                         frame.lifecycle.drop()
                         raise
                     self._finish_handler(frame, answer)
-                    current = _Returned(answer)
+                    current = _Returned(value=answer)
                     env = dict(frame.environment)
                     continue
                 if isinstance(frame, _AnswerFrame):
@@ -2545,10 +2581,14 @@ class Evaluator:
                     continue
                 raise AssertionError(f"unknown evaluator frame {frame!r}")
             if isinstance(current, Return):
-                current = _Returned(self._value(current.value, env))
+                current = _Returned(value=self._value(current.value, env))
                 continue
             if isinstance(current, Bind):
-                stack.append(_BindFrame(current.binder, current.then, dict(env)))
+                stack.append(
+                    _BindFrame(
+                        binder=current.binder, then=current.then, environment=dict(env)
+                    )
+                )
                 current = current.first
                 continue
             if isinstance(current, Handle):
@@ -2570,10 +2610,10 @@ class Evaluator:
                 )
                 stack.append(
                     _HandlerFrame(
-                        current.instance,
-                        lifecycle,
-                        definition,
-                        dict(env),
+                        instance=current.instance,
+                        lifecycle=lifecycle,
+                        definition=definition,
+                        environment=dict(env),
                     )
                 )
                 current = current.computation
@@ -2673,7 +2713,12 @@ class Evaluator:
                     },
                 )
                 stack.append(
-                    _CallFrame(callee.id, callee.name, serial, caller_environment)
+                    _CallFrame(
+                        callee=callee.id,
+                        name=callee.name,
+                        serial=serial,
+                        environment=caller_environment,
+                    )
                 )
                 env = dict(zip(parameters, arguments, strict=True))
                 current = substitute_computation(callee.body, substitution)
@@ -2690,7 +2735,7 @@ class Evaluator:
                         "site": str(current.origin.site_id()),
                     },
                 )
-                stack.append(_InstanceFrame(current.instance, serial))
+                stack.append(_InstanceFrame(instance=current.instance, serial=serial))
                 current = current.body
                 continue
             if isinstance(current, Resume):
@@ -2708,21 +2753,21 @@ class Evaluator:
                     )
                 value = self._value(current.value, env)
                 shot_frames, shot_path = clause.resumption._begin_shot(value)
-                stack.append(_PathFrame(resumption_path))
+                stack.append(_PathFrame(resumption_path=resumption_path))
                 stack.extend(shot_frames)
                 env = dict(clause.resumption._captured_environment)
                 resumption_path = shot_path
-                current = _Returned(value)
+                current = _Returned(value=value)
                 continue
             if isinstance(current, Perform):
                 runtime_request = RuntimeRequest(
-                    current.request,
-                    tuple(
+                    core=current.request,
+                    arguments=tuple(
                         self._value(argument, env)
                         for argument in current.request.arguments
                     ),
-                    resumption_path,
-                    self._dynamic_path(stack),
+                    resumption_path=resumption_path,
+                    dynamic_path=self._dynamic_path(stack),
                 )
                 self._emit_trace(
                     "operation.requested",
@@ -2811,7 +2856,9 @@ class Evaluator:
         return RuntimeHandler(
             definition,
             {
-                clause.operation: RuntimeClause(_authored_clause, _accept)
+                clause.operation: RuntimeClause(
+                    invoke=_authored_clause, result_validator=_accept
+                )
                 for clause in definition.clauses
             },
             duplicable_context=True,
@@ -2966,11 +3013,11 @@ class Evaluator:
                 del stack[index:]
                 stack.append(
                     _ClauseFrame(
-                        resumption,
-                        definition,
-                        handler,
-                        frame.environment,
-                        request.resumption_path,
+                        resumption=resumption,
+                        definition=definition,
+                        handler=handler,
+                        environment=frame.environment,
+                        resumption_path=request.resumption_path,
                     )
                 )
                 self._emit_trace(
@@ -2985,7 +3032,11 @@ class Evaluator:
                 clause_environment.update(
                     zip(structural_clause.parameters, request.arguments, strict=True)
                 )
-                return _Continue(body, clause_environment, request.resumption_path)
+                return _Continue(
+                    current=body,
+                    environment=clause_environment,
+                    resumption_path=request.resumption_path,
+                )
             resumption = Resumption(
                 self,
                 request,
@@ -3017,12 +3068,12 @@ class Evaluator:
                     )
                 shot_frames, shot_path = resumption._begin_shot(answer.value)
                 del stack[index:]
-                stack.append(_PathFrame(request.resumption_path))
+                stack.append(_PathFrame(resumption_path=request.resumption_path))
                 stack.extend(shot_frames)
                 return _Continue(
-                    _Returned(answer.value),
-                    dict(resumption._captured_environment),
-                    shot_path,
+                    current=_Returned(value=answer.value),
+                    environment=dict(resumption._captured_environment),
+                    resumption_path=shot_path,
                 )
             if isinstance(answer, Forward):
                 if resumption.calls:
@@ -3039,7 +3090,7 @@ class Evaluator:
                 # outer handler, but an omega-only pristine snapshot is dead.
                 resumption._release_forward_seed()
                 if answer.on_response is not None:
-                    stack.append(_ResponseHookFrame(answer.on_response))
+                    stack.append(_ResponseHookFrame(hook=answer.on_response))
                 self._emit_trace(
                     "operation.forwarded",
                     {
@@ -3064,7 +3115,9 @@ class Evaluator:
                 resumption._close_handled_capture()
             del stack[index:]
             return _Continue(
-                _Returned(answer), dict(frame.environment), request.resumption_path
+                current=_Returned(value=answer),
+                environment=dict(frame.environment),
+                resumption_path=request.resumption_path,
             )
         self._emit_trace(
             "operation.unhandled",
@@ -3262,7 +3315,7 @@ class Evaluator:
                             f"fork_context for {frame.handler.definition.name!r} "
                             "returned the live mutable handler"
                         )
-                    clone_lifecycle = _HandlerLifecycle(clone)
+                    clone_lifecycle = _HandlerLifecycle(handler=clone)
                     try:
                         if clone.definition != frame.handler.definition:
                             raise InvalidHandlerError(
@@ -3279,13 +3332,13 @@ class Evaluator:
                         clone_lifecycle.drop()
                         raise
                 else:
-                    clone_lifecycle = _HandlerLifecycle(clone)
+                    clone_lifecycle = _HandlerLifecycle(handler=clone)
                 result.append(
                     _HandlerFrame(
-                        frame.instance,
-                        clone_lifecycle,
-                        frame.definition,
-                        frame.environment,
+                        instance=frame.instance,
+                        lifecycle=clone_lifecycle,
+                        definition=frame.definition,
+                        environment=frame.environment,
                     )
                 )
         except BaseException:
@@ -3332,7 +3385,7 @@ class Evaluator:
             if prototype.context_factory is not None
             else prototype
         )
-        lifecycle = _HandlerLifecycle(handler)
+        lifecycle = _HandlerLifecycle(handler=handler)
         try:
             if handler.definition != prototype.definition:
                 raise InvalidHandlerError(

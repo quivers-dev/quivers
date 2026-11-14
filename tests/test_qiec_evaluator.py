@@ -185,8 +185,10 @@ def _tracked_resource_handler(
         return RuntimeHandler(
             definition,
             {
-                STATE_GET: RuntimeClause(get, _int),
-                STATE_PUT: RuntimeClause(put, lambda value: value is None),
+                STATE_GET: RuntimeClause(invoke=get, result_validator=_int),
+                STATE_PUT: RuntimeClause(
+                    invoke=put, result_validator=lambda value: value is None
+                ),
             },
             input_validator=_int,
             output_validator=_int,
@@ -267,7 +269,7 @@ def test_deep_resumption_reinstalls_the_matching_handler() -> None:
 
     handler = RuntimeHandler(
         definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
         duplicable_context=True,
@@ -326,7 +328,7 @@ def test_clause_body_effects_run_only_in_the_outer_context() -> None:
 
     random_handler = RuntimeHandler(
         definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
         duplicable_context=True,
@@ -397,7 +399,7 @@ def test_clause_context_evaluate_finalizes_locally_installed_handlers(
 
     handler = RuntimeHandler(
         definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
     )
@@ -462,7 +464,7 @@ def test_clause_computation_finalizes_locally_installed_handlers(
 
     def clause(_request_value, _resume, _context):
         return ClauseComputation(
-            Handle(
+            computation=Handle(
                 instance=resource_instance,
                 handler=resource.definition.id,
                 computation=body,
@@ -471,7 +473,7 @@ def test_clause_computation_finalizes_locally_installed_handlers(
 
     handler = RuntimeHandler(
         definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         output_validator=_int,
     )
     _attach_handler(attachments, resource)
@@ -528,7 +530,7 @@ def test_resumption_finalizes_handlers_installed_after_execution_starts(
 
     handler = RuntimeHandler(
         definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
     )
@@ -617,13 +619,13 @@ def test_clause_body_cannot_recapture_itself_but_can_reach_outer_instance_handle
 
     outer = RuntimeHandler(
         outer_definition,
-        {RANDOM_SAMPLE: RuntimeClause(outer_clause, _int)},
+        {RANDOM_SAMPLE: RuntimeClause(invoke=outer_clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
     )
     inner = RuntimeHandler(
         inner_definition,
-        {RANDOM_SAMPLE: RuntimeClause(inner_clause, _int)},
+        {RANDOM_SAMPLE: RuntimeClause(invoke=inner_clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
     )
@@ -1494,8 +1496,10 @@ def test_multishot_branches_fork_from_one_pristine_handler_snapshot() -> None:
         return RuntimeHandler(
             state_definition,
             {
-                STATE_GET: RuntimeClause(get, _int),
-                STATE_PUT: RuntimeClause(put, lambda value: value is None),
+                STATE_GET: RuntimeClause(invoke=get, result_validator=_int),
+                STATE_PUT: RuntimeClause(
+                    invoke=put, result_validator=lambda value: value is None
+                ),
             },
             input_validator=_int,
             output_validator=_int,
@@ -1634,8 +1638,10 @@ def test_multishot_handler_contexts_finalize_exactly_once(
         return RuntimeHandler(
             definition,
             {
-                STATE_GET: RuntimeClause(get, _int),
-                STATE_PUT: RuntimeClause(put, lambda value: value is None),
+                STATE_GET: RuntimeClause(invoke=get, result_validator=_int),
+                STATE_PUT: RuntimeClause(
+                    invoke=put, result_validator=lambda value: value is None
+                ),
             },
             return_clause=finish,
             input_validator=_int,
@@ -1703,8 +1709,8 @@ def test_mutable_duplicable_handler_requires_a_fork_context() -> None:
             definition,
             {
                 RANDOM_SAMPLE: RuntimeClause(
-                    lambda _request, resume, _context: resume(1),
-                    _int,
+                    invoke=lambda _request, resume, _context: resume(1),
+                    result_validator=_int,
                 )
             },
             duplicable_context=True,
@@ -1797,7 +1803,7 @@ def test_resumption_grades_are_enforced_in_every_execution(
     )
     handler = RuntimeHandler(
         definition,
-        {RANDOM_SAMPLE: RuntimeClause(clause, _int)},
+        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         duplicable_context=True,
     )
     attachments = RuntimeAttachments()

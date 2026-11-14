@@ -780,11 +780,15 @@ def draw_handler(
             if draw is not None
             else _default_draw(sampleable)
         )
-        return TailResume(value)
+        return TailResume(value=value)
 
     return RuntimeHandler(
         definition,
-        {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)},
+        {
+            RANDOM_SAMPLE: RuntimeClause(
+                invoke=sample, result_validator=result_validator
+            )
+        },
         duplicable_context=duplicable_context,
     )
 
@@ -1105,7 +1109,11 @@ def enumerate_handler(
 
     return RuntimeHandler(
         definition,
-        {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)},
+        {
+            RANDOM_SAMPLE: RuntimeClause(
+                invoke=sample, result_validator=result_validator
+            )
+        },
         duplicable_context=True,
     )
 
@@ -1237,7 +1245,7 @@ def score_handler(
             local.total = combine(local.total, weight)
             if observer is not None:
                 observer(request, weight)
-            return TailResume(None)
+            return TailResume(value=None)
 
         def finish(value: object, _context: ClauseContext) -> object:
             """Answer the handled computation's return.
@@ -1264,7 +1272,7 @@ def score_handler(
 
         return RuntimeHandler(
             definition,
-            {SCORE_ADD: RuntimeClause(add, _unit)},
+            {SCORE_ADD: RuntimeClause(invoke=add, result_validator=_unit)},
             return_clause=finish,
             input_validator=answer_validator,
             output_validator=(
@@ -1564,7 +1572,7 @@ def condition_handler(
                 weight_validator,
                 role="condition-score",
             )
-            return TailResume(value)
+            return TailResume(value=value)
 
         def finish(value: object, _context: ClauseContext) -> object:
             """Answer the handled computation's return.
@@ -1599,7 +1607,11 @@ def condition_handler(
 
         return RuntimeHandler(
             definition,
-            {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)},
+            {
+                RANDOM_SAMPLE: RuntimeClause(
+                    invoke=sample, result_validator=result_validator
+                )
+            },
             return_clause=finish,
             mutable_context=True,
         )
@@ -1795,7 +1807,7 @@ def replay_handler(
                     weight_validator,
                     role="replay-score",
                 )
-            return TailResume(value)
+            return TailResume(value=value)
 
         def finish(value: object, _context: ClauseContext) -> object:
             """Answer the handled computation's return.
@@ -1828,7 +1840,11 @@ def replay_handler(
 
         return RuntimeHandler(
             definition,
-            {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)},
+            {
+                RANDOM_SAMPLE: RuntimeClause(
+                    invoke=sample, result_validator=result_validator
+                )
+            },
             return_clause=finish,
             mutable_context=True,
         )
@@ -1996,7 +2012,9 @@ def trace_handler(
                 handler's reply.
             """
             return Forward(
-                lambda result: recorder.record(request, result, mode="forwarded")
+                on_response=lambda result: recorder.record(
+                    request, result, mode="forwarded"
+                )
             )
 
         try:
@@ -2061,9 +2079,9 @@ def trace_handler(
                 assert hook is not None
                 return hook(result)
 
-            return Forward(validate_and_record)
+            return Forward(on_response=validate_and_record)
 
-        return RuntimeClause(checked_clause, validator)
+        return RuntimeClause(invoke=checked_clause, result_validator=validator)
 
     return RuntimeHandler(
         definition,
@@ -2190,7 +2208,7 @@ def state_handler(
                 If the request carries any argument.
             """
             _expect_arguments(request, 0, definition.name)
-            return TailResume(local.value)
+            return TailResume(value=local.value)
 
         def put(
             request: RuntimeRequest,
@@ -2223,7 +2241,7 @@ def state_handler(
             (new_value,) = _expect_arguments(request, 1, definition.name)
             _require(new_value, state_validator, state_type, "state update")
             local.value = new_value
-            return TailResume(None)
+            return TailResume(value=None)
 
         def finish(value: object, _context: ClauseContext) -> object:
             """Answer the handled computation's return.
@@ -2250,8 +2268,8 @@ def state_handler(
         return RuntimeHandler(
             definition,
             {
-                STATE_GET: RuntimeClause(get, state_validator),
-                STATE_PUT: RuntimeClause(put, _unit),
+                STATE_GET: RuntimeClause(invoke=get, result_validator=state_validator),
+                STATE_PUT: RuntimeClause(invoke=put, result_validator=_unit),
             },
             return_clause=finish,
             input_validator=answer_validator,
@@ -2375,7 +2393,7 @@ def abort_handler(
 
     return RuntimeHandler(
         definition,
-        {ABORT_ABORT: RuntimeClause(abort, result_validator)},
+        {ABORT_ABORT: RuntimeClause(invoke=abort, result_validator=result_validator)},
         output_validator=output_validator,
         duplicable_context=duplicable_context,
     )
@@ -2487,7 +2505,11 @@ def choose_handler(
 
     return RuntimeHandler(
         definition,
-        {CHOOSE_CHOOSE: RuntimeClause(choose, choice_validator)},
+        {
+            CHOOSE_CHOOSE: RuntimeClause(
+                invoke=choose, result_validator=choice_validator
+            )
+        },
         return_clause=lambda value, _context: (value,),
         input_validator=answer_validator,
         output_validator=(
@@ -2636,7 +2658,11 @@ def search_handler(
 
     return RuntimeHandler(
         definition,
-        {operation: RuntimeClause(choose, alternative_validator)},
+        {
+            operation: RuntimeClause(
+                invoke=choose, result_validator=alternative_validator
+            )
+        },
         return_clause=finish,
         duplicable_context=True,
     )
@@ -2787,7 +2813,7 @@ def weight_handler(
             _require(weight, weight_validator, weight_type, "semiring weight")
             local.contributions.append(weight)
             local.total = combine(local.total, weight)
-            return TailResume(None)
+            return TailResume(value=None)
 
         def finish(value: object, _context: ClauseContext) -> object:
             """Answer the handled computation's return.
@@ -2829,7 +2855,7 @@ def weight_handler(
 
         return RuntimeHandler(
             definition,
-            {WEIGHT_ADD: RuntimeClause(add, _unit)},
+            {WEIGHT_ADD: RuntimeClause(invoke=add, result_validator=_unit)},
             return_clause=finish,
             input_validator=answer_validator,
             output_validator=(
@@ -2940,11 +2966,15 @@ def draw_scoring_handler(
             weight_validator,
             role="draw-score",
         )
-        return TailResume(value)
+        return TailResume(value=value)
 
     return RuntimeHandler(
         definition,
-        {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)},
+        {
+            RANDOM_SAMPLE: RuntimeClause(
+                invoke=sample, result_validator=result_validator
+            )
+        },
     )
 
 
@@ -3030,10 +3060,15 @@ def intervene_handler(
         )
         if on_intervene is not None:
             on_intervene(request, value)
-        return TailResume(value)
+        return TailResume(value=value)
 
     return RuntimeHandler(
-        definition, {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)}
+        definition,
+        {
+            RANDOM_SAMPLE: RuntimeClause(
+                invoke=sample, result_validator=result_validator
+            )
+        },
     )
 
 
@@ -3125,9 +3160,11 @@ def reweight_handler(
             weight_validator,
             role=request.core.origin.origin.role,
         )
-        return TailResume(None)
+        return TailResume(value=None)
 
-    return RuntimeHandler(definition, {SCORE_ADD: RuntimeClause(add, _unit)})
+    return RuntimeHandler(
+        definition, {SCORE_ADD: RuntimeClause(invoke=add, result_validator=_unit)}
+    )
 
 
 def block_handler(
@@ -3230,10 +3267,15 @@ def block_handler(
             weight_validator,
             role="block-score",
         )
-        return TailResume(value)
+        return TailResume(value=value)
 
     return RuntimeHandler(
-        definition, {RANDOM_SAMPLE: RuntimeClause(sample, result_validator)}
+        definition,
+        {
+            RANDOM_SAMPLE: RuntimeClause(
+                invoke=sample, result_validator=result_validator
+            )
+        },
     )
 
 
@@ -3310,10 +3352,11 @@ def compute_handler(
             If the request does not carry exactly one argument.
         """
         (argument,) = _expect_arguments(request, 1, definition.name)
-        return TailResume(function(argument, context))
+        return TailResume(value=function(argument, context))
 
     return RuntimeHandler(
-        definition, {COMPUTE_APPLY: RuntimeClause(apply, result_validator)}
+        definition,
+        {COMPUTE_APPLY: RuntimeClause(invoke=apply, result_validator=result_validator)},
     )
 
 
@@ -3395,9 +3438,12 @@ def param_handler(
         _require(
             value, result_validator, request.core.result_type, f"parameter {name!r}"
         )
-        return TailResume(value)
+        return TailResume(value=value)
 
-    return RuntimeHandler(definition, {PARAM_GET: RuntimeClause(get, result_validator)})
+    return RuntimeHandler(
+        definition,
+        {PARAM_GET: RuntimeClause(invoke=get, result_validator=result_validator)},
+    )
 
 
 __all__ = [

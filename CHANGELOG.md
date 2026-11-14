@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- **Breaking: Evaluator attachments and continuations use immutable records.** Attachment tables remain mutable and retain their identities. Checked terms and addresses compare by value, while host values, callbacks, and handler lifecycles retain identity. Delimiters remain distinct for each host invocation, and constructors use keywords.
 - **Breaking: QIEC execution and host-program records use immutable models.** Runtime configurations, trace events, collectors, distributions, and host-step records use keyword-only construction and validated `with_` updates. Configuration and distribution maps retain owned snapshots with live host values; collectors keep independent mutable event lists. Checked types, effect instances, and structural compilation metadata remain values.
 - **Breaking: QIEC run results and handler manifests use immutable models.** Run results retain returned values and execution records by identity, including tensor gradients. Handler manifests retain an immutable snapshot of the checked definitions. Constructors are keyword-only, and `with_` validates replacement fields.
 - **Breaking: QIEC family and primitive registries use immutable models.** Keyword-only constructors and `with_` validate recursive types, family parameter relationships, and target spellings. Target maps are immutable, and registry records compare their metadata by value.

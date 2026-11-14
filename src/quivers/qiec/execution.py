@@ -1018,7 +1018,7 @@ class CoreRuntimeProvider(QiecModel):
                     )
                 return _checked_resume(request, resume, response)
 
-            return RuntimeClause(invoke, lambda _value: True)
+            return RuntimeClause(invoke=invoke, result_validator=lambda _value: True)
 
         return RuntimeHandler(
             definition,
@@ -1122,7 +1122,9 @@ class CoreRuntimeProvider(QiecModel):
                         )
                     return _checked_resume(_request, resume, _tuplify(queue.pop(0)))
 
-                return RuntimeClause(invoke, lambda _value: True)
+                return RuntimeClause(
+                    invoke=invoke, result_validator=lambda _value: True
+                )
 
             return RuntimeHandler(
                 definition,
@@ -1234,7 +1236,9 @@ class CoreRuntimeProvider(QiecModel):
                         f"state provider does not implement operation {operation_name!r}"
                     )
 
-                return RuntimeClause(invoke, lambda _value: True)
+                return RuntimeClause(
+                    invoke=invoke, result_validator=lambda _value: True
+                )
 
             return RuntimeHandler(
                 definition,
