@@ -17,7 +17,7 @@
 #   y_n     ~ Normal(beta_0 + u_{g(n)} + beta_1 * x_n, sigma)
 #
 # The predictor x and the per-row group index group_idx are
-# exogenous data supplied at fit time through the observations
+# exogenous data provided at fit time through the observations
 # dict. Resp is the plate the responses are observed over, Group
 # is the plate the offsets are allocated over, and Val is the
 # value space of the returned residual scale.
