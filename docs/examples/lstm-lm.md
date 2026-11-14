@@ -67,16 +67,14 @@ and the token after position $t$ is scored under $\mathrm{softmax}(U h_t + d)$. 
 
 - `object State : Real 16` holds the pair $(h_t, c_t)$: `slice(state, 0, 8)` is the hidden state and `slice(state, 8, 8)` the cell state, and `concat(h, c)` packs the new pair for the next position.
 - `input_gate`, `forget_gate`, `output_gate` and `candidate` are `role=function` morphisms with `sigmoid` or `tanh` outputs, all reading the current token and $h_{t-1}$.
-- `let c = f * c_prev + i * g` and `let h = o * tanh(c)` are the cell and hidden updates; `tanh` is the checked elementwise builtin.
-- `observe next_token <- Categorical(logits=logits)` scores the next token at every position; `scan(lstm_step)` threads the packed state from zero.
+- `let c = f * c_prev + i * g` and `let h = o * tanh(c)` are the cell and hidden updates. `tanh` is the checked elementwise builtin.
+- `observe next_token <- Categorical(logits=logits)` scores the next token at every position. `scan(lstm_step)` threads the packed state from zero.
 
 ## Try it
 
-Both blocks use tolerances fixed before the first run.
-
 ### The log joint against a hand-written LSTM
 
-The compiled runtime must match an independent float64 LSTM to a relative 1e-5 and the reference machine to 1e-9. An oracle without the forget gate ($c_t = c_{t-1} + i_t g_t$) must lie more than a relative 1e-3 from the runtime, so the first check can tell the two cells apart; it lies 9.2e-3 and 6.2e-3 away on the two runs.
+The compiled runtime must match an independent float64 LSTM to a relative 1e-5 and the [reference machine](../developer/qiec.md#reference-evaluator) to 1e-9. A reference calculation without the forget gate ($c_t = c_{t-1} + i_t g_t$) must lie more than a relative 1e-3 from the runtime, so the first check can tell the two cells apart. It lies 9.2e-3 and 6.2e-3 away on the two runs.
 
 ```python
 import math
@@ -160,7 +158,7 @@ for row in range(2):
 
 ### Maximum-likelihood fitting
 
-The same design as the [vanilla RNN](vanilla-rnn-lm.md#maximum-likelihood-fitting): 8 training runs of length 12 that advance by one token (mod 6), 400 Adam steps, and three checks fixed in advance: per-token NLL below 0.05 nats on the training runs and on 8 held-out runs, and above 1.0 on runs that advance by two.
+The same design as the [vanilla RNN](vanilla-rnn-lm.md#maximum-likelihood-fitting): 8 training runs of length 12 that advance by one token (mod 6), 400 Adam steps, and three checks: per-token NLL below 0.05 nats on the training runs and on 8 held-out runs, and above 1.0 on runs that advance by two.
 
 ```python
 def per_token_nll(model, sequence):
@@ -201,10 +199,6 @@ assert contrast > 1.0
 
 ## Categorical perspective
 
-The gates and the candidate are deterministic morphisms, Dirac kernels in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical]. Packing $(h, c)$ with `concat` makes the step an endomorphism of one state space, so [`scan(lstm_step)`](../guides/dsl-declarations.md#scan-temporal-recurrence) is the left [fold](https://ncatlab.org/nlab/show/fold) of a single morphism along the sequence; the observations are the only factors that weight a run.
+A deterministic function defines a [Dirac kernel](https://en.wikipedia.org/wiki/Dirac_measure), which puts all probability at its output. A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical].
 
-## Sources and further reading
-
-- *Long short-term memory* [@hochreiter1997lstm].
-- *Learning to forget: continual prediction with LSTM* [@gers2000learning].
-- *A categorical approach to probability theory* [@giry1982categorical].
+The gates and candidate are deterministic functions. Packing $(h,c)$ with `concat` gives one recurrent state, but the update still also takes the current input. `scan(lstm_step)` is a [fold](https://en.wikipedia.org/wiki/Fold_(higher-order_function)) over those inputs. The observations multiply the run weight by their predicted token probabilities. The scored transition is a subprobability [kernel](https://en.wikipedia.org/wiki/Markov_kernel) because each token probability is at most one. It belongs to the extension that permits mass below one, rather than to the probability-kernel category itself [@staton2017commutative].
