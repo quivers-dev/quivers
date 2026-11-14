@@ -34,6 +34,11 @@ The result is a [`BayesianFit`](../api/formulas/fit.md), a frozen
 [`MCMCResult`](../api/inference/mcmc.md) or a [`Guide`](../api/inference/guide.md)),
 and `.observations` (the observations dict used for inference).
 
+The `seed` argument to [`fit`](../api/formulas/fit.md) controls both model
+initialization and inference. Compilation and fitting run in an isolated CPU
+random state, and the caller's state is restored even if fitting raises an error.
+For MCMC, the same argument initializes the driver's independent chain streams.
+
 <!-- python: skip -->
 ```python
 print(result.qvr_source)                    # canonical .qvr source
