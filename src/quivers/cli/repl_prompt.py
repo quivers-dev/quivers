@@ -19,9 +19,36 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from quivers.cli.repl_session import ReplResponse, ReplSession
+from quivers.cli.repl_complete import all_completions
+from quivers.cli.repl_session import Diagnostic, ReplResponse, ReplSession
+from quivers.dsl.pygments_lexer import QvrLexer
+
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.lexers import PygmentsLexer
+except ModuleNotFoundError as error:
+    if error.name != "prompt_toolkit":
+        raise
+    _PROMPT_AVAILABLE = False
+else:
+    _PROMPT_AVAILABLE = True
+
+try:
+    from rich.console import Console
+    from rich.markdown import Markdown
+    from rich.syntax import Syntax
+except ModuleNotFoundError as error:
+    if error.name != "rich":
+        raise
+    _RICH_AVAILABLE = False
+else:
+    _RICH_AVAILABLE = True
 
 
 def run_plain(session: ReplSession) -> int:
@@ -40,20 +67,29 @@ def run_plain(session: ReplSession) -> int:
     int
         The process exit status, ``0`` when the user quits.
     """
-    try:
-        from prompt_toolkit import PromptSession
-        from prompt_toolkit.completion import Completer, Completion
-        from prompt_toolkit.history import FileHistory
-        from prompt_toolkit.lexers import PygmentsLexer
-
-        from quivers.cli.repl_complete import all_completions
-        from quivers.dsl.pygments_lexer import QvrLexer
-
+    getline: Callable[[], str | None] = _bare_input
+    if _PROMPT_AVAILABLE:
         history_path = _history_path()
         history_path.parent.mkdir(parents=True, exist_ok=True)
 
         class _Completer(Completer):
-            def get_completions(self, document, complete_event):  # noqa: D401
+            def get_completions(
+                self, document: Document, complete_event: CompleteEvent
+            ) -> Iterable[Completion]:
+                """Yield completions at the current source position.
+
+                Parameters
+                ----------
+                document : Document
+                    The editable input buffer.
+                complete_event : CompleteEvent
+                    The completion request.
+
+                Returns
+                -------
+                Iterable[Completion]
+                    Matching names with their replacement positions.
+                """
                 del complete_event
                 word = document.get_word_before_cursor(WORD=True)
                 for c in all_completions(session, word):
@@ -63,7 +99,7 @@ def run_plain(session: ReplSession) -> int:
                         display_meta=c.detail,
                     )
 
-        ps: PromptSession = PromptSession(
+        ps: PromptSession[str] = PromptSession(
             message="qvr> ",
             history=FileHistory(str(history_path)),
             completer=_Completer(),
@@ -71,10 +107,7 @@ def run_plain(session: ReplSession) -> int:
             multiline=False,
         )
 
-        def getline() -> str:
-            return ps.prompt()
-    except ImportError:
-        getline = _bare_input  # type: ignore[assignment]
+        getline = ps.prompt
 
     while True:
         try:
@@ -95,6 +128,13 @@ def run_plain(session: ReplSession) -> int:
 
 
 def _bare_input() -> str | None:
+    """Read one line from standard input.
+
+    Returns
+    -------
+    str or None
+        The input line, or None at end of input.
+    """
     try:
         return input("qvr> ")
     except EOFError:
@@ -102,11 +142,14 @@ def _bare_input() -> str | None:
 
 
 def _render(response: ReplResponse) -> None:
-    # Try rich for nicer output, fall back to plain print.
-    try:
-        from rich.console import Console
-        from rich.syntax import Syntax
+    """Print one response with the available terminal renderer.
 
+    Parameters
+    ----------
+    response : ReplResponse
+        The body and diagnostics to display.
+    """
+    if _RICH_AVAILABLE:
         console = Console()
         if response.body:
             if response.body_kind == "qvr":
@@ -114,32 +157,46 @@ def _render(response: ReplResponse) -> None:
             elif response.body_kind == "json":
                 console.print(Syntax(response.body, "json", theme="ansi_dark"))
             elif response.body_kind == "markdown":
-                from rich.markdown import Markdown
-
                 console.print(Markdown(response.body))
             else:
-                from quivers.cli.repl_highlight import to_rich_text
-
-                # Plain text bodies aren't QVR, so render as-is.
                 console.print(response.body)
-                del to_rich_text
-        for d in response.diagnostics:
+        for diagnostic in response.diagnostics:
             console.print(
-                _format_diag(d), style="red" if d.severity == "error" else "yellow"
+                _format_diag(diagnostic),
+                style="red" if diagnostic.severity == "error" else "yellow",
             )
-    except ImportError:
+    else:
         if response.body:
             sys.stdout.write(response.body + "\n")
-        for d in response.diagnostics:
-            sys.stderr.write(_format_diag(d) + "\n")
+        for diagnostic in response.diagnostics:
+            sys.stderr.write(_format_diag(diagnostic) + "\n")
 
 
-def _format_diag(d) -> str:
+def _format_diag(d: Diagnostic) -> str:
+    """Format a diagnostic with its source position.
+
+    Parameters
+    ----------
+    d : Diagnostic
+        The diagnostic to display.
+
+    Returns
+    -------
+    str
+        Its severity, code, position, and message.
+    """
     loc = f":{d.line}:{d.col}" if d.line else ""
     return f"{d.severity}[{d.code}]{loc}: {d.message}"
 
 
 def _history_path() -> Path:
+    """Return the configured REPL history file.
+
+    Returns
+    -------
+    Path
+        The history path under the user's configuration directory.
+    """
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / "quivers" / "history"
 

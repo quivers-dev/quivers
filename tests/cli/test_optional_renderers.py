@@ -7,14 +7,14 @@ import sys
 import textwrap
 
 
-_BLOCK_RICH = """
+_BLOCK_DEPENDENCY = """
 import sys
 from collections.abc import Sequence
 from importlib.abc import MetaPathFinder
 from importlib.machinery import ModuleSpec
 from types import ModuleType
 
-class BlockRich(MetaPathFinder):
+class BlockDependency(MetaPathFinder):
     def find_spec(
         self,
         fullname: str,
@@ -46,7 +46,7 @@ class BlockRich(MetaPathFinder):
             raise ModuleNotFoundError("blocked test dependency", name=fullname)
         return None
 
-sys.meta_path.insert(0, BlockRich())
+sys.meta_path.insert(0, BlockDependency())
 """
 
 
@@ -66,7 +66,7 @@ def _run_isolated(blocked: str, checks: str) -> subprocess.CompletedProcess[str]
         The child interpreter's status and diagnostic output.
     """
     return subprocess.run(
-        [sys.executable, "-c", f"blocked = {blocked!r}\n" + _BLOCK_RICH + checks],
+        [sys.executable, "-c", f"blocked = {blocked!r}\n" + _BLOCK_DEPENDENCY + checks],
         capture_output=True,
         text=True,
         check=False,
@@ -79,6 +79,8 @@ def test_plain_cli_does_not_require_rich() -> None:
         """
         from quivers.cli import tokenize, to_pygments_pairs, to_rich_text
         from quivers.analysis import PlateGraph, render_table, render_table_plain
+        from quivers.cli.repl_prompt import _render
+        from quivers.cli.repl_session import Diagnostic, ReplResponse
 
         source = "object X : FinSet 3"
         assert tokenize(source)
@@ -93,10 +95,35 @@ def test_plain_cli_does_not_require_rich() -> None:
                 assert "quivers[repl]" in str(error)
             else:
                 raise AssertionError("Rich renderer accepted a missing dependency")
+        _render(ReplResponse(
+            body="plain response",
+            diagnostics=(Diagnostic(severity="error", code="test", message="failure"),),
+        ))
         """
     )
     result = _run_isolated("rich", checks)
     assert result.returncode == 0, result.stderr
+    assert "plain response" in result.stdout
+    assert "error[test]: failure" in result.stderr
+
+
+def test_plain_repl_without_prompt_toolkit() -> None:
+    """The standard-input frontend evaluates a command and handles exit."""
+    checks = textwrap.dedent(
+        """
+        import io
+        from quivers.cli import ReplSession, run_plain
+
+        sys.stdin = io.StringIO(":help\\n:quit\\n")
+        assert run_plain(ReplSession()) == 0
+        sys.stdin = io.StringIO("")
+        assert run_plain(ReplSession()) == 0
+        """
+    )
+    result = _run_isolated("prompt_toolkit", checks)
+    assert result.returncode == 0, result.stderr
+    assert "qvr>" in result.stdout
+    assert ":quit" in result.stdout
 
 
 def test_broken_rich_installation_is_not_treated_as_absent() -> None:
