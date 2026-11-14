@@ -27,16 +27,17 @@ and tail effective sample sizes are computed from those draws by
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from functools import cached_property
 import math
 from pathlib import Path
 import time
 from typing import Literal, cast
 
+import didactic.api as dx
 import torch
 from torch.distributions import constraints as _constraints
 
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.plate import PlateDraw
 from quivers.continuous.spaces import ContinuousSpace
@@ -93,14 +94,15 @@ phase. It runs in the sampling loop; it should not draw from the
 chain's generator or modify the state."""
 
 
-@dataclass
-class MCMCResult:
+class MCMCResult(ValueModel):
     """Posterior samples, per-chain sampler statistics, and diagnostics.
 
     The convergence diagnostics are derived from ``samples`` on first
     access by the public estimators of `quivers.diagnostics`, so they
     agree exactly with `quivers.diagnostics.rhat` and
-    `quivers.diagnostics.ess` applied to the same draws.
+    `quivers.diagnostics.ess` applied to the same draws. Tensors and
+    statistic mappings are held by identity; immutable record updates
+    retain these references and compute their own diagnostic caches.
 
     Attributes
     ----------
@@ -163,24 +165,61 @@ class MCMCResult:
         Gradient evaluations per chain. Shape ``(num_chains,)``.
     """
 
-    samples: dict[str, torch.Tensor]
-    log_densities: torch.Tensor
-    acceptance_rates: torch.Tensor
-    divergence_counts: torch.Tensor
+    samples: dict[str, torch.Tensor] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    log_densities: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    acceptance_rates: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    divergence_counts: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     num_warmup: int
     num_samples: int
-    component_acceptance: dict[str, torch.Tensor] = field(default_factory=dict)
-    sample_stats: dict[str, torch.Tensor] = field(default_factory=dict)
+    component_acceptance: dict[str, torch.Tensor] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    sample_stats: dict[str, torch.Tensor] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     stopped_by: tuple[StopReason, ...] = ()
-    num_draws: torch.Tensor = field(
-        default_factory=lambda: torch.empty(0, dtype=torch.int64)
+    num_draws: torch.Tensor = dx.field(
+        default_factory=lambda: torch.empty(0, dtype=torch.int64),
+        opaque=True,
+        extras=OPAQUE_BY_IDENTITY,
     )
-    num_evaluations: torch.Tensor = field(
-        default_factory=lambda: torch.empty(0, dtype=torch.int64)
+    num_evaluations: torch.Tensor = dx.field(
+        default_factory=lambda: torch.empty(0, dtype=torch.int64),
+        opaque=True,
+        extras=OPAQUE_BY_IDENTITY,
     )
-    num_gradient_evaluations: torch.Tensor = field(
-        default_factory=lambda: torch.empty(0, dtype=torch.int64)
+    num_gradient_evaluations: torch.Tensor = dx.field(
+        default_factory=lambda: torch.empty(0, dtype=torch.int64),
+        opaque=True,
+        extras=OPAQUE_BY_IDENTITY,
     )
+
+    @dx.model_validator()
+    def _check_runtime_fields(self) -> None:
+        """Validate retained tensor references and statistic mappings.
+
+        Raises
+        ------
+        TypeError
+            If a statistic is not a tensor or a mapping has invalid entries.
+        """
+        for name in (
+            "log_densities",
+            "acceptance_rates",
+            "divergence_counts",
+            "num_draws",
+            "num_evaluations",
+            "num_gradient_evaluations",
+        ):
+            if not isinstance(getattr(self, name), torch.Tensor):
+                raise TypeError(f"MCMCResult.{name} must be a torch.Tensor")
+        for name in ("samples", "component_acceptance", "sample_stats"):
+            values = getattr(self, name)
+            if not isinstance(values, dict) or not all(
+                isinstance(key, str) and isinstance(value, torch.Tensor)
+                for key, value in values.items()
+            ):
+                raise TypeError(f"MCMCResult.{name} must map names to tensors")
 
     @property
     def truncated(self) -> bool:
