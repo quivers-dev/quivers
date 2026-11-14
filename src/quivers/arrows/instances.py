@@ -13,13 +13,12 @@ Realisations:
 - `VRel`: the canonical V-enriched-relation arrow. ``compose``
   is the V-Rel ``>>`` operator; ``arr`` is the identity embedding;
   ``first`` is the parallel-product factory; ``left_arr`` is the
-  coproduct functorial action; ``loop_arr`` is the V-algebra iterative
-  trace on the recurrent component.
+  coproduct functorial action; ``loop_arr`` is finite diagonal contraction over the feedback component.
 - `Function`: restricts to deterministic V-relations (functions
   with point-mass tensors). Pure-functional operations.
-- `Stochastic`: stochastic-matrix arrows where ``first``,
-  ``left_arr``, and ``loop_arr`` are the corresponding row-stochastic
-  realisations.
+- `Stochastic`: stochastic-matrix arrows. Neither total finite functions
+  nor normalized stochastic kernels have general diagonal-contraction
+  feedback, so `Function` and `Stochastic` do not implement `ArrowLoop`.
 """
 
 from __future__ import annotations
@@ -101,8 +100,7 @@ class VRel(dx.Model):
     Hom-sets are V-Rel morphisms; composition is the standard
     ``>>``; ``arr`` is the identity embedding (every V-Rel morphism
     is an arrow); ``first`` is the parallel pair; ``left_arr`` is
-    the coproduct functorial action; ``loop_arr`` is the V-algebra
-    iterative trace.
+    the coproduct functorial action; ``loop_arr`` is finite diagonal contraction.
     """
 
     name: str = "VRel"
@@ -136,11 +134,9 @@ class Function(dx.Model):
     """Deterministic V-relation arrow (point-mass tensors only).
 
     Restricts `VRel` to morphisms whose tensors are 0/1-valued
-    (function graphs). All operations preserve determinism — composition
-    of deterministic relations is deterministic; ``first`` and
-    ``left_arr`` are the standard functorial actions; ``loop_arr`` is
-    the least-fixed-point trace, computed by iterating the recurrent
-    component until a fixed point is reached.
+    (function graphs). Composition, ``first``, and ``left_arr`` preserve
+    determinism on this carrier. Arbitrary feedback can have several
+    fixed points or none, so this instance does not implement `ArrowLoop`.
     """
 
     name: str = "Function"
@@ -160,15 +156,6 @@ class Function(dx.Model):
     def left_arr(self, f: Morphism, C: SetObject) -> Morphism:
         return coproduct_map((f, id_morph(C)))
 
-    def loop_arr(self, f: Morphism, C: SetObject) -> Morphism:
-        """Least-fixed-point trace for deterministic functions.
-
-        Iterates the loop ``c_{n+1} := f.second_projection(a, c_n)``
-        until ``c_{n+1} == c_n``. In V-Rel terms this coincides with
-        the algebra-iterative trace when ``f`` is function-shaped.
-        """
-        return _trace_v_rel(f, C)
-
     def app(self, A: SetObject, B: SetObject) -> Morphism:
         """ArrowApply.app for Function — the standard evaluation."""
         return _evaluation_morphism(A, B)
@@ -176,7 +163,6 @@ class Function(dx.Model):
 
 Arrow.register(Function)
 ArrowChoice.register(Function)
-ArrowLoop.register(Function)
 ArrowApply.register(Function)
 
 
@@ -186,8 +172,9 @@ class Stochastic(dx.Model):
     Each arrow is a `Morphism` whose tensor rows are
     probability distributions. Operations preserve row-stochasticity:
     composition is matrix multiplication; ``first`` and ``left_arr``
-    are the tensor-product / coproduct-product lifts; ``loop_arr`` is
-    the sampled / cartesian trace summed over the recurrent dimension.
+    are the tensor-product and coproduct lifts. Diagonal contraction
+    need not preserve row sums, so this instance does not implement
+    `ArrowLoop`.
     """
 
     name: str = "Stochastic"
@@ -207,18 +194,9 @@ class Stochastic(dx.Model):
     def left_arr(self, f: Morphism, C: SetObject) -> Morphism:
         return coproduct_map((f, id_morph(C)))
 
-    def loop_arr(self, f: Morphism, C: SetObject) -> Morphism:
-        """Cartesian trace: marginalise the recurrent component.
-
-        ``trace(f)(a, b) = ∑_c f((a, c), (b, c))`` — the row-stochastic
-        analogue of the V-Rel iterative trace.
-        """
-        return _trace_v_rel(f, C)
-
 
 Arrow.register(Stochastic)
 ArrowChoice.register(Stochastic)
-ArrowLoop.register(Stochastic)
 
 
 # LinearMap deferred: requires a separate Morphism stratum (linear
