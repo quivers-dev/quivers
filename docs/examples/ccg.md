@@ -1,5 +1,11 @@
 # Weighted Combinatory Categorial Grammar
 
+## Overview
+
+Combinatory Categorial Grammar (CCG) is expressed as an agenda-based [weighted deduction](../guides/deduction.md) whose items are chart spans `span(I, J, X)` (token range `[I, J)` carrying category `X`). Steedman's combinators, forward and backward application, harmonic composition, and crossed composition [@steedman2000syntactic], each become one sequent rule. The lexicon is chosen so that each of the six rules is needed by at least one sentence, and removing each rule in turn tests its contribution. The [semiring](https://ncatlab.org/nlab/show/rig) is `LogProb`, so inside scores flow as differentiable tensors back to the learnable rule and lexicon weights.
+
+The categories use Steedman notation: `Fwd(X, Y)` denotes `X/Y` and `Bwd(X, Y)` denotes `X\Y`, with the result first in both [@steedman2000syntactic].
+
 ## QVR source
 
 ```qvr
@@ -84,10 +90,6 @@ program score_sentence : Term -> LogWeight
 export score_sentence
 ```
 
-## Overview
-
-Combinatory Categorial Grammar (CCG) is expressed as an agenda-based weighted deduction whose items are chart spans `span(I, J, X)` (token range `[I, J)` carrying category `X`). Steedman's combinators, forward and backward application, harmonic composition, and crossed composition [@steedman2000syntactic], each become one sequent rule. The lexicon is chosen so that each of the six rules is needed by at least one sentence, and the page checks this by deleting each rule in turn. The semiring is `LogProb`, so inside scores flow as differentiable tensors back to the learnable rule and lexicon weights.
-
 ## Understanding the model
 
 A category describes what an expression can combine with. Read `NP/N` as
@@ -105,7 +107,7 @@ for. Backward composition does the same leftward: in
 into `S\NP`, the argument of `that : (N\N)/(S\NP)`. Crossed composition
 combines functors whose slashes point in opposite directions. In
 `Mary probably sleeps`, the sentence adverb `probably : S/S` composes with
-`sleeps : S\NP` into `S\NP`; in the heavy-NP-shift order
+`sleeps : S\NP` into `S\NP`. In the heavy-NP-shift order
 `Mary saw yesterday the cat`, `saw : (S\NP)/NP` composes with
 `yesterday : (S\NP)\(S\NP)` into `(S\NP)/NP`, which then takes the shifted
 object.
@@ -113,11 +115,11 @@ object.
 Unrestricted crossed composition also permits orders English does not: with
 the same lexicon, `the sleeps cat` parses, because backward crossed
 composition of `the : NP/N` with `sleeps : S\NP` yields `S/N`. Steedman
-restricts the crossed rules to particular categories for this reason; the
+restricts the crossed rules to particular categories for this reason. The
 deduction here keeps them unrestricted, and the enumeration below lists such
 strings among the grammatical ones.
 
-Rule weights score derivations; alternatives leading to the same goal are
+Rule weights score derivations. Alternatives leading to the same goal are
 combined by the chosen [semiring](../getting-started/concepts.md#3-an-algebra-chooses-how-weights-combine). Under `LogProb`, weights add along a
 single derivation and `logsumexp` combines alternatives. The goal weight
 $Z(s)$ is thus a sum of exponentiated derivation weights, not a probability.
@@ -128,23 +130,23 @@ recovers.
 
 ## Walkthrough
 
-`object Term : FinSet 16` declares a finite carrier for chart items; the concrete cardinality is irrelevant because the deduction reasons symbolically over constructor-tagged tuples, not over enumerated elements of `Term`.
+`object Term : FinSet 16` declares a finite carrier for chart items. The concrete cardinality is irrelevant because the deduction reasons symbolically over constructor-tagged tuples, not over enumerated elements of `Term`.
 
-`atoms NAME, NAME, ...` lists every identifier the rules may match literally: category atoms (`NP`, `S`, `N`), slash constructors (`Fwd`, `Bwd`), the chart-item constructor (`span`), and the lexical logical-form constants. Identifiers not listed here that appear in a rule pattern are bound as wildcards; the convention is single uppercase letters (`X`, `Y`, `Z`, `I`, `J`, `K`).
+`atoms NAME, NAME, ...` lists every identifier the rules may match literally: category atoms (`NP`, `S`, `N`), slash constructors (`Fwd`, `Bwd`), the chart-item constructor (`span`), and the lexical logical-form constants. Identifiers not listed here that appear in a rule pattern are bound as wildcards. The convention is single uppercase letters (`X`, `Y`, `Z`, `I`, `J`, `K`).
 
-Each `rule` is a sequent: premises on the left of `|-`, conclusion on the right. `Fwd(X, Y)` constructs the forward-slash category `X/Y`; `Bwd(X, Y)` constructs the backward-slash category `X\Y`, with the result first in both. Adjacent spans whose end / start indices agree fire whichever rule's pattern matches their categories. `Mary` has two lexical entries, the plain `NP` and the type-raised `S/(S\NP)` that forward composition needs; the chart sums over both.
+Each `rule` is a sequent: premises on the left of `|-`, conclusion on the right. `Fwd(X, Y)` constructs the forward-slash category `X/Y`. `Bwd(X, Y)` constructs the backward-slash category `X\Y`, with the result first in both. Adjacent spans whose end / start indices agree fire whichever rule's pattern matches their categories. `Mary` has two lexical entries, the plain `NP` and the type-raised `S/(S\NP)` that forward composition needs. The chart sums over both.
 
 Every rule and lexical entry carries `#[learnable]`. A learnable rule's log-weight is keyed by the binding of its category variables, not by the span positions ([Weighted Deduction Fragment §2.1](../semantics/grammar.md#21-learnable-rule-weights-learnable)), and is allocated the first time that binding fires.
 
 The header's option block sets the remaining knobs: the `semiring=LogProb` option selects log-space inside scores, the `start=S` option declares the goal category for a successful parse, and the `depth=6` option bounds the constructor depth of derived categories to keep the agenda finite.
 
-The `score_sentence` program connects the grammar to a probabilistic program: `parse(CCG, sentence)` runs the deduction on an observed sentence, and `score log_Z = chart.goal_weight()` adds $\log Z(s)$ to the program's log-joint. That is an unnormalized factor; the fit below divides by the length-$n$ total explicitly.
+The `score_sentence` program connects the grammar to a probabilistic program: `parse(CCG, sentence)` runs the deduction on an observed sentence, and `score log_Z = chart.goal_weight()` adds $\log Z(s)$ to the program's log-joint. That is an unnormalized factor. The fit below divides by the length-$n$ total explicitly.
 
 ## DSL features
 
-- **`deduction Name : Dom -> Cod [options]` header plus indented body**: declares the agenda-based weighted deduction in a single construct. The header's option block sets the semiring, the start symbol, and the depth bound; the body supplies the item algebra (via `atoms`), the rule set, and the lexicon that serves as the axiom source.
-- **`atoms NAME, NAME, ...`**: closes the constructor universe. Identifiers listed here match literally in rule patterns; any identifier not listed is bound as a wildcard, with single uppercase letters (`X`, `Y`, `Z`, `I`, `J`, `K`) as the convention.
-- **Sequent rules**: arbitrary-arity premises on the left of `|-`, single conclusion on the right; rules with one premise are unary chart rules, with two are binary, and so on.
+- **`deduction Name : Dom -> Cod [options]` header plus indented body**: declares the agenda-based weighted deduction in a single construct. The header's option block sets the semiring, the start symbol, and the depth bound. The body provides the item algebra (via `atoms`), the rule set, and the lexicon that serves as the axiom source.
+- **`atoms NAME, NAME, ...`**: closes the constructor universe. Identifiers listed here match literally in rule patterns. Any identifier not listed is bound as a wildcard, with single uppercase letters (`X`, `Y`, `Z`, `I`, `J`, `K`) as the convention.
+- **Sequent rules**: arbitrary-arity premises on the left of `|-`, single conclusion on the right. Rules with one premise are unary chart rules, with two are binary, and so on.
 - **Slash constructors**: `Fwd(X, Y)` and `Bwd(X, Y)` are user-declared atoms, not built-in syntax. The combinators are ordinary rules over them.
 - **`parse(D, sentence)` in a program**: a program body can run a deduction and score its goal weight.
 
@@ -279,8 +281,8 @@ assert kl_fitted < 0.05 and kl_fitted < 0.25 * kl_initial
 
 Twenty-one three-word strings parse. Besides plain application, they include
 `Mary saw Mary` and `probably Mary sleeps`, with derivations through forward
-composition of the raised subject; `Mary sleeps today`, through backward
-composition; `Mary probably sleeps`, through forward crossed composition; and
+composition of the raised subject. `Mary sleeps today`, through backward
+composition. `Mary probably sleeps`, through forward crossed composition. And
 the scrambled `the sleeps cat` and `Mary today sleeps`, through backward
 crossed composition. With 2,000 draws over 21 outcomes, the sampling error of
 the maximum-likelihood fit is near $20 / (2 \cdot 2000) = 0.005$ nats, so a
@@ -290,8 +292,8 @@ mass along one derivation, so the check is on the distribution over strings.
 
 ## Categorical perspective
 
-Application and harmonic composition are theorems of the [Lambek calculus](https://doi.org/10.2307/2310058) [@lambek1958mathematics], whose models are [biclosed monoidal categories](https://ncatlab.org/nlab/show/closed+monoidal+category): `X/Y` and `X\Y` are the two internal homs, application is the evaluation counit of each hom-tensor adjunction, and harmonic composition is composition of internal homs. Crossed composition is not a Lambek theorem. It becomes derivable once the tensor is symmetric, as in the commutative calculus LP, which is also why it licenses `the sleeps cat`: a symmetric tensor forgets word order. The six rules thus extend the Lambek fragment rather than present the internal language of a biclosed monoidal category, and operationally the page defines exactly the six sequent rules shown in the source.
+Application and harmonic composition are theorems of the [Lambek calculus](https://doi.org/10.2307/2310058) [@lambek1958mathematics], whose models are [biclosed monoidal categories](https://ncatlab.org/nlab/show/closed+monoidal+category): `X/Y` and `X\Y` are internal function types accepting a `Y` on opposite sides. Application evaluates such a function at its argument, formally the [counit](https://ncatlab.org/nlab/show/adjunction) of a tensor-hom [adjunction](https://ncatlab.org/nlab/show/adjunction). Harmonic composition composes these internal functions. Crossed composition is not a Lambek theorem. It becomes derivable once the tensor is symmetric, as in the commutative calculus LP, which is also why it licenses `the sleeps cat`: a symmetric tensor forgets word order. The six rules thus extend the Lambek fragment rather than present the internal language of a biclosed monoidal category, and the implementation uses exactly the six sequent rules shown in the source.
 
 ## Semiring selection
 
-The choice of semiring affects the parser's behavior: `LogProb` accumulates inside log-weights (numerically stable, differentiable); `Viterbi` returns the highest-weight derivation; `Counting` counts distinct derivations; `Boolean` checks membership without weights. The same deduction block serves all four objectives via the `semiring` option.
+The choice of semiring affects the parser's behavior: `LogProb` accumulates inside log-weights (numerically stable, differentiable). `Viterbi` returns the highest-weight derivation. `Counting` counts distinct derivations. `Boolean` checks membership without weights. The same deduction block serves all four objectives via the `semiring` option.
