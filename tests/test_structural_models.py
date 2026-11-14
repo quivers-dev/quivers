@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from quivers.structural.encoder import PerOpFn
+from quivers.structural.losses import LossEntry, LossRegistry
 from quivers.structural.signature import Context, ContextEntry, Term
 
 
@@ -56,3 +57,28 @@ def test_context_rejects_invalid_runtime_fields() -> None:
         entry.with_(type_term="A")
     with pytest.raises(dx.ValidationError, match="tuple of ContextEntry"):
         Context(entries=("invalid",))
+
+
+def test_loss_records_preserve_callable_gradients_and_registry_mutation() -> None:
+    """Weighted evaluation agrees with its scalar formula and exact gradient."""
+    parameter = torch.tensor(3.0, requires_grad=True)
+    entry = LossEntry(name="square", body=lambda env: parameter.square())
+    weighted = entry.with_(weight=lambda env: parameter.new_tensor(2.0))
+    registry = LossRegistry()
+    other = LossRegistry()
+    registry.add(weighted)
+    copied = copy.copy(registry)
+    assert copied.entries is registry.entries
+    assert copied == registry
+    assert other.entries == []
+    assert weighted.body is entry.body
+    assert copy.copy(weighted) == weighted
+    total = registry.evaluate()
+    torch.testing.assert_close(total, torch.tensor(18.0), rtol=0, atol=0)
+    total.backward()
+    torch.testing.assert_close(parameter.grad, torch.tensor(12.0), rtol=0, atol=0)
+    assert total != entry.body({})
+    with pytest.raises(dx.ValidationError, match="callable"):
+        entry.with_(body=3)
+    with pytest.raises(dx.ValidationError, match="LossEntry"):
+        registry.with_(entries=["invalid"])

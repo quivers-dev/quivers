@@ -8,10 +8,12 @@ evaluate the right ones at the right point in the training step.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
 from typing import Literal
 
+import didactic.api as dx
 import torch
+
+from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 
 
 type LossBody = Callable[[Mapping[str, "TrainEnv"]], torch.Tensor]
@@ -42,8 +44,7 @@ type AttachmentKind = Literal[
 """The kind of construct a registered loss is attached to."""
 
 
-@dataclass
-class LossEntry:
+class LossEntry(ValueModel):
     """One registered loss.
 
     Attributes
@@ -65,15 +66,30 @@ class LossEntry:
     """
 
     name: str
-    body: LossBody
-    weight: LossWeight | None = None
+    body: LossBody = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    weight: LossWeight | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     attachment_kind: AttachmentKind = "global"
     target: str | None = None
     rule_deduction: str | None = None
 
+    @dx.model_validator()
+    def _validate_callables(self) -> None:
+        """Require callable loss bodies and optional weights.
 
-@dataclass
-class LossRegistry:
+        Raises
+        ------
+        TypeError
+            If either runtime field is not callable.
+        """
+        if not callable(self.body):
+            raise TypeError("loss body must be callable")
+        if self.weight is not None and not callable(self.weight):
+            raise TypeError("loss weight must be callable or None")
+
+
+class LossRegistry(ValueModel):
     """All losses declared in a compiled module.
 
     Attributes
@@ -82,7 +98,23 @@ class LossRegistry:
         The registered losses in registration order.
     """
 
-    entries: list[LossEntry] = field(default_factory=list)
+    entries: list[LossEntry] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    @dx.model_validator()
+    def _validate_entries(self) -> None:
+        """Require a mutable list of loss records.
+
+        Raises
+        ------
+        TypeError
+            If the registry does not hold a list of ``LossEntry`` values.
+        """
+        if not isinstance(self.entries, list) or not all(
+            isinstance(entry, LossEntry) for entry in self.entries
+        ):
+            raise TypeError("loss entries must be a list of LossEntry values")
 
     def add(self, entry: LossEntry) -> None:
         """Register a loss.
