@@ -1,0 +1,716 @@
+==================
+QIEC declarations
+==================
+
+index Nat = Z | S(Nat)
+
+family Vec[A : Type](n : Nat) : Type
+    constructor Nil : Vec[A](Z)
+    constructor Cons[m : Nat] : A * Vec[A](m) -> Vec[A](S(m))
+
+effect State[S : Type]
+    get : Unit -> S
+    put : S -> Unit
+
+instance cell : State[Int]
+
+handler run_state[S : Type, A : Type] for State[S] : A -> A [coverage=total]
+    get resumes 1
+    put resumes 0
+
+---
+
+(source_file
+  (index_decl
+    (identifier)
+    (qiec_index_constructor
+      (identifier))
+    (qiec_index_constructor
+      (identifier)
+      (qiec_index_sort
+        (qiec_nat_sort))))
+  (indexed_family_decl
+    (identifier)
+    (qiec_static_telescope
+      (qiec_type_binder
+        (identifier)
+        (qiec_type_kind)))
+    (qiec_index_telescope
+      (qiec_index_binder
+        (identifier)
+        (qiec_index_sort
+          (qiec_nat_sort))))
+    (qiec_type_kind)
+    (qiec_constructor_decl
+      (identifier)
+      (qiec_type_application
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier)))
+        (qiec_index_name
+          (identifier))))
+    (qiec_constructor_decl
+      (identifier)
+      (qiec_static_telescope
+        (qiec_index_binder
+          (identifier)
+          (qiec_index_sort
+            (qiec_nat_sort))))
+      (qiec_type_name
+        (identifier))
+      (qiec_type_application
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier)))
+        (qiec_index_name
+          (identifier)))
+      (qiec_type_application
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier)))
+        (qiec_index_application
+          (identifier)
+          (qiec_index_name
+            (identifier))))))
+  (effect_decl
+    (identifier)
+    (qiec_static_telescope
+      (qiec_type_binder
+        (identifier)
+        (qiec_type_kind)))
+    (qiec_operation_decl
+      (identifier)
+      (qiec_type_name
+        (identifier))
+      (qiec_type_name
+        (identifier)))
+    (qiec_operation_decl
+      (identifier)
+      (qiec_type_name
+        (identifier))
+      (qiec_type_name
+        (identifier))))
+  (effect_instance_decl
+    (identifier)
+    (qiec_effect_ref
+      (identifier)
+      (qiec_static_argument
+        (qiec_type_name
+          (identifier)))))
+  (handler_decl
+    (identifier)
+    (qiec_static_telescope
+      (qiec_type_binder
+        (identifier)
+        (qiec_type_kind))
+      (qiec_type_binder
+        (identifier)
+        (qiec_type_kind)))
+    (qiec_effect_ref
+      (identifier)
+      (qiec_static_argument
+        (qiec_type_name
+          (identifier))))
+    (qiec_type_name
+      (identifier))
+    (qiec_type_name
+      (identifier))
+    (qiec_handler_options
+      (qiec_handler_first_option
+        (qiec_handler_coverage_key)))
+    (qiec_handler_operation_clause
+      (identifier)
+      (qiec_resumption_grade))
+    (qiec_handler_operation_clause
+      (identifier)
+      (qiec_resumption_grade))))
+
+==================
+QIEC state computations and open rows
+==================
+
+define swap[cell_effect : Effect](next : Int) : Int ! {cell | rho lacks cell} =
+    let prior <- perform cell.get()
+    perform cell.put(next)
+    return prior
+
+define run(next : Int) : Int ! {} =
+    handle cell with run_state[Int, Int] in
+        return next
+
+define polymorphic(next : Int) : Int ! {| rho lacks cell} =
+    return next
+
+---
+
+(source_file
+  (computation_decl
+    (identifier)
+    (qiec_static_telescope
+      (qiec_effect_binder
+        (identifier)
+        (qiec_effect_kind)))
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal
+        (qiec_row_entry
+          (identifier))
+        (identifier)
+        (identifier)))
+    (qiec_bind_computation
+      (qiec_local_binding
+        (identifier))
+      (qiec_perform_computation
+        (qiec_effect_request
+          (identifier)
+          (identifier)))
+      (qiec_sequence_computation
+        (qiec_perform_computation
+          (qiec_effect_request
+            (identifier)
+            (identifier)
+            (let_var
+              (identifier))))
+        (qiec_return_computation
+          (let_var
+            (identifier))))))
+  (computation_decl
+    (identifier)
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_handle_computation
+      (identifier)
+      (qiec_handler_application
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier)))
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier))))
+      (qiec_return_computation
+        (let_var
+          (identifier)))))
+  (computation_decl
+    (identifier)
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal
+        (identifier)
+        (identifier)))
+    (qiec_return_computation
+      (let_var
+        (identifier)))))
+
+==================
+QIEC indexed construction and case
+==================
+
+define singleton[A : Type](value : A) : Vec[A](S(Z)) ! {} =
+    return construct Cons[A, Z](value, construct Nil[A]() as Vec[A](Z)) as Vec[A](S(Z))
+
+define head[A : Type, n : Nat](xs : Vec[A](S(n))) : A ! {} =
+    case xs motive (m : Nat) => A
+        Cons[n](head, tail) =>
+            return head
+
+---
+
+(source_file
+  (computation_decl
+    (identifier)
+    (qiec_static_telescope
+      (qiec_type_binder
+        (identifier)
+        (qiec_type_kind)))
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_type_application
+      (identifier)
+      (qiec_static_argument
+        (qiec_type_name
+          (identifier)))
+      (qiec_index_application
+        (identifier)
+        (qiec_index_name
+          (identifier))))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_return_computation
+      (qiec_constructor_value
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier)))
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier)))
+        (let_var
+          (identifier))
+        (qiec_constructor_value
+          (identifier)
+          (qiec_static_argument
+            (qiec_type_name
+              (identifier)))
+          (qiec_type_application
+            (identifier)
+            (qiec_static_argument
+              (qiec_type_name
+                (identifier)))
+            (qiec_index_name
+              (identifier))))
+        (qiec_type_application
+          (identifier)
+          (qiec_static_argument
+            (qiec_type_name
+              (identifier)))
+          (qiec_index_application
+            (identifier)
+            (qiec_index_name
+              (identifier)))))))
+  (computation_decl
+    (identifier)
+    (qiec_static_telescope
+      (qiec_type_binder
+        (identifier)
+        (qiec_type_kind))
+      (qiec_index_binder
+        (identifier)
+        (qiec_index_sort
+          (qiec_nat_sort))))
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_application
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier)))
+        (qiec_index_application
+          (identifier)
+          (qiec_index_name
+            (identifier)))))
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_case_computation
+      (let_var
+        (identifier))
+      (qiec_case_motive
+        (qiec_index_telescope
+          (qiec_index_binder
+            (identifier)
+            (qiec_index_sort
+              (qiec_nat_sort))))
+        (qiec_type_name
+          (identifier)))
+      (qiec_case_branch
+        (identifier)
+        (qiec_case_static_binder
+          (identifier))
+        (qiec_local_binding
+          (identifier))
+        (qiec_local_binding
+          (identifier))
+        (qiec_return_computation
+          (let_var
+            (identifier)))))))
+
+==================
+QIEC signed literals
+==================
+
+define negative_int() : Int !{} =
+    return -1
+
+define negative_real() : Real !{} =
+    return -1.5
+
+---
+
+(source_file
+  (computation_decl
+    (identifier)
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_return_computation
+      (let_unary
+        (let_literal
+          (integer)))))
+  (computation_decl
+    (identifier)
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_return_computation
+      (let_unary
+        (let_literal
+          (float))))))
+
+==================
+QIEC computation calls and pure bindings
+==================
+
+define helper(value : Int) : Int !{} =
+    return value
+
+define caller(value : Int) : Int !{} =
+    let doubled = value
+    let result <- helper(doubled)
+    return result
+
+---
+
+(source_file
+  (computation_decl
+    (identifier)
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_return_computation
+      (let_var
+        (identifier))))
+  (computation_decl
+    (identifier)
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_pure_binding
+      (qiec_local_binding
+        (identifier))
+      (let_var
+        (identifier))
+      (qiec_bind_computation
+        (qiec_local_binding
+          (identifier))
+        (qiec_call_computation
+          (identifier)
+          (let_var
+            (identifier)))
+        (qiec_return_computation
+          (let_var
+            (identifier)))))))
+
+==================
+QIEC authored handler clauses and scoped instances
+==================
+
+handler tracked for State[Int] : Int -> Int [coverage=total, implementation=authored]
+    return x =>
+        return x
+    get(u : Unit) resumes 1 =>
+        resume(u)
+
+define scoped(seed : Int) : Int !{} =
+    with instance cell : State[Int] in
+        handle cell with tracked in
+            return seed
+
+---
+
+(source_file
+  (handler_decl
+    (identifier)
+    (qiec_effect_ref
+      (identifier)
+      (qiec_static_argument
+        (qiec_type_name
+          (identifier))))
+    (qiec_type_name
+      (identifier))
+    (qiec_type_name
+      (identifier))
+    (qiec_handler_options
+      (qiec_handler_first_option
+        (qiec_handler_coverage_key))
+      (qiec_handler_option))
+    (qiec_handler_return_clause
+      (qiec_local_binding
+        (identifier))
+      (qiec_return_computation
+        (let_var
+          (identifier))))
+    (qiec_handler_operation_clause
+      (identifier)
+      (qiec_local_binding
+        (identifier)
+        (qiec_type_name
+          (identifier)))
+      (qiec_resumption_grade)
+      (qiec_resume_computation
+        (let_var
+          (identifier)))))
+  (computation_decl
+    (identifier)
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_instance_computation
+      (identifier)
+      (qiec_effect_ref
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier))))
+      (qiec_handle_computation
+        (identifier)
+        (qiec_handler_application
+          (identifier))
+        (qiec_return_computation
+          (let_var
+            (identifier)))))))
+
+==================
+QIEC computation without an effect row is rejected
+:error
+==================
+
+define missing_row(x : Int) : Int =
+    return x
+
+---
+
+(ERROR)
+
+==================
+QIEC static telescope without a binder name is rejected
+:error
+==================
+
+define nameless[: Type](x : Int) : Int !{} =
+    return x
+
+---
+
+(ERROR)
+
+==================
+QIEC handler clause arrow without a body is rejected
+:error
+==================
+
+handler broken for State[Int] : Int -> Int
+    get(u : Unit) resumes 1 =>
+
+---
+
+(ERROR)
+
+==================
+QIEC pure expressions, tuples, and builtin applications
+==================
+
+define arithmetic(x : Int, y : Real) : Real !{} =
+    let doubled = x * 2 + 1
+    let scaled = real(doubled) / y
+    let flag = (x > 0) && not (y == 1.0)
+    let pair = (doubled, y)
+    return pair[1] - scaled
+
+---
+
+(source_file
+  (computation_decl
+    (identifier)
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_pure_binding
+      (qiec_local_binding
+        (identifier))
+      (let_binop
+        (let_binop
+          (let_var
+            (identifier))
+          (let_literal
+            (integer)))
+        (let_literal
+          (integer)))
+      (qiec_pure_binding
+        (qiec_local_binding
+          (identifier))
+        (let_binop
+          (let_call
+            (identifier)
+            (let_var
+              (identifier)))
+          (let_var
+            (identifier)))
+        (qiec_pure_binding
+          (qiec_local_binding
+            (identifier))
+          (let_binop
+            (let_paren
+              (let_binop
+                (let_var
+                  (identifier))
+                (let_literal
+                  (integer))))
+            (let_unary
+              (let_paren
+                (let_binop
+                  (let_var
+                    (identifier))
+                  (let_literal
+                    (float))))))
+          (qiec_pure_binding
+            (qiec_local_binding
+              (identifier))
+            (let_tuple
+              (let_var
+                (identifier))
+              (let_var
+                (identifier)))
+            (qiec_return_computation
+              (let_binop
+                (let_index
+                  (let_var
+                    (identifier))
+                  (let_literal
+                    (integer)))
+                (let_var
+                  (identifier))))))))))
+
+==================
+QIEC if computations
+==================
+
+define triangle(n : Int) : Int !{} =
+    if n <= 0 then
+        return 0
+    else
+        let rest <- triangle(n - 1)
+        return (n + rest)
+
+---
+
+(source_file
+  (computation_decl
+    (identifier)
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_if_computation
+      (let_binop
+        (let_var
+          (identifier))
+        (let_literal
+          (integer)))
+      (qiec_return_computation
+        (let_literal
+          (integer)))
+      (qiec_bind_computation
+        (qiec_local_binding
+          (identifier))
+        (qiec_call_computation
+          (identifier)
+          (let_binop
+            (let_var
+              (identifier))
+            (let_literal
+              (integer))))
+        (qiec_return_computation
+          (let_paren
+            (let_binop
+              (let_var
+                (identifier))
+              (let_var
+                (identifier)))))))))
+
+==================
+QIEC hanging collection call and list
+==================
+
+define hanging() : Tensor[Real]([2]) !{} =
+    return map(
+        [
+            1.0,
+            2.0,
+        ],
+        (x -> x * 2.0),
+    )
+
+---
+
+(source_file
+  (computation_decl
+    (identifier)
+    (qiec_type_application
+      (identifier)
+      (qiec_static_argument
+        (qiec_type_name
+          (identifier)))
+      (qiec_shape_index
+        (qiec_index_literal
+          (integer))))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_return_computation
+      (let_call
+        (identifier)
+        (let_list
+          (let_literal
+            (float))
+          (let_literal
+            (float)))
+        (let_paren
+          (let_lambda
+            (identifier)
+            (let_binop
+              (let_var
+                (identifier))
+              (let_literal
+                (float)))))))))

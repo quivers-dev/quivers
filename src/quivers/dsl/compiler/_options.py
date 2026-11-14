@@ -13,7 +13,7 @@ The rules are deliberate:
 * Missing key returns the supplied default (or None).
 * Wrong shape (e.g. asking for an int when the entry is a string)
   is a `CompileError` at the declaration's source location.
-* Identifier-valued options (``role=latent``) decode through
+* Identifier-valued options (``role=parameter``) decode through
   ``get_option_name``; string-valued options (``path="lex.tsv"``)
   decode through ``get_option_string``. The surface distinguishes
   the two, and the compiler should not silently coerce.
@@ -118,7 +118,7 @@ def get_option_name(
 ) -> str | None:
     """Decode an identifier-valued option to its name.
 
-    Matches ``key=identifier`` (and only that). ``role=latent``,
+    Matches ``key=identifier`` (and only that). ``role=parameter``,
     ``init=auto``, ``reduction=logsumexp`` all hit this path.
     """
     entry = find_option(options, key)
@@ -439,19 +439,19 @@ def get_program_effects(
     return frozenset(names)
 
 
-def get_program_over_model(
+def get_program_posterior_model(
     options: tuple[OptionEntry, ...],
     *,
     line: int = 0,
     col: int = 0,
 ) -> str | None:
-    """Decode the ``over`` option of a program declaration.
+    """Decode the ``posterior_of`` option of a program declaration.
 
-    The surface form ``[over=<name>]`` marks a posterior block whose
+    The surface form ``[posterior_of=<name>]`` marks a posterior block whose
     body is run against the named generative model; absence means
     the program is a vanilla generative program.
     """
-    return get_option_name(options, "over", line=line, col=col)
+    return get_option_name(options, "posterior_of", line=line, col=col)
 
 
 def get_option_value(options: tuple[OptionEntry, ...], key: str) -> OptionValue | None:
@@ -477,6 +477,6 @@ __all__ = [
     "get_option_string",
     "get_option_value",
     "get_program_effects",
-    "get_program_over_model",
+    "get_program_posterior_model",
     "has_option",
 ]

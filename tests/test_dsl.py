@@ -44,8 +44,8 @@ class TestParser:
         assert stmt.names == ("X",)
 
     def test_latent_morphism_role(self):
-        """Parse a morphism declaration with role=latent."""
-        mod = self._parse("object X : FinSet 3\nmorphism f : X -> X [role=latent]\n")
+        """Parse a morphism declaration with role=parameter."""
+        mod = self._parse("object X : FinSet 3\nmorphism f : X -> X [role=parameter]\n")
         stmt = mod.statements[1]
         assert isinstance(stmt, MorphismDecl)
         assert stmt.names == ("f",)
@@ -54,8 +54,8 @@ class TestParser:
         """Parse a let binding with composition."""
         source = (
             "object X : FinSet 3\n"
-            "morphism f : X -> X [role=latent]\n"
-            "morphism g : X -> X [role=latent]\n"
+            "morphism f : X -> X [role=parameter]\n"
+            "morphism g : X -> X [role=parameter]\n"
             "define h = f >> g\n"
         )
         mod = self._parse(source)
@@ -67,8 +67,8 @@ class TestParser:
         """Parse a let binding with tensor product."""
         source = (
             "object X : FinSet 3\n"
-            "morphism f : X -> X [role=latent]\n"
-            "morphism g : X -> X [role=latent]\n"
+            "morphism f : X -> X [role=parameter]\n"
+            "morphism g : X -> X [role=parameter]\n"
             "define h = f @ g\n"
         )
         mod = self._parse(source)
@@ -79,7 +79,7 @@ class TestParser:
         """Parse a let binding with marginalization."""
         source = (
             "object X : FinSet 3\n"
-            "morphism f : X -> X [role=latent]\n"
+            "morphism f : X -> X [role=parameter]\n"
             "define m = f.marginalize(X)\n"
         )
         mod = self._parse(source)
@@ -89,7 +89,7 @@ class TestParser:
 
     def test_export_decl(self):
         """Parse an export declaration."""
-        source = "object X : FinSet 3\nmorphism f : X -> X [role=latent]\nexport f\n"
+        source = "object X : FinSet 3\nmorphism f : X -> X [role=parameter]\nexport f\n"
         mod = self._parse(source)
         out = mod.statements[2]
         assert isinstance(out, ExportDecl)
@@ -103,7 +103,7 @@ class TestParser:
     def test_parse_returns_module(self):
         """The parse function returns a Module AST."""
         mod = parse(
-            "object X : FinSet 3\nmorphism f : X -> X [role=latent]\nexport f\n"
+            "object X : FinSet 3\nmorphism f : X -> X [role=parameter]\nexport f\n"
         )
         assert isinstance(mod, Module)
         assert len(mod.statements) == 3
@@ -115,7 +115,7 @@ class TestCompiler:
         prog = loads(
             "object X : FinSet 3\n"
             "object Y : FinSet 4\n"
-            "morphism f : X -> Y [role=latent]\n"
+            "morphism f : X -> Y [role=parameter]\n"
             "export f\n"
         )
         assert isinstance(prog, Program)
@@ -127,8 +127,8 @@ class TestCompiler:
             "object X : FinSet 3\n"
             "object Y : FinSet 4\n"
             "object Z : FinSet 2\n"
-            "morphism f : X -> Y [role=latent]\n"
-            "morphism g : Y -> Z [role=latent]\n"
+            "morphism f : X -> Y [role=parameter]\n"
+            "morphism g : Y -> Z [role=parameter]\n"
             "export f >> g\n"
         )
         assert prog().shape == torch.Size([3, 2])
@@ -138,8 +138,8 @@ class TestCompiler:
         prog = loads(
             "object X : FinSet 2\n"
             "object Y : FinSet 3\n"
-            "morphism f : X -> X [role=latent]\n"
-            "morphism g : Y -> Y [role=latent]\n"
+            "morphism f : X -> X [role=parameter]\n"
+            "morphism g : Y -> Y [role=parameter]\n"
             "export f @ g\n"
         )
         assert prog().shape == torch.Size([2, 3, 2, 3])
@@ -148,7 +148,7 @@ class TestCompiler:
         """Let bindings can be referenced later."""
         prog = loads(
             "object X : FinSet 3\n"
-            "morphism f : X -> X [role=latent]\n"
+            "morphism f : X -> X [role=parameter]\n"
             "define g = f >> f\n"
             "export g\n"
         )
@@ -170,7 +170,7 @@ class TestCompiler:
         prog = loads(
             "object X : FinSet 3\n"
             "object Y : FinSet 4\n"
-            "morphism f : X -> Y [role=latent]\n"
+            "morphism f : X -> Y [role=parameter]\n"
             "export f\n"
         )
         params = list(prog.parameters())
@@ -183,8 +183,8 @@ class TestCompiler:
             "object X : FinSet 2\n"
             "object Y : FinSet 3\n"
             "object Z : FinSet 2\n"
-            "morphism f : X -> Y [role=latent]\n"
-            "morphism g : Y -> Z [role=latent]\n"
+            "morphism f : X -> Y [role=parameter]\n"
+            "morphism g : Y -> Z [role=parameter]\n"
             "export f >> g\n"
         )
         out = prog()
@@ -197,7 +197,7 @@ class TestCompiler:
         """Morphism scale option is respected."""
         prog = loads(
             "object X : FinSet 3\n"
-            "morphism f : X -> X [role=latent, scale=0.1]\n"
+            "morphism f : X -> X [role=parameter, scale=0.1]\n"
             "export f\n"
         )
         assert prog().shape == torch.Size([3, 3])
@@ -205,7 +205,7 @@ class TestCompiler:
     def test_undefined_object_error(self):
         """CompileError for undefined object reference."""
         with pytest.raises(CompileError, match="undefined object"):
-            loads("morphism f : X -> Y [role=latent]\nexport f\n")
+            loads("morphism f : X -> Y [role=parameter]\nexport f\n")
 
     def test_undefined_morphism_error(self):
         """CompileError for undefined morphism reference."""
@@ -220,7 +220,7 @@ class TestLoader:
         f.write_text(
             "object X : FinSet 3\n"
             "object Y : FinSet 4\n"
-            "morphism f : X -> Y [role=latent]\n"
+            "morphism f : X -> Y [role=parameter]\n"
             "export f\n"
         )
         prog = load(f)
@@ -231,7 +231,7 @@ class TestLoader:
         """Load accepts string paths."""
         f = tmp_path / "model.qvr"
         f.write_text(
-            "object X : FinSet 2\nmorphism f : X -> X [role=latent]\nexport f\n"
+            "object X : FinSet 2\nmorphism f : X -> X [role=parameter]\nexport f\n"
         )
         prog = load(str(f))
         assert isinstance(prog, Program)
@@ -248,7 +248,7 @@ class TestCompileEnv:
         ast = parse(
             "object X : FinSet 3\n"
             "object Y : FinSet 4\n"
-            "morphism f : X -> Y [role=latent]\n"
+            "morphism f : X -> Y [role=parameter]\n"
         )
         compiler = Compiler(ast)
         env = compiler.compile_env()
@@ -261,7 +261,7 @@ class TestCompileEnv:
         ast = parse(
             "object X : FinSet 3\n"
             "object Y : FinSet 4\n"
-            "morphism f : X -> Y [role=latent]\n"
+            "morphism f : X -> Y [role=parameter]\n"
         )
         compiler = Compiler(ast)
         env = compiler.compile_env()
@@ -393,7 +393,7 @@ class TestComments:
             "object X : FinSet 3   # input\n"
             "object Y : FinSet 4   # output\n"
             "\n"
-            "morphism f : X -> Y [role=latent]\n"
+            "morphism f : X -> Y [role=parameter]\n"
             "\n"
             "export f\n"
         )

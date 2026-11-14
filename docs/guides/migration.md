@@ -41,6 +41,23 @@ A migration across several revisions composes the conversions between adjacent
 revisions. The installed package includes the grammar of every revision as a compiled
 parser, so `qvr migrate` never compiles a parser at run time.
 
+## Declaration options
+
+The declaration-option migration renames three header options:
+
+| Declaration | Source option | Target option |
+| --- | --- | --- |
+| Morphism | `role=latent` | `role=parameter` |
+| Program | `over=model` | `posterior_of=model` |
+| Composition | `level=bilinear_form` | `level=magmoid` |
+
+The parameter role declares a learnable morphism. A posterior program reads the
+named model's latent variables. The [magmoid level](../semantics/composition-rules.md#1-levels) selects a composition rule without
+requiring associativity or identities. These meanings are preserved by the migration.
+Comments, strings, user-defined names, `weights=latent`, and event-axis `over=` options
+retain their original bytes. Both spellings fit the option grammar, so checking the
+migrated source also tests whether its option names are accepted by the compiler.
+
 ## Common invocations
 
 `--from` names the grammar revision the source was written for, as a release tag such

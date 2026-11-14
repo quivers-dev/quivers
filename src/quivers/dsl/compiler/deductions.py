@@ -361,7 +361,7 @@ def load_lexicon_tsv(
             syn_src = (
                 "object LexTerm : FinSet 1\n"
                 "morphism lex_source : LexTerm -> LexTerm "
-                "[role=latent]\n"
+                "[role=parameter]\n"
                 "program lex_program : LexTerm -> LexTerm\n"
                 "    sample lex_value : LexTerm <- lex_source\n"
                 f"    let lex_lf = {lf_text}\n"

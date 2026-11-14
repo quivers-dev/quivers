@@ -322,7 +322,7 @@ class TestInitAutoDSL:
 composition product_fuzzy [level=algebra]
 object A : FinSet 8
 object B : FinSet 4
-morphism f : A -> B [role=latent, init=auto]
+morphism f : A -> B [role=parameter, init=auto]
 export f
 """
         from quivers.dsl import loads
@@ -341,7 +341,7 @@ export f
 composition product_fuzzy [level=algebra]
 object A : FinSet 8
 object B : FinSet 4
-morphism f : A -> B [role=latent]
+morphism f : A -> B [role=parameter]
 export f
 """
         from quivers.dsl import loads
@@ -356,7 +356,7 @@ export f
 composition boolean [level=algebra]
 object A : FinSet 4
 object B : FinSet 4
-morphism f : A -> B [role=latent, init=auto]
+morphism f : A -> B [role=parameter, init=auto]
 export f
 """
         from quivers.dsl import loads

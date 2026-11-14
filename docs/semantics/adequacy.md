@@ -27,7 +27,7 @@ For these clauses the runtime computes the denotation, up to floating-point erro
 - An object expression is resolved by one recursive walk over `ObjectExpr`, which flattens nested
   products and coproducts without reordering them ([Types and spaces](types-and-spaces.md)). Space
   constructors are looked up in the compiler's table of constructors.
-- A learnable table (`role=latent`) stores unconstrained parameters and returns their sigmoid as its
+- A learnable table (`role=parameter`) stores unconstrained parameters and returns their sigmoid as its
   matrix, and an observed morphism returns the matrix it was given. Composition applies the rule's
   `tensor_op` and `join` as in [Morphisms §1.1](morphisms.md#11-composition-tensor-identity), and the
   tensor product applies `tensor_op` entrywise.

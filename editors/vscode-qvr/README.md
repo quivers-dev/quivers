@@ -19,13 +19,13 @@ pip install 'quivers[lsp]'
 qvr-lsp --help
 ```
 
-Then install `vscode-qvr-0.7.0.vsix` from the corresponding Quivers GitHub
+Then install `vscode-qvr-0.7.1.vsix` from the corresponding Quivers GitHub
 release:
 
 ```sh
-code --install-extension vscode-qvr-0.7.0.vsix
+code --install-extension vscode-qvr-0.7.1.vsix
 # or
-cursor --install-extension vscode-qvr-0.7.0.vsix
+cursor --install-extension vscode-qvr-0.7.1.vsix
 ```
 
 To package the extension from a checkout:
@@ -34,7 +34,7 @@ To package the extension from a checkout:
 cd editors/vscode-qvr
 npm ci
 npm run package
-code --install-extension vscode-qvr-0.7.0.vsix
+code --install-extension vscode-qvr-0.7.1.vsix
 ```
 
 ## Language features

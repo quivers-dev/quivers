@@ -165,7 +165,7 @@ class Compiler(
         self._objects: dict[str, SetObject] = {}
         self._spaces: dict = {}
         self._morphisms: dict = {}
-        # The `~ Family(...)` prior of each `role=latent` morphism that
+        # The `~ Family(...)` prior of each `role=parameter` morphism that
         # declares one: a draw from the morphism draws from this family,
         # as the reference machine and every transpile target read it.
         self._latent_priors: dict[str, MorphismInitFamily] = {}

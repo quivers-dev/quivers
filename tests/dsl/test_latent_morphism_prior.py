@@ -1,6 +1,6 @@
 """A latent morphism's `~ Family(...)` prior is the law a draw from it has.
 
-`morphism W : A -> B [role=latent] ~ Normal(loc=0.0, scale=2.0)` declares
+`morphism W : A -> B [role=parameter] ~ Normal(loc=0.0, scale=2.0)` declares
 the prior of a draw `sample v <- W`. The reference machine and every
 transpile target score such a draw under the declared family; the compiled
 runtime has to as well, rather than reading the morphism as its learned
@@ -24,7 +24,7 @@ _SOURCE = """\
 object A : FinSet 3
 object B : FinSet 2
 object Row : FinSet 4
-morphism W : A -> B [role=latent] ~ Normal(loc=0.5, scale=2.0)
+morphism W : A -> B [role=parameter] ~ Normal(loc=0.5, scale=2.0)
 program p : Row -> Row
     sample v : Row <- W
     return v

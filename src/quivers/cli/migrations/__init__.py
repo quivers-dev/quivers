@@ -49,7 +49,8 @@ from quivers.cli.migrations import v0_10_0_to_v0_11_0 as _hop_10_11
 from quivers.cli.migrations import v0_11_0_to_v0_14_0 as _hop_11_14
 from quivers.cli.migrations import v0_14_0_to_v0_15_0 as _hop_14_15
 from quivers.cli.migrations import v0_18_0_to_v0_19_0 as _hop_18_19
-from quivers.cli.migrations import v0_19_0_to_head as _hop_19_head
+from quivers.cli.migrations import v0_19_0_to_v0_62_0 as _hop_19_62
+from quivers.cli.migrations import v0_62_0_to_head as _hop_62_head
 from quivers.cli.migrations._common import MigrationError
 from quivers.cli.migrations._manifest import SCHEMA_COMMITS, revisions_are_identical
 from quivers.cli.migrations._vcs import (
@@ -81,6 +82,7 @@ CHAIN: tuple[str, ...] = (
     "v0.17.0",
     "v0.18.0",
     "v0.19.0",
+    "v0.62.0",
     "HEAD",
 )
 """The QVR grammar releases a migration can start or end at, oldest
@@ -166,7 +168,8 @@ MIGRATORS: dict[tuple[str, str], _Migrator] = {
         "v0.17.0", "v0.18.0", resolve_commit=commit_id
     ),
     ("v0.18.0", "v0.19.0"): _hop_18_19.migrate,
-    ("v0.19.0", "HEAD"): _hop_19_head.migrate,
+    ("v0.19.0", "v0.62.0"): _hop_19_62.migrate,
+    ("v0.62.0", "HEAD"): _hop_62_head.migrate,
 }
 """The one-hop migrator registered for each adjacent pair of `CHAIN`,
 a ``bytes -> bytes`` rewrite of ``.qvr`` source."""
@@ -186,7 +189,8 @@ COVERAGE: dict[tuple[str, str], frozenset[str]] = {
     ("v0.16.0", "v0.17.0"): _identity.SOURCE_RULE_COVERAGE,
     ("v0.17.0", "v0.18.0"): _identity.SOURCE_RULE_COVERAGE,
     ("v0.18.0", "v0.19.0"): _hop_18_19.SOURCE_RULE_COVERAGE,
-    ("v0.19.0", "HEAD"): _hop_19_head.SOURCE_RULE_COVERAGE,
+    ("v0.19.0", "v0.62.0"): _hop_19_62.SOURCE_RULE_COVERAGE,
+    ("v0.62.0", "HEAD"): _hop_62_head.SOURCE_RULE_COVERAGE,
 }
 """The source-side grammar rules each hop's converters cover, keyed by
 adjacent pair of `CHAIN`. `vcs_coverage_report` checks these against
@@ -214,6 +218,10 @@ IDENTITY_PAIRS: frozenset[tuple[str, str]] = _declared_identity_pairs()
 their registered migrator returns its source unchanged."""
 
 
+_SEMANTIC_PAIRS = frozenset({("v0.62.0", "HEAD")})
+"""Option-vocabulary migrations with byte-identical grammar assets."""
+
+
 def _validate_registry() -> frozenset[tuple[str, str]]:
     """Fail closed when the executable chain drifts from its manifests."""
     expected_edges = set(zip(CHAIN, CHAIN[1:]))
@@ -235,7 +243,11 @@ def _validate_registry() -> frozenset[tuple[str, str]]:
     manifest_identity = frozenset(
         pair for pair in expected_edges if revisions_are_identical(*pair)
     )
-    if declared_identity != manifest_identity:
+    if not _SEMANTIC_PAIRS <= manifest_identity:
+        raise MigrationError(
+            "semantic migration pairs must have identical grammar assets"
+        )
+    if declared_identity != manifest_identity - _SEMANTIC_PAIRS:
         raise MigrationError(
             "registered identity migrators do not match the grammar/schema "
             f"manifest: declared={sorted(declared_identity)!r}, "

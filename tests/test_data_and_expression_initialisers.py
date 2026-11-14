@@ -124,8 +124,8 @@ def test_freeze_materialises_composition_tensor() -> None:
     object B : FinSet 2
     object C : FinSet 2
 
-    morphism f : A -> B [role=latent]
-    morphism g : B -> C [role=latent]
+    morphism f : A -> B [role=parameter]
+    morphism g : B -> C [role=parameter]
 
     define chain = f >> g
     define frozen = chain.freeze
@@ -145,7 +145,7 @@ def test_freeze_detaches_gradients() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 2
     object B : FinSet 2
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define frozen = f.freeze
     export frozen
     """
@@ -172,7 +172,7 @@ def test_expression_initializer_propagates_parameters() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
     object B : FinSet 3
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     morphism h : A -> B [role=observed] ~ f
     export h
     """
@@ -195,7 +195,7 @@ def test_latent_morphism_accepts_scale_option() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 5
     object B : FinSet 5
-    morphism f : A -> B [role=latent, scale=0.01]
+    morphism f : A -> B [role=parameter, scale=0.01]
     export f
     """
     m = loads(textwrap.dedent(src))
@@ -225,7 +225,7 @@ def test_from_data_composed_with_latent_yields_learnable_chain() -> None:
     object C : FinSet 5
 
     morphism h : A -> B [role=observed] ~ from_data("H")
-    morphism g : B -> C [role=latent]
+    morphism g : B -> C [role=parameter]
     define chain = h >> g
     export chain
     """

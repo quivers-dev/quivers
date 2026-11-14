@@ -15,7 +15,7 @@ from quivers.dsl import loads
 
 src = """
 object A : FinSet 3
-morphism f : A -> A [role=latent]
+morphism f : A -> A [role=parameter]
 export f
 """
 print(type(loads(src)).__name__)   # Program

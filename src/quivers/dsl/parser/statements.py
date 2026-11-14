@@ -163,7 +163,7 @@ def _walk_statement(t: _Tree, vid: str) -> Statement | list[Statement]:
 # ---------------------------------------------------------------------------
 
 
-_COMPOSITION_LEVELS = ("algebra", "semigroupoid", "bilinear_form", "rule")
+_COMPOSITION_LEVELS = ("algebra", "semigroupoid", "magmoid", "rule")
 
 
 def _walk_composition_decl(t: _Tree, vid: str, line: int, col: int) -> CompositionDecl:

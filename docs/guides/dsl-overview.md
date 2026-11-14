@@ -20,7 +20,7 @@ composition product_fuzzy [level=algebra]
 object X : FinSet 3
 object Y : FinSet 4
 
-morphism f : X -> Y [role=latent]
+morphism f : X -> Y [role=parameter]
 export f
 """)
 
@@ -36,7 +36,7 @@ programming languages such as Stan and Pyro [@carpenter2017stan; @bingham2019pyr
 QVR differs in three ways:
 
 - **Priors on weight matrices.** A learnable table takes a prior directly,
-  `morphism W : A -> B [role=latent] ~ Family(args)`, and a draw marks which axes
+  `morphism W : A -> B [role=parameter] ~ Family(args)`, and a draw marks which axes
   form one joint event with the `[over=..., iid_over=...]` clause after its family.
   [Matrix-normal](https://en.wikipedia.org/wiki/Matrix_normal_distribution),
   [LKJ](https://en.wikipedia.org/wiki/Lewandowski-Kurowicka-Joe_distribution)
@@ -100,7 +100,7 @@ from quivers.dsl import Compiler, parse
 
 source = """
 object X : FinSet 3
-morphism f : X -> X [role=latent]
+morphism f : X -> X [role=parameter]
 export f
 """.strip()
 ast = parse(source)
@@ -139,7 +139,7 @@ from quivers.dsl import parse, Compiler, extract_program_schema
 
 source = """
 object X : FinSet 3
-morphism f : X -> X [role=latent]
+morphism f : X -> X [role=parameter]
 export f
 """.strip()
 ast = parse(source)
@@ -190,7 +190,7 @@ composition_decl
                := 'composition' IDENT [option_block]
                   [INDENT composition_rule_entry+ DEDENT]
 composition_level              (* the value of the `level` option key *)
-               := 'algebra' | 'semigroupoid' | 'bilinear_form' | 'rule'
+               := 'algebra' | 'semigroupoid' | 'magmoid' | 'rule'
 composition_rule_entry
                := IDENT ['(' IDENT (',' IDENT)* ')'] '=' let_expr
 
@@ -203,7 +203,7 @@ object_decl    := 'object' IDENT ':' object_value
 object_value   := enum_set_literal | free_residuated_expr
                 | free_monoid_expr | object_expr
 
-(* Morphisms. The role (`latent`, `observed`, `kernel`, `embed`,
+(* Morphisms. The role (`parameter`, `observed`, `kernel`, `embed`,
    `discretize`) and other modifiers live in the option block. An
    optional `~ Family(args)` attaches a distribution family. *)
 morphism_decl  := 'morphism' IDENT (',' IDENT)* ':' object_expr '->' object_expr
@@ -303,7 +303,7 @@ The character `#` starts five kinds of token, told apart by the character after 
 object X : FinSet 3  # inline comment
 
 # Define morphisms
-morphism f : X -> X [role=latent]
+morphism f : X -> X [role=parameter]
 ```
 
 ### Doc comments
@@ -317,7 +317,7 @@ comments.
 #! The terminal vocabulary; cardinality 256 is one byte.
 object Token : FinSet 256
 #! Latent token-to-category embedding learned during training.
-morphism emit : Token -> Token [role=latent]
+morphism emit : Token -> Token [role=parameter]
 ```
 
 ## Error handling
@@ -336,7 +336,7 @@ from quivers.dsl import loads, ParseError, CompileError
 
 bad_source = """
 object X : FinSet 3
-morphism f : X -> Y [role=latent]
+morphism f : X -> Y [role=parameter]
 export f
 """.strip()
 try:

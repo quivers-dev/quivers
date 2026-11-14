@@ -676,8 +676,8 @@ class TestDSLObserveExecution(unittest.TestCase):
 space Unit : 1
 space R1 : Euclidean(1)
 
-morphism prior : Unit -> R1 [role=latent]
-morphism likelihood : R1 -> R1 [role=latent]
+morphism prior : Unit -> R1 [role=parameter]
+morphism likelihood : R1 -> R1 [role=parameter]
 
 program test : Unit -> R1
     sample x <- prior

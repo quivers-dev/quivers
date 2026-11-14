@@ -1,0 +1,412 @@
+==================
+minimal program
+==================
+
+program p : A -> B
+    sample x <- f
+    return x
+
+---
+
+(source_file
+  (program_decl
+    (identifier)
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
+    (sample_step
+      (identifier)
+      (identifier))
+    (return_step
+      (identifier))))
+
+==================
+program with typed and untyped parameters
+==================
+
+program q (alpha, beta : Real, n : Nat, s : FinSet, sp : Space, ob : Object, m : Mor[A, B * C]) : A -> B [n_steps=4]
+    sample x <- f
+    return x
+
+---
+
+(source_file
+  (program_decl
+    (identifier)
+    (identifier)
+    (typed_program_param
+      (identifier)
+      (scalar_kind))
+    (typed_program_param
+      (identifier)
+      (scalar_kind))
+    (typed_program_param
+      (identifier)
+      (object_kind))
+    (typed_program_param
+      (identifier)
+      (object_kind))
+    (typed_program_param
+      (identifier)
+      (object_kind))
+    (typed_program_param
+      (identifier)
+      (morphism_kind
+        (object_atom
+          (identifier))
+        (object_product
+          (object_atom
+            (identifier))
+          (object_atom
+            (identifier)))))
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
+    (option_block
+      (option_entry
+        (identifier)
+        (signed_number
+          (integer))))
+    (sample_step
+      (identifier)
+      (identifier))
+    (return_step
+      (identifier))))
+
+==================
+sample step forms
+==================
+
+program draws : A -> B
+    sample x <- f
+    sample (y, z) <- g
+    sample v : Item <- Normal(0.0, 1.0)
+    sample u <- prior(theta[N], -1.0, 2.5e-3) [iid]
+    sample mix <- Mixture([0.3, 0.7], [PointMass(0), Poisson(rate)])
+    return x
+
+---
+
+(source_file
+  (program_decl
+    (identifier)
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
+    (sample_step
+      (identifier)
+      (identifier))
+    (sample_step
+      (var_tuple
+        (identifier)
+        (identifier))
+      (identifier))
+    (sample_step
+      (identifier)
+      (object_atom
+        (identifier))
+      (identifier)
+      (signed_number
+        (float))
+      (signed_number
+        (float)))
+    (sample_step
+      (identifier)
+      (identifier)
+      (bracket_index_arg
+        (identifier)
+        (object_atom
+          (identifier)))
+      (signed_number
+        (float))
+      (signed_number
+        (float))
+      (option_block
+        (option_entry
+          (identifier))))
+    (sample_step
+      (identifier)
+      (identifier)
+      (list_arg
+        (signed_number
+          (float))
+        (signed_number
+          (float)))
+      (list_arg
+        (family_call_arg
+          (identifier)
+          (signed_number
+            (integer)))
+        (family_call_arg
+          (identifier)
+          (identifier))))
+    (return_step
+      (identifier))))
+
+==================
+observe step forms
+==================
+
+program evidence : A -> B
+    observe d <- lik(z, 0.5)
+    observe (a, b) <- joint
+    observe r : N <- Bernoulli(p)
+    return r
+
+---
+
+(source_file
+  (program_decl
+    (identifier)
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
+    (observe_step
+      (identifier)
+      (identifier)
+      (identifier)
+      (signed_number
+        (float)))
+    (observe_step
+      (var_tuple
+        (identifier)
+        (identifier))
+      (identifier))
+    (observe_step
+      (identifier)
+      (object_atom
+        (identifier))
+      (identifier)
+      (identifier))
+    (return_step
+      (identifier))))
+
+==================
+marginalize with scope
+==================
+
+program marg : A -> B
+    marginalize c : K <- Categorical(probs=probs)
+        observe r <- emissions(c)
+        let s = r * 2.0
+    return c
+
+---
+
+(source_file
+  (program_decl
+    (identifier)
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
+    (marginalize_step
+      (identifier)
+      (object_atom
+        (identifier))
+      (identifier)
+      (named_draw_arg
+        (identifier)
+        (identifier))
+      (observe_step
+        (identifier)
+        (identifier)
+        (identifier))
+      (let_step
+        (identifier)
+        (let_binop
+          (let_var
+            (identifier))
+          (let_literal
+            (float)))))
+    (return_step
+      (identifier))))
+
+==================
+let and score steps
+==================
+
+program scored (alpha : Real) : A -> B
+    sample x <- f
+    let logit = log(p) - log(1.0 - p)
+    score pen = logit * alpha
+    return x
+
+---
+
+(source_file
+  (program_decl
+    (identifier)
+    (typed_program_param
+      (identifier)
+      (scalar_kind))
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
+    (sample_step
+      (identifier)
+      (identifier))
+    (let_step
+      (identifier)
+      (let_binop
+        (let_call
+          (identifier)
+          (let_var
+            (identifier)))
+        (let_call
+          (identifier)
+          (let_binop
+            (let_literal
+              (float))
+            (let_var
+              (identifier))))))
+    (score_step
+      (identifier)
+      (let_binop
+        (let_var
+          (identifier))
+        (let_var
+          (identifier))))
+    (return_step
+      (identifier))))
+
+==================
+return tuple forms
+==================
+
+program plain_tuple : A -> B * C
+    sample m <- f
+    sample s <- g
+    return (m, s)
+
+program labeled_tuple : A -> B * C
+    sample m <- f
+    sample s <- g
+    return (mu: m, sigma: s)
+
+---
+
+(source_file
+  (program_decl
+    (identifier)
+    (object_atom
+      (identifier))
+    (object_product
+      (object_atom
+        (identifier))
+      (object_atom
+        (identifier)))
+    (sample_step
+      (identifier)
+      (identifier))
+    (sample_step
+      (identifier)
+      (identifier))
+    (return_step
+      (return_tuple
+        (identifier)
+        (identifier))))
+  (program_decl
+    (identifier)
+    (object_atom
+      (identifier))
+    (object_product
+      (object_atom
+        (identifier))
+      (object_atom
+        (identifier)))
+    (sample_step
+      (identifier)
+      (identifier))
+    (sample_step
+      (identifier)
+      (identifier))
+    (return_step
+      (return_labeled_tuple
+        (return_label_entry
+          (identifier)
+          (identifier))
+        (return_label_entry
+          (identifier)
+          (identifier))))))
+
+==================
+call step binding a named computation
+==================
+
+program calls : A -> B
+    sample m <- f
+    let total <- helper[Real](m, 2.0)
+    let plain <- nullary()
+    let sized <- padded[3](total)
+    return total
+
+---
+
+(source_file
+  (program_decl
+    (identifier)
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
+    (sample_step
+      (identifier)
+      (identifier))
+    (call_step
+      (identifier)
+      (qiec_call_computation
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier)))
+        (let_var
+          (identifier))
+        (let_literal
+          (float))))
+    (call_step
+      (identifier)
+      (qiec_call_computation
+        (identifier)))
+    (call_step
+      (identifier)
+      (qiec_call_computation
+        (identifier)
+        (qiec_static_argument
+          (qiec_index_literal
+            (integer)))
+        (let_var
+          (identifier))))
+    (return_step
+      (identifier))))
+
+==================
+named distribution argument
+==================
+
+program categorical_logits : A -> K
+    observe y <- Categorical(logits=scores)
+    return y
+
+---
+
+(source_file
+  (program_decl
+    (identifier)
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
+    (observe_step
+      (identifier)
+      (identifier)
+      (named_draw_arg
+        (identifier)
+        (identifier)))
+    (return_step
+      (identifier))))

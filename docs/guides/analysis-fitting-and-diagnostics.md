@@ -510,7 +510,7 @@ program = loads('''
 composition product_fuzzy [level=algebra]
 object X : FinSet 8
 object Y : FinSet 8
-morphism W : X -> Y [role=latent, init=auto]
+morphism W : X -> Y [role=parameter, init=auto]
 export W
 ''')
 W = program.morphism

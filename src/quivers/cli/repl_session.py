@@ -1031,14 +1031,14 @@ class ReplSession:
     def _type_line_for_morphism(self, name: str, morph: Any) -> str:
         """Render a morphism's signature in valid-QVR notation.
 
-        The unified ``morphism NAME : DOM -> COD [role=latent]`` form
+        The unified ``morphism NAME : DOM -> COD [role=parameter]`` form
         is the only signature line that round-trips cleanly through
         the QVR grammar without a body block, so the TUI's tokenizer
         sees the dom and cod identifiers as type positions. The
         binding's true role is surfaced by ``:info``.
         """
         del self
-        return f"morphism {name} : {_pretty_morphism(morph)} [role=latent]"
+        return f"morphism {name} : {_pretty_morphism(morph)} [role=parameter]"
 
     def _type_line_for_program(self, name: str, tmpl: Any) -> str:
         """Render a program template's signature.

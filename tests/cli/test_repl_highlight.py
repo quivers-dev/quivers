@@ -22,7 +22,7 @@ from quivers.cli.repl_highlight import (
 from quivers.dsl.pygments_lexer import QvrLexer
 
 
-SAMPLE = "object X : FinSet 3\nmorphism f : X -> X [role=latent]\n# comment\n"
+SAMPLE = "object X : FinSet 3\nmorphism f : X -> X [role=parameter]\n# comment\n"
 
 
 def _classify(spans: list[Span]) -> list[tuple[str, str]]:
@@ -42,7 +42,7 @@ def test_tokenize_classifies_keywords_and_punctuation() -> None:
 
 def test_tokenize_identifies_types_and_variables() -> None:
     # In `object X : FinSet 3`, X appears as the declared identifier (variable).
-    # In `morphism f : X -> X [role=latent]`, the two X tokens sit inside type_atoms
+    # In `morphism f : X -> X [role=parameter]`, the two X tokens sit inside type_atoms
     # and must surface as `type` so the LSP semantic-tokens stream
     # paints them with the type colour.
     pairs = _classify(tokenize(SAMPLE))
@@ -188,7 +188,7 @@ def test_doc_comment_classification() -> None:
 
 def test_operator_classification() -> None:
     pairs = _classify(
-        tokenize("object X : FinSet 3\nmorphism f : X -> X [role=latent]")
+        tokenize("object X : FinSet 3\nmorphism f : X -> X [role=parameter]")
     )
     operators = {p[1] for p in pairs if p[0] == "operator"}
     assert "->" in operators

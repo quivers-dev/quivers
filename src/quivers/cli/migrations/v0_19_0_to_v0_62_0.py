@@ -1,8 +1,8 @@
-"""One-hop migrator from the released v0.19 surface to QVR HEAD.
+"""One-hop migrator from the released v0.19 surface to QVR v0.62.
 
-QVR HEAD accepts hanging-indented argument and list forms. Distribution-family
+The target accepts hanging-indented argument and list forms. Distribution-family
 construction is keyword-only, so this hop names every positional family
-argument according to the HEAD family catalog. Former splatted vector calls to
+argument according to the family catalog. Former splatted vector calls to
 ``Categorical`` and ``Dirichlet`` are gathered into their one vector parameter.
 Other source remains byte-preserving.
 """
@@ -14,7 +14,7 @@ from quivers.dsl.family_schemas import family_parameter_names
 
 
 _SOURCE_REV = "v0.19.0"
-_TARGET_REV = "HEAD"
+_TARGET_REV = "v0.62.0"
 
 
 _FAMILY_CALL_KINDS: dict[str, str] = {

@@ -130,7 +130,7 @@
     "keyword-composition-level": {
       "comment": "Composition-level names carried by `[level=...]` option values.",
       "name": "storage.modifier.qvr",
-      "match": "\\b(algebra|semigroupoid|bilinear_form)\\b"
+      "match": "\\b(algebra|semigroupoid|magmoid)\\b"
     },
     "keyword-structural": {
       "name": "keyword.declaration.structural.qvr",

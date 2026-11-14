@@ -35,7 +35,7 @@ def test_let_binds_singleton_transformation() -> None:
     composition real [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define phi = boolean_embedding
     define g = f.change_base(phi)
     export g
@@ -53,7 +53,7 @@ def test_let_binds_constructor_result() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define normalize = softmax(B)
     define g = f.change_base(normalize)
     export g
@@ -69,8 +69,8 @@ def test_let_binds_then_reuses_transformation() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
-    morphism h : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
+    morphism h : A -> B [role=parameter]
     define normalize = softmax(B)
     define f_norm = f.change_base(normalize)
     define h_norm = h.change_base(normalize)
@@ -86,7 +86,7 @@ def test_let_trans_name_disjoint_from_morphism_name() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define t = softmax(B)
     define t = f
     export f
@@ -108,7 +108,7 @@ def test_trans_compose_chains_two_compatible_steps() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define s = softmax(B)
     define pipe = s >>> expectation
     define g = f.change_base(pipe)
@@ -130,7 +130,7 @@ def test_trans_compose_inline_in_change_base() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(softmax(B) >>> expectation)
     export g
     """
@@ -145,7 +145,7 @@ def test_trans_compose_three_steps_flattens() -> None:
     composition real [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define pipe = probability_clamp >>> probability_to_real >>> counting_from_real
     define g = f.change_base(pipe)
     export g
@@ -163,7 +163,7 @@ def test_trans_compose_source_target_mismatch_errors() -> None:
     composition boolean [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define bad = boolean_embedding >>> expectation
     define g = f.change_base(bad)
     export g
@@ -182,7 +182,7 @@ def test_softmax_constructor_accepts_object() -> None:
     composition product_fuzzy [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(softmax(B))
     export g
     """
@@ -196,7 +196,7 @@ def test_constructor_args_resolve_against_object_scope() -> None:
     object A : FinSet 3
     object B : FinSet 4
     object NotUsed : FinSet 2
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(l1_normalize(B))
     export g
     """
@@ -215,7 +215,7 @@ def test_bare_singleton_resolves() -> None:
     composition boolean [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(boolean_embedding)
     export g
     """
@@ -230,7 +230,7 @@ def test_constructor_referenced_bare_errors_helpfully() -> None:
     composition real [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(softmax)
     export g
     """
@@ -243,7 +243,7 @@ def test_unknown_name_in_change_base_errors() -> None:
     composition real [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(no_such_thing)
     export g
     """
@@ -256,7 +256,7 @@ def test_unknown_constructor_errors() -> None:
     composition real [level=algebra]
     object A : FinSet 3
     object B : FinSet 4
-    morphism f : A -> B [role=latent]
+    morphism f : A -> B [role=parameter]
     define g = f.change_base(no_such_constructor(B))
     export g
     """

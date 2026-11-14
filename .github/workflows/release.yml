@@ -150,6 +150,6 @@ jobs:
         with:
           files: |
             dist/*
-            editors/vscode-qvr/vscode-qvr-0.7.0.vsix
+            editors/vscode-qvr/vscode-qvr-0.7.1.vsix
           generate_release_notes: true
           tag_name: ${{ github.ref_name }}

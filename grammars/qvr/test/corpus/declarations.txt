@@ -118,7 +118,7 @@ morphism options with signed and scientific numbers
 ==================
 
 morphism g : A -> B [scale=0.1]
-morphism h : A -> B [role=latent, shift=-0.5, jitter=1e-3, lr=2.5e-4]
+morphism h : A -> B [role=parameter, shift=-0.5, jitter=1e-3, lr=2.5e-4]
 morphism k : A -> B [frozen, tags=[fast, "exact", -2], seed=mk("a", -1, 0.5)]
 
 ---

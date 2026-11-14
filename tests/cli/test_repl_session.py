@@ -17,7 +17,7 @@ from quivers.cli.repl_session import ReplSession
 SOURCE = """\
 object X : FinSet 3
 object Y : FinSet 4
-morphism f : X -> Y [role=latent]
+morphism f : X -> Y [role=parameter]
 """
 
 
@@ -141,7 +141,7 @@ def test_load_and_reload(tmp_path: Path) -> None:
     assert "loaded" in r.body
     assert "X" in s.env and "Y" in s.env
     # Mutate the file: drop Y and reload, expect a removal diff.
-    path.write_text("object X : FinSet 3\nmorphism g : X -> X [role=latent]\n")
+    path.write_text("object X : FinSet 3\nmorphism g : X -> X [role=parameter]\n")
     r2 = s.dispatch(":reload")
     assert r2.ok, r2.diagnostics
     assert "removed:" in r2.body and "Y" in r2.body

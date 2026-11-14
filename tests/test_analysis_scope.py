@@ -325,8 +325,8 @@ def test_scope_for_bundle_exposes_member_names():
         composition product_fuzzy [level=algebra]
         object A : FinSet 3
         object B : FinSet 4
-        morphism f : A -> B [role=latent]
-        morphism g : A -> B [role=latent]
+        morphism f : A -> B [role=parameter]
+        morphism g : A -> B [role=parameter]
         bundle MyBundle : [f, g]
         """
     )
@@ -437,7 +437,7 @@ def test_morphism_is_a_leaf():
         composition product_fuzzy [level=algebra]
         object A : FinSet 3
         object B : FinSet 4
-        morphism f : A -> B [role=latent]
+        morphism f : A -> B [role=parameter]
         """
     )
     ref = resolve_scoped_path(c, "f")

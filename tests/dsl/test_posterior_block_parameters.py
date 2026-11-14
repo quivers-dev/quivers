@@ -1,6 +1,6 @@
 """A posterior block's parameters take the types of the latents it consumes.
 
-A program declared ``[over=model]`` names latents of ``model`` as its
+A program declared ``[posterior_of=model]`` names latents of ``model`` as its
 parameters, so each parameter has the type of the model's site of that
 name: a real for a real draw, a real vector for a vector draw. An
 unannotated parameter is not an index merely because the block's
@@ -23,7 +23,7 @@ object R : Real 1
 program scored : Item -> R
     sample z <- Normal(loc=0.0, scale=1.0)
     return z
-program post({parameter}) : Item -> R [effects=[Pure], over=scored]
+program post({parameter}) : Item -> R [effects=[Pure], posterior_of=scored]
     let w = exp({body})
     return w
 export scored
@@ -36,7 +36,7 @@ object L4 : Real 4
 program scored : Item -> L4
     sample raw : K <- Normal(loc=0.0, scale=1.0)
     return raw
-program post(raw) : Item -> L4 [effects=[Pure], over=scored]
+program post(raw) : Item -> L4 [effects=[Pure], posterior_of=scored]
     let p = softmax(raw)
     return p
 export scored

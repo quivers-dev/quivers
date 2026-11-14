@@ -131,7 +131,7 @@ In a `.qvr` file, `change_base` is a method of a morphism and `>>>` composes tra
 composition product_fuzzy [level=algebra]
 object A : FinSet 3
 object B : FinSet 4
-morphism f : A -> B [role=latent]
+morphism f : A -> B [role=parameter]
 
 define s    = softmax(B)
 define pipe = s >>> expectation

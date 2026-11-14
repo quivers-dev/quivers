@@ -283,7 +283,7 @@ mn = ConditionalMatrixNormal(
 ```
 
 As a prior on a learnable table in QVR,
-`morphism W : D -> K [role=latent, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)`,
+`morphism W : D -> K [role=parameter, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)`,
 the first axis in `over` takes the row covariance and the second the column
 covariance ([Latent morphism prior](dsl-declarations.md#latent-morphism-prior)).
 

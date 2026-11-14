@@ -25,19 +25,20 @@ from quivers.cli.migrations import (
 from quivers.cli.migrations import _assets, _grammar, _identity, _manifest
 from quivers.cli.migrations import v0_14_0_to_v0_15_0 as hop_14_15
 from quivers.cli.migrations import v0_18_0_to_v0_19_0 as hop_18_19
-from quivers.cli.migrations import v0_19_0_to_head as hop_19_head
+from quivers.cli.migrations import v0_19_0_to_v0_62_0 as hop_19_62
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_chain_has_every_release_and_explicit_head_terminus() -> None:
-    assert CHAIN[-6:] == (
+    assert CHAIN[-7:] == (
         "v0.15.0",
         "v0.16.0",
         "v0.17.0",
         "v0.18.0",
         "v0.19.0",
+        "v0.62.0",
         "HEAD",
     )
     pairs = set(zip(CHAIN, CHAIN[1:]))
@@ -46,7 +47,7 @@ def test_chain_has_every_release_and_explicit_head_terminus() -> None:
 
 
 def test_released_identity_segment_shares_one_grammar_commit() -> None:
-    commits = {commit_id(ref) for ref in CHAIN[-6:-2]}
+    commits = {commit_id(ref) for ref in CHAIN[-7:-3]}
     assert len(commits) == 1
     assert "" not in commits
 
@@ -103,9 +104,9 @@ def test_vcs_coverage_spans_every_chain_edge() -> None:
     assert all(not report.removed_rules for report in identity_reports)
 
     head_report = reports[-1]
-    assert (head_report.from_ref, head_report.to_ref) == ("v0.19.0", "HEAD")
+    assert (head_report.from_ref, head_report.to_ref) == ("v0.62.0", "HEAD")
     assert not head_report.removed_rules
-    assert ("v0.19.0", "HEAD") not in IDENTITY_PAIRS
+    assert ("v0.62.0", "HEAD") not in IDENTITY_PAIRS
 
 
 def test_v018_to_v019_additive_hop_is_byte_preserving_and_validated() -> None:
@@ -115,14 +116,14 @@ def test_v018_to_v019_additive_hop_is_byte_preserving_and_validated() -> None:
         hop_18_19.migrate(b"\x00\x00\x00")
 
 
-def test_v019_to_head_layout_hop_preserves_unaffected_source_and_validates() -> None:
+def test_v019_to_v062_layout_hop_preserves_unaffected_source_and_validates() -> None:
     source = b"define f(x : Real) : Real !{} =\n    return exp(x)\n"
-    assert hop_19_head.migrate(source) == source
+    assert hop_19_62.migrate(source) == source
     with pytest.raises(MigrationError, match="does not parse"):
-        hop_19_head.migrate(b"\x00\x00\x00")
+        hop_19_62.migrate(b"\x00\x00\x00")
 
 
-def test_v019_to_head_names_categorical_probability_arguments() -> None:
+def test_v019_to_v062_names_categorical_probability_arguments() -> None:
     source = b"""\
 object K : FinSet 3
 morphism prior : K -> K ~ Categorical(weights)
@@ -131,10 +132,10 @@ program p : K -> K
     return y
 """
     expected = source.replace(b"Categorical(weights)", b"Categorical(probs=weights)")
-    assert hop_19_head.migrate(source) == expected
+    assert hop_19_62.migrate(source) == expected
 
 
-def test_v019_to_head_bundles_categorical_spread_probabilities() -> None:
+def test_v019_to_v062_bundles_categorical_spread_probabilities() -> None:
     source = b"""\
 object K : FinSet 3
 program p : K -> K
@@ -145,10 +146,10 @@ program p : K -> K
         b"Categorical(0.2, 0.3, 0.5)",
         b"Categorical(probs=[0.2, 0.3, 0.5])",
     )
-    assert hop_19_head.migrate(source) == expected
+    assert hop_19_62.migrate(source) == expected
 
 
-def test_v019_to_head_names_all_family_construction_levels() -> None:
+def test_v019_to_v062_names_all_family_construction_levels() -> None:
     source = b"""\
 object K : FinSet 3
 morphism prior : K -> K ~ Normal(0.0, 1.0)
@@ -165,7 +166,7 @@ program p : K -> K
     observe y <- Restrict(base=Normal(loc=0.0, scale=1.0), low=0.0, high=2.0)
     return y
 """
-    assert hop_19_head.migrate(source) == expected
+    assert hop_19_62.migrate(source) == expected
 
 
 def test_manifest_identity_drift_is_checked_for_v09_alias(

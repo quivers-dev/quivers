@@ -22,7 +22,7 @@ has `role=kernel`.
 
 | `role` | Denotes | Initializer | Runtime class |
 |------------|--------------------------------------------|----------------------|----------------------|
-| `latent` | a learnable $\mathcal V$-matrix | none, or `~ Family(...)` | `LatentMorphism` |
+| `parameter` | a learnable $\mathcal V$-matrix | none, or `~ Family(...)` | `LatentMorphism` |
 | `observed` | a fixed $\mathcal V$-matrix | `~ expr`, required | the morphism `expr` denotes |
 | `kernel` | a stochastic matrix, or a Markov kernel with `~ Family(...)` | none, or `~ Family(...)` | `StochasticMorphism`, or a conditional family |
 | `embed` | a Markov kernel from a finite set to a space | none | `Embed` |
@@ -31,7 +31,7 @@ has `role=kernel`.
 | `function` | a learned deterministic map between spaces | none | `LearnedFunction` |
 
 Other options configure single roles. `scale` and `init` set the initial scale and the
-initialization scheme of a `latent` table. `bins` sets the number of cells of a `discretize`.
+initialization scheme of a `parameter` table. `bins` sets the number of cells of a `discretize`.
 `param_source` and `hidden_dim` select the parameter map $\theta$ of a family kernel (§2.1).
 `replicate=n` declares $n$ copies with separate parameters (§4.1). `over` and `iid` give the event
 and batch axes of a family (§6). The compiler rejects an option that the declared role does not
@@ -42,7 +42,7 @@ read.
 A declaration
 
 ```
-morphism f : τ₁ -> τ₂ [role=latent]
+morphism f : τ₁ -> τ₂ [role=parameter]
 ```
 
 denotes a morphism of $\mathbf{Mat}(\mathcal V)$, that is, a matrix
@@ -51,12 +51,11 @@ $$
 \llbracket f \rrbracket \in V^{\llbracket \tau_1 \rrbracket \times \llbracket \tau_2 \rrbracket}.
 $$
 
-The entries of a `latent` table are learnable. The runtime stores an unconstrained real parameter
+The entries of a `parameter` table are learnable. The runtime stores an unconstrained real parameter
 for each entry, drawn at initialization from a Normal distribution with mean zero and standard
 deviation `scale` (default $0.5$), and its entries are the
 [sigmoid](https://en.wikipedia.org/wiki/Sigmoid_function) of the parameters, so they lie in
-$(0, 1)$ whatever the composition rule. The name `latent` is the library's keyword for this
-learnable table. It is not a latent variable: without a prior the entries are point estimates.
+$(0, 1)$ whatever the composition rule. The entries of this learnable table are point estimates.
 
 A declaration `morphism g : τ₁ -> τ₂ [role=observed] ~ data` denotes the fixed matrix
 $\llbracket g \rrbracket(x, y) = \mathrm{data}[x, y]$.
@@ -352,10 +351,10 @@ product, each factor must be named.
 
 ## 7. Distribution clauses {#7-priors-on-learnable-tables}
 
-A `latent` declaration accepts a family clause, with the `over` and `iid` options of §6:
+A `parameter` declaration accepts a family clause, with the `over` and `iid` options of §6:
 
 ```
-morphism f : τ₁ -> τ₂ [role=latent, over=E, iid=I] ~ Family(args)
+morphism f : τ₁ -> τ₂ [role=parameter, over=E, iid=I] ~ Family(args)
 ```
 
 The clause specifies the distribution of a program draw from $f$, with the event and batch

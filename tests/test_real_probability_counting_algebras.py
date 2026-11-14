@@ -271,8 +271,8 @@ def test_real_composition_uses_declared_algebra() -> None:
     object B : FinSet 3
     object C : FinSet 3
 
-    morphism f : A -> B [role=latent]
-    morphism g : B -> C [role=latent]
+    morphism f : A -> B [role=parameter]
+    morphism g : B -> C [role=parameter]
     define chain = f >> g
     export chain
     """
@@ -289,8 +289,8 @@ def test_probability_composition_uses_declared_algebra() -> None:
     object B : FinSet 3
     object C : FinSet 3
 
-    morphism f : A -> B [role=latent]
-    morphism g : B -> C [role=latent]
+    morphism f : A -> B [role=parameter]
+    morphism g : B -> C [role=parameter]
     define chain = f >> g
     export chain
     """
@@ -309,7 +309,7 @@ def test_algebra_real_declaration_compiles() -> None:
     src = """
     composition real [level=algebra]
     object A : FinSet 4
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     export f
     """
     m = loads(textwrap.dedent(src))
@@ -322,7 +322,7 @@ def test_algebra_probability_declaration_compiles() -> None:
     src = """
     composition probability [level=algebra]
     object A : FinSet 4
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     export f
     """
     m = loads(textwrap.dedent(src))
@@ -335,7 +335,7 @@ def test_algebra_counting_declaration_compiles() -> None:
     src = """
     composition counting [level=algebra]
     object A : FinSet 4
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     export f
     """
     m = loads(textwrap.dedent(src))
@@ -349,7 +349,7 @@ def test_algebra_max_plus_declaration_compiles() -> None:
     src = """
     composition max_plus [level=algebra]
     object A : FinSet 4
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     export f
     """
     m = loads(textwrap.dedent(src))
@@ -362,7 +362,7 @@ def test_algebra_log_prob_declaration_compiles() -> None:
     src = """
     composition log_prob [level=algebra]
     object A : FinSet 4
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     export f
     """
     m = loads(textwrap.dedent(src))
@@ -536,7 +536,7 @@ def test_dsl_change_base_to_probability_clamp() -> None:
     composition real [level=algebra]
     object A : FinSet 3
 
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     define g = f.change_base(probability_clamp)
     export g
     """
@@ -551,7 +551,7 @@ def test_dsl_change_base_to_counting_from_real() -> None:
     composition real [level=algebra]
     object A : FinSet 3
 
-    morphism f : A -> A [role=latent]
+    morphism f : A -> A [role=parameter]
     define g = f.change_base(counting_from_real)
     export g
     """

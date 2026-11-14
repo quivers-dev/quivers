@@ -132,7 +132,7 @@ With [tree-sitter-langs](https://github.com/emacs-tree-sitter/tree-sitter-langs)
                     "total" "partial"
                     "aff" "omega" "true" "false" "unit"
                     "export" "as" "over"
-                    "algebra" "semigroupoid" "bilinear_form"
+                    "algebra" "semigroupoid" "magmoid"
                     "rule"]
                    @font-lock-keyword-face)))
     (treesit-major-mode-setup)))

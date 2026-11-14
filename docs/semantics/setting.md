@@ -199,7 +199,7 @@ QVR morphisms fall into three fragments, each interpreted in its own category.
 
 | Fragment | Declared by | Category |
 |---------|--------------------------------|-------------------|
-| Finite weighted | `morphism` with `role=latent` or `role=observed` | $\mathbf{Mat}(\mathcal{V})$ |
+| Finite weighted | `morphism` with `role=parameter` or `role=observed` | $\mathbf{Mat}(\mathcal{V})$ |
 | Finite stochastic | `morphism` with `role=kernel` between finite sets and no `~ Family` initializer | $\mathbf{FinStoch}$ |
 | Continuous | `morphism` with a `~ Family` initializer and a continuous codomain, and `object` declarations of continuous spaces | $\mathbf{BorelStoch}$ |
 
