@@ -26,7 +26,7 @@ from quivers.qiec import (
     TypeVariable,
     UserIndexSort,
 )
-from quivers.qiec._models import QiecModel
+from quivers.qiec._models import QiecModel, validate_shape
 from quivers.qiec.serialization import SerializationError, dumps, loads
 from quivers.qiec.entries import EntryPoint, EntryRun
 from quivers.qiec.distributions import RuntimeDistribution
@@ -206,3 +206,32 @@ def test_runtime_distribution_owns_parameters_without_detaching_tensors() -> Non
         distribution.with_(ranks={"loc": "scalar"})
     value.backward()
     assert parameter.grad.item() == 3.0
+
+
+def test_compiled_field_checks_revalidate_mutated_containers() -> None:
+    """Only annotations are cached; changing an earlier value is checked again."""
+    values = {"items": [REAL]}
+    validate_shape(
+        values, dict[str, list[TypeApplication | TypeVariable]], path="values"
+    )
+    values["items"].append(7)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match=r"values.*got int"):
+        validate_shape(
+            values, dict[str, list[TypeApplication | TypeVariable]], path="values"
+        )
+
+
+@pytest.mark.parametrize(
+    "value,annotation",
+    [
+        (True, int),
+        (1, bool),
+        ((REAL, 2), tuple[TypeApplication, str]),
+        ({1: REAL}, dict[str, TypeApplication]),
+        ((REAL, "bad"), tuple[TypeApplication | TypeVariable, ...]),
+    ],
+)
+def test_compiled_field_checks_preserve_negative_shapes(value, annotation) -> None:
+    """Scalar exactness, tuple positions, keys, and union members stay checked."""
+    with pytest.raises(TypeError):
+        validate_shape(value, annotation, path="field")

@@ -1697,10 +1697,16 @@ def _reduce(operator: str, value: object) -> object:
     Raises
     ------
     EvaluationError
-        If the tensor is empty.
+        If mean, minimum, or maximum is requested for an empty tensor.
     """
     entries = _flat(value)
     if not entries:
+        if operator == "sum":
+            return 0
+        if operator == "prod":
+            return 1
+        if operator == "logsumexp":
+            return -math.inf
         raise EvaluationError(f"{operator} of an empty tensor")
     if operator == "sum":
         return (
@@ -3503,6 +3509,8 @@ class Evaluator:
             raise InvalidHandlerError(
                 f"invalid static arguments for handler {definition.name!r}: {error}"
             ) from error
+        if not definition.telescope:
+            return definition
         return definition.with_(
             effect=substitute_effect(definition.effect, substitution),
             clauses=tuple(

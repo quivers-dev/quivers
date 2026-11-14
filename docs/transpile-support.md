@@ -377,13 +377,13 @@ Refused for: [`vae`](examples/vae.md).
 Reported kinds:
 
 ```text
-param-source:mlp: the step at line 41 draws from `decoder`, and since the 'mlp' network's weights appear in neither the wire form nor the sample sites, no target can reconstruct the mean `decoder` computes there. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+param-source:mlp: the step at line 42 draws from `decoder`, and since the 'mlp' network's weights appear in neither the wire form nor the sample sites, no target can reconstruct the mean `decoder` computes there. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
 ```
 
 Every backend reports it in the same words. `bugs` on `vae` reports:
 
 ```text
-a morphism draws its parameters from a `mlp` network, whose weights are not sites the program declares: the step at line 41 draws from `decoder`, and since the 'mlp' network's weights appear in neither the wire form nor the sample sites, no target can reconstruct the mean `decoder` computes there. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
+a morphism draws its parameters from a `mlp` network, whose weights are not sites the program declares: the step at line 42 draws from `decoder`, and since the 'mlp' network's weights appear in neither the wire form nor the sample sites, no target can reconstruct the mean `decoder` computes there. Express the network as explicit sampled weights and a deterministic forward pass, or write the step as a `sample` / `observe` against a closed-form family.
 ```
 
 ### `param-source:positions`

@@ -82,7 +82,7 @@ from quivers.qiec.evaluator import (
 )
 from quivers.qiec.identifiers import SiteProvenance, SourceOrigin
 from quivers.qiec.kinds import NAT
-from quivers.qiec.module import NamedComputation, QiecModule
+from quivers.qiec.module import NamedComputation, NamedEffectInstance, QiecModule
 from quivers.qiec.canonical import tensor_shape, tensor_type
 from quivers.qiec.terms import (
     Call,
@@ -1685,8 +1685,12 @@ def _handle_chain(installations: list[Installation], inner: Computation) -> Comp
 _KERNELS: weakref.WeakKeyDictionary[
     MonadicProgram, dict[tuple[str, ...], ProgramKernel]
 ] = weakref.WeakKeyDictionary()
-_REGISTRIES: weakref.WeakKeyDictionary[
-    MonadicProgram, dict[tuple[tuple[str, ...], tuple[HandlerDef, ...]], KernelRegistry]
+_RUN_MODULES: weakref.WeakKeyDictionary[
+    MonadicProgram,
+    dict[
+        tuple[tuple[str, ...], tuple[tuple[NamedEffectInstance, HandlerDef], ...]],
+        tuple[QiecModule, KernelRegistry],
+    ],
 ] = weakref.WeakKeyDictionary()
 
 
@@ -1713,35 +1717,83 @@ def _cached_kernel(program: MonadicProgram, data: tuple[str, ...]) -> ProgramKer
     return kernel
 
 
-def _checked_registry(
-    program: MonadicProgram, kernel: ProgramKernel, module: QiecModule
-) -> KernelRegistry:
-    """The registry of a validated run module.
+def _checked_run_module(
+    program: MonadicProgram, kernel: ProgramKernel, installations: list[Installation]
+) -> tuple[QiecModule, KernelRegistry]:
+    """Reuse the checked static wrapper while runtime installations stay fresh.
 
     Parameters
     ----------
     program : MonadicProgram
-        The program the run module was built for.
+        The owning program; the cache retains it weakly.
     kernel : ProgramKernel
-        The encoding the run module extends.
-    module : QiecModule
-        The run module: the kernel's declarations, the run's handlers,
-        and the run's wrapper.
+        Its encoding for this set of host data names.
+    installations : list[Installation]
+        Fresh runtime handlers, whose instance and complete declaration
+        determine the static wrapper. Their executable closures are not cached.
 
     Returns
     -------
-    KernelRegistry
-        The registry `validate_module` resolved, once per encoding and
-        handler set: the module's declarations and wrapper are fixed by
-        those, so two such runs build the same module.
+    tuple[QiecModule, KernelRegistry]
+        The immutable run module and its validated registry.
     """
-    registries = _REGISTRIES.setdefault(program, {})
-    key = (kernel.data, tuple(module.handlers))
-    registry = registries.get(key)
-    if registry is None:
-        registry = validate_module(module)
-        registries[key] = registry
-    return registry
+    modules = _RUN_MODULES.setdefault(program, {})
+    key = (
+        kernel.data,
+        tuple((item.instance, item.runtime.definition) for item in installations),
+    )
+    cached = modules.get(key)
+    if cached is not None:
+        return cached
+    result_type = kernel.result_type
+    entry = kernel.module.computations[0]
+    parameters = [Local(name=local.name, type=local.type) for local in entry.parameters]
+    call = Call(
+        callee=entry.id,
+        name=entry.name,
+        static_arguments=(),
+        arguments=tuple(Var(local=parameter) for parameter in parameters),
+        result_type=result_type,
+        effects=entry.type.effects,
+        origin=SourceOrigin(
+            module=kernel.module.module,
+            structural_path=("run", "call"),
+            role="call",
+            source_protocol=SOURCE_PROTOCOL,
+        ),
+    )
+    body = _handle_chain(installations, call)
+    wrapper = NamedComputation(
+        id=ComputationId.derive(kernel.module.module, "computation", RUN),
+        name=RUN,
+        telescope=(),
+        parameters=tuple(parameters),
+        body=body,
+        type=ComputationType(effects=EffectRow(), result=result_type),
+        origin=SourceOrigin(
+            module=kernel.module.module,
+            structural_path=("run",),
+            role="computation",
+            source_protocol=SOURCE_PROTOCOL,
+        ),
+    )
+    module = QiecModule(
+        module=kernel.module.module,
+        source_protocol=kernel.module.source_protocol,
+        effects=kernel.module.effects,
+        instances=kernel.module.instances,
+        handlers=tuple(
+            installation.runtime.definition for installation in installations
+        ),
+        computations=(*kernel.module.computations, wrapper),
+    )
+    registry = validate_module(module)
+    # Custom handler declarations can vary on every invocation. Bound the
+    # per-program cache without retaining any observations or handler state.
+    if len(modules) >= 64:
+        modules.pop(next(iter(modules)))
+    modules[key] = (module, registry)
+    return module, registry
 
 
 def _element_admits(element: TypeExpr, value: torch.Tensor) -> bool:
@@ -2546,27 +2598,11 @@ def _run_once(
                 ),
             )
         )
-    entry = kernel.module.computations[0]
-    arguments = [x, *(data[name] for name in kernel.data)]
-    parameters = [Local(name=local.name, type=local.type) for local in entry.parameters]
-    call = Call(
-        callee=entry.id,
-        name=entry.name,
-        static_arguments=(),
-        arguments=tuple(Var(local=parameter) for parameter in parameters),
-        result_type=result_type,
-        effects=entry.type.effects,
-        origin=SourceOrigin(
-            module=kernel.module.module,
-            structural_path=("run", "call"),
-            role="call",
-            source_protocol=SOURCE_PROTOCOL,
-        ),
-    )
     # A handler is installed only over an effect the entry performs:
     # a program with no draw performs neither Random nor Param, and
     # one with no draw and no score step performs no Score either.
     has_draws = any(step.kind == "draw" for step in kernel.steps)
+    entry = kernel.module.computations[0]
     performs_score = entry.type.effects.lookup(kernel.score.entry.instance) is not None
     if not has_draws:
         random_installations = []
@@ -2585,32 +2621,10 @@ def _run_once(
             ]
         )
     ]
-    body = _handle_chain(installations, call)
-    wrapper = NamedComputation(
-        id=ComputationId.derive(kernel.module.module, "computation", RUN),
-        name=RUN,
-        telescope=(),
-        parameters=tuple(parameters),
-        body=body,
-        type=ComputationType(effects=EffectRow(), result=result_type),
-        origin=SourceOrigin(
-            module=kernel.module.module,
-            structural_path=("run",),
-            role="computation",
-            source_protocol=SOURCE_PROTOCOL,
-        ),
-    )
-    module = QiecModule(
-        module=kernel.module.module,
-        source_protocol=kernel.module.source_protocol,
-        effects=kernel.module.effects,
-        instances=kernel.module.instances,
-        handlers=tuple(
-            installation.runtime.definition for installation in installations
-        ),
-        computations=(*kernel.module.computations, wrapper),
-    )
-    registry = _checked_registry(program, kernel, module)
+    module, registry = _checked_run_module(program, kernel, installations)
+    wrapper = module.computations[-1]
+    body, parameters = wrapper.body, wrapper.parameters
+    arguments = [x, *(data[name] for name in kernel.data)]
     attachments = RuntimeAttachments()
     for installation in installations:
         attachments.bind_handler(installation.runtime)

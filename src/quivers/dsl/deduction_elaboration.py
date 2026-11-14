@@ -42,9 +42,10 @@ head symbol and the positions of its yield, read in pairs as the
 components the item covers: its rules must be linear, each conclusion
 component a concatenation of premise components, so a rule with several
 premises derives each over fewer tokens, and its unary rules must form
-no cycle. Any other system takes its axioms and their weights as input
-and enumerates derivations of any item to a height of its axioms and
-rules together. The agenda engine tabulates the same derivations.
+no cycle. Any other system takes its axioms and their weights as input and
+iterates a finite weighted chart. Each round adds the axioms to the rule
+contributions from the preceding chart, until every item weight converges.
+Constructor depth does not impose a proof-height limit.
 """
 
 from __future__ import annotations
@@ -57,6 +58,8 @@ import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec._models import QiecModel
+
+from quivers.dsl._deduction_chart import declare_chart, elaborate_chart
 
 from quivers.dsl.ast_nodes import (
     BundleDecl,
@@ -1223,6 +1226,8 @@ class _DeductionElaboration:
                     dict.fromkeys(entry.word for entry in system.entries)
                 )
             self._declare_item_family(system)
+            if not system.entries:
+                declare_chart(self, system)
             if system.chained:
                 self._declare_chain_family(system)
             self._declare_deduction_instances(system)
@@ -2566,6 +2571,17 @@ class _DeductionElaboration:
             else {}
         )
 
+        if weighted and not system.entries:
+            for suffix in (
+                "chart_step",
+                *(
+                    f"chart_rule{i}_{p}"
+                    for i, rule in enumerate(system.rules)
+                    for p in range(len(rule.premises) + 1)
+                ),
+            ):
+                threaded[system.name(suffix)] = system.name(f"weighted_{suffix}")
+
         def declare(
             name: str,
             telescope: tuple[IndexBinder, ...],
@@ -2715,13 +2731,36 @@ class _DeductionElaboration:
             axioms_type = tensor_type(item, (n,))
             weights_type = tensor_type(carrier, (n,))
             axiom = None
+            chart = TypeApplication(
+                constructor=self.families[system.name("Chart")].type_constructor,
+                arguments=(),
+            )
             derive = declare(
                 system.name("derive"),
                 (extent,),
-                (INT, axioms_type, weights_type),
-                item,
-                row,
+                (chart, axioms_type, weights_type),
+                chart,
+                outer,
             )
+            for suffix, parameters, result, effects in (
+                ("chart_add", (chart, item, carrier), chart, pure),
+                ("chart_zero", (chart,), chart, pure),
+                ("chart_equal", (chart, chart), BOOL, pure),
+                ("chart_goal", (chart,), carrier, pure),
+                ("chart_axioms", (INT, chart, axioms_type, weights_type), chart, pure),
+                ("chart_step", (chart, axioms_type, weights_type), chart, outer),
+                ("chart_plus", (carrier, carrier), carrier, pure),
+            ):
+                declare(system.name(suffix), (extent,), parameters, result, effects)
+            for rule_index, rule in enumerate(system.rules):
+                for position in range(len(rule.premises) + 1):
+                    declare(
+                        system.name(f"chart_rule{rule_index}_{position}"),
+                        (extent,),
+                        (chart, chart, chart, carrier, *((item,) * position)),
+                        chart,
+                        outer,
+                    )
             entry = declare(
                 system.name("run"),
                 (extent,),
@@ -2772,7 +2811,8 @@ class _DeductionElaboration:
                 )
         if axiom is not None:
             computations.append(context.axiom(axiom))
-        computations.append(context.derivation(derive))
+        if system.entries:
+            computations.append(context.derivation(derive))
         if system.closes:
             computations.append(context.closure(signatures[system.name("close")]))
         if system.handlers_cell[0] is None:
@@ -2785,7 +2825,10 @@ class _DeductionElaboration:
             computations.append(
                 context.convergence(signatures[system.name("converge")])
             )
-        computations.append(context.entry(entry, handlers))
+        if system.entries:
+            computations.append(context.entry(entry, handlers))
+        else:
+            computations.extend(elaborate_chart(context))
         return computations
 
     def _deduction_handlers(
@@ -3782,6 +3825,7 @@ class _Context:
         result: TypeExpr,
         continue_with: _Continuation,
         *path: str | int,
+        failed: Callable[[], Computation] | None = None,
     ) -> Computation:
         """Match a value against a pattern, continuing with the bindings.
 
@@ -3801,11 +3845,15 @@ class _Context:
         *path : str | int
             The match's path.
 
+        failed : Callable[[], Computation] | None
+            The deterministic failure continuation, or an empty search choice.
+
         Returns
         -------
         Computation
             The match.
         """
+        failure = failed or (lambda: self.fail(result, *path, "match"))
         if isinstance(pattern, _Wild):
             bound = bindings.get(pattern.name)
             if bound is None:
@@ -3815,7 +3863,7 @@ class _Context:
                 return If(
                     condition=condition,
                     then=continue_with(bindings),
-                    otherwise=self.fail(result, *path, "shared"),
+                    otherwise=failure(),
                 )
             return self.bind(
                 "same",
@@ -3824,7 +3872,7 @@ class _Context:
                 lambda same: If(
                     condition=Var(local=same),
                     then=continue_with(bindings),
-                    otherwise=self.fail(result, *path, "shared"),
+                    otherwise=failure(),
                 ),
             )
         if isinstance(pattern, _Lit):
@@ -3833,7 +3881,7 @@ class _Context:
                     "eq_int", Var(local=value), _int(pattern.value)
                 ),
                 then=continue_with(bindings),
-                otherwise=self.fail(result, *path, "literal"),
+                otherwise=failure(),
             )
         if isinstance(pattern, _Bound):
             return self.case(
@@ -3845,10 +3893,10 @@ class _Context:
                             "eq_int", Var(local=fields[0]), _int(pattern.index)
                         ),
                         then=continue_with(bindings),
-                        otherwise=self.fail(result, *path, "bound"),
+                        otherwise=failure(),
                     )
                 },
-                lambda: self.fail(result, *path, "bound"),
+                lambda: failure(),
                 *path,
                 "bound",
             )
@@ -3894,6 +3942,7 @@ class _Context:
                     lambda extended: step(position + 1, extended),
                     *path,
                     position,
+                    failed=failed,
                 )
 
             return step(0, bindings)
@@ -3902,7 +3951,7 @@ class _Context:
             Var(local=value),
             result,
             {symbol: fields_matched},
-            lambda: self.fail(result, *path, "constructor"),
+            lambda: failure(),
             *path,
             symbol,
         )
@@ -3918,8 +3967,7 @@ class _Context:
         derived over its own smaller span; the unary rules then extend
         the item by the closure. The recursion thus follows the
         sentence, and only the closure, over one span, needs its own
-        bound. A system without a lexicon chooses an axiom or a rule
-        group and derives each premise with one less unit of fuel.
+        bound. Nonlexical systems use the weighted chart computations instead.
 
         Rules are grouped by the shape of their premises: the spans the
         premises cover relative to the conclusion's, or, without spans,
@@ -3948,101 +3996,44 @@ class _Context:
         repeats: Local | None = None
         start = Local(name="start", type=INT)
         stop = Local(name="stop", type=INT)
-        fuel = Local(name="fuel", type=INT)
-        if system.span_shaped_cell[0]:
-            repeats = Local(name="repeats", type=INT) if system.chained else None
-            tokens = Local(name="tokens", type=self.inputs(signature)[-1])
-            parameters: tuple[Local, ...] = (
-                *((repeats,) if repeats is not None else ()),
-                start,
-                stop,
-                tokens,
-            )
+        assert system.span_shaped_cell[0]
+        repeats = Local(name="repeats", type=INT) if system.chained else None
+        tokens = Local(name="tokens", type=self.inputs(signature)[-1])
+        parameters: tuple[Local, ...] = (
+            *((repeats,) if repeats is not None else ()),
+            start,
+            stop,
+            tokens,
+        )
 
-            def recursion(low: Value, high: Value) -> Call:
-                """Derive an item over a sub-span.
+        def recursion(low: Value, high: Value) -> Call:
+            """Derive an item over a sub-span.
 
-                Parameters
-                ----------
-                low : Value
-                    The sub-span's start.
-                high : Value
-                    Its end.
+            Parameters
+            ----------
+            low : Value
+                The sub-span's start.
+            high : Value
+                Its end.
 
-                Returns
-                -------
-                Call
-                    The recursive call.
-                """
-                prefix = (Var(local=repeats),) if repeats is not None else ()
-                return self.call(
-                    signature.name, (*prefix, low, high, Var(local=tokens))
-                )
+            Returns
+            -------
+            Call
+                The recursive call.
+            """
+            prefix = (Var(local=repeats),) if repeats is not None else ()
+            return self.call(signature.name, (*prefix, low, high, Var(local=tokens)))
 
-            axiom_alternative: Computation = If(
-                condition=self.primitive(
-                    "eq_int",
-                    Var(local=stop),
-                    self.primitive("add_int", Var(local=start), _int(1)),
-                ),
-                then=self.call(
-                    system.name("axiom"), (Var(local=start), Var(local=tokens))
-                ),
-                otherwise=self.fail(item, "derive", "lexical", "span"),
-            )
-            groups = [group for group in self.rule_groups() if group.arity > 1]
-        else:
-            axioms = Local(name="axioms", type=signature.parameters[1])
-            weights = Local(name="weights", type=signature.parameters[2])
-            parameters = (fuel, axioms, weights)
-            spent = self.primitive("sub_int", Var(local=fuel), _int(1))
-
-            def recursion(low: Value, high: Value) -> Call:
-                """Derive any item with one less fuel.
-
-                Parameters
-                ----------
-                low : Value
-                    Unused; the system has no spans.
-                high : Value
-                    Unused; the system has no spans.
-
-                Returns
-                -------
-                Call
-                    The recursive call.
-                """
-                del low, high
-                return self.call(
-                    signature.name, (spent, Var(local=axioms), Var(local=weights))
-                )
-
-            axiom_alternative = self.bind(
-                "chosen",
-                INT,
-                self.choose_position("derive", "axiom", "choose"),
-                lambda chosen: Bind(
-                    binder=system.local("added", UNIT),
-                    first=self.add_weight(
-                        Gather(
-                            value=Var(local=weights),
-                            index=Var(local=chosen),
-                            result_type=system.carrier,
-                        ),
-                        "derive",
-                        "axiom",
-                        "weight",
-                    ),
-                    then=Return(
-                        value=Gather(
-                            value=Var(local=axioms),
-                            index=Var(local=chosen),
-                            result_type=item,
-                        )
-                    ),
-                ),
-            )
-            groups = self.rule_groups()
+        axiom_alternative: Computation = If(
+            condition=self.primitive(
+                "eq_int",
+                Var(local=stop),
+                self.primitive("add_int", Var(local=start), _int(1)),
+            ),
+            then=self.call(system.name("axiom"), (Var(local=start), Var(local=tokens))),
+            otherwise=self.fail(item, "derive", "lexical", "span"),
+        )
+        groups = [group for group in self.rule_groups() if group.arity > 1]
         alternatives = TensorValue(
             items=tuple(_int(index) for index in range(-1, len(groups))),
             result_type=tensor_type(
@@ -4151,11 +4142,8 @@ class _Context:
                         lambda value: Return(value=value),
                         *path,
                     )
-                if system.span_shaped_cell[0]:
-                    low, high = group.spans[position]
-                    call = recursion(Var(local=chosen[low]), Var(local=chosen[high]))
-                else:
-                    call = recursion(_int(0), _int(0))
+                low, high = group.spans[position]
+                call = recursion(Var(local=chosen[low]), Var(local=chosen[high]))
                 return self.bind(
                     "premise",
                     item,
@@ -4163,8 +4151,6 @@ class _Context:
                     lambda value: premises(position + 1, chosen, [*derived, value]),
                 )
 
-            if not system.span_shaped_cell[0]:
-                return premises(0, {}, [])
             return choose_positions(list(group.splits), {"L": start, "R": stop})
 
         def dispatch(chosen: Local, index: int) -> Computation:
@@ -4206,20 +4192,13 @@ class _Context:
                 otherwise=dispatch(chosen, 0),
             ),
         )
-        if system.span_shaped_cell[0]:
-            body: Computation = If(
-                condition=self.primitive("lt_int", Var(local=start), Var(local=stop)),
-                then=self.bind(
-                    "base", item, base, lambda found: self.closed(repeats, found)
-                ),
-                otherwise=self.fail(item, "derive", "span"),
-            )
-        else:
-            body = If(
-                condition=self.primitive("le_int", Var(local=fuel), _int(0)),
-                then=self.fail(item, "derive", "fuel"),
-                otherwise=base,
-            )
+        body: Computation = If(
+            condition=self.primitive("lt_int", Var(local=start), Var(local=stop)),
+            then=self.bind(
+                "base", item, base, lambda found: self.closed(repeats, found)
+            ),
+            otherwise=self.fail(item, "derive", "span"),
+        )
         return self.computation(signature, parameters, body)
 
     def schema_derivation(self, signature: ComputationSignature) -> NamedComputation:
@@ -6439,6 +6418,7 @@ class _Context:
         assert system.choice_cell[0] is not None and system.weight_cell[0] is not None
         search_handler, collect_handler = handlers
         item = system.item
+        assert system.entries
         length: Value = Reduction(
             operator="sum",
             value=Comprehension(
@@ -6463,21 +6443,11 @@ class _Context:
                 system.name("derive"),
                 (fuel_value, _int(0), length, expected, Var(local=parameters[0])),
             )
-        elif system.span_shaped_cell[0]:
+        else:
             prefix = (repeats,) if repeats is not None else ()
             derived = self.call(
                 system.name("derive"),
                 (*prefix, _int(0), length, Var(local=parameters[0])),
-            )
-        else:
-            # A system without a lexicon has no sentence to recur on: it
-            # enumerates derivations up to a height of its axioms and
-            # rules together, a bound its input fixes; ``depth`` bounds
-            # its categories, as everywhere.
-            fuel_value = self.primitive("add_int", length, _int(len(system.rules)))
-            derived = self.call(
-                system.name("derive"),
-                (fuel_value, *(Var(local=parameter) for parameter in parameters)),
             )
 
         def accept() -> Computation:

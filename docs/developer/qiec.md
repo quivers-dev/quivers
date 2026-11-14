@@ -624,7 +624,7 @@ The lowering accepts such a system when two conditions hold, and refuses it othe
 Its goal spans cover the whole sentence, as the agenda algorithm's do. Any other system takes its
 axioms and their weights as input.
 
-**The run entry.** `<name>__run` handles the weight instance with a collecting handler and the
+**The lexical run entry.** `<name>__run` handles the weight instance with a collecting handler and the
 search instance with a handler that resumes once per alternative and combines the shots by the
 semiring's addition. Its answer is the semiring sum, over derivations of the goal, of the product
 of the weights along each derivation. This is the
@@ -640,8 +640,18 @@ counterpart of the chart's fixed-point iteration, which repeats until weights st
 
 **Depth.** The `depth` option bounds the constructor depth of each rule's conclusion category
 through `<name>__depth`, the measure the agenda algorithm uses, and never the length of a
-derivation. A system without a lexicon bounds the height of a derivation by the number of its
-axioms and rules.
+derivation.
+
+**Nonlexical charts.** A system without a lexicon takes an axiom tensor and a weight tensor.
+Its `<name>__Chart` family stores one weight per item. Each round computes the sum of the axiom
+weights and all rule contributions from the preceding chart, using semiring multiplication for
+the premise and rule weights. The computation compares every item weight, including intermediate
+items that do not match the goal, and repeats until the whole chart converges within `tolerance`
+(exactly when no tolerance is declared). `<name>__run` then sums the goal entries.
+
+This iteration imposes no proof-height limit. Constructor depth can bound the reachable items,
+but convergence also depends on the weights and cycles in the rules. Passing `fuel` to
+`run_deduction` bounds execution steps; exhausting that budget raises `ExecutionFailure`.
 
 A program calls the deduction with `let chart = parse(D, sentence)`, which types `sentence` as a
 tensor of tokens over one of the program's open extents, and reads `chart.goal_weight()` as a real

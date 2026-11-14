@@ -108,14 +108,12 @@ class ArrowLoop(Arrow, ABC):
     Encodes traced symmetric monoidal structure on the arrow category.
 
     For an arrow ``f : (A ⊗ C) ⇝ (B ⊗ C)``, ``loop(f) : A ⇝ B``
-    closes the loop on ``C``. In `Function`, this is the
-    least-fixed-point operator; in `VRel`, it is the iterative
-    trace; in `Stochastic` and `Kern`, it is the
-    cartesian / sampled trace.
-
-    The chart-fold parser combinator of
-    [`quivers.dsl.ast_nodes.ExprChartFold`][quivers.dsl.ast_nodes.ExprChartFold] is denotationally
-    an `loop_arr` invocation on the appropriate arrow.
+    closes the loop on ``C``. `VRel` implements finite diagonal contraction,
+    the compact-closed trace for weighted relations over a commutative
+    semiring. Total finite functions and normalized stochastic kernels do
+    not have this general trace, so `Function` and `Stochastic` are not
+    registered here. A chart's closure algorithm is a separate operation;
+    registering this interface does not establish a recursive chart solver.
     """
 
     @abstractmethod

@@ -8,6 +8,8 @@ consequently never become serializable QIEC fields.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from collections.abc import Callable, Iterable, Mapping
 from enum import Enum
 import math
@@ -509,6 +511,7 @@ def _tuple_of(item: RuntimeValidator) -> RuntimeValidator:
     return validate
 
 
+@lru_cache(maxsize=256)
 def _handler_def(
     name: str,
     effect: EffectRef,
