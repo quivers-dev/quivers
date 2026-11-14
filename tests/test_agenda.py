@@ -52,24 +52,26 @@ class TestMatch:
         assert match(("span", "A"), ("span", "A", 0, 3)) is None
 
     def test_wildcard_bind(self):
-        b = match(("span", Wildcard("X"), 0, 3), ("span", "A", 0, 3))
+        b = match(("span", Wildcard(name="X"), 0, 3), ("span", "A", 0, 3))
         assert b == {"X": "A"}
 
     def test_wildcard_shared(self):
         # Same wildcard name must bind to equal values.
-        ok = match(("rule", Wildcard("X"), Wildcard("X")), ("rule", "A", "A"))
+        ok = match(("rule", Wildcard(name="X"), Wildcard(name="X")), ("rule", "A", "A"))
         assert ok == {"X": "A"}
-        bad = match(("rule", Wildcard("X"), Wildcard("X")), ("rule", "A", "B"))
+        bad = match(
+            ("rule", Wildcard(name="X"), Wildcard(name="X")), ("rule", "A", "B")
+        )
         assert bad is None
 
     def test_nested_pattern(self):
-        pat = ("step", ("span", Wildcard("A"), 0, Wildcard("j")))
+        pat = ("step", ("span", Wildcard(name="A"), 0, Wildcard(name="j")))
         item = ("step", ("span", "NP", 0, 3))
         assert match(pat, item) == {"A": "NP", "j": 3}
 
     def test_instantiate_substitutes(self):
         out = instantiate(
-            ("span", Wildcard("X"), 0, Wildcard("j")), {"X": "VP", "j": 4}
+            ("span", Wildcard(name="X"), 0, Wildcard(name="j")), {"X": "VP", "j": 4}
         )
         assert out == ("span", "VP", 0, 4)
 
@@ -102,7 +104,7 @@ class TestHashChart:
         chart.insert_or_aggregate(("span", "A", 0, 3), torch.tensor(0.0), LOG_PROB)
         chart.insert_or_aggregate(("span", "B", 0, 3), torch.tensor(0.0), LOG_PROB)
         chart.insert_or_aggregate(("token", "A"), torch.tensor(0.0), LOG_PROB)
-        out = list(chart.lookup(("span", Wildcard("X"), 0, 3)))
+        out = list(chart.lookup(("span", Wildcard(name="X"), 0, 3)))
         assert len(out) == 2
         names = sorted(item[1] for item, _ in out)
         assert names == ["A", "B"]
@@ -159,10 +161,10 @@ class TestEndToEnd:
         rule_s = InferenceRule(
             name="combine",
             premises=(
-                ("span", "NP", Wildcard("i"), Wildcard("k")),
-                ("span", "VP", Wildcard("k"), Wildcard("j")),
+                ("span", "NP", Wildcard(name="i"), Wildcard(name="k")),
+                ("span", "VP", Wildcard(name="k"), Wildcard(name="j")),
             ),
-            conclusion=("span", "S", Wildcard("i"), Wildcard("j")),
+            conclusion=("span", "S", Wildcard(name="i"), Wildcard(name="j")),
         )
         return [rule_s], LOG_PROB
 
@@ -236,10 +238,10 @@ class TestEndToEnd:
         rule = InferenceRule(
             name="combine",
             premises=(
-                ("span", "NP", Wildcard("i"), Wildcard("k")),
-                ("span", "VP", Wildcard("k"), Wildcard("j")),
+                ("span", "NP", Wildcard(name="i"), Wildcard(name="k")),
+                ("span", "VP", Wildcard(name="k"), Wildcard(name="j")),
             ),
-            conclusion=("span", "S", Wildcard("i"), Wildcard("j")),
+            conclusion=("span", "S", Wildcard(name="i"), Wildcard(name="j")),
         )
         axioms = [
             (("span", "NP", 0, 1), torch.tensor(-0.6)),
@@ -269,10 +271,10 @@ class TestEndToEnd:
         rule = InferenceRule(
             name="combine",
             premises=(
-                ("span", "NP", Wildcard("i"), Wildcard("k")),
-                ("span", "VP", Wildcard("k"), Wildcard("j")),
+                ("span", "NP", Wildcard(name="i"), Wildcard(name="k")),
+                ("span", "VP", Wildcard(name="k"), Wildcard(name="j")),
             ),
-            conclusion=("span", "S", Wildcard("i"), Wildcard("j")),
+            conclusion=("span", "S", Wildcard(name="i"), Wildcard(name="j")),
         )
         # Derivable case.
         r_ok = run_agenda(
@@ -314,10 +316,10 @@ class TestChartView:
         rule = InferenceRule(
             name="combine",
             premises=(
-                ("span", "NP", Wildcard("i"), Wildcard("k")),
-                ("span", "VP", Wildcard("k"), Wildcard("j")),
+                ("span", "NP", Wildcard(name="i"), Wildcard(name="k")),
+                ("span", "VP", Wildcard(name="k"), Wildcard(name="j")),
             ),
-            conclusion=("span", "S", Wildcard("i"), Wildcard("j")),
+            conclusion=("span", "S", Wildcard(name="i"), Wildcard(name="j")),
         )
         return DeductionSystem(
             rules=(rule,),
@@ -368,7 +370,7 @@ class TestChartView:
             (("span", "VP", 2, 4), torch.tensor(0.0)),
         ]
         view = sys(axioms)
-        nps = view.enumerate(("span", "NP", Wildcard("i"), Wildcard("j")))
+        nps = view.enumerate(("span", "NP", Wildcard(name="i"), Wildcard(name="j")))
         assert len(nps) == 2
 
     def test_goal_weight(self):

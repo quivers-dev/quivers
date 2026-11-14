@@ -40,6 +40,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
+import didactic.api as dx
 import torch
 
 from quivers.stochastic.productions import ProductionGroup, ProductionWeights
@@ -62,8 +63,7 @@ or `Wildcard` placeholders in patterns.
 """
 
 
-@dataclass(frozen=True)
-class Wildcard:
+class Wildcard(dx.Model):
     """Pattern-position wildcard.
 
     A wildcard matches any value in the corresponding slot and
@@ -91,7 +91,7 @@ def make_wildcard(name: str) -> Wildcard:
     Wildcard
         The wildcard.
     """
-    return Wildcard(name)
+    return Wildcard(name=name)
 
 
 Pattern = tuple[Any, ...]

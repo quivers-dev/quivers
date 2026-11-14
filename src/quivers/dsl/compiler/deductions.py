@@ -724,7 +724,7 @@ class _DeductionsMixin:
                 # numeral is a wildcard, whatever its spelling; a
                 # declared atom's name is always that atom.
                 if is_pattern_variable(texpr, frozen_atoms):
-                    return Wildcard(name)
+                    return Wildcard(name=name)
                 if name.isdigit():
                     return ("literal", int(name))
                 return atom_term(name)
@@ -778,7 +778,7 @@ class _DeductionsMixin:
                 children = tuple(_normalise_span(c) for c in pat[1:])
                 if len(children) == 3:
                     _lf_wildcard_counter["n"] += 1
-                    fresh = Wildcard(f"_lf_{_lf_wildcard_counter['n']}")
+                    fresh = Wildcard(name=f"_lf_{_lf_wildcard_counter['n']}")
                     return ("span", *children, fresh)
                 return ("span", *children)
             if isinstance(pat, tuple):

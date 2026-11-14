@@ -58,7 +58,7 @@ class TestStdlibRegistry:
             (("edge", 3, 4), torch.tensor(1.0)),
         ]
         view = Datalog(axioms)
-        reaches = view.enumerate(("reach", 1, Wildcard("Y")))
+        reaches = view.enumerate(("reach", 1, Wildcard(name="Y")))
         targets = sorted(item[2] for item, _ in reaches)
         assert targets == [2, 3, 4]
 
@@ -69,7 +69,7 @@ class TestStdlibRegistry:
             (("edge", 3, 4), torch.tensor(1.0)),
         ]
         view = Datalog(axioms)
-        reaches = view.enumerate(("reach", 1, Wildcard("Y")))
+        reaches = view.enumerate(("reach", 1, Wildcard(name="Y")))
         targets = sorted(item[2] for item, _ in reaches)
         # 1 can only reach 2; not 3, 4.
         assert targets == [2]
