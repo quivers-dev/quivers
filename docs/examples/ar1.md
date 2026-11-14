@@ -31,7 +31,7 @@ gallery and shows the minimum QVR needed to fit a linear time series.
 #   y_t    ~ Normal(alpha + phi * y_{t-1}, sigma) for t = 1, ..., T
 #
 # Step indexes the T scored transitions. y_prev is the series
-# shifted by one, supplied as data: row t of y_prev holds y_{t-1}, so
+# shifted by one, provided as data: row t of y_prev holds y_{t-1}, so
 # the first row conditions on y_0, which the likelihood does not
 # score. Inside the Uniform(-1, 1) support the series has a
 # stationary distribution with mean alpha / (1 - phi) and variance
@@ -58,7 +58,7 @@ export ar1
 If `phi = 0.8`, a one-unit deviation in the previous observation shifts the
 next conditional mean by `0.8` units. Repeated effects decay when
 `abs(phi) < 1`, and the series then has a stationary distribution with mean
-`alpha / (1 - phi)` and standard deviation `sigma / sqrt(1 - phi^2)`; the
+`alpha / (1 - phi)` and standard deviation `sigma / sqrt(1 - phi^2)`. The
 `Uniform(-1, 1)` prior on `phi` places all of its mass on that region.
 `sigma` controls the new variation added at each step.
 
@@ -79,11 +79,11 @@ steps, feed each generated observation back as the next step's lag.
 
 ## Walkthrough
 
-`alpha` is the intercept of the recurrence, `phi` is the autoregressive coefficient with a `Uniform(-1, 1)` prior over the [stationary region](https://en.wikipedia.org/wiki/Stationary_process), and `sigma` is the innovation scale with a [half-Cauchy](https://en.wikipedia.org/wiki/Cauchy_distribution#Related_distributions) prior. The identifier `y_prev` is never declared inside the program, so the runtime resolves it from the observations dict at trace time: it is the series shifted by one position. The mean `mu = alpha + phi * y_prev` is the per-step recurrence and the observed `y` is Normal noise around it.
+`alpha` is the intercept of the recurrence, `phi` is the autoregressive coefficient with a `Uniform(-1, 1)` prior over the [stationary region](https://en.wikipedia.org/wiki/Stationary_process), and `sigma` is the innovation scale with a [half-Cauchy](https://en.wikipedia.org/wiki/Cauchy_distribution#Related_distributions) prior. The identifier `y_prev` is never declared inside the program, so the runtime resolves it from the observations mapping at trace time: it is the series shifted by one position. The mean `mu = alpha + phi * y_prev` is the per-step recurrence and the observed `y` is Normal noise around it.
 
 `Step` counts the `T = 64` scored transitions, so `y` and `y_prev` both have 64 rows, and the series they come from has 65 values. Row `t` pairs $y_{t+1}$ with its predecessor $y_t$, and the first value $y_0$ appears only as a lag.
 
-The program returns `phi`, a scalar real, so the declared codomain is `Val : Real 1`: the value space of what comes back, not the index set the series is plated over. `Step` names that plate extent, and it appears in the signature only as the domain.
+`return phi` exposes the autoregressive coefficient as a real scalar. `Step` indexes the 64 observed transitions.
 
 ## Try it
 
@@ -146,7 +146,7 @@ assert torch.allclose(model_lj, oracle_lj.reshape(1), atol=1e-3)
 
 ### SVI fit
 
-Fit `alpha`, `phi`, and `sigma` with a mean-field [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) and check the posterior means against the truth. The tolerances are about three asymptotic standard errors at `T = 64`: `sqrt((1 - phi^2) / T)` is about `0.09` for `phi` and `sigma / sqrt(2 T)` is about `0.03` for `sigma`, while the intercept is less precisely determined because it trades off against `phi` through the stationary mean.
+Fit `alpha`, `phi`, and `sigma` with a [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide) and check the posterior means against the truth. The tolerances are about three asymptotic standard errors at `T = 64`: `sqrt((1 - phi^2) / T)` is about `0.09` for `phi` and `sigma / sqrt(2 T)` is about `0.03` for `sigma`, while the intercept is less precisely determined because it trades off against `phi` through the stationary mean.
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -172,7 +172,7 @@ assert abs(svi_means["sigma"] - true_sigma) < 0.08
 
 ### NUTS posterior
 
-The three parameters are the only latent sites, so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly. The same tolerances apply to the posterior means; a longer, multi-chain run is needed for well-calibrated intervals.
+The three parameters are the only latent sites, so [`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) samples them directly. The same tolerances apply to the posterior means. A longer, multi-chain run is needed for well-calibrated intervals.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
@@ -194,9 +194,6 @@ assert abs(nuts_means["sigma"] - true_sigma) < 0.08
 
 ## Categorical perspective
 
-The model is a Kleisli morphism in the [Giry monad](https://doi.org/10.1007/BFb0092872)'s [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) whose denotation is the conditional AR(1) joint $p(\alpha, \phi, \sigma) \prod_{t \ge 1} \mathcal{N}(y_t \mid \alpha + \phi y_{t-1}, \sigma)$. The `Step`-indexed plate is the [right Kan extension](https://ncatlab.org/nlab/show/Kan+extension) of the per-step Normal kernel along the trivial projection $\mathrm{Step} \to \mathbf{1}$; the lags enter as data, so given them the transitions are conditionally independent. [@giry1982categorical]
+The conditional AR(1) joint is $p(\alpha, \phi, \sigma) \prod_{t \ge 1} \mathcal{N}(y_t \mid \alpha + \phi y_{t-1}, \sigma)$, where $\sigma$ is the standard deviation. A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical]. The `Step` plate multiplies the Normal likelihood factors evaluated at the observed lags. This factorization does not make successive observations independent in the generative chain, where each newly drawn observation becomes the next lag.
 
-## Sources and further reading
-
-- *Time-Series Models*, Stan User's Guide [@stanTimeSeries].
-- *A categorical approach to probability theory* [@giry1982categorical].
+Observing data weights this sampling distribution by a likelihood. The resulting measure need not have total mass one, so the scored program uses weighted-measure semantics [@staton2017commutative].
