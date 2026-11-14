@@ -54,6 +54,10 @@ from dataclasses import dataclass, field
 import math
 from typing import TYPE_CHECKING, Literal
 
+import didactic.api as dx
+
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
+
 from quivers.dsl.ast_nodes import (
     BundleDecl,
     DeductionDecl,
@@ -211,8 +215,7 @@ BOUND = "bound"
 type Sort = Literal["int", "item"]
 
 
-@dataclass(frozen=True, slots=True)
-class _Atom:
+class _Atom(dx.Model):
     """A declared atom in a pattern.
 
     Parameters
@@ -224,8 +227,7 @@ class _Atom:
     name: str
 
 
-@dataclass(frozen=True, slots=True)
-class _Wild:
+class _Wild(dx.Model):
     """A pattern variable.
 
     Parameters
@@ -237,8 +239,7 @@ class _Wild:
     name: str
 
 
-@dataclass(frozen=True, slots=True)
-class _Lit:
+class _Lit(dx.Model):
     """An integer literal in a pattern.
 
     Parameters
@@ -250,8 +251,7 @@ class _Lit:
     value: int
 
 
-@dataclass(frozen=True, slots=True)
-class _Bound:
+class _Bound(dx.Model):
     """A bound variable of a logical form, canonically numbered.
 
     Parameters
@@ -263,8 +263,7 @@ class _Bound:
     index: int
 
 
-@dataclass(frozen=True, slots=True)
-class _App:
+class _App(ValueModel):
     """An applied constructor symbol in a pattern.
 
     Parameters
@@ -276,7 +275,21 @@ class _App:
     """
 
     symbol: str
-    args: tuple[Pattern, ...]
+    args: tuple[Pattern, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+    @dx.model_validator()
+    def _check_arguments(self) -> None:
+        """Require immutable, recursively typed pattern arguments.
+
+        Raises
+        ------
+        TypeError
+            If the arguments are not a tuple of pattern records.
+        """
+        if not isinstance(self.args, tuple) or not all(
+            isinstance(arg, (_Atom, _Wild, _Lit, _Bound, _App)) for arg in self.args
+        ):
+            raise TypeError("pattern arguments must be a tuple of pattern records")
 
 
 type Pattern = _Atom | _Wild | _Lit | _Bound | _App
@@ -1849,17 +1862,17 @@ class _DeductionElaboration:
         """
         if isinstance(expr, TypeName):
             if is_pattern_variable(expr, frozenset(atoms)):
-                return _Wild(expr.name)
+                return _Wild(name=expr.name)
             if expr.name.isdigit():
-                return _Lit(int(expr.name))
+                return _Lit(value=int(expr.name))
             self._note_atom(system, expr.name)
-            return _Atom(expr.name)
+            return _Atom(name=expr.name)
         if isinstance(expr, ObjectEffectApply):
             args = tuple(
                 self._object_pattern(item, atoms, system) for item in expr.args
             )
             self._note_symbol(system, expr.effect, len(args))
-            return _App(expr.effect, args)
+            return _App(symbol=expr.effect, args=args)
         if isinstance(expr, ObjectSlash):
             symbol = "fwd_slash" if expr.direction == "/" else "bwd_slash"
             args = (
@@ -1867,14 +1880,14 @@ class _DeductionElaboration:
                 self._object_pattern(expr.argument, atoms, system),
             )
             self._note_symbol(system, symbol, 2)
-            return _App(symbol, args)
+            return _App(symbol=symbol, args=args)
         if isinstance(expr, ObjectProduct):
             args = tuple(
                 self._object_pattern(item, atoms, system) for item in expr.components
             )
             symbol = f"product{len(args)}"
             self._note_symbol(system, symbol, len(args))
-            return _App(symbol, args)
+            return _App(symbol=symbol, args=args)
         self._fail(
             system.decl,
             f"deduction {system.decl.name!r} has a rule pattern of kind "
@@ -1968,9 +1981,9 @@ class _DeductionElaboration:
             )
             if pattern.symbol == SPAN and len(args) == 3:
                 counter[0] += 1
-                args = (*args, _Wild(f"_lf{counter[0]}"))
+                args = (*args, _Wild(name=f"_lf{counter[0]}"))
                 system.symbols[SPAN] = ["item"] * 4
-            return _App(pattern.symbol, args)
+            return _App(symbol=pattern.symbol, args=args)
         return pattern
 
     def _read_lexicon(
@@ -2055,7 +2068,7 @@ class _DeductionElaboration:
                 system.entries.append(_Entry(word, category, form, learnable))
             else:
                 for atom in candidates:
-                    system.entries.append(_Entry(word, _Atom(atom), form, True))
+                    system.entries.append(_Entry(word, _Atom(name=atom), form, True))
         if system.entries:
             sorts: list[Sort] = ["int", "int", "item", "item"]
             system.symbols[SPAN] = sorts[: 4 if system.uses_forms else 3]
@@ -2115,10 +2128,10 @@ class _DeductionElaboration:
             if isinstance(node, LetExprVar):
                 if node.name in scope:
                     self._note_symbol(system, BOUND, 1)
-                    return _Bound(scope[node.name])
+                    return _Bound(index=scope[node.name])
                 if node.name in atoms:
                     self._note_atom(system, node.name)
-                    return _Atom(node.name)
+                    return _Atom(name=node.name)
                 self._fail(
                     declaration,
                     f"deduction {declaration.name!r}: logical form names "
@@ -2127,7 +2140,7 @@ class _DeductionElaboration:
                 )
             if isinstance(node, LetExprLiteral):
                 if float(node.value).is_integer():
-                    return _Lit(int(node.value))
+                    return _Lit(value=int(node.value))
                 self._fail(
                     declaration,
                     f"deduction {declaration.name!r}: logical form holds the real "
@@ -2148,13 +2161,13 @@ class _DeductionElaboration:
                     inner = {**scope, first.name: counter[0]}
                     self._note_symbol(system, BOUND, 1)
                     args = (
-                        _Bound(counter[0]),
+                        _Bound(index=counter[0]),
                         *(visit(item, inner) for item in node.args[1:]),
                     )
                 else:
                     args = tuple(visit(item, scope) for item in node.args)
                 self._note_symbol(system, node.func, len(args))
-                return _App(node.func, args)
+                return _App(symbol=node.func, args=args)
             self._fail(
                 declaration,
                 f"deduction {declaration.name!r}: logical form uses a "
