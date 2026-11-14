@@ -7157,8 +7157,10 @@ class _ProgramsMixin:
                             f"DeductionSystem instances; got "
                             f"{type(d1).__name__}, {type(d2).__name__}"
                         )
+                    first = cast(DeductionSystem, d1)
+                    second = cast(DeductionSystem, d2)
 
-                    def _composed_injector(inp, _d1=d1, _d2=d2):
+                    def _composed_injector(inp, _d1=first, _d2=second):
                         # Run D1 to fixed point; lift each of its
                         # goal items (and their weights) into D2's
                         # axiom list. The implementation defers to
@@ -7172,9 +7174,9 @@ class _ProgramsMixin:
                         d2_axioms = list(_d2.axiom_injector(inp))
                         return d1_axioms + d2_axioms
 
-                    composed = d2.with_(
+                    composed = second.with_(
                         axiom_injector=_composed_injector,
-                        modules={**d1.modules, **d2.modules},
+                        modules={**first.modules, **second.modules},
                     )
                     return composed
                 # Standard scalar / tensor builtins.
