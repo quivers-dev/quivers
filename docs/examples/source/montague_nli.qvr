@@ -107,7 +107,7 @@ deduction Montague : Term -> Term [semiring=LogProb, start=S, depth=12]
 # while the existential is false. The inference is valid only
 # under existential import, so the rule takes ``Nonempty(P)`` as a
 # second premise rather than smuggling the assumption in. A caller
-# that wants the inference must supply that premise.
+# that wants the inference must provide that premise.
 
 deduction Prover : Term -> Term [semiring=LogProb, depth=12]
     atoms Claim, Every, Some, Nonempty, App, Var
