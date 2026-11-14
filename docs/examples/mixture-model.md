@@ -79,21 +79,21 @@ the fitted locations.
 
 ## Walkthrough
 
-`composition log_prob [level=algebra]` selects the log-probability semiring so the program's `Score` effect accumulates log-densities additively. `object Component : FinSet 3` and `object Resp : FinSet 200` declare the two discrete plates: $K = 3$ mixture components and $N = 200$ observed rows, and `object Weights : Real 3` is the value space of the returned mixing weights, a point of the component simplex embedded in $\mathbb{R}^K$. `program gmm(alpha : Real) : Resp -> Weights` parameterizes the program by the Dirichlet concentration and declares that what it returns is a mixing-weight vector rather than a row index.
+`composition log_prob [level=algebra]` selects the log-probability [semiring](https://ncatlab.org/nlab/show/rig) so the program's `Score` effect accumulates log-densities additively. `object Component : FinSet 3` and `object Resp : FinSet 200` declare the two discrete plates: $K = 3$ mixture components and $N = 200$ observed rows, and `object Weights : Real 3` is the value space of the returned mixing weights, a point of the component simplex embedded in $\mathbb{R}^K$. `program gmm(alpha : Real) : Resp -> Weights` parameterizes the program by the Dirichlet concentration and declares that what it returns is a mixing-weight vector rather than a row index.
 
 The three `sample` steps draw the shared per-component parameters:
 
-- `sample probs <- Dirichlet(alpha) [over=Component]` draws the mixing weights as a single point on the `Component` simplex; `over=Component` names the family's event axis (Dirichlet event-rank 1).
-- `sample mu : Component <- Normal(0.0, 5.0)` draws the $K$ component locations as plate-bound continuous latents, one per component.
+- `sample probs <- Dirichlet(alpha) [over=Component]` draws the mixing weights as a single point on the `Component` simplex. `over=Component` names the family's event axis (Dirichlet event-rank 1).
+- `sample mu : Component <- Normal(0.0, 5.0)` draws the $K$ component locations as [plate](https://en.wikipedia.org/wiki/Plate_notation)-bound continuous latents, one per component.
 - `sample sigma : Component <- HalfNormal(1.0)` draws the $K$ positive component scales the same way.
 
 `observe r : Resp <- MixtureNormal(probs, mu, sigma)` scores each observed row against the $K$-component mixture the three shared vectors define. `MixtureNormal` takes the mixing weights, the locations, and the scales as three per-component vectors, each broadcast across every row of the `Resp` plate, and returns the per-row marginal $\sum_k \mathrm{probs}[k]\,\mathcal{N}(r_n;\,\mu[k],\,\sigma[k])$ in closed form. No component-assignment latent is sampled: the mixture likelihood integrates it out.
 
-`return probs` projects the program's joint kernel onto the mixing-weight site.
+`return probs` projects the program's joint [kernel](https://en.wikipedia.org/wiki/Markov_kernel) onto the mixing-weight site.
 
 ## Try it
 
-The blocks below simulate a corpus from the model, check the compiled joint against a hand-written density, fit all three parameter vectors by SVI, and run a short NUTS chain on the same model.
+The blocks below simulate a corpus from the model, check the compiled joint against a hand-written density, fit all three parameter vectors by [SVI](../guides/inference-svi.md) (stochastic variational inference), and run a short [NUTS](../guides/inference-mcmc.md) (No-U-Turn Sampler) chain on the same model.
 
 ### Generating synthetic data
 
@@ -118,7 +118,7 @@ observations = {"r": r}
 x_in = torch.zeros(1, 1)
 ```
 
-The program input `x_in` is a single row. The extent of the `Resp` plate comes from the observed rows, and the unplated site `probs` is drawn once per run rather than once per input row. The rows are drawn by sampling a component per row and then a value from that component's Gaussian. Only the rows `r` enter `observations`: the component labels, the mixing weights `probs`, the locations `mu`, and the scales `sigma` are all left for inference.
+The program input `x_in` is a single row. The extent of the `Resp` plate comes from the observed rows, and the unplated site `probs` is drawn once in that run. Each [input row is an independent run](../guides/inference-foundations.md#input-rows-are-independent-runs). The rows are drawn by sampling a component per row and then a value from that component's Gaussian. Only the rows `r` enter `observations`: the component labels, the mixing weights `probs`, the locations `mu`, and the scales `sigma` are all left for inference.
 
 ### Checking the joint density
 
@@ -143,7 +143,7 @@ print(f"log joint at the truth: {float(log_joint):.2f}")
 
 ### SVI fit
 
-The mixture likelihood is multimodal: a fit can settle where two components share one cluster, and every relabeling of the components is an equally good optimum. The block below thus runs three restarts from different seeds, keeps the one with the best average ELBO over its last 100 steps (a criterion that never looks at the truth), and summarizes each site by the mean of 200 draws from the fitted [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide). Components are aligned to the truth by sorting on the fitted locations [@stephens2000labels].
+The mixture likelihood is multimodal: a fit can settle where two components share one cluster, and every relabeling of the components is an equally good optimum. The block below thus runs three restarts from different seeds, keeps the one with the best average [ELBO](https://en.wikipedia.org/wiki/Evidence_lower_bound) (evidence lower bound) over its last 100 steps (a criterion that never looks at the truth), and summarizes each site by the mean of 200 draws from the fitted [`AutoNormalGuide`](../api/inference/guide.md#quivers.inference.guides.AutoNormalGuide). Components are aligned to the truth by sorting on the fitted locations [@stephens2000labels].
 
 ```python
 from quivers.inference import AutoNormalGuide, ELBO, SVI
@@ -181,11 +181,11 @@ assert (fitted["mu"] - true_mu).abs().max() < 0.25
 assert (fitted["sigma"] - true_sigma).abs().max() < 0.2
 ```
 
-A restart can end where the components overlap instead of separating, with a loss far worse than the others; a single-seed fit could thus report a poor optimum as if it were the posterior. The tolerances are about three sampling standard errors at $N = 200$ (for instance, $\sqrt{0.25 \cdot 0.75 / 200} \approx 0.03$ for the smallest weight, and $0.7 / \sqrt{70} \approx 0.08$ for the middle component's mean), so they leave room for finite-sample error but not for a collapsed or merged component.
+A restart can end where the components overlap instead of separating, with a loss far worse than the others. A single-seed fit could thus report a poor optimum as if it were the posterior. The tolerances are about three sampling standard errors at $N = 200$ (for instance, $\sqrt{0.25 \cdot 0.75 / 200} \approx 0.03$ for the smallest weight, and $0.7 / \sqrt{70} \approx 0.08$ for the middle component's mean), so they leave room for finite-sample error but not for a collapsed or merged component.
 
 ### NUTS posterior
 
-[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets the same joint, with all three parameter vectors latent. The chain below is short; a real analysis would run several chains and check their diagnostics.
+[`NUTSKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.NUTSKernel) targets the same joint, with all three parameter vectors latent. The chain below is short. A real analysis would run several chains and check their diagnostics.
 
 ```python
 from quivers.inference import MCMC, NUTSKernel
