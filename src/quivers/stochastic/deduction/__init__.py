@@ -28,8 +28,13 @@ posterior vs. generate synthetic data) and so that adding more
 operations in the future does not bloat any one module.
 """
 
+from __future__ import annotations
+
+import importlib
+from types import FunctionType
+from typing import TYPE_CHECKING
+
 from quivers.stochastic.agenda import DeductionSystem
-from quivers.stochastic.deduction.bayes import nuts_program_from_deduction
 from quivers.stochastic.deduction.fit import adam_fit_deduction
 from quivers.stochastic.deduction.primitives import (
     Axiom,
@@ -39,7 +44,44 @@ from quivers.stochastic.deduction.primitives import (
     Schedule,
 )
 from quivers.stochastic.deduction.sample import sample_corpus
-from quivers.inference.lifts import bayesian_lift_parameters
+
+if TYPE_CHECKING:
+    from quivers.inference.lifts import bayesian_lift_parameters
+    from quivers.stochastic.deduction.bayes import nuts_program_from_deduction
+
+_LAZY_EXPORTS: dict[str, str] = {
+    "bayesian_lift_parameters": "quivers.inference.lifts",
+    "nuts_program_from_deduction": "quivers.stochastic.deduction.bayes",
+}
+
+
+def __getattr__(name: str) -> FunctionType:
+    """Load inference operations when their public names are requested.
+
+    The deduction primitives are independent of inference. Their package
+    can initialize while the compiler is importing chart parsers.
+
+    Parameters
+    ----------
+    name : str
+        The requested public attribute.
+
+    Returns
+    -------
+    FunctionType
+        The operation from its defining module.
+
+    Raises
+    ------
+    AttributeError
+        If the name is not a deferred inference operation.
+    """
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value: FunctionType = getattr(importlib.import_module(module_name), name)
+    globals()[name] = value
+    return value
 
 
 __all__ = [

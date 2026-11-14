@@ -1,11 +1,14 @@
 """Compiler mixin: deduction systems and lexicon loading."""
 
 from __future__ import annotations
+
 import math
 from collections.abc import Callable, Hashable
 from pathlib import Path
+
 import torch
 import torch.nn as nn
+
 from quivers.core.algebras import BOOLEAN
 from quivers.dsl.ast_nodes import (
     DeductionDecl,
@@ -15,50 +18,34 @@ from quivers.dsl.ast_nodes import (
     LexiconCategoryFixed,
     LexiconCategoryRestricted,
     LexiconCategoryWildcard,
-    LexiconEntry as _LexiconEntryAst,
     ObjectEffectApply,
     ObjectProduct,
     ObjectSlash,
     ProgramDecl,
     TypeName,
 )
-from quivers.stochastic.agenda import (
-    DeductionSystem,
-    InferenceRule,
-    Wildcard,
-    cky_agenda,
-    depth_first_agenda,
-    semi_naive_agenda,
+from quivers.dsl.ast_nodes import (
+    LetExprBinOp as _LetBinOp,
 )
-from quivers.stochastic.productions import (
-    Production,
-    ProductionKey,
-    ProductionWeights,
+from quivers.dsl.ast_nodes import (
+    LetExprCall as _LetCall,
 )
-from quivers.stochastic.semiring import (
-    BOOLEAN as SEMIRING_BOOLEAN,
-    COUNTING as SEMIRING_COUNTING,
-    LOG_PROB as SEMIRING_LOG_PROB,
-    VITERBI as SEMIRING_VITERBI,
+from quivers.dsl.ast_nodes import (
+    LetExprIndex as _LetIndex,
 )
-from quivers.dsl.compiler._options import (
-    check_option_keys,
-    find_option,
-    get_option_flag,
-    get_option_float,
-    get_option_int,
-    get_option_name,
+from quivers.dsl.ast_nodes import (
+    LetExprLambda as _LetLambda,
 )
-from quivers.dsl.compiler._deduction_terms import (
-    LET_BOUND_VARIABLES_KEY,
-    LET_CONSTRUCTORS_KEY,
-    RESERVED_TERM_TAGS,
-    TERM_ATOM_TAG,
-    TERM_LEAF_TAGS,
-    atom_term,
-    variable_name,
-    variable_term,
+from quivers.dsl.ast_nodes import (
+    LetExprList as _LetList,
 )
+from quivers.dsl.ast_nodes import (
+    LetExprVar as _LetVar,
+)
+from quivers.dsl.ast_nodes import (
+    LexiconEntry as _LexiconEntryAst,
+)
+from quivers.dsl.ast_nodes._shared import OptionName as _OptionName
 from quivers.dsl.compiler._deduction_positions import (
     is_pattern_variable,
     misplaced_positions,
@@ -70,10 +57,53 @@ from quivers.dsl.compiler._deduction_productions import (
     normalization_mode,
     production_groups,
 )
+from quivers.dsl.compiler._deduction_terms import (
+    LET_BOUND_VARIABLES_KEY,
+    LET_CONSTRUCTORS_KEY,
+    RESERVED_TERM_TAGS,
+    TERM_ATOM_TAG,
+    TERM_LEAF_TAGS,
+    atom_term,
+    variable_name,
+    variable_term,
+)
+from quivers.dsl.compiler._options import (
+    check_option_keys,
+    find_option,
+    get_option_flag,
+    get_option_float,
+    get_option_int,
+    get_option_name,
+)
 from quivers.dsl.compiler._prelude import CompileError
 from quivers.dsl.compiler.programs import _ProgramsMixin
 from quivers.dsl.parser import parse as _parse_qvr
-
+from quivers.stochastic.agenda import (
+    DeductionSystem,
+    InferenceRule,
+    Wildcard,
+    cky_agenda,
+    depth_first_agenda,
+    semi_naive_agenda,
+)
+from quivers.stochastic.agenda import instantiate as _instantiate
+from quivers.stochastic.productions import (
+    Production,
+    ProductionKey,
+    ProductionWeights,
+)
+from quivers.stochastic.semiring import (
+    BOOLEAN as SEMIRING_BOOLEAN,
+)
+from quivers.stochastic.semiring import (
+    COUNTING as SEMIRING_COUNTING,
+)
+from quivers.stochastic.semiring import (
+    LOG_PROB as SEMIRING_LOG_PROB,
+)
+from quivers.stochastic.semiring import (
+    VITERBI as SEMIRING_VITERBI,
+)
 
 # Category-side pattern carried by a lexicon entry: either a
 # wildcard variable (any identifier not declared as an atom) or a
@@ -230,7 +260,6 @@ def _install_depth_guard(rule, depth_n: int) -> None:
     pattern instantiation. Composes with any pre-existing side
     condition the rule already carries (``AND``).
     """
-    from quivers.stochastic.agenda import instantiate as _instantiate
 
     existing = rule.side_condition
     conclusion_pattern = rule.conclusion
@@ -877,10 +906,6 @@ class _DeductionsMixin:
             parent_entry = find_option(sr.options, "parent")
             parent_name: str | None = None
             if parent_entry is not None:
-                from quivers.dsl.ast_nodes._shared import (
-                    OptionName as _OptionName,
-                )
-
                 if not isinstance(parent_entry.value, _OptionName):
                     raise CompileError(
                         f"deduction {decl.name!r}: rule {sr.name!r}: "
@@ -1021,14 +1046,6 @@ class _DeductionsMixin:
             # ``atoms``). The subsequent alpha-renaming pass
             # (``_normalise_binders``) replaces every such name with
             # a fresh canonical symbol.
-            from quivers.dsl.ast_nodes import (
-                LetExprCall as _LetCall,
-                LetExprVar as _LetVar,
-                LetExprBinOp as _LetBinOp,
-                LetExprList as _LetList,
-                LetExprIndex as _LetIndex,
-                LetExprLambda as _LetLambda,
-            )
 
             def _collect_bound_vars(node, acc: set[str]) -> None:
                 if isinstance(node, _LetCall):

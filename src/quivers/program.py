@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
@@ -10,8 +9,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from quivers.core.morphisms import Morphism
 from quivers.continuous.morphisms import ContinuousMorphism
+from quivers.core.morphisms import (
+    ComposedMorphism,
+    FunctorMorphism,
+    MarginalizedMorphism,
+    Morphism,
+    ProductMorphism,
+    RepeatMorphism,
+)
 from quivers.qiec.entries import (
     EntryPoint,
     EntryRun,
@@ -370,13 +376,6 @@ class Program(nn.Module):
         n : int
             Number of repetition steps.
         """
-        from quivers.core.morphisms import (
-            RepeatMorphism,
-            ComposedMorphism,
-            ProductMorphism,
-            MarginalizedMorphism,
-            FunctorMorphism,
-        )
 
         def _walk(m: Morphism) -> None:
             if isinstance(m, RepeatMorphism):

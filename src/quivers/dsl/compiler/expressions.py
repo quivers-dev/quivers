@@ -5,18 +5,28 @@ composition, parsers, chart folds, exports, and data binding.
 """
 
 from __future__ import annotations
+
+import copy
+
 import torch
-from quivers.core.morphisms import identity as make_identity
-from quivers.core.morphisms import cap as _make_cap, cup as _make_cup
-from quivers.core.algebras import (
-    Algebra,
-    Magmoid,
-    CompositionRule,
-    Semigroupoid,
-)
-from quivers.core.objects import SetObject
+
+from quivers.continuous.morphisms import FanOutMorphism
 from quivers.continuous.scan import ScanMorphism
 from quivers.continuous.spaces import ContinuousSpace
+from quivers.core.algebras import (
+    Algebra,
+    CompositionRule,
+    Magmoid,
+    Semigroupoid,
+)
+from quivers.core.morphisms import CurriedMorphism, RepeatMorphism
+from quivers.core.morphisms import Morphism as _CatMorph
+from quivers.core.morphisms import ObservedMorphism as _Obs
+from quivers.core.morphisms import cap as _make_cap
+from quivers.core.morphisms import cup as _make_cup
+from quivers.core.morphisms import identity as make_identity
+from quivers.core.objects import FinSet as _FS
+from quivers.core.objects import FreeResiduated, ProductSet, SetObject
 from quivers.core.trans import TransSeq
 from quivers.dsl.ast_nodes import (
     ExportDecl,
@@ -44,10 +54,14 @@ from quivers.dsl.ast_nodes import (
     ExprTransCompose,
 )
 from quivers.dsl.compiler._prelude import (
+    _ALGEBRA_REGISTRY,
     CompileError,
     _ChartHandlerComposite,
-    _ALGEBRA_REGISTRY,
 )
+from quivers.stochastic.categories import CategorySystem
+from quivers.stochastic.inside import InsideAlgorithm
+from quivers.stochastic.parsers import ChartParser
+from quivers.stochastic.schema import SCHEMA_REGISTRY
 
 
 class _ExpressionsMixin:
@@ -379,10 +393,6 @@ class _ExpressionsMixin:
             # and wrap as an ObservedMorphism. Gradient flow stops
             # at this boundary; the constituent morphisms' parameters
             # are not part of the result's parameter set.
-            from quivers.core.morphisms import (
-                Morphism as _CatMorph,
-                ObservedMorphism as _Obs,
-            )
 
             if not isinstance(inner, _CatMorph):
                 raise CompileError(
@@ -423,7 +433,6 @@ class _ExpressionsMixin:
                     expr.line,
                     expr.col,
                 )
-            from quivers.core.morphisms import ObservedMorphism as _Obs
 
             tensor = data_dict[expr.key]
             if not isinstance(tensor, torch.Tensor):
@@ -437,7 +446,6 @@ class _ExpressionsMixin:
             # the correct domain/codomain post-substitution; this
             # let-expression path is for ``let h = from_data(...)``
             # which the surrounding context constrains.
-            from quivers.core.objects import FinSet as _FS
 
             if tensor.dim() < 1:
                 raise CompileError(
@@ -486,8 +494,6 @@ class _ExpressionsMixin:
             except (TypeError, ValueError) as e:
                 raise CompileError(str(e), expr.line, expr.col) from e
         elif isinstance(expr, ExprCurry):
-            from quivers.core.morphisms import CurriedMorphism
-
             inner = self._compile_expr(expr.inner)
             try:
                 return CurriedMorphism(inner, direction=expr.direction)
@@ -496,8 +502,6 @@ class _ExpressionsMixin:
         elif isinstance(expr, ExprChartFold):
             return self._compile_chart_fold(expr)
         elif isinstance(expr, ExprFan):
-            from quivers.continuous.morphisms import FanOutMorphism
-
             components = []
             for sub_expr in expr.exprs:
                 if isinstance(sub_expr, ExprIdent) and sub_expr.name in self._groups:
@@ -513,8 +517,6 @@ class _ExpressionsMixin:
         elif isinstance(expr, ExprRepeat):
             morph = self._compile_expr(expr.expr)
             if expr.count is None:
-                from quivers.core.morphisms import RepeatMorphism
-
                 try:
                     return RepeatMorphism(morph, n=1)
                 except (TypeError, ValueError) as e:
@@ -527,8 +529,6 @@ class _ExpressionsMixin:
                     raise CompileError(str(e), expr.line, expr.col) from e
             return result
         elif isinstance(expr, ExprStack):
-            import copy
-
             morph = self._compile_expr(expr.expr)
             result = copy.deepcopy(morph)
             for _ in range(expr.count - 1):
@@ -550,8 +550,6 @@ class _ExpressionsMixin:
             except TypeError as e:
                 raise CompileError(str(e), expr.line, expr.col) from e
         elif isinstance(expr, ExprParser):
-            from quivers.stochastic.schema import SCHEMA_REGISTRY
-
             schemas: list = []
             morphisms: list = []
 
@@ -624,8 +622,6 @@ class _ExpressionsMixin:
         expr : ExprParser
             The AST node (for error reporting).
         """
-        from quivers.core.objects import ProductSet
-        from quivers.stochastic.inside import InsideAlgorithm
 
         binary = None
         lexical = None
@@ -681,7 +677,6 @@ class _ExpressionsMixin:
         must act on that enlarged universe. Each declared handler is then
         post-composed with the parser's denotation in declaration order.
         """
-        from quivers.stochastic.inside import InsideAlgorithm
 
         lex = self._compile_expr(expr.lex)
         if expr.binary is None:
@@ -724,10 +719,6 @@ class _ExpressionsMixin:
         expr : ExprParser
             The AST node.
         """
-        from quivers.stochastic.categories import CategorySystem
-        from quivers.stochastic.parsers import ChartParser
-
-        from quivers.core.objects import FreeResiduated
 
         if expr.categories:
             categories = list(expr.categories)
