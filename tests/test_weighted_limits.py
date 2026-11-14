@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import itertools
 
+import didactic.api as dx
 import pytest
 import torch
 
@@ -78,7 +79,7 @@ def test_tropical_weighted_limit_uses_truncated_subtraction():
 
 
 def test_weights_and_constructions_refuse_a_non_lattice_algebra():
-    with pytest.raises(TypeError, match="IdempotentSemiring"):
+    with pytest.raises(dx.ValidationError, match="IdempotentSemiring"):
         Weight(values=torch.tensor([1.0]), algebra=PRODUCT_FUZZY)  # type: ignore[arg-type]
     fs, w = _family()
     with pytest.raises(TypeError, match="IdempotentSemiring"):
@@ -86,7 +87,7 @@ def test_weights_and_constructions_refuse_a_non_lattice_algebra():
 
 
 def test_weight_requires_one_dimension():
-    with pytest.raises(ValueError, match="1D"):
+    with pytest.raises(dx.ValidationError, match="1D"):
         Weight(values=torch.tensor([[0.5, 1.0]]), algebra=GODEL)
 
 
