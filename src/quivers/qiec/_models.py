@@ -55,6 +55,8 @@ def validate_shape(value: HeldValue, annotation: HeldValue, *, path: str) -> Non
         If the value does not inhabit its annotation, or the annotation
         is outside the closed scalar, tuple, dictionary, union, and model schema.
     """
+    if annotation is HeldValue:
+        return
     if isinstance(annotation, TypeAliasType):
         validate_shape(value, annotation.__value__, path=path)
         return

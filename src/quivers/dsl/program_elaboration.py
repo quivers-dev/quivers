@@ -29,6 +29,8 @@ from types import MappingProxyType
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
+from quivers._values import OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.dsl.ast_nodes import (
     CallStep,
     ContinuousConstructor,
@@ -363,8 +365,7 @@ is no Cholesky factor or covariance, so a free name filling such a
 parameter is a matrix even beside a plate's event axes."""
 
 
-@dataclass(frozen=True, slots=True)
-class ObjectInfo:
+class ObjectInfo(QiecModel):
     """What the elaborator reads off one ``object`` declaration.
 
     Parameters
@@ -380,8 +381,12 @@ class ObjectInfo:
         Whether the object is a finite set.
     """
 
-    extent: int | IndexVariable | None = None
-    real_width: int | IndexVariable | None = None
+    extent: int | IndexVariable | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    real_width: int | IndexVariable | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     finite: bool = False
 
 
@@ -1530,7 +1535,7 @@ def _elaborate_marginal_chain(
     )
     try:
         elaborator.registry.register_computation(helper)
-    except (KernelError, TypeError, ValueError) as error:
+    except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
         elaborator._fail_kernel(node, error, fallback="qiec-program")
     elaborator.computation_signatures[name] = helper
     path = ("programs", state.declaration.name, "chains", node.name)
@@ -2618,7 +2623,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         try:
             self.registry.register_computation(signature)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(declaration, error, fallback="qiec-program")
         self.computation_signatures[declaration.name] = signature
         computation = NamedComputation(
@@ -2633,7 +2638,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         context = CheckContext(locals=parameters)
         try:
             actual = infer_computation(body, self.registry, context)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(declaration, error, fallback="qiec-program")
         if actual.result != result_type:
             self._fail(
@@ -4008,7 +4013,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         try:
             self.registry.register_computation(helper)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(node, error, fallback="qiec-program")
         self.computation_signatures[name] = helper
         statics: tuple[StaticArgument, ...] = (extent,)
@@ -4384,7 +4389,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         try:
             self.registry.register_computation(helper)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(node, error, fallback="qiec-program")
         self.computation_signatures[name] = helper
         path = ("programs", state.declaration.name, "scans", node.name)
@@ -4728,7 +4733,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             call = self._lower_call(step.call, (), scope.context(), path, None)
         try:
             call_type = infer_computation(call, self.registry, scope.context())
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(step.call, error)
         params = self.instances.get(PARAMS_INSTANCE)
         for entry in call_type.effects.entries:
@@ -4918,7 +4923,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             statics.append(bound)
         try:
             substitution = instantiate_telescope(signature.telescope, tuple(statics))
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(step, error, fallback="qiec-program")
         return Call(
             callee=signature.id,
@@ -6361,13 +6366,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         try:
             self.registry.register_computation(signature)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(step, error, fallback="qiec-program")
         self.computation_signatures[name] = signature
         context = CheckContext(locals=parameters)
         try:
             actual = infer_computation(body, self.registry, context)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(step, error, fallback="qiec-program")
         if actual.result != result_type or actual.effects.entries:
             self._fail(

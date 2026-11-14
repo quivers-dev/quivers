@@ -9,7 +9,6 @@ responsibilities.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -26,7 +25,8 @@ from didactic.gadt import (
 )
 from panproto import GatError
 
-from quivers._values import HeldValue
+from quivers._values import HeldValue, OPAQUE_BY_VALUE
+from quivers.qiec._models import QiecModel
 from quivers.dsl import ast_nodes as surface
 from quivers.qiec.canonical import (
     BUILTIN_TYPE_CONSTRUCTORS,
@@ -252,8 +252,7 @@ class QvrQiecSource(dx.Model):
     elaborate_programs: bool = True
 
 
-@dataclass(frozen=True, slots=True)
-class CheckedQvrQiec:
+class CheckedQvrQiec(QiecModel):
     """The checked result passed between Didactic's ordered stages.
 
     Parameters
@@ -262,7 +261,7 @@ class CheckedQvrQiec:
         The kernel module the stages produced.
     """
 
-    module: QiecModule
+    module: QiecModule = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
 def has_qiec_surface(module: surface.Module) -> bool:
@@ -511,7 +510,7 @@ class QvrQiecLowerer:
         """
         module = _Elaborator(source).elaborate()
         validate_module(module)
-        return CheckedQvrQiec(module)
+        return CheckedQvrQiec(module=module)
 
     def lower(self, checked: CheckedQvrQiec, /) -> QiecModule:
         """Return the checked module.
@@ -1588,7 +1587,13 @@ class _Elaborator(
                 tuple(self.families.values()),
                 tuple(self.constructors.values()),
             ).compile()
-        except (GADTDeclarationError, GatError, TypeError, ValueError) as error:
+        except (
+            GADTDeclarationError,
+            GatError,
+            TypeError,
+            ValueError,
+            dx.ValidationError,
+        ) as error:
             declarations = self._items(surface.QiecFamilyDecl) or self._items(
                 surface.QiecIndexDecl
             )
@@ -1645,7 +1650,7 @@ class _Elaborator(
                         len(item.arguments) for item in declaration.constructors
                     ),
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-index")
         for declaration in declarations:
             current = self.index_sorts[declaration.name]
@@ -1800,7 +1805,7 @@ class _Elaborator(
                 self.effects[declaration.name] = EffectDef(
                     ref=ref, telescope=telescope, operations=()
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-handler")
 
     def _declare_effect_operations(self) -> None:
@@ -1855,7 +1860,7 @@ class _Elaborator(
                     telescope=telescope,
                     operations=operations,
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-handler")
 
     def _declare_instances(self) -> None:
@@ -1937,7 +1942,7 @@ class _Elaborator(
                 interface_substitution = instantiate_telescope(
                     definition.telescope, effect.arguments
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-handler")
             clauses: list[HandlerClauseDef] = []
             return_clause: HandlerReturnClauseDef | None = None
@@ -2003,7 +2008,7 @@ class _Elaborator(
                         ),
                         interface_substitution,
                     )
-                except (TypeError, ValueError) as error:
+                except (TypeError, ValueError, dx.ValidationError) as error:
                     self._fail_kernel(clause, error, fallback="qiec-handler")
                 # A signature-only clause binds nothing, because it has
                 # no body for a binder to be in scope of. Only an
@@ -2069,7 +2074,7 @@ class _Elaborator(
                     return_clause=return_clause,
                     implementation=declaration.implementation,
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-handler")
             self.handlers[declaration.name] = handler
 
@@ -2098,14 +2103,14 @@ class _Elaborator(
         for family in self.families.values():
             try:
                 self.registry.register_family(family)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(
                     family_nodes[family.name], error, fallback="qiec-index"
                 )
         for constructor in self.constructors.values():
             try:
                 self.registry.register_constructor(constructor)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(
                     family_nodes[self.registry.families[constructor.family].name],
                     error,
@@ -2118,7 +2123,7 @@ class _Elaborator(
                 continue
             try:
                 self.registry.register_effect(effect)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(
                     effect_nodes[effect.ref.name], error, fallback="qiec-kind"
                 )
@@ -2147,7 +2152,7 @@ class _Elaborator(
         for handler in self.handlers.values():
             try:
                 self.registry.register_handler(handler)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 node = handler_nodes.get(handler.name)
                 if node is None:
                     node = next(
@@ -2208,7 +2213,7 @@ class _Elaborator(
             )
             try:
                 self.registry.register_computation(signature)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration, error, fallback="qiec-route")
             self.computation_signatures[declaration.name] = signature
 
@@ -2292,7 +2297,7 @@ class _Elaborator(
             )
             try:
                 actual = infer_computation(body, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(declaration.body, error, fallback="qiec-kind")
             if actual.result != computation.type.result:
                 self._fail(
@@ -2824,7 +2829,7 @@ class _Elaborator(
         if isinstance(authored, surface.QiecIndexLiteral):
             try:
                 return IndexLiteral(value=authored.value, sort=expected)
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored, error, fallback="qiec-index")
         if isinstance(authored, surface.QiecIndexApplication):
             if not isinstance(expected, UserIndexSort):
@@ -2843,7 +2848,7 @@ class _Elaborator(
                     arguments=arguments,
                     sort=expected,
                 )
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored, error, fallback="qiec-index")
         if isinstance(authored, surface.QiecShapeIndex):
             return ShapeIndex(
@@ -2898,7 +2903,7 @@ class _Elaborator(
         )
         try:
             return definition.apply(arguments)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(authored, error, fallback="qiec-kind")
 
     def _lower_row(
@@ -2971,11 +2976,11 @@ class _Elaborator(
                     ),
                     lacks=tuple(lacks),
                 )
-            except ValueError as error:
+            except (ValueError, dx.ValidationError) as error:
                 self._fail(authored, str(error), code="qiec-row")
         try:
             return EffectRow(entries=tuple(entries), tail=tail)
-        except ValueError as error:
+        except (ValueError, dx.ValidationError) as error:
             self._fail(authored, str(error), code="qiec-row")
 
     def _lower_value(
@@ -4302,7 +4307,7 @@ class _Elaborator(
         """
         try:
             return infer_value(value, self.registry, context)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(authored, error, fallback="qiec-primitive")
 
     def _numeric_primitive(
@@ -5654,7 +5659,7 @@ class _Elaborator(
             )
             try:
                 inferred = infer_computation(first, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored.first, error)
             binder_type = (
                 inferred.result
@@ -5684,7 +5689,7 @@ class _Elaborator(
             )
             try:
                 inferred = infer_computation(first, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored.first, error)
             name = self._fresh_sequence_name(context, path)
             binder = Local(name=name, type=inferred.result)
@@ -5853,7 +5858,7 @@ class _Elaborator(
             try:
                 then_type = infer_computation(then, self.registry, context)
                 otherwise_type = infer_computation(otherwise, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored, error)
             if then_type.result != otherwise_type.result:
                 self._fail(
@@ -5906,7 +5911,7 @@ class _Elaborator(
             )
             try:
                 inferred = infer_value(value, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored.value, error)
             binder_type = (
                 inferred
@@ -6093,7 +6098,7 @@ class _Elaborator(
         )
         try:
             substitution = instantiate_telescope(signature.telescope, static_arguments)
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(authored, error, fallback="qiec-kind")
         return Call(
             callee=signature.id,
@@ -6230,7 +6235,7 @@ class _Elaborator(
             )
             try:
                 inferred = infer_computation(call, self.registry, context)
-            except (KernelError, TypeError, ValueError) as error:
+            except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(applied, error)
             if result_type is None:
                 result_type = inferred.result
@@ -6310,7 +6315,7 @@ class _Elaborator(
         )
         try:
             scrutinee_type = infer_value(scrutinee, self.registry, context)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(authored.scrutinee, error, fallback="qiec-index")
         if not isinstance(scrutinee_type, TypeApplication):
             self._fail(
@@ -6575,7 +6580,7 @@ class _Elaborator(
         context = CheckContext(locals=parameters)
         try:
             actual = infer_computation(body, self.registry, context)
-        except (KernelError, TypeError, ValueError) as error:
+        except (KernelError, TypeError, ValueError, dx.ValidationError) as error:
             self._fail_kernel(node, error, fallback="qiec-program")
         if actual.result != signature.result:
             self._fail(
