@@ -5,10 +5,17 @@ Each renderer consumes only `PlateGraph` and does not inspect the source AST.
 
 from __future__ import annotations
 
-from rich.table import Table
-from rich.text import Text
-
 from quivers.analysis.plate_graph import PlateGraph, PlateNode
+
+try:
+    from rich.table import Table
+    from rich.text import Text
+except ModuleNotFoundError as error:
+    if error.name != "rich":
+        raise
+    _RICH_AVAILABLE = False
+else:
+    _RICH_AVAILABLE = True
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +53,16 @@ def render_table(graph: PlateGraph) -> Table:
     -------
     rich.table.Table
         One row per node, with its kind, family, plates, and parents.
+
+    Raises
+    ------
+    ModuleNotFoundError
+        If the optional Rich dependency is absent.
     """
+    if not _RICH_AVAILABLE:
+        raise ModuleNotFoundError(
+            "Rich table rendering requires quivers[repl]", name="rich"
+        )
     title = Text()
     title.append("plate graph of ", style="dim")
     title.append(graph.program_name, style="bold")

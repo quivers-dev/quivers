@@ -24,8 +24,6 @@ themes never drift across surfaces.
 
 from __future__ import annotations
 
-from typing import Any
-
 import didactic.api as dx
 import tree_sitter
 from pygments.token import (
@@ -48,6 +46,16 @@ from quivers.dsl.pygments_lexer import (
     _node_kind_to_pygments_token,
     _TokenType,
 )
+
+try:
+    from rich.style import Style
+    from rich.text import Text
+except ModuleNotFoundError as error:
+    if error.name != "rich":
+        raise
+    _RICH_AVAILABLE = False
+else:
+    _RICH_AVAILABLE = True
 
 # ---------------------------------------------------------------------------
 # semantic token vocabulary
@@ -439,11 +447,8 @@ def to_rich_text(
     *,
     env_kinds: dict[str, str] | None = None,
     link_action: str | None = None,
-) -> Any:
+) -> Text:
     """Build a `rich.text.Text` from the highlighted source.
-
-    Rich is imported lazily so that importing this module does
-    not pull rich in for callers that need only raw spans.
 
     If ``link_action`` is set (e.g. ``"info"``), identifiers that the
     grammar or env classified as something meaningful (type / function
@@ -467,10 +472,16 @@ def to_rich_text(
     -------
     rich.text.Text
         The styled text.
-    """
-    from rich.style import Style
-    from rich.text import Text
 
+    Raises
+    ------
+    ModuleNotFoundError
+        If the optional Rich dependency is absent.
+    """
+    if not _RICH_AVAILABLE:
+        raise ModuleNotFoundError(
+            "Rich syntax highlighting requires quivers[repl]", name="rich"
+        )
     out = Text()
     interesting = {"type", "function", "namespace"}
     for span in tokenize(source, env_kinds=env_kinds):
