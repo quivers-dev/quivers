@@ -2,10 +2,9 @@
 #
 # A prior over correlation matrices, given in its Cholesky-factor
 # form (named after Lewandowski-Kurowicka-Joe). The Cholesky
-# factorisation is numerically preferable to the dense matrix when
-# downstream inference samples in unconstrained space, since the
-# factor admits a smooth bijection onto an unconstrained vector
-# while the dense correlation matrix does not.
+# factorization gives a direct representation for Gaussian likelihoods.
+# Both the factor and the positive-definite correlation matrix have
+# unconstrained coordinates, related through the Cholesky transform.
 #
 # Generative structure:
 #

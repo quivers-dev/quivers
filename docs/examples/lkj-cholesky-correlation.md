@@ -2,7 +2,7 @@
 
 ## Overview
 
-A prior over $K \times K$ correlation matrices through their Cholesky factor. The [LKJ family](https://en.wikipedia.org/wiki/Lewandowski-Kurowicka-Joe_distribution) uses a shape parameter $\eta > 0$ to control concentration around the identity ($\eta > 1$ favours weaker correlations; $\eta = 1$ is uniform over correlation matrices; $\eta < 1$ favours stronger correlations). Its Cholesky factor is lower triangular with positive diagonal and unit row norms; it is not unit-lower-triangular.
+A prior over $K \times K$ correlation matrices through their Cholesky factor. The [LKJ family](https://en.wikipedia.org/wiki/Lewandowski-Kurowicka-Joe_distribution) uses a shape parameter $\eta > 0$ to control concentration around the identity: $\eta > 1$ favours weaker correlations, $\eta = 1$ is uniform over correlation matrices, and $\eta < 1$ favours stronger correlations. Its Cholesky factor is lower triangular with positive diagonal and unit row norms. It is not unit-lower-triangular. [@lewandowski2009lkj]
 
 Generative structure:
 
@@ -22,10 +22,9 @@ where $L L^\top$ is the implied correlation matrix.
 #
 # A prior over correlation matrices, given in its Cholesky-factor
 # form (named after Lewandowski-Kurowicka-Joe). The Cholesky
-# factorisation is numerically preferable to the dense matrix when
-# downstream inference samples in unconstrained space, since the
-# factor admits a smooth bijection onto an unconstrained vector
-# while the dense correlation matrix does not.
+# factorization gives a direct representation for Gaussian likelihoods.
+# Both the factor and the positive-definite correlation matrix have
+# unconstrained coordinates, related through the Cholesky transform.
 #
 # Generative structure:
 #
@@ -55,11 +54,7 @@ export correlation_model
 
 ## Understanding the model
 
-Choosing each pairwise correlation separately can produce an invalid matrix:
-the choices must jointly define nonnegative variances for every linear
-combination of coordinates. A Cholesky factor represents those constraints
-through a triangular matrix. Multiplying `L` by its transpose produces the
-correlation matrix; the unit row norms make its diagonal entries one.
+Choosing each pairwise correlation separately can produce an invalid matrix. The entries must jointly define a positive-definite matrix. A Cholesky factor enforces this constraint through a triangular matrix with positive diagonal and unit row norms. Both this factor and the correlation matrix admit [unconstrained parameterizations](https://mc-stan.org/docs/reference-manual/variable-transforms.html) [@stanReparameterization]. Multiplying `L` by its transpose gives the correlation matrix, with diagonal entries one.
 
 For marginal standard deviations `s`, the covariance is
 `diag(s) @ (L @ L.T) @ diag(s)`. The example draws from the [prior](../getting-started/concepts.md#4-a-probabilistic-program-describes-how-data-could-arise) with no
@@ -68,11 +63,11 @@ matrices before adding a likelihood.
 
 ## Walkthrough
 
-`object Dim : FinSet 4` declares the matrix dimension; the `sample chol : Dim <- ...` line carries that as the family's matrix axis, so `LKJCholesky(eta)` produces a $4 \times 4$ lower-triangular Cholesky factor whose rows have unit Euclidean norm. `object Factor : Real 4` is the value space of one row of that factor, and the program's signature `Dim -> Factor` names it as the codomain, since the codomain of a program is the space its returned value lives in rather than an index set. The shape parameter $\eta$ is drawn from a half-Normal, giving a weakly-informative prior over how strongly the correlation matrix concentrates around the identity. Downstream consumers reconstruct the correlation matrix as $\Sigma = L L^\top$ when they need the dense form.
+`object Dim : FinSet 4` declares the matrix dimension. The `sample chol : Dim <- ...` line carries that as the family's matrix axis, so `LKJCholesky(eta)` produces a $4 \times 4$ lower-triangular Cholesky factor whose rows have unit Euclidean norm. `object Factor : Real 4` is the value space of one row of that factor, and the program's signature `Dim -> Factor` names it as the codomain, since the codomain of a program is the space its returned value lives in rather than an index set. The shape parameter $\eta$ is drawn from a half-Normal, giving a weakly informative prior over how strongly the correlation matrix concentrates around the identity. Downstream consumers reconstruct the correlation matrix as $\Sigma = L L^\top$ when they need the dense form.
 
 ## Try it
 
-> The runs below demonstrate the API on the prior alone. A downstream likelihood would condition the factor; assess convergence with multiple chains and diagnostics before interpreting a posterior.
+> The runs below demonstrate the API on the prior alone. A downstream likelihood would condition the factor. Assess convergence with multiple chains and diagnostics before interpreting a posterior.
 
 ### Drawing a factor
 
@@ -131,8 +126,4 @@ assert torch.isfinite(run.log_joint).all()
 
 ## Use cases
 
-Multivariate Gaussian models with correlated dimensions: factor analysis, multivariate hierarchical regression, copula constructions where the marginals are modeled separately. The Cholesky form is the recommended parameterization in Stan (`cholesky_factor_corr`), NumPyro (`LKJCholesky`), and PyMC (`LKJCholeskyCov`), since constraint-respecting samplers (HMC, NUTS) work in the unconstrained tangent space.
-
-## Sources and further reading
-
-- *Generating random correlation matrices based on vines and extended onion method* [@lewandowski2009lkj].
+The factor can parameterize multivariate Gaussian likelihoods, hierarchical regressions with correlated effects, and [copulas](https://en.wikipedia.org/wiki/Copula_(statistics)) with separately modeled marginals. Hamiltonian Monte Carlo operates on unconstrained Euclidean coordinates through a transform of the factor [@stanReparameterization].
