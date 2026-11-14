@@ -55,22 +55,22 @@ $$
 h_t = (1 - z_t) \odot n_t + z_t \odot h_{t-1},
 $$
 
-and the token after position $t$ is scored under $\mathrm{softmax}(U h_t + c)$. An update gate near one copies the previous state forward unchanged, which is how a GRU carries information across many positions; a reset gate near zero lets the candidate ignore the past. Each input row is one sequence, its one-hot tokens the input and its next tokens the observation `next_token`.
+and the token after position $t$ is scored under $\mathrm{softmax}(U h_t + c)$. An update gate near one copies the previous state forward unchanged, which is how a GRU carries information across many positions. A reset gate near zero lets the candidate ignore the past. Each input row is one sequence, its one-hot tokens the input and its next tokens the observation `next_token`.
 
 ## Walkthrough
 
 - `update_gate`, `reset_gate`, and `candidate` are `role=function` morphisms: affine maps of their two inputs with a `sigmoid` or `tanh` output, and point-estimated weights. They have no sample sites.
 - `let n = candidate(x_t, r * h_prev)` passes the reset-gated state as the second argument, so the reset gate acts inside the candidate exactly as in the GRU equations.
 - `let h = (1.0 - z) * n + z * h_prev` is the elementwise interpolation.
-- `observe next_token <- Categorical(logits=logits)` scores the next token at every position; `scan(gru_step)` threads the state from zero.
+- `observe next_token <- Categorical(logits=logits)` scores the next token at every position. `scan(gru_step)` threads the state from zero.
 
 ## Try it
 
-The first block checks the compiled runtime and the reference machine against an independent float64 GRU; the second fits the network by maximum likelihood. Tolerances were fixed before the first run.
+The first block checks the compiled runtime and the [reference machine](../developer/qiec.md#reference-evaluator) against an independent float64 GRU. The second fits the network by maximum likelihood.
 
 ### The log joint against a hand-written GRU
 
-The compiled runtime must match the oracle to a relative 1e-5 and the reference machine to 1e-9. The block also prints how far an oracle that ignores the reset gate lies from the runtime. That gap measures whether the agreement check could tell the two cells apart: it is 5.4e-3 (relative) on the first run and 3.9e-4 on the second, so both are tens of times the 1e-5 agreement tolerance, but the second is below the 1e-3 margin fixed in advance for this check. At these initial weights the hidden state is small and the reset gate changes the candidate little, so this page does not claim the 1e-3 margin.
+The compiled runtime must match the reference calculation to a relative 1e-5 and the reference machine to 1e-9. The block also prints how far a reference calculation that ignores the reset gate lies from the runtime. That gap measures whether the agreement check could tell the two cells apart: it is 5.4e-3 (relative) on the first run and 3.9e-4 on the second, so both are tens of times the 1e-5 agreement tolerance, but the second is below the 1e-3 specified margin for this check. At these initial weights the hidden state is small and the reset gate changes the candidate little, so the 1e-3 margin does not hold for both runs.
 
 ```python
 import math
@@ -154,7 +154,7 @@ for row in range(2):
 
 ### Maximum-likelihood fitting
 
-The same design as the [vanilla RNN](vanilla-rnn-lm.md#maximum-likelihood-fitting): 8 training runs of length 12 that advance by one token (mod 6), 400 Adam steps, and three checks fixed in advance: per-token NLL below 0.05 nats on the training runs and on 8 held-out runs, and above 1.0 on runs that advance by two.
+The same design as the [vanilla RNN](vanilla-rnn-lm.md#maximum-likelihood-fitting): 8 training runs of length 12 that advance by one token (mod 6), 400 Adam steps, and three checks: per-token NLL below 0.05 nats on the training runs and on 8 held-out runs, and above 1.0 on runs that advance by two.
 
 ```python
 def per_token_nll(model, sequence):
@@ -196,9 +196,6 @@ assert contrast > 1.0
 
 ## Categorical perspective
 
-The gates and the candidate are deterministic morphisms, Dirac kernels in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://doi.org/10.1007/BFb0092872) [@giry1982categorical], and the step composes them pointwise. [`scan(gru_step)`](../guides/dsl-declarations.md#scan-temporal-recurrence) is the left [fold](https://ncatlab.org/nlab/show/fold) of that step along the sequence; the observation at each position is the only factor that weights a run.
+A deterministic function defines a [Dirac kernel](https://en.wikipedia.org/wiki/Dirac_measure), which puts all probability at its output. A [probability kernel](https://en.wikipedia.org/wiki/Markov_kernel) assigns a probability distribution to each input. Such kernels compose by integration in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category) of the [Giry monad](https://ncatlab.org/nlab/show/Giry+monad) [@giry1982categorical].
 
-## Sources and further reading
-
-- *Learning phrase representations using RNN encoder-decoder for statistical machine translation* [@cho2014encoder].
-- *A categorical approach to probability theory* [@giry1982categorical].
+The gates and candidate are deterministic functions of the input and previous state. `scan(gru_step)` is a [fold](https://en.wikipedia.org/wiki/Fold_(higher-order_function)) that repeatedly applies this state update along the sequence. Each observation multiplies the run weight by the predicted next-token probability. The scored transition is a subprobability [kernel](https://en.wikipedia.org/wiki/Markov_kernel) because each token probability is at most one. It belongs to the extension that permits mass below one, rather than to the probability-kernel category itself [@staton2017commutative].
