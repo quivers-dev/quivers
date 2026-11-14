@@ -11,6 +11,9 @@ from quivers.qiec.builtins import (
     TraceRecorder,
     WeightAccumulator,
 )
+from quivers.qiec.evaluator import RuntimeConstructor
+from quivers.qiec.identifiers import ConstructorId
+from quivers.qiec.types import INT
 
 
 @pytest.mark.parametrize("model", [ScoreAccumulator, WeightAccumulator, StateCell])
@@ -76,3 +79,23 @@ def test_aborted_payload_retains_live_tensor_identity() -> None:
     assert answer.error is payload
     assert answer.with_().error is payload
     assert answer != Aborted(error=payload.clone())
+
+
+def test_runtime_constructors_compare_deep_data_and_preserve_tensor_identity() -> None:
+    """Structural equality handles deep data and distinguishes live payloads."""
+    constructor = ConstructorId.derive("test", "runtime-data")
+    left = RuntimeConstructor(
+        constructor=constructor, static_arguments=(), fields=(), result_type=INT
+    )
+    right = left.with_()
+    for index in range(2000):
+        left = left.with_(fields=(index, left))
+        right = right.with_(fields=(index, right))
+    assert left == right
+    assert hash(left) == hash(right)
+    assert left != right.with_(fields=(-1, right.fields[1]))
+    payload = torch.tensor([1.0, 2.0], requires_grad=True)
+    tensor_value = left.with_(fields=(payload,))
+    assert tensor_value == left.with_(fields=(payload,))
+    assert tensor_value != left.with_(fields=(payload.clone(),))
+    assert tensor_value.fields[0] is payload

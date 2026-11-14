@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- **Breaking: Evaluated constructor data use validated immutable models.** Constructor metadata, scalars, tuples, and nested models compare structurally without recursion through child models. Live host payloads retain identity and gradients; construction and updates validate declared field types.
 - **Breaking: Built-in handler state and trace records use validated models.** State cells and score or weight accumulators take a one-element `contents` list and expose its value through `value` or `total`. Trace collectors retain independent event lists; updates preserve live payload identities and tensor gradients. Constructors use keywords.
 - **Breaking: Effect run contexts and installations use validated models.** Constructors use keywords, checked kernels and addresses compare by value, and live tensors, callbacks, and mutable run collections retain identity. Parameter handlers share the run's parameter store throughout execution.
 - **Breaking: Runtime handlers use validated immutable models.** Definitions and operation-clause maps compare by value; executable callbacks retain identity. Renaming, installation factories, and continuation forks use validated updates while preserving independent mutable state and exact-once finalization.

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Hashable, Mapping
-from dataclasses import dataclass
 
 import didactic.api as dx
 
@@ -31,6 +30,7 @@ from quivers.qiec.effects import (
 from quivers.qiec.identifiers import (
     AttachmentId,
     ComputationId,
+    ConstructorId,
     DynamicAddressFrame,
     EffectInstanceId,
     HandlerId,
@@ -224,9 +224,33 @@ class NonDuplicableContinuationError(ResumptionUsageError):
     """An unrestricted clause captured state that cannot safely be copied."""
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeConstructor:
+def _runtime_field_value(value: HeldValue) -> HeldValue:
+    """Key immutable runtime data by value and live host objects by identity.
+
+    Parameters
+    ----------
+    value
+        One evaluated constructor field, possibly a tuple or nested model.
+
+    Returns
+    -------
+    HeldValue
+        An immutable comparison value retaining nested models as children.
+    """
+    if isinstance(value, (ValueModel, dx.Model, str, bytes, bool, int, float, complex)):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, tuple):
+        return tuple(_runtime_field_value(item) for item in value)
+    return (type(value), id(value))
+
+
+class RuntimeConstructor(QiecModel):
     """Erased runtime representation of a checked constructor value.
+
+    Constructor metadata, scalar fields, tuples, and nested models compare
+    by value. Live host objects retain identity, including tensor gradients.
 
     Parameters
     ----------
@@ -240,10 +264,27 @@ class RuntimeConstructor:
         The family type the value inhabits.
     """
 
-    constructor: object
-    static_arguments: tuple[object, ...]
-    fields: tuple[object, ...]
-    result_type: TypeExpr
+    constructor: ConstructorId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    static_arguments: tuple[StaticArgument, ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    fields: tuple[HeldValue, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+    def _local_key(self) -> tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]:
+        """Compare constructor data without recursively traversing child models.
+
+        Returns
+        -------
+        tuple[tuple[Hashable, ...], tuple[ValueModel, ...]]
+            Local keys and children traversed by the model's explicit stack.
+        """
+        return self._comparison_key(
+            self.constructor,
+            self.static_arguments,
+            self.result_type,
+            tuple(_runtime_field_value(value) for value in self.fields),
+        )
 
 
 class AttachmentBinding(QiecModel):
@@ -2142,10 +2183,10 @@ class Evaluator:
             return value.value
         if isinstance(value, ConstructorValue):
             return RuntimeConstructor(
-                value.constructor,
-                value.static_arguments,
-                tuple(self._value(field, environment) for field in value.fields),
-                value.result_type,
+                constructor=value.constructor,
+                static_arguments=value.static_arguments,
+                fields=tuple(self._value(field, environment) for field in value.fields),
+                result_type=value.result_type,
             )
         if isinstance(value, EvidenceValue):
             return value.evidence

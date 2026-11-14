@@ -1261,10 +1261,10 @@ def deduction_item(
         )
     family = next(item for item in module.families if item.id == constructor.family)
     return RuntimeConstructor(
-        constructor.id,
-        (),
-        tuple(fields),
-        TypeApplication(constructor=family.type_constructor, arguments=()),
+        constructor=constructor.id,
+        static_arguments=(),
+        fields=tuple(fields),
+        result_type=TypeApplication(constructor=family.type_constructor, arguments=()),
     )
 
 
