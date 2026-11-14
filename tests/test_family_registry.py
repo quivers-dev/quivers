@@ -19,6 +19,9 @@ Verifies that:
 
 from __future__ import annotations
 
+import copy
+
+import didactic.api as dx
 import pytest
 import torch
 
@@ -242,10 +245,34 @@ def test_hand_written_family_registered(name: str) -> None:
 
 
 def test_param_spec_unknown_transform_raises() -> None:
-    # Didactic wraps converter ValueErrors in its own ValidationError;
-    # accept either since both surface the same diagnostic.
-    with pytest.raises(Exception, match="unknown transform"):
+    """Invalid parameter transforms fail model validation."""
+    with pytest.raises(dx.ValidationError, match="unknown transform"):
         ParamSpec(name="x", transform="not_a_transform")
+
+
+def test_family_model_preserves_runtime_identity_and_validates_updates() -> None:
+    """Family copies retain builders, constraints, and parameter identities."""
+    family = FAMILY_REGISTRY["Normal"]
+    copied = copy.copy(family)
+    assert copied == family
+    assert hash(copied) == hash(family)
+    assert copied.dist_class is family.dist_class
+    assert copied.support is family.support
+    assert copied.params[0] is family.params[0]
+    assert copied.conditional_class_override is family.conditional_class_override
+    parameter = family.params[1]
+    rebuilt = parameter.with_(name=parameter.name)
+    assert rebuilt != parameter
+    assert rebuilt.bijector is parameter.bijector
+    assert family.with_(params=(family.params[0], rebuilt)) != family
+    with pytest.raises(dx.ValidationError, match="unknown transform"):
+        parameter.with_(transform="missing")
+    with pytest.raises(dx.ValidationError, match="pair of numbers"):
+        parameter.with_(inline_bounds=(1.0,))
+    with pytest.raises(dx.ValidationError, match="Distribution class"):
+        family.with_(dist_class=str)
+    with pytest.raises(dx.ValidationError, match="ParamSpec"):
+        family.with_(params=("scale",))
 
 
 def test_registry_names_sorted_and_unique() -> None:
