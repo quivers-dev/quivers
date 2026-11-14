@@ -183,8 +183,8 @@ def _tracked_resource_handler(
             finalized.append(mode)
 
         return RuntimeHandler(
-            definition,
-            {
+            definition=definition,
+            clauses={
                 STATE_GET: RuntimeClause(invoke=get, result_validator=_int),
                 STATE_PUT: RuntimeClause(
                     invoke=put, result_validator=lambda value: value is None
@@ -198,7 +198,7 @@ def _tracked_resource_handler(
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype, finalized
 
 
@@ -268,8 +268,8 @@ def test_deep_resumption_reinstalls_the_matching_handler() -> None:
         return resume(len(calls))
 
     handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
         duplicable_context=True,
@@ -327,8 +327,8 @@ def test_clause_body_effects_run_only_in_the_outer_context() -> None:
         return resume(9)
 
     random_handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
         duplicable_context=True,
@@ -398,8 +398,8 @@ def test_clause_context_evaluate_finalizes_locally_installed_handlers(
         return resume(7)
 
     handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
     )
@@ -472,8 +472,8 @@ def test_clause_computation_finalizes_locally_installed_handlers(
         )
 
     handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         output_validator=_int,
     )
     _attach_handler(attachments, resource)
@@ -529,8 +529,8 @@ def test_resumption_finalizes_handlers_installed_after_execution_starts(
         return resume(7)
 
     handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         input_validator=_int,
         output_validator=_int,
     )
@@ -618,14 +618,18 @@ def test_clause_body_cannot_recapture_itself_but_can_reach_outer_instance_handle
         return resume(9)
 
     outer = RuntimeHandler(
-        outer_definition,
-        {RANDOM_SAMPLE: RuntimeClause(invoke=outer_clause, result_validator=_int)},
+        definition=outer_definition,
+        clauses={
+            RANDOM_SAMPLE: RuntimeClause(invoke=outer_clause, result_validator=_int)
+        },
         input_validator=_int,
         output_validator=_int,
     )
     inner = RuntimeHandler(
-        inner_definition,
-        {RANDOM_SAMPLE: RuntimeClause(invoke=inner_clause, result_validator=_int)},
+        definition=inner_definition,
+        clauses={
+            RANDOM_SAMPLE: RuntimeClause(invoke=inner_clause, result_validator=_int)
+        },
         input_validator=_int,
         output_validator=_int,
     )
@@ -1309,8 +1313,8 @@ def test_checked_evaluation_rejects_handler_id_collision_with_divergent_definiti
         name="same-id-different-definition",
     )
     divergent = RuntimeHandler(
-        divergent_definition,
-        expected.clauses,
+        definition=divergent_definition,
+        clauses=expected.clauses,
         return_clause=expected.return_clause,
         input_validator=expected.input_validator,
         output_validator=expected.output_validator,
@@ -1494,8 +1498,8 @@ def test_multishot_branches_fork_from_one_pristine_handler_snapshot() -> None:
             return make_state_handler(cell["value"])
 
         return RuntimeHandler(
-            state_definition,
-            {
+            definition=state_definition,
+            clauses={
                 STATE_GET: RuntimeClause(invoke=get, result_validator=_int),
                 STATE_PUT: RuntimeClause(
                     invoke=put, result_validator=lambda value: value is None
@@ -1509,7 +1513,7 @@ def test_multishot_branches_fork_from_one_pristine_handler_snapshot() -> None:
         )
 
     state = make_state_handler(0)
-    state.context_factory = lambda: make_state_handler(0)
+    state = state.with_(context_factory=lambda: make_state_handler(0))
     _attach_handler(attachments, choose)
     _attach_handler(attachments, state)
     choices = attachments.bind_value(
@@ -1636,8 +1640,8 @@ def test_multishot_handler_contexts_finalize_exactly_once(
             finalized[label] = mode
 
         return RuntimeHandler(
-            definition,
-            {
+            definition=definition,
+            clauses={
                 STATE_GET: RuntimeClause(invoke=get, result_validator=_int),
                 STATE_PUT: RuntimeClause(
                     invoke=put, result_validator=lambda value: value is None
@@ -1654,7 +1658,7 @@ def test_multishot_handler_contexts_finalize_exactly_once(
         )
 
     resource = make_context(0, tracked=False)
-    resource.context_factory = lambda: make_context(0)
+    resource = resource.with_(context_factory=lambda: make_context(0))
     _attach_handler(attachments, choose)
     _attach_handler(attachments, resource)
     choices = attachments.bind_value(
@@ -1706,8 +1710,8 @@ def test_mutable_duplicable_handler_requires_a_fork_context() -> None:
     )
     with pytest.raises(InvalidHandlerError, match="needs fork_context"):
         RuntimeHandler(
-            definition,
-            {
+            definition=definition,
+            clauses={
                 RANDOM_SAMPLE: RuntimeClause(
                     invoke=lambda _request, resume, _context: resume(1),
                     result_validator=_int,
@@ -1802,8 +1806,8 @@ def test_resumption_grades_are_enforced_in_every_execution(
         output_type=INT,
     )
     handler = RuntimeHandler(
-        definition,
-        {RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
+        definition=definition,
+        clauses={RANDOM_SAMPLE: RuntimeClause(invoke=clause, result_validator=_int)},
         duplicable_context=True,
     )
     attachments = RuntimeAttachments()

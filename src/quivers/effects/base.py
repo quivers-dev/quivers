@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 import threading
 from typing import Self
 
@@ -298,7 +298,7 @@ class Installation:
             id=HandlerId.derive("run", name),
             name=name,
         )
-        runtime = replace(self.runtime, definition=definition)
+        runtime = self.runtime.with_(definition=definition)
         factory = self.runtime.context_factory
         if factory is not None:
 
@@ -310,9 +310,9 @@ class Installation:
                 RuntimeHandler
                     The handler the original factory builds, renamed.
                 """
-                return replace(factory(), definition=definition)
+                return factory().with_(definition=definition)
 
-            runtime.context_factory = context_factory
+            runtime = runtime.with_(context_factory=context_factory)
         return Installation(self.instance, runtime)
 
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Hashable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import didactic.api as dx
 
@@ -360,13 +360,15 @@ def _accept(_value: object) -> bool:
     return True
 
 
-@dataclass(slots=True)
-class RuntimeHandler:
+class RuntimeHandler(QiecModel):
     """Executable attachment for a structural :class:`HandlerDef`.
 
     The checked definition contains coverage, grades, input/output types, and
     introduced effects.  This attachment contains only process-local code and
     state.  It is never serialized as QIEC.
+
+    Definitions and clause maps compare by value. Executable callbacks
+    retain identity, and each installation creates its own mutable state.
 
     Parameters
     ----------
@@ -401,20 +403,39 @@ class RuntimeHandler:
         exclusive with ``on_exit``.
     """
 
-    definition: HandlerDef
-    clauses: Mapping[OperationId, RuntimeClause]
-    return_clause: ReturnClause = _identity_return
-    input_validator: RuntimeValidator = _accept
-    output_validator: RuntimeValidator = _accept
+    definition: HandlerDef = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    clauses: Mapping[OperationId, RuntimeClause] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    return_clause: ReturnClause = dx.field(
+        default=_identity_return, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    input_validator: RuntimeValidator = dx.field(
+        default=_accept, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    output_validator: RuntimeValidator = dx.field(
+        default=_accept, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     duplicable_context: bool = False
     mutable_context: bool = False
-    fork_context: Callable[["RuntimeHandler"], "RuntimeHandler"] | None = None
-    context_factory: Callable[[], "RuntimeHandler"] | None = None
-    on_enter: Callable[[], None] | None = None
-    on_exit: Callable[[], None] | None = None
-    on_drop: Callable[[], None] | None = None
+    fork_context: Callable[["RuntimeHandler"], "RuntimeHandler"] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    context_factory: Callable[[], "RuntimeHandler"] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    on_enter: Callable[[], None] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    on_exit: Callable[[], None] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    on_drop: Callable[[], None] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
-    def __post_init__(self) -> None:
+    @dx.model_validator()
+    def _validate_handler(self) -> None:
         """Check the executable clauses against the checked declaration.
 
         Raises
@@ -2854,8 +2875,8 @@ class Evaluator:
                 f"no runtime clauses are attached for handler {handler}"
             )
         return RuntimeHandler(
-            definition,
-            {
+            definition=definition,
+            clauses={
                 clause.operation: RuntimeClause(
                     invoke=_authored_clause, result_validator=_accept
                 )
@@ -2892,10 +2913,10 @@ class Evaluator:
             clause.invoke is not _authored_clause
             for clause in prototype.clauses.values()
         ):
-            return replace(prototype, definition=definition)
+            return prototype.with_(definition=definition)
         return RuntimeHandler(
-            definition,
-            dict(prototype.clauses),
+            definition=definition,
+            clauses=dict(prototype.clauses),
             input_validator=self._validator_at(definition.input_type),
             output_validator=self._validator_at(definition.output_type),
             duplicable_context=True,

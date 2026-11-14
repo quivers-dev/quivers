@@ -783,8 +783,8 @@ def draw_handler(
         return TailResume(value=value)
 
     return RuntimeHandler(
-        definition,
-        {
+        definition=definition,
+        clauses={
             RANDOM_SAMPLE: RuntimeClause(
                 invoke=sample, result_validator=result_validator
             )
@@ -1108,8 +1108,8 @@ def enumerate_handler(
         return _reshape(marginals, widest)
 
     return RuntimeHandler(
-        definition,
-        {
+        definition=definition,
+        clauses={
             RANDOM_SAMPLE: RuntimeClause(
                 invoke=sample, result_validator=result_validator
             )
@@ -1271,8 +1271,8 @@ def score_handler(
             accumulator.contributions[:] = local.contributions
 
         return RuntimeHandler(
-            definition,
-            {SCORE_ADD: RuntimeClause(invoke=add, result_validator=_unit)},
+            definition=definition,
+            clauses={SCORE_ADD: RuntimeClause(invoke=add, result_validator=_unit)},
             return_clause=finish,
             input_validator=answer_validator,
             output_validator=(
@@ -1285,7 +1285,7 @@ def score_handler(
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype, accumulator
 
 
@@ -1606,8 +1606,8 @@ def condition_handler(
             return value
 
         return RuntimeHandler(
-            definition,
-            {
+            definition=definition,
+            clauses={
                 RANDOM_SAMPLE: RuntimeClause(
                     invoke=sample, result_validator=result_validator
                 )
@@ -1617,7 +1617,7 @@ def condition_handler(
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype
 
 
@@ -1839,8 +1839,8 @@ def replay_handler(
             return value
 
         return RuntimeHandler(
-            definition,
-            {
+            definition=definition,
+            clauses={
                 RANDOM_SAMPLE: RuntimeClause(
                     invoke=sample, result_validator=result_validator
                 )
@@ -1850,7 +1850,7 @@ def replay_handler(
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype
 
 
@@ -2084,8 +2084,8 @@ def trace_handler(
         return RuntimeClause(invoke=checked_clause, result_validator=validator)
 
     return RuntimeHandler(
-        definition,
-        {operation: make_clause(operation) for operation in operation_tuple},
+        definition=definition,
+        clauses={operation: make_clause(operation) for operation in operation_tuple},
     )
 
 
@@ -2266,8 +2266,8 @@ def state_handler(
             cell.value = local.value
 
         return RuntimeHandler(
-            definition,
-            {
+            definition=definition,
+            clauses={
                 STATE_GET: RuntimeClause(invoke=get, result_validator=state_validator),
                 STATE_PUT: RuntimeClause(invoke=put, result_validator=_unit),
             },
@@ -2283,7 +2283,7 @@ def state_handler(
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype, cell
 
 
@@ -2392,8 +2392,10 @@ def abort_handler(
         return on_abort(error)
 
     return RuntimeHandler(
-        definition,
-        {ABORT_ABORT: RuntimeClause(invoke=abort, result_validator=result_validator)},
+        definition=definition,
+        clauses={
+            ABORT_ABORT: RuntimeClause(invoke=abort, result_validator=result_validator)
+        },
         output_validator=output_validator,
         duplicable_context=duplicable_context,
     )
@@ -2504,8 +2506,8 @@ def choose_handler(
         return tuple(flattened)
 
     return RuntimeHandler(
-        definition,
-        {
+        definition=definition,
+        clauses={
             CHOOSE_CHOOSE: RuntimeClause(
                 invoke=choose, result_validator=choice_validator
             )
@@ -2657,8 +2659,8 @@ def search_handler(
         return value[1]
 
     return RuntimeHandler(
-        definition,
-        {
+        definition=definition,
+        clauses={
             operation: RuntimeClause(
                 invoke=choose, result_validator=alternative_validator
             )
@@ -2854,8 +2856,8 @@ def weight_handler(
             return make_context(local)
 
         return RuntimeHandler(
-            definition,
-            {WEIGHT_ADD: RuntimeClause(invoke=add, result_validator=_unit)},
+            definition=definition,
+            clauses={WEIGHT_ADD: RuntimeClause(invoke=add, result_validator=_unit)},
             return_clause=finish,
             input_validator=answer_validator,
             output_validator=(
@@ -2870,7 +2872,7 @@ def weight_handler(
         )
 
     prototype = make_context()
-    prototype.context_factory = make_context
+    prototype = prototype.with_(context_factory=make_context)
     return prototype, accumulator
 
 
@@ -2969,8 +2971,8 @@ def draw_scoring_handler(
         return TailResume(value=value)
 
     return RuntimeHandler(
-        definition,
-        {
+        definition=definition,
+        clauses={
             RANDOM_SAMPLE: RuntimeClause(
                 invoke=sample, result_validator=result_validator
             )
@@ -3063,8 +3065,8 @@ def intervene_handler(
         return TailResume(value=value)
 
     return RuntimeHandler(
-        definition,
-        {
+        definition=definition,
+        clauses={
             RANDOM_SAMPLE: RuntimeClause(
                 invoke=sample, result_validator=result_validator
             )
@@ -3163,7 +3165,8 @@ def reweight_handler(
         return TailResume(value=None)
 
     return RuntimeHandler(
-        definition, {SCORE_ADD: RuntimeClause(invoke=add, result_validator=_unit)}
+        definition=definition,
+        clauses={SCORE_ADD: RuntimeClause(invoke=add, result_validator=_unit)},
     )
 
 
@@ -3270,8 +3273,8 @@ def block_handler(
         return TailResume(value=value)
 
     return RuntimeHandler(
-        definition,
-        {
+        definition=definition,
+        clauses={
             RANDOM_SAMPLE: RuntimeClause(
                 invoke=sample, result_validator=result_validator
             )
@@ -3355,8 +3358,12 @@ def compute_handler(
         return TailResume(value=function(argument, context))
 
     return RuntimeHandler(
-        definition,
-        {COMPUTE_APPLY: RuntimeClause(invoke=apply, result_validator=result_validator)},
+        definition=definition,
+        clauses={
+            COMPUTE_APPLY: RuntimeClause(
+                invoke=apply, result_validator=result_validator
+            )
+        },
     )
 
 
@@ -3441,8 +3448,10 @@ def param_handler(
         return TailResume(value=value)
 
     return RuntimeHandler(
-        definition,
-        {PARAM_GET: RuntimeClause(invoke=get, result_validator=result_validator)},
+        definition=definition,
+        clauses={
+            PARAM_GET: RuntimeClause(invoke=get, result_validator=result_validator)
+        },
     )
 
 

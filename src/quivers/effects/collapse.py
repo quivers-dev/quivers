@@ -153,8 +153,8 @@ class CollapseHandler(EffectHandler):
             return Forward()
 
         runtime = RuntimeHandler(
-            definition,
-            {
+            definition=definition,
+            clauses={
                 RANDOM_SAMPLE: RuntimeClause(
                     invoke=sample, result_validator=run.validator
                 )

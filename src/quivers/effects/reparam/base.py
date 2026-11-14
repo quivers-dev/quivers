@@ -237,8 +237,8 @@ class ReparamOrchestrator(EffectHandler):
             return resume(value)
 
         runtime = RuntimeHandler(
-            definition,
-            {
+            definition=definition,
+            clauses={
                 RANDOM_SAMPLE: RuntimeClause(
                     invoke=sample, result_validator=run.validator
                 )

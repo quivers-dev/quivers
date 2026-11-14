@@ -402,11 +402,13 @@ def structural_runtime_provider(
             answer_type=result_type,
             key=f"structural-{instance.name}-{component_name}",
         )
-        runtime.definition = structural_handler_definition(
-            instance.entry.effect,
-            result_type,
-            instance_name=instance.name,
-            computation_name=component_name,
+        runtime = runtime.with_(
+            definition=structural_handler_definition(
+                instance.entry.effect,
+                result_type,
+                instance_name=instance.name,
+                computation_name=component_name,
+            )
         )
         runtimes.append(runtime)
     return StructuralRuntimeProvider(runtimes=tuple(runtimes), term_types=term_types)

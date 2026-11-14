@@ -14,7 +14,6 @@ or ambient attachment registry is consulted by ``run_named``.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import replace
 from importlib.metadata import entry_points
 import json
 from pathlib import Path
@@ -414,7 +413,7 @@ def _rekey(built: RuntimeHandler, definition: HandlerDef) -> RuntimeHandler:
     RuntimeHandler
         The implementation under the declaration.
     """
-    rekeyed = replace(built, definition=definition)
+    rekeyed = built.with_(definition=definition)
     if built.context_factory is not None:
         prototype_factory = built.context_factory
 
@@ -428,7 +427,7 @@ def _rekey(built: RuntimeHandler, definition: HandlerDef) -> RuntimeHandler:
             """
             return _rekey(prototype_factory(), definition)
 
-        rekeyed.context_factory = context_factory
+        rekeyed = rekeyed.with_(context_factory=context_factory)
     if built.fork_context is not None:
         prototype_fork = built.fork_context
 
@@ -447,7 +446,7 @@ def _rekey(built: RuntimeHandler, definition: HandlerDef) -> RuntimeHandler:
             """
             return _rekey(prototype_fork(handler), definition)
 
-        rekeyed.fork_context = fork_context
+        rekeyed = rekeyed.with_(fork_context=fork_context)
     return rekeyed
 
 
@@ -1021,8 +1020,8 @@ class CoreRuntimeProvider(QiecModel):
             return RuntimeClause(invoke=invoke, result_validator=lambda _value: True)
 
         return RuntimeHandler(
-            definition,
-            {item.operation: clause(item) for item in definition.clauses},
+            definition=definition,
+            clauses={item.operation: clause(item) for item in definition.clauses},
             input_validator=input_validator,
             output_validator=output_validator,
             duplicable_context=True,
@@ -1127,8 +1126,8 @@ class CoreRuntimeProvider(QiecModel):
                 )
 
             return RuntimeHandler(
-                definition,
-                {item.operation: clause(item) for item in definition.clauses},
+                definition=definition,
+                clauses={item.operation: clause(item) for item in definition.clauses},
                 input_validator=_require_core_handler_validator(
                     definition.input_type, definition.name, "input"
                 ),
@@ -1139,7 +1138,7 @@ class CoreRuntimeProvider(QiecModel):
             )
 
         prototype = make()
-        prototype.context_factory = make
+        prototype = prototype.with_(context_factory=make)
         return prototype
 
     def _state(
@@ -1241,8 +1240,8 @@ class CoreRuntimeProvider(QiecModel):
                 )
 
             return RuntimeHandler(
-                definition,
-                {item.operation: clause(item) for item in definition.clauses},
+                definition=definition,
+                clauses={item.operation: clause(item) for item in definition.clauses},
                 input_validator=_require_core_handler_validator(
                     definition.input_type, definition.name, "input"
                 ),
@@ -1253,7 +1252,7 @@ class CoreRuntimeProvider(QiecModel):
             )
 
         prototype = make()
-        prototype.context_factory = make
+        prototype = prototype.with_(context_factory=make)
         return prototype
 
 
