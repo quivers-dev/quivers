@@ -10,13 +10,33 @@ from __future__ import annotations
 import argparse
 import sys
 
+try:
+    from quivers.lsp import build_server
+except ModuleNotFoundError as error:
+    if error.name not in {"pygls", "lsprotocol"}:
+        raise
+    _LSP_UNAVAILABLE: ModuleNotFoundError | None = error
+else:
+    _LSP_UNAVAILABLE = None
+
 
 def main(args: argparse.Namespace) -> int:
-    try:
-        from quivers.lsp import build_server
-    except ImportError as e:
+    """Start the language server using the selected transport.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The TCP port and optional transpilation target.
+
+    Returns
+    -------
+    int
+        Zero after the server exits, or two when its dependencies are absent.
+    """
+    if _LSP_UNAVAILABLE is not None:
         sys.stderr.write(
-            f"pygls not installed ({e}); install with `pip install 'quivers[lsp]'`.\n"
+            f"language server unavailable ({_LSP_UNAVAILABLE}); "
+            "install with `pip install 'quivers[lsp]'`.\n"
         )
         return 2
     server = build_server(target=getattr(args, "target", None))

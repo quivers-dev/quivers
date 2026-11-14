@@ -6,6 +6,8 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
 
 _BLOCK_DEPENDENCY = """
 import sys
@@ -70,6 +72,7 @@ def _run_isolated(blocked: str, checks: str) -> subprocess.CompletedProcess[str]
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
 
 
@@ -139,4 +142,61 @@ def test_broken_rich_installation_is_not_treated_as_absent() -> None:
         """
     )
     result = _run_isolated("rich.style", checks)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("dependency", "arguments", "extra"),
+    [
+        ("pygls", ["lsp"], "lsp"),
+        ("lsprotocol", ["lsp"], "lsp"),
+        ("jupyter_client", ["kernel", "install"], "repl"),
+    ],
+)
+def test_optional_command_reports_its_missing_dependency(
+    dependency: str, arguments: list[str], extra: str
+) -> None:
+    """Subcommands report absent extras without breaking CLI import.
+
+    Parameters
+    ----------
+    dependency : str
+        The dependency to block.
+    arguments : list[str]
+        The requested command and arguments.
+    extra : str
+        The installation extra the diagnostic must name.
+    """
+    checks = textwrap.dedent(
+        f"""
+        from quivers.cli import main
+
+        sys.argv = ["qvr", *{arguments!r}]
+        assert main() == 2
+        """
+    )
+    result = _run_isolated(dependency, checks)
+    assert result.returncode == 0, result.stderr
+    assert f"quivers[{extra}]" in result.stderr
+
+
+def test_kernel_metadata_does_not_require_ipykernel() -> None:
+    """Kernelspec metadata remains accessible, while execution refuses."""
+    checks = textwrap.dedent(
+        """
+        from quivers.cli import main
+        from quivers.kernel import KERNELSPEC
+
+        assert KERNELSPEC["language"] == "qvr"
+        sys.argv = ["qvr", "kernel", "run"]
+        try:
+            main()
+        except ModuleNotFoundError as error:
+            assert error.name == "ipykernel"
+            assert "quivers[repl]" in str(error)
+        else:
+            raise AssertionError("kernel launch accepted a missing runtime")
+        """
+    )
+    result = _run_isolated("ipykernel", checks)
     assert result.returncode == 0, result.stderr
