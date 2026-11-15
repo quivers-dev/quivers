@@ -390,6 +390,13 @@ Continuous integration runs the following on every pull request, and each can be
 | Rendered math | `python scripts/check_rendered_math.py site` |
 | Tests | the tiers above |
 
+Wheel CI also installs the built artifact and runs
+`python tools/release_wheel_smoke.py <checkout-path>` with the source checkout
+excluded from `PYTHONPATH`. This check disables parser compiler fallbacks and
+exercises the installed native/reference runtimes, dependent input binding,
+exact integer literals, normalized count scores and gradients, and count
+representation limits. It also checks every bundled migration parser.
+
 `tests/test_doc_blocks.py` compiles every `qvr` block under `docs/` and in `README.md`, and runs
 every Python block under `docs/tutorials/`. An HTML comment on the line before a fence chooses the
 mode: `<!-- compile: false -->` and `<!-- python: skip -->` exclude a block,

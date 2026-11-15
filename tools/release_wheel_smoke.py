@@ -155,6 +155,53 @@ def main() -> None:
         else:
             raise SystemExit("installed-wheel runtime accepted a negative Nat input")
 
+    count_source = """object Row : FinSet _
+program counts(trials: Tensor[Int]([Row]), p: Real, y: Tensor[Int]([Row])) : Row -> Row
+    observe y : Row <- ZeroInflatedBinomial(zero_prob=0.25, total_count=trials, probs=p)
+    return y
+export counts
+"""
+    probability = torch.tensor(0.5, requires_grad=True)
+    count_data = {
+        "trials": torch.tensor([0, 3]),
+        "p": probability,
+        "y": torch.tensor([0, 1]),
+    }
+    count_model = Model(count_source)
+    count_trace = count_model.bind(count_data).trace()
+    expected = torch.tensor(9 / 32, dtype=torch.float64).log()
+    torch.testing.assert_close(count_trace.log_joint.reshape(()), expected)
+    torch.testing.assert_close(
+        torch.autograd.grad(count_trace.log_joint.sum(), probability)[0],
+        torch.tensor(-2.0),
+    )
+    checked_counts = Compiler(
+        parse(count_source.replace("FinSet _", "FinSet 2"))
+    ).qiec_module
+    if checked_counts is None:
+        raise SystemExit("installed-wheel count program has no checked entry")
+    count_run = invoke_entry(checked_counts, "counts", ((0, 3), 0.5, (0, 1)))
+    if (
+        count_run.log_joint is None
+        or abs(count_run.log_joint - expected.item()) > 1e-12
+    ):
+        raise SystemExit("installed-wheel native/reference count scores disagree")
+    try:
+        count_model.bind({**count_data, "trials": torch.tensor([0, 2**53 + 1])}).trace()
+    except ValueError as error:
+        if "2**53" not in str(error):
+            raise
+    else:
+        raise SystemExit("installed-wheel count kernel rounded an unsupported integer")
+    exact_module = Compiler(
+        parse("define exact_integer() : Int !{} =\n    return 9007199254740993\n")
+    ).qiec_module
+    if (
+        exact_module is None
+        or invoke_entry(exact_module, "exact_integer").value != 2**53 + 1
+    ):
+        raise SystemExit("installed-wheel compiler rounded an exact integer literal")
+
     available = set(migration_grammar.available_revisions())
     missing = set(CHAIN) - available
     if missing:
