@@ -755,6 +755,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError(
                     f"distributional parameter {name!r} has a different row count"
                 )
+            reserved_offsets = {
+                f"formula_offset_{index}" for index, _ in enumerate(predictor.offsets)
+            }
+            collisions = reserved_offsets & {
+                column.qvr_name for column in predictor.fixed_columns
+            }
+            if collisions:
+                raise ValueError(
+                    f"offset input names are reserved: {sorted(collisions)}"
+                )
             for group, levels in predictor.group_levels.items():
                 normalized = _qvr_name(group)
                 coding = (group, levels, predictor.group_indices[group])
@@ -815,6 +825,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             group_levels=dict(formula.group_levels),
             group_indices=dict(formula.group_indices),
             random_terms=formula.random_terms,
+            offsets=formula.offsets,
         )
         return module, complement
 
@@ -979,6 +990,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             response_name=complement.response_name,
             fixed_columns=tuple(fixed_columns),
             random_terms=tuple(random_terms),
+            offsets=complement.offsets,
             response_values=complement.response_values,
             group_levels=complement.group_levels,
             group_indices=complement.group_indices,
@@ -1019,6 +1031,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 for name, predictor in self._distributional.items()
             ),
         ):
+            for index, column in enumerate(predictor.offsets):
+                obs[f"{prefix}formula_offset_{index}"] = torch.as_tensor(
+                    column.data.copy(), dtype=torch.float32
+                )
             for term in predictor.random_terms:
                 if term.column is not None and not term.column.is_intercept:
                     obs[f"{prefix}random_{term.column.qvr_name}"] = torch.as_tensor(
@@ -1334,6 +1350,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 cell_terms.append(coefficient)
             else:
                 cell_terms.append(_mul(coefficient, _index(col.qvr_name, response_var)))
+
+        cell_terms.extend(
+            _index(f"formula_offset_{index}", response_var)
+            for index, _ in enumerate(formula.offsets)
+        )
 
         if self._predictor_name is not None:
             predictor_index = _add(
@@ -1845,7 +1866,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         LetExprNode
             Sum of the predictor contributions, or scalar zero.
         """
-        linear_terms: list[LetExprNode] = []
+        linear_terms: list[LetExprNode] = [
+            _var(f"{prefix}formula_offset_{index}")
+            for index, _ in enumerate(formula.offsets)
+        ]
 
         # Fixed effects: one scalar latent per design-matrix column.
         for col in formula.fixed_columns:

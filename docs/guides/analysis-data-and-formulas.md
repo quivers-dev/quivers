@@ -145,6 +145,53 @@ gives a `Module` that compiles to the same program.
 - **Interactions** `x:z` (elementwise product, one coefficient) and
   `x*z` (expands to `x + z + x:z`, three coefficients).
 
+### Offsets and observation exposure
+
+An offset is a known contribution to a linear predictor with coefficient one.
+Write `offset(expr)` to add the evaluated expression, or `exposure(expr)` to
+add its natural logarithm. With a log link, exposure multiplies the response
+mean. For instance, this count model accounts for different observation times:
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+counts = pd.DataFrame({
+    "events": [0, 2, 1, 4],
+    "temperature": [-1.0, 0.0, 0.5, 1.0],
+    "hours": [0.5, 1.0, 2.0, 4.0],
+})
+rate_fit = fit(
+    "events ~ temperature + exposure(hours)",
+    data=counts,
+    family="poisson",
+    method="svi",
+    num_steps=10,
+    seed=7,
+)
+# The native predictor is intercept + beta_temperature * temperature + log(hours).
+mean_counts = rate_fit.posterior_epred(num_samples=5)
+assert mean_counts.shape == (1, 5, 4)
+assert set(rate_fit.fixed_effects(num_samples=5)) == {"Intercept", "temperature"}
+```
+
+`offset(log(hours))` expresses the same model. Offset columns receive no prior
+or fitted coefficient, and `get_prior` excludes them. Their evaluated values
+are retained in `Formula.offsets`, the lens complement, and the fitted data;
+posterior predictors use the same native bindings as fitting.
+
+Offsets also work in auxiliary formulas, for instance
+`distributional={"sigma": "~ z + offset(log(known_scale))"}`. They apply before
+the selected inverse link. Several offset terms add together, and `~ 0 + offset(z)`
+requires no population coefficient. Categorical models add a scalar row offset
+to every non-reference-category logit; the reference logit remains zero.
+
+Every offset must produce one finite numeric value per response row. Exposures
+must additionally be strictly positive. Offset and exposure modifiers must be
+standalone additive terms; interactions, wrappers around these modifiers, and
+random coefficients on them raise errors. The modifiers' names are reserved in
+the formula evaluation namespace.
+
 ### Correlated group effects
 
 A random-effects block assigns a joint distribution to its coefficients. For

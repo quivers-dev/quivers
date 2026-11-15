@@ -31,6 +31,7 @@ namespace so users coming from R get the expected base R behaviour.
 from __future__ import annotations
 
 from typing import Mapping
+import re
 
 import didactic.api as dx
 import formulae as fo
@@ -63,6 +64,52 @@ _R_TRANSFORMS = {
     "cosh": np.cosh,
     "tanh": np.tanh,
 }
+
+
+def _exposure(values: object) -> np.ndarray:
+    """Convert positive observation exposures to log offsets.
+
+    Parameters
+    ----------
+    values : object
+        Numeric exposure values, one per observation.
+
+    Returns
+    -------
+    np.ndarray
+        Natural logarithms of the exposures.
+
+    Raises
+    ------
+    ValueError
+        If an exposure is nonpositive or nonfinite.
+    """
+    exposure = np.asarray(values, dtype=np.float64)
+    if not np.isfinite(exposure).all() or np.any(exposure <= 0):
+        raise ValueError("exposure terms require strictly positive finite values")
+    return np.log(exposure)
+
+
+def _offset_calls(expression: object) -> set[str]:
+    """Find offset modifiers within a formulae lazy expression.
+
+    Parameters
+    ----------
+    expression : object
+        Parsed call, operator, variable, or literal.
+
+    Returns
+    -------
+    set[str]
+        Names of offset and exposure calls in the expression tree.
+    """
+    callee = getattr(expression, "callee", None)
+    found = {callee} if callee in {"offset", "exposure"} else set()
+    for argument in getattr(expression, "args", ()):
+        found.update(_offset_calls(argument))
+    for argument in getattr(expression, "kwargs", {}).values():
+        found.update(_offset_calls(argument))
+    return found
 
 
 def _read_only(values: np.ndarray) -> np.ndarray:
@@ -189,6 +236,9 @@ class Formula(ValueModel):
     group_levels : dict[str, tuple[str, ...]]
         Canonical level ordering per grouping factor, used to derive
         deterministic plate-index tensors.
+    offsets : tuple[FixedColumn, ...]
+        Evaluated ``offset(expr)`` and ``exposure(expr)`` contributions on
+        the linear-predictor scale. These columns receive no coefficients.
     group_indices : dict[str, tuple[int, ...]]
         Per-group integer index array, shape ``(N,)``.
     """
@@ -206,6 +256,9 @@ class Formula(ValueModel):
     )
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
+    offsets: tuple[FixedColumn, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 class FormulaData(ValueModel):
@@ -236,6 +289,9 @@ class FormulaData(ValueModel):
         Original group names keyed by normalized group name.
     group_levels : dict[str, tuple[str, ...]]
         Canonical level order for each group.
+    offsets : tuple[FixedColumn, ...]
+        Evaluated ``offset(expr)`` and ``exposure(expr)`` contributions on
+        the linear-predictor scale. These columns receive no coefficients.
     group_indices : dict[str, tuple[int, ...]]
         Per-row integer codes for each group.
     random_terms : tuple[RandomTerm, ...]
@@ -259,6 +315,9 @@ class FormulaData(ValueModel):
     group_original_names: dict[str, str] = dx.field(default_factory=dict)
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
+    offsets: tuple[FixedColumn, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     random_terms: tuple[RandomTerm, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -428,7 +487,10 @@ def formula_from_data(
     ``log1p``, ``expm1``, ``asin``, ``acos``, ``atan``, ``sinh``,
     ``cosh``, ``tanh``) are pre-loaded into the formulae evaluation
     namespace so users coming from R / brms get the expected base
-    R behaviour without explicit registration.  Polynomial terms via
+    R behaviour without explicit registration.
+    ``offset(expr)`` adds an evaluated expression with coefficient one;
+    ``exposure(expr)`` adds its logarithm and requires positive finite values.
+    These terms work in location and auxiliary formulas. Polynomial terms via
     ``poly(x, k)`` are orthogonal by default, matching R's
     ``stats::poly``.
 
@@ -459,8 +521,44 @@ def formula_from_data(
     pandas_df = nw_df.to_pandas()
     namespace: dict[str, object] = dict(_R_TRANSFORMS)
     if extra_namespace:
+        if {"offset", "exposure"} & extra_namespace.keys():
+            raise ValueError("offset and exposure are reserved formula modifiers")
         namespace.update(extra_namespace)
+    namespace["exposure"] = _exposure
     normalized, random_blocks = _random_blocks(formula)
+    # Inspect only formulas containing modifiers, so ordinary formulas retain
+    # their single design-matrix parse. Inspect before evaluation because a
+    # nested offset object can otherwise fail inside formulae arithmetic.
+    if re.search(r"\b(?:offset|exposure)\s*\(", normalized):
+        description = fo.model_description(normalized)
+        for term in description.common_terms:
+            components = getattr(term, "components", ())
+            modifiers = set().union(
+                *(
+                    _offset_calls(getattr(component, "call", None))
+                    for component in components
+                )
+            )
+            root = (
+                getattr(components[0], "call", None) if len(components) == 1 else None
+            )
+            if modifiers and not (
+                root is not None
+                and getattr(root, "callee", None) in {"offset", "exposure"}
+                and not any(_offset_calls(argument) for argument in root.args)
+            ):
+                raise ValueError(
+                    "offset and exposure terms must be standalone additive terms"
+                )
+        for term in description.group_terms:
+            components = getattr(term.expr, "components", ())
+            if any(
+                _offset_calls(getattr(component, "call", None))
+                for component in components
+            ):
+                raise ValueError(
+                    "offset and exposure terms cannot be random coefficients"
+                )
     dm = fo.design_matrices(normalized, data=pandas_df, extra_namespace=namespace)
     if dm.response is None:
         raise ValueError(
@@ -471,9 +569,26 @@ def formula_from_data(
     n_obs = int(pandas_df.shape[0])
 
     fixed_columns: list[FixedColumn] = []
+    offsets: list[FixedColumn] = []
     if dm.common is not None:
         for term_name, term in dm.common.terms.items():
-            fixed_columns.extend(_explode_term(term_name, term, n_obs))
+            columns = _explode_term(term_name, term, n_obs)
+            components = getattr(term, "components", ())
+            modifier = (
+                getattr(getattr(components[0], "call", None), "callee", None)
+                if len(components) == 1
+                else None
+            )
+            if modifier in {"offset", "exposure"}:
+                if len(columns) != 1 or columns[0].data.shape != (n_obs,):
+                    raise ValueError(
+                        "offset and exposure terms must produce one value per response row"
+                    )
+                if not np.isfinite(columns[0].data).all():
+                    raise ValueError("offset terms require finite numeric values")
+                offsets.extend(columns)
+            else:
+                fixed_columns.extend(columns)
 
     random_terms: list[RandomTerm] = []
     group_levels: dict[str, tuple[str, ...]] = {}
@@ -509,6 +624,7 @@ def formula_from_data(
         formula=formula,
         response_name=response_name,
         fixed_columns=tuple(fixed_columns),
+        offsets=tuple(offsets),
         random_terms=tuple(random_terms),
         response_values=response_values,
         group_levels=group_levels,

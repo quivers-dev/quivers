@@ -10,11 +10,16 @@ depend on the data and the category encoding as well as on the formula.
 `Formula`, `FormulaData`, and `FixedColumn` are immutable values that
 compare by every field. Two formulas are equal only when their formula
 strings, response names, fixed columns (labels and data), random
-terms, response values, group levels, and group indices all agree, and
+terms, offsets, response values, group levels, and group indices all agree, and
 hashing agrees with equality. The arrays with one entry per row are stored as
 read-only copies made at construction: writing into
 `formula.response_values` or a column's `data` raises `ValueError`, and
 changing the source data frame afterwards does not change the formula.
 Copy a field (`formula.response_values.copy()`) to get a writable array.
+
+`Formula.offsets` retains coefficient-free `offset(expr)` and `exposure(expr)`
+columns as read-only `FixedColumn` values. Exposure contributes the logarithm of
+positive finite values. The [offset guide](../../guides/analysis-data-and-formulas.md#offsets-and-observation-exposure)
+shows how these terms affect fitting and posterior predictors.
 
 ::: quivers.formulas.formula

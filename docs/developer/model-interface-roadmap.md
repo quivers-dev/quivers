@@ -5,8 +5,9 @@ This audit distinguishes three questions: (i) whether QVR can state a model;
 provides the corresponding data preparation and analysis workflow. Expressibility
 alone does not establish parity with another modeling system.
 
-The implementation supplies checked input schemas, explicit external declarations,
-finite extent inference, and reusable inference methods. The tables below record
+The implementation supplies checked input schemas, explicit runtime parameters,
+finite extent inference, reusable inference methods, new-data prediction, and raw
+pointwise observation likelihoods. The tables below record
 remaining work against brms and the open enhancement issues as of November 15, 2026.
 
 ## brms coverage
@@ -22,19 +23,19 @@ from the implementation and its tests. Full brms coverage is not established.
 | Capability | QVR evidence and remaining requirements |
 | --- | --- |
 | Data dimensions and external inputs | `Model.schema` retains checked types and roles; `Model.bind` specializes finite extents and validates supplied values. Tested in `tests/modeling/test_model.py`. |
-| Common regression families | `quivers.formulas.families` contains 14 entries. The larger QVR family registry is a separate interface. Test every brms family, link, support, and parameterization before claiming family parity. |
-| Group effects | Formula compilation provides independent varying coefficients. Correlated coefficient blocks, shared correlation IDs, and covariance-aware prediction still require implementation and numerical checks. |
-| Distributional and nonlinear formulas | QVR can express predictors directly. The formula interface needs separate predictors and links for auxiliary parameters, a nonlinear parameter dependency graph, and prior discovery. |
+| Common regression families | `quivers.formulas.families` contains 23 entries, with 15 inverse links and mean/precision conversions for binomial, beta-binomial, gamma, Weibull, and other families. Asymmetric Laplace quantile regression supports a fixed or regressed quantile, with independent SciPy density/CDF/quantile and sampling tests. `tests/test_formula_distributional.py` checks independent likelihood and derivative oracles. ExGaussian uses the response mean and Gaussian/exponential components; inverse Gaussian uses response mean/shape with implicit sample gradients. These have independent density, CDF, derivative, and sampling oracles. The larger native family registry remains a separate interface; the remaining brms families and their interactions need implementation and tests. |
+| Group effects | Single-bar blocks use native LKJ Cholesky correlations; double bars request independence. Shared IDs couple coefficients across location and auxiliary formulas. Scalar responses support centered and noncentered coordinates; categorical blocks couple all non-reference-category coefficients in noncentered coordinates. `tests/test_formula_correlations.py` checks Gaussian covariance densities, derivatives, and SVI/HMC/NUTS execution. Supplied group covariance, multi-membership, repeated coefficients across blocks, and covariance-aware prediction remain work. |
+| Distributional and nonlinear formulas | `distributional={"sigma": "~ z + (1 | g)"}` supplies evaluated auxiliary predictors and parameter-specific links in the formula interface. Design columns and group coding are retained, and shared correlation IDs can span predictors. A nonlinear parameter dependency graph remains work. |
 | Multivariate responses | QVR supports multiple observation sites. Joint formula construction, residual correlations, response selection, and aligned output coordinates need a common interface. |
 | Splines, Gaussian processes, and special predictor terms | Some corresponding kernels exist. Smooth construction, monotonic effects, category-specific effects, multi-membership, and group-level term semantics require formula and prediction tests. |
 | Dependence structures | QVR has scans and state-space examples. brms's temporal, spatial, and supplied covariance structures require individually verified parameterizations and prediction behavior. |
-| Additional response information | Some QVR programs express weighting, censoring, truncation, or trials directly. A uniform formula and data contract must cover every supported response addition and distinguish likelihood weights from replication. |
+| Additional response information | Formula `offset(expr)` and `exposure(expr)` terms enter location and auxiliary predictors with coefficient one, preserve evaluated arrays, and agree with independent density, gradient, and posterior-prediction oracles in `tests/test_formula_offsets.py`. Binomial and beta-binomial trials support constants or per-row columns. Uniform likelihood weights, censoring, truncation, and their interactions remain work; likelihood weights must distinguish response scores from priors and replication. |
 | Missing data and measurement error | Explicit latent-variable models are possible. Automatic imputation formulas, measurement-error preparation, multiple datasets, and their prediction semantics remain work. |
-| Priors | QVR has explicit sample sites and formula prior overrides. Class-based selectors, prior inspection, regularized horseshoe and R2D2 workflows, and prior-only fitting need matching acceptance tests. |
+| Priors | `get_prior` inspects the exact overrideable priors in the formula AST, including column autoscaling, auxiliary coefficients, and shared correlations. Unused overrides fail before fitting; `fixed_parameters` removes known auxiliary parameters from the latent and prior layouts. Class-based selectors, regularized horseshoe and R2D2 workflows, and prior-only fitting need implementations and acceptance tests. |
 | Sampling and variational fitting | Existing MCMC and variational components remain configurable through reusable methods. Every algorithm's objective, stopping condition, initialization, and checkpoint semantics stay visible. This does not establish equivalence to Stan's samplers. |
-| Prediction | `ModelFit.predict` releases observations at the fitted layout. The brms [prediction contract](https://paulbuerkner.com/brms/reference/posterior_predict.brmsfit.html) also requires new-data validation, retained factor coding, new group levels, selected effects and responses, and several predictive quantities. |
-| Parameter summaries and diagnostics | The wrapper reuses QVR's MCMC summaries. Regression coefficient reconstruction, varying-effect extraction, covariance summaries, and fitted-value summaries require formula-aware metadata. |
-| Model comparison | QVR provides ArviZ adapters and comparison functions. The model wrapper still needs pointwise likelihoods, observation coordinates, LOO and WAIC integration, exact refits, K-fold validation, and model weighting. A whole-program joint score is insufficient. |
+| Prediction | `BayesianFit.posterior_linpred` and `posterior_epred` replay native predictors and response distributions on training rows, with explicit class labels and binomial count expectations. `ModelFit.predict` validates new covariates and can infer a new row count while retaining the fitted latent layout. The brms [prediction contract](https://paulbuerkner.com/brms/reference/posterior_predict.brmsfit.html) additionally requires retained factor coding, new group levels, selected effects and responses, and several predictive quantities. |
+| Parameter summaries and diagnostics | `BayesianFit.draws` preserves chain/draw axes; `fixed_effects`, `random_effects`, and `coefficients` reconstruct native population/group coefficients with original labels and retained level coding. `tests/test_formula_posterior.py` checks centered, noncentered, shared, and categorical effects. Covariance summaries and a common summary/diagnostic interface remain work. |
+| Model comparison | `ModelFit.log_likelihood` extracts raw pointwise observation densities, and QVR provides ArviZ adapters and comparison functions. Marginal-likelihood observers, observation coordinates, integrated LOO and WAIC, exact refits, K-fold validation, and model weighting require further work. A whole-program joint score is insufficient. |
 | Other post-processing | Hypothesis tests, Bayes factors, marginal likelihoods, R-squared, conditional effects, model updates, and persistent fitted artifacts require their own implementations and tests. |
 | Custom families and backends | Existing family and target registries are extension points. Custom scoring, sampling, prediction, and emitted-target support must each be checked; a registered name proves none of these by itself. |
 
@@ -67,9 +68,10 @@ that the proposed executors or distributions have been implemented.
 
 1. Finish typed structured binding, explicit executor capability checks, and
    regression artifacts with persistent design and group coding.
-2. Add distributional and multivariate formula graphs, correlated varying effects,
-   and the remaining families and response modifiers, each with numerical oracles.
-3. Add prediction on new data, pointwise likelihoods, comparisons, and persistence.
+2. Extend the distributional formula interface with nonlinear and multivariate
+   dependency graphs, supplied group covariances, and the remaining families and
+   response modifiers, each with numerical oracles.
+3. Extend new-data prediction and raw pointwise likelihoods with retained encodings, marginal-likelihood observers, comparisons, and persistence.
 4. Connect the structured executors as their issues land, retaining each solver's
    objective, approximation, termination, and differentiation contract.
 

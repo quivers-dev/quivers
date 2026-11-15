@@ -8,6 +8,8 @@ generated module shows exactly which priors, axes, and likelihood the formula pr
 Its optional `distributional` mapping takes parsed `Formula` values for auxiliary
 parameters, giving each predictor its own coefficient namespace while sharing group
 coding. The lens complement still reconstructs the primary location formula;
-auxiliary formulas are retained in the configured lens.
+auxiliary formulas are retained in the configured lens. Offset and exposure
+columns enter native predictor bindings without coefficient draws; their arrays
+are retained by `FormulaData.offsets` and returned by `fixed_column_observations`.
 
 ::: quivers.formulas.compile
