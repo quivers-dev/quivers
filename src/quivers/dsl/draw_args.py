@@ -37,7 +37,7 @@ from quivers.dsl.family_schemas import (
     render_parameterizations,
 )
 
-Atom = str | float
+Atom = str | int | float
 
 
 def argument_parameter(arg: DrawArg) -> str | None:

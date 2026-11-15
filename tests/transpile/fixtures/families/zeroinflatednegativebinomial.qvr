@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the ZeroInflatedNegativeBinomial family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program zeroinflatednegativebinomial_fixture : Obs -> Obs
+    observe y : Obs <- ZeroInflatedNegativeBinomial(zero_prob=0.25, total_count=2.0, probs=0.5)
+    return y
+export zeroinflatednegativebinomial_fixture

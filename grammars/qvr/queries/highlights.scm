@@ -178,6 +178,7 @@
     "Horseshoe"
     "HurdleGamma"
     "HurdleLogNormal"
+    "HurdleNegativeBinomial"
     "HurdlePoisson"
     "Independent"
     "InverseGamma"
@@ -220,6 +221,9 @@
     "VonMises"
     "Weibull"
     "Wishart"
+    "ZeroInflatedBetaBinomial"
+    "ZeroInflatedBinomial"
+    "ZeroInflatedNegativeBinomial"
     "ZeroInflatedPoisson"
     "ZeroOneInflatedBeta"))
 

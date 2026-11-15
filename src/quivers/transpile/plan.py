@@ -1720,13 +1720,13 @@ class _ProgramWalk:
         if isinstance(value, Var):
             return IRArgRef(name=value.local.name, indices=())
         if isinstance(value, LiteralValue) and isinstance(value.value, int | float):
-            return IRArgNumber(value=float(value.value))
+            return IRArgNumber(value=value.value)
         if isinstance(value, Comprehension):
             spread = _spread_literal(value)
             if spread is not None:
                 literal, shape = spread
                 return IRArgBroadcast(
-                    value=IRArgNumber(value=float(literal)), target_shape=shape
+                    value=IRArgNumber(value=literal), target_shape=shape
                 )
         if isinstance(value, TensorValue):
             if value.items and all(
@@ -2730,7 +2730,7 @@ def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:
     )
 
 
-def _spread_literal(value: Comprehension) -> tuple[float, tuple[int, ...]] | None:
+def _spread_literal(value: Comprehension) -> tuple[int | float, tuple[int, ...]] | None:
     """A literal spread over a vector, as the literal and the shape.
 
     A single literal a construction spreads over a vector parameter,
@@ -2744,7 +2744,7 @@ def _spread_literal(value: Comprehension) -> tuple[float, tuple[int, ...]] | Non
 
     Returns
     -------
-    tuple[float, tuple[int, ...]] | None
+    tuple[int | float, tuple[int, ...]] | None
         The literal and the shape, or ``None`` when the body is not a
         literal or a spread itself, or an extent is open.
     """
@@ -2754,7 +2754,7 @@ def _spread_literal(value: Comprehension) -> tuple[float, tuple[int, ...]] | Non
         return None
     body = value.body
     if isinstance(body, LiteralValue) and isinstance(body.value, int | float):
-        return float(body.value), (value.extent.value,)
+        return body.value, (value.extent.value,)
     if isinstance(body, Comprehension):
         inner = _spread_literal(body)
         if inner is not None:

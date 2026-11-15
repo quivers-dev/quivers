@@ -55,8 +55,8 @@ def _dist(family: str, **arguments: DrawArg) -> DrawArgDist:
     )
 
 
-def _scalar(value: float) -> DrawArgScalar:
-    return DrawArgScalar(value=float(value))
+def _scalar(value: int | float) -> DrawArgScalar:
+    return DrawArgScalar(value=value)
 
 
 def _literal_values(

@@ -120,8 +120,9 @@ class LetExprLiteral(LetExprNode):
         The literal's value.
     integral
         Whether the source spelled an integer, with no fraction or
-        exponent. A program step treats every number as real; the QIEC
-        lowerer types an integral literal as ``Int``.
+        exponent. Integer lexemes retain an exact integer carrier. The
+        QIEC lowerer types them as ``Int`` unless the expected context
+        requires ``Real``.
     line
         The 1-based source line, or 0 when unknown.
     col
@@ -130,7 +131,7 @@ class LetExprLiteral(LetExprNode):
         The discriminator; always ``"let_expr_literal"``.
     """
 
-    value: float
+    value: int | float
     integral: bool = False
     line: int = 0
     col: int = 0

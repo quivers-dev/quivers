@@ -261,7 +261,9 @@ def _doc_lines(docs: tuple[str, ...], indent: int) -> list[str]:
     return [f"{_pad(indent)}#! {doc.strip()}" for doc in docs]
 
 
-def _emit_number(value: float) -> str:
+def _emit_number(value: int | float) -> str:
+    if isinstance(value, int):
+        return str(value)
     if not math.isfinite(value):
         raise EmitError(f"emit: non-finite numeric literal {value!r}")
     if value == int(value) and abs(value) < 1e16:

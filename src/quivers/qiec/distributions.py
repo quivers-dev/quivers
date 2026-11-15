@@ -21,6 +21,14 @@ import didactic.api as dx
 
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
+from quivers.qiec._count_mixtures import (
+    SAMPLERS as _COUNT_MIXTURE_SAMPLERS,
+    _binomial_log_mass,
+    _poisson as _sample_poisson_count,
+    _deviance as _count_deviance,
+    _stirling_error as _count_stirling_error,
+    DENSITIES as _COUNT_MIXTURE_DENSITIES,
+)
 from quivers.qiec.reference_families import (
     DENSITIES as _STRUCTURED_DENSITIES,
     LOG_MASSES as _LOG_MASSES,
@@ -31,7 +39,6 @@ from quivers.qiec.reference_support import (
     DistributionError,
     Sampler,
     finite_value as _finite_value,
-    log_choose as _log_choose,
     normal_log_prob as _normal_log_prob,
     log_probabilities as _log_probabilities,
     probability as _probabilities,
@@ -1006,15 +1013,7 @@ def _poisson_sample(a: Mapping[str, object], rng: random.Random) -> object:
     object
         The drawn value.
     """
-    rate = _real(a, "rate", "Poisson")
-    # Knuth's method, exact for the moderate rates a reference run uses.
-    limit = math.exp(-rate)
-    count = 0
-    product = rng.random()
-    while product > limit:
-        count += 1
-        product *= rng.random()
-    return count
+    return _sample_poisson_count(_real(a, "rate", "Poisson"), rng)
 
 
 def _poisson_density(a: Mapping[str, object], value: object) -> float:
@@ -1039,7 +1038,13 @@ def _poisson_density(a: Mapping[str, object], value: object) -> float:
         return -math.inf
     if rate == 0.0:
         return 0.0 if count == 0 else -math.inf
-    return count * math.log(rate) - rate - math.lgamma(count + 1)
+    if count == 0:
+        return -rate
+    return (
+        -_count_stirling_error(float(count))
+        - 0.5 * (1.83787706640934548356 + math.log(count))
+        - _count_deviance(float(count), math.log(rate))
+    )
 
 
 def _binomial_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -1082,11 +1087,7 @@ def _binomial_density(a: Mapping[str, object], value: object) -> float:
     log_success, log_failure = _log_probabilities(a, "Binomial")
     if not 0 <= count <= trials:
         return -math.inf
-    return (
-        _log_choose(trials, count)
-        + _times(count, log_success)
-        + _times(trials - count, log_failure)
-    )
+    return _binomial_log_mass(float(trials), count, log_success, log_failure)
 
 
 def _geometric_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -1528,6 +1529,98 @@ def _studentt_density(a: Mapping[str, object], value: object) -> float:
     )
 
 
+def _generalized_pareto_parameters(
+    a: Mapping[str, object],
+) -> tuple[float, float, float]:
+    """Read finite location, positive scale, and real tail index.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named GeneralizedPareto parameters.
+
+    Returns
+    -------
+    tuple[float, float, float]
+        Location, scale, and concentration.
+
+    Raises
+    ------
+    DistributionError
+        If a parameter is nonfinite or scale is nonpositive.
+    """
+    loc, scale, concentration = (
+        _real(a, name, "GeneralizedPareto")
+        for name in ("loc", "scale", "concentration")
+    )
+    if (
+        not all(math.isfinite(item) for item in (loc, scale, concentration))
+        or scale <= 0
+    ):
+        raise DistributionError(
+            "GeneralizedPareto needs finite parameters and positive scale"
+        )
+    return loc, scale, concentration
+
+
+def _generalized_pareto_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw through the exponential quantile transformation.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named parameters.
+    rng : random.Random
+        Host random generator.
+
+    Returns
+    -------
+    object
+        A real observation on the concentration-dependent support.
+    """
+    loc, scale, concentration = _generalized_pareto_parameters(a)
+    exponential = rng.expovariate(1.0)
+    standardized = (
+        exponential
+        if concentration == 0
+        else math.expm1(concentration * exponential) / concentration
+    )
+    return loc + scale * standardized
+
+
+def _generalized_pareto_density(a: Mapping[str, object], value: object) -> float:
+    """Score the generalized Pareto law, including its exponential limit.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named parameters.
+    value : object
+        Real observation to score.
+
+    Returns
+    -------
+    float
+        Log density, with negative infinity outside the support.
+    """
+    loc, scale, concentration = _generalized_pareto_parameters(a)
+    standardized = (_finite_value(value, "GeneralizedPareto") - loc) / scale
+    if standardized < 0:
+        return -math.inf
+    if concentration == 0:
+        return -math.log(scale) - standardized
+    endpoint = 1 + concentration * standardized
+    if endpoint < 0:
+        return -math.inf
+    if endpoint == 0:
+        if concentration == -1:
+            return -math.log(scale)
+        return math.inf if concentration < -1 else -math.inf
+    return -math.log(scale) - (1 + 1 / concentration) * math.log1p(
+        concentration * standardized
+    )
+
+
 def _dirichlet_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``Dirichlet``.
 
@@ -1609,7 +1702,9 @@ _SAMPLERS: Mapping[str, Sampler] = MappingProxyType(
         "Cauchy": _cauchy_sample,
         "StudentT": _studentt_sample,
         "Dirichlet": _dirichlet_sample,
+        "GeneralizedPareto": _generalized_pareto_sample,
         **_STRUCTURED_SAMPLERS,
+        **_COUNT_MIXTURE_SAMPLERS,
     }
 )
 
@@ -1637,7 +1732,9 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
         "Cauchy": _cauchy_density,
         "StudentT": _studentt_density,
         "Dirichlet": _dirichlet_density,
+        "GeneralizedPareto": _generalized_pareto_density,
         **_STRUCTURED_DENSITIES,
+        **_COUNT_MIXTURE_DENSITIES,
     }
 )
 

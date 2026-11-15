@@ -320,9 +320,13 @@ def test_beta_binomial_density_with_varying_trials_and_distributional_precision(
         "dpar_phi_beta_z": torch.tensor(0.2),
     }
     recorded = trace(program, torch.zeros(1, 1, dtype=torch.long), observations)
-    precision = torch.exp(log_precision + 0.2 * observations["dpar_phi_z"])
-    alpha = torch.sigmoid(eta) * precision
-    beta = (1 - torch.sigmoid(eta)) * precision
+    precision = torch.exp(
+        log_precision.double() + 0.2 * observations["dpar_phi_z"].double()
+    )
+    alpha = torch.sigmoid(eta.double()) * precision
+    beta = (1 - torch.sigmoid(eta.double())) * precision
+    response = response.double()
+    trials = trials.double()
     expected = (
         torch.lgamma(trials + 1)
         - torch.lgamma(response + 1)

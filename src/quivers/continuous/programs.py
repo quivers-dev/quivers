@@ -51,6 +51,7 @@ from typing import Protocol, cast
 import torch
 from torch import nn
 
+from quivers.continuous._closed_probability import _check_trial_count_source
 from quivers.continuous.morphisms import (
     AnySpace,
     ContinuousMorphism,
@@ -304,9 +305,10 @@ def _check_scan(step: Scan) -> MonadicProgram:
 def _parameter_dtype(parts: Sequence[torch.Tensor]) -> torch.dtype:
     """The floating dtype stacked parameters are carried in.
 
-    The widest floating dtype among the parts, so a float64 program
-    stays float64; the default floating dtype when every part is an
-    integer or boolean index.
+    The widest floating dtype among the parts, with integer parameters
+    carried in float64 so packing them beside a floating probability
+    does not round trial counts to float32. Boolean parameters use the
+    default floating dtype when no floating parameter is present.
 
     Parameters
     ----------
@@ -319,11 +321,17 @@ def _parameter_dtype(parts: Sequence[torch.Tensor]) -> torch.dtype:
         The dtype every part is converted to.
     """
     floating = [t.dtype for t in parts if t.is_floating_point()]
-    if not floating:
-        return torch.get_default_dtype()
-    dtype = floating[0]
+    integer = any(
+        not part.is_floating_point()
+        and not part.is_complex()
+        and part.dtype != torch.bool
+        for part in parts
+    )
+    dtype = floating[0] if floating else torch.get_default_dtype()
     for other in floating[1:]:
         dtype = torch.promote_types(dtype, other)
+    if integer:
+        dtype = torch.promote_types(dtype, torch.float64)
     return dtype
 
 
@@ -812,6 +820,18 @@ class MonadicProgram(ContinuousMorphism):
         event_ranks = getattr(morph, "_param_event_ranks", None)
         param_spec = getattr(morph, "_param_spec", None)
         if event_ranks is not None and param_spec is not None:
+            integer_parameters = getattr(
+                getattr(morph, "_family", morph), "_param_integers", ()
+            )
+            if integer_parameters:
+                variables = iter(parts)
+                for (kind, _), integer in zip(
+                    param_spec, integer_parameters, strict=True
+                ):
+                    if kind == "var":
+                        value = next(variables)
+                        if integer:
+                            _check_trial_count_source(value)
             var_ranks = tuple(
                 event_ranks[i] for i, (k, _) in enumerate(param_spec) if k == "var"
             )

@@ -77,11 +77,26 @@ class TestConditionalBetaBinomial:
         with pytest.raises(NotImplementedError, match="rsample is not supported"):
             f.rsample(torch.tensor([0, 1]))
 
-    def test_rejects_nonpositive_total_count(self) -> None:
+    @pytest.mark.parametrize("count", [-1, 0.5, True])
+    def test_rejects_invalid_total_count(self, count) -> None:
         a = FinSet(name="A", cardinality=2)
         y = Euclidean(name="y", dim=1)
-        with pytest.raises(ValueError, match="total_count must be >= 1"):
-            ConditionalBetaBinomial(a, y, total_count=0)
+        with pytest.raises(ValueError, match="total_count"):
+            ConditionalBetaBinomial(a, y, total_count=count)
+
+    def test_zero_total_count_is_a_point_mass_at_zero(self) -> None:
+        a = FinSet(name="A", cardinality=2)
+        y = Euclidean(name="y", dim=1)
+        family = ConditionalBetaBinomial(a, y, total_count=0)
+        inputs = torch.tensor([0, 1])
+        density = family.log_prob(inputs, torch.zeros(2, 1))
+        assert density.eq(0).all()
+        assert family.sample(inputs).eq(0).all()
+        density.sum().backward()
+        assert all(
+            parameter.grad is not None and parameter.grad.eq(0).all()
+            for parameter in family.parameters()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -372,10 +387,15 @@ class TestFamilyMetaWiring:
             "InverseGaussian",
             "HurdleGamma",
             "HurdleLogNormal",
+            "ZeroInflatedNegativeBinomial",
+            "ZeroInflatedBinomial",
+            "ZeroInflatedBetaBinomial",
+            "HurdleNegativeBinomial",
         }
         assert added <= FAMILY_META.keys()
         for family in added:
             meta = FAMILY_META[family]
             assert meta.distribution_class.__name__ == family
             assert meta.quivers_class.__name__ == f"Conditional{family}"
-        assert len(FAMILY_META) == 65
+        assert "GP" in FAMILY_META
+        assert len(FAMILY_META) == 70

@@ -236,7 +236,9 @@ class Let(Step):
     """
 
     name: str
-    value: float | str | StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    value: int | float | str | StepFunction = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     kind: Literal["let"] = "let"
 
 

@@ -15,6 +15,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 VSCODE = ROOT / "editors" / "vscode-qvr"
 ZED = ROOT / "editors" / "zed-extension-qvr"
+COUNT_FAMILIES = (
+    "ZeroInflatedNegativeBinomial",
+    "ZeroInflatedBinomial",
+    "ZeroInflatedBetaBinomial",
+    "HurdleNegativeBinomial",
+)
 
 
 def _repository() -> dict[str, object]:
@@ -76,6 +82,49 @@ def test_checked_weight_builtins_are_repl_completion_candidates(name: str) -> No
     )
 
 
+@pytest.mark.parametrize("name", COUNT_FAMILIES)
+def test_count_families_are_repl_and_lsp_completion_candidates(name: str) -> None:
+    from lsprotocol import types as lsp
+
+    from quivers.cli.repl_complete import all_completions
+    from quivers.cli.repl_session import ReplSession
+    from quivers.lsp.server import build_server
+    from tests.transpile.fixtures._generate_families import (
+        _INLINE_OBSERVE,
+        _inline_observe_source,
+    )
+
+    prefix = name[:10]
+    assert any(
+        item.text == name and item.kind == "type"
+        for item in all_completions(ReplSession(), prefix)
+    )
+    source = _inline_observe_source(name, _INLINE_OBSERVE[name])
+    fixture = ROOT / f"tests/transpile/fixtures/families/{name.lower()}.qvr"
+    assert fixture.read_text() == source
+    server = build_server()
+    server.text_document_publish_diagnostics = lambda params: None
+    uri = f"file:///tmp/{name}.qvr"
+    server.protocol.fm.features[lsp.TEXT_DOCUMENT_DID_OPEN](
+        lsp.DidOpenTextDocumentParams(
+            text_document=lsp.TextDocumentItem(
+                uri=uri, language_id="qvr", version=1, text=source
+            )
+        )
+    )
+    line = source.splitlines()[4]
+    completion = server.protocol.fm.features[lsp.TEXT_DOCUMENT_COMPLETION](
+        lsp.CompletionParams(
+            text_document=lsp.TextDocumentIdentifier(uri=uri),
+            position=lsp.Position(line=4, character=line.index(name) + len(prefix)),
+        )
+    )
+    assert any(
+        item.label == name and item.kind == lsp.CompletionItemKind.Class
+        for item in completion.items
+    )
+
+
 def test_zed_uses_an_immutable_grammar_revision() -> None:
     manifest = tomllib.loads((ZED / "extension.toml").read_text())
     revision = manifest["grammars"]["qvr"]["rev"]
@@ -134,6 +183,14 @@ _CORPUS = (
     "    return observation_weight(w)\n"
     "define scaled(w : Real, ell : Real) : Real !{} =\n"
     "    return weight_value(scale_weight(w, weight(ell)))\n"
+    "\n"
+    "object CountRow : FinSet 2\n"
+    "program counts : CountRow -> CountRow\n"
+    "    observe a : CountRow <- ZeroInflatedNegativeBinomial(zero_prob=0.2, total_count=2.0, probs=0.5)\n"
+    "    observe b : CountRow <- ZeroInflatedBinomial(zero_prob=0.2, total_count=4.0, probs=0.5)\n"
+    "    observe c : CountRow <- ZeroInflatedBetaBinomial(zero_prob=0.2, total_count=4.0, concentration1=2.0, concentration0=2.0)\n"
+    "    observe d : CountRow <- HurdleNegativeBinomial(zero_prob=0.2, total_count=2.0, probs=0.5)\n"
+    "    return a\n"
 )
 
 #: Each token of interest by position, with the class every highlighter
@@ -164,6 +221,10 @@ _EXPECTED: dict[tuple[int, str], str] = {
     (20, "return"): "keyword",
     (23, "observation_weight"): "function",
     (25, "scale_weight"): "function",
+    (29, "ZeroInflatedNegativeBinomial"): "type",
+    (30, "ZeroInflatedBinomial"): "type",
+    (31, "ZeroInflatedBetaBinomial"): "type",
+    (32, "HurdleNegativeBinomial"): "type",
 }
 
 #: The tree-sitter capture names and Pygments token families that stand
@@ -334,6 +395,9 @@ def test_highlighters_classify_the_corpus_alike() -> None:
         textmate
     )
     assert {(23, "observation_weight"), (25, "scale_weight")} <= set(textmate)
+    assert {(29 + index, name) for index, name in enumerate(COUNT_FAMILIES)} <= set(
+        textmate
+    )
 
 
 def test_docs_highlighter_uses_the_authoritative_lexer() -> None:

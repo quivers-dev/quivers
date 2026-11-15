@@ -2485,7 +2485,9 @@ class BUGSRenderer(RendererBase):
         """
         if isinstance(arg, IRArgNumber):
             return _IndexPiece.number(
-                str(int(arg.value)) if arg.value.is_integer() else repr(arg.value)
+                str(int(arg.value))
+                if isinstance(arg.value, int) or arg.value.is_integer()
+                else repr(arg.value)
             )
         if isinstance(arg, IRArgRef):
             inner_plate = ctx.decl_plates.get(arg.name)

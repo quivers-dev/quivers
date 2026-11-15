@@ -879,7 +879,7 @@ def fit(
                 observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
                     list(codes), dtype=torch.long
                 )
-        if family_obj.name in {"binomial", "beta_binomial"}:
+        if family_obj.trials_parameter is not None:
             trials = _binomial_trial_tensor(
                 data, binomial_trials, n_obs=parsed.response_values.shape[0]
             )
@@ -1126,7 +1126,7 @@ def _formula_lens(
     parameter_formulas = _parse_distributional(
         distributional, data, parsed.response_name
     )
-    if family_obj.name in {"binomial", "beta_binomial"}:
+    if family_obj.trials_parameter is not None:
         trials = _binomial_trial_tensor(
             data, binomial_trials, n_obs=parsed.response_values.shape[0]
         )
@@ -1308,32 +1308,67 @@ def _binomial_trial_tensor(
     *,
     n_obs: int,
 ) -> torch.Tensor:
-    if isinstance(trials, bool):
-        raise ValueError("binomial_trials must be a positive integer or a column name")
+    """Validate nonnegative binomial trials exactly representable in float64.
+
+    Parameters
+    ----------
+    data : IntoDataFrame
+        Rows containing an optional trial-count column.
+    trials : int or str
+        Shared nonnegative count or trial-count column name.
+    n_obs : int
+        Required number of rows.
+
+    Returns
+    -------
+    torch.Tensor
+        One signed-64-bit count per row, including zero-trial rows.
+
+    Raises
+    ------
+    ValueError
+        If counts are missing, negative, Boolean, fractional, nonfinite,
+        nonnumeric, or greater than ``2**53``, the exact integer limit of
+        the native float64 count distributions.
+    """
+    if isinstance(trials, bool) or not isinstance(trials, (int, str)):
+        raise ValueError(
+            "binomial_trials must be a nonnegative integer or a column name"
+        )
     if isinstance(trials, int):
-        if trials < 1:
-            raise ValueError("binomial_trials must be at least one")
+        if trials < 0 or trials > 2**53:
+            raise ValueError(
+                "binomial_trials must be a nonnegative integer at most 2**53"
+            )
         return torch.full((n_obs,), trials, dtype=torch.long)
     frame = nw.from_native(data, eager_only=True)
     if trials not in frame.columns:
         raise ValueError(f"binomial_trials column {trials!r} is not in the data")
-    values = torch.as_tensor(frame[trials].to_numpy().copy()).reshape(-1)
+    column = frame[trials].to_numpy()
+    if column.dtype.kind not in "iuf":
+        raise ValueError("binomial_trials must contain nonnegative finite integers")
+    if (column > 2**53).any():
+        raise ValueError("binomial_trials must contain integers at most 2**53")
+    try:
+        values = torch.as_tensor(column.copy()).reshape(-1)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(
+            "binomial_trials must contain supported real numeric values"
+        ) from error
     if values.shape[0] != n_obs:
         raise ValueError(
             f"binomial_trials column has {values.shape[0]} rows, expected {n_obs}"
         )
-    if values.dtype == torch.bool or values.is_complex():
-        raise ValueError("binomial_trials must contain positive finite integers")
     if values.is_floating_point():
-        if not torch.isfinite(values).all() or torch.any(values < 1):
-            raise ValueError("binomial_trials must contain positive finite integers")
+        if not torch.isfinite(values).all() or torch.any(values < 0):
+            raise ValueError("binomial_trials must contain nonnegative finite integers")
         if not torch.equal(values, values.round()):
             raise ValueError("binomial_trials must contain integers")
-        if torch.any(values >= 2**63):
-            raise ValueError("binomial_trials must fit in a signed 64-bit integer")
     integer_values = values.to(dtype=torch.long)
-    if torch.any(integer_values < 1):
-        raise ValueError("binomial_trials must contain positive signed 64-bit integers")
+    if torch.any(integer_values < 0):
+        raise ValueError(
+            "binomial_trials must contain nonnegative signed 64-bit integers"
+        )
     return integer_values
 
 

@@ -19,9 +19,12 @@ distribution built from ``probs`` from the probability itself:
 Each product of a count and a log probability is taken as zero where
 the count is zero, with a zero gradient there, so ``0 log 0 = 0``, the
 convention that makes the masses at the boundary probabilities the
-point masses the families tend to there. A distribution built from ``logits``
-is scored by torch's own logit path, which is exact for every finite
-logit. A ``total_count`` of zero is admitted, the point mass at zero.
+point masses the families tend to there. Finite logits are scored directly through their log probabilities. A ``total_count`` of zero is admitted, the point mass at zero.
+Binomial, negative-binomial, and Poisson parameters and count arithmetic
+use float64 and stable deviance/Stirling corrections: subtracting large
+log-gamma terms can otherwise give a positive log probability. Finite
+binomial trial counts are restricted to exactly representable integers
+through 2**53.
 
 References
 ----------
@@ -37,6 +40,252 @@ from typing import cast
 import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
+
+
+_MAX_EXACT_TRIALS = 2**53
+
+
+def _check_trial_count_source(total_count) -> None:
+    """Reject integer trial inputs that a float64 count kernel cannot preserve.
+
+    Parameters
+    ----------
+    total_count : torch.Tensor or int or float
+        Source trial count, before a floating-point conversion.
+
+    Raises
+    ------
+    ValueError
+        If an integer trial count exceeds 2**53.
+    TypeError
+        If trials use unsigned64 instead of the canonical signed integer dtype.
+    """
+    message = (
+        "native count trials must be <= 2**53 for exact float64 integer representation"
+    )
+    if isinstance(total_count, int):
+        if total_count > _MAX_EXACT_TRIALS:
+            raise ValueError(message)
+        return
+    if isinstance(total_count, torch.Tensor) and not total_count.is_floating_point():
+        if total_count.dtype == getattr(torch, "uint64", None):
+            raise TypeError("native trial tensors use signed64 integer counts")
+        if total_count.dtype == torch.int64 and bool(
+            (total_count > _MAX_EXACT_TRIALS).any()
+        ):
+            raise ValueError(message)
+
+
+def _require_sample_capacity(value: torch.Tensor) -> torch.Tensor:
+    """Refuse sampler values beyond exact float64 integer capacity.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        Generated intensities or count samples.
+
+    Returns
+    -------
+    torch.Tensor
+        The unchanged representable values.
+
+    Raises
+    ------
+    RuntimeError
+        If a value is negative, nonfinite, or exceeds 2**53. This is an
+        operational failure, not truncation or conditioning of the law.
+    """
+    if not bool(
+        (torch.isfinite(value) & (value >= 0) & (value <= _MAX_EXACT_TRIALS)).all()
+    ):
+        raise RuntimeError(
+            "count sampling exceeds the exact float64 integer capacity 2**53"
+        )
+    return value
+
+
+def _sample_poisson_exact(rate: torch.Tensor) -> torch.Tensor:
+    """Draw Poisson counts after checking intensity and output capacity.
+
+    Parameters
+    ----------
+    rate : torch.Tensor
+        Nonnegative Poisson intensities.
+
+    Returns
+    -------
+    torch.Tensor
+        Float64 integer-valued samples on the input device.
+
+    Raises
+    ------
+    RuntimeError
+        If an intensity or draw exceeds the sampler's exact integer capacity.
+    """
+    rate = _require_sample_capacity(rate.to(torch.float64))
+    return _require_sample_capacity(torch.poisson(rate))
+
+
+def _stirling_error(x: torch.Tensor) -> torch.Tensor:
+    """Evaluate the log-factorial Stirling correction without large subtraction.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Strictly positive real counts.
+
+    Returns
+    -------
+    torch.Tensor
+        ``lgamma(x+1) - (x+.5)*log(x) + x - log(2*pi)/2``.
+    """
+    large = x > 15
+    small_x = torch.where(large, torch.ones_like(x), x)
+    exact = (
+        torch.lgamma(small_x + 1)
+        - (small_x + 0.5) * small_x.log()
+        + small_x
+        - 0.91893853320467274178
+    )
+    inverse = 1 / torch.where(large, x, torch.full_like(x, 16))
+    square = inverse.square()
+    series = inverse * (
+        1 / 12
+        - square * (1 / 360 - square * (1 / 1260 - square * (1 / 1680 - square / 1188)))
+    )
+    return torch.where(large, series, exact)
+
+
+def _deviance(x: torch.Tensor, log_expected: torch.Tensor) -> torch.Tensor:
+    """Evaluate Poisson deviance with a convergent series near its minimum.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Strictly positive observed counts.
+    log_expected : torch.Tensor
+        Logarithm of the positive expected counts.
+
+    Returns
+    -------
+    torch.Tensor
+        ``x*log(x/expected) + expected - x`` with stable central values.
+    """
+    expected = log_expected.exp()
+    difference = x - expected
+    near = difference.abs() < 0.1 * (x + expected)
+    direct_x = torch.where(near, torch.ones_like(x), x)
+    direct_log = torch.where(near, torch.zeros_like(log_expected), log_expected)
+    direct = direct_x * (direct_x.log() - direct_log) + direct_log.exp() - direct_x
+    v = torch.where(near, difference / (x + expected), torch.zeros_like(x))
+    square = v.square()
+    polynomial = 1 / 21
+    for denominator in range(19, 2, -2):
+        polynomial = 1 / denominator + square * polynomial
+    series = difference * v + 2 * x * v * square * polynomial
+    return torch.where(near, series, direct)
+
+
+def _binomial_log_mass(
+    k: torch.Tensor, n: torch.Tensor, log_p: torch.Tensor, log_q: torch.Tensor
+) -> torch.Tensor:
+    """Score a binomial without subtracting extensive log-gamma terms.
+
+    Parameters
+    ----------
+    k : torch.Tensor
+        Counts in the trial support.
+    n : torch.Tensor
+        Nonnegative trial counts.
+    log_p : torch.Tensor
+        Finite log success probabilities.
+    log_q : torch.Tensor
+        Finite log failure probabilities.
+
+    Returns
+    -------
+    torch.Tensor
+        Stable double-precision log masses.
+    """
+    interior = (k > 0) & (k < n)
+    a = torch.where(interior, k, torch.ones_like(k))
+    b = torch.where(interior, n - k, torch.ones_like(k))
+    total = a + b
+    result = (
+        _stirling_error(total)
+        - _stirling_error(a)
+        - _stirling_error(b)
+        - _deviance(a, total.log() + log_p)
+        - _deviance(b, total.log() + log_q)
+        - 0.5 * (1.83787706640934548356 + a.log() + b.log() - total.log())
+    )
+    boundary = torch.where(k == 0, n * log_q, n * log_p)
+    return torch.where(interior, result, boundary)
+
+
+def _negative_binomial_log_mass(
+    k: torch.Tensor, r: torch.Tensor, log_p: torch.Tensor, log_q: torch.Tensor
+) -> torch.Tensor:
+    """Score positive negative-binomial counts through stable deviance terms.
+
+    Parameters
+    ----------
+    k : torch.Tensor
+        Strictly positive observed counts.
+    r : torch.Tensor
+        Strictly positive shape parameters.
+    log_p : torch.Tensor
+        Finite log success probabilities.
+    log_q : torch.Tensor
+        Finite log failure probabilities.
+
+    Returns
+    -------
+    torch.Tensor
+        Negative-binomial log masses without extensive gamma subtraction.
+    """
+    log_k, log_r = k.log(), r.log()
+    log_total = torch.logaddexp(log_k, log_r)
+    log_ratio = torch.logaddexp(torch.zeros_like(log_k), log_k - log_r)
+    return (
+        _stirling_error(k + r)
+        - _stirling_error(k)
+        - _stirling_error(r)
+        - _deviance(k, log_total + log_p)
+        - _deviance(r, log_total + log_q)
+        - 0.5 * (1.83787706640934548356 + log_k + log_ratio)
+    )
+
+
+def _log_gamma_increment(x: torch.Tensor, increment: torch.Tensor) -> torch.Tensor:
+    """Evaluate ``lgamma(x+increment)-lgamma(x)`` without large cancellation.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Positive gamma argument.
+    increment : torch.Tensor
+        Shift with ``x+increment > 0``.
+
+    Returns
+    -------
+    torch.Tensor
+        Stable difference, including gradients of the shift.
+    """
+    large = (x > 16) & (x + increment > 16)
+    direct_x = torch.where(large, torch.ones_like(x), x)
+    direct_shift = torch.where(large, torch.zeros_like(increment), increment)
+    direct = torch.lgamma(direct_x + direct_shift) - torch.lgamma(direct_x)
+    large_x = torch.where(large, x, torch.full_like(x, 17))
+    shift = torch.where(large, increment, torch.zeros_like(increment))
+    asymptotic = (
+        shift * large_x.log()
+        + (large_x + shift - 0.5) * torch.log1p(shift / large_x)
+        - shift
+        + _stirling_error(large_x + shift)
+        - _stirling_error(large_x)
+    )
+    return torch.where(large, asymptotic, direct)
 
 
 def _out_of_support(value: torch.Tensor, total: torch.Tensor) -> torch.Tensor:
@@ -190,6 +439,10 @@ class ClosedBinomial(D.Binomial):
         Whether to validate arguments and samples.
     """
 
+    arg_constraints = dict(D.Binomial.arg_constraints) | {
+        "total_count": _constraints.integer_interval(0, _MAX_EXACT_TRIALS)
+    }
+
     def __init__(
         self,
         total_count: torch.Tensor | int = 1,
@@ -197,9 +450,16 @@ class ClosedBinomial(D.Binomial):
         logits: torch.Tensor | None = None,
         validate_args: bool | None = None,
     ) -> None:
+        _check_trial_count_source(total_count)
+        probs = None if probs is None else probs.to(torch.float64)
+        logits = None if logits is None else logits.to(torch.float64)
+        parameter = probs if probs is not None else logits
+        total_count = torch.as_tensor(
+            total_count,
+            dtype=torch.float64,
+            device=None if parameter is None else parameter.device,
+        )
         super().__init__(
-            # The type checker reads torch's `total_count` as `int`; the
-            # constructor broadcasts a tensor of trial counts as well.
             total_count=cast(int, total_count),
             probs=probs,
             logits=logits,
@@ -227,27 +487,48 @@ class ClosedBinomial(D.Binomial):
             nonnegative integer.
         """
         probs = self._closed_probs
-        if probs is None:
-            return super().log_prob(value)
         if self._validate_args:
             _require_counts(value)
-        value, total, probs = torch.broadcast_tensors(
-            value.to(probs.dtype), torch.as_tensor(self.total_count), probs
+        value, total = torch.broadcast_tensors(
+            value.to(torch.float64), self.total_count
         )
         outside = _out_of_support(value, total)
-        inside_value = torch.where(outside, torch.zeros_like(value), value)
-        inside_total = torch.where(outside, torch.zeros_like(total), total)
-        log_choose = (
-            torch.lgamma(inside_total + 1.0)
-            - torch.lgamma(inside_value + 1.0)
-            - torch.lgamma(inside_total - inside_value + 1.0)
+        k = torch.where(outside, torch.zeros_like(value), value)
+        if probs is None:
+            log_p = torch.nn.functional.logsigmoid(self.logits)
+            log_q = torch.nn.functional.logsigmoid(-self.logits)
+            result = _binomial_log_mass(k, total, log_p, log_q)
+        else:
+            interior_p = (probs > 0) & (probs < 1)
+            safe = torch.where(interior_p, probs, torch.full_like(probs, 0.5))
+            stable = _binomial_log_mass(k, total, safe.log(), torch.log1p(-safe))
+            endpoint = _count_log(k, probs) + _count_log_complement(total - k, probs)
+            result = torch.where(interior_p, stable, endpoint)
+        return torch.where(outside, torch.full_like(result, -torch.inf), result)
+
+    def expand(self, batch_shape, _instance=None):
+        """Retain probability-endpoint state through batch expansion.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size or Sequence[int]
+            Requested broadcast batch shape.
+        _instance : ClosedBinomial or None
+            Optional PyTorch instance.
+
+        Returns
+        -------
+        ClosedBinomial
+            Expanded distribution with float64 count arithmetic.
+        """
+        new = self._get_checked_instance(type(self), _instance)
+        super().expand(batch_shape, new)
+        new._closed_probs = (
+            None
+            if self._closed_probs is None
+            else self._closed_probs.expand(batch_shape)
         )
-        log_mass = (
-            log_choose
-            + _count_log(inside_value, probs)
-            + _count_log_complement(inside_total - inside_value, probs)
-        )
-        return torch.where(outside, torch.full_like(log_mass, -torch.inf), log_mass)
+        return new
 
 
 class ClosedNegativeBinomial(D.NegativeBinomial):
@@ -278,6 +559,14 @@ class ClosedNegativeBinomial(D.NegativeBinomial):
         logits: torch.Tensor | None = None,
         validate_args: bool | None = None,
     ) -> None:
+        probs = None if probs is None else probs.to(torch.float64)
+        logits = None if logits is None else logits.to(torch.float64)
+        parameter = probs if probs is not None else logits
+        total_count = torch.as_tensor(
+            total_count,
+            dtype=torch.float64,
+            device=None if parameter is None else parameter.device,
+        )
         super().__init__(
             total_count=total_count,
             probs=probs,
@@ -299,34 +588,114 @@ class ClosedNegativeBinomial(D.NegativeBinomial):
         torch.Tensor
             The log masses, ``-inf`` below zero.
         """
-        probs = self._closed_probs
-        if probs is None:
-            return super().log_prob(value)
         if self._validate_args:
             self._validate_sample(value)
-        value, total, probs = torch.broadcast_tensors(
-            value.to(probs.dtype), torch.as_tensor(self.total_count), probs
+        value, total = torch.broadcast_tensors(
+            value.to(torch.float64), self.total_count
         )
-        negative = value < 0
-        count = torch.where(negative, torch.zeros_like(value), value)
-        # The normalizer Gamma(r + k) / (Gamma(k + 1) Gamma(r)) is one at
-        # r = k = 0, where its log is the indeterminate inf - inf.
-        degenerate = (total + count) == 0
-        safe_total = torch.where(degenerate, torch.ones_like(total), total)
-        log_normalizer = (
-            torch.lgamma(safe_total + count)
-            - torch.lgamma(count + 1.0)
-            - torch.lgamma(safe_total)
+        positive = (value > 0) & (total > 0)
+        k = torch.where(positive, value, torch.ones_like(value))
+        r = torch.where(positive, total, torch.ones_like(total))
+        probs = self._closed_probs
+        if probs is None:
+            log_p = torch.nn.functional.logsigmoid(self.logits)
+            log_q = torch.nn.functional.logsigmoid(-self.logits)
+        else:
+            interior = probs > 0
+            safe_p = torch.where(interior, probs, torch.full_like(probs, 0.5))
+            log_p, log_q = safe_p.log(), torch.log1p(-safe_p)
+        stable = _negative_binomial_log_mass(k, r, log_p, log_q)
+        if probs is not None:
+            stable = torch.where(probs > 0, stable, -torch.inf)
+            zero = _count_log_complement(total, probs)
+        else:
+            zero = total * log_q
+        result = torch.where(
+            value == 0, zero, torch.where(positive, stable, -torch.inf)
         )
-        log_normalizer = torch.where(
-            degenerate, torch.zeros_like(log_normalizer), log_normalizer
+        return result
+
+    @property
+    def mean(self) -> torch.Tensor:
+        """Expected successes with the exact p=0 endpoint.
+
+        Returns
+        -------
+        torch.Tensor
+            Float64 negative-binomial mean.
+        """
+        if self._closed_probs is None:
+            return super().mean
+        return self.total_count * self._closed_probs / (1 - self._closed_probs)
+
+    @property
+    def variance(self) -> torch.Tensor:
+        """Response variance with the exact p=0 endpoint.
+
+        Returns
+        -------
+        torch.Tensor
+            Float64 negative-binomial variance.
+        """
+        if self._closed_probs is None:
+            return super().variance
+        return self.mean / (1 - self._closed_probs)
+
+    def expand(self, batch_shape, _instance=None):
+        """Retain exact probability endpoints through expansion.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size or Sequence[int]
+            Requested broadcast batch shape.
+        _instance : ClosedNegativeBinomial or None
+            Optional PyTorch instance.
+
+        Returns
+        -------
+        ClosedNegativeBinomial
+            Expanded distribution retaining its closed probability parameter.
+        """
+        new = self._get_checked_instance(type(self), _instance)
+        super().expand(batch_shape, new)
+        new._closed_probs = (
+            None
+            if self._closed_probs is None
+            else self._closed_probs.expand(batch_shape)
         )
-        log_mass = (
-            log_normalizer
-            + _count_log_complement(total, probs)
-            + _count_log(count, probs)
-        )
-        return torch.where(negative, torch.full_like(log_mass, -torch.inf), log_mass)
+        return new
+
+    def sample(self, sample_shape=torch.Size()):
+        """Draw gamma-Poisson counts using true closed probabilities.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size or Sequence[int]
+            Sample dimensions prepended to the batch.
+
+        Returns
+        -------
+        torch.Tensor
+            Float64 counts, exactly zero at zero shape or probability.
+        """
+        with torch.no_grad():
+            shape = self._extended_shape(sample_shape)
+            total = self.total_count.expand(shape)
+            if self._closed_probs is None:
+                active = total > 0
+                gamma_rate = torch.ones_like(total)
+                gamma_scale = self.logits.exp().expand(shape)
+            else:
+                probability = self._closed_probs.expand(shape)
+                active = (total > 0) & (probability > 0)
+                safe_probability = torch.where(active, probability, 0.5)
+                gamma_rate = (1 - safe_probability) / safe_probability
+                gamma_scale = torch.ones_like(total)
+            safe_total = torch.where(active, total, 1.0)
+            safe_rate = torch.where(active, gamma_rate, 1.0)
+            intensity = D.Gamma(safe_total, safe_rate).sample() * gamma_scale
+            intensity = torch.where(active, intensity, 0.0)
+            return _sample_poisson_exact(intensity)
 
 
 class ClosedPoisson(D.Poisson):
@@ -345,6 +714,36 @@ class ClosedPoisson(D.Poisson):
         Whether to validate arguments and samples.
     """
 
+    def __init__(
+        self, rate: torch.Tensor | float, validate_args: bool | None = None
+    ) -> None:
+        super().__init__(
+            torch.as_tensor(rate, dtype=torch.float64), validate_args=validate_args
+        )
+
+    def sample(self, sample_shape=torch.Size()):
+        """Draw counts within the sampler's exact integer representation.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size or Sequence[int]
+            Leading sample dimensions.
+
+        Returns
+        -------
+        torch.Tensor
+            Float64 integer-valued counts.
+
+        Raises
+        ------
+        RuntimeError
+            If an intensity or sample exceeds 2**53.
+        """
+        with torch.no_grad():
+            return _sample_poisson_exact(
+                self.rate.expand(self._extended_shape(sample_shape))
+            )
+
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         """The log mass at a count.
 
@@ -361,7 +760,16 @@ class ClosedPoisson(D.Poisson):
         if self._validate_args:
             self._validate_sample(value)
         value, rate = torch.broadcast_tensors(value.to(self.rate.dtype), self.rate)
-        return _count_log(value, rate) - rate - torch.lgamma(value + 1.0)
+        positive = value > 0
+        k = torch.where(positive, value, torch.ones_like(value))
+        safe_rate = torch.where(rate > 0, rate, torch.ones_like(rate))
+        stable = (
+            -_stirling_error(k)
+            - 0.5 * (1.83787706640934548356 + k.log())
+            - _deviance(k, safe_rate.log())
+        )
+        stable = torch.where(rate > 0, stable, -torch.inf)
+        return torch.where(positive, stable, -rate)
 
 
 __all__ = [

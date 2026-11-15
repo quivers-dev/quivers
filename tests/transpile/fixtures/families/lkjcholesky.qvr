@@ -1,0 +1,7 @@
+# Matrix event axes are distinct from the response plate.
+object Obs : FinSet 3
+object Dim : FinSet 2
+program lkjcholesky_fixture : Obs -> Obs
+    observe y : Obs <- LKJCholesky(concentration=2.0) [over=[Dim, Dim]]
+    return y
+export lkjcholesky_fixture

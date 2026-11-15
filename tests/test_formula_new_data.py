@@ -266,7 +266,7 @@ def test_fresh_binomial_trials_are_counts_not_probabilities(family):
     fresh = pd.DataFrame({"n": [1, 7, 3]})
     torch.testing.assert_close(
         result.posterior_epred(new_data=fresh),
-        torch.tensor([0.5, 3.5, 1.5]).expand(2, 3, 3),
+        torch.tensor([0.5, 3.5, 1.5], dtype=torch.float64).expand(2, 3, 3),
     )
     sample = result.posterior_predict(new_data=fresh, seed=8)
     assert sample.shape == (2, 3, 3)

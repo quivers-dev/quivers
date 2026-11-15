@@ -172,7 +172,13 @@ def validate_program_application(
                 if (
                     isinstance(parameter, QiecIndexBinder)
                     and isinstance(argument, DrawArgScalar)
-                    and (argument.value < 0 or not argument.value.is_integer())
+                    and (
+                        argument.value < 0
+                        or (
+                            isinstance(argument.value, float)
+                            and not argument.value.is_integer()
+                        )
+                    )
                 ):
                     raise TemplateError(
                         f"static index {parameter.name!r} requires a natural number"
@@ -187,7 +193,10 @@ def draw_argument_expression(argument: DrawArg) -> LetExprNode:
     """Represent a value argument with the existing pure expression tree."""
     if isinstance(argument, DrawArgScalar):
         return LetExprLiteral(
-            value=argument.value, line=argument.line, col=argument.col
+            value=argument.value,
+            integral=isinstance(argument.value, int),
+            line=argument.line,
+            col=argument.col,
         )
     if isinstance(argument, DrawArgName):
         if argument.text in {"true", "false"}:
@@ -205,7 +214,7 @@ def draw_argument_expression(argument: DrawArg) -> LetExprNode:
 
         def index_expression(index: str) -> LetExprNode:
             try:
-                return LetExprLiteral(value=int(index))
+                return LetExprLiteral(value=int(index), integral=True)
             except ValueError:
                 return LetExprVar(name=index)
 
@@ -646,8 +655,8 @@ def _argument_name(
     if isinstance(replacement, LetExprVar):
         return replacement.name
     if index and isinstance(replacement, LetExprLiteral):
-        numeric = float(replacement.value)
-        if numeric.is_integer():
+        numeric = replacement.value
+        if isinstance(numeric, int) or numeric.is_integer():
             return str(int(numeric))
     raise TemplateError(f"indexed parameter {name!r} requires a named value")
 
@@ -673,9 +682,7 @@ def _draw_argument(value: LetExprNode, argument: DrawArgName) -> DrawArg:
         If the expression is neither.
     """
     if isinstance(value, LetExprLiteral):
-        return DrawArgScalar(
-            value=float(value.value), line=argument.line, col=argument.col
-        )
+        return DrawArgScalar(value=value.value, line=argument.line, col=argument.col)
     if isinstance(value, LetExprVar):
         return DrawArgName(text=value.name, line=argument.line, col=argument.col)
     raise TemplateError(

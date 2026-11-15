@@ -80,12 +80,24 @@ by the body. Later parameter types may refer to earlier static parameters, so a
 signature can express that two inputs have the same shape. A typed value
 parameter is not by itself a request to specialize a template.
 
+A static `Nat` is an index extent, not a runtime integer term. A family
+argument such as `Binomial(total_count=n, probs=p)` thus needs
+`n` as a runtime value, for instance `(n : Nat)`. The current checker
+does not implicitly convert `[n : Nat]` into a scalar value for that call.
+
 For instance, `program model[Row : FinSet](x : Tensor[Real]([Row])) : Row -> Out`
 abstracts over a finite row object and receives a tensor over that object.
 `model[Rows](values)` supplies the object separately from its values. A scalar
 hyperparameter, such as `scale : Real`, belongs in the runtime list even when a
 caller happens to supply a literal. The [parameter reference](index.md#parameter-telescopes)
 explains this convention across declarations and its distinction from family indices.
+
+Source program calls currently accept names or signed numeric literals as
+static actuals, as in `model[Rows](values)` or `prior[3]()`. The signature's
+kinds then check those actuals. Arbitrary structured types, applied effects,
+or index-constructor expressions are not accepted in that program-call
+position, even when the shared checked telescope can represent their sorts.
+Typed `define` calls retain their own QIEC static-argument syntax.
 
 A runtime `(count : Nat)` accepts a nonnegative integer. The checked program
 retains that restriction alongside its integer arithmetic type, and both native

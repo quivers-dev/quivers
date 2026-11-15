@@ -229,6 +229,17 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
             td.Normal(_tensor(arguments["loc"]), _tensor(arguments["scale"])),
         )
         return float(distribution.log_prob(_tensor(point)))
+    if family == "GeneralizedPareto":
+        from scipy.stats import genpareto
+
+        return float(
+            genpareto.logpdf(
+                point,
+                arguments["concentration"],
+                loc=arguments["loc"],
+                scale=arguments["scale"],
+            )
+        )
     return float(_torch_class(family, **arguments).log_prob(_tensor(point)))
 
 
@@ -256,6 +267,10 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     "InverseGamma": ({"concentration": 3.0, "rate": 2.0}, (0.4, 1.5)),
     "Weibull": ({"scale": 2.0, "concentration": 1.5}, (0.5, 2.5)),
     "Pareto": ({"scale": 1.0, "alpha": 2.5}, (1.5, 4.0)),
+    "GeneralizedPareto": (
+        {"loc": -0.5, "scale": 1.3, "concentration": 0.2},
+        (0.0, 3.0),
+    ),
     "Kumaraswamy": ({"concentration1": 2.0, "concentration0": 3.0}, (0.3, 0.8)),
     "ContinuousBernoulli": ({"probs": 0.3}, (0.2, 0.9)),
     "FisherSnedecor": ({"df1": 4.0, "df2": 6.0}, (0.5, 2.0)),
@@ -379,6 +394,27 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
         (-0.5, 1.2),
     ),
     "PointMass": ({"value": 0.75}, (0.75,)),
+    "ZeroInflatedNegativeBinomial": (
+        {"zero_prob": 0.3, "total_count": 1.7, "probs": 0.4},
+        (0, 1, 3),
+    ),
+    "ZeroInflatedBinomial": (
+        {"zero_prob": 0.3, "total_count": 5, "probs": 0.4},
+        (0, 1, 3),
+    ),
+    "ZeroInflatedBetaBinomial": (
+        {
+            "zero_prob": 0.3,
+            "total_count": 5,
+            "concentration1": 1.7,
+            "concentration0": 2.3,
+        },
+        (0, 1, 3),
+    ),
+    "HurdleNegativeBinomial": (
+        {"zero_prob": 0.3, "total_count": 1.7, "probs": 0.4},
+        (0, 1, 3),
+    ),
     "ZeroInflatedPoisson": ({"zero_prob": 0.3, "rate": 2.5}, (0, 3)),
     "HurdlePoisson": ({"zero_prob": 0.3, "rate": 2.5}, (0, 3)),
     "ZeroOneInflatedBeta": (

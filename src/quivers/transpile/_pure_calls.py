@@ -599,10 +599,10 @@ def _expression(
         return LetExprVar(name=value.local.name)
     if isinstance(value, LiteralValue):
         if isinstance(value.value, bool):
-            return LetExprLiteral(value=float(value.value), integral=True)
+            return LetExprLiteral(value=int(value.value), integral=True)
         if isinstance(value.value, int | float):
             return LetExprLiteral(
-                value=float(value.value), integral=isinstance(value.value, int)
+                value=value.value, integral=isinstance(value.value, int)
             )
         if isinstance(value.value, str):
             return LetExprString(value=value.value)
@@ -731,7 +731,7 @@ def _expression(
         # A component of a product, as the source subscripts a tuple.
         return LetExprIndex(
             array=_expression(value.value, cards, target, program),
-            indices=(LetExprLiteral(value=float(value.position)),),
+            indices=(LetExprLiteral(value=value.position, integral=True),),
         )
     raise UnsupportedConstruct(
         f"qvr-{target}",

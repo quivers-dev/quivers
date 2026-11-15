@@ -340,7 +340,11 @@ value. The built-in families:
 | `student_t` | identity | `nu ~ Gamma(2.0, 0.1)`, `sigma ~ HalfCauchy(2.0)` |
 | `cumulative` | logit on the cumulative probabilities (`OrderedLogistic`) | learned ordered cutpoints |
 | `zero_inflated_poisson` | log (exp) | `zi ~ Beta(2.0, 2.0)` |
+| `zero_inflated_negbinomial` | log for the component mean | `shape ~ Gamma(2.0, 2.0)`, `zi ~ Beta(2.0, 2.0)` |
+| `zero_inflated_binomial` | logit for the component success probability | known trial count, `zi ~ Beta(2.0, 2.0)` |
+| `zero_inflated_beta_binomial` | logit for the component success probability | known trial count, `phi ~ HalfCauchy(2.0)`, `zi ~ Beta(2.0, 2.0)` |
 | `hurdle_poisson` | log (exp) | `zi ~ Beta(2.0, 2.0)` |
+| `hurdle_negbinomial` | log for the untruncated component mean | `shape ~ Gamma(2.0, 2.0)`, `hu ~ Beta(2.0, 2.0)` |
 | `hurdle_gamma` | log | `shape`, `hu` (zero probability) |
 | `hurdle_lognormal` | identity | `sigma` (log-scale), `hu` (zero probability) |
 | `zero_inflated_beta` | logit | `phi` (precision), `zi` (zero probability) |
@@ -358,6 +362,64 @@ value. The built-in families:
 A new family is a [`Family`](../api/formulas/family.md#quivers.formulas.family.Family)
 value with its own observation family and link. The table's priors on auxiliary
 parameters are the library's defaults.
+
+### Zero-inflated and hurdle counts
+
+A zero-inflated count model adds a structural zero to a count distribution
+that can already produce zero. Its `zi` parameter is the probability of the
+structural zero, so the total zero probability also includes the component's
+zero mass. A hurdle model instead uses `hu` for the entire zero probability
+and conditions its count component to be positive. The existing
+`hurdle_poisson` interface currently calls this auxiliary `zi`; the
+negative-binomial hurdle interface uses `hu`.
+
+For `zero_inflated_negbinomial` and `hurdle_negbinomial`, the location
+predictor gives the untruncated negative-binomial mean $\mu$. The positive
+`shape` parameter gives variance $\mu+\mu^2/\mathrm{shape}$ before inflation
+or truncation. Native parameters are `total_count=shape` and
+`probs=mu/(mu+shape)`, using PyTorch's negative-binomial probability
+convention. The existing `negative_binomial` family calls this same
+dispersion auxiliary `disp`.
+
+`zero_inflated_binomial` and `zero_inflated_beta_binomial` use a success
+probability as location, with `binomial_trials` supplying the trial count.
+The beta-binomial additionally uses precision `phi`, giving component
+concentrations `mu*phi` and `(1-mu)*phi`. For instance, this model allows a
+separate predictor for the structural-zero probability:
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+count_data = pd.DataFrame({
+    "successes": [0, 1, 0, 2, 4],
+    "trials": [0, 4, 3, 5, 6],
+    "x": [-1.0, -0.5, 0.0, 0.5, 1.0],
+    "z": [0.2, -0.1, 0.4, 0.0, 0.5],
+})
+count_fit = fit(
+    "successes ~ x", data=count_data,
+    family="zero_inflated_beta_binomial", binomial_trials="trials",
+    distributional={"zi": "~ z"}, method="svi", num_steps=10, seed=7,
+)
+new_counts = pd.DataFrame({
+    "x": [-0.25, 0.75], "z": [0.1, 0.3], "trials": [0, 8],
+})
+counts_mean = count_fit.posterior_epred(new_data=new_counts, num_samples=5)
+counts_rep = count_fit.posterior_predict(new_data=new_counts, num_samples=5)
+assert counts_mean.shape == counts_rep.shape == (1, 5, 2)
+assert (counts_mean[..., 0] == 0).all()
+assert (counts_rep[..., 0] == 0).all()
+```
+
+Zero trials require a zero response and produce a zero prediction.
+For the three zero-inflated families, `posterior_epred` multiplies the
+component mean by `1-zi`. The hurdle negative-binomial expectation instead
+divides its component mean by the component's positive probability before
+multiplying by `1-hu`. `posterior_linpred(transform=True)` returns the
+component mean or success probability, not this mixture expectation.
+At native negative-binomial `probs=0`, the hurdle's positive component uses
+the limiting point mass at one; its full response expectation is `1-hu`.
 
 ### Response-time families
 
@@ -587,8 +649,9 @@ parameters must still lie in their distribution's support. Categorical models
 require softmax; cumulative ordinal models support logit and probit, which select
 `OrderedLogistic` and `OrderedProbit` respectively.
 
-For binomial and beta-binomial data, `binomial_trials` is either one common positive
-integer or the name of a data column with one count per row:
+For binomial, beta-binomial, and their zero-inflated variants,
+`binomial_trials` is either one common nonnegative integer or the name of a
+data column with one trial count per row:
 
 <!-- python: skip -->
 ```python
@@ -600,7 +663,21 @@ fit(
 )
 ```
 
-The emitted likelihood is `Binomial(trials, sigmoid(eta))`. The negative-binomial family
+Trial counts must satisfy `0 <= n <= 2**53`. This family-specific bound
+preserves exact integer representation in native float64 arithmetic; the
+language's general `Int` carrier remains signed 64-bit. Boolean, fractional,
+nonfinite, negative, and out-of-range values are refused at fitting and prediction.
+Zero trials are allowed; their observed and predicted counts must be zero.
+
+Native Binomial, BetaBinomial, NegativeBinomial, Poisson, and the four count-mixture
+kernels use float64 parameters, log scores, and moments. Learned heads may
+remain float32: promotion retains their autograd connections, and gradients
+return in the heads' original dtype. Supply large trial counts as integer
+arrays or integer source literals so their original values reach validation;
+promoting an already-rounded float32 count preserves its rounded value.
+Scores still use floating-point arithmetic.
+
+The emitted binomial likelihood is `Binomial(trials, sigmoid(eta))`. The negative-binomial family
 uses the NB2 form [@cameron1986econometric], with mean $\mu$ and variance
 $\mu + \mu^2 / \mathrm{disp}$: `mu = exp(eta)`, `disp > 0`, and the compiler emits
 `NegativeBinomial(disp, mu / (mu + disp))`, matching QVR's
@@ -918,9 +995,10 @@ interface does not create coefficients or sample effects for a new group.
 The fitted latent layout and coefficient priors remain fixed.
 
 Include columns used by offsets and exposures, and by auxiliary formulas.
-Exposures remain strictly positive. A binomial or beta-binomial fit with
-per-row trials needs its column of positive integer trial counts on the new
-rows; a fixed trial count is reused. Missing predictors, nonfinite evaluated values, incompatible
+Exposures remain strictly positive. A binomial, beta-binomial, or
+zero-inflated trial-count fit with per-row trials needs its column of
+nonnegative integer trial counts on the new rows; a fixed trial count is
+reused. Zero trials imply a zero count. Missing predictors, nonfinite evaluated values, incompatible
 design widths, and missing categorical or group values are refused before
 posterior draws are taken. Prediction frames must be nonempty and have
 unique column names. Response and likelihood-weight values, if present,

@@ -588,7 +588,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Random-effect parameterization. Categorical random effects use the
         non-centered form.
     binomial_trials : int or str
-        Common trial count or the name of a per-row trial-count column.
+        Nonnegative common trial count or a per-row trial-count column.
     thresholds_by : str or None
         Grouping factor whose levels receive partially pooled ordinal
         cutpoint spacings.
@@ -611,7 +611,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
     ValueError
         If an option is out of range or does not apply to ``family``:
         ``thresholds_by`` outside the cumulative family,
-        ``binomial_trials`` outside the binomial/beta-binomial families or below one,
+        ``binomial_trials`` for a family without trials or outside the
+        nonnegative signed 64-bit range,
         ``mixture_components`` below two or outside the mixture
         family, or an unknown ``reparameterize`` value.
 
@@ -692,20 +693,24 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 "FormulaToQVRModule: thresholds_by is only valid for the "
                 "cumulative family"
             )
-        if family.name not in {"binomial", "beta_binomial"} and binomial_trials != 1:
+        if family.trials_parameter is None and binomial_trials != 1:
             raise ValueError(
                 "FormulaToQVRModule: binomial_trials is only valid for the "
-                "binomial and beta_binomial families"
+                "families with a trial-count parameter"
             )
         if not isinstance(binomial_trials, (int, str)) or isinstance(
             binomial_trials, bool
         ):
             raise ValueError(
-                "FormulaToQVRModule: binomial_trials must be a positive integer "
+                "FormulaToQVRModule: binomial_trials must be a nonnegative integer "
                 "or a data-column name"
             )
-        if isinstance(binomial_trials, int) and binomial_trials < 1:
-            raise ValueError("FormulaToQVRModule: binomial_trials must be at least one")
+        if isinstance(binomial_trials, int) and binomial_trials < 0:
+            raise ValueError("FormulaToQVRModule: binomial_trials must be nonnegative")
+        if isinstance(binomial_trials, int) and binomial_trials > 2**53:
+            raise ValueError(
+                "FormulaToQVRModule: binomial_trials must be at most 2**53"
+            )
         if (
             not isinstance(mixture_components, int)
             or isinstance(mixture_components, bool)
@@ -2198,17 +2203,25 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         if self._family.name == "cumulative":
             assert cutpoints_name is not None
             obs_args: tuple[str | float, ...] = ("mu", cutpoints_name)
-        elif self._family.name == "negative_binomial":
+        elif self._family.name in {
+            "negative_binomial",
+            "zero_inflated_negbinomial",
+            "hurdle_negbinomial",
+        }:
             # QVR follows torch's ``NegativeBinomial(total_count, probs)``
             # convention. The formula family is parameterized by mean ``mu``
-            # and concentration ``disp``, for which probs = mu / (mu + disp).
+            # and a concentration, for which probs = mu / (mu + concentration).
+            shape = "disp" if self._family.name == "negative_binomial" else "shape"
             program_steps.append(
                 _let(
                     "negative_binomial_probs",
-                    _div(_var("mu"), _add(_var("mu"), _var("disp"))),
+                    _div(_var("mu"), _add(_var("mu"), _var(shape))),
                 )
             )
-            obs_args = ("disp", "negative_binomial_probs")
+            obs_args = (shape, "negative_binomial_probs")
+            if self._family.name != "negative_binomial":
+                zero = "hu" if self._family.name == "hurdle_negbinomial" else "zi"
+                obs_args = (zero, *obs_args)
         elif self._family.name == "exgaussian":
             program_steps.append(
                 _let("exgaussian_location", _sub(_var("mu"), _var("beta")))
@@ -2304,13 +2317,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             # Both QVR count-mixture constructors take the structural-zero
             # probability first and the Poisson rate second.
             obs_args = ("zi", "mu")
-        elif self._family.name in {"binomial", "beta_binomial"}:
+        elif self._family.trials_parameter is not None:
             trials: str | float
             if isinstance(self._binomial_trials, str):
                 trials = _qvr_name(self._binomial_trials)
             else:
                 trials = float(self._binomial_trials)
-            if self._family.name == "beta_binomial":
+            if self._family.observe_family.endswith("BetaBinomial"):
                 program_steps.append(
                     _let("beta_binomial_concentration1", _mul(_var("mu"), _var("phi")))
                 )
@@ -2327,6 +2340,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
             else:
                 obs_args = (trials, "mu")
+            if self._family.name.startswith("zero_inflated_"):
+                obs_args = ("zi", *obs_args)
         elif self._family.name == "mixture":
             obs_args = self._append_mixture_parameters(
                 formula, statements, program_steps

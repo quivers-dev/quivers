@@ -76,6 +76,10 @@ class Family(dx.Model):
        parameter.
     4. A single ``observe y : Resp <- <observe_family>(mu, ...)``
        step parameterised by ``mu`` and the auxiliary parameters.
+
+    ``trials_parameter`` identifies families that require a constant or
+    per-row number of trials. It names the native constructor parameter;
+    fitting and prediction use the same metadata to validate trial counts.
     """
 
     name: str
@@ -83,6 +87,7 @@ class Family(dx.Model):
     observe_family: str
     extra_observe_args: tuple[str, ...] = ()
     aux_params: tuple[AuxParam, ...] = ()
+    trials_parameter: str | None = None
 
     def with_links(self, **parameters: str) -> Family:
         """Return a family with selected parameter links.
@@ -135,6 +140,7 @@ class Family(dx.Model):
             if self.name == "cumulative"
             else self.observe_family,
             extra_observe_args=self.extra_observe_args,
+            trials_parameter=self.trials_parameter,
             aux_params=tuple(
                 AuxParam(
                     name=aux.name,
@@ -208,11 +214,13 @@ families: Mapping[str, Family] = {
         name="binomial",
         location_link=_LOGIT,
         observe_family="Binomial",
+        trials_parameter="total_count",
     ),
     "beta_binomial": Family(
         name="beta_binomial",
         location_link=_LOGIT,
         observe_family="BetaBinomial",
+        trials_parameter="total_count",
         extra_observe_args=("phi",),
         aux_params=(AuxParam(name="phi", prior="HalfCauchy(2.0)", link=_LOG),),
     ),
@@ -312,6 +320,41 @@ families: Mapping[str, Family] = {
                 prior="Beta(2.0, 2.0)",
                 link=_LOGIT,
             ),
+        ),
+    ),
+    "zero_inflated_negbinomial": Family(
+        name="zero_inflated_negbinomial",
+        location_link=_LOG,
+        observe_family="ZeroInflatedNegativeBinomial",
+        aux_params=(
+            AuxParam(name="shape", prior="Gamma(2.0, 2.0)", link=_LOG),
+            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT),
+        ),
+    ),
+    "zero_inflated_binomial": Family(
+        name="zero_inflated_binomial",
+        location_link=_LOGIT,
+        observe_family="ZeroInflatedBinomial",
+        trials_parameter="total_count",
+        aux_params=(AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT),),
+    ),
+    "zero_inflated_beta_binomial": Family(
+        name="zero_inflated_beta_binomial",
+        location_link=_LOGIT,
+        observe_family="ZeroInflatedBetaBinomial",
+        trials_parameter="total_count",
+        aux_params=(
+            AuxParam(name="phi", prior="HalfCauchy(2.0)", link=_LOG),
+            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT),
+        ),
+    ),
+    "hurdle_negbinomial": Family(
+        name="hurdle_negbinomial",
+        location_link=_LOG,
+        observe_family="HurdleNegativeBinomial",
+        aux_params=(
+            AuxParam(name="shape", prior="Gamma(2.0, 2.0)", link=_LOG),
+            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT),
         ),
     ),
     "hurdle_gamma": Family(

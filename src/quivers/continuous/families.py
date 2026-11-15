@@ -37,12 +37,20 @@ from torch.distributions import constraints as _constraints
 
 from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
 from quivers.continuous._response_time import ExGaussian, InverseGaussian
+from quivers.continuous._zero_inflated_count import (
+    ZeroInflatedNegativeBinomial,
+    ZeroInflatedBinomial,
+    ZeroInflatedBetaBinomial,
+    HurdleNegativeBinomial,
+    _CountBetaBinomial,
+)
 from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
 
 from quivers.continuous._closed_probability import (
     ClosedBernoulli,
     ClosedBinomial,
     ClosedNegativeBinomial,
+    _check_trial_count_source,
     ClosedPoisson,
 )
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
@@ -192,7 +200,10 @@ class _IndependentConditional(ContinuousMorphism):
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         dist = self._get_dist(x)
-        y_typed = y.float() if self._discrete else y
+        floating_support = isinstance(
+            dist.support, (_constraints._Boolean, _constraints._OneHot)
+        )
+        y_typed = y.float() if self._discrete and floating_support else y
         return dist.log_prob(y_typed).sum(dim=-1)
 
     def rsample(
@@ -1076,6 +1087,223 @@ ConditionalPoisson = _make_family(
     inline_bounds={"rate": (0.0, math.inf)},
 )
 """Conditional Poisson(rate(x)). Discrete, non-negative integer counts."""
+
+ConditionalZeroInflatedNegativeBinomial = _make_family(
+    "ConditionalZeroInflatedNegativeBinomial",
+    ZeroInflatedNegativeBinomial,
+    [
+        ("zero_prob", "sigmoid"),
+        ("total_count", "softplus_shifted"),
+        ("probs", "sigmoid"),
+    ],
+    "Conditional structural zeros plus a negative binomial count.",
+    inline_bounds={
+        "zero_prob": (0.0, 1.0),
+        "total_count": (0.0, math.inf),
+        "probs": (0.0, 1.0),
+    },
+)
+"""Conditional zero-inflated negative binomial with three parameter heads."""
+
+ConditionalHurdleNegativeBinomial = _make_family(
+    "ConditionalHurdleNegativeBinomial",
+    HurdleNegativeBinomial,
+    [
+        ("zero_prob", "sigmoid"),
+        ("total_count", "softplus_shifted"),
+        ("probs", "sigmoid"),
+    ],
+    "Conditional structural zeros plus a normalized positive negative binomial.",
+    inline_bounds={"zero_prob": (0.0, 1.0), "probs": (0.0, 1.0)},
+)
+"""Conditional hurdle negative binomial with an efficiently sampled positive count."""
+
+
+class _ConditionalInflatedTrialCount(_IndependentConditional):
+    """Shared learned heads for a count family with fixed integer trial counts.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        Parameter-source domain.
+    codomain : ContinuousSpace
+        Independent count coordinates.
+    total_count : int
+        Nonnegative trial count.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-source network dimensions.
+    param_source : ParamSource or None
+        Reusable parameter source.
+    param_source_option : str or None
+        Parameter-source strategy.
+    """
+
+    _count_distribution: type[D.Distribution]
+    _count_heads: tuple[tuple[str, str], ...]
+
+    def __init__(
+        self,
+        domain,
+        codomain,
+        total_count,
+        hidden_dim=None,
+        param_source=None,
+        param_source_option=None,
+    ):
+        _check_trial_count_source(total_count)
+        if (
+            isinstance(total_count, bool)
+            or not isinstance(total_count, int)
+            or total_count < 0
+        ):
+            raise ValueError("total_count must be a nonnegative integer")
+        self._total_count = total_count
+        super().__init__(
+            domain,
+            codomain,
+            self._count_distribution,
+            [
+                (name, resolve_transform(transform).forward)
+                for name, transform in self._count_heads
+            ],
+            hidden_dim,
+            discrete=True,
+            param_source=param_source,
+            param_source_option=param_source_option,
+        )
+
+    @property
+    def support(self):
+        """The finite integer response support.
+
+        Returns
+        -------
+        Constraint
+            Integers from zero to the fixed trial count.
+        """
+        return _constraints.integer_interval(0, self._total_count)
+
+    def _get_dist(self, x):
+        """Build the count distribution from learned heads and fixed trials.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs to the parameter source.
+
+        Returns
+        -------
+        Distribution
+            Independent response counts per codomain coordinate.
+        """
+        raw = self.param_source(x)
+        parameters = {
+            name: transform(raw[..., i * self._d : (i + 1) * self._d])
+            for i, (name, transform) in enumerate(self._param_specs)
+        }
+        parameters["total_count"] = raw.new_tensor(
+            self._total_count, dtype=torch.float64
+        )
+        return self._count_distribution(**parameters)
+
+
+class ConditionalZeroInflatedBinomial(_ConditionalInflatedTrialCount):
+    """Zero-inflated binomial heads with fixed nonnegative trial counts.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        Parameter-source domain.
+    codomain : ContinuousSpace
+        Independent count coordinates.
+    total_count : int
+        Fixed nonnegative number of trials.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-source network dimensions.
+    param_source : ParamSource or None
+        Optional reusable parameter source.
+    param_source_option : str or None
+        Optional source strategy.
+    """
+
+    _count_distribution = ZeroInflatedBinomial
+    _count_heads = (("zero_prob", "sigmoid"), ("probs", "sigmoid"))
+    arg_constraints = ZeroInflatedBinomial.arg_constraints
+
+
+class ConditionalZeroInflatedBetaBinomial(_ConditionalInflatedTrialCount):
+    """Zero-inflated beta-binomial heads with fixed nonnegative trials.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        Parameter-source domain.
+    codomain : ContinuousSpace
+        Independent count coordinates.
+    total_count : int
+        Fixed nonnegative number of trials.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-source network dimensions.
+    param_source : ParamSource or None
+        Optional reusable parameter source.
+    param_source_option : str or None
+        Optional source strategy.
+    """
+
+    _count_distribution = ZeroInflatedBetaBinomial
+    _count_heads = (
+        ("zero_prob", "sigmoid"),
+        ("concentration1", "softplus"),
+        ("concentration0", "softplus"),
+    )
+    arg_constraints = ZeroInflatedBetaBinomial.arg_constraints
+
+
+for _count_name, _count_class, _conditional_count, _extra_heads in (
+    (
+        "ZeroInflatedBinomial",
+        ZeroInflatedBinomial,
+        ConditionalZeroInflatedBinomial,
+        (("probs", "sigmoid"),),
+    ),
+    (
+        "ZeroInflatedBetaBinomial",
+        ZeroInflatedBetaBinomial,
+        ConditionalZeroInflatedBetaBinomial,
+        (("concentration1", "softplus"), ("concentration0", "softplus")),
+    ),
+):
+    _register_family(
+        FamilySpec(
+            name=_count_name,
+            dist_class=_count_class,
+            params=(
+                ParamSpec(
+                    name="zero_prob", transform="sigmoid", inline_bounds=(0.0, 1.0)
+                ),
+                ParamSpec(
+                    name="total_count",
+                    transform="softplus_shifted",
+                    kind="integer",
+                    inline_bounds=(0.0, math.inf),
+                ),
+                *(
+                    ParamSpec(
+                        name=name,
+                        transform=transform,
+                        inline_bounds=(0.0, 1.0) if name == "probs" else None,
+                    )
+                    for name, transform in _extra_heads
+                ),
+            ),
+            support=_constraints.nonnegative_integer,
+            discrete=True,
+            output_kind="independent",
+            docstring="Structural zero atom plus a finite-trial count component.",
+            conditional_class_override=_conditional_count,
+        )
+    )
+
 
 ConditionalGeometric = _make_family(
     "ConditionalGeometric",
@@ -2107,9 +2335,14 @@ class ConditionalBinomial(ContinuousMorphism):
         param_source: ParamSource | None = None,
         param_source_option: str | None = None,
     ) -> None:
-        if total_count < 1:
+        _check_trial_count_source(total_count)
+        if (
+            isinstance(total_count, bool)
+            or not isinstance(total_count, int)
+            or total_count < 0
+        ):
             raise ValueError(
-                f"ConditionalBinomial: total_count must be >= 1, got {total_count}"
+                f"ConditionalBinomial: total_count must be a nonnegative integer, got {total_count}"
             )
         super().__init__(domain, codomain)
         d = codomain.dim
@@ -2125,11 +2358,11 @@ class ConditionalBinomial(ContinuousMorphism):
 
     def _get_dist(self, x: torch.Tensor) -> D.Binomial:
         logits = self.param_source(x)
-        return D.Binomial(total_count=self._total_count, logits=logits)
+        return ClosedBinomial(total_count=self._total_count, logits=logits)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         dist = self._get_dist(x)
-        return dist.log_prob(y.float()).sum(dim=-1)
+        return dist.log_prob(y).sum(dim=-1)
 
     def rsample(
         self,
@@ -2246,7 +2479,7 @@ class ConditionalZeroInflatedPoisson(ContinuousMorphism):
         return ZeroInflatedPoisson(zero_prob, rate)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        return self._get_dist(x).log_prob(y.float()).sum(dim=-1)
+        return self._get_dist(x).log_prob(y).sum(dim=-1)
 
     def rsample(
         self,
@@ -2294,7 +2527,7 @@ class ConditionalHurdlePoisson(ContinuousMorphism):
         return HurdlePoisson(zero_prob, rate)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        return self._get_dist(x).log_prob(y.float()).sum(dim=-1)
+        return self._get_dist(x).log_prob(y).sum(dim=-1)
 
     def rsample(
         self,
@@ -3272,7 +3505,7 @@ class ConditionalLearnedOrderedLogistic(ContinuousMorphism):
 # ============================================================================
 
 try:
-    _GPD = D.GeneralizedPareto
+    from quivers.continuous._generalized_pareto import GeneralizedPareto as _GPD
 
     class ConditionalGeneralizedPareto(ContinuousMorphism):
         """Conditional generalized Pareto distribution.
@@ -3698,7 +3931,7 @@ class ConditionalBetaBinomial(ContinuousMorphism):
         observations are produced per input.
     total_count : int
         Number of Bernoulli trials per observation; must be a
-        positive integer.
+        nonnegative integer.
     hidden_dim : int
         Hidden layer width for the neural parameter source.
     """
@@ -3712,9 +3945,14 @@ class ConditionalBetaBinomial(ContinuousMorphism):
         param_source: ParamSource | None = None,
         param_source_option: str | None = None,
     ) -> None:
-        if total_count < 1:
+        _check_trial_count_source(total_count)
+        if (
+            isinstance(total_count, bool)
+            or not isinstance(total_count, int)
+            or total_count < 0
+        ):
             raise ValueError(
-                f"ConditionalBetaBinomial: total_count must be >= 1, got {total_count}"
+                f"ConditionalBetaBinomial: total_count must be a nonnegative integer, got {total_count}"
             )
         super().__init__(domain, codomain)
         d = codomain.dim
@@ -3743,23 +3981,13 @@ class ConditionalBetaBinomial(ContinuousMorphism):
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         alpha, beta = self._get_concentrations(x)
-        n = float(self._total_count)
-        y_f = y.float()
-        lgamma = torch.lgamma
-        n_tensor = torch.tensor(n, device=y_f.device, dtype=y_f.dtype)
-        log_binom = (
-            lgamma(n_tensor + 1.0) - lgamma(y_f + 1.0) - lgamma(n_tensor - y_f + 1.0)
+        return (
+            _CountBetaBinomial(
+                alpha.new_tensor(self._total_count, dtype=torch.float64), alpha, beta
+            )
+            .log_prob(y)
+            .sum(-1)
         )
-        log_p = (
-            lgamma(alpha + beta)
-            + lgamma(alpha + y_f)
-            + lgamma(beta + n_tensor - y_f)
-            - lgamma(alpha)
-            - lgamma(beta)
-            - lgamma(alpha + beta + n_tensor)
-            + log_binom
-        )
-        return log_p.sum(dim=-1)
 
     def rsample(
         self,
@@ -3780,7 +4008,9 @@ class ConditionalBetaBinomial(ContinuousMorphism):
         with torch.no_grad():
             alpha, beta = self._get_concentrations(x)
             p = D.Beta(alpha, beta).sample(sample_shape)
-            return D.Binomial(total_count=self._total_count, probs=p).sample().long()
+            return (
+                ClosedBinomial(total_count=self._total_count, probs=p).sample().long()
+            )
 
 
 class ConditionalLogistic(ContinuousMorphism):
@@ -4207,6 +4437,14 @@ class Truncated(ContinuousMorphism):
 
 
 __all__ = [
+    "ZeroInflatedNegativeBinomial",
+    "ZeroInflatedBinomial",
+    "ZeroInflatedBetaBinomial",
+    "HurdleNegativeBinomial",
+    "ConditionalZeroInflatedNegativeBinomial",
+    "ConditionalZeroInflatedBinomial",
+    "ConditionalZeroInflatedBetaBinomial",
+    "ConditionalHurdleNegativeBinomial",
     "ConditionalNormal",
     "ConditionalLogitNormal",
     "ConditionalBeta",

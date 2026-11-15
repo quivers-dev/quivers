@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from quivers.formulas import Family, families, fit
+from quivers.qiec.families import FAMILIES
 from quivers.inference.mcmc.driver import MCMCResult
 
 
@@ -214,22 +215,14 @@ def test_inflated_prediction_includes_correct_zero_atom_and_response_mean(family
 
 @pytest.mark.parametrize("family", sorted(families))
 def test_every_formula_family_has_native_training_row_predictions(family):
-    if family in {
-        "bernoulli",
-        "binomial",
-        "beta_binomial",
-        "categorical",
-        "cumulative",
-        "poisson",
-        "negative_binomial",
-        "geometric",
-        "zero_inflated_poisson",
-        "hurdle_poisson",
-    }:
+    specification = families[family]
+    native_family = FAMILIES[specification.observe_family]
+    if native_family.discrete:
         response = (
-            [0, 1, 2, 0]
-            if family not in {"bernoulli", "binomial", "beta_binomial"}
-            else [0, 1, 1, 0]
+            [0, 1, 1, 0]
+            if specification.trials_parameter is not None
+            or native_family.finite_support is not None
+            else [0, 1, 2, 0]
         )
     else:
         response = [0.1, 0.2, 0.7, 0.4]

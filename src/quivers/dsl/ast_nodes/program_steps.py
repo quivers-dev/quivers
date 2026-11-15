@@ -92,9 +92,9 @@ class DrawArgIndex(DrawArg):
 
 
 class DrawArgScalar(DrawArg):
-    """Numeric literal in a draw step."""
+    """Numeric literal, preserving integer lexemes before numerical execution."""
 
-    value: float
+    value: int | float
     line: int = 0
     col: int = 0
     kind: Literal["scalar"] = "scalar"
@@ -158,7 +158,7 @@ def atom_to_draw_arg(value: str | float | int | DrawArg) -> DrawArg:
     if isinstance(value, str):
         return DrawArgName(text=value)
     if isinstance(value, (int, float)):
-        return DrawArgScalar(value=float(value))
+        return DrawArgScalar(value=value)
     raise TypeError(
         f"atom_to_draw_arg: expected str | float | DrawArg, got {type(value).__name__}"
     )

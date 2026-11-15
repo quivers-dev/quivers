@@ -356,10 +356,25 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     "HalfNormal": (("scale", "softplus"),),
     "InverseGamma": (("concentration", "softplus_shifted"), ("rate", "softplus")),
     "Weibull": (("scale", "softplus"), ("concentration", "softplus")),
+    "GeneralizedPareto": (
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("concentration", "identity"),
+    ),
     "Pareto": (("scale", "softplus"), ("alpha", "softplus")),
     "ContinuousBernoulli": (("logits", "identity"),),
     "Poisson": (("rate", "softplus"),),
     "Geometric": (("probs", "sigmoid"),),
+    "ZeroInflatedNegativeBinomial": (
+        ("zero_prob", "sigmoid"),
+        ("total_count", "softplus_shifted"),
+        ("probs", "sigmoid"),
+    ),
+    "HurdleNegativeBinomial": (
+        ("zero_prob", "sigmoid"),
+        ("total_count", "softplus_shifted"),
+        ("probs", "sigmoid"),
+    ),
     "NegativeBinomial": (("total_count", "softplus_shifted"), ("probs", "sigmoid")),
     "VonMises": (("loc", "identity"), ("concentration", "softplus")),
     "Beta": (
@@ -2266,11 +2281,11 @@ class _Spread(dx.Model):
         The vector's length.
     """
 
-    value: float
+    value: int | float
     dimension: int
 
 
-def _literal(value: float, integral: bool) -> LiteralValue:
+def _literal(value: int | float, integral: bool) -> LiteralValue:
     """A numeric literal at the type a parameter expects.
 
     Parameters
@@ -2285,7 +2300,7 @@ def _literal(value: float, integral: bool) -> LiteralValue:
     LiteralValue
         An ``Int`` literal when integral and whole, else a ``Real``.
     """
-    if integral and float(value).is_integer():
+    if integral and (isinstance(value, int) or value.is_integer()):
         return LiteralValue(value=int(value), type=INT)
     return LiteralValue(value=float(value), type=REAL)
 
@@ -3574,9 +3589,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             if (
                 isinstance(argument, DrawArgScalar)
                 and expected == INT
-                and argument.value.is_integer()
+                and (isinstance(argument.value, int) or argument.value.is_integer())
             ):
-                expression = LetExprLiteral(value=int(argument.value))
+                expression = LetExprLiteral(value=int(argument.value), integral=True)
             if is_nat and isinstance(argument, DrawArgScalar) and argument.value < 0:
                 self._fail(
                     node,
@@ -8104,7 +8119,15 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         items = tuple(
             item
             if isinstance(item, DrawArgScalar)
-            else DrawArgScalar(value=float(item), line=step.line, col=step.col)
+            else DrawArgScalar(
+                value=item
+                if isinstance(item, int | float)
+                else float(item)
+                if any(c in item for c in ".eE")
+                else int(item),
+                line=step.line,
+                col=step.col,
+            )
             for item in literals
         )
         if len(items) >= 2:
@@ -8190,7 +8213,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 result_type=tensor_type(element, (_extent(argument.dimension),)),
             )
         if isinstance(argument, float | int):
-            return _literal(float(argument), integral)
+            return _literal(argument, integral)
         if isinstance(argument, DrawArgScalar):
             return _literal(argument.value, integral)
         if isinstance(argument, DrawArgNamed):
@@ -8228,7 +8251,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             return self._nested_distribution(argument, scope, state, node)
         text = str(argument)
         if _is_number_text(text):
-            return _literal(float(text), integral)
+            return _literal(
+                float(text) if any(c in text for c in ".eE") else int(text), integral
+            )
         if "[" in text:
             base, _, rest = text.partition("[")
             indices = tuple(item.rstrip("]") for item in rest.split("["))
@@ -8296,6 +8321,16 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         local = scope.lookup(name)
         if local is not None:
             return Var(local=local)
+        if any(
+            isinstance(binder, QiecIndexBinder) and binder.name == name
+            for binder in state.declaration.binders
+        ):
+            self._fail(
+                node,
+                f"static index {name!r} is an extent, not a runtime distribution value; "
+                f"declare ({name} : Nat) as a runtime program parameter to use a count",
+                code="qiec-program",
+            )
         morphism = self._program_morphisms.get(name)
         if morphism is not None and constraint == "sampleable":
             return self._morphism_distribution(morphism, name, scope, state, node)

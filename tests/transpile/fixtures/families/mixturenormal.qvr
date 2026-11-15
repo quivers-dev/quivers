@@ -1,0 +1,10 @@
+# Retain a named component axis and normalized simplex weights.
+object Obs : FinSet 3
+object Comp : FinSet 2
+program mixturenormal_fixture(concentration: Tensor[Real]([Comp])) : Obs -> Obs
+    sample weights <- Dirichlet(concentration=concentration) [over=Comp]
+    sample loc <- Normal(loc=0.0, scale=1.0) [over=Comp]
+    sample scale <- HalfNormal(scale=1.0) [over=Comp]
+    observe y : Obs <- MixtureNormal(weights=weights, loc=loc, scale=scale)
+    return y
+export mixturenormal_fixture

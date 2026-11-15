@@ -667,7 +667,7 @@ class _Lowering:
         """
         if isinstance(value, LiteralValue) and isinstance(value.value, int | float):
             if not isinstance(value.value, bool):
-                return DrawArgScalar(value=float(value.value))
+                return DrawArgScalar(value=value.value)
         if isinstance(value, Var) and not self.per_item(value):
             return DrawArgName(text=value.local.name)
         if self.plate is not None and self.per_item(value):

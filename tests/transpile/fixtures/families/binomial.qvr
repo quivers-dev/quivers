@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the Binomial family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program binomial_fixture : Obs -> Obs
+    observe y : Obs <- Binomial(total_count=4.0, probs=0.5)
+    return y
+export binomial_fixture

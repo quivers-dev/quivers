@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the BetaBinomial family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program betabinomial_fixture : Obs -> Obs
+    observe y : Obs <- BetaBinomial(total_count=4.0, concentration1=2.0, concentration0=2.0)
+    return y
+export betabinomial_fixture

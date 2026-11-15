@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the HurdlePoisson family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program hurdlepoisson_fixture : Obs -> Obs
+    observe y : Obs <- HurdlePoisson(zero_prob=0.25, rate=2.0)
+    return y
+export hurdlepoisson_fixture

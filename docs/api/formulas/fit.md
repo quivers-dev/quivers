@@ -37,4 +37,13 @@ observation-only likelihood weights. The column is retained on the parsed
 formula; posterior predictors use the unweighted response law at each draw.
 See [likelihood weights](../../guides/analysis-data-and-formulas.md#likelihood-weights).
 
+Trial-count families use `binomial_trials` for either one common count or a
+column name. Trial counts satisfy `0 <= n <= 2**53`, including zero,
+which permits only a zero response. This family-specific bound preserves
+exact integer representation in native float64 arithmetic; `Int` itself
+remains signed 64-bit. The same metadata and validation apply
+to fitting and new-data prediction, including the zero-inflated binomial
+and beta-binomial variants. See the
+[count-family example](../../guides/analysis-data-and-formulas.md#zero-inflated-and-hurdle-counts).
+
 ::: quivers.formulas._fit

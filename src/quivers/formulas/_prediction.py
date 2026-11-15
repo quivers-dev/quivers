@@ -380,7 +380,7 @@ def prepare_prediction(
     )
     if fit.formula.response_weights is not None:
         observations["formula_weights"] = torch.ones(rows, dtype=torch.float64)
-    if fit.family.name in {"binomial", "beta_binomial"}:
+    if fit.family.trials_parameter is not None:
         trials = _binomial_trial_tensor(frame, fit.binomial_trials, n_obs=rows)
         if isinstance(fit.binomial_trials, str):
             observations[_qvr_name(fit.binomial_trials)] = trials

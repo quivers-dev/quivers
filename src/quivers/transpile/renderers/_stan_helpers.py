@@ -794,8 +794,8 @@ def _build_nested_array(
             subst = _substitute_let_expr(
                 subst,
                 binder.var,
-                index_value=LetExprLiteral(value=float(value), integral=True),
-                scalar_value=LetExprLiteral(value=float(value), integral=True),
+                index_value=LetExprLiteral(value=value, integral=True),
+                scalar_value=LetExprLiteral(value=value, integral=True),
             )
         return _render(ctx, subst)
     level = len(fixed)

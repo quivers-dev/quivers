@@ -38,6 +38,8 @@ import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from quivers.core.objects import ProductSet, Unit
+from quivers.continuous._closed_probability import _check_trial_count_source
+from quivers.continuous._zero_inflated_count import _CountBetaBinomial as _BetaBinomial
 from quivers.continuous._closed_probability import ClosedBernoulli, ClosedPoisson
 from quivers.continuous._lkj import OnionLKJCholesky
 from quivers.continuous._truncated_normal import TruncatedNormal
@@ -414,6 +416,9 @@ class MixedInlineDistribution(ContinuousMorphism):
         For each parameter of rank two or more read from the input, the
         shape one row's value has, which its flat columns are laid out
         in; ``None`` elsewhere. Defaults to none.
+    param_integers : tuple[bool, ...], optional
+        Parameters constrained to integers. Literal and constant counts
+        retain float64 precision independently of the input's dtype.
     """
 
     def __init__(
@@ -426,12 +431,25 @@ class MixedInlineDistribution(ContinuousMorphism):
         support: _constraints.Constraint | None = None,
         param_event_ranks: tuple[int, ...] | None = None,
         param_shapes: tuple[tuple[int, ...] | None, ...] | None = None,
+        param_integers: tuple[bool, ...] | None = None,
     ) -> None:
         super().__init__(domain, codomain)
         self._param_spec = param_spec
         self._dist_builder = dist_builder
         self._discrete = discrete
         self._support = support if support is not None else _constraints.real
+        self._param_integers = (
+            param_integers if param_integers is not None else (False,) * len(param_spec)
+        )
+        if len(self._param_integers) != len(param_spec):
+            raise ValueError(
+                "MixedInlineDistribution: param_integers length must match param_spec"
+            )
+        for (kind, value), integer in zip(
+            param_spec, self._param_integers, strict=True
+        ):
+            if integer and kind in {"lit", "const"}:
+                _check_trial_count_source(value)
         # Per-position event rank. Position 0 = per-row scalar; >= 1 =
         # vector-shaped distribution parameter (cutpoints, mixture
         # weights / locations / scales). Each consumes the number of
@@ -508,6 +526,8 @@ class MixedInlineDistribution(ContinuousMorphism):
             discrete=self._discrete,
             support=self._support,
             param_event_ranks=self._param_event_ranks,
+            param_shapes=self._param_shapes,
+            param_integers=self._param_integers,
         )
 
     def _resolve_params(self, x: torch.Tensor) -> list[torch.Tensor]:
@@ -566,17 +586,20 @@ class MixedInlineDistribution(ContinuousMorphism):
         literal_shape = (x.shape[0],) + (1,) * (rank - 1)
         params: list[torch.Tensor] = []
         supplied = iter(variables)
-        for kind, value in self._param_spec:
+        for (kind, value), integer in zip(
+            self._param_spec, self._param_integers, strict=True
+        ):
+            dtype = torch.float64 if integer else x.dtype
             if kind == "lit":
                 assert isinstance(value, int | float)
                 params.append(
                     torch.full(
-                        literal_shape, float(value), device=x.device, dtype=x.dtype
+                        literal_shape, float(value), device=x.device, dtype=dtype
                     )
                 )
             elif kind == "const":
                 assert isinstance(value, torch.Tensor)
-                constant = value.to(device=x.device, dtype=x.dtype)
+                constant = value.to(device=x.device, dtype=dtype)
                 params.append(constant.expand(x.shape[0], *constant.shape))
             else:
                 params.append(next(supplied))
@@ -1637,98 +1660,12 @@ def _half_student_t_builder(params: list[torch.Tensor]) -> D.Distribution:
     return _HalfStudentT(df, scale)
 
 
-class _BetaBinomial(D.Distribution):
-    """Beta-Binomial: ``Binomial(n, p)`` with ``p ~ Beta(a, b)``.
-
-    The marginal pmf is
-
-        p(k; n, a, b) = C(n, k) * B(a + k, b + n - k) / B(a, b),
-
-    where ``B(.,.)`` is the beta function. `log_prob` evaluates this
-    in log space through `torch.lgamma`; `sample` draws ``p ~ Beta(a,
-    b)`` then ``k ~ Binomial(n, p)``, matching the generative
-    definition.
-
-    Defined here in the continuous layer so the inline builder carries
-    no dependency on the transpile layer.
-    """
-
-    arg_constraints = {
-        "total_count": _constraints.nonnegative_integer,
-        "concentration1": _constraints.positive,
-        "concentration0": _constraints.positive,
-    }
-    support = _constraints.nonnegative_integer
-    has_rsample = False
-
-    def __init__(
-        self,
-        total_count: torch.Tensor,
-        concentration1: torch.Tensor,
-        concentration0: torch.Tensor,
-        validate_args: bool | None = None,
-    ) -> None:
-        self.total_count = total_count
-        self.concentration1 = concentration1
-        self.concentration0 = concentration0
-        super().__init__(validate_args=validate_args)
-
-    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
-        """``log p(value; n, a, b)`` via the closed-form Beta-Binomial pmf.
-
-        The calculation promotes all inputs to a floating result dtype
-        and evaluates the ``lgamma`` terms in ``float64`` to limit
-        cancellation at large trial counts.
-        """
-        dtype = torch.promote_types(
-            torch.promote_types(
-                torch.promote_types(self.total_count.dtype, self.concentration1.dtype),
-                self.concentration0.dtype,
-            ),
-            torch.promote_types(value.dtype, torch.get_default_dtype()),
-        )
-        n = self.total_count.double()
-        a = self.concentration1.double()
-        b = self.concentration0.double()
-        k = value.double()
-        log_comb = (
-            torch.lgamma(n + 1.0) - torch.lgamma(k + 1.0) - torch.lgamma(n - k + 1.0)
-        )
-        log_beta_post = (
-            torch.lgamma(a + k) + torch.lgamma(b + n - k) - torch.lgamma(a + b + n)
-        )
-        log_beta_prior = torch.lgamma(a) + torch.lgamma(b) - torch.lgamma(a + b)
-        return (log_comb + log_beta_post - log_beta_prior).to(dtype)
-
-    def sample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
-        """Two-stage draw: ``p ~ Beta(a, b)``; ``k ~ Binomial(n, p)``."""
-        p = D.Beta(self.concentration1, self.concentration0).sample(sample_shape)
-        return D.Binomial(total_count=self.total_count, probs=p).sample()
-
-    @property
-    def mean(self) -> torch.Tensor:
-        """``E[K] = n * a / (a + b)``."""
-        return (
-            self.total_count
-            * self.concentration1
-            / (self.concentration1 + self.concentration0)
-        )
-
-    @property
-    def variance(self) -> torch.Tensor:
-        """Closed-form Beta-Binomial variance."""
-        n = self.total_count
-        a = self.concentration1
-        b = self.concentration0
-        return n * a * b * (a + b + n) / ((a + b) ** 2 * (a + b + 1.0))
-
-
 def _beta_binomial_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build a Beta-Binomial distribution from [total_count,
     concentration1, concentration0].
 
-    The distribution is the continuous-layer `_BetaBinomial`, whose
-    closed-form `log_prob` exposes `sample`, `mean`, and `variance`
+    The distribution is the shared native beta-binomial, whose
+    stable `log_prob` exposes `sample`, `mean`, and `variance`
     directly and keeps the inline path free of a transpile import. Zero
     trials is the point mass at zero. Negative or noninteger trial counts
     are refused.
@@ -2099,7 +2036,7 @@ def _list_values(arg: DrawArgList) -> list[float] | list[list[float]]:
     values: list = []
     for item in arg.items:
         if isinstance(item, DrawArgScalar):
-            values.append(float(item.value))
+            values.append(item.value)
         elif isinstance(item, DrawArgList):
             values.append(_list_values(item))
         else:
@@ -2111,8 +2048,8 @@ def _list_values(arg: DrawArgList) -> list[float] | list[list[float]]:
 
 
 def _inline_argument(
-    arg: DrawArg | float | str | Indexed,
-) -> tuple[Literal["lit", "const", "var"], float | torch.Tensor | StepArgument]:
+    arg: DrawArg | int | float | str | Indexed,
+) -> tuple[Literal["lit", "const", "var"], int | float | torch.Tensor | StepArgument]:
     """Classify one inline family argument for the compiled runtime.
 
     Every draw argument kind the grammar has reaches this one function:
@@ -2126,13 +2063,13 @@ def _inline_argument(
 
     Parameters
     ----------
-    arg : DrawArg | float | str | Indexed
+    arg : DrawArg | int | float | str | Indexed
         The argument: a tagged draw argument, or its plain form (a
         number, a name, or an `Indexed` gather).
 
     Returns
     -------
-    tuple[Literal["lit", "const", "var"], float | torch.Tensor | StepArgument]
+    tuple[Literal["lit", "const", "var"], int | float | torch.Tensor | StepArgument]
         The argument's kind and its literal value or step argument.
 
     Raises
@@ -2144,9 +2081,9 @@ def _inline_argument(
     if isinstance(arg, DrawArgNamed):
         return _inline_argument(arg.value)
     if isinstance(arg, DrawArgScalar):
-        return "lit", float(arg.value)
+        return "lit", arg.value
     if isinstance(arg, int | float) and not isinstance(arg, bool):
-        return "lit", float(arg)
+        return "lit", arg
     if isinstance(arg, DrawArgList):
         return "const", torch.tensor(_list_values(arg))
     if isinstance(arg, DrawArgName):
@@ -2198,7 +2135,7 @@ def _eval_draw_arg_value(
     if isinstance(arg, DrawArgDist):
         return _build_inner_distribution(arg, variable_types)
     if isinstance(arg, (int, float)):
-        return float(arg)
+        return arg
     if isinstance(arg, str):
         return arg
     raise TypeError(f"_eval_draw_arg_value: unexpected arg type {type(arg).__name__}")
@@ -2539,7 +2476,9 @@ def make_inline_distribution(
                     None,
                 )
             listed = _list_values(args[0])
-            weights = [entry for entry in listed if isinstance(entry, float)]
+            weights = [
+                float(entry) for entry in listed if isinstance(entry, int | float)
+            ]
             if len(weights) != len(listed):
                 raise ValueError(
                     "inline Categorical takes one vector of class weights, "
@@ -2581,8 +2520,7 @@ def make_inline_distribution(
                 )
                 morph = factory(value, codomain)
             else:
-                all_floats = [float(a) for a in args]
-                morph = factory(*all_floats, codomain)
+                morph = factory(*args, codomain)
             return (morph, None)
         if family not in _FAMILY_BUILDERS:
             raise ValueError(f"no fixed factory for inline family {family!r}")
@@ -2629,7 +2567,7 @@ def make_inline_distribution(
         kind, value = _inline_argument(arg)
         param_shapes.append(None)
         if kind == "lit" or kind == "const":
-            assert isinstance(value, float | torch.Tensor)
+            assert isinstance(value, int | float | torch.Tensor)
             param_spec.append((kind, value))
         else:
             assert isinstance(value, str | Indexed)
@@ -2752,8 +2690,23 @@ def make_inline_distribution(
         support=fam_support,
         param_event_ranks=fam_event_ranks,
         param_shapes=tuple(param_shapes),
+        param_integers=_registry_integer_parameters(family, param_names),
     )
     return (morph, tuple(var_name_order) if var_name_order else None)
+
+
+def _registry_integer_parameters(
+    family: str, parameters: tuple[str, ...]
+) -> tuple[bool, ...]:
+    """Identify integer parameters from their checked family constraints."""
+    record = FAMILIES.get(FAMILY_ALIASES.get(family, family))
+    aliases = PARAMETER_ALIASES.get(family, {})
+    return tuple(
+        record is not None
+        and aliases.get(name, name) in record.parameter_names
+        and "integer" in record.parameter(aliases.get(name, name)).constraint
+        for name in parameters
+    )
 
 
 def _registry_event_ranks(family: str, parameters: tuple[str, ...]) -> tuple[int, ...]:
@@ -2796,16 +2749,25 @@ def _make_fixed_selected_parameters(
     """Build a literal family through the parameterization named in QVR."""
     spec = FAMILY_REGISTRY[family]
     evaluated = [_eval_draw_arg_value(argument, None) for argument in args]
+    integers = _registry_integer_parameters(family, parameters)
+    for value, integer in zip(evaluated, integers, strict=True):
+        if integer:
+            _check_trial_count_source(
+                torch.as_tensor(value) if isinstance(value, (list, tuple)) else value
+            )
     d = int(getattr(codomain, "dim", 1))
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         values: dict[str, torch.Tensor] = {}
-        for name, value in zip(parameters, evaluated, strict=True):
+        for name, value, integer in zip(parameters, evaluated, integers, strict=True):
+            dtype = torch.float64 if integer else torch.get_default_dtype()
             if isinstance(value, (list, tuple)):
-                literal = torch.as_tensor(value, device=device)
+                literal = torch.as_tensor(value, device=device, dtype=dtype)
                 tensor = literal.expand(batch, *literal.shape)
             else:
-                tensor = torch.full((batch, d), float(value), device=device)
+                tensor = torch.full(
+                    (batch, d), float(value), device=device, dtype=dtype
+                )
             values[name] = _selected_clamp(spec, name, tensor)
         alternative = _ALTERNATIVE_BUILDERS.get((family, parameters))
         if alternative is not None:
@@ -3025,13 +2987,24 @@ def _build_generic_fixed_factory(spec: FamilySpec) -> Callable:
         d = getattr(codomain, "dim", 1)
         clamped_floats = []
         for param, val in zip(spec.params, literal_args):
+            if param.kind == "integer":
+                _check_trial_count_source(val)
             f = float(val)
-            clamped_floats.append(float(param.inline_clamp(torch.tensor(f)).item()))
+            clamped_floats.append(
+                float(param.inline_clamp(torch.tensor(f, dtype=torch.float64)).item())
+            )
 
         def builder(batch: int, device: torch.device) -> D.Distribution:
             kwargs = {}
             for param, val in zip(spec.params, clamped_floats):
-                kwargs[param.name] = torch.full((batch, d), val, device=device)
+                kwargs[param.name] = torch.full(
+                    (batch, d),
+                    val,
+                    device=device,
+                    dtype=torch.float64
+                    if param.kind == "integer"
+                    else torch.get_default_dtype(),
+                )
             return spec.dist_class(**kwargs)
 
         return FixedDistribution(

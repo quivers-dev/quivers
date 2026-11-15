@@ -799,6 +799,22 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
+        name="GeneralizedPareto",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="concentration", constraint="real", rank=0),
+        ),
+        support="dependent",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="Pareto",
         parameters=(
             FamilyParameter(name="scale", constraint="positive", rank=0),
@@ -1521,6 +1537,75 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
             "pyro": "TruncatedDistribution",
             "turing": "truncated",
         },
+    ),
+    DistributionFamily(
+        name="ZeroInflatedNegativeBinomial",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="total_count", constraint="nonnegative", rank=0),
+            FamilyParameter(name="probs", constraint="unit_interval_half_open", rank=0),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="ZeroInflatedBinomial",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(
+                name="total_count", constraint="nonnegative_integer", rank=0
+            ),
+            FamilyParameter(name="probs", constraint="unit_interval", rank=0),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="ZeroInflatedBetaBinomial",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(
+                name="total_count", constraint="nonnegative_integer", rank=0
+            ),
+            FamilyParameter(name="concentration1", constraint="positive", rank=0),
+            FamilyParameter(name="concentration0", constraint="positive", rank=0),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="HurdleNegativeBinomial",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="total_count", constraint="positive", rank=0),
+            FamilyParameter(name="probs", constraint="unit_interval_half_open", rank=0),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
     ),
     DistributionFamily(
         name="ZeroInflatedPoisson",

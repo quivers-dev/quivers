@@ -21,7 +21,7 @@ define length[A : Type, n : Nat](xs : Vec[A](n)) : Int !{} =
             return 1 + rest
 ```
 
-`index Nat = Z | S(Nat)` declares a finite enumerated index type whose values are the natural numbers in unary: `Z` is zero and `S(n)` is the successor of `n`. `Vec[A](n)` has a *parameter* `A`, the element type, which is the same in every constructor, and an *index* `n`, the length, which each constructor fixes: `Nil` builds only `Vec[A](Z)`, and `Cons[m]` takes a tail of length `m` and builds a vector of length `S(m)`. The length is thus established by the constructors and cannot disagree with the elements.
+`index Nat = Z | S(Nat)` declares a closed index sort with two constructors. Its values are the natural numbers in unary: `Z` is zero and `S(n)` is the successor of `n`. The recursive constructor permits arbitrarily large indices. `Vec[A](n)` has a *parameter* `A`, the element type, which is the same in every constructor, and an *index* `n`, the length, which each constructor fixes: `Nil` builds only `Vec[A](Z)`, and `Cons[m]` takes a tail of length `m` and builds a vector of length `S(m)`. The length is thus established by the constructors and cannot disagree with the elements.
 
 `length` is a computation (`define`) whose effect row `!{}` is empty: it performs no effects ([chapter 10](10-effects-and-handlers.md) introduces effect rows). Its `case` analysis states a *motive*, the result type of the analysis as a function of the inspected value's index [@mcbride2002elimination]. Here the motive `(m : Nat) => Int` returns `Int` whatever the length. In the `Cons` branch the checker learns that the input has length `S(k)` for some `k`, so `tail` has type `Vec[A](k)` and the recursive call is made at `k`.
 

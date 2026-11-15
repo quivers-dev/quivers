@@ -1653,7 +1653,7 @@ def _observation_weights(options, line: int, col: int) -> str | float | None:
 
 def _rename_observation_weights(
     weights: str | float | None,
-    value_subst: dict[str, str | float],
+    value_subst: dict[str, str | int | float],
     rename: dict[str, str],
 ) -> str | float | None:
     """Preserve observation-weight references through template specialization."""
@@ -2652,7 +2652,7 @@ class _ProgramsMixin:
                 if isinstance(argument, DrawArg)
                 else DrawArgName(text=argument)
                 if isinstance(argument, str)
-                else DrawArgScalar(value=float(argument))
+                else DrawArgScalar(value=argument)
                 for argument in args
             )
             bound = {
@@ -2728,7 +2728,7 @@ class _ProgramsMixin:
             if isinstance(argument, DrawArg)
             else DrawArgName(text=argument)
             if isinstance(argument, str)
-            else DrawArgScalar(value=float(argument))
+            else DrawArgScalar(value=argument)
             for argument in args
         )
         try:
@@ -2743,7 +2743,7 @@ class _ProgramsMixin:
         self._validate_template_static_types(tmpl, checked_bindings, call_site)
         # Build the parameter-substitution environment.
         type_subst: dict[str, ObjectExpr] = {}
-        value_subst: dict[str, str | float] = {}
+        value_subst: dict[str, str | int | float] = {}
         for param, arg in zip(type_params, args):
             if isinstance(param, ObjectParam):
                 # `DrawArgName` carries the identifier text; a bare
@@ -2801,11 +2801,11 @@ class _ProgramsMixin:
                 if isinstance(arg, DrawArgName):
                     value_subst[param.name] = arg.text
                 elif isinstance(arg, DrawArgScalar):
-                    value_subst[param.name] = float(arg.value)
+                    value_subst[param.name] = arg.value
                 elif isinstance(arg, str):
                     value_subst[param.name] = arg
                 else:
-                    value_subst[param.name] = float(arg)
+                    value_subst[param.name] = arg
             elif isinstance(param, MorphismParam):
                 if isinstance(arg, DrawArgName):
                     arg = arg.text
@@ -3007,7 +3007,7 @@ class _ProgramsMixin:
     def _rename_args(
         self,
         args: tuple | None,
-        value_subst: dict[str, str | float],
+        value_subst: dict[str, str | int | float],
         rename: dict[str, str],
     ) -> tuple | None:
         """Apply parameter substitution and alpha-renaming inside a
@@ -3039,9 +3039,7 @@ class _ProgramsMixin:
                 if key in value_subst:
                     sub = value_subst[key]
                     if isinstance(sub, (int, float)) and not isinstance(sub, bool):
-                        out.append(
-                            DrawArgScalar(value=float(sub), line=a.line, col=a.col)
-                        )
+                        out.append(DrawArgScalar(value=sub, line=a.line, col=a.col))
                     else:
                         out.append(a.with_(text=str(sub)))
                 elif key in rename:
@@ -3086,7 +3084,7 @@ class _ProgramsMixin:
         self,
         step: ProgramStep,
         type_subst: dict[str, ObjectExpr],
-        value_subst: dict[str, str | float],
+        value_subst: dict[str, str | int | float],
         rename: dict[str, str],
     ) -> ProgramStep:
         """Apply parameter substitution + α-renaming to a single step."""
@@ -3249,7 +3247,7 @@ class _ProgramsMixin:
         self,
         expr: LetExprNode,
         type_subst: dict[str, ObjectExpr],
-        value_subst: dict[str, str | float],
+        value_subst: dict[str, str | int | float],
         rename: dict[str, str],
         line: int,
         col: int,
@@ -3306,7 +3304,7 @@ class _ProgramsMixin:
                 values[name] = LetExprVar(name=sub)
                 callees[name] = sub
             else:
-                values[name] = LetExprLiteral(value=float(sub))
+                values[name] = LetExprLiteral(value=sub, integral=isinstance(sub, int))
         for callee in free_let_callees(expr):
             if callee in value_subst and callee not in callees:
                 raise CompileError(
@@ -3641,7 +3639,11 @@ class _ProgramsMixin:
 
         def argument(text: str) -> DrawArg:
             try:
-                return DrawArgScalar(value=float(text), line=expr.line, col=expr.col)
+                return DrawArgScalar(
+                    value=float(text) if any(c in text for c in ".eE") else int(text),
+                    line=expr.line,
+                    col=expr.col,
+                )
             except ValueError:
                 return DrawArgName(text=text, line=expr.line, col=expr.col)
 
@@ -3684,7 +3686,7 @@ class _ProgramsMixin:
                 expr.col,
             )
         type_subst: dict[str, ObjectExpr] = {}
-        value_subst: dict[str, str | float] = {}
+        value_subst: dict[str, str | int | float] = {}
         for param, arg in zip(type_params, args):
             if isinstance(param, ObjectParam):
                 if param.universe == "FinSet" and arg not in self._objects:
@@ -3726,10 +3728,12 @@ class _ProgramsMixin:
                 # name reference for the caller's bound_vars to
                 # resolve at draw-site time.
                 if isinstance(arg, (int, float)):
-                    value_subst[param.name] = float(arg)
+                    value_subst[param.name] = arg
                 elif isinstance(arg, str):
                     try:
-                        value_subst[param.name] = float(arg)
+                        value_subst[param.name] = (
+                            float(arg) if any(c in arg for c in ".eE") else int(arg)
+                        )
                     except ValueError:
                         value_subst[param.name] = arg
                 else:

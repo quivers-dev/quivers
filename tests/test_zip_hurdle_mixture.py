@@ -39,6 +39,7 @@ def test_zero_inflated_poisson_log_prob() -> None:
     dist = ZeroInflatedPoisson(pi, rate)
     y = torch.tensor([0, 1, 3])
     actual = dist.log_prob(y)
+    pi, rate = pi.double(), rate.double()
     poisson = torch.distributions.Poisson(rate)
     expected_zero = torch.log(pi + (1.0 - pi) * (-rate).exp())
     expected_pos = torch.log(1.0 - pi) + poisson.log_prob(y)

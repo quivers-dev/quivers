@@ -17,13 +17,18 @@ import math
 import random
 
 from quivers.qiec._onion import onion_cholesky_rows
+from quivers.qiec._count_mixtures import (
+    _negative_binomial_log_mass,
+    _poisson as _sample_poisson_count,
+    _require_sample_capacity as _require_count_sample_capacity,
+    _beta_binomial_log_mass,
+)
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.reference_support import (
     Density,
     DistributionError,
     Sampler,
     finite_value,
-    log_choose,
     log_probabilities,
     normal_log_prob,
     probability,
@@ -2007,14 +2012,10 @@ def _negativebinomial_sample(a: Mapping[str, object], rng: random.Random) -> obj
     """
     total = real_parameter(a, "total_count", "NegativeBinomial")
     success = probability(a, "NegativeBinomial")
+    if total == 0 or success == 0:
+        return 0
     rate = rng.gammavariate(total, success / (1.0 - success))
-    limit = math.exp(-rate)
-    count = 0
-    product = rng.random()
-    while product > limit:
-        count += 1
-        product *= rng.random()
-    return count
+    return _sample_poisson_count(rate, rng)
 
 
 def _negativebinomial_density(a: Mapping[str, object], value: object) -> float:
@@ -2038,17 +2039,7 @@ def _negativebinomial_density(a: Mapping[str, object], value: object) -> float:
     count = int(finite_value(value, "NegativeBinomial"))
     total = real_parameter(a, "total_count", "NegativeBinomial")
     log_success, log_failure = log_probabilities(a, "NegativeBinomial")
-    if count < 0:
-        return -math.inf
-    if total == 0.0:
-        return 0.0 if count == 0 else -math.inf
-    return (
-        math.lgamma(total + count)
-        - math.lgamma(count + 1)
-        - math.lgamma(total)
-        + total * log_failure
-        + (0.0 if count == 0 else count * log_success)
-    )
+    return _negative_binomial_log_mass(total, count, log_success, log_failure)
 
 
 def _betabinomial_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -2093,13 +2084,7 @@ def _betabinomial_density(a: Mapping[str, object], value: object) -> float:
     total = real_parameter(a, "total_count", "BetaBinomial")
     first = real_parameter(a, "concentration1", "BetaBinomial")
     second = real_parameter(a, "concentration0", "BetaBinomial")
-    if not 0 <= count <= total:
-        return -math.inf
-    return (
-        log_choose(total, count)
-        + _log_beta(first + count, second + total - count)
-        - _log_beta(first, second)
-    )
+    return _beta_binomial_log_mass(total, count, first, second)
 
 
 def _ordered_probabilities(
@@ -3769,13 +3754,7 @@ def _zip_sample(a: Mapping[str, object], rng: random.Random) -> object:
     if rng.random() < real_parameter(a, "zero_prob", "ZeroInflatedPoisson"):
         return 0
     rate = real_parameter(a, "rate", "ZeroInflatedPoisson")
-    limit = math.exp(-rate)
-    count = 0
-    product = rng.random()
-    while product > limit:
-        count += 1
-        product *= rng.random()
-    return count
+    return _sample_poisson_count(rate, rng)
 
 
 def _poisson_log_mass(count: int, rate: float) -> float:
@@ -3893,11 +3872,8 @@ def _hurdle_sample(a: Mapping[str, object], rng: random.Random) -> object:
         if rate <= 8
         else rate + math.log1p(u * math.expm1(-rate))
     )
-    count = 1
-    elapsed = rng.expovariate(1.0)
-    while elapsed < remaining:
-        count += 1
-        elapsed += rng.expovariate(1.0)
+    count = 1 + _sample_poisson_count(remaining, rng)
+    _require_count_sample_capacity(count)
     return count
 
 

@@ -77,7 +77,19 @@ class ZeroInflatedPoisson(Distribution):
         return self._mixture.log_prob(value)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
-        return self._mixture.sample(sample_shape).long()
+        with torch.no_grad():
+            shape = self._extended_shape(sample_shape)
+            probability = self.zero_prob.expand(shape)
+            active = (
+                torch.rand(shape, dtype=probability.dtype, device=probability.device)
+                >= probability
+            )
+            result = torch.zeros(shape, dtype=torch.long, device=probability.device)
+            if active.any():
+                result[active] = (
+                    ClosedPoisson(self.rate.expand(shape)[active]).sample().long()
+                )
+            return result
 
 
 class HurdlePoisson(Distribution):
@@ -164,9 +176,17 @@ class HurdlePoisson(Distribution):
         """
         with torch.no_grad():
             shape = self._extended_shape(sample_shape)
-            positive = positive_poisson_sample(self.rate.expand(shape))
-            zero = torch.bernoulli(self.zero_prob.expand(shape)).bool()
-            return torch.where(zero, torch.zeros_like(positive), positive).long()
+            probability = self.zero_prob.expand(shape)
+            active = (
+                torch.rand(shape, dtype=probability.dtype, device=probability.device)
+                >= probability
+            )
+            result = torch.zeros(shape, dtype=torch.long, device=probability.device)
+            if active.any():
+                result[active] = positive_poisson_sample(
+                    self.rate.expand(shape)[active]
+                ).long()
+            return result
 
 
 class MixtureNormal(Distribution):

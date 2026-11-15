@@ -23,7 +23,7 @@ and diagnostic codes.
 
 | To | Read |
 | --- | --- |
-| declare finite index types, [indexed families](types-and-indexed-families.md#family-declarations), constructors, or case analyses | [Types and indexed families](types-and-indexed-families.md) |
+| declare closed index sorts, [indexed families](types-and-indexed-families.md#family-declarations), constructors, or case analyses | [Types and indexed families](types-and-indexed-families.md) |
 | declare an effect, create effect instances, write rows, or handle requests | [Effects and handlers](effects-and-handlers.md) |
 | write `define`, call a computation, recurse, branch, or distinguish pure and effectful binding | [Computations](computations.md) |
 | map, traverse, fold, or normalize a tensor of fixed shape | [Finite collection expressions](collection-expressions.md) |
@@ -106,6 +106,14 @@ program object and morphism binders. The tensor compiler specializes supported
 finite objects and natural-number extents; a structured computation may remain
 a `CheckedProgram`, with its checked interface intact. The
 [execution reference](execution-and-tooling.md) gives the separate capability boundary.
+
+The shared binder sorts do not yet give every source application the same
+argument grammar. A program call's `[...]` currently accepts names and
+signed numeric literals, followed by kind checking. It does not accept
+arbitrary structured type, effect, or index-constructor expressions there.
+Typed `define` calls use the QIEC static-argument grammar. This is a
+restriction of the current program-call syntax, separate from what its
+checked telescope can represent.
 
 ## A minimal mixed module
 

@@ -1445,7 +1445,7 @@ class _HostSteps:
             self.axis.record(step.program, spec.name, carried)
             return value
         self.axis.record(step.program, spec.name, True)
-        return torch.full((self.x.shape[0],), float(spec.value), device=self.x.device)
+        return torch.full((self.x.shape[0],), spec.value, device=self.x.device)
 
     def _score(self, step: HostStep, argument: object) -> object:
         """Compute a score step's contribution.

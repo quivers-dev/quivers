@@ -3,8 +3,8 @@
 A conditional distribution family in quivers is a
 [`ContinuousMorphism`](../api/continuous/morphisms.md#quivers.continuous.morphisms.ContinuousMorphism)
 whose distribution's parameters a parameter source, a lookup table or a network,
-computes from each input. More than fifty families are registered, and in QVR the same
-families are written inline in program steps with given parameters
+computes from each input. More than fifty families are registered. QVR writes
+supported families inline in program steps with checked parameters
 ([Inline distributions](dsl-programs-and-lets.md#inline-distributions)).
 [Continuous Spaces](continuous-spaces.md) describes the spaces they live on.
 
@@ -20,6 +20,12 @@ deviations than a Normal.
 parameters, including its mean. A mean given exactly is written in QVR as
 `Normal(loc=mu, scale=sigma)`, which uses the values bound to `mu` and `sigma` at that
 step.
+
+Registry membership, checked source construction, and external rendering are
+separate capabilities. In particular, native `Independent` requires a batched
+base distribution, which the current checked scalar-family argument contract
+cannot express as an inline source call. Use its native Python construction;
+registration does not establish a QVR source or export form.
 
 ### Core families {#hand-written-core-families}
 
@@ -93,6 +99,35 @@ x = torch.randn(8, 5)
 gamma = ConditionalGamma(domain, codomain)
 samples = gamma.rsample(x)  # positive
 ```
+
+### Generalized Pareto tails
+
+`GeneralizedPareto(loc, scale, concentration)` implements the
+[generalized Pareto law](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.genpareto.html)
+above `loc`,
+with positive `scale` and real tail index `concentration`. A negative
+tail index gives the finite upper endpoint `loc - scale/concentration`;
+a nonnegative index gives an unbounded upper tail. At index zero, the
+law is `loc + Exponential(rate=1/scale)`.
+
+```qvr
+object Row : FinSet 4
+program tail(scale: Real) : Row -> Row
+    observe y : Row <- GeneralizedPareto(loc=0.0, scale=scale, concentration=-0.2)
+    return y
+export tail
+```
+
+The native family supplies density, CDF, inverse CDF, broadcasting, and
+reparameterized sampling, including differentiable zero-index limits.
+Its mean exists for `concentration < 1` and its variance for
+`concentration < 0.5`; the implementation returns `NaN` outside those
+moment domains. The public learned wrapper is
+[`ConditionalGeneralizedPareto`](../api/continuous/families.md#quivers.continuous.families.ConditionalGeneralizedPareto).
+The underlying distribution class is an implementation detail, rather
+than a `quivers.continuous.GeneralizedPareto` export. Native and QIEC
+reference execution support this source family; the current external
+renderers refuse it.
 
 ### Zero atoms with positive responses
 
@@ -234,6 +269,79 @@ mvn = ConditionalMultivariateNormal(domain, Euclidean(name="Y", dim=5))
 
 ### Discrete / categorical families
 
+Count mixtures combine an exact zero with a discrete response. The registered
+native constructors are:
+
+| Family | Parameters |
+| --- | --- |
+| `ZeroInflatedNegativeBinomial` | `zero_prob`, `total_count`, `probs` |
+| `ZeroInflatedBinomial` | `zero_prob`, `total_count`, `probs` |
+| `ZeroInflatedBetaBinomial` | `zero_prob`, `total_count`, `concentration1`, `concentration0` |
+| `HurdleNegativeBinomial` | `zero_prob`, `total_count`, `probs` |
+
+For zero inflation, `zero_prob` selects a structural zero in addition to
+zeros from the count component. For the hurdle family, it is the complete
+zero probability; the other branch is a positive-truncated negative
+binomial. Its component mean is `total_count * probs / (1-probs)` before
+truncation. At `probs=0`, the positive branch uses its limiting count of one.
+Binomial trial counts may be zero, in which case the response is always zero.
+These scalar count samples are not reparameterized. Their log masses and
+moments retain gradients with respect to the distribution parameters.
+
+```qvr
+object Row : FinSet 3
+program counts : Row -> Row
+    observe nb : Row <- ZeroInflatedNegativeBinomial(zero_prob=0.3, total_count=2.5, probs=0.4)
+    observe bin : Row <- ZeroInflatedBinomial(zero_prob=0.3, total_count=8, probs=0.4)
+    observe bb : Row <- ZeroInflatedBetaBinomial(zero_prob=0.3, total_count=8, concentration1=0.7, concentration0=1.1)
+    observe hurdle : Row <- HurdleNegativeBinomial(zero_prob=0.3, total_count=2.5, probs=0.4)
+    return nb
+export counts
+```
+
+The [formula interface](analysis-data-and-formulas.md#zero-inflated-and-hurdle-counts)
+provides mean/precision parameterizations and known trial counts. The
+[native API](../api/continuous/families.md#zero-inflated-and-hurdle-counts)
+gives the constructors and sampling behavior. Native and reference execution
+support these families. All 11 external renderers currently refuse each
+with a `family:<Family>` diagnostic; the 44 family/backend cells are checked
+by `tests/transpile/test_family_matrix.py`. These family fixtures are separate
+from the gallery and construct rows of the general support matrix.
+
+Native Binomial, BetaBinomial, NegativeBinomial, Poisson, and the four count mixtures
+use float64 parameters, log scores, and moments to avoid float32
+cancellation at large counts. Gradients still reach the original learned
+heads, including float32 heads. Finite trial counts are checked before
+conversion and must lie between zero and `2**53`, inclusive. This bound
+preserves their exact integer representation in float64; `Int` remains a
+signed 64-bit carrier. Supply large counts as integer tensors or integer
+source literals. Converting an already-rounded float32 count to float64
+does not restore the original integer.
+A source integer literal also retains its integer value through parsing,
+static substitution, and family argument binding. Stable deviance,
+Stirling, and gamma-increment formulas avoid subtracting nearly equal
+large log-gamma values in the count kernels. Float64 remains an
+approximation; these choices do not establish a uniform error bound for
+every parameter regime.
+A runtime header can declare `trials : Tensor[Int]([Row])` and pass it as
+`Binomial(total_count=trials, probs=p)`; the checked integer input reaches
+the count kernel before floating-point conversion.
+A shared scalar count can instead use `(trials : Nat)`. A static
+`[trials : Nat]` is an index extent; it cannot directly supply the
+family's runtime `total_count` argument. The source checker reports this
+stage mismatch explicitly.
+
+Poisson, negative-binomial, and their inflated or hurdle samplers refuse
+a generated intensity or count that is nonfinite or exceeds `2**53`.
+Native execution raises `RuntimeError`; reference execution raises
+`DistributionError`, a `ValueError` subtype. These failures do not
+truncate or renormalize the law, or redraw to conceal overflow.
+A structural-zero outcome bypasses its unreachable count branch, so a
+zero-atom probability of one does not attempt to sample a huge base
+count. The sampling ceiling is separate from the general `Int` carrier;
+density and moment evaluation can still accept larger real-valued
+negative-binomial shapes or Poisson rates.
+
 ```python
 from quivers.continuous.families import (
     ConditionalBernoulli,
@@ -262,6 +370,7 @@ that choice explicit:
 | Family | Event dimensions | Interpretation |
 |---|---|---|
 | `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `AsymmetricLaplace`, `ExGaussian`, `InverseGaussian`, `HurdleGamma`, `HurdleLogNormal`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli`, `Horseshoe` | 0 | Scalar; every codomain axis is iid by default |
+| `ZeroInflatedNegativeBinomial`, `ZeroInflatedBinomial`, `ZeroInflatedBetaBinomial`, `HurdleNegativeBinomial` | 0 | Integer count; every codomain axis is iid by default |
 | `MultivariateNormal`, `LowRankMVN`, `Dirichlet`, `OneHotCategorical`, `RelaxedOneHotCategorical`, `LogisticNormal`, `GP` | 1 | Vector; one named event axis carries the joint distribution |
 | `Wishart`, `InverseWishart`, `MatrixNormal`, `LKJCholesky` | 2 | Matrix; two named event axes carry the joint distribution |
 

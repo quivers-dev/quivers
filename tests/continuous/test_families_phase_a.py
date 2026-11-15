@@ -322,6 +322,11 @@ def test_family_meta_catalog_count_includes_new_response_families() -> None:
         "InverseGaussian",
         "HurdleGamma",
         "HurdleLogNormal",
+        "ZeroInflatedNegativeBinomial",
+        "ZeroInflatedBinomial",
+        "ZeroInflatedBetaBinomial",
+        "HurdleNegativeBinomial",
     }
     assert added <= FAMILY_META.keys()
-    assert len(FAMILY_META) == 65
+    assert "GP" in FAMILY_META
+    assert len(FAMILY_META) == 70

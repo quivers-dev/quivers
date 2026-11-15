@@ -141,7 +141,8 @@ def test_binomial_epred_is_count_and_transformed_linpred_is_probability(data):
         result.posterior_linpred(transform=True), eta.sigmoid().expand(2, 3, 4)
     )
     torch.testing.assert_close(
-        result.posterior_epred(), (eta.sigmoid() * torch.arange(1, 5)).expand(2, 3, 4)
+        result.posterior_epred(),
+        (eta.double().sigmoid() * torch.arange(1, 5)).expand(2, 3, 4),
     )
 
 

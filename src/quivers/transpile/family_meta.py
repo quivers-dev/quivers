@@ -18,6 +18,19 @@ import torch.distributions.constraints as c
 from torch.distributions.distribution import Distribution
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.continuous.families import (
+    ConditionalZeroInflatedNegativeBinomial,
+    ConditionalZeroInflatedBinomial,
+    ConditionalZeroInflatedBetaBinomial,
+    ConditionalHurdleNegativeBinomial,
+)
+from quivers.continuous._zero_inflated_count import (
+    ZeroInflatedNegativeBinomial,
+    ZeroInflatedBinomial,
+    ZeroInflatedBetaBinomial,
+    HurdleNegativeBinomial,
+)
+from quivers.continuous._generalized_pareto import GeneralizedPareto
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
 from quivers.continuous._response_time import ExGaussian, InverseGaussian
@@ -41,6 +54,7 @@ from quivers.continuous.families import (
     ConditionalExponential,
     ConditionalFisherSnedecor,
     ConditionalGamma,
+    ConditionalGeneralizedPareto,
     ConditionalGaussianProcess,
     ConditionalGeometric,
     ConditionalGumbel,
@@ -1470,6 +1484,30 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "pymc": {"base_distribution": "dist"},
         },
     ),
+    "ZeroInflatedNegativeBinomial": FamilyMeta(
+        qvr_name="ZeroInflatedNegativeBinomial",
+        distribution_class=ZeroInflatedNegativeBinomial,
+        quivers_class=ConditionalZeroInflatedNegativeBinomial,
+        target_names={},
+    ),
+    "ZeroInflatedBinomial": FamilyMeta(
+        qvr_name="ZeroInflatedBinomial",
+        distribution_class=ZeroInflatedBinomial,
+        quivers_class=ConditionalZeroInflatedBinomial,
+        target_names={},
+    ),
+    "ZeroInflatedBetaBinomial": FamilyMeta(
+        qvr_name="ZeroInflatedBetaBinomial",
+        distribution_class=ZeroInflatedBetaBinomial,
+        quivers_class=ConditionalZeroInflatedBetaBinomial,
+        target_names={},
+    ),
+    "HurdleNegativeBinomial": FamilyMeta(
+        qvr_name="HurdleNegativeBinomial",
+        distribution_class=HurdleNegativeBinomial,
+        quivers_class=ConditionalHurdleNegativeBinomial,
+        target_names={},
+    ),
     "ZeroInflatedPoisson": FamilyMeta(
         qvr_name="ZeroInflatedPoisson",
         distribution_class=ZeroInflatedPoisson,
@@ -1817,3 +1855,11 @@ __all__ = [
     "finite_enumerable_at_call_site",
     "marginalize_support",
 ]
+
+
+FAMILY_META["GeneralizedPareto"] = FamilyMeta(
+    qvr_name="GeneralizedPareto",
+    distribution_class=GeneralizedPareto,
+    quivers_class=ConditionalGeneralizedPareto,
+    target_names={},
+)

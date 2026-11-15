@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the ZeroOneInflatedBeta family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program zerooneinflatedbeta_fixture : Obs -> Obs
+    observe y : Obs <- ZeroOneInflatedBeta(mu=0.4, phi=3.0, zoi=0.2, coi=0.3)
+    return y
+export zerooneinflatedbeta_fixture

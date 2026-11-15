@@ -102,6 +102,71 @@ A draw may name the components of a product value: `sample (v_1, ..., v_m) <- F(
 $\llbracket \mathrm{cod}(F) \rrbracket = K_1 \times \cdots \times K_m$ and has the same denotation as
 the draw of one value $v$, with $v_i$ the $i$-th projection of $v$.
 
+#### Zero-inflated and hurdle count kernels
+
+These count families use counting measure on the nonnegative integers.
+For a component mass function $f$ and structural-zero probability
+$\omega\in[0,1]$, the zero-inflated kernel has mass
+
+$$
+p_{\mathrm{ZI}}(y)=
+\begin{cases}
+\omega+(1-\omega)f(0), & y=0,\\
+(1-\omega)f(y), & y>0.
+\end{cases}
+$$
+
+`ZeroInflatedNegativeBinomial`, `ZeroInflatedBinomial`, and
+`ZeroInflatedBetaBinomial` choose the corresponding component $f$.
+Their `zero_prob` argument is $\omega$, not the complete probability of
+observing zero. A hurdle kernel instead has mass
+
+$$
+p_{\mathrm{H}}(y)=
+\begin{cases}
+\omega, & y=0,\\
+(1-\omega)\dfrac{f(y)}{1-f(0)}, & y>0.
+\end{cases}
+$$
+
+`HurdleNegativeBinomial` uses this positive truncation of its
+negative-binomial component. At component `probs=0`, conditioning on a
+positive count would have a zero denominator. The implemented family
+extends the positive component by its limit as `probs` approaches zero,
+the point mass at one. This extension is distinct from conditioning on an
+event of positive probability.
+
+A binomial or beta-binomial component with zero trials is the point mass
+at zero. Its zero-inflated extension is also the point mass at zero for
+every $\omega$. Trial counts are supplied integer values; declaring them
+does not add a latent variable or an effect. The count samplers are not
+reparameterized, though their likelihood parameters remain differentiable.
+
+Native count arithmetic is a separate implementation contract from these
+mass functions. Binomial, BetaBinomial, NegativeBinomial, Poisson, and the four mixtures
+use float64 parameters, log scores, and moments while retaining gradients
+to the original learned heads. Finite trial counts are validated before
+conversion with $0\leq n\leq 2^{53}$, so their integer values are represented
+exactly in float64. This family-specific bound does not change the signed
+64-bit `Int` carrier or the static natural-number index sort. The resulting
+scores are floating-point approximations to the mass functions above.
+Integer source literals and typed integer inputs retain their integer
+values until the family performs this conversion. The native density
+kernels use stable deviance, Stirling, and gamma-increment forms where
+applicable, rather than relying on subtraction of large log-gamma terms.
+This arithmetic policy does not imply a uniform approximation bound for
+every count and parameter regime.
+
+Poisson, negative-binomial, and their inflated or hurdle samplers have a
+separate operational ceiling: a generated intensity or count must be
+finite and at most $2^{53}$. An execution that exceeds it fails explicitly,
+with `RuntimeError` natively or `DistributionError` in the reference
+backend; it does not truncate, renormalize, or redraw from the kernel.
+An outcome selected from a structural zero atom skips the unreachable
+count branch. This execution limit does not change the mathematical
+kernel or the general integer carrier, and does not itself restrict
+density or moment evaluation at larger real-valued shapes or rates.
+
 ### 2.2 Observations {#22-observe}
 
 An observation
@@ -582,6 +647,12 @@ structure inherited from the integer carrier. Lowering records the carrier as
 `Int` and retains a nonnegative constraint; native and reference input validation
 enforce both integrality and nonnegativity. The corresponding static `Nat`
 parameter instead ranges over index valuations in $\Delta$.
+A static index is not implicitly converted into a runtime integer term.
+In particular, a distribution argument `total_count=n` requires a
+runtime value, such as a parameter `(n : Nat)`; a static binder
+`[n : Nat]` supplies an extent and cannot fill that argument directly.
+The source checker rejects this stage mismatch rather than changing the
+parameter's role during specialization.
 
 For each static valuation $\delta$, let
 $D(\delta)=\llbracket\Gamma_v(\delta)\rrbracket$ be the space of admissible
@@ -624,6 +695,14 @@ commutes with the denotation of the body, because each parameter is bound at the
 and the body's denotation is built from the denotations of its steps, and renaming bound variables
 consistently does not change a denotation. Two calls of one program thus contribute separate
 factors with their own latent variables, as in a hierarchical model.
+
+Static substitution recurses through categorical object expressions,
+including constructor dimensions such as `FinSet n` and `Real n`, products,
+coproducts, slash types, and applied effects. It is not restricted to bare
+axis names. The source program-call grammar currently admits only names
+and signed numeric literals as static actuals; kind checking further
+restricts which a binder accepts. This source restriction is separate from
+the semantic valuation of a general checked telescope.
 
 Static and runtime arities are checked separately. Runtime arguments must match
 the specialized parameter types, including a tensor's element type and shape.

@@ -165,7 +165,7 @@ class ResolvedDist(dx.Model):
     ``family`` is the canonical QVR family name, exactly as it would
     appear if the user had written ``sample x <- family(args)``.
     ``args`` is the tuple of positional arguments after resolution,
-    held in the legacy wire form ``str | float`` for backends that
+    held in the legacy wire form ``str | int | float`` for backends that
     have not migrated to the structural `DrawArg` representation.
 
     The ``original_morphism_name`` and ``via`` fields are diagnostic:
@@ -177,7 +177,7 @@ class ResolvedDist(dx.Model):
     ----------
     family : str
         Canonical distribution family name.
-    args : tuple[str or float, ...]
+    args : tuple[str, int, or float, ...]
         Resolved positional arguments in the backend wire representation.
     original_morphism_name : str
         Source name from which this distribution was resolved.
@@ -186,12 +186,12 @@ class ResolvedDist(dx.Model):
     """
 
     family: str
-    args: tuple[str | float, ...]
+    args: tuple[str | int | float, ...]
     original_morphism_name: str
     via: tuple[str, ...] = ()
 
 
-def _draw_arg_to_wire(arg: DrawArg) -> str | float:
+def _draw_arg_to_wire(arg: DrawArg) -> str | int | float:
     """Lower a `DrawArg` atomic variant to its wire form. Compound
     variants encode positionally so the legacy backend pipeline
     receives the structural literal as a parseable string surrogate."""
@@ -219,13 +219,13 @@ def _draw_arg_to_wire(arg: DrawArg) -> str | float:
     raise TypeError(f"_draw_arg_to_wire: unsupported arg variant {type(arg).__name__}")
 
 
-def _atom_to_text(value: str | float) -> str:
+def _atom_to_text(value: str | int | float) -> str:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return _format_number(float(value))
+        return _format_number(value)
     return str(value)
 
 
-def _format_number(value: float) -> str:
+def _format_number(value: int | float) -> str:
     if value == int(value):
         return f"{int(value)}"
     return repr(value)
@@ -847,7 +847,7 @@ def resolve_step_dist(
         membership in this tuple.
     """
     if morphism_name in family_registry:
-        wire: tuple[str | float, ...]
+        wire: tuple[str | int | float, ...]
         if raw_args:
             wire = tuple(_draw_arg_to_wire(a) for a in raw_args)
         else:
@@ -982,7 +982,7 @@ def _from_init_family(
        default (`_FAMILY_DEFAULT_ARGS`).
     """
     if init.args:
-        wire: tuple[str | float, ...]
+        wire: tuple[str | int | float, ...]
         if step_args:
             wire = tuple(_draw_arg_to_wire(a) for a in step_args)
         else:
@@ -997,7 +997,7 @@ def _from_init_family(
     arg_names = _FAMILY_ARG_NAMES.get(init.family, ())
     option_map = _options_to_map(morphism_options)
     step_wire = tuple(_draw_arg_to_wire(a) for a in step_args) if step_args else ()
-    wire_list: list[str | float] = list(step_wire)
+    wire_list: list[str | int | float] = list(step_wire)
     for i in range(len(step_wire), len(defaults)):
         name = arg_names[i] if i < len(arg_names) else None
         if name is not None and name in option_map:
@@ -1014,12 +1014,12 @@ def _from_init_family(
 
 def _options_to_map(
     options: tuple[OptionEntry, ...],
-) -> dict[str, str | float]:
+) -> dict[str, str | int | float]:
     """Reduce a tuple of `OptionEntry` to a `key -> wire-value` map
     of numeric / string-valued options. Identifier / list / call
     option shapes are ignored (they describe declaration metadata
     like `role=kernel` rather than family arguments)."""
-    out: dict[str, str | float] = {}
+    out: dict[str, str | int | float] = {}
     for entry in options:
         value = entry.value
         if isinstance(value, OptionNumber):
@@ -1047,6 +1047,15 @@ _FAMILY_ARG_NAMES: dict[str, tuple[str, ...]] = {
     "Laplace": ("loc", "scale"),
     "AsymmetricLaplace": ("loc", "scale", "quantile"),
     "ExGaussian": ("loc", "scale", "rate"),
+    "ZeroInflatedNegativeBinomial": ("zero_prob", "total_count", "probs"),
+    "ZeroInflatedBinomial": ("zero_prob", "total_count", "probs"),
+    "ZeroInflatedBetaBinomial": (
+        "zero_prob",
+        "total_count",
+        "concentration1",
+        "concentration0",
+    ),
+    "HurdleNegativeBinomial": ("zero_prob", "total_count", "probs"),
     "HurdleGamma": ("zero_prob", "concentration", "rate"),
     "HurdleLogNormal": ("zero_prob", "loc", "scale"),
     "InverseGaussian": ("mu", "shape"),
@@ -1058,6 +1067,7 @@ _FAMILY_ARG_NAMES: dict[str, tuple[str, ...]] = {
     "Exponential": ("rate",),
     "Uniform": ("low", "high"),
     "StudentT": ("df", "loc", "scale"),
+    "GeneralizedPareto": ("loc", "scale", "concentration"),
     "Pareto": ("scale", "alpha"),
     "Weibull": ("scale", "concentration"),
 }
@@ -1124,7 +1134,7 @@ _assert_family_arg_names_match_torch()
 # Mirror of `_expand_composites._FAMILY_DEFAULT_ARGS` for
 # resolver-side use (the expansion pass does in-chain substitution,
 # this fallback is for standalone kernels).
-_FAMILY_DEFAULT_ARGS: dict[str, tuple[str | float, ...]] = {
+_FAMILY_DEFAULT_ARGS: dict[str, tuple[str | int | float, ...]] = {
     "Normal": (0.0, 1.0),
     "HalfNormal": (1.0,),
     "Cauchy": (0.0, 1.0),
@@ -1132,6 +1142,10 @@ _FAMILY_DEFAULT_ARGS: dict[str, tuple[str | float, ...]] = {
     "Laplace": (0.0, 1.0),
     "AsymmetricLaplace": (0.0, 1.0, 0.5),
     "ExGaussian": (0.0, 1.0, 1.0),
+    "ZeroInflatedNegativeBinomial": (0.25, 1.0, 0.5),
+    "ZeroInflatedBinomial": (0.25, 1.0, 0.5),
+    "ZeroInflatedBetaBinomial": (0.25, 1.0, 1.0, 1.0),
+    "HurdleNegativeBinomial": (0.25, 1.0, 0.5),
     "HurdleGamma": (0.25, 1.0, 1.0),
     "HurdleLogNormal": (0.25, 0.0, 1.0),
     "InverseGaussian": (1.0, 1.0),
@@ -1143,6 +1157,7 @@ _FAMILY_DEFAULT_ARGS: dict[str, tuple[str | float, ...]] = {
     "Exponential": (1.0,),
     "Uniform": (0.0, 1.0),
     "StudentT": (1.0, 0.0, 1.0),
+    "GeneralizedPareto": (0.0, 1.0, 0.0),
     "Pareto": (1.0, 1.0),
     "Weibull": (1.0, 1.0),
     # Multivariate-shape families (`MultivariateNormal`,

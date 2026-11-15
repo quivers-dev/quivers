@@ -775,9 +775,9 @@ class IRArg(dx.TaggedUnion, discriminator="kind"):
 
 
 class IRArgNumber(IRArg):
-    """A numeric literal."""
+    """A numeric literal preserving its integer or real carrier."""
 
-    value: float
+    value: int | float
     kind: Literal["number"] = "number"
 
 

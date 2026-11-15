@@ -92,17 +92,17 @@ def test_poisson_exposure_is_observation_time_multiplier(data):
     lens = FormulaToQVRModule(families["poisson"])
     program = Compiler(lens.forward(formula)[0]).compile().morphism
     observations = lens.fixed_column_observations(formula) | {
-        "y": torch.tensor(frame.y.to_numpy(), dtype=torch.float32),
+        "y": torch.tensor(frame.y.to_numpy(), dtype=torch.float64),
         "intercept": torch.tensor(0.1, requires_grad=True),
         "beta_x": torch.tensor(0.2, requires_grad=True),
     }
     recorded = trace(program, torch.zeros(1, 1, dtype=torch.long), observations)
     rate = torch.exp(
-        observations["intercept"] + observations["beta_x"] * observations["x"]
+        observations["intercept"].double()
+        + observations["beta_x"].double() * observations["x"].double()
     ) * torch.tensor(frame.time.to_numpy(), dtype=torch.float32)
-    expected = (
-        observations["y"] * rate.log() - rate - torch.lgamma(observations["y"] + 1)
-    ).sum()
+    response = observations["y"].double()
+    expected = (response * rate.log() - rate - torch.lgamma(response + 1)).sum()
     actual = recorded.sites["y"].log_prob.sum()
     torch.testing.assert_close(actual, expected)
     variables = (observations["intercept"], observations["beta_x"])
@@ -185,7 +185,9 @@ def test_fitting_and_posterior_helpers_retain_native_offsets(data, method):
         dtype=torch.float32,
     )
     torch.testing.assert_close(result.posterior_linpred(), eta.expand(1, 2, 4))
-    torch.testing.assert_close(result.posterior_epred(), eta.exp().expand(1, 2, 4))
+    torch.testing.assert_close(
+        result.posterior_epred(), eta.double().exp().expand(1, 2, 4)
+    )
     assert set(result.fixed_effects()) == {"Intercept", "x"}
     assert "formula_offset_1" in result.qvr_source
     loads(result.qvr_source)

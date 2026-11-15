@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the NegativeBinomial family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program negativebinomial_fixture : Obs -> Obs
+    observe y : Obs <- NegativeBinomial(total_count=2.0, probs=0.5)
+    return y
+export negativebinomial_fixture
