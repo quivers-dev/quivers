@@ -568,3 +568,21 @@ def test_completion_unresolvable_scope_prefix_returns_empty(lda_session):
 
     cs = [c for c in all_completions(lda_session, "nonexistent::") if c.kind == "env"]
     assert cs == []
+
+
+def test_symbolic_model_tree_exposes_declared_data():
+    s = ReplSession()
+    result = s.dispatch("""object Row : FinSet _
+object Out : Real 1
+program p : Row -> Out
+    data x : Tensor[Real]([Row])
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let mu = b * x
+    observe y : Row <- Normal(loc=mu, scale=1.0)
+    return b
+export p
+""")
+    assert result.ok, result.diagnostics
+    paths = {path: label for _, label, path in _walk_paths(_build_fake_tree(s)) if path}
+    assert paths["Row"] == "object Row : FinSet _"
+    assert paths["p::x"] == "data x : Tensor[Real]([Row])"

@@ -8,7 +8,8 @@ on the compiler's objects and know nothing of either front end.
 
 from __future__ import annotations
 
-from quivers.dsl.emit import draw_call_to_source
+from quivers.dsl.ast_nodes import ObjectDecl
+from quivers.dsl.emit import _emit_qiec_type, draw_call_to_source, module_to_source
 
 # Each ``_children_for_*`` returns ``(head_label, children)`` where
 # ``children`` is a possibly nested list of either ``str`` leaves or
@@ -29,6 +30,10 @@ def _pretty(obj):  # type: ignore[no-untyped-def]
 
 
 def _children_for_object(name, obj):  # type: ignore[no-untyped-def]
+    if isinstance(obj, ObjectDecl):
+        from quivers.dsl.ast_nodes import Module
+
+        return module_to_source(Module(statements=(obj,))).strip(), []
     card = getattr(obj, "cardinality", None)
     if card is not None:
         return f"{name} : FinSet {card}", []
@@ -36,6 +41,8 @@ def _children_for_object(name, obj):  # type: ignore[no-untyped-def]
 
 
 def _children_for_space(name, sp):  # type: ignore[no-untyped-def]
+    if isinstance(sp, ObjectDecl):
+        return _children_for_object(name, sp)
     dim = getattr(sp, "dim", None)
     if dim is not None:
         return f"{name} : Real {dim}", []
@@ -88,6 +95,8 @@ def _children_for_program(name, tmpl):  # type: ignore[no-untyped-def]
 
 def _step_node(step):  # type: ignore[no-untyped-def]
     cls = type(step).__name__
+    if cls == "DataStep":
+        return f"data {step.name} : {_emit_qiec_type(step.type_expr)}", []
     if cls == "SampleStep":
         vars_ = getattr(step, "vars", ()) or ()
         var = vars_[0] if vars_ else "?"

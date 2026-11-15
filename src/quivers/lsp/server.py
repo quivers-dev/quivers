@@ -31,7 +31,7 @@ from pygls.protocol.language_server import LanguageServerProtocol, lsp_method
 from lsprotocol import types as lsp
 
 from quivers import __version__
-from quivers.analysis.scope import ScopedRef, resolve_scoped_path
+from quivers.analysis.scope import ScopedRef, resolve_scoped_path, top_level_bindings
 from quivers.cli.repl_complete import all_completions
 from quivers.cli.repl_highlight import (
     SEMANTIC_TOKEN_MODIFIERS,
@@ -46,6 +46,7 @@ from quivers.cli.repl_session import (
 )
 from quivers.dsl.ast_nodes import (
     ContinuousConstructor,
+    DataStep,
     DefineDecl,
     MorphismDecl,
     ObjectDecl,
@@ -480,6 +481,11 @@ def _env_kinds_for(doc: DocumentState) -> dict[str, str]:
     kinds: dict[str, str] = qiec_env_kinds(doc.module)
     if compiler is None:
         return kinds
+    for ref in top_level_bindings(compiler):
+        if ref.kind in {"object", "space"}:
+            kinds[ref.name] = "type"
+        elif ref.kind == "program":
+            kinds[ref.name] = "function"
     for name in getattr(compiler, "objects", {}):
         kinds[name] = "type"
     for name in getattr(compiler, "spaces", {}):
@@ -780,9 +786,9 @@ def _render_hover(
             return f"```\n{name} :: {type(doc.env[name]).__name__}\n```"
         return None
     qvr = _slice_source(doc, decl)
-    if isinstance(decl, QiecBinder | QiecValueParameter | QiecLocalBinding) or (
-        isinstance(decl, QiecTypeName) and qiec_local is decl
-    ):
+    if isinstance(
+        decl, DataStep | QiecBinder | QiecValueParameter | QiecLocalBinding
+    ) or (isinstance(decl, QiecTypeName) and qiec_local is decl):
         source_lines = doc.source.splitlines()
         source_line = max(0, getattr(decl, "line", 1) - 1)
         qvr = (
@@ -1374,6 +1380,8 @@ def _qiec_local_signature(local: object) -> str:
     """Render one lexical QIEC binder for hover and completion details."""
 
     name = str(getattr(local, "name", ""))
+    if isinstance(local, DataStep):
+        return f"data {name} : {_emit_qiec_type(local.type_expr)}"
     if isinstance(local, QiecBinder):
         return _emit_qiec_binder(local)
     if isinstance(local, QiecValueParameter):

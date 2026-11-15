@@ -17,7 +17,7 @@ import didactic.api as dx
 
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
-from quivers.dsl.ast_nodes import Module, ProgramDecl, Statement
+from quivers.dsl.ast_nodes import Module, ObjectDecl, ProgramDecl, Statement
 from quivers.dsl.ast_nodes.program_steps import CallStep, MarginalizeStep
 from quivers.dsl.ast_nodes.qiec import (
     QiecCallComputation,
@@ -291,7 +291,15 @@ def analyze_module(
         compiler = Compiler(non_qiec_module, lower_qiec=False)
     compile_error: CompileError | None = None
     try:
-        env = {} if has_inferred_objects(module) else compiler.compile_env()
+        if has_inferred_objects(module):
+            env = {}
+            for statement in module.statements:
+                if isinstance(statement, ObjectDecl):
+                    env.update((name, statement) for name in statement.names)
+                elif isinstance(statement, ProgramDecl):
+                    env[statement.name] = statement
+        else:
+            env = compiler.compile_env()
     except CompileError as error:
         compile_error = error
         env = {}

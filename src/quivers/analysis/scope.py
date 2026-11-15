@@ -52,11 +52,16 @@ import didactic.api as dx
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.dsl.ast_nodes import (
     BundleDecl,
+    ContinuousConstructor,
+    DataStep,
     LetStep,
     MarginalizeStep,
     ObserveStep,
+    ObjectDecl,
+    ProgramDecl,
     ReturnStep,
     SampleStep,
+    TypeFromExpr,
 )
 
 ScopeKind = Literal[
@@ -76,6 +81,7 @@ ScopeKind = Literal[
     "category",
     # Sub-scopes
     "param",  # program parameter
+    "data-input",
     "sample-site",
     "observe-site",
     "let-site",
@@ -212,6 +218,28 @@ def top_level_bindings(compiler) -> tuple[ScopedRef, ...]:  # type: ignore[no-un
             out.append(
                 ScopedRef(name=name, kind=kind, path=name, parent_kind=None, node=node)
             )
+    # Symbolic finite objects are checked before data can specialize them.
+    # Their source declarations still supply inspectable scopes.
+    for statement in getattr(getattr(compiler, "_module", None), "statements", ()):
+        if isinstance(statement, ObjectDecl | ProgramDecl):
+            names = (
+                statement.names
+                if isinstance(statement, ObjectDecl)
+                else (statement.name,)
+            )
+            kind = "object" if isinstance(statement, ObjectDecl) else "program"
+            if (
+                isinstance(statement, ObjectDecl)
+                and isinstance(statement.init, TypeFromExpr)
+                and isinstance(statement.init.expr, ContinuousConstructor)
+            ):
+                kind = "space"
+            for name in names:
+                if name not in seen:
+                    seen.add(name)
+                    out.append(
+                        ScopedRef(name=name, kind=kind, path=name, node=statement)
+                    )
     return tuple(out)
 
 
@@ -230,17 +258,7 @@ def _top_level_lookup(compiler, name: str) -> ScopedRef | None:  # type: ignore[
     ScopedRef | None
         The binding `top_level_bindings` gives the name, or ``None``.
     """
-    for attr, kind in TOP_LEVEL_ACCESSORS:
-        mapping = getattr(compiler, attr, None) or {}
-        if name in mapping:
-            return ScopedRef(
-                name=name,
-                kind=kind,
-                path=name,
-                parent_kind=None,
-                node=mapping[name],
-            )
-    return None
+    return next((ref for ref in top_level_bindings(compiler) if ref.name == name), None)
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +267,8 @@ def _top_level_lookup(compiler, name: str) -> ScopedRef | None:  # type: ignore[
 
 
 def _step_kind(step: object) -> ScopeKind | None:
+    if isinstance(step, DataStep):
+        return "data-input"
     if isinstance(step, SampleStep):
         return "sample-site"
     if isinstance(step, ObserveStep):
@@ -269,6 +289,8 @@ def _step_kind(step: object) -> ScopeKind | None:
 def _step_bound_name(step: object) -> str | None:
     """Return the name a step binds, or ``None`` for steps that
     bind multiple names or none."""
+    if isinstance(step, DataStep):
+        return step.name
     if isinstance(step, SampleStep):
         vars_ = getattr(step, "vars", ()) or ()
         return vars_[0] if len(vars_) == 1 else None

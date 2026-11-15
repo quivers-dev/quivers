@@ -623,23 +623,25 @@ def _build_tui_app(session: ReplSession) -> object:
                 # Show every populated bucket; suppress empty ones so a
                 # tiny module's status line stays readable.
                 parts: list[str] = []
-                for label, mapping in (
-                    ("obj", compiler.objects),
-                    ("space", compiler.spaces),
-                    ("morph", compiler.morphisms),
-                    ("rule", compiler.rules),
-                    ("prog", compiler.programs),
-                    ("ded", compiler.deductions),
-                    ("sig", compiler.signatures),
-                    ("enc", compiler.encoders),
-                    ("dec", compiler.decoders),
-                    ("loss", compiler.losses),
-                    ("bundle", compiler.bundles),
-                    ("contr", compiler.contractions),
-                ):
-                    n = len(mapping)
-                    if n:
-                        parts.append(f"{n} {label}")
+                refs = top_level_bindings(compiler)
+                labels = {
+                    "object": "obj",
+                    "space": "space",
+                    "morphism": "morph",
+                    "rule": "rule",
+                    "program": "prog",
+                    "deduction": "ded",
+                    "signature": "sig",
+                    "encoder": "enc",
+                    "decoder": "dec",
+                    "loss": "loss",
+                    "bundle": "bundle",
+                    "contraction": "contr",
+                }
+                for kind, label in labels.items():
+                    count = sum(ref.kind == kind for ref in refs)
+                    if count:
+                        parts.append(f"{count} {label}")
                 qiec_count = len(qiec_bindings(self.session.module))
                 if qiec_count:
                     parts.append(f"{qiec_count} qiec")

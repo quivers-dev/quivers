@@ -41,6 +41,7 @@ from quivers.analysis.scope import (
     find_all_references,
     resolve_scoped_path,
     scope_children,
+    top_level_bindings,
 )
 from quivers.cli.repl_browse import (
     _children_for_bundle,
@@ -64,6 +65,7 @@ from quivers.dsl import (
     parse,
 )
 from quivers.dsl.ast_nodes import (
+    DataStep,
     ExportDecl,
     ExprCompose,
     ExprIdent,
@@ -86,7 +88,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecHandlerDecl,
 )
 from quivers.dsl.constraints import Violation, check_constraints
-from quivers.dsl.emit import draw_call_to_source, module_to_source
+from quivers.dsl.emit import _emit_qiec_type, draw_call_to_source, module_to_source
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_tooling import (
     analyze_module,
@@ -967,6 +969,11 @@ class ReplSession:
         if not self._compiler:
             return _pretty_object(expr)
         if isinstance(expr, TypeName):
+            if any(
+                expr.name in getattr(statement, "names", ())
+                for statement in self._module.statements
+            ):
+                return expr.name
             if (
                 expr.name in self._compiler.objects
                 or expr.name in self._compiler.spaces
@@ -999,6 +1006,8 @@ class ReplSession:
             return f"{ref.name} :: ?"
         if kind in ("sample-site", "observe-site", "marginalize-site"):
             return _site_signature(ref.name, node)
+        if kind == "data-input" and isinstance(node, DataStep):
+            return f"{ref.name} :: {_emit_qiec_type(node.type_expr)}"
         if kind == "let-site":
             return f"{ref.name} :: ?"
         if kind == "score-site":
@@ -1102,8 +1111,12 @@ class ReplSession:
         if kind == "morphism":
             return self._type_line_for_morphism(ref.name, node)
         if kind == "object":
+            if isinstance(node, ObjectDecl):
+                return _render_decl(node).strip()
             return f"object {ref.name} : {_pretty_object(node)}"
         if kind == "space":
+            if isinstance(node, ObjectDecl):
+                return _render_decl(node).strip()
             return f"space {ref.name} : {_pretty_object(node)}"
         if kind == "deduction":
             dom = getattr(node, "domain", None)
@@ -1141,6 +1154,8 @@ class ReplSession:
             if universe is not None:
                 return f"param {ref.name} : {universe}"
             return f"param {ref.name}"
+        if kind == "data-input" and isinstance(node, DataStep):
+            return f"data {ref.name} : {_emit_qiec_type(node.type_expr)}"
         if kind == "sample-site":
             return _render_sample_line(node)
         if kind == "observe-site":
@@ -1739,14 +1754,22 @@ class ReplSession:
             ("contractions", compiler.contractions, _children_for_contraction),
         )
         programs = compiler.programs
+        source_refs = top_level_bindings(compiler)
         for ns, mapping, builder in sources:
+            kind = {"objects": "object", "spaces": "space", "programs": "program"}.get(
+                ns
+            )
+            display_mapping: dict[str, object] = dict(mapping)
+            for ref in source_refs:
+                if ref.kind == kind:
+                    display_mapping.setdefault(ref.name, ref.node)
             entries: list[tuple[str, object]] = []
-            for name in sorted(mapping):
+            for name in sorted(display_mapping):
                 if ns == "morphisms" and name in programs:
                     # A program without typed parameters also compiles
                     # to a morphism; it is listed once, as the program.
                     continue
-                head, children = builder(name, mapping[name])
+                head, children = builder(name, display_mapping[name])
                 entries.append((head, children))
             groups[ns] = entries
         qiec_groups = {
@@ -2671,6 +2694,7 @@ _VALUE_REF_KINDS: frozenset[str] = frozenset(
         "program",
         "deduction",
         "sample-site",
+        "data-input",
         "observe-site",
         "marginalize-site",
         "let-site",
