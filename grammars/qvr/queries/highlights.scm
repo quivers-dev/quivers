@@ -176,6 +176,8 @@
     "HalfNormal"
     "HalfStudentT"
     "Horseshoe"
+    "HurdleGamma"
+    "HurdleLogNormal"
     "HurdlePoisson"
     "Independent"
     "InverseGamma"
