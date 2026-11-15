@@ -35,6 +35,7 @@ import re
 
 import didactic.api as dx
 import formulae as fo
+from formulae.matrices import DesignMatrices
 import narwhals as nw
 import numpy as np
 from narwhals.typing import IntoDataFrame
@@ -540,6 +541,41 @@ def formula_from_data(
         interaction or group, or weights are nonnumeric, negative, nonfinite,
         or misaligned with the evaluated response rows.
     """
+    return _formula_and_design(
+        formula, data, weights=weights, extra_namespace=extra_namespace
+    )[0]
+
+
+def _formula_and_design(
+    formula: str,
+    data: IntoDataFrame,
+    *,
+    weights: str | None = None,
+    extra_namespace: Mapping[str, object] | None = None,
+) -> tuple[Formula, DesignMatrices]:
+    """Evaluate a formula once and retain its fitted transformation state.
+
+    Parameters
+    ----------
+    formula : str
+        Regression formula.
+    data : IntoDataFrame
+        Training rows.
+    weights : str or None
+        Optional likelihood-weight column.
+    extra_namespace : Mapping[str, object] or None
+        Additional expression bindings.
+
+    Returns
+    -------
+    tuple[Formula, DesignMatrices]
+        The immutable source IR and the evaluated formulae design.
+
+    Raises
+    ------
+    ValueError
+        If modifiers, weights, or evaluated response rows are invalid.
+    """
     nw_df = nw.from_native(data, eager_only=True)
     pandas_df = nw_df.to_pandas()
     response_weights = None
@@ -676,7 +712,7 @@ def formula_from_data(
         response_values=response_values,
         group_levels=group_levels,
         group_indices=group_indices,
-    )
+    ), dm
 
 
 __all__ = [

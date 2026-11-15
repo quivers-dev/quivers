@@ -116,6 +116,26 @@ beta_x    (true 2.0): 2.031 ± 0.036
 
 The `±` values are standard deviations of the guide's draws, the spread of the approximation. Whether that spread is accurate needs a reference, such as a well-mixed NUTS fit of the same model.
 
+### Predict on new rows
+
+Pass a frame of covariates to predict without a response column:
+
+```python
+future = pd.DataFrame({"x": [-1.0, 0.0, 1.0]})
+future_mean = result.posterior_epred(new_data=future, num_samples=20, seed=7)
+future_response = result.posterior_predict(new_data=future, num_samples=20, seed=7)
+assert future_mean.shape == future_response.shape == (1, 20, 3)
+```
+
+The first result contains expected responses; the second adds response noise.
+`posterior_linpred` instead exposes the linear predictor, with
+`transform=True` for its inverse-link value. New rows reuse fitted transforms
+and contrasts. Grouped models accept fitted group levels in any row order
+and reject new levels. Responses and likelihood weights are unnecessary;
+offsets, exposures, auxiliary predictors, and per-row trials still require
+their columns. The [new-row guide](../../guides/analysis-data-and-formulas.md#predictions-on-new-rows)
+gives a grouped distributional example and the neural-input contract.
+
 ## Random effects: hierarchical model under SVI
 
 Eight groups, each with its own intercept offset, and twelve rows per group:

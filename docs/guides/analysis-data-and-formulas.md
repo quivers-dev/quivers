@@ -843,7 +843,7 @@ and draws 100 guide samples. Guide draws are reproducible under `seed` and
 preserve the caller's CPU random state.
 
 `posterior_linpred` returns the native linear predictor on the retained training
-rows. `transform=True` instead returns the inverse-link binding. These differ
+rows, or on `new_data` when supplied. `transform=True` instead returns the inverse-link binding. These differ
 from `posterior_epred`, which evaluates the native response expectation. For
 instance, a binomial transformed predictor is a success probability, while its
 expected response multiplies that probability by the actual trial count. An
@@ -853,7 +853,7 @@ inflated-beta expectations include boundary mass.
 
 `posterior_predict` returns a tensor of replicated responses with shape
 `(chain, draw, row)`. Each posterior draw supplies an independent response
-for each training row, including when rows share all distribution parameters.
+for each requested row, including when rows share all distribution parameters.
 It uses the native response sampler, so binomial draws respect each row's trial
 count and hurdle draws include the zero atom. Categorical and ordinal draws are
 integer codes in `category_labels` order. Likelihood weights affect fitting;
@@ -870,14 +870,76 @@ an additional level axis for group adjustments. For ordinal models,
 thresholds; `posterior_epred` evaluates those probabilities directly.
 
 These helpers use the evaluated design matrices and fitted group coding.
-They do not reparse formulas or compile a new program for each draw. Predictions
-on new data require retained formula encodings and a specified policy for new
-group levels; this formula interface currently exposes training-row predictions.
+They do not reparse formulas or compile a new program for each draw.
 Undefined means, including a Cauchy mean or a Student-t draw without a finite
 mean, raise an error. Circular responses require an angular convention and are
 also refused by `posterior_epred`.
 `posterior_predict` can still sample these families because it does not require
 a response expectation.
+
+### Predictions on new rows
+
+Pass `new_data` to `posterior_linpred`, `posterior_epred`, or
+`posterior_predict` to change the prediction rows while retaining the fitted
+coefficients and group effects. The frame supplies every predictor used by
+the location and auxiliary formulas. It does not need the response or
+likelihood-weight column:
+
+```python
+future_participants = pd.DataFrame({
+    "x": [-0.5, 1.5, 0.2],
+    "z": [0.1, -0.3, 0.4],
+    "participant": ["b", "a", "b"],
+})
+future_linear = posterior_fit.posterior_linpred(
+    new_data=future_participants, num_samples=5, seed=7,
+)
+future_mean = posterior_fit.posterior_epred(
+    new_data=future_participants, num_samples=5, seed=7,
+)
+future_response = posterior_fit.posterior_predict(
+    new_data=future_participants, num_samples=5, seed=7,
+)
+assert future_linear.shape == future_mean.shape == future_response.shape == (1, 5, 3)
+torch.testing.assert_close(future_linear, future_mean)
+
+# A weighted count fit also predicts without responses or likelihood weights.
+future_counts = pd.DataFrame({"x": [-0.5, 0.5], "hours": [1.0, 2.0]})
+assert weighted_fit.posterior_epred(new_data=future_counts, num_samples=5).shape == (1, 5, 2)
+```
+
+The result preserves input row order, with separate chain and draw axes.
+The row count may change. Fitted transforms, including centering, scaling,
+and orthogonal polynomial bases, retain their training state; categorical
+predictors retain their contrasts and column order. Known categorical and
+group levels may appear in any order, repeat, or be absent from the new
+frame. An unseen categorical level or group raises `ValueError`; this
+interface does not create coefficients or sample effects for a new group.
+The fitted latent layout and coefficient priors remain fixed.
+
+Include columns used by offsets and exposures, and by auxiliary formulas.
+Exposures remain strictly positive. A binomial or beta-binomial fit with
+per-row trials needs its column of positive integer trial counts on the new
+rows; a fixed trial count is reused. Missing predictors, nonfinite evaluated values, incompatible
+design widths, and missing categorical or group values are refused before
+posterior draws are taken. Prediction frames must be nonempty and have
+unique column names. Response and likelihood-weight values, if present,
+do not determine the predicted response law.
+
+A neural fit additionally requires `predictor_data` for the new rows:
+`neural_fit.posterior_epred(new_data=future, predictor_data=new_features)`.
+The input must have the required row count and produce finite predictor
+values. Evaluation temporarily uses the fitted module's evaluation mode
+and restores its prior mode. Supplying `predictor_data` without `new_data`,
+or for a fit without a neural predictor, raises an error.
+
+The fitted evaluator prepares the new design columns once per request and
+compiles one row-specialized native program, then replays it for all draws
+into one allocated output tensor. Training observations and the fitted
+source remain unchanged. These retained evaluators are live runtime state;
+the versioned prediction plan explicitly refuses serialization. Keep the
+fit in the current process until a portable fitted-artifact format is
+available.
 
 ## See also
 

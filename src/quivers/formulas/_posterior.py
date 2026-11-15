@@ -16,6 +16,7 @@ from quivers.inference.trace import Trace, trace
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
+    from quivers.formulas._prediction import PredictionContext
 
 
 def draw_count(
@@ -120,7 +121,11 @@ def posterior_draws(
 
 
 def replay(
-    fit: BayesianFit, draws: dict[str, torch.Tensor], shape: tuple[int, int]
+    fit: BayesianFit,
+    draws: dict[str, torch.Tensor],
+    shape: tuple[int, int],
+    *,
+    context: PredictionContext | None = None,
 ) -> Iterator[Trace]:
     """Replay the retained native program once per draw, without recompilation.
 
@@ -132,6 +137,8 @@ def replay(
         Validated constrained posterior draws.
     shape : tuple[int, int]
         The chain count and draw count.
+    context : PredictionContext or None
+        Prepared fresh-row program and bindings, or None for training rows.
 
     Yields
     ------
@@ -139,13 +146,16 @@ def replay(
         One native execution trace per chain and draw.
     """
     with torch.no_grad():
-        observations = dict(fit.observations)
+        observations = dict(
+            fit.observations if context is None else context.observations
+        )
+        program = fit.program if context is None else context.program
         input = torch.zeros(1, 1, dtype=torch.long)
         for chain in range(shape[0]):
             for draw in range(shape[1]):
                 latents = {name: values[chain, draw] for name, values in draws.items()}
                 yield trace(
-                    fit.program,
+                    program,
                     input,
                     observations | latents,
                 )

@@ -92,8 +92,11 @@ The [diagnostics adapter](../api/diagnostics/index.md) converts quivers' inferen
 records for [ArviZ](https://python.arviz.org/) and returns an
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)
 with ArviZ-compatible groups. A formula fit's `posterior_predict` method
-supplies replicated responses on its retained training rows, including response
-noise and preserving separate chain and draw axes. Its
+supplies replicated responses on its retained training rows, or on a `new_data`
+frame evaluated with fitted transforms and known group levels. It includes response
+noise and preserves separate chain and draw axes. The
+[new-row workflow](analysis-data-and-formulas.md#predictions-on-new-rows)
+shows prediction without response or weight columns. The
 [posterior workflow](analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
 distinguishes these draws from linear predictors and expected responses.
 

@@ -193,6 +193,11 @@ original binding, and an explicit seed preserves the caller's random state.
 This operation accepts values in the model's checked representation. It does
 not reconstruct dataframe contrasts or assign meanings to unseen participant
 labels; those operations require the corresponding retained data encoding.
+Formula fits retain that encoding: use
+`formula_fit.posterior_predict(new_data=frame)` for a `BayesianFit`, with
+fitted transforms and known group levels. The
+[formula prediction guide](analysis-data-and-formulas.md#predictions-on-new-rows)
+also covers linear predictors, expected responses, and rejected new levels.
 
 ### Extract pointwise log likelihoods
 

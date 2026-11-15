@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Literal, Mapping
 
 import didactic.api as dx
+from formulae.matrices import DesignMatrices
 import narwhals as nw
 import torch
 from torch import nn
@@ -29,7 +30,13 @@ from quivers.dsl import Compiler
 from quivers.dsl.emit import module_to_source
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas.family import Family, families
-from quivers.formulas.formula import Formula, _qvr_name, formula_from_data
+from quivers.formulas.formula import (
+    Formula,
+    _formula_and_design,
+    _qvr_name,
+    formula_from_data,
+)
+from quivers.formulas._prediction import FormulaPredictionPlan
 from quivers.inference import (
     ELBO,
     HMCKernel,
@@ -66,10 +73,13 @@ class BayesianFit(ValueModel):
     distributional : Mapping[str, Formula]
         Evaluated auxiliary-parameter design matrices, retained so source
         inspection emits the fitted model without re-evaluating transforms.
+    prediction_plan : FormulaPredictionPlan or None
+        Live fitted evaluators for new-data prediction. The versioned runtime
+        plan is held by identity and explicitly refuses durable serialization.
 
     Fits compare by value over the formula, family, and settings, and
     by identity over the live objects: the program, the posterior, the
-    observations mapping, the predictor, and its data. Two fits are
+    observations mapping, the predictor, its data, and the prediction plan. Two fits are
     thus equal exactly when they share those objects and agree on
     everything else.
     """
@@ -99,6 +109,9 @@ class BayesianFit(ValueModel):
     fixed_parameters: dict[str, float] = dx.field(default_factory=dict)
     distributional: Mapping[str, Formula] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    prediction_plan: FormulaPredictionPlan | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
     @property
@@ -303,10 +316,12 @@ class BayesianFit(ValueModel):
         *,
         parameter: str = "mu",
         transform: bool = False,
+        new_data: IntoDataFrame | None = None,
+        predictor_data: torch.Tensor | None = None,
         num_samples: int | None = None,
         seed: int = 0,
     ) -> torch.Tensor:
-        """Replay a fitted linear predictor on its retained training rows.
+        """Replay a fitted linear predictor on training or fresh predictor rows.
 
         Parameters
         ----------
@@ -316,6 +331,13 @@ class BayesianFit(ValueModel):
             Return the native inverse-link binding instead of its linear
             predictor. For binomial data this is a probability, not a count.
             Ordinal probabilities are supplied by `posterior_epred`.
+        new_data : IntoDataFrame or None
+            Fresh predictor rows evaluated with fitted transforms, contrasts,
+            and known group levels. None reuses the retained training rows.
+            Response and likelihood-weight columns are not required.
+        predictor_data : torch.Tensor or None
+            Explicit input for a neural predictor on new rows. Required for
+            neural fits with new_data; otherwise must be None.
         num_samples : int or None
             Draw count under the convention of `draws`.
         seed : int
@@ -339,6 +361,7 @@ class BayesianFit(ValueModel):
             replay,
             row_binding,
         )
+        from quivers.formulas._prediction import prepare_prediction
 
         self._formula_predictor(parameter)
         ordinal = self.family.observe_family in {"OrderedLogistic", "OrderedProbit"}
@@ -351,9 +374,10 @@ class BayesianFit(ValueModel):
             if parameter == "mu"
             else (parameter if transform else f"dpar_{parameter}_eta")
         )
+        context = prepare_prediction(self, new_data, predictor_data)
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
-        rows = self.formula.response_values.shape[0]
+        rows = context.rows
         categories = (
             len(self.category_labels)
             if self.family.observe_family == "Categorical"
@@ -362,18 +386,28 @@ class BayesianFit(ValueModel):
         return collect_draws(
             (
                 row_binding(recorded.sites[binding].value, rows, categories)
-                for recorded in replay(self, draws, shape)
+                for recorded in replay(self, draws, shape, context=context)
             ),
             shape,
         )
 
     def posterior_epred(
-        self, *, num_samples: int | None = None, seed: int = 0
+        self,
+        *,
+        new_data: IntoDataFrame | None = None,
+        predictor_data: torch.Tensor | None = None,
+        num_samples: int | None = None,
+        seed: int = 0,
     ) -> torch.Tensor:
-        """Evaluate the native expected response on retained training rows.
+        """Evaluate native expected responses on training or fresh rows.
 
         Parameters
         ----------
+        new_data : IntoDataFrame or None
+            Fresh predictor rows using fitted encodings and known levels,
+            or None for training rows. No response or weight column is needed.
+        predictor_data : torch.Tensor or None
+            Explicit neural input for new_data, required for neural fits.
         num_samples : int or None
             Draw count under the convention of `draws`.
         seed : int
@@ -403,19 +437,21 @@ class BayesianFit(ValueModel):
             response_distribution,
             row_binding,
         )
+        from quivers.formulas._prediction import prepare_prediction
 
         if self.family.observe_family == "VonMises":
             raise TypeError(
                 "a circular response expectation requires an angular convention"
             )
+        context = prepare_prediction(self, new_data, predictor_data)
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
-        rows = self.formula.response_values.shape[0]
+        rows = context.rows
         response = _qvr_name(self.formula.response_name)
         categories = len(self.category_labels)
 
         def values():
-            for recorded in replay(self, draws, shape):
+            for recorded in replay(self, draws, shape, context=context):
                 distribution = response_distribution(recorded, response)
                 if self.family.observe_family == "Categorical":
                     if not isinstance(distribution, torch.distributions.Categorical):
@@ -452,12 +488,22 @@ class BayesianFit(ValueModel):
         return collect_draws(values(), shape)
 
     def posterior_predict(
-        self, *, num_samples: int | None = None, seed: int = 0
+        self,
+        *,
+        new_data: IntoDataFrame | None = None,
+        predictor_data: torch.Tensor | None = None,
+        num_samples: int | None = None,
+        seed: int = 0,
     ) -> torch.Tensor:
-        """Sample native response distributions on retained training rows.
+        """Sample native response distributions on training or fresh rows.
 
         Parameters
         ----------
+        new_data : IntoDataFrame or None
+            Fresh predictor rows using fitted encodings and known levels,
+            or None for training rows. No response or weight column is needed.
+        predictor_data : torch.Tensor or None
+            Explicit neural input for new_data, required for neural fits.
         num_samples : int or None
             Maximum draws per MCMC chain, or fresh guide draws, following
             `draws`. Each posterior draw supplies one response per row.
@@ -486,14 +532,16 @@ class BayesianFit(ValueModel):
             replay,
             row_binding,
         )
+        from quivers.formulas._prediction import prepare_prediction
 
+        context = prepare_prediction(self, new_data, predictor_data)
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
-        rows = self.formula.response_values.shape[0]
+        rows = context.rows
         response = _qvr_name(self.formula.response_name)
 
         def values():
-            for recorded in replay(self, draws, shape):
+            for recorded in replay(self, draws, shape, context=context):
                 sampleable = recorded.sites[response].sampleable
                 if sampleable is None:
                     raise TypeError("the response has no native sampling operation")
@@ -774,9 +822,10 @@ def fit(
         else:
             family_obj = family
 
-        parsed = formula_from_data(formula, data, weights=weights)
+        parsed, design = _formula_and_design(formula, data, weights=weights)
+        parameter_designs: dict[str, DesignMatrices] = {}
         parameter_formulas = _parse_distributional(
-            distributional, data, parsed.response_name
+            distributional, data, parsed.response_name, designs=parameter_designs
         )
         predictor_name = "neural_eta" if predictor is not None else None
         if predictor is not None and predictor_data is None:
@@ -897,6 +946,9 @@ def fit(
             predictor_name=predictor_name,
             distributional=parameter_formulas,
             fixed_parameters=dict(fixed_parameters or {}),
+            prediction_plan=FormulaPredictionPlan(
+                module=module, designs={"mu": design, **parameter_designs}
+            ),
         )
 
 
@@ -1101,6 +1153,8 @@ def _parse_distributional(
     formulas: Mapping[str, str] | None,
     data: IntoDataFrame,
     response: str,
+    *,
+    designs: dict[str, DesignMatrices] | None = None,
 ) -> dict[str, Formula]:
     """Evaluate auxiliary design matrices on the same response rows.
 
@@ -1112,6 +1166,8 @@ def _parse_distributional(
         Shared source rows.
     response : str
         Primary response name used to evaluate design matrices.
+    designs : dict[str, DesignMatrices] or None
+        Optional output mapping that retains each fitted evaluator.
 
     Returns
     -------
@@ -1132,7 +1188,12 @@ def _parse_distributional(
             raise ValueError(
                 f"distributional formula for {parameter!r} has mismatched left-hand side {lhs.strip()!r}"
             )
-        parsed[parameter] = formula_from_data(f"{response} ~ {rhs}", data)
+        if designs is None:
+            parsed[parameter] = formula_from_data(f"{response} ~ {rhs}", data)
+        else:
+            parsed[parameter], designs[parameter] = _formula_and_design(
+                f"{response} ~ {rhs}", data
+            )
     return parsed
 
 

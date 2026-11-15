@@ -16,13 +16,21 @@ describes coefficient names, priors, and group coding.
 `BayesianFit.draws` preserves chain and draw axes. `fixed_effects`, `random_effects`,
 and `coefficients` expose population and group coefficients with retained labels.
 `posterior_linpred`, `posterior_epred`, and `posterior_predict` replay native
-fitted bindings on the training rows. The first two expose predictors and
+fitted bindings on the training rows or on a supplied `new_data` frame. The first two expose predictors and
 response expectations; `posterior_predict` independently samples responses
 conditional on each posterior draw. Its tensor has shape `(chain, draw, row)`;
 categorical and ordinal responses use integer codes in `category_labels` order.
-All three prediction helpers reuse the compiled program and fill one preallocated output tensor.
+All three accept keyword-only `new_data` and `predictor_data`. New rows reuse
+fitted transforms, contrasts, and known group levels; unseen categories and
+groups are refused. Response and likelihood-weight columns are unnecessary,
+but covariates, offsets, exposures, auxiliary predictors, and any per-row
+trials must be supplied. Neural fits require explicit new `predictor_data`.
+Training predictions reuse the compiled program; new rows specialize one
+program per request. Both fill one preallocated output tensor across draws.
 The [posterior workflow](../../guides/analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
 describes shapes, labels, link scales, and expectations.
+The [new-row workflow](../../guides/analysis-data-and-formulas.md#predictions-on-new-rows)
+gives an executable example and the retained evaluator's serialization boundary.
 
 `fit`, `formula_to_qvr`, and `get_prior` accept `weights="column"` for
 observation-only likelihood weights. The column is retained on the parsed
