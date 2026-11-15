@@ -167,7 +167,7 @@ class BoundModel(ValueModel):
         posterior = sampler.run(program, self.input, self.tensor_data())
         return ModelFit(model=self, posterior=posterior)
 
-    def tensor_data(self) -> dict[str, object]:
+    def tensor_data(self) -> dict[str, torch.Tensor]:
         """Adapt external values to the native tensor executor's one-run layout.
 
         Scanned observations acquire a leading run axis through tensor views.
@@ -175,18 +175,18 @@ class BoundModel(ValueModel):
 
         Returns
         -------
-        dict[str, object]
+        dict[str, torch.Tensor]
             Values for a custom tensor inference method or guide constructor.
 
         Raises
         ------
         TypeError
-            If the entry requires reference execution.
+            If the entry requires reference execution or an input has no tensor form.
         """
-        values = dict(self.data)
         repeated = scanned_sites(self.require_tensor_program())
+        values = {name: torch.as_tensor(value) for name, value in self.data.items()}
         for name in set(self.schema.observations) & repeated:
-            values[name] = torch.as_tensor(values[name]).unsqueeze(0)
+            values[name] = values[name].unsqueeze(0)
         return values
 
     def require_tensor_program(self) -> MonadicProgram:
@@ -336,7 +336,7 @@ class ModelFit(ValueModel):
         """
         data = {
             name: value
-            for name, value in self.model.data.items()
+            for name, value in self.model.tensor_data().items()
             if name not in self.model.schema.observations
         }
         predictive = Predictive(

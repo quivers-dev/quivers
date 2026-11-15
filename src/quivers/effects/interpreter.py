@@ -1829,7 +1829,7 @@ def _element_admits(element: TypeExpr, value: torch.Tensor) -> bool:
 
 def check_host_data(
     program: MonadicProgram | CheckedProgram,
-    data: Mapping[str, torch.Tensor | float | int],
+    data: Mapping[str, object],
     runs: int | None = None,
 ) -> dict[str, bool]:
     """Refuse host data that does not inhabit the program's checked types.
@@ -1851,7 +1851,7 @@ def check_host_data(
     ----------
     program : MonadicProgram or CheckedProgram
         The program, whose ``host_data_types`` give the checked types.
-    data : Mapping[str, torch.Tensor | float | int]
+    data : Mapping[str, object]
         The supplied host data, by name.
     runs : int | None
         The length of the input batch, whose axis a datum may lead with;

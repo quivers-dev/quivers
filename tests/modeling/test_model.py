@@ -411,3 +411,24 @@ def test_scanned_observations_bind_at_checked_shape_and_fit_all_positions():
     fit = bound.infer(VariationalMethod(num_steps=2))
     assert set(fit.draws(num_samples=2)) == {"s@0", "s@1", "s@2"}
     assert len(fit.losses) == 2
+
+
+def test_boolean_observations_require_boolean_values_before_inference():
+    source = SOURCE.replace("data y : Tensor[Real]", "data y : Tensor[Bool]").replace(
+        "observe y : Row <- Normal(loc=mu, scale=1.0)",
+        "observe y : Row <- Bernoulli(logits=mu)",
+    )
+    model = Model(source)
+    x = torch.tensor([1.0, 2.0])
+    with pytest.raises(TypeError, match="Bool"):
+        model.bind({"x": x, "y": torch.tensor([0.0, 1.0])})
+    bound = model.bind({"x": x, "y": torch.tensor([False, True])})
+    assert bound.tensor_data()["x"] is x
+    actual = bound.trace({"b": torch.tensor([0.25])}).log_joint
+    expected = (
+        torch.distributions.Normal(0.0, 1.0).log_prob(torch.tensor([0.25]))
+        + torch.distributions.Bernoulli(logits=0.25 * x)
+        .log_prob(torch.tensor([0.0, 1.0]))
+        .sum()
+    )
+    torch.testing.assert_close(actual, expected)

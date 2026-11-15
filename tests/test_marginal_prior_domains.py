@@ -54,7 +54,7 @@ def test_marginal_prior_preserves_atom_weight(
 ) -> None:
     values = {
         "a": torch.tensor(0.0, dtype=torch.float64),
-        "y": torch.tensor([1.0], dtype=torch.float64),
+        "y": torch.tensor([True]),
         "q": torch.tensor(probability, dtype=torch.float64),
         "weights": torch.tensor([1 - probability, probability], dtype=torch.float64),
         "idx": torch.tensor([0]),
@@ -78,7 +78,7 @@ def test_marginal_prior_preserves_atom_weight(
 def test_marginal_categorical_normalizes_weights(grouped: bool) -> None:
     values = {
         "a": torch.tensor(0.0, dtype=torch.float64),
-        "y": torch.tensor([1.0], dtype=torch.float64),
+        "y": torch.tensor([True]),
         "weights": torch.tensor([2.0, 3.0], dtype=torch.float64),
         "idx": torch.tensor([0]),
     }
