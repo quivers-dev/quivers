@@ -36,6 +36,7 @@ from quivers.dsl._grammar_introspection import (  # noqa: E402
     SORT_KINDS,
 )
 from quivers.dsl.family_schemas import DISTRIBUTION_FAMILIES  # noqa: E402
+from quivers.dsl.pure_builtins import PURE_BUILTINS  # noqa: E402
 
 
 HEADER = """; QVR syntax highlighting queries.
@@ -260,6 +261,9 @@ def render() -> str:
         "; ---------------------------------------------------------------------------",
         "",
         _quote_list(_queryable_literals(BUILTIN_FUNCTIONS)) + " @function.builtin",
+        "",
+        "; Checked pure builtins are identifiers rather than grammar literals.",
+        _identifier_predicate("function.builtin", set(PURE_BUILTINS)),
         "",
         "; ---------------------------------------------------------------------------",
         "; operators",

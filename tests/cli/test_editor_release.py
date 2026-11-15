@@ -58,6 +58,24 @@ def test_textmate_recognizes_every_distribution_family() -> None:
     assert all(pattern.fullmatch(name) for name in DISTRIBUTION_FAMILIES)
 
 
+def test_textmate_recognizes_every_checked_pure_builtin() -> None:
+    from quivers.dsl.pure_builtins import PURE_BUILTINS
+
+    pattern = re.compile(_repository()["builtin-function"]["match"])
+    assert all(pattern.fullmatch(name) for name in PURE_BUILTINS)
+
+
+@pytest.mark.parametrize("name", ["observation_weight", "scale_weight"])
+def test_checked_weight_builtins_are_repl_completion_candidates(name: str) -> None:
+    from quivers.cli.repl_complete import all_completions
+    from quivers.cli.repl_session import ReplSession
+
+    assert any(
+        item.text == name and item.kind == "function"
+        for item in all_completions(ReplSession(), name[:5])
+    )
+
+
 def test_zed_uses_an_immutable_grammar_revision() -> None:
     manifest = tomllib.loads((ZED / "extension.toml").read_text())
     revision = manifest["grammars"]["qvr"]["rev"]
@@ -111,6 +129,11 @@ _CORPUS = (
     "    sample location <- Normal(loc=0.0, scale=2.0)\n"
     "    observe y : Row <- Normal(loc=location, scale=1.0)\n"
     "    return y\n"
+    "\n"
+    "define checked(w : Real) : Real !{} =\n"
+    "    return observation_weight(w)\n"
+    "define scaled(w : Real, ell : Real) : Real !{} =\n"
+    "    return weight_value(scale_weight(w, weight(ell)))\n"
 )
 
 #: Each token of interest by position, with the class every highlighter
@@ -139,6 +162,8 @@ _EXPECTED: dict[tuple[int, str], str] = {
     (19, "observe"): "keyword",
     (19, "Normal"): "type",
     (20, "return"): "keyword",
+    (23, "observation_weight"): "function",
+    (25, "scale_weight"): "function",
 }
 
 #: The tree-sitter capture names and Pygments token families that stand
@@ -308,6 +333,7 @@ def test_highlighters_classify_the_corpus_alike() -> None:
     assert {key for key, value in _EXPECTED.items() if value == "keyword"} <= set(
         textmate
     )
+    assert {(23, "observation_weight"), (25, "scale_weight")} <= set(textmate)
 
 
 def test_docs_highlighter_uses_the_authoritative_lexer() -> None:
