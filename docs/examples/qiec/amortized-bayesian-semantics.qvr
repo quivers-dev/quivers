@@ -18,9 +18,9 @@ object Atoms : {N, NP, S}
 object Cat : FreeResiduated(Atoms)
 object Token : {every, some, linguist, model, predicts, surprises}
 
-schema fwd_app (X, Y : Cat) : (X / Y) * Y -> X
-schema bwd_app (X, Y : Cat) : Y * (X \ Y) -> X
-schema fwd_comp (X, Y, Z : Cat) : (X / Y) * (Y / Z) -> X / Z
+schema fwd_app[X, Y : Cat] : (X / Y) * Y -> X
+schema bwd_app[X, Y : Cat] : Y * (X \ Y) -> X
+schema fwd_comp[X, Y, Z : Cat] : (X / Y) * (Y / Z) -> X / Z
 
 bundle semantic_rules : [fwd_app, bwd_app, fwd_comp]
 

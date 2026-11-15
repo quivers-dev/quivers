@@ -114,7 +114,7 @@ def main() -> None:
         symbolic = (
             path.read_text()
             .replace("FinSet 4", "FinSet _")
-            .replace("    sample a", "    data y : Tensor[Real]([Obs])\n    sample a")
+            .replace("program prog :", "program prog(y : Tensor[Real]([Obs])) :")
         )
         model = Model(symbolic)
         bound = model.bind({"y": torch.tensor([0.1, 0.2, 0.3, 0.4])})
@@ -129,6 +129,31 @@ def main() -> None:
             or not torch.isfinite(recorded.log_joint).all()
         ):
             raise SystemExit("installed-wheel model trace returned an invalid result")
+        dependent = Model(
+            "object Out : Real 1\n"
+            "program dependent[n : Nat](count : Nat, y : Tensor[Real]([n])) : n -> Out\n"
+            "    sample a <- Normal(loc=0.0, scale=1.0)\n"
+            "    let mean = a + count\n"
+            "    observe y : n <- Normal(loc=mean, scale=1.0)\n"
+            "    return a\n"
+            "export dependent\n"
+        )
+        dependent_data = {"count": torch.tensor(2), "y": torch.ones(3)}
+        bound = dependent.bind(dependent_data)
+        if bound.schema.describe()["count"].get("constraint") != "nonnegative":
+            raise SystemExit("installed-wheel model lost its runtime Nat constraint")
+        if bound.schema.describe()["y"]["type"] != "Tensor[Real]([3])":
+            raise SystemExit("installed-wheel model did not infer its static extent")
+        if not torch.isfinite(bound.trace({"a": torch.zeros(1)}).log_joint).all():
+            raise SystemExit(
+                "installed-wheel dependent program returned invalid density"
+            )
+        try:
+            dependent.bind({**dependent_data, "count": torch.tensor(-1)})
+        except TypeError, ValueError:
+            pass
+        else:
+            raise SystemExit("installed-wheel runtime accepted a negative Nat input")
 
     available = set(migration_grammar.available_revisions())
     missing = set(CHAIN) - available

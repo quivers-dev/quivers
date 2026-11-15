@@ -9,7 +9,13 @@ on the compiler's objects and know nothing of either front end.
 from __future__ import annotations
 
 from quivers.dsl.ast_nodes import ObjectDecl
-from quivers.dsl.emit import _emit_qiec_type, draw_call_to_source, module_to_source
+from quivers.dsl.emit import (
+    _emit_program_param,
+    _emit_qiec_binder,
+    _emit_qiec_type,
+    draw_call_to_source,
+    module_to_source,
+)
 
 # Each ``_children_for_*`` returns ``(head_label, children)`` where
 # ``children`` is a possibly nested list of either ``str`` leaves or
@@ -59,34 +65,42 @@ def _children_for_rule(name, rule):  # type: ignore[no-untyped-def]
     return name, []
 
 
+def _program_parameter_groups(tmpl):  # type: ignore[no-untyped-def]
+    """Render static and runtime telescopes without duplicating scalar binders."""
+    from quivers.dsl.program_templates import (
+        static_program_parameters,
+        runtime_program_parameters,
+    )
+    from quivers.dsl.ast_nodes import QiecBinder
+
+    static = [
+        _emit_qiec_binder(parameter)
+        if isinstance(parameter, QiecBinder)
+        else _emit_program_param(parameter)
+        for parameter in static_program_parameters(tmpl)
+    ]
+    runtime = [str(name) for name in tmpl.params or ()]
+    runtime.extend(
+        f"{parameter.name} : {_emit_qiec_type(parameter.type_expr)}"
+        if hasattr(parameter, "type_expr")
+        else _emit_program_param(parameter)
+        for parameter in runtime_program_parameters(tmpl)
+    )
+    return static, runtime
+
+
 def _children_for_program(name, tmpl):  # type: ignore[no-untyped-def]
-    param_strs = []
-    for n in getattr(tmpl, "params", None) or ():
-        param_strs.append(str(n))
-    for p in getattr(tmpl, "type_params", None) or ():
-        pname = getattr(p, "name", "?")
-        kind = type(p).__name__
-        if kind == "ScalarParam":
-            param_strs.append(f"{pname} : {getattr(p, 'scalar_kind', '?')}")
-        elif kind == "ObjectParam":
-            param_strs.append(f"{pname} : {getattr(p, 'universe', '?')}")
-        elif kind == "MorphismParam":
-            dom = _pretty(getattr(p, "domain", None))
-            cod = _pretty(getattr(p, "codomain", None))
-            param_strs.append(f"{pname} : Mor[{dom}, {cod}]")
-        else:
-            param_strs.append(str(pname))
+    static, runtime = _program_parameter_groups(tmpl)
     dom = _pretty(getattr(tmpl, "domain", None))
     cod = _pretty(getattr(tmpl, "codomain", None))
     head = f"{name}"
-    if param_strs:
-        head += f"({', '.join(param_strs)})"
+    if static:
+        head += f"[{', '.join(static)}]"
+    if runtime:
+        head += f"({', '.join(runtime)})"
     head += f" : {dom} -> {cod}"
     steps = getattr(tmpl, "draws", ()) or ()
     children = [_step_node(step) for step in steps]
-    # The terminating ``return vars`` step is stored separately on
-    # ``return_vars`` rather than inside ``draws``; append it so the
-    # tree shows the full program body.
     ret_vars = getattr(tmpl, "return_vars", ()) or ()
     if ret_vars:
         children.append((f"return {', '.join(ret_vars)}", []))
@@ -95,8 +109,6 @@ def _children_for_program(name, tmpl):  # type: ignore[no-untyped-def]
 
 def _step_node(step):  # type: ignore[no-untyped-def]
     cls = type(step).__name__
-    if cls == "DataStep":
-        return f"data {step.name} : {_emit_qiec_type(step.type_expr)}", []
     if cls == "SampleStep":
         vars_ = getattr(step, "vars", ()) or ()
         var = vars_[0] if vars_ else "?"
@@ -131,7 +143,11 @@ def _index_suffix(idx):  # type: ignore[no-untyped-def]
 
 def _call_str(step):  # type: ignore[no-untyped-def]
     head = getattr(step, "morphism", "?") or "?"
-    return draw_call_to_source(str(head), getattr(step, "args", None))
+    return draw_call_to_source(
+        str(head),
+        getattr(step, "args", None),
+        static_args=getattr(step, "static_args", ()),
+    )
 
 
 def _children_for_deduction(name, system):  # type: ignore[no-untyped-def]

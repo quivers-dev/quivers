@@ -14,7 +14,13 @@ from typing import Protocol
 
 from quivers.cli.repl_session import Diagnostic
 from quivers.dsl import Compiler, ParseError, parse
-from quivers.dsl.ast_nodes import DataStep, DefineDecl, Module, ProgramDecl, Statement
+from quivers.dsl.ast_nodes import (
+    DefineDecl,
+    Module,
+    ProgramDecl,
+    ProgramParam,
+    Statement,
+)
 from quivers.dsl.ast_nodes.qiec import (
     QiecBindComputation,
     QiecBinder,
@@ -60,7 +66,7 @@ class EnvBinding(Protocol):
 
 
 type QiecLocalDecl = (
-    QiecBinder | QiecValueParameter | QiecLocalBinding | QiecTypeName | DataStep
+    QiecBinder | QiecValueParameter | QiecLocalBinding | QiecTypeName | ProgramParam
 )
 """A source binder whose identity is lexical rather than module-level."""
 
@@ -294,7 +300,15 @@ class DocumentState:
         visible: list[QiecLocalDecl] = []
 
         if isinstance(owner, ProgramDecl):
-            visible.extend(step for step in owner.draws if isinstance(step, DataStep))
+            visible.extend(
+                local
+                for local in (
+                    *(owner.type_params or ()),
+                    *owner.binders,
+                    *owner.value_parameters,
+                )
+                if _binder_has_entered_scope(local, source_line, source_col)
+            )
         elif isinstance(owner, QiecFamilyDecl):
             visible.extend(
                 local

@@ -189,7 +189,7 @@ from quivers.qiec import (
 )
 
 
-QVR_SOURCE_VERSION = "qvr-source/v0.21"
+QVR_SOURCE_VERSION = "qvr-source/v0.22"
 """The source protocol a `QvrQiecLowerer` route accepts.
 
 `lower_qvr_to_qiec` checks its ``source_version`` argument against this
@@ -2434,7 +2434,9 @@ class _Elaborator(
         if isinstance(authored, surface.QiecTypeName):
             bound = (static_bindings or {}).get(authored.name)
             if bound is not None:
-                if isinstance(bound, TypeVariable):
+                if isinstance(
+                    bound, TypeVariable | TypeApplication | FunctionType | EqualityType
+                ):
                     return bound
                 self._fail(
                     authored,
@@ -2696,7 +2698,7 @@ class _Elaborator(
         if isinstance(authored, surface.QiecTypeName):
             bound = (static_bindings or {}).get(authored.name)
             if bound is not None:
-                if isinstance(bound, EffectVariable):
+                if isinstance(bound, EffectVariable | EffectRef):
                     return bound
                 self._fail(
                     authored,
@@ -2886,6 +2888,9 @@ class _Elaborator(
         QiecDiagnosticError
             If the interface is unknown, or its arguments do not saturate the telescope.
         """
+        bound = (static_bindings or {}).get(authored.name)
+        if isinstance(bound, EffectRef) and not authored.arguments:
+            return bound
         definition = self._effect(authored.name)
         if definition is None:
             self._fail(authored, f"unknown effect interface {authored.name!r}")

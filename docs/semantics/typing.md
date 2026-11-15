@@ -81,7 +81,7 @@ A program declaration fixes a domain and a codomain and introduces its body:
 ```qvr
 object Row : FinSet 8
 
-program regression : Row -> Row
+program regression(offset : Real, y : Tensor[Real]([Row])) : Row -> Row
     sample location <- Normal(loc=0.0, scale=2.0)
     sample scale <- HalfNormal(scale=1.0)
     let mean = location + offset
@@ -93,14 +93,43 @@ The source checker classifies the names in a body:
 
 | A name that is | Becomes |
 | --- | --- |
-| a declared parameter of the program | an explicit value or scalar parameter |
+| declared in the static telescope `[...]` | an index, object, or morphism parameter in $\Delta$ |
+| declared with a type in the runtime telescope `(...)` | an external value parameter in $\Gamma_v$ |
+| declared as a bare domain parameter | a projection of the declared domain |
 | bound by `sample`, a call, or `let` | a local binding in $\Phi$ |
 | the response of an `observe` | an observation input |
 | given by `via` | an index map, an integer input (role `index_map` in the API) |
 | read and bound nowhere | a data input |
 
-Elaboration records `offset` above as a typed parameter of the entry point. Its value is given when the
-program runs, and the extents of tensors given as data inputs are checked then.
+Elaboration records `offset` and `y` above as typed parameters of the entry point.
+Their annotations are checked against every use. The value of `offset` is given
+when the program runs; `observe y` assigns `y` its observation role. The same
+checked parameter is inferred when its annotation is omitted and the body
+determines its type. An input whose type remains ambiguous requires an annotation.
+
+The static and runtime telescopes have different judgments. If $\Delta$ is
+well formed and $\Delta\vdash T:\mathsf{Type}$, a runtime binder extends
+$\Gamma_v$ with $x:T$. It does not extend the effect row. The body is then
+checked under $\Delta;\Gamma_v$, and specialization substitutes a static
+valuation into both its input types and result type. Thus declarations of
+external values and ordinary computation parameters use the same rule.
+
+A static `[n : Nat]` may index `Tensor[Real]([n])` and act as the finite
+ordinal in a domain or plate annotation. These occurrences share one binder,
+so specialization at $n=k$ substitutes the same $k$ into every shape and
+finite-object position. A module-level object cannot refer to a binder local
+to one program; the scope is the program signature and its body.
+
+A runtime `(count : Nat)` has a different judgment: it extends $\Gamma_v$
+with an integer-valued input subject to the restriction $count\geq 0$. Its
+lowered parameter uses the arithmetic carrier `Int` and carries the checked
+constraint `nonnegative`. This constraint survives serialization and is
+validated at native and reference execution boundaries; it does not turn the
+value into a static index.
+At a program call, a nonnegative integer literal or an input carrying this
+constraint satisfies a runtime `Nat` formal. A computed or sampled `Int` does
+not establish the restriction; without a refinement proof mechanism, the
+checker conservatively refuses that actual argument.
 
 ### 3.1 Program steps
 
@@ -164,7 +193,11 @@ computes ([Programs as kernels §2.8](programs.md#28-effect-signatures)).
 
 A *kind* classifies static arguments as a type classifies run-time values. Static parameters, written in
 square brackets, are used in checking and specialization, and range over `Type`, an index sort, `Nat`, or
-`Effect`. Run-time parameters, in parentheses, are values passed when the computation runs. In a telescope
+`Effect`. Programs additionally abstract over objects and morphisms in their static
+telescopes. Run-time parameters, in parentheses on a program or computation, are
+values passed when it runs. Family declarations use parentheses for refinable
+static indices instead; punctuation is interpreted with its declaration form.
+In a telescope
 such as `[A : Type](xs : Vec[A](n))`, the element type `A` is in scope when `xs` is checked.
 
 | Kind | Inhabitants |

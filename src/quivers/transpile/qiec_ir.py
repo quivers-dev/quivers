@@ -1898,6 +1898,8 @@ class IRQiecProgramParameter(dx.Model):
     per_row
         Whether its leading axis is the plate of the draw it fills, so
         that a value without that axis is shared by every row.
+    constraint
+        A checked value restriction, retained through lowering and recovery.
     """
 
     name: str
@@ -1905,6 +1907,7 @@ class IRQiecProgramParameter(dx.Model):
     type: IRQiecStatic
     axes: tuple[str, ...] = ()
     per_row: bool = False
+    constraint: str | None = None
 
 
 class IRQiecProgramSite(dx.Model):

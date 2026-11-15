@@ -32,6 +32,13 @@ may leave unhandled. Both telescopes are optional, but a computation with no val
 writes `()`. A static binder ranges over `Type`, an index type, or `Effect`, and a `Nat` binder may
 receive an integer literal at a call site.
 
+Programs use the same staged header convention, with object and morphism
+specialization in brackets and checked external values in parentheses. Both
+headers elaborate to the same core distinction between a static telescope and
+typed value parameters. Family declarations use parentheses for refinable static
+indices, a separate distinction explained in the
+[parameter reference](index.md#parameter-telescopes).
+
 <!-- compile: qiec -->
 ```qvr
 define identity[A : Type](value : A) : A !{} =

@@ -13,25 +13,38 @@ each branch.
 ## Kinds and binders
 
 A *telescope* is an ordered list of binders in which later types may mention earlier binders
-[@debruijn1991telescopic]. QVR writes static binders in square brackets and runtime binders in
-round brackets:
+[@debruijn1991telescopic]. Computations and programs write static binders in square
+brackets and runtime binders in round brackets. Family declarations additionally
+use round brackets for their refinable static indices:
 
 | Form | Meaning | Used by |
 | --- | --- | --- |
-| `[A : Type]` | static type binder | families, constructors, effects, [handlers](effects-and-handlers.md#handler-declarations), computations |
-| `[n : Nat]` | static index binder | constructors, operations, computations |
-| `[E : Effect]` | static binder for an effect interface | declarations that abstract over an effect |
+| `[A : Type]` | static type binder | families, constructors, effects, [handlers](effects-and-handlers.md#handler-declarations), computations, programs |
+| `[n : Nat]` | static index binder | constructors, operations, computations, programs |
+| `[Row : FinSet]`, `[f : Mor[A, B]]` | static object or morphism binder | programs |
+| `[E : Effect]` | static binder for an effect interface | declarations, including programs, that abstract over an effect |
 | `(n : Nat)` | family index, refined by case analysis | family declarations and case motives |
-| `(x : T)` | runtime value parameter | computations and handler clauses |
+| `(x : T)` | runtime value parameter | computations, programs, and handler clauses |
 
 Static arguments are written in brackets, as in `length[Real, S(Z)](xs)`, and runtime values in
 parentheses. An integer literal may fill a `Nat` static binder, so `window[32](xs)` is valid when
 `window` binds `[n : Nat]`.
 
+The distinction is semantic: a static argument determines the specialized types,
+whereas a runtime argument inhabits those types. Whether an argument is written
+explicitly or inferred is independent of that distinction. The
+[cross-construct parameter reference](index.md#parameter-telescopes) relates
+program inputs to constructors, effects, handlers, and family indices.
+
 The built-in value types are `Unit`, `Bool`, `Int`, `Real`, `String`, `LogWeight`,
 `Tensor[A]([d1, ...])`, `Sampleable[A]`, and `Site[A]`. A
 [product type](../../guides/core.md#productset-and-coproductset) is written `A * B`. A tuple value
 is written `(a, b)`, and `pair[0]` and `pair[1]` project its components.
+
+In a program runtime header, `(count : Nat)` additionally restricts the integer
+carrier `Int` to nonnegative values. The checked input contract preserves this
+restriction and execution validates supplied values. This use differs from a
+static extent `[n : Nat]` and from the inductive index declaration below.
 
 ## Index types
 

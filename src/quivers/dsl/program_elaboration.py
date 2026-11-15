@@ -33,7 +33,6 @@ from quivers.qiec._models import QiecModel
 from quivers.dsl.ast_nodes import (
     CallStep,
     ContinuousConstructor,
-    DataStep,
     DiscreteConstructor,
     DrawArg,
     DrawArgDist,
@@ -72,6 +71,13 @@ from quivers.dsl.ast_nodes import (
     ProgramDecl,
     ProgramStep,
     ReturnStep,
+    QiecTypeName,
+    QiecValueParameter,
+    QiecIndexLiteral,
+    QiecIndexBinder,
+    QiecNatSort,
+    QiecTypeBinder,
+    QiecEffectBinder,
     SampleStep,
     ObjectParam,
     MorphismParam,
@@ -114,7 +120,7 @@ from quivers.qiec.identifiers import (
     SiteProvenance,
     SourceOrigin,
 )
-from quivers.qiec.kinds import NAT, IndexBinder, TypeBinder
+from quivers.qiec.kinds import NAT, IndexBinder, TypeBinder, TelescopeBinder
 from quivers.qiec.module import NamedComputation, NamedEffectInstance
 from quivers.qiec.programs import (
     ParameterRole,
@@ -203,7 +209,10 @@ from quivers.continuous.param_source import attention_draw_message
 from quivers.dsl.draw_args import kernel_argument_refusal
 from quivers.dsl.program_templates import (
     TemplateError,
+    TemplateBindings,
     instantiate_program,
+    runtime_program_parameters,
+    static_program_parameters,
     template_bindings,
 )
 from quivers.dsl.pure_builtins import (
@@ -314,7 +323,14 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     "LogitNormal": (("loc", "identity"), ("scale", "exp_floor")),
     "Cauchy": (("loc", "identity"), ("scale", "softplus")),
     "Laplace": (("loc", "identity"), ("scale", "softplus")),
+    "AsymmetricLaplace": (
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("quantile", "sigmoid"),
+    ),
     "Gumbel": (("loc", "identity"), ("scale", "softplus")),
+    "ExGaussian": (("loc", "identity"), ("scale", "softplus"), ("rate", "softplus")),
+    "InverseGaussian": (("mu", "softplus"), ("shape", "softplus")),
     "LogNormal": (("loc", "identity"), ("scale", "softplus")),
     "StudentT": (
         ("df", "softplus_shifted"),
@@ -2632,7 +2648,17 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             row_entries.append(self.instances[PARAMS_INSTANCE].entry)
         row = EffectRow(entries=tuple(row_entries))
         parameters = tuple(scope.locals[name] for name, _ in state.parameters)
-        telescope = tuple(state.extents.values())
+        available = {
+            binder.name: binder
+            for binder in (*state.static_binders, *state.extents.values())
+        }
+        authored = []
+        for parameter in static_program_parameters(declaration):
+            if isinstance(parameter, MorphismParam):
+                continue
+            if parameter.name in available:
+                authored.append(available.pop(parameter.name))
+        telescope = (*authored, *available.values())
         identity = ComputationId.derive(
             self.source.module_name, "computation", declaration.name
         )
@@ -2679,6 +2705,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         role=role,
                         type=scope.locals[name].type,
                         axes=state.parameter_axes.get(name, ()),
+                        constraint=state.parameter_constraints.get(name),
                         per_row=name in state.per_row
                         and name not in state.declared_data,
                     )
@@ -2798,7 +2825,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     declaration,
                     axes=self._domain_axes(factor, type_),
                 )
-        if declaration.type_params is not None:
+        if declaration.type_params is not None and not declaration.value_parameters:
             for parameter in declaration.type_params:
                 if isinstance(parameter, ScalarParam):
                     self._declare_parameter(
@@ -2808,7 +2835,69 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         scope,
                         state,
                         declaration,
+                        constraint="nonnegative"
+                        if parameter.scalar_kind == "Nat"
+                        else None,
                     )
+
+        declared_here = {
+            p.name
+            for p in declaration.binders
+            if isinstance(p, QiecIndexBinder | QiecTypeBinder | QiecEffectBinder)
+        }
+        declared_here.update(
+            p.name
+            for p in declaration.type_params or ()
+            if isinstance(p, ObjectParam | MorphismParam)
+        )
+        for step in declaration.value_parameters:
+            existing_role = next(
+                (role for name, role in state.parameters if name == step.name), None
+            )
+            if step.name in declared_here or (
+                scope.lookup(step.name) is not None
+                and existing_role not in {"data", "index_map", "observation"}
+            ):
+                self._fail(
+                    step,
+                    f"duplicate program parameter {step.name!r}",
+                    code="qiec-program",
+                )
+            declared_here.add(step.name)
+            state.declared_data.add(step.name)
+            bindings = {
+                name: _extent(info.extent)
+                for name, info in self._program_objects.items()
+                if info.extent is not None
+            }
+            declared_type = (
+                INT
+                if isinstance(step.type_expr, QiecTypeName)
+                and step.type_expr.name == "Nat"
+                else self._lower_type(
+                    step.type_expr,
+                    (*state.static_binders, *state.extents.values()),
+                    bindings,
+                )
+            )
+            self._declare_parameter(
+                step.name,
+                declared_type,
+                "scalar"
+                if isinstance(step.type_expr, QiecTypeName)
+                and step.type_expr.name in {"Real", "Nat"}
+                else "data",
+                scope,
+                state,
+                step,
+                constraint="nonnegative"
+                if isinstance(step.type_expr, QiecTypeName)
+                and step.type_expr.name == "Nat"
+                else None,
+            )
+            split = tensor_shape(declared_type)
+            if split is not None:
+                state.batch_shapes[step.name] = tuple(split[1])
 
     def _template_objects(
         self: _Elaborator, declaration: ProgramDecl, state: _ProgramState
@@ -2834,6 +2923,23 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         QiecDiagnosticError
             If an object parameter shadows a declared object.
         """
+        for binder in self._lower_telescope(declaration.binders):
+            if isinstance(binder, IndexBinder):
+                state.extents[binder.name] = binder
+                if binder.sort == NAT:
+                    if binder.name in self._program_objects:
+                        self._fail(
+                            declaration,
+                            f"static binder {binder.name!r} shadows an object",
+                            code="qiec-program",
+                        )
+                    variable = IndexVariable(name=binder.name, sort=NAT)
+                    self._program_objects[binder.name] = ObjectInfo(
+                        extent=variable, finite=True
+                    )
+                    state.template_objects.append(binder.name)
+            else:
+                state.static_binders.append(binder)
         if declaration.type_params is None:
             return
         for parameter in declaration.type_params:
@@ -2906,6 +3012,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         state: _ProgramState,
         node: object,
         axes: tuple[str, ...] | None = None,
+        *,
+        constraint: Literal["nonnegative"] | None = None,
     ) -> Local:
         """Bind one program parameter in the body's scope.
 
@@ -2929,6 +3037,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             read off the type when absent: an open extent's variable,
             else the one object of the dimension's cardinality, else
             the dimension's position.
+        constraint : Literal["nonnegative"] | None
+            An additional value restriction retained on the input contract.
 
         Returns
         -------
@@ -2941,6 +3051,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             If the name is already a parameter at another type or a
             bound step.
         """
+        if constraint is not None:
+            state.parameter_constraints[name] = constraint
         root = scope
         while root.outer is not None:
             root = root.outer
@@ -3039,38 +3151,6 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         QiecDiagnosticError
             If a step is of a kind the elaboration does not admit.
         """
-        declared_here = set()
-        for step in steps:
-            if not isinstance(step, DataStep):
-                continue
-            existing_role = next(
-                (role for name, role in state.parameters if name == step.name), None
-            )
-            if step.name in declared_here or (
-                scope.lookup(step.name) is not None
-                and existing_role not in {"data", "index_map", "observation"}
-            ):
-                self._fail(
-                    step,
-                    f"duplicate data declaration {step.name!r}",
-                    code="qiec-program",
-                )
-            declared_here.add(step.name)
-            state.declared_data.add(step.name)
-            bindings = {
-                name: _extent(info.extent)
-                for name, info in self._program_objects.items()
-                if info.extent is not None
-            }
-            declared_type = self._lower_type(
-                step.type_expr, tuple(state.extents.values()), bindings
-            )
-            self._declare_parameter(
-                step.name, declared_type, "data", scope, state, step
-            )
-            split = tensor_shape(declared_type)
-            if split is not None:
-                state.batch_shapes[step.name] = tuple(split[1])
         for step in steps:
             if isinstance(step, SampleStep):
                 self._elaborate_sample(step, scope, state)
@@ -3084,7 +3164,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 self._elaborate_score(step, scope, state)
             elif isinstance(step, MarginalizeStep):
                 self._elaborate_marginalize(step, scope, state)
-            elif isinstance(step, ReturnStep | DataStep):
+            elif isinstance(step, ReturnStep):
                 continue
             else:
                 self._fail(
@@ -3242,8 +3322,40 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             pattern's arity is not what it returns.
         """
         self._inline_program(
-            step.morphism, step.vars, step.args or (), step, scope, state
+            step.morphism,
+            step.vars,
+            step.args or (),
+            step,
+            scope,
+            state,
+            static_arguments=step.static_args,
         )
+
+    def _specialize_program_indices(
+        self: _Elaborator,
+        template: ProgramDecl,
+        bindings: TemplateBindings,
+        prefix: str,
+    ) -> tuple[TemplateBindings, tuple[str, ...]]:
+        """Give a supplied natural extent an object name inside an inlined body."""
+        objects = dict(bindings.objects)
+        introduced: list[str] = []
+        for parameter in template.binders:
+            if not isinstance(parameter, QiecIndexBinder) or not isinstance(
+                parameter.sort, QiecNatSort
+            ):
+                continue
+            argument = bindings.statics[parameter.name]
+            if isinstance(argument, DrawArgName):
+                objects[parameter.name] = argument.text
+            elif isinstance(argument, DrawArgScalar):
+                name = f"__qvr_static${template.name}${prefix}${parameter.name}${int(argument.value)}"
+                self._program_objects[name] = ObjectInfo(
+                    extent=int(argument.value), finite=True
+                )
+                objects[parameter.name] = name
+                introduced.append(name)
+        return bindings.with_(objects=objects), tuple(introduced)
 
     def _inline_program(
         self: _Elaborator,
@@ -3253,6 +3365,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         node: SampleStep | CallStep,
         scope: _Scope,
         state: _ProgramState,
+        *,
+        static_arguments: tuple[DrawArg, ...] = (),
     ) -> None:
         """Elaborate a program's steps in this program under a pattern.
 
@@ -3263,8 +3377,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         binders : tuple[str, ...]
             The draw's pattern.
         arguments : tuple[DrawArg, ...]
-            The draw's arguments, filling the program's template
-            parameters.
+            Runtime actuals, checked against the declared value parameters.
+        static_arguments : tuple[DrawArg, ...]
+            Static actuals in the authored telescope's order.
         node : SampleStep | CallStep
             The source step, for diagnostics.
         scope : _Scope
@@ -3279,10 +3394,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             pattern's arity is not what it returns.
         """
         template = self._program_declarations[name]
-        bound = {local: LetExprVar(name=local) for local in scope.locals}
+        bound = {
+            local.name: LetExprVar(name=local.name) for local in scope.context().locals
+        }
         try:
-            bindings = template_bindings(template, arguments, bound)
-            steps = instantiate_program(template, binders, bindings)
+            bindings = template_bindings(
+                template, arguments, bound, static_arguments=static_arguments
+            )
         except TemplateError as error:
             self._fail(node, error.message, code="qiec-program")
         for parameter, argument in bindings.objects.items():
@@ -3293,18 +3411,212 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"{name!r} is not declared",
                     code="qiec-program",
                 )
-        for parameter, argument in bindings.morphisms.items():
+        expected_objects = dict(self._program_objects)
+        for parameter in template.type_params or ():
+            if not isinstance(parameter, ObjectParam):
+                continue
+            actual = self._program_objects[bindings.objects[parameter.name]]
             if (
-                argument not in self._program_morphisms
-                and argument not in self._program_declarations
+                parameter.universe == "FinSet"
+                and not actual.finite
+                or parameter.universe == "Space"
+                and actual.finite
             ):
                 self._fail(
                     node,
-                    f"morphism {argument!r} passed as {parameter!r} of program "
-                    f"{name!r} is not declared",
+                    f"static object parameter {parameter.name!r} requires {parameter.universe}",
                     code="qiec-program",
                 )
-        self._elaborate_steps(steps, scope, state)
+            expected_objects[parameter.name] = actual
+        for formal, argument in bindings.statics.items():
+            if isinstance(argument, DrawArgScalar):
+                expected_objects[formal] = ObjectInfo(
+                    extent=int(argument.value), finite=True
+                )
+            elif (
+                isinstance(argument, DrawArgName)
+                and argument.text in self._program_objects
+            ):
+                expected_objects[formal] = self._program_objects[argument.text]
+        for parameter in template.type_params or ():
+            if not isinstance(parameter, MorphismParam):
+                continue
+            argument = bindings.morphisms[parameter.name]
+            actual = self._program_morphisms.get(
+                argument
+            ) or self._program_declarations.get(argument)
+            if actual is None:
+                self._fail(
+                    node,
+                    f"morphism {argument!r} passed as {parameter.name!r} of program {name!r} is not declared",
+                    code="qiec-program",
+                )
+            for side in ("domain", "codomain"):
+                expected = _object_expr_info(getattr(parameter, side), expected_objects)
+                received = _object_expr_info(
+                    getattr(actual, side), self._program_objects
+                )
+                if expected is None or received is None or expected != received:
+                    self._fail(
+                        node,
+                        f"morphism parameter {parameter.name!r} has incompatible {side}: {argument!r} does not inhabit its declared Mor type",
+                        code="qiec-program",
+                    )
+        telescope = (*state.static_binders, *state.extents.values())
+        static_bindings: dict[str, StaticArgument] = {
+            object_name: _extent(info.extent)
+            for object_name, info in self._program_objects.items()
+            if info.extent is not None
+        }
+        for parameter, argument in bindings.objects.items():
+            extent = self._program_objects[argument].extent
+            if extent is not None:
+                static_bindings[parameter] = _extent(extent)
+        for parameter in template.binders:
+            if not isinstance(
+                parameter, QiecIndexBinder | QiecTypeBinder | QiecEffectBinder
+            ):
+                self._fail(node, "unsupported static binder", code="qiec-program")
+            actual = bindings.statics[parameter.name]
+            if isinstance(parameter, QiecIndexBinder):
+                if not isinstance(actual, DrawArgScalar | DrawArgName):
+                    self._fail(
+                        node,
+                        "a static index requires a name or a natural literal",
+                        code="qiec-program",
+                    )
+                authored = (
+                    QiecIndexLiteral(value=int(actual.value))
+                    if isinstance(actual, DrawArgScalar)
+                    else QiecTypeName(name=actual.text)
+                )
+            else:
+                if not isinstance(actual, DrawArgName):
+                    self._fail(
+                        node,
+                        f"static parameter {parameter.name!r} requires a name",
+                        code="qiec-program",
+                    )
+                authored = QiecTypeName(name=actual.text)
+            lowered_binder = self._lower_telescope((parameter,))[0]
+            static_bindings[parameter.name] = self._lower_static_argument(
+                authored, lowered_binder, telescope, static_bindings
+            )
+        checked_values = dict(bindings.values)
+        for parameter, argument in zip(
+            runtime_program_parameters(template), arguments, strict=True
+        ):
+            is_nat = (
+                (
+                    isinstance(parameter, QiecValueParameter)
+                    and isinstance(parameter.type_expr, QiecTypeName)
+                    and parameter.type_expr.name == "Nat"
+                )
+                or isinstance(parameter, ScalarParam)
+                and parameter.scalar_kind == "Nat"
+            )
+            if isinstance(parameter, ScalarParam):
+                expected = REAL if parameter.scalar_kind == "Real" else INT
+            else:
+                expected = (
+                    INT
+                    if is_nat
+                    else self._lower_type(
+                        parameter.type_expr, telescope, static_bindings
+                    )
+                )
+            expression = bindings.values[parameter.name]
+            if (
+                isinstance(argument, DrawArgName)
+                and argument.text in self._program_objects
+            ):
+                self._fail(
+                    node,
+                    f"object {argument.text!r} is static and cannot fill runtime parameter {parameter.name!r}",
+                    code="qiec-program",
+                )
+            if (
+                isinstance(argument, DrawArgName)
+                and scope.lookup(argument.text) is None
+                and isinstance(expression, LetExprVar)
+            ):
+                self._declare_parameter(
+                    argument.text,
+                    expected,
+                    "data",
+                    scope,
+                    state,
+                    node,
+                    constraint="nonnegative" if is_nat else None,
+                )
+            if is_nat and isinstance(expression, LetExprVar):
+                actual_name = expression.name
+                if any(key == actual_name for key, _ in state.parameters):
+                    state.parameter_constraints[actual_name] = "nonnegative"
+                elif state.parameter_constraints.get(actual_name) != "nonnegative":
+                    self._fail(
+                        node,
+                        f"runtime Nat parameter {parameter.name!r} requires a natural literal "
+                        "or a constrained Nat input; the local integer "
+                        f"{actual_name!r} has no nonnegative proof",
+                        code="qiec-program",
+                    )
+            if (
+                isinstance(argument, DrawArgScalar)
+                and expected == INT
+                and argument.value.is_integer()
+            ):
+                expression = LetExprLiteral(value=int(argument.value))
+            if is_nat and isinstance(argument, DrawArgScalar) and argument.value < 0:
+                self._fail(
+                    node,
+                    f"runtime Nat parameter {parameter.name!r} requires a natural number",
+                    code="qiec-program",
+                )
+            value = self._lower_value(
+                expression,
+                telescope,
+                scope.context(),
+                static_bindings,
+                ("programs", state.declaration.name, "arguments", parameter.name),
+                expected=expected,
+            )
+            actual_type = self._value_type(value, scope.context(), node)
+            if actual_type != expected and not self._unify_types(
+                actual_type, expected, scope, state
+            ):
+                self._fail(
+                    node,
+                    f"runtime parameter {parameter.name!r} of program {name!r} expects {self._render(expected)}, received {self._render(actual_type)}",
+                    code="qiec-program",
+                )
+            if isinstance(expression, LetExprVar | LetExprLiteral):
+                # Variables and literals already denote one value. Reusing them
+                # avoids administrative bindings and preserves lexical identity.
+                checked_values[parameter.name] = expression
+                continue
+            alias = f"{'_'.join(binders)}$argument${parameter.name}"
+            while scope.lookup(alias) is not None:
+                alias += "$"
+            self._bind_step(scope, alias, expected, Return(value=value), node)
+            split = tensor_shape(expected)
+            if split is not None:
+                state.batch_shapes[alias] = tuple(split[1])
+            if is_nat:
+                state.parameter_constraints[alias] = "nonnegative"
+            checked_values[parameter.name] = LetExprVar(name=alias)
+        bindings, introduced = self._specialize_program_indices(
+            template, bindings.with_(values=checked_values), "_".join(binders)
+        )
+        try:
+            try:
+                steps = instantiate_program(template, binders, bindings)
+            except TemplateError as error:
+                self._fail(node, error.message, code="qiec-program")
+            self._elaborate_steps(steps, scope, state)
+        finally:
+            for name in introduced:
+                self._program_objects.pop(name, None)
 
     def _sample_request(
         self: _Elaborator,
@@ -5701,7 +6013,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         dict[str, tuple[TypeApplication, PlateAxis | None]]
             Each free name's element type and batch axis, if any.
         """
-        bound: set[str] = set()
+        bound: set[str] = {parameter.name for parameter in declaration.value_parameters}
         if declaration.params is not None:
             bound.update(declaration.params)
         if declaration.type_params is not None:
@@ -5767,22 +6079,32 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     # place, so the names they read are typed as they
                     # are read there.
                     template = self._program_declarations[step.morphism]
+                    introduced: tuple[str, ...] = ()
                     try:
-                        instantiated = instantiate_program(
+                        bindings = template_bindings(
                             template,
-                            step.vars,
-                            template_bindings(
-                                template,
-                                step.args or (),
-                                {name: LetExprVar(name=name) for name in bound},
-                            ),
+                            step.args or (),
+                            {name: LetExprVar(name=name) for name in bound},
+                            static_arguments=step.static_args,
+                        )
+                        bindings, introduced = self._specialize_program_indices(
+                            template, bindings, "_".join(step.vars)
+                        )
+                        instantiated = instantiate_program(
+                            template, step.vars, bindings
                         )
                     except TemplateError:
+                        for name in introduced:
+                            self._program_objects.pop(name, None)
                         # The elaboration of the draw reports the misfit
                         # with its location.
                         bound.update(step.vars)
                         continue
-                    visit(instantiated, group)
+                    try:
+                        visit(instantiated, group)
+                    finally:
+                        for name in introduced:
+                            self._program_objects.pop(name, None)
                     bound.update(step.vars)
                 elif isinstance(step, SampleStep | ObserveStep | MarginalizeStep):
                     names = (
@@ -6533,6 +6855,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             If the morphism cannot be resolved to a family, or the
             arguments and plate do not type.
         """
+        if step.static_args:
+            self._fail(
+                step,
+                f"{step.morphism!r} is not a program template and accepts no static arguments",
+                code="qiec-program",
+            )
         if self._function_morphism(step.morphism) is not None:
             self._fail(
                 step, learned_function_draw_message(step.morphism), code="qiec-program"
@@ -9985,6 +10313,8 @@ class _ProgramState(QiecModel):
         The program.
     parameters
         The computation's parameters with their roles, in order.
+    parameter_constraints
+        Additional restrictions on external inputs and proven internal aliases.
     sites
         The probabilistic steps seen so far.
     helpers
@@ -10061,6 +10391,9 @@ class _ProgramState(QiecModel):
     parameters: list[tuple[str, ParameterRole]] = dx.field(
         default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    parameter_constraints: dict[str, Literal["nonnegative"]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     declared_data: set[str] = dx.field(
         default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -10087,6 +10420,9 @@ class _ProgramState(QiecModel):
     )
     current_site_cell: list[str] = dx.field(
         default_factory=lambda: [""], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    static_binders: list[TelescopeBinder] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     extents: dict[str, IndexBinder] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY

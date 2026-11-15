@@ -37,8 +37,7 @@ def test_kernel_protocol_executes_qiec_and_preserves_silent_errors(tmp_path) -> 
         reply = client.execute(
             "object Row : FinSet _\n"
             "object Out : Real 1\n"
-            "program regression : Row -> Out\n"
-            "    data x : Tensor[Real]([Row])\n"
+            "program regression(x : Tensor[Real]([Row])) : Row -> Out\n"
             "    sample b <- Normal(loc=0.0, scale=1.0)\n"
             "    let mu = b * x\n"
             "    observe y : Row <- Normal(loc=mu, scale=1.0)\n"

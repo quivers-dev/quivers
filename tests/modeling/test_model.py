@@ -12,9 +12,7 @@ from quivers.modeling import MCMCMethod, Model, VariationalMethod
 
 SOURCE = """object Row : FinSet _
 object Out : Real 1
-program regression : Row -> Out
-    data x : Tensor[Real]([Row])
-    data y : Tensor[Real]([Row])
+program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out
     sample b <- Normal(loc=0.0, scale=1.0)
     let mu = b * x
     observe y : Row <- Normal(loc=mu, scale=1.0)
@@ -36,7 +34,7 @@ def test_schema_is_available_before_binding_and_preserves_types():
 def test_declarations_roundtrip():
     emitted = module_to_source(parse(SOURCE))
     assert module_to_source(parse(emitted)) == emitted
-    assert "data x : Tensor[Real]([Row])" in emitted
+    assert "x : Tensor[Real]([Row])" in emitted
 
 
 def test_inferred_size_matches_explicit_program_and_analytic_joint():
@@ -100,9 +98,7 @@ def test_missing_and_extra_inputs_fail():
 
 def test_implicit_data_uses_same_schema_without_separate_name_list():
     model = Model(
-        SOURCE.replace("    data x : Tensor[Real]([Row])\n", "").replace(
-            "    data y : Tensor[Real]([Row])\n", ""
-        )
+        SOURCE.replace("(x : Tensor[Real]([Row]), y : Tensor[Real]([Row]))", "")
     )
     bound = model.bind({"x": torch.ones(3), "y": torch.zeros(3)})
     assert set(bound.schema.types) == {"x", "y"}
@@ -119,24 +115,22 @@ export m
 """
     with pytest.raises(QiecDiagnosticError, match="nothing fixes its shape"):
         Model(source)
-    typed = source.replace(
-        "    let total", "    data external : Tensor[Real]([3])\n    let total"
-    )
+    typed = source.replace("program m :", "program m(external : Tensor[Real]([3])) :")
     bound = Model(typed).bind({"external": torch.ones(3)})
     torch.testing.assert_close(bound.trace().output, torch.tensor(3.0))
 
 
 def test_declaration_conflicting_with_use_fails_at_compile_time():
     with pytest.raises(QiecDiagnosticError):
-        Model(SOURCE.replace("data y : Tensor[Real]", "data y : Tensor[Int]"))
+        Model(SOURCE.replace("y : Tensor[Real]", "y : Tensor[Int]"))
 
 
 def test_duplicate_data_declaration_fails_at_compile_time():
     source = SOURCE.replace(
-        "    data x : Tensor[Real]([Row])",
-        "    data x : Tensor[Real]([Row])\n    data x : Tensor[Real]([Row])",
+        "x : Tensor[Real]([Row])",
+        "x : Tensor[Real]([Row]), x : Tensor[Real]([Row])",
     )
-    with pytest.raises(QiecDiagnosticError, match="duplicate data"):
+    with pytest.raises(QiecDiagnosticError, match="duplicate program parameter"):
         Model(source)
 
 
@@ -192,8 +186,7 @@ def test_binding_preserves_data_gradients_and_cpu_rng():
 
 def test_observation_alone_infers_rows():
     source = (
-        SOURCE.replace("    data x : Tensor[Real]([Row])\n", "")
-        .replace("    data y : Tensor[Real]([Row])\n", "")
+        SOURCE.replace("(x : Tensor[Real]([Row]), y : Tensor[Real]([Row]))", "")
         .replace("    let mu = b * x\n", "")
         .replace("loc=mu", "loc=b")
     )
@@ -229,9 +222,7 @@ def test_group_index_range_infers_smallest_zero_based_space():
 def test_matrix_shape_infers_two_finite_extents():
     source = (
         SOURCE.replace("object Out", "object Feature : FinSet _\nobject Out")
-        .replace(
-            "data x : Tensor[Real]([Row])", "data x : Tensor[Real]([Row, Feature])"
-        )
+        .replace("x : Tensor[Real]([Row])", "x : Tensor[Real]([Row, Feature])")
         .replace("b * x", "b * sum(x)")
     )
     bound = Model(source).bind({"x": torch.ones(3, 2), "y": torch.zeros(3)})
@@ -245,7 +236,7 @@ def test_matrix_shape_infers_two_finite_extents():
 
 def test_exact_group_extent_must_contain_all_external_indices():
     source = GROUPED.replace(
-        "    sample a", "    data table : Tensor[Real]([Group])\n    sample a"
+        "program grouped :", "program grouped(table : Tensor[Real]([Group])) :"
     )
     with pytest.raises(CompileError, match="Group.*indices.*group_idx"):
         Model(source).bind(
@@ -277,8 +268,9 @@ def test_lda_infers_documents_and_tokens_without_python_role_lists():
             "doc_idx": torch.tensor([0, 0, 1, 1]),
             "token_idx": torch.arange(4),
             "w": torch.tensor([0, 1, 2, 3]),
+            "alpha": 0.5,
+            "beta": 0.5,
         },
-        parameters={"alpha": 0.5, "beta": 0.5},
     )
     recorded = bound.trace()
     assert recorded.sites["theta"].value.shape == (2, 3)
@@ -308,9 +300,7 @@ def test_template_object_substitution_preserves_declared_data_types():
     source = """object Row : FinSet 3
 object Group : FinSet 2
 object Out : Real 1
-program grouped(G : FinSet) : Row -> Out
-    data group_idx : Tensor[Int]([Row])
-    data y : Tensor[Real]([Row])
+program grouped[G : FinSet](group_idx : Tensor[Int]([Row]), y : Tensor[Real]([Row])) : Row -> Out
     sample a : G <- Normal(loc=0.0, scale=1.0)
     let mu = a[group_idx]
     observe y : Row <- Normal(loc=mu, scale=1.0)
@@ -341,8 +331,7 @@ define shift(x : Real) : Real !{} =
     else
         let rest <- shift(x - 1.0)
         return x + rest
-program m : One -> Out
-    data x : Real
+program m(x : Real) : One -> Out
     let z <- shift(x)
     return z
 export m
@@ -357,20 +346,27 @@ export m
 
 @pytest.mark.parametrize("invalid", ["typo", True, torch.tensor(1.0)])
 def test_python_template_boundary_rejects_untyped_scalar_arguments(invalid):
-    source = SOURCE.replace("FinSet _", "FinSet 3").replace(
-        "program regression :", "program regression(scale : Real) :"
+    source = (
+        SOURCE.replace("FinSet _", "FinSet 3")
+        .replace("(x : Tensor[Real]([Row]), y : Tensor[Real]([Row]))", "")
+        .replace("program regression :", "program regression(scale : Real) :")
     )
     data = {"x": torch.ones(3), "y": torch.zeros(3)}
-    with pytest.raises(TypeError, match="parameter 'scale'.*Real"):
-        Model(source).bind(data, parameters={"scale": invalid})
+    if isinstance(invalid, torch.Tensor) and invalid.is_floating_point():
+        assert Model(source).bind({**data, "scale": invalid}).data["scale"] is invalid
+    else:
+        with pytest.raises(TypeError):
+            Model(source).bind({**data, "scale": invalid})
     with pytest.raises(TypeError, match="parameter 'scale'.*Real"):
         loads(source).regression(scale=invalid)
 
 
 @pytest.mark.parametrize("invalid", [-1, 1.5, True])
 def test_python_template_boundary_checks_natural_arguments(invalid):
-    source = SOURCE.replace("FinSet _", "FinSet 3").replace(
-        "program regression :", "program regression(count : Nat) :"
+    source = (
+        SOURCE.replace("FinSet _", "FinSet 3")
+        .replace("(x : Tensor[Real]([Row]), y : Tensor[Real]([Row]))", "")
+        .replace("program regression :", "program regression(count : Nat) :")
     )
     with pytest.raises(TypeError, match="parameter 'count'"):
         loads(source).regression(count=invalid)
@@ -379,7 +375,9 @@ def test_python_template_boundary_checks_natural_arguments(invalid):
 def test_python_template_boundary_accepts_numpy_numbers():
     import numpy as np
 
-    source = SOURCE.replace("FinSet _", "FinSet 3")
+    source = SOURCE.replace("FinSet _", "FinSet 3").replace(
+        "(x : Tensor[Real]([Row]), y : Tensor[Real]([Row]))", ""
+    )
     real = source.replace("program regression :", "program regression(scale : Real) :")
     natural = source.replace(
         "program regression :", "program regression(count : Nat) :"
@@ -414,7 +412,7 @@ def test_scanned_observations_bind_at_checked_shape_and_fit_all_positions():
 
 
 def test_boolean_observations_require_boolean_values_before_inference():
-    source = SOURCE.replace("data y : Tensor[Real]", "data y : Tensor[Bool]").replace(
+    source = SOURCE.replace("y : Tensor[Real]", "y : Tensor[Bool]").replace(
         "observe y : Row <- Normal(loc=mu, scale=1.0)",
         "observe y : Row <- Bernoulli(logits=mu)",
     )

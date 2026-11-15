@@ -113,7 +113,7 @@ For instance, save this Bayesian linear regression as `regression.qvr`:
 ```R
 object Item : FinSet 100
 
-program regression : Item -> Item
+program regression(x : Tensor[Real]([Item]), y : Tensor[Real]([Item])) : Item -> Item
     sample sigma  <- HalfNormal(scale=1.0)
     sample beta_0 <- Normal(loc=0.0, scale=5.0)
     sample beta_1 <- Normal(loc=0.0, scale=2.0)
@@ -145,8 +145,12 @@ replicated = fit.predict(num_samples=100)
 ```
 
 Here `data` maps `x` and `y` to floating tensors. To infer the row count, replace
-`FinSet 100` with `FinSet _`; optional declarations such as
-`data x : Tensor[Real]([Item])` make external types explicit. The
+`FinSet 100` with `FinSet _`. Typed parameters in the program header state the
+input contract; `observe` identifies the response. Static parameters go in
+brackets before the runtime value parameters, as in
+`program model[Row : FinSet](x : Tensor[Real]([Row])) : Row -> Out`.
+The [parameter reference](https://quivers.dev/reference/qvr/#parameter-telescopes)
+explains this convention across computations, programs, and indexed types. The
 [checked fitting tutorial](https://quivers.dev/tutorials/qvr/00-model-interface/)
 gives an executable example and shows input errors before inference.
 

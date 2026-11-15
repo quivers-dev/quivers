@@ -86,8 +86,12 @@
       "begin": "#!?\\[",
       "end": "\\]",
       "patterns": [
-        { "include": "#string" },
-        { "include": "#numeric-literal" },
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#numeric-literal"
+        },
         {
           "name": "entity.name.tag.qvr",
           "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
@@ -120,7 +124,7 @@
     },
     "keyword-declaration": {
       "name": "keyword.declaration.qvr",
-      "match": "\\b(data|composition|contraction|category|object|morphism|schema|rule|bundle|program|deduction|signature|encoder|decoder|loss|define|index|family|constructor|effect|instance|handler)\\b"
+      "match": "\\b(composition|contraction|category|object|morphism|schema|rule|bundle|program|deduction|signature|encoder|decoder|loss|define|index|family|constructor|effect|instance|handler)\\b"
     },
     "keyword-qiec-modifier": {
       "comment": "QIEC kinds, handler coverage, forwarding, and resumption grades.",
@@ -154,7 +158,7 @@
         {
           "comment": "Sequent arrow used in deduction rules.",
           "name": "keyword.operator.sequent.qvr",
-          "match": "\\|-|⊢"
+          "match": "\\|-|\u22a2"
         },
         {
           "comment": "Compose arrows (longest-first; trans-compose first).",
@@ -196,7 +200,7 @@
     },
     "distribution-family": {
       "name": "support.type.distribution.qvr",
-      "match": "\\b(Bernoulli|Beta|BetaBinomial|Binomial|Categorical|Cauchy|Chi2|ContinuousBernoulli|Dirichlet|Exponential|FisherSnedecor|GP|Gamma|GeneralizedPareto|Geometric|Gumbel|HalfCauchy|HalfNormal|HalfStudentT|Horseshoe|HurdlePoisson|Independent|InverseGamma|InverseWishart|Kumaraswamy|LKJCholesky|LKJCorrelationFactor|Laplace|LogGamma|LogNormal|Logistic|LogisticNormal|LogitBeta|LogitNormal|LowRankMVN|MatrixNormal|Mixture|MixtureNormal|MultivariateNormal|NegativeBinomial|Normal|Normalize|OneHotCategorical|OrderedLogistic|OrderedProbit|Pareto|PointMass|Poisson|Pushforward|RelaxedBernoulli|RelaxedOneHotCategorical|Restrict|StudentT|Transformed|Truncate|Truncated|TruncatedNormal|Uniform|VonMises|Weibull|Wishart|ZeroInflatedPoisson|ZeroOneInflatedBeta)\\b"
+      "match": "\\b(AsymmetricLaplace|Bernoulli|Beta|BetaBinomial|Binomial|Categorical|Cauchy|Chi2|ContinuousBernoulli|Dirichlet|ExGaussian|Exponential|FisherSnedecor|GP|Gamma|GeneralizedPareto|Geometric|Gumbel|HalfCauchy|HalfNormal|HalfStudentT|Horseshoe|HurdlePoisson|Independent|InverseGamma|InverseGaussian|InverseWishart|Kumaraswamy|LKJCholesky|LKJCorrelationFactor|Laplace|LogGamma|LogNormal|Logistic|LogisticNormal|LogitBeta|LogitNormal|LowRankMVN|MatrixNormal|Mixture|MixtureNormal|MultivariateNormal|NegativeBinomial|Normal|Normalize|OneHotCategorical|OrderedLogistic|OrderedProbit|Pareto|PointMass|Poisson|Pushforward|RelaxedBernoulli|RelaxedOneHotCategorical|Restrict|StudentT|Transformed|Truncate|Truncated|TruncatedNormal|Uniform|VonMises|Weibull|Wishart|ZeroInflatedPoisson|ZeroOneInflatedBeta)\\b"
     },
     "qiec-option-value": {
       "comment": "QIEC handler-forwarding option values.",

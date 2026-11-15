@@ -13,6 +13,7 @@ it like any other before it runs.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from numbers import Integral
 
 import didactic.api as dx
 
@@ -991,6 +992,22 @@ def _run_wrapped(
     ExecutionFailure
         If the run fails.
     """
+    for parameter in entry.parameters:
+        if parameter.constraint != "nonnegative" or parameter.name not in data:
+            continue
+        value = data[parameter.name]
+        if getattr(value, "shape", None) == () and callable(
+            getattr(value, "item", None)
+        ):
+            value = value.item()
+        if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+            raise ExecutionFailure(
+                ExecutionDiagnostic(
+                    code="qiec-run-type",
+                    message=f"datum {parameter.name!r} must be a nonnegative integer",
+                    computation=entry.name,
+                )
+            )
     data = broadcast_shared_data(entry, data)
     _refuse_unmapped_data(module, entry, data)
     arguments = tuple(data[parameter.name] for parameter in entry.parameters)

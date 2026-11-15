@@ -17,7 +17,6 @@
 ; ---------------------------------------------------------------------------
 
 [
-  "Nat"
   "aff"
   "as"
   "atoms"
@@ -143,7 +142,6 @@
   "FinSet"
   "LowerTriangular"
   "Mor"
-  "Nat"
   "Object"
   "Orthogonal"
   "Real"
@@ -156,6 +154,7 @@
 ; Registered distribution-family identifiers.
 ((identifier) @type.builtin
   (#any-of? @type.builtin
+    "AsymmetricLaplace"
     "Bernoulli"
     "Beta"
     "BetaBinomial"
@@ -165,6 +164,7 @@
     "Chi2"
     "ContinuousBernoulli"
     "Dirichlet"
+    "ExGaussian"
     "Exponential"
     "FisherSnedecor"
     "GP"
@@ -179,6 +179,7 @@
     "HurdlePoisson"
     "Independent"
     "InverseGamma"
+    "InverseGaussian"
     "InverseWishart"
     "Kumaraswamy"
     "LKJCholesky"

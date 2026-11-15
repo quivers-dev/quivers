@@ -53,7 +53,6 @@ from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.dsl.ast_nodes import (
     BundleDecl,
     ContinuousConstructor,
-    DataStep,
     LetStep,
     MarginalizeStep,
     ObserveStep,
@@ -267,8 +266,6 @@ def _top_level_lookup(compiler, name: str) -> ScopedRef | None:  # type: ignore[
 
 
 def _step_kind(step: object) -> ScopeKind | None:
-    if isinstance(step, DataStep):
-        return "data-input"
     if isinstance(step, SampleStep):
         return "sample-site"
     if isinstance(step, ObserveStep):
@@ -289,8 +286,6 @@ def _step_kind(step: object) -> ScopeKind | None:
 def _step_bound_name(step: object) -> str | None:
     """Return the name a step binds, or ``None`` for steps that
     bind multiple names or none."""
-    if isinstance(step, DataStep):
-        return step.name
     if isinstance(step, SampleStep):
         vars_ = getattr(step, "vars", ()) or ()
         return vars_[0] if len(vars_) == 1 else None
@@ -329,6 +324,24 @@ def _scope_for_program(ref: ScopedRef) -> Mapping[str, ScopedRef]:
                 parent_kind=ref.kind,
                 node=p,
             )
+    for binder in getattr(decl, "binders", ()):
+        out[binder.name] = ScopedRef(
+            name=binder.name,
+            kind="param",
+            path=f"{ref.path}::{binder.name}",
+            parent_kind=ref.kind,
+            node=binder,
+        )
+    for parameter in getattr(decl, "value_parameters", ()):
+        if parameter.name in out:
+            continue
+        out[parameter.name] = ScopedRef(
+            name=parameter.name,
+            kind="data-input",
+            path=f"{ref.path}::{parameter.name}",
+            parent_kind=ref.kind,
+            node=parameter,
+        )
     # Bare-name params (the param list shape on programs that
     # don't carry type annotations).
     for n in getattr(decl, "params", None) or ():
@@ -349,13 +362,16 @@ def _scope_for_program(ref: ScopedRef) -> Mapping[str, ScopedRef]:
         bound = _step_bound_name(step)
         if bound is None:
             continue
-        out[bound] = ScopedRef(
-            name=bound,
-            kind=kind,
-            path=f"{ref.path}::{bound}",
-            parent_kind=ref.kind,
-            node=step,
-        )
+        # Observation sites use supplied parameters; retain their declarations
+        # as navigation targets when the two share a name.
+        if bound not in out or out[bound].kind != "data-input":
+            out[bound] = ScopedRef(
+                name=bound,
+                kind=kind,
+                path=f"{ref.path}::{bound}",
+                parent_kind=ref.kind,
+                node=step,
+            )
     # ``ProgramDecl.return_vars`` stores the return clause as a
     # plain tuple of names rather than a ``ReturnStep`` AST node.
     # Surface it under ``return`` so the scope path

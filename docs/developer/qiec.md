@@ -41,6 +41,34 @@ and the result is held to the deterministic serialization contract of the Python
 
 ## Serialized data and runtime attachments {#two-boundaries}
 
+### Parameter stages
+
+Program and computation headers share a static telescope and a runtime value
+telescope. For programs, object and morphism parameters live in `[...]`, while
+typed external tensors and scalar hyperparameters live in `(...)`. Elaboration
+places the former in the static context and the latter in the entry's checked
+value parameters, using the same core representation as `define`.
+
+An explicit input annotation and an inferred free input thus produce the same
+kind of parameter. Observation and index-map roles remain metadata derived from
+uses; the annotation does not add an operation to the effectful body. Binding
+may solve static extents from the runtime values before specialization, without
+making those extents runtime tensor axes or random variables. See the
+[formal parameter semantics](../semantics/programs.md#31-static-and-runtime-telescopes)
+and the [language-wide syntax reference](../reference/qvr/index.md#parameter-telescopes).
+
+Family parameters and indices retain their separate type-level notation:
+`Vec[A](n)` has a uniform parameter `A` and refinable index `n`, both static.
+This distinction must survive elaboration even though a family index uses
+parentheses at the source boundary.
+
+A program runtime `Nat` annotation lowers to the arithmetic carrier `Int` with
+`ProgramParameter.constraint="nonnegative"`. Preserve this field through IR
+conversion and serialization: both native and reference `run_program` and
+`sample_program` validate integer inputs and their nonnegative restriction. A
+static `Nat` remains an index-sort binder rather than a constrained runtime
+parameter.
+
 The serialized core contains only typed, deterministic data: kinds, telescopes,
 declarations of indexed families, effect interfaces, rows, handler signatures, value and computation
 terms, source provenance, and equality evidence. Python callables and mutable resources are

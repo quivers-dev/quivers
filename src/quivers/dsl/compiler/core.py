@@ -430,14 +430,11 @@ class Compiler(
         elif isinstance(
             self._output_expr, ExprIdent
         ) and self._output_expr.name in getattr(self, "_program_templates", {}):
-            # The export names a parametric program template. A
-            # template has no root morphism on its own (a function
-            # ``Pi (p : P). Kern(dom(p), cod(p))`` rather than a
-            # single Kleisli arrow); the returned Program is a
-            # container holding the template, which the caller
-            # instantiates by attribute access.
+            # A scalar value interface also has a runtime root. Static
+            # interfaces remain families until their arguments are known;
+            # both expose named partial application beside the runtime root.
             tmpl_name = self._output_expr.name
-            program = Program(None)
+            program = Program(self._morphisms.get(tmpl_name))
             invoker = self._make_template_invoker(tmpl_name)
             program.templates = {tmpl_name: invoker}
             # Convenience: ``program.<name>(...)`` works directly.
@@ -537,7 +534,7 @@ class Compiler(
         target.host_data_types = {
             parameter.name: parameter.type
             for parameter in entry.parameters
-            if parameter.role in ("data", "index_map", "observation")
+            if parameter.role in ("data", "index_map", "observation", "scalar")
         }
         target.host_data_shared = frozenset(
             parameter.name for parameter in entry.parameters if parameter.per_row

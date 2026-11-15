@@ -362,8 +362,8 @@ conditions one of its sample sites and leaves every other site drawn, and
 `--seed N` seeds the reference generator the draws use. The response carries
 the program's value and the log joint of the drawn and given sites together
 with its observations and scores. A program's extents are read off its data,
-and an extent no data fixes, the object parameter of a program template, is
-given with `--static NAME=TERM`. A program's handlers are fixed by the run,
+and an unsolved static object or index parameter is supplied with
+`--static NAME=TERM`. A program's handlers are fixed by the run,
 so the session's runtime configuration applies to computations only.
 
 Named computations may recurse without bound, so `--fuel STEPS` caps the
@@ -627,7 +627,7 @@ machine-readable.
 
 ```
 > :dump lda
-ProgramDecl(name='lda', params=None, type_params=(ScalarParam(name='alpha', …), …), …)
+ProgramDecl(name='lda', binders=(), value_parameters=(QiecValueParameter(name='alpha', …), …), …)
 ```
 
 #### `:edit NAME`
@@ -753,7 +753,7 @@ What each container kind exposes as named children:
 
 | Container | Children |
 |---|---|
-| `program` | typed parameters + body steps (sample / observe / let / marginalize / score / return), and every program is a scope, with or without typed parameters |
+| `program` | static and runtime header parameters + body steps (sample / observe / let / marginalize / score / return), and every program is a scope, with or without typed parameters |
 | `marginalize` | the same kinds of program step, nested inside the marginalize block |
 | `deduction` | rules + atoms + lexicon entries |
 | `signature` | sorts + constructors + binders + vertex_kinds + edge_kinds |
@@ -1188,7 +1188,7 @@ Each frontend is a thin adapter:
 - [`quivers.kernel.quivers_kernel`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/kernel/quivers_kernel.py), ipykernel adapter.
 - [`quivers.lsp.server`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/lsp/server.py), pygls server.
 
-## Checked data in interactive tools
+## Checked parameters in interactive tools
 
 A model with inferred dimensions can be checked and inspected before data are
 available. Save this source as `regression.qvr`:
@@ -1197,9 +1197,7 @@ available. Save this source as `regression.qvr`:
 ```qvr
 object Row : FinSet _
 object Out : Real 1
-program regression : Row -> Out
-    data x : Tensor[Real]([Row])
-    data y : Tensor[Real]([Row])
+program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out
     sample b <- Normal(loc=0.0, scale=1.0)
     let mu = b * x
     observe y : Row <- Normal(loc=mu, scale=1.0)
@@ -1210,8 +1208,22 @@ export regression
 `qvr check regression.qvr` checks the symbolic program. The language server uses
 the same checked projection for diagnostics, formatting, highlighting, and
 navigation. Within `regression`, completion offers `x` and `y` with their declared
-types; hover and go-to-definition resolve them to their `data` declarations.
+types; hover and go-to-definition resolve them to their parameter declarations.
 These names are local to the program rather than module globals.
+
+Program headers use the same telescope convention as checked computations:
+`[...]` binds static parameters, while `(...)` binds values supplied to execution.
+A later parameter's type may refer to an earlier static parameter. The header
+describes the inputs; an `observe` step separately determines which input
+contributes a likelihood. Thus an observed response remains an ordinary typed
+parameter, and navigation returns to its header declaration.
+
+For a template such as `program p[K : FinSet](spread : Real) : K -> Out`,
+`:type p` displays `p :: [K : FinSet] (Real) => K -> Out`. This keeps the
+static object and runtime scalar separate from the kernel's domain and codomain.
+`:type p::K` and `:type p::spread` inspect the individual parameters. The language
+server offers both names within the body and distinguishes static parameters
+from runtime variables in completion.
 
 The REPL and its TUI retain the symbolic objects and program in their environment
 browsers. Scoped inspection exposes the declarations:

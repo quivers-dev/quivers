@@ -46,11 +46,12 @@ from quivers.cli.repl_session import (
 )
 from quivers.dsl.ast_nodes import (
     ContinuousConstructor,
-    DataStep,
     DefineDecl,
     MorphismDecl,
     ObjectDecl,
     ProgramDecl,
+    ProgramParam,
+    ScalarParam,
     Statement,
     TypeFromExpr,
     TypeInitializer,
@@ -69,7 +70,12 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecTypeName,
     QiecValueParameter,
 )
-from quivers.dsl.emit import _emit_qiec_binder, _emit_qiec_type, module_to_source
+from quivers.dsl.emit import (
+    _emit_program_param,
+    _emit_qiec_binder,
+    _emit_qiec_type,
+    module_to_source,
+)
 from quivers.dsl.qiec_tooling import (
     call_site_at,
     call_sites,
@@ -787,15 +793,9 @@ def _render_hover(
         return None
     qvr = _slice_source(doc, decl)
     if isinstance(
-        decl, DataStep | QiecBinder | QiecValueParameter | QiecLocalBinding
+        decl, QiecBinder | QiecValueParameter | QiecLocalBinding | ProgramParam
     ) or (isinstance(decl, QiecTypeName) and qiec_local is decl):
-        source_lines = doc.source.splitlines()
-        source_line = max(0, getattr(decl, "line", 1) - 1)
-        qvr = (
-            source_lines[source_line].strip()
-            if source_line < len(source_lines)
-            else name
-        )
+        qvr = _qiec_local_signature(decl)
     if qvr is None:
         if isinstance(decl, Statement):
             qvr = module_to_source(type(doc.module)(statements=(decl,))).rstrip()
@@ -1380,8 +1380,8 @@ def _qiec_local_signature(local: object) -> str:
     """Render one lexical QIEC binder for hover and completion details."""
 
     name = str(getattr(local, "name", ""))
-    if isinstance(local, DataStep):
-        return f"data {name} : {_emit_qiec_type(local.type_expr)}"
+    if isinstance(local, ProgramParam):
+        return _emit_program_param(local)
     if isinstance(local, QiecBinder):
         return _emit_qiec_binder(local)
     if isinstance(local, QiecValueParameter):
@@ -1419,6 +1419,10 @@ def _qiec_local_completion_items(
             kind=(
                 lsp.CompletionItemKind.TypeParameter
                 if isinstance(local, QiecBinder | QiecTypeName)
+                or (
+                    isinstance(local, ProgramParam)
+                    and not isinstance(local, ScalarParam)
+                )
                 else lsp.CompletionItemKind.Variable
             ),
             detail=_qiec_local_signature(local),

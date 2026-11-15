@@ -207,12 +207,12 @@ def test_invocation_refusals_carry_stable_codes() -> None:
 _TEMPLATE = """\
 object School : FinSet 8
 object Effect : Real 1
-program school_effects(spread : Real, K : FinSet) : K -> Effect
+program school_effects[K : FinSet](spread : Real) : K -> Effect
     sample z : K <- Normal(loc=0.0, scale=1.0)
     let effect = spread * z
     return effect
 program pooled : School -> Effect
-    sample theta <- school_effects(0.6, School)
+    sample theta <- school_effects[School](0.6)
     sample sigma <- LogNormal(loc=0.0, scale=0.5)
     observe y : School <- Normal(loc=theta, scale=sigma)
     return theta

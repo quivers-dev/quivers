@@ -1,6 +1,7 @@
 """Compile, bind, and inspect QVR models through checked input metadata."""
 
 from collections.abc import Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Protocol
 
@@ -10,14 +11,37 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous import ContinuousSpace, MonadicProgram
 from quivers.dsl import Compiler, CompileError, Module, parse, lower_qvr_to_qiec
-from quivers.dsl.ast_nodes import ExportDecl, ExprIdent, ProgramDecl
+from quivers.dsl.ast_nodes import (
+    ExportDecl,
+    ExprIdent,
+    ProgramDecl,
+    ScalarParam,
+    QiecTypeBinder,
+    QiecIndexBinder,
+    QiecEffectBinder,
+)
 from quivers.effects import CheckedProgram
 from quivers.effects.interpreter import check_host_data
 from quivers.effects.program_module import once_sites, scanned_sites
-from quivers.inference import Guide, MCMC, MCMCResult, Predictive, Trace, trace
+from quivers.inference import (
+    Guide,
+    LatentRegistry,
+    MCMC,
+    MCMCResult,
+    Predictive,
+    Trace,
+    trace,
+)
 from quivers.diagnostics import ConvergenceSummary, summary
 from quivers.program import Program
-from quivers.qiec import ProgramEntry, ProgramParameter, TypeExpr, render_static
+from quivers.qiec import (
+    IndexLiteral,
+    ProgramEntry,
+    ProgramParameter,
+    TypeExpr,
+    render_static,
+    tensor_shape,
+)
 
 
 class ModelSchema(ValueModel):
@@ -75,10 +99,15 @@ class ModelSchema(ValueModel):
         Returns
         -------
         dict[str, dict[str, str]]
-            Each input's role and readable type.
+            Each input's role, readable type, and optional value restriction.
         """
         return {
-            p.name: {"role": p.role, "type": render_static(p.type)} for p in self.inputs
+            p.name: {
+                "role": p.role,
+                "type": render_static(p.type),
+                **({"constraint": p.constraint} if p.constraint is not None else {}),
+            }
+            for p in self.inputs
         }
 
 
@@ -105,11 +134,253 @@ class InferenceMethod[Result](Protocol):
         ...
 
 
+class Model:
+    """A reusable QVR source whose finite dimensions specialize at data binding.
+
+    Parameters
+    ----------
+    source : str
+        QVR source, optionally declaring objects as ``FinSet _``.
+    entry : str or None
+        Program to select. Defaults to the first exported program, or the
+        only program when none is exported.
+    """
+
+    def __init__(self, source: str, *, entry: str | None = None) -> None:
+        self.source = source
+        self.syntax: Module = parse(source)
+        names = [s.name for s in self.syntax.statements if isinstance(s, ProgramDecl)]
+        if entry is None:
+            exported = [
+                s.expr.name
+                for s in self.syntax.statements
+                if isinstance(s, ExportDecl)
+                and isinstance(s.expr, ExprIdent)
+                and s.expr.name in names
+            ]
+            if exported:
+                entry = exported[0]
+            elif len(names) == 1:
+                entry = names[0]
+            else:
+                raise ValueError(f"select an entry from {names}")
+        if entry not in names:
+            raise ValueError(f"unknown program {entry!r}; choose from {names}")
+        self.entry = entry
+        checked = lower_qvr_to_qiec(self.syntax)
+        typed_entry = next((e for e in checked.entries if e.name == entry), None)
+        if typed_entry is None:
+            raise CompileError(f"entry {entry!r} has no checked input contract")
+        self.schema = ModelSchema(entry=typed_entry)
+
+    @classmethod
+    def from_file(cls, path: str | Path, *, entry: str | None = None) -> Model:
+        """Read a QVR model from a file.
+
+        Parameters
+        ----------
+        path : str or Path
+            UTF-8 source file.
+        entry : str or None
+            Program to select.
+
+        Returns
+        -------
+        Model
+            Parsed reusable model.
+        """
+        return cls(Path(path).read_text(encoding="utf-8"), entry=entry)
+
+    def fit[Result](
+        self,
+        data: Mapping[str, object],
+        *,
+        method: InferenceMethod[Result],
+        parameters: Mapping[str, object] | None = None,
+        input: torch.Tensor | None = None,
+        seed: int = 0,
+    ) -> Result:
+        """Bind external data and apply an inference method in one call.
+
+        Parameters
+        ----------
+        data : Mapping[str, object]
+            External values, with roles inferred from QVR.
+        method : InferenceMethod[Result]
+            Inference configuration, including its own random seed and budgets.
+        parameters : Mapping[str, object] or None
+            Static specialization arguments passed to binding.
+        input : torch.Tensor or None
+            One-run domain input, if the program reads one.
+        seed : int
+            Compilation seed, independent of the method's inference seed.
+
+        Returns
+        -------
+        Result
+            The method's result with its own type and semantics.
+        """
+        return self.bind(data, parameters=parameters, input=input, seed=seed).infer(
+            method
+        )
+
+    def bind(
+        self,
+        data: Mapping[str, object],
+        *,
+        parameters: Mapping[str, object] | None = None,
+        input: torch.Tensor | None = None,
+        seed: int = 0,
+    ) -> BoundModel:
+        """Infer dimensions, compile, and validate one data binding.
+
+        Parameters
+        ----------
+        data : Mapping[str, object]
+            External data and observations. Roles and types come from QVR.
+        parameters : Mapping[str, object] or None
+            Explicit static arguments. Runtime scalars belong in ``data``.
+        input : torch.Tensor or None
+            Explicit one-run domain input. Required for a real-valued domain.
+        seed : int
+            Compilation seed; the caller's CPU random state is restored.
+
+        Returns
+        -------
+        BoundModel
+            Compiled entry and its checked binding.
+
+        Raises
+        ------
+        CompileError
+            If sizes cannot be inferred or the source cannot be checked.
+        ValueError
+            If input names, shapes, or required values disagree with the schema.
+        TypeError
+            If supplied element types disagree with their checked types.
+        """
+        return self._bind(
+            data,
+            parameters=parameters,
+            input=input,
+            seed=seed,
+            require_observations=True,
+        )
+
+    def _bind(
+        self,
+        data: Mapping[str, object],
+        *,
+        parameters: Mapping[str, object] | None,
+        input: torch.Tensor | None,
+        seed: int,
+        require_observations: bool,
+    ) -> BoundModel:
+        """Specialize one binding, optionally leaving responses to prediction."""
+        values = dict(data)
+        arguments = {} if parameters is None else dict(parameters)
+        declaration = next(
+            statement
+            for statement in self.syntax.statements
+            if isinstance(statement, ProgramDecl) and statement.name == self.entry
+        )
+        static_names = {
+            binder.name
+            for binder in declaration.binders
+            if isinstance(binder, QiecTypeBinder | QiecIndexBinder | QiecEffectBinder)
+        }
+        static_names.update(
+            parameter.name
+            for parameter in declaration.type_params or ()
+            if not isinstance(parameter, ScalarParam)
+        )
+        if extra := set(arguments) - static_names:
+            raise ValueError(
+                f"unknown static parameters: {sorted(extra)}; supply runtime values in data"
+            )
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(seed)
+            compiler = Compiler(self.syntax)
+            compiler.bind_data({**values, **arguments})
+            module = compiler.compile()
+            qiec = compiler.qiec_module
+            if qiec is None:
+                raise CompileError("the model has no checked input contract")
+            entry = next((e for e in qiec.entries if e.name == self.entry), None)
+            if entry is None:
+                raise CompileError(
+                    f"entry {self.entry!r} has no checked input contract: {qiec.gap or 'not elaborated'}"
+                )
+            declaration = next(
+                s
+                for s in self.syntax.statements
+                if isinstance(s, ProgramDecl) and s.name == self.entry
+            )
+            if self.entry in compiler.morphisms:
+                program = compiler.morphisms[self.entry]
+            else:
+                invoker = compiler._make_template_invoker(self.entry)
+                template = compiler._program_templates[self.entry]
+                application = {
+                    parameter.name: arguments.get(
+                        parameter.name, values.get(parameter.name)
+                    )
+                    for parameter in template.type_params or ()
+                    if parameter.name in arguments or parameter.name in values
+                }
+                selected = invoker(**application)
+                program = selected.morphism
+        if not isinstance(program, (MonadicProgram, CheckedProgram)):
+            raise TypeError(f"entry {self.entry!r} is not a probabilistic program")
+        if program.input_contract is not None:
+            entry = program.input_contract
+        schema = ModelSchema(entry=entry)
+        expected = set(schema.types)
+        required = (
+            expected if require_observations else expected - set(schema.observations)
+        )
+        if missing := required - set(values):
+            raise ValueError(f"missing external inputs: {sorted(missing)}")
+        if extra := set(values) - expected:
+            raise ValueError(
+                f"unknown external inputs: {sorted(extra)}; expected {sorted(expected)}"
+            )
+        if input is None:
+            if any(p.role == "domain" for p in entry.parameters) or isinstance(
+                program.domain, ContinuousSpace
+            ):
+                raise ValueError(
+                    "this entry reads a domain value; provide input explicitly"
+                )
+            input = torch.zeros(1, 1, dtype=torch.long)
+        if input.ndim < 2 or input.shape[0] != 1:
+            raise ValueError(
+                "model fitting requires exactly one execution; observation rows belong to QVR plates"
+            )
+        check_host_data(program, {**values, **arguments})
+        return BoundModel(
+            module=module,
+            program=program,
+            schema=schema,
+            data=values,
+            input=input,
+            specification=self,
+            template_arguments=arguments,
+            compilation_seed=seed,
+        )
+
+
 class BoundModel(ValueModel):
     """A compiled model with validated external values and one execution input.
 
     Parameters
     ----------
+    specification : Model
+        Original source and entry selection, retained by identity for rebinding.
+    template_arguments : Mapping[str, object]
+        Static arguments retained by identity for recompilation.
+    compilation_seed : int
+        Seed used to initialize deterministic parameters when binding.
     module : Program
         Compiled module container, held by identity.
     program : MonadicProgram or CheckedProgram
@@ -122,6 +393,11 @@ class BoundModel(ValueModel):
         One run's domain input, held by identity.
     """
 
+    specification: Model = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    template_arguments: Mapping[str, object] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    compilation_seed: int
     module: Program = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     program: MonadicProgram | CheckedProgram = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -129,6 +405,86 @@ class BoundModel(ValueModel):
     schema: ModelSchema = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     data: Mapping[str, object] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     input: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+    def rebind(
+        self, data: Mapping[str, object], *, input: torch.Tensor | None = None
+    ) -> BoundModel:
+        """Bind new data while retaining the fitted parameter interpretation.
+
+        Parameters
+        ----------
+        data : Mapping[str, object]
+            Replacement covariates and optional responses. Inferred dimensions
+            specialize again; explicit cardinalities remain fixed.
+        input : torch.Tensor or None
+            One execution input; the original input when omitted.
+
+        Returns
+        -------
+        BoundModel
+            Independent binding with copied deterministic parameter state.
+
+        Raises
+        ------
+        ValueError
+            If the new data change latent site names or shapes.
+        """
+        rebound = self.specification._bind(
+            data,
+            parameters=self.template_arguments,
+            input=self.input if input is None else input,
+            seed=self.compilation_seed,
+            require_observations=False,
+        )
+        original_parameters = dict(self.require_tensor_program().named_parameters())
+        replacement_parameters = dict(
+            rebound.require_tensor_program().named_parameters()
+        )
+        if original_parameters.keys() != replacement_parameters.keys():
+            raise ValueError(
+                "new data change deterministic parameter names; refit the model"
+            )
+        with torch.no_grad():
+            for name, parameter in replacement_parameters.items():
+                original = original_parameters[name]
+                if parameter.shape != original.shape:
+                    raise ValueError(
+                        f"new data change deterministic parameter {name!r}; refit the model"
+                    )
+                parameter.copy_(original)
+
+        def shapes(bound: BoundModel) -> dict[str, tuple[int, ...]]:
+            observations = set(bound.schema.observations)
+            recorded = bound.trace()
+            return {
+                name: tuple(site.value.shape)
+                for name, site in recorded.sites.items()
+                if not site.is_deterministic
+                and name.partition("@")[0] not in observations
+            }
+
+        # Ordinary models expose their latent layout without executing a prior
+        # draw. Input-dependent scans and non-bijective supports use the trace
+        # fallback, which checks both bindings with the same representation.
+        try:
+            layouts = [
+                {
+                    name: site.constrained_shape
+                    for name, site in LatentRegistry.from_model(
+                        bound.require_tensor_program(),
+                        set(bound.schema.observations),
+                    ).sites.items()
+                }
+                for bound in (self, rebound)
+            ]
+        except ValueError, NotImplementedError:
+            with torch.random.fork_rng(devices=[]):
+                layouts = [shapes(self), shapes(rebound)]
+        if layouts[0] != layouts[1]:
+            raise ValueError(
+                "new data change the latent site layout; refit the model for that layout"
+            )
+        return rebound
 
     def infer[Result](self, method: InferenceMethod[Result]) -> Result:
         """Apply a method without imposing a posterior-draw result contract.
@@ -320,29 +676,180 @@ class ModelFit(ValueModel):
             for name in draws[0]
         }
 
-    def predict(self, *, num_samples: int | None = None) -> dict[str, torch.Tensor]:
-        """Sample observations conditional on fitted latents and external covariates.
+    def predict(
+        self,
+        data: Mapping[str, object] | None = None,
+        *,
+        input: torch.Tensor | None = None,
+        num_samples: int | None = None,
+        seed: int | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Sample responses at the fitted data or a compatible new binding.
 
         Parameters
         ----------
+        data : Mapping[str, object] or None
+            New covariates and optional responses; fitted data when omitted.
+            Observation values are released before predictive sampling.
+        input : torch.Tensor or None
+            Execution input for new data; the fitted input when omitted.
         num_samples : int or None
-            Maximum posterior draws; all available draws when omitted.
+            Maximum posterior draws; all available MCMC draws when omitted.
+        seed : int or None
+            Optional CPU random seed, restored on exit.
 
         Returns
         -------
         dict[str, torch.Tensor]
-            Predictive samples by site. Observations are released while
-            covariates and index maps remain bound.
+            Predictive samples by site at the requested data layout.
+
+        Raises
+        ------
+        ValueError
+            If new data change the latent parameter layout.
         """
-        data = {
-            name: value
-            for name, value in self.model.tensor_data().items()
-            if name not in self.model.schema.observations
-        }
-        predictive = Predictive(
-            self.model.require_tensor_program(), self.posterior, num_samples=num_samples
+        context = (
+            torch.random.fork_rng(devices=[]) if seed is not None else nullcontext()
         )
-        return predictive(self.model.input, observations=data)
+        with context:
+            if seed is not None:
+                torch.random.default_generator.manual_seed(seed)
+            bound = (
+                self.model
+                if data is None and input is None
+                else self.model.rebind(
+                    self.model.data if data is None else data, input=input
+                )
+            )
+            covariates = {
+                name: value
+                for name, value in bound.tensor_data().items()
+                if name not in bound.schema.observations
+            }
+            predictive = Predictive(
+                bound.require_tensor_program(), self.posterior, num_samples=num_samples
+            )
+            predicted = predictive(bound.input, observations=covariates)
+            for name in bound.schema.observations:
+                if name not in predicted:
+                    continue
+                split = tensor_shape(bound.schema.types[name])
+                dimensions = () if split is None else split[1]
+                if all(
+                    isinstance(dimension, IndexLiteral)
+                    and isinstance(dimension.value, int)
+                    for dimension in dimensions
+                ):
+                    shape = tuple(dimension.value for dimension in dimensions)
+                    predicted[name] = predicted[name].reshape(
+                        predicted[name].shape[0], *shape
+                    )
+            return predicted
+
+    def log_likelihood(
+        self,
+        data: Mapping[str, object] | None = None,
+        *,
+        num_samples: int | None = None,
+        seed: int | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Evaluate observation densities separately at posterior draws.
+
+        Parameters
+        ----------
+        data : Mapping[str, object] or None
+            Replacement covariates and observed responses; fitted data by default.
+        num_samples : int or None
+            Maximum draws per MCMC chain; 100 draws for a guide when omitted.
+        seed : int or None
+            Optional CPU seed for variational draws, restored on exit.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Raw observation log densities with leading chain and draw axes.
+            Event dimensions are reduced; observation plate axes are retained.
+
+        Raises
+        ------
+        ValueError
+            If responses are missing or the draw count is not positive.
+        TypeError
+            If an observation is hidden by marginalization and requires a
+            marginal-likelihood observer rather than a conditional site score.
+        """
+        if num_samples is not None and num_samples < 1:
+            raise ValueError("num_samples must be positive")
+        context = (
+            torch.random.fork_rng(devices=[]) if seed is not None else nullcontext()
+        )
+        with context, torch.no_grad():
+            if seed is not None:
+                torch.random.default_generator.manual_seed(seed)
+            bound = self.model if data is None else self.model.rebind(data)
+            observations = set(bound.schema.observations)
+            if missing := observations - set(bound.data):
+                raise ValueError(
+                    f"log likelihood requires observations: {sorted(missing)}"
+                )
+            draws = self.draws(num_samples=100 if num_samples is None else num_samples)
+            if not draws:
+                raise ValueError("posterior has no latent draws")
+            first = next(iter(draws.values()))
+            chains, available = first.shape[:2]
+            count = available if num_samples is None else min(available, num_samples)
+            collected: dict[str, torch.Tensor] = {}
+            values = bound.tensor_data()
+            for chain in range(chains):
+                for draw in range(count):
+                    latents = {
+                        name: samples[chain, draw] for name, samples in draws.items()
+                    }
+                    recorded = trace(
+                        bound.require_tensor_program(),
+                        bound.input,
+                        {**values, **latents},
+                    )
+                    current: dict[str, list[torch.Tensor]] = {}
+                    for name, site in recorded.sites.items():
+                        base, separator, position = name.rpartition("@")
+                        observed_name = (
+                            base if separator and position.isdigit() else name
+                        )
+                        if observed_name not in observations or site.sampleable is None:
+                            continue
+                        sampleable = site.sampleable
+                        pointwise = getattr(
+                            sampleable.morphism, "log_prob_pointwise", None
+                        )
+                        density = (
+                            pointwise(sampleable.input, site.value)
+                            if callable(pointwise)
+                            else sampleable.log_prob(site.value)
+                        )
+                        current.setdefault(observed_name, []).append(
+                            density.reshape(1) if density.ndim == 0 else density
+                        )
+                    if missing := observations - set(current):
+                        raise TypeError(
+                            f"observations {sorted(missing)} require a marginal-likelihood observer"
+                        )
+                    for name, densities in current.items():
+                        density = (
+                            densities[0]
+                            if len(densities) == 1
+                            else torch.stack(densities)
+                        )
+                        if name not in collected:
+                            collected[name] = density.new_empty(
+                                chains, count, *density.shape
+                            )
+                        elif collected[name].shape[2:] != density.shape:
+                            raise ValueError(
+                                f"observation {name!r} changes shape between posterior draws"
+                            )
+                        collected[name][chain, draw].copy_(density)
+            return collected
 
     def summary(self) -> dict[str, ConvergenceSummary]:
         """Summarize MCMC chains with the package's convergence estimators.
@@ -358,189 +865,6 @@ class ModelFit(ValueModel):
             If this is a variational fit, which has no MCMC chains.
         """
         return summary(self.samples)
-
-
-class Model:
-    """A reusable QVR source whose finite dimensions specialize at data binding.
-
-    Parameters
-    ----------
-    source : str
-        QVR source, optionally declaring objects as ``FinSet _``.
-    entry : str or None
-        Program to select. Defaults to the first exported program, or the
-        only program when none is exported.
-    """
-
-    def __init__(self, source: str, *, entry: str | None = None) -> None:
-        self.source = source
-        self.syntax: Module = parse(source)
-        names = [s.name for s in self.syntax.statements if isinstance(s, ProgramDecl)]
-        if entry is None:
-            exported = [
-                s.expr.name
-                for s in self.syntax.statements
-                if isinstance(s, ExportDecl)
-                and isinstance(s.expr, ExprIdent)
-                and s.expr.name in names
-            ]
-            if exported:
-                entry = exported[0]
-            elif len(names) == 1:
-                entry = names[0]
-            else:
-                raise ValueError(f"select an entry from {names}")
-        if entry not in names:
-            raise ValueError(f"unknown program {entry!r}; choose from {names}")
-        self.entry = entry
-        checked = lower_qvr_to_qiec(self.syntax)
-        typed_entry = next((e for e in checked.entries if e.name == entry), None)
-        if typed_entry is None:
-            raise CompileError(f"entry {entry!r} has no checked input contract")
-        self.schema = ModelSchema(entry=typed_entry)
-
-    @classmethod
-    def from_file(cls, path: str | Path, *, entry: str | None = None) -> Model:
-        """Read a QVR model from a file.
-
-        Parameters
-        ----------
-        path : str or Path
-            UTF-8 source file.
-        entry : str or None
-            Program to select.
-
-        Returns
-        -------
-        Model
-            Parsed reusable model.
-        """
-        return cls(Path(path).read_text(encoding="utf-8"), entry=entry)
-
-    def fit[Result](
-        self,
-        data: Mapping[str, object],
-        *,
-        method: InferenceMethod[Result],
-        parameters: Mapping[str, object] | None = None,
-        input: torch.Tensor | None = None,
-        seed: int = 0,
-    ) -> Result:
-        """Bind external data and apply an inference method in one call.
-
-        Parameters
-        ----------
-        data : Mapping[str, object]
-            External values, with roles inferred from QVR.
-        method : InferenceMethod[Result]
-            Inference configuration, including its own random seed and budgets.
-        parameters : Mapping[str, object] or None
-            Template arguments passed to binding.
-        input : torch.Tensor or None
-            One-run domain input, if the program reads one.
-        seed : int
-            Compilation seed, independent of the method's inference seed.
-
-        Returns
-        -------
-        Result
-            The method's result with its own type and semantics.
-        """
-        return self.bind(data, parameters=parameters, input=input, seed=seed).infer(
-            method
-        )
-
-    def bind(
-        self,
-        data: Mapping[str, object],
-        *,
-        parameters: Mapping[str, object] | None = None,
-        input: torch.Tensor | None = None,
-        seed: int = 0,
-    ) -> BoundModel:
-        """Infer dimensions, compile, and validate one data binding.
-
-        Parameters
-        ----------
-        data : Mapping[str, object]
-            External data and observations. Roles and types come from QVR.
-        parameters : Mapping[str, object] or None
-            Arguments of a scalar-parameterized program, such as LDA's priors.
-        input : torch.Tensor or None
-            Explicit one-run domain input. Required for a real-valued domain.
-        seed : int
-            Compilation seed; the caller's CPU random state is restored.
-
-        Returns
-        -------
-        BoundModel
-            Compiled entry and its checked binding.
-
-        Raises
-        ------
-        CompileError
-            If sizes cannot be inferred or the source cannot be checked.
-        ValueError
-            If input names, shapes, or required values disagree with the schema.
-        TypeError
-            If supplied element types disagree with their checked types.
-        """
-        values = dict(data)
-        arguments = {} if parameters is None else dict(parameters)
-        with torch.random.fork_rng(devices=[]):
-            torch.random.default_generator.manual_seed(seed)
-            compiler = Compiler(self.syntax)
-            compiler.bind_data(values)
-            module = compiler.compile()
-            qiec = compiler.qiec_module
-            if qiec is None:
-                raise CompileError("the model has no checked input contract")
-            entry = next((e for e in qiec.entries if e.name == self.entry), None)
-            if entry is None:
-                raise CompileError(
-                    f"entry {self.entry!r} has no checked input contract: {qiec.gap or 'not elaborated'}"
-                )
-            declaration = next(
-                s
-                for s in self.syntax.statements
-                if isinstance(s, ProgramDecl) and s.name == self.entry
-            )
-            if declaration.type_params is not None:
-                invoker = compiler._make_template_invoker(self.entry)
-                selected = invoker(**arguments)
-                program = selected.morphism
-            else:
-                if arguments:
-                    raise ValueError("this entry has no template parameters")
-                program = compiler.morphisms[self.entry]
-        if not isinstance(program, (MonadicProgram, CheckedProgram)):
-            raise TypeError(f"entry {self.entry!r} is not a probabilistic program")
-        if program.input_contract is not None:
-            entry = program.input_contract
-        schema = ModelSchema(entry=entry)
-        expected = set(schema.types) - set(arguments)
-        if missing := expected - set(values):
-            raise ValueError(f"missing external inputs: {sorted(missing)}")
-        if extra := set(values) - expected:
-            raise ValueError(
-                f"unknown external inputs: {sorted(extra)}; expected {sorted(expected)}"
-            )
-        if input is None:
-            if any(p.role == "domain" for p in entry.parameters) or isinstance(
-                program.domain, ContinuousSpace
-            ):
-                raise ValueError(
-                    "this entry reads a domain value; provide input explicitly"
-                )
-            input = torch.zeros(1, 1, dtype=torch.long)
-        if input.ndim < 2 or input.shape[0] != 1:
-            raise ValueError(
-                "model fitting requires exactly one execution; observation rows belong to QVR plates"
-            )
-        check_host_data(program, {**values, **arguments})
-        return BoundModel(
-            module=module, program=program, schema=schema, data=values, input=input
-        )
 
 
 __all__ = ["BoundModel", "InferenceMethod", "Model", "ModelFit", "ModelSchema"]

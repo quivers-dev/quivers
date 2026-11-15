@@ -3,14 +3,14 @@
 A `program` declaration
 
 ```
-program P (params) : τ₁ -> τ₂
+program P[static_params](value_params) : τ₁ -> τ₂
     s₁
     ⋮
     sₙ
     return e
 ```
 
-denotes an [s-finite kernel](setting.md#4-finite-and-s-finite-kernels)
+denotes, at fixed static and runtime arguments, an [s-finite kernel](setting.md#4-finite-and-s-finite-kernels)
 $\llbracket P \rrbracket$ from $\llbracket \tau_1 \rrbracket$ to $\llbracket \tau_2 \rrbracket$
 [@staton2017commutative]. Each step denotes a kernel from the values bound before it to the
 values bound after it, and the body denotes the composite of these kernels. A body with no
@@ -383,7 +383,7 @@ arguments read the latent would be one draw for each class, and the compiler rej
 A program may declare which effects its body performs:
 
 ```
-program P (params) : τ₁ -> τ₂ [effects = [E₁, E₂, ...]]
+program P[static_params](value_params) : τ₁ -> τ₂ [effects = [E₁, E₂, ...]]
     body
 ```
 
@@ -479,32 +479,77 @@ names the components of its domain: when $\tau_1 = \sigma_1 \times \cdots \times
 $i$-th projection of the input. The denotation is the kernel from $\llbracket \tau_1 \rrbracket$ to
 $\llbracket \tau_2 \rrbracket$ of §1.
 
-### 3.1 Typed parameters
+### 3.1 Static and runtime telescopes
 
-Typed parameters make $P$ a family of kernels, one for each value of the parameters:
+A typed program separates static specialization from values supplied to the
+specialized program:
 
-| Parameter kind | Ranges over |
-|---|---|
-| `FinSet`, `Space`, `Object` | finite sets or standard Borel spaces |
-| `Real`, `Nat` | real numbers or natural numbers (a hyperparameter) |
-| `Mor[A, B]` | morphisms from $A$ to $B$ |
+```text
+program P[p₁ : P₁, ..., pₖ : Pₖ](x₁ : T₁, ..., xₘ : Tₘ) : A -> B
+    body
+```
+
+The static telescope $\Delta=(p_1:P_1,\ldots,p_k:P_k)$ binds QIEC types,
+effects, and indices, as well as program objects and morphisms used in checking
+and specialization. Object kinds are
+`FinSet`, `Space`, and `Object`; a morphism kind is `Mor[A, B]`; and a static
+`Nat` records an extent. The runtime telescope
+$\Gamma_v(\Delta)=(x_1:T_1,\ldots,x_m:T_m)$ binds values at those specialized
+types. Scalar hyperparameters of type `Real` or `Nat` belong to this runtime
+telescope when they are values read by the body. A runtime `Nat` parameter
+denotes the nonnegative subset of the integers, with the discrete measurable
+structure inherited from the integer carrier. Lowering records the carrier as
+`Int` and retains a nonnegative constraint; native and reference input validation
+enforce both integrality and nonnegativity. The corresponding static `Nat`
+parameter instead ranges over index valuations in $\Delta$.
+
+For each static valuation $\delta$, let
+$D(\delta)=\llbracket\Gamma_v(\delta)\rrbracket$ be the space of admissible
+runtime inputs. The program denotes
 
 $$
-\llbracket P \rrbracket \in \prod_{p_1 : P_1} \cdots \prod_{p_k : P_k} \mathbf{K}\bigl(\mathrm{dom}(p), \mathrm{cod}(p)\bigr),
+\llbracket P \rrbracket \in
+\prod_{\delta:\llbracket\Delta\rrbracket}
+D(\delta)\to
+\mathbf K\bigl(\llbracket A(\delta)\rrbracket,
+               \llbracket B(\delta)\rrbracket\bigr),
 $$
 
-where $\mathbf K(X, Y)$ is the set of s-finite kernels from $X$ to $Y$. The domain and codomain may
-mention the parameters, so different parameter values may give kernels between different spaces.
+where $\mathbf K(X,Y)$ is the set of s-finite kernels from $X$ to $Y$.
+Runtime values select a kernel over the declared domain; they are not extra
+independent executions of that kernel. An input annotation adds no probability
+factor. If `y` occurs as a parameter and as the response of `observe y`, its
+annotation constrains the response space and the observation step contributes
+the likelihood.
+
+A Python factory may partially apply the static valuation without fixing runtime
+inputs: `.sub(n=3)` selects $\delta$ while retaining the inputs in
+$D(\delta)$. Fixing a scalar runtime argument by named partial application
+instead selects a value in that input space and preserves its position in
+$\Gamma_v$.
+
+The distinction between stages is independent of explicitness. Elaboration may
+infer an input's type from its uses, and binding may recover an omitted static
+extent from exact shape evidence. The resulting checked program still has both
+telescopes. An ambiguous type must be annotated, and an extent without adequate
+evidence must be supplied before execution.
 
 ### 3.2 Calls of programs
 
-A call `v <- P(a₁, ..., aₖ)` in another program substitutes the arguments $a_i$ for the parameters
-$p_i$ in the body of $P$ and inlines the result as steps of the caller. The latent variables of the
+A call `v <- P[s₁, ..., sₖ](a₁, ..., aₘ)` in another program first substitutes
+the static arguments $s_i$ into the program's types and body, then binds the
+runtime arguments $a_j$ and inlines the body as steps of the caller. The latent variables of the
 callee are renamed under the fresh prefix `v$`, and its return value is bound to $v$. Substitution
 commutes with the denotation of the body, because each parameter is bound at the top of the body
 and the body's denotation is built from the denotations of its steps, and renaming bound variables
 consistently does not change a denotation. Two calls of one program thus contribute separate
 factors with their own latent variables, as in a hierarchical model.
+
+Static and runtime arities are checked separately. Runtime arguments must match
+the specialized parameter types, including a tensor's element type and shape.
+For a runtime `Nat` formal, the current checker admits a nonnegative integer
+literal or an input already carrying the nonnegative constraint. It refuses
+an arbitrary computed or sampled `Int`, whose nonnegativity it cannot prove.
 
 ### 3.3 Calls of computations
 
@@ -728,19 +773,19 @@ Whether this is the posterior $p(\mathbf w \mid s_1, \ldots, s_N)$ depends on wh
   probabilities explicitly, for instance by Dirichlet draws [@johnson2007bayesian] or a softmax for
   each left-hand side, and scores the normalized grammar.
 
-## External data and inferred finite objects
+## External inputs and inferred finite objects
 
-A program's **external data context** (EDC), written $\Delta$, contains each
-external symbol at the type required by its uses. A declaration `data x : T`
-asserts $x:T\in\Delta$. It contributes no random draw or score; elaboration
-checks the assertion and exposes `x` as a parameter of the existing computation.
-An observation declaration can refer to the same symbol, giving that parameter
-its observation role.
+The runtime telescope $\Gamma_v(\Delta)$ contains each external symbol at its
+checked type. A header parameter `x : T` adds the assumption $x:T$ to that
+context. An undeclared external symbol is elaborated into the same context
+when its uses determine a type; conflicting or ambiguous uses are rejected.
+There is no separate body statement for declaring data, since input formation
+does not change the sequence of probabilistic steps.
 
-For fixed external values $d\in\llbracket\Delta\rrbracket$, the program has the
-same kernel denotation as its body evaluated at $d$. The declaration thus
-restricts admissible inputs without adding a probabilistic factor. A declaration
-whose type conflicts with a use is rejected before execution.
+For fixed external values $d\in\llbracket\Gamma_v(\delta)\rrbracket$, the
+program has the kernel denotation of its body evaluated at $d$. Runtime input
+typing and likelihood contribution are independent: an observation response
+inhabits the declared type, and `observe` contributes its log density.
 
 An object `object A : FinSet _` introduces a natural-number extent variable $a$.
 Binding data first solves the extent constraints, then specializes the checked
@@ -761,7 +806,7 @@ checks supplied tensor shapes and dtypes, and rejects external gather indices
 outside their checked axes. The compiler's input contract and the runtime's
 checks thus describe the same specialized program.
 
-A leading execution axis supplies one EDC valuation per run. The tensor
+A leading execution axis supplies one runtime-context valuation per run. The tensor
 executor applies the same checked kernel to each valuation, separating runs
 before a grouped marginal is evaluated. Observation plates stay inside each
 execution.

@@ -25,6 +25,14 @@ define length[A : Type, n : Nat](xs : Vec[A](n)) : Int !{} =
 
 `length` is a computation (`define`) whose effect row `!{}` is empty: it performs no effects ([chapter 10](10-effects-and-handlers.md) introduces effect rows). Its `case` analysis states a *motive*, the result type of the analysis as a function of the inspected value's index [@mcbride2002elimination]. Here the motive `(m : Nat) => Int` returns `Int` whatever the length. In the `Cons` branch the checker learns that the input has length `S(k)` for some `k`, so `tail` has type `Vec[A](k)` and the recursive call is made at `k`.
 
+This signature also illustrates QVR's parameter stages. In `length[A, n](xs)`,
+the bracketed arguments determine the type of the runtime argument `xs`.
+Programs use the same split between static specialization and typed external
+values. Family application has a distinct purpose: the parentheses in
+`Vec[A](n)` identify a refinable *static index*, rather than a runtime argument.
+The [parameter reference](../../reference/qvr/index.md#parameter-telescopes)
+compares these forms across the language.
+
 ## 2. Fold without a shape check
 
 A sum over a real vector:

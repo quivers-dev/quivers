@@ -14,7 +14,7 @@ and scalar parameters become value parameters of the computation.
 ```qvr
 object Row : FinSet 100
 
-program regression : Row -> Row [effects=[Sample, Score]]
+program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Row [effects=[Sample, Score]]
     sample sigma <- HalfNormal(scale=1.0)
     sample intercept <- Normal(loc=0.0, scale=5.0)
     sample slope <- Normal(loc=0.0, scale=2.0)
@@ -38,7 +38,6 @@ posterior is computed by an [inference driver](../../guides/inference-foundation
 
 | Step | Checked meaning |
 | --- | --- |
-| `data x : Type` | declare the checked type of an externally supplied value; this declaration performs no effect |
 | `sample x <- FAMILY(...)` | `Random.sample` at site `x` |
 | `sample x : Plate <- FAMILY(...)` | one draw per element of the object `Plate`, as a [plate](https://en.wikipedia.org/wiki/Plate_notation) of conditionally independent draws [@koller2009probabilistic] |
 | `observe y <- FAMILY(...)` | `Score.add(log_prob(FAMILY(...), y))` |
@@ -54,16 +53,103 @@ an expression reads but no step binds is a data input of the program, not a glob
 
 ## Data inputs {#host-data}
 
-Optional `data name : Type` declarations use QIEC types, such as
-`Tensor[Real]([Row])` or `Tensor[Int]([Row])`. They are collected before checking
-the body, so every use must agree with the declared type; they do not bind sampled
-values or reclassify an observation as a covariate. `observe` determines the role.
+Optional typed parameters in the program header use QIEC types, such as
+`x : Tensor[Real]([Row])` or `index : Tensor[Int]([Row])`. Each parameter is
+in scope throughout the body, and every use must agree with its declared type.
+Declaring a parameter performs no random draw or score. In particular, the
+parameter `y` above becomes an observation because the body uses `observe y`;
+its type annotation alone does not determine that role.
 `object Row : FinSet _` requests specialization from supplied checked shapes or
 direct index evidence. See [data binding and fitting](../../guides/model-data-and-fitting.md)
-for the inference rules and [interactive inspection](../../guides/repl-and-lsp.md#checked-data-in-interactive-tools)
+for the inference rules and [interactive inspection](../../guides/repl-and-lsp.md#checked-parameters-in-interactive-tools)
 for symbolic checking, completion, and notebook use.
 
-A *data input* is a name the program reads but does not bind, given at run time with the
+### Static and runtime parameters
+
+A program has the same two parameter lists as a `define` computation:
+
+```text
+program NAME[STATIC_PARAMETERS](VALUE_PARAMETERS) : DOMAIN -> CODOMAIN
+    STEPS
+    return VALUE
+```
+
+The static telescope in `[...]` binds QIEC types, indices, or effects, and program
+objects or morphisms used when specializing the program. The runtime telescope in `(...)` accepts values used
+by the body. Later parameter types may refer to earlier static parameters, so a
+signature can express that two inputs have the same shape. A typed value
+parameter is not by itself a request to specialize a template.
+
+For instance, `program model[Row : FinSet](x : Tensor[Real]([Row])) : Row -> Out`
+abstracts over a finite row object and receives a tensor over that object.
+`model[Rows](values)` supplies the object separately from its values. A scalar
+hyperparameter, such as `scale : Real`, belongs in the runtime list even when a
+caller happens to supply a literal. The [parameter reference](index.md#parameter-telescopes)
+explains this convention across declarations and its distinction from family indices.
+
+A runtime `(count : Nat)` accepts a nonnegative integer. The checked program
+retains that restriction alongside its integer arithmetic type, and both native
+and reference execution validate it when inputs are supplied. A static
+`[n : Nat]` instead selects an index used by the specialized types.
+A program call can supply a nonnegative integer literal or a runtime input
+already constrained as `Nat`. An arbitrary computed or sampled `Int` is
+rejected: the checker does not yet prove that an integer expression is nonnegative.
+
+Bare parameters, as in `program f(a, b) : A * B -> C`, remain shorthand for
+the components of the declared domain. Typed external values are additional
+inputs; declaring them does not change the program's domain or add an execution axis.
+
+A static natural number can itself index a finite plate:
+
+<!-- compile: qiec -->
+```qvr
+object Out : Real 1
+
+program regression[n : Nat](
+    x : Tensor[Real]([n]),
+    y : Tensor[Real]([n]),
+) : n -> Out
+    sample slope <- Normal(loc=0.0, scale=1.0)
+    let mean = slope * x
+    observe y : n <- Normal(loc=mean, scale=1.0)
+    return slope
+
+export regression
+```
+
+In a finite-object position, `n` denotes the canonical zero-based ordinal
+$\{0,\ldots,n-1\}$. In a tensor shape it denotes the same extent. The shared
+binder thus relates the input shapes, plate, and domain without introducing a
+module-level object for each size. Symbolic checking verifies this dependency
+before a concrete size is supplied; executor support for specialization is
+checked separately.
+
+The Python factory can specialize only the static telescope and leave runtime
+inputs to be supplied with data:
+
+```python
+from quivers.dsl import loads
+
+static_family = loads("""
+object Out : Real 1
+program sub[n : Nat](scale : Real) : n -> Out
+    sample z : n <- Normal(loc=0.0, scale=scale)
+    return z
+export sub
+""")
+specialized = static_family.sub(n=3)
+contract = specialized.morphism.input_contract
+assert contract.telescope == ()
+assert tuple(parameter.name for parameter in contract.parameters) == ("scale",)
+```
+
+Here `n=3` fixes the plate's extent, while `scale` remains a checked runtime
+input. Named scalar partial application, such as `.sub(n=3, scale=0.7)`, may
+also fix a runtime value; it preserves that value's runtime parameter stage.
+Supply tensor values through `Model.bind` or the execution data interface.
+
+A *data input* is an external value the body reads, declared as a typed header
+parameter or inferred from an otherwise unbound name, given at run time with the
 observations, as a variable of Stan's `data` block is [@carpenter2017stan]. Each data input has one
 checked type, which `qvr check` and `entry_points()` list and every transpile target declares. The
 type is inferred from the name's uses:
@@ -83,7 +169,9 @@ independent copies, and its *event axes* belong to one joint value [@pyroTensorS
 
 The rule applies to `let` and `score` expressions alike. A data input that a reduction or a rowwise
 operation consumes, but whose shape no use fixes, as in `score s = sum(weight)`, is refused at the
-step that reads it, since nothing gives its number of entries. Its extent is fixed by combining it
+step that reads it, since nothing gives its number of entries. Declare a typed
+header parameter, such as `weight : Tensor[Real]([Item])`, to state the intended
+extent. The extent can also be fixed by combining it
 entry by entry with a value over the intended object, or by reading it entrywise in a factor, as in
 `sum(factor i : Item in weight[i] * resid[i])`. A name whose uses fix two different shapes is
 refused the same way.
@@ -248,7 +336,7 @@ such a call is refused with the same error when it is instantiated:
 | an `if` whose branches draw or score | its set of sites depends on the branch taken | draw outside the conditional and choose between values with `select` |
 | a callee that handles an effect in its body (`with instance`, `handle`) | the compiled runtime does not run handlers or resumptions | a callee with no handler |
 | a `case` on a family value | the compiled runtime does not run case analysis | a callee with no `case` |
-| a call with static arguments, as `identity[Int](4)` | the compiled runtime does not specialize | a callee with no static binders |
+| a `define`-computation call with static arguments, as `identity[Int](4)` | the compiled runtime does not specialize computation calls | a computation with no static binders |
 | a program called as a computation, `let y <- sub(...)` | a program is drawn from, not called | `sample y <- sub(...)` |
 
 Dynamic transpile targets emit every reachable call, Stan accepts a callee that is a closed,

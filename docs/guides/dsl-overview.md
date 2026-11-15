@@ -226,11 +226,11 @@ contraction_input
 bundle_decl    := 'bundle' IDENT ':' '[' [IDENT (',' IDENT)*] ']'
 
 (* Top-level categorial grammar rule. *)
-rule_decl      := 'rule' IDENT '(' IDENT (',' IDENT)* ')'
+rule_decl      := 'rule' IDENT '[' IDENT (',' IDENT)* ']'
                   ':' object_expr (',' object_expr)* ('|-' | '⊢') object_expr
 
 (* Rule schema: a rule template with typed parameters. *)
-schema_decl    := 'schema' IDENT '(' schema_parameter (',' schema_parameter)* ')'
+schema_decl    := 'schema' IDENT '[' schema_parameter (',' schema_parameter)* ']'
                   ':' object_expr '->' object_expr
 schema_parameter
                := IDENT (',' IDENT)* ':' object_expr
@@ -251,11 +251,14 @@ loss_decl      := 'loss' IDENT [option_block] INDENT let_arith DEDENT
 
 (* Program. The body is an indented sequence of steps ending in a
    required `return`. *)
-program_decl   := 'program' IDENT ['(' program_param (',' program_param)* ')']
+program_decl   := 'program' IDENT
+                  ['[' program_static (',' program_static)* ']']
+                  ['(' program_value (',' program_value)* ')']
                   ':' object_expr '->' object_expr [option_block]
                   INDENT program_step* return_step DEDENT
-program_param  := IDENT | (IDENT ':' param_kind)
-param_kind     := 'FinSet' | 'Space' | 'Object' | 'Real' | 'Nat'
+program_value  := IDENT [':' qiec_type]
+program_static := IDENT ':' static_kind
+static_kind    := 'FinSet' | 'Space' | 'Object' | 'Nat' | 'Type' | 'Effect' | IDENT
                 | 'Mor' '[' object_expr ',' object_expr ']'
 program_step   := sample_step | observe_step | marginalize_step
                 | let_step | score_step

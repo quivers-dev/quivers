@@ -237,14 +237,14 @@ class TestDSLSurface:
         object SubjCloze : FinSet 7
         object Verb : FinSet 3
 
-        program random_intercepts(G : FinSet, scale : Real) : G -> Real 1
+        program random_intercepts[G : FinSet](scale : Real) : G -> Real 1
             sample sigma <- HalfNormal(scale=scale)
             sample v : G <- Normal(loc=0.0, scale=sigma)
             return v
 
         program demo : SubjCloze -> SubjCloze
-            sample by_subj <- random_intercepts(SubjCloze, 1.0)
-            sample by_verb <- random_intercepts(Verb, 1.0)
+            sample by_subj <- random_intercepts[SubjCloze](1.0)
+            sample by_verb <- random_intercepts[Verb](1.0)
             return by_subj
 
         export demo
@@ -278,12 +278,12 @@ class TestDSLSurface:
 
         morphism my_prior : Subj -> UnitSpace [role=kernel] ~ Normal(loc=0.0, scale=1.0)
 
-        program with_prior(G : FinSet, prior : Mor[Subj, UnitSpace]) : G -> Real 1
+        program with_prior[G : FinSet, prior : Mor[Subj, UnitSpace]] : G -> Real 1
             sample v : G <- prior
             return v
 
         program demo : Subj -> Subj
-            sample by_subj <- with_prior(Subj, my_prior)
+            sample by_subj <- with_prior[Subj, my_prior]()
             return by_subj
 
         export demo

@@ -114,7 +114,7 @@ The [model interface](../../guides/model-data-and-fitting.md) derives input name
 types, and observation roles from the checked program. `Model(source).bind(data)`
 checks the supplied values before fitting; neither a guide nor an extra list of
 observed names is required. `object Item : FinSet _` also permits the data to fix
-the number of rows, and optional `data` declarations constrain external values.
+the number of rows, and optional typed parameters in the program header constrain external values.
 
 The component-level workflow below constructs a guide and an optimizer explicitly
 to explain SVI. At this level, `AutoNormalGuide` still accepts `observed_names`,

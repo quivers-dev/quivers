@@ -56,6 +56,7 @@ from quivers.cli.repl_browse import (
     _children_for_rule,
     _children_for_signature,
     _children_for_space,
+    _program_parameter_groups,
 )
 from quivers.core.objects import FinSet
 from quivers.dsl import (
@@ -65,7 +66,6 @@ from quivers.dsl import (
     parse,
 )
 from quivers.dsl.ast_nodes import (
-    DataStep,
     ExportDecl,
     ExprCompose,
     ExprIdent,
@@ -77,6 +77,7 @@ from quivers.dsl.ast_nodes import (
     ObjectExpr,
     ObserveStep,
     ProgramStep,
+    ProgramParam,
     SampleStep,
     Statement,
     TypeFromExpr,
@@ -86,9 +87,17 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputationDecl,
     QiecEffectDecl,
     QiecHandlerDecl,
+    QiecBinder,
+    QiecValueParameter,
 )
 from quivers.dsl.constraints import Violation, check_constraints
-from quivers.dsl.emit import _emit_qiec_type, draw_call_to_source, module_to_source
+from quivers.dsl.emit import (
+    _emit_program_param,
+    _emit_qiec_binder,
+    _emit_qiec_type,
+    draw_call_to_source,
+    module_to_source,
+)
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_tooling import (
     analyze_module,
@@ -744,10 +753,10 @@ class ReplSession:
         if not self._compiler:
             return None
         c = self._compiler
-        if bare in c.morphisms:
-            return self._type_signature_for_morphism(bare, c.morphisms[bare])
         if bare in c.programs:
             return self._type_signature_for_program(bare, c.programs[bare])
+        if bare in c.morphisms:
+            return self._type_signature_for_morphism(bare, c.morphisms[bare])
         if bare in c.encoders:
             return f"{bare} :: encoder"
         if bare in c.decoders:
@@ -902,53 +911,27 @@ class ReplSession:
         return f"{name} :: {self._pretty(dom)} -> {self._pretty(cod)}"
 
     def _type_signature_for_program(self, name: str, tmpl: Any) -> str:
-        """GHCi-style signature for a program template.
+        """Show static and value parameters separately from the kernel arrow.
 
-        Per ``docs/semantics/programs.md``, a program's denotation
-        depends on the parameter list:
-
-        - Bare-identifier params (``P(q₁, …, qₖ) : τ₁ -> τ₂``) project
-          components of the domain. The kernel's signature is
-          ``τ₁ -> τ₂``; the q_i are syntactic conveniences, not
-          additional arguments, so they do not appear in the type.
-        - Typed params (``alpha : Real``, ``X : Object``,
-          ``f : Mor[A, B]``) denote a dependent family
-          ``∏ p_i:P_i. Kern(dom, cod)`` and are surfaced as a
-          Haskell-style constraint context ``(p₁ : P₁, …) => dom -> cod``
-          so the ∏-bound parameters never get conflated with the
-          kernel's dom -> cod arrow.
-
-        The dom / cod ``ObjectExpr`` AST nodes are routed through
-        the compiler's ``_resolve_any_space`` so the rendered
-        signature carries the *elaborated* SetObject / ContinuousSpace
-        (with cardinalities and dims resolved) rather than the raw
-        parse tree.
+        Static ``[...]`` parameters may occur in later value types. Runtime
+        ``(...)`` parameters supply scalar settings or checked external values.
+        Bare domain projections remain syntactic names for kernel input fields.
         """
-        type_param_strs: list[str] = []
-        for p in getattr(tmpl, "type_params", None) or ():
-            kind = type(p).__name__
-            if kind == "ScalarParam":
-                type_param_strs.append(str(getattr(p, "scalar_kind", "?")))
-            elif kind == "ObjectParam":
-                type_param_strs.append(str(getattr(p, "universe", "?")))
-            elif kind == "MorphismParam":
-                dom_p = self._pretty_obj_expr(getattr(p, "domain", None))
-                cod_p = self._pretty_obj_expr(getattr(p, "codomain", None))
-                if dom_p is not None and cod_p is not None:
-                    type_param_strs.append(f"Mor[{dom_p}, {cod_p}]")
-                else:
-                    type_param_strs.append("Mor")
-            else:
-                type_param_strs.append("?")
+        static, runtime = _program_parameter_groups(tmpl)
+        # Keep the compact scalar context familiar to existing REPL users;
+        # static binders carry their names because later types depend on them.
+        runtime_types = [
+            parameter.split(" : ", 1)[-1] for parameter in runtime if " : " in parameter
+        ]
         dom = self._pretty_obj_expr(getattr(tmpl, "domain", None))
         cod = self._pretty_obj_expr(getattr(tmpl, "codomain", None))
         if dom is None or cod is None:
             return f"{name} :: ?"
         morph_sig = f"{dom} -> {cod}"
-        if type_param_strs:
-            ctx = ", ".join(type_param_strs)
-            return f"{name} :: ({ctx}) => {morph_sig}"
-        return f"{name} :: {morph_sig}"
+        context = f"[{', '.join(static)}] " if static else ""
+        if runtime_types:
+            context += f"({', '.join(runtime_types)}) => "
+        return f"{name} :: {context}{morph_sig}"
 
     def _pretty_obj_expr(self, expr: Any) -> str | None:
         """Render an ``ObjectExpr`` for display, preferring the
@@ -1006,7 +989,7 @@ class ReplSession:
             return f"{ref.name} :: ?"
         if kind in ("sample-site", "observe-site", "marginalize-site"):
             return _site_signature(ref.name, node)
-        if kind == "data-input" and isinstance(node, DataStep):
+        if kind == "data-input" and isinstance(node, QiecValueParameter):
             return f"{ref.name} :: {_emit_qiec_type(node.type_expr)}"
         if kind == "let-site":
             return f"{ref.name} :: ?"
@@ -1016,6 +999,10 @@ class ReplSession:
             members = node if isinstance(node, tuple) else (str(node),)
             return f"return :: {', '.join(str(m) for m in members)}"
         if kind == "param":
+            if isinstance(node, ProgramParam):
+                return f"{ref.name} :: {_emit_program_param(node).split(' : ', 1)[1]}"
+            if isinstance(node, QiecBinder):
+                return f"{ref.name} :: {_emit_qiec_binder(node).split(' : ', 1)[1]}"
             sk = getattr(node, "scalar_kind", None)
             universe = getattr(node, "universe", None)
             if sk is not None:
@@ -1050,46 +1037,14 @@ class ReplSession:
         return f"morphism {name} : {_pretty_morphism(morph)} [role=parameter]"
 
     def _type_line_for_program(self, name: str, tmpl: Any) -> str:
-        """Render a program template's signature.
-
-        Reconstructs ``program NAME(params) : DOM -> COD`` from the
-        AST node. Parameters come from two slots:
-        ``params`` (bare-name list, no type annotation) and
-        ``type_params`` (typed list of ``ScalarParam`` / ``ObjectParam``
-        / ``MorphismParam`` records); a program declares at most one
-        of the two, but the AST keeps them separate so the renderer
-        merges whichever is populated.
-        """
+        """Render static ``[...]`` and runtime ``(...)`` program telescopes."""
         del self
-        param_strs: list[str] = []
-        bare = getattr(tmpl, "params", None) or ()
-        for n in bare:
-            param_strs.append(str(n))
-        typed = getattr(tmpl, "type_params", None) or ()
-        for p in typed:
-            pname = getattr(p, "name", "?")
-            kind = type(p).__name__
-            if kind == "ScalarParam":
-                annot = getattr(p, "scalar_kind", "?")
-            elif kind == "ObjectParam":
-                annot = getattr(p, "universe", "?")
-            elif kind == "MorphismParam":
-                dom = getattr(p, "domain", None)
-                cod = getattr(p, "codomain", None)
-                annot = (
-                    f"Mor[{_pretty_object(dom)}, {_pretty_object(cod)}]"
-                    if dom is not None and cod is not None
-                    else "Mor"
-                )
-            else:
-                annot = ""
-            if annot:
-                param_strs.append(f"{pname} : {annot}")
-            else:
-                param_strs.append(str(pname))
+        static, runtime = _program_parameter_groups(tmpl)
         head = f"program {name}"
-        if param_strs:
-            head += f"({', '.join(param_strs)})"
+        if static:
+            head += f"[{', '.join(static)}]"
+        if runtime:
+            head += f"({', '.join(runtime)})"
         dom = getattr(tmpl, "domain", None)
         cod = getattr(tmpl, "codomain", None)
         if dom is not None and cod is not None:
@@ -1147,6 +1102,10 @@ class ReplSession:
         if kind == "contraction":
             return f"contraction {ref.name}"
         if kind == "param":
+            if isinstance(node, ProgramParam):
+                return f"param {_emit_program_param(node)}"
+            if isinstance(node, QiecBinder):
+                return f"param {_emit_qiec_binder(node)}"
             sk = getattr(node, "scalar_kind", None)
             universe = getattr(node, "universe", None)
             if sk is not None:
@@ -1154,8 +1113,8 @@ class ReplSession:
             if universe is not None:
                 return f"param {ref.name} : {universe}"
             return f"param {ref.name}"
-        if kind == "data-input" and isinstance(node, DataStep):
-            return f"data {ref.name} : {_emit_qiec_type(node.type_expr)}"
+        if kind == "data-input" and isinstance(node, QiecValueParameter):
+            return f"{ref.name} : {_emit_qiec_type(node.type_expr)}"
         if kind == "sample-site":
             return _render_sample_line(node)
         if kind == "observe-site":
@@ -2985,7 +2944,11 @@ def _extract_export_expr(mod: Module):
 
 def _call_str(step: Any) -> str:
     head = getattr(step, "morphism", "?") or "?"
-    return draw_call_to_source(str(head), getattr(step, "args", None))
+    return draw_call_to_source(
+        str(head),
+        getattr(step, "args", None),
+        static_args=getattr(step, "static_args", ()),
+    )
 
 
 def _index_suffix(idx: Any) -> str:

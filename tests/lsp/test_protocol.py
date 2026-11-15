@@ -66,8 +66,7 @@ def test_lsp_stdio_handshake_diagnostics_and_close() -> None:
                     "text": (
                         "object Row : FinSet _\n"
                         "object Out : Real 1\n"
-                        "program regression : Row -> Out\n"
-                        "    data x : Tensor[Real]([Row])\n"
+                        "program regression(x : Tensor[Real]([Row])) : Row -> Out\n"
                         "    sample b <- Normal(loc=0.0, scale=1.0)\n"
                         "    let mu = b * x\n"
                         "    observe y : Row <- Normal(loc=mu, scale=1.0)\n"
@@ -80,19 +79,17 @@ def test_lsp_stdio_handshake_diagnostics_and_close() -> None:
         assert receive()["params"]["diagnostics"] == []
         send(
             "textDocument/hover",
-            {"textDocument": {"uri": uri}, "position": {"line": 5, "character": 17}},
+            {"textDocument": {"uri": uri}, "position": {"line": 4, "character": 17}},
             3,
         )
-        assert (
-            "data x : Tensor[Real]([Row])" in receive()["result"]["contents"]["value"]
-        )
+        assert "x : Tensor[Real]([Row])" in receive()["result"]["contents"]["value"]
         send(
             "textDocument/definition",
-            {"textDocument": {"uri": uri}, "position": {"line": 5, "character": 17}},
+            {"textDocument": {"uri": uri}, "position": {"line": 4, "character": 17}},
             4,
         )
         definition = receive()["result"]
-        assert definition[0]["range"]["start"]["line"] == 3
+        assert definition[0]["range"]["start"]["line"] == 2
         send(
             "textDocument/didChange",
             {

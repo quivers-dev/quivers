@@ -116,7 +116,7 @@ _ERROR_CASES: list[tuple[str, str, tuple[str, ...]]] = [
         (
             "object Atoms : {NP, S}\n"
             "object Cat : FreeResiduated(Atoms, depth=2, ops=[slash])\n"
-            "rule app(X, Y) : X/Y, Y => X\n"
+            "rule app[X, Y] : X/Y, Y => X\n"
         ),
         ("line 3", "syntax error"),
     ),

@@ -74,6 +74,13 @@ including one that the cell cannot produce.
 
 ## 4. Programs and data
 
+These correspondences are evaluated at a fixed static specialization and a
+valid runtime binding. Header annotations and inferred input types constrain
+that binding; they introduce no additional draw or density. The tensor
+executor first validates the checked input contract and specializes its finite
+extents. A symbolic `CheckedProgram` may retain a valid interface even when its
+body requires capabilities that executor does not implement.
+
 The steps of a program keep their keywords' meanings
 ([Programs as kernels](programs.md)):
 

@@ -11,17 +11,22 @@ reusable components, and explain the limits of dimension inference.
 ## Declare external values when useful
 
 An external symbol can remain implicit when its uses determine its type. A
-`data` declaration fixes that type explicitly, including a tensor's dimensions.
+typed runtime parameter fixes that type explicitly, including a tensor's dimensions.
 The compiler checks every use against the declaration.
+
+These are ordinary parameters of the program, written in its header. They are
+not steps that execute. This uses the same distinction as a `define`
+computation: static parameters in `[...]` determine types and structure, and
+values in `(...)` inhabit those types. The
+[language reference](../reference/qvr/index.md#parameter-telescopes) explains how
+the convention applies to programs, computations, constructors, effects, and handlers.
 
 <!-- compile: qiec -->
 ```qvr
 object Row : FinSet _
 object Out : Real 1
 
-program regression : Row -> Out
-    data x : Tensor[Real]([Row])
-    data y : Tensor[Real]([Row])
+program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out
     sample b <- Normal(loc=0.0, scale=1.0)
     let mu = b * x
     observe y : Row <- Normal(loc=mu, scale=1.0)
@@ -35,9 +40,22 @@ to determine its cardinality; the number of observations in `y` and the length
 of `x` must agree. `Out` and the prior specify the model independently of that
 cardinality.
 
-The declaration of `y` gives its type, while `observe y` gives its role. An
+The parameter annotation on `y` gives its type, while `observe y` gives its role. An
 observation is thus identified by the program itself. No Python list of observed
 names is required.
+
+A reusable program can bind its row object in a static telescope instead of
+using a module-level object, as in
+`program regression[Row : FinSet](x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out`.
+The dependency of both tensor types on `Row` states that their lengths must
+agree. Inference of an omitted extent uses the supplied values as evidence;
+it does not turn the extent into a latent variable or a runtime array.
+
+If a count is instead a value read by the model, declare it in the runtime
+header, as `(count : Nat)`, and include it in the data mapping. Binding accepts
+nonnegative integers and retains the restriction in the checked contract.
+Static extents such as `[n : Nat]` belong to specialization rather than this
+runtime data mapping.
 
 ## Inspect and bind
 
@@ -114,6 +132,10 @@ losses = variational.losses
 The default guide is built from a trace, including a scan's individual sites.
 Variational draws have one pseudo-chain; they do not supply MCMC convergence
 evidence. `summary()` thus requires an MCMC result.
+For formula-generated fits, the [posterior workflow](analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
+describes labeled coefficients, retained group levels, linear predictors, and
+expected responses on the fitted training rows.
+
 
 `model.fit(data, method=method)` combines binding and inference. Keep the bound
 instance when several methods should use the same initialized model. A method's
@@ -125,6 +147,53 @@ adds the one-run axis expected by the tensor executor through a view. Custom
 tensor methods and guide factories can obtain these values with
 `bound.tensor_data()`. `bound.trace` also accepts a scanned latent's address,
 such as `s@2`, to condition one position without marking it as an external input.
+
+### Predict at new inputs
+
+Pass a new covariate binding to predict on different rows. Responses may be
+omitted, since prediction generates them:
+
+```python
+new_data = {"x": torch.tensor([0.5, 1.5])}
+predicted = fit.predict(new_data, num_samples=100, seed=11)
+assert predicted["y"].shape == (100, 2)
+```
+
+The row extent is inferred again from the new covariates. The model keeps its
+fitted parameters and checks that the names and shapes of its latent variables
+are compatible with the posterior. A regression with one global slope can thus
+predict on a different number of rows. A model with one latent variable per row
+needs a refit when that latent layout changes. Prediction does not mutate the
+original binding, and an explicit seed preserves the caller's random state.
+
+This operation accepts values in the model's checked representation. It does
+not reconstruct dataframe contrasts or assign meanings to unseen participant
+labels; those operations require the corresponding retained data encoding.
+
+### Extract pointwise log likelihoods
+
+`log_likelihood` returns the response density at each posterior draw, retaining
+the observation rows. A new binding must include the responses to score:
+
+```python
+pointwise = fit.log_likelihood(num_samples=100)
+new_pointwise = fit.log_likelihood({
+    "x": torch.tensor([0.5, 1.5]),
+    "y": torch.tensor([0.25, 0.75]),
+}, num_samples=100)
+assert new_pointwise["y"].shape[-1] == 2
+```
+
+MCMC output has chain and draw axes followed by the response's observation
+axes; variational output has one pseudo-chain. These are raw likelihood terms,
+without the prior or posterior normalization. Summing the observation axes
+recovers that response's contribution to the joint density. Event coordinates
+of one multivariate response are reduced together, while independent response
+rows remain separate.
+
+An observation hidden inside exact marginalization requires a corresponding
+marginal-likelihood observer. The current method refuses that case rather
+than assigning the whole marginalized joint to individual observations.
 
 ## Infer only dimensions determined by data
 
@@ -142,7 +211,14 @@ For the [LDA model](../examples/lda.md), replace `Doc` and `Token` cardinalities
 with underscores. The words and token maps determine `Token`; gathering document
 topic weights through `doc_idx` determines the smallest document space. Keep
 `Topic` explicit: the observed words do not identify the intended number of topics.
-Pass the template arguments through `parameters={"alpha": 0.5, "beta": 0.1}`.
+Pass scalar hyperparameters with the other runtime inputs, as in
+`model.bind({**observations, "alpha": 0.5, "beta": 0.1})`.
+Their annotations belong in the runtime telescope, as in
+`program lda(alpha : Real, beta : Real, ...) : Word -> Word`.
+Object and morphism parameters belong in the static telescope instead.
+The Python `parameters=` mapping supplies static arguments, such as a known
+extent; runtime scalar values belong in `data`. Rebinding for prediction must
+retain these scalar inputs along with the other covariates.
 
 An empty index array cannot identify the size of its target space. A transformed
 index, such as `group_idx + 1`, does not establish the raw index's target extent.
@@ -158,6 +234,6 @@ then specializes its dimensions and runs the tensor compiler's checks. A
 but the tensor fitting components refuse it pending
 [enhancement #232](https://github.com/quivers-dev/quivers/issues/232).
 
-The fitted wrapper currently predicts at the fitted data layout. Prediction on
-new rows, persistent factor coding, and the wider regression interface remain
-separate work, listed in the [capability audit](../developer/model-interface-roadmap.md).
+Persistent factor coding, prediction for new group levels, and the wider
+regression interface require additional contracts, listed in the
+[capability audit](../developer/model-interface-roadmap.md).

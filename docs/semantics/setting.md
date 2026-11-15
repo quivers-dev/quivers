@@ -222,12 +222,21 @@ one part for each kind of name:
   Markov kernels.
 - $\rho_{\mathrm{cat}}$ maps the atoms of syntactic categories to their denotations in
   [weighted deduction](grammar.md).
-- $\rho_{\mathrm{var}}$ maps the variables bound earlier in a `program` body to points of their
+- $\rho_{\mathrm{var}}$ maps runtime input parameters and variables bound earlier in a `program` body to points of their
   spaces ([Programs as kernels](programs.md)).
 
 We write $\rho[x \mapsto v]$ for $\rho$ extended with the binding of $x$ to $v$, and
 $\llbracket \phi \rrbracket_{\rho}$ for the denotation of the phrase $\phi$ in $\rho$. We drop
 $\rho$ when it is clear from the context.
+
+For a declaration with a static telescope $\Delta$, interpretation is relative
+to a static valuation $\delta\in\llbracket\Delta\rrbracket$ before runtime
+values are assigned. An input telescope $\Gamma_v(\delta)$ may depend on that
+valuation, as a tensor's shape depends on a static extent. Supplying
+$d\in\llbracket\Gamma_v(\delta)\rrbracket$ extends the runtime environment
+without performing an effect. The
+[parameter semantics](programs.md#31-static-and-runtime-telescopes) makes this
+dependence explicit for programs.
 
 ## 7. Typing judgments
 

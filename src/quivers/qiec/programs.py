@@ -69,6 +69,10 @@ class ProgramParameter(QiecModel):
         directly, so that its leading axis is the draw's plate: a value
         without that axis is one value shared by every row, which a run
         broadcasts across the plate.
+    constraint
+        An additional checked value restriction. ``"nonnegative"`` retains
+        a runtime ``Nat`` parameter's restriction after lowering its arithmetic
+        carrier to ``Int``; ``None`` adds no restriction.
     tag
         The serialization discriminator; always ``"program_parameter"``.
     """
@@ -78,6 +82,7 @@ class ProgramParameter(QiecModel):
     type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     axes: tuple[str, ...] = dx.field(default=(), opaque=True, extras=OPAQUE_BY_VALUE)
     per_row: bool = False
+    constraint: Literal["nonnegative"] | None = None
     tag: Literal["program_parameter"] = "program_parameter"
 
 

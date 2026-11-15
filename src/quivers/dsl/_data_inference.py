@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
+from numbers import Integral
 
 import didactic.api as dx
 import torch
 
-from quivers.dsl.ast_nodes import DiscreteConstructor, Module, ObjectDecl, TypeFromExpr
+from quivers.dsl.ast_nodes import (
+    AxisSpec,
+    ContinuousConstructor,
+    DiscreteConstructor,
+    Module,
+    ObjectDecl,
+    ObjectParam,
+    ProgramDecl,
+    QiecIndexBinder,
+    QiecIndexName,
+    QiecIndexLiteral,
+    QiecNatSort,
+    TypeFromExpr,
+    TypeName,
+    CallStep,
+    ExprMorphismCall,
+    MarginalizeStep,
+    ObserveStep,
+    SampleStep,
+)
 from quivers.dsl.compiler._prelude import CompileError
 from quivers.qiec import (
     Call,
@@ -113,7 +133,7 @@ def infer_data_objects(module: Module, data: Mapping[str, object]) -> Module:
     """Replace ``FinSet _`` when the checked inputs provide consistent evidence."""
     inferred = _inferred_objects(module)
     if not inferred:
-        return module
+        return _specialize_program_parameters(module, data)
     from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 
     checked = lower_qvr_to_qiec(module)
@@ -202,6 +222,224 @@ def infer_data_objects(module: Module, data: Mapping[str, object]) -> Module:
                 )
         else:
             statements.append(statement)
+    return _specialize_program_parameters(
+        module.with_(statements=tuple(statements)), data
+    )
+
+
+def _specialize_program_parameters(
+    module: Module, data: Mapping[str, object]
+) -> Module:
+    """Solve scoped finite binders from explicit arguments and checked shapes.
+
+    Each entry has its own binder namespace. Substitution changes only syntax
+    carrying static indices or object references; external values stay shared.
+    """
+    candidates = {
+        declaration.name: {
+            parameter.name: parameter
+            for parameter in (*declaration.binders, *(declaration.type_params or ()))
+            if isinstance(parameter, ObjectParam)
+            and parameter.universe == "FinSet"
+            or isinstance(parameter, QiecIndexBinder)
+            and isinstance(parameter.sort, QiecNatSort)
+        }
+        for declaration in module.statements
+        if isinstance(declaration, ProgramDecl)
+    }
+    candidates = {name: binders for name, binders in candidates.items() if binders}
+    if not candidates or not data:
+        return module
+    from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
+
+    checked = lower_qvr_to_qiec(module)
+    solutions: dict[str, dict[str, int]] = {}
+    for entry in checked.entries:
+        binders = candidates.get(entry.name, {})
+        evidence: dict[str, tuple[int, str]] = {}
+
+        def constrain(name: str, size: int, source: str) -> None:
+            previous = evidence.setdefault(name, (size, source))
+            if size != previous[0]:
+                binder = binders[name]
+                raise CompileError(
+                    f"cannot infer {name!r}: {previous[1]!r} requires {previous[0]}, but {source!r} requires {size}",
+                    binder.line,
+                    binder.col,
+                )
+
+        for name, binder in binders.items():
+            if name not in data:
+                continue
+            value = data[name]
+            if isinstance(binder, ObjectParam) and isinstance(value, str):
+                continue
+            if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+                raise TypeError(
+                    f"static extent {name!r} requires a nonnegative integer"
+                )
+            constrain(name, int(value), name)
+        for parameter in entry.parameters:
+            if parameter.name not in data:
+                continue
+            shape = tensor_shape(parameter.type)
+            supplied = _shape(data[parameter.name], parameter.name)
+            if shape is None or len(shape[1]) != len(supplied):
+                continue
+            for dimension, size in zip(shape[1], supplied, strict=True):
+                if isinstance(dimension, IndexVariable) and dimension.name in binders:
+                    constrain(dimension.name, size, parameter.name)
+        if evidence:
+            solutions[entry.name] = {name: size for name, (size, _) in evidence.items()}
+    if not solutions:
+        return module
+    # Binding an exported entry must not consume the static arguments of its
+    # callers. Keep referenced declarations as generic templates under fresh
+    # internal names; the original entry can then specialize independently.
+    called = {
+        node.morphism
+        if isinstance(node, SampleStep | ObserveStep | MarginalizeStep)
+        else node.callee
+        if isinstance(node, ExprMorphismCall)
+        else node.call.callee
+        for node in _walk(module)
+        if isinstance(
+            node,
+            SampleStep | ObserveStep | MarginalizeStep | ExprMorphismCall | CallStep,
+        )
+    }
+    names = {
+        name
+        for statement in module.statements
+        for name in (
+            *getattr(statement, "names", ()),
+            getattr(statement, "name", None),
+        )
+        if isinstance(name, str)
+    }
+    generic_names: dict[str, str] = {}
+    for name in sorted(called.intersection(solutions)):
+        generic = f"__qvr_template_{name}"
+        while generic in names:
+            generic += "_"
+        names.add(generic)
+        generic_names[name] = generic
+
+    def retain_generic_calls(
+        value: object, shadowed: frozenset[str] = frozenset()
+    ) -> object:
+        if isinstance(value, ProgramDecl):
+            shadowed = frozenset(p.name for p in value.type_params or ())
+        if isinstance(value, tuple):
+            items = tuple(retain_generic_calls(item, shadowed) for item in value)
+            return (
+                value
+                if all(a is b for a, b in zip(value, items, strict=True))
+                else items
+            )
+        if not isinstance(value, dx.Model):
+            return value
+        changed = {}
+        for field in type(value).__field_specs__:
+            original = getattr(value, field)
+            rewritten = retain_generic_calls(original, shadowed)
+            if rewritten is not original:
+                changed[field] = rewritten
+        if isinstance(value, SampleStep | ObserveStep | MarginalizeStep):
+            if value.morphism not in shadowed:
+                if value.morphism in generic_names:
+                    changed["morphism"] = generic_names[value.morphism]
+        elif isinstance(value, ExprMorphismCall):
+            if value.callee not in shadowed:
+                if value.callee in generic_names:
+                    changed["callee"] = generic_names[value.callee]
+        elif isinstance(value, CallStep):
+            if value.call.callee not in shadowed and value.call.callee in generic_names:
+                changed["call"] = changed.get("call", value.call).with_(
+                    callee=generic_names[value.call.callee]
+                )
+        return value.with_(**changed) if changed else value
+
+    if generic_names:
+        declarations = {
+            s.name: s for s in module.statements if isinstance(s, ProgramDecl)
+        }
+        clones = tuple(
+            declarations[name].with_(name=generic)
+            for name, generic in generic_names.items()
+        )
+        module = retain_generic_calls(
+            module.with_(statements=(*clones, *module.statements))
+        )
+    occupied = set(names)
+    statements = []
+    for declaration in module.statements:
+        if (
+            not isinstance(declaration, ProgramDecl)
+            or declaration.name not in solutions
+        ):
+            statements.append(declaration)
+            continue
+        sizes = solutions[declaration.name]
+        objects = {}
+        for name, size in sizes.items():
+            object_name = f"__qvr_{declaration.name}_{name}"
+            while object_name in occupied:
+                object_name += "_"
+            occupied.add(object_name)
+            objects[name] = object_name
+            statements.append(
+                ObjectDecl(
+                    names=(object_name,),
+                    init=TypeFromExpr(
+                        expr=DiscreteConstructor(
+                            constructor="FinSet", args=(str(size),)
+                        )
+                    ),
+                )
+            )
+
+        def substitute(value: object) -> object:
+            if isinstance(value, TypeName) and value.name in objects:
+                return value.with_(name=objects[value.name])
+            if isinstance(value, QiecIndexName) and value.name in sizes:
+                return QiecIndexLiteral(
+                    value=sizes[value.name], line=value.line, col=value.col
+                )
+            if isinstance(value, AxisSpec):
+                return value.with_(
+                    over=tuple(objects.get(name, name) for name in value.over),
+                    iid_over=tuple(objects.get(name, name) for name in value.iid_over),
+                )
+            if isinstance(value, ContinuousConstructor | DiscreteConstructor):
+                return value.with_(
+                    args=tuple(
+                        str(sizes[name]) if name in sizes else name
+                        for name in value.args
+                    )
+                )
+            if isinstance(value, tuple):
+                return tuple(substitute(item) for item in value)
+            if isinstance(value, dx.Model):
+                return value.with_(
+                    **{
+                        field: substitute(getattr(value, field))
+                        for field in type(value).__field_specs__
+                        if field not in {"binders", "type_params"}
+                    }
+                )
+            return value
+
+        specialized = substitute(declaration)
+        remaining = tuple(
+            p for p in declaration.type_params or () if p.name not in sizes
+        )
+        statements.append(
+            specialized.with_(
+                binders=tuple(p for p in declaration.binders if p.name not in sizes),
+                type_params=remaining or None,
+            )
+        )
     return module.with_(statements=tuple(statements))
 
 

@@ -54,7 +54,7 @@ Each word picks its own topic. A document about two subjects can thus draw some 
 ## Walkthrough
 
 - `object Doc : FinSet 20`, `object Topic : FinSet 3`, `object Vocab : FinSet 50`, and `object Token : FinSet 1000` are the documents, topics, vocabulary, and corpus positions. `object Mix : Real 3` is the value space of the returned topic weights.
-- `program lda(alpha : Real, beta : Real)` is a template: `prog.lda(alpha=1.0, beta=1.0)` instantiates it with symmetric Dirichlet concentrations.
+- `program lda(alpha : Real, beta : Real)` declares runtime scalar parameters. The Python partial application `prog.lda(alpha=1.0, beta=1.0)` fixes their symmetric Dirichlet concentrations while retaining their runtime parameter stage.
 - `sample theta : Doc <- Dirichlet(...) [over=Topic, iid_over=Doc]` draws one row of topic weights per document, and `sample phi : Topic <- Dirichlet(...) [over=Vocab, iid_over=Topic]` one vocabulary distribution per topic.
 - `let theta_tok = theta[doc_idx]` gathers, for each token, its document's row of topic weights. `doc_idx` is input data holding one document index per token.
 - `marginalize z : Topic <- Categorical(probs=theta_tok) [over=Token, reduction=logsumexp]` gives every token its own topic and sums it out by log-sum-exp: a grouped `marginalize` scores one class per group, and here each group is a single token. `observe w : Token <- Categorical(probs=phi[z]) [via=token_idx]` scores each token's word under its topic, with `token_idx` mapping each observation to its own token row.
@@ -110,16 +110,15 @@ source = Path("docs/examples/source/lda.qvr").read_text()
 source = source.replace("object Doc : FinSet 20", "object Doc : FinSet _")
 source = source.replace("object Token : FinSet 1000", "object Token : FinSet _")
 source = source.replace(
-    "    sample theta",
-    "    data doc_idx : Tensor[Int]([Token])\n"
-    "    data token_idx : Tensor[Int]([Token])\n"
-    "    data w : Tensor[Int]([Token])\n"
-    "    sample theta",
+    "program lda(alpha : Real, beta : Real)",
+    "program lda(alpha : Real, beta : Real, "
+    "doc_idx : Tensor[Int]([Token]), "
+    "token_idx : Tensor[Int]([Token]), w : Tensor[Int]([Token]))",
     1,
 )
 specification = Model(source)
 print(specification.schema.describe())
-bound = specification.bind(observations, parameters={"alpha": 1.0, "beta": 1.0})
+bound = specification.bind({**observations, "alpha": 1.0, "beta": 1.0})
 print(bound.schema.describe())
 ```
 

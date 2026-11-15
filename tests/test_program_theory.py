@@ -182,6 +182,23 @@ def _edges(schema: panproto.Schema, kind: str) -> set[tuple[str, str]]:
     return {(edge.src, edge.tgt) for edge in schema.edges if edge.kind == kind}
 
 
+def test_runtime_natural_restriction_survives_program_shape_extraction() -> None:
+    compiler = Compiler(
+        parse("""object Row : FinSet 1
+object Out : Real 1
+program model(count : Nat) : Row -> Out
+    return count
+export model
+""")
+    )
+    compiler.compile_env()
+    schema = extract_program_schema(compiler)
+    constraints = schema.constraints_for("program_entry::model/parameter::count")
+    assert any(
+        c.sort == "value_constraint" and c.value == "nonnegative" for c in constraints
+    )
+
+
 def test_program_only_module_yields_the_kernel_graph() -> None:
     """A module holding one program produces its computation, entry, sites,
     and the canonical instances the entry addresses."""

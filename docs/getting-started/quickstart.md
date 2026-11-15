@@ -54,6 +54,15 @@ independent draws, and scores the observed `y` under that likelihood. The name
 [data input](../reference/qvr/probabilistic-programs.md#host-data), which the
 caller gives at run time with the observations.
 
+The uses of `x` and `y` determine their tensor types here. To state those types
+explicitly, write the header as
+`program regression(x : Tensor[Real]([Item]), y : Tensor[Real]([Item])) : Item -> Item`.
+These parameters constrain supplied values without adding model steps;
+`observe y` still determines the likelihood role. Static objects or extents
+belong in a preceding `[...]` telescope, following the same convention as
+`define` computations. The [parameter reference](../reference/qvr/index.md#parameter-telescopes)
+explains the shared syntax.
+
 ## 3. Check it
 
 ```bash

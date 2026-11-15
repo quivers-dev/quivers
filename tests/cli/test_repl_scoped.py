@@ -200,3 +200,74 @@ def test_browse_unknown_path_falls_through(lda):
     # Falls through to the legacy namespace dispatcher; the legacy
     # path returns an "unknown namespace" error for "nonexistent".
     assert not r.ok or "(empty" in r.body or "objects:" in r.body
+
+
+def test_runtime_header_parameters_are_inspectable_in_shared_session():
+    session = ReplSession()
+    response = session.dispatch("""object Row : FinSet _
+object Out : Real 1
+program p(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let mu = b * x
+    observe y : Row <- Normal(loc=mu, scale=1.0)
+    return b
+export p
+""")
+    assert response.ok, response.diagnostics
+    assert session.type_of("p::x").body == "x :: Tensor[Real]([Row])"
+    assert session.type_of("p::y").body == "y :: Tensor[Real]([Row])"
+    assert "y : Tensor[Real]([Row])" in session.info("p::y").body
+    assert "data y" not in session.info("p::y").body
+    assert (
+        "p(x : Tensor[Real]([Row]), y : Tensor[Real]([Row]))"
+        in session.browse("p").body
+    )
+
+
+def test_static_and_runtime_program_parameters_render_separate_telescopes():
+    session = ReplSession()
+    response = session.dispatch("""object Out : Real 1
+program p[K : FinSet](spread : Real) : K -> Out
+    sample z : K <- Normal(loc=0.0, scale=1.0)
+    let scaled = spread * z
+    return scaled
+""")
+    assert response.ok, response.diagnostics
+    assert session.type_of("p").body == "p :: [K : FinSet] (Real) => K -> Out"
+    assert "program p[K : FinSet](spread : Real)" in session.browse("p").body
+    assert session.type_of("p::K").body == "K :: FinSet"
+    assert session.type_of("p::spread").body == "spread :: Real"
+
+
+def test_scoped_draw_inspection_keeps_static_and_runtime_actuals():
+    from quivers.dsl import parse
+    from quivers.cli.repl_browse import _children_for_program
+    from quivers.cli.repl_session import _render_sample_line
+    from quivers.dsl.ast_nodes import ProgramDecl
+
+    source = """object Row : FinSet 2
+object Out : Real 1
+program host : Row -> Out
+    sample theta <- effects[Row](2.5)
+    return theta
+"""
+    program = next(
+        statement
+        for statement in parse(source).statements
+        if isinstance(statement, ProgramDecl)
+    )
+    assert _render_sample_line(program.draws[0]) == "sample theta <- effects[Row](2.5)"
+    _, children = _children_for_program("host", program)
+    assert children[0][0] == "sample theta <- effects[Row](2.5)"
+
+
+def test_static_morphism_parameter_inspection_retains_domain_and_codomain():
+    session = ReplSession()
+    response = session.dispatch("""object Out : Real 1
+program p[K : FinSet, f : Mor[K, Out]] : K -> Out
+    sample z <- f
+    return z
+""")
+    assert response.ok, response.diagnostics
+    assert session.type_of("p::f").body == "f :: Mor[K, Out]"
+    assert "param f : Mor[K, Out]" in session.browse("p").body

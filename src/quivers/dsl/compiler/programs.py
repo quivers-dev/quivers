@@ -79,10 +79,10 @@ from quivers.core.objects import FinSet, ProductSet, SetObject
 from quivers.core.wiring import EinsumWiring
 from quivers.dsl.ast_nodes import (
     AxisSpec,
-    DataStep,
     BindStep,
     ContractionDecl,
     ContractionInput,
+    DrawArg,
     DrawArgDist,
     DrawArgIndex,
     DrawArgList,
@@ -121,11 +121,15 @@ from quivers.dsl.ast_nodes import (
     Module,
     GroupedMarginalizeStep,
     MorphismParam,
+    MorphismDecl,
     ObjectParam,
     ObserveStep,
     PlateDrawStep,
     ProgramDecl,
     ProgramStep,
+    QiecIndexBinder,
+    QiecTypeName,
+    QiecValueParameter,
     SampleStep,
     ScalarParam,
     ObjectExpr,
@@ -174,6 +178,7 @@ from quivers.program import Program
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec import (
     QiecModule,
+    ProgramParameter,
     NAT,
     PlateShape,
     StaticSubstitution,
@@ -1684,6 +1689,26 @@ class _ProgramsMixin:
         [`desugar_step`][quivers.dsl.compiler.sugar.desugar_step], so
         downstream IR walks the single operator vocabulary.
         """
+        if isinstance(step, SampleStep | ObserveStep | MarginalizeStep):
+            template = self._program_templates.get(step.morphism)
+            if template is not None:
+                from quivers.dsl.program_templates import (
+                    TemplateError,
+                    validate_program_application,
+                )
+
+                try:
+                    validate_program_application(
+                        template, step.args or (), static_arguments=step.static_args
+                    )
+                except TemplateError as error:
+                    raise CompileError(error.message, step.line, step.col) from error
+            elif step.static_args:
+                raise CompileError(
+                    f"{step.morphism!r} accepts no static arguments",
+                    step.line,
+                    step.col,
+                )
         if isinstance(step, CallStep):
             # A call reaching the step compiler is a scan's step program
             # calling its cell, which compiles to a call run in place.
@@ -1701,7 +1726,9 @@ class _ProgramsMixin:
             return BindStep(
                 vars=step.vars,
                 morphism=step.morphism,
-                args=step.args,
+                args=(*step.static_args, *(step.args or ()))
+                if step.static_args
+                else step.args,
                 index=step.index,
                 mode="sample",
                 axes=step.axes,
@@ -1742,7 +1769,9 @@ class _ProgramsMixin:
             return BindStep(
                 vars=step.vars,
                 morphism=step.morphism,
-                args=step.args,
+                args=(*step.static_args, *(step.args or ()))
+                if step.static_args
+                else step.args,
                 index=step.index,
                 mode="score",
                 axes=axes,
@@ -1762,7 +1791,9 @@ class _ProgramsMixin:
             return BindStep(
                 vars=(step.var,),
                 morphism=step.morphism,
-                args=step.args,
+                args=(*step.static_args, *(step.args or ()))
+                if step.static_args
+                else step.args,
                 index=step.index,
                 mode="marginal",
                 scope=tuple(self._surface_to_bind(s) for s in step.scope),
@@ -1796,8 +1827,6 @@ class _ProgramsMixin:
         """
         out: list[ProgramStep] = []
         for raw in steps:
-            if isinstance(raw, DataStep):
-                continue
             step = self._surface_to_bind(raw)
             if isinstance(step, LetStep):
                 out.append(step)
@@ -2322,17 +2351,23 @@ class _ProgramsMixin:
             if (
                 isinstance(step, DrawStep)
                 and not step.is_observed
-                and step.morphism in self._program_templates
+                and (
+                    step.morphism in self._program_templates
+                    or step.morphism in self._program_decls
+                )
             ):
-                tmpl = self._program_templates[step.morphism]
-                if len(step.vars) != 1:
+                tmpl = (
+                    self._program_templates.get(step.morphism)
+                    or self._program_decls[step.morphism]
+                )
+                if len(step.vars) != 1 and not (tmpl.value_parameters or tmpl.binders):
                     raise CompileError(
                         f"template call {step.morphism!r} may bind only one "
                         f"variable, got tuple {step.vars}",
                         step.line,
                         step.col,
                     )
-                bind_name = step.vars[0]
+                bind_name = step.vars[0] if len(step.vars) == 1 else step.vars
                 args = step.args or ()
                 inst = self._instantiate_template(tmpl, bind_name, args, step)
                 # Recursively expand any nested template calls in the
@@ -2354,10 +2389,72 @@ class _ProgramsMixin:
             expanded.append(step)
         return tuple(expanded)
 
+    def _validate_template_static_types(self, template, bindings, node) -> None:
+        """Check categorical static actuals against their declared carriers."""
+        types: dict[str, ObjectExpr] = {
+            name: TypeName(name=actual) for name, actual in bindings.objects.items()
+        }
+        for name, argument in bindings.statics.items():
+            if isinstance(argument, DrawArgScalar):
+                types[name] = TypeName(name=str(int(argument.value)))
+            elif isinstance(argument, DrawArgName) and argument.text in self._objects:
+                types[name] = TypeName(name=argument.text)
+        for parameter in template.type_params or ():
+            if isinstance(parameter, ObjectParam):
+                actual = self._resolve_any_space(types[parameter.name])
+                if (
+                    parameter.universe == "FinSet"
+                    and not isinstance(actual, SetObject)
+                    or parameter.universe == "Space"
+                    and not isinstance(actual, ContinuousSpace)
+                ):
+                    raise CompileError(
+                        f"static object parameter {parameter.name!r} requires {parameter.universe}",
+                        node.line,
+                        node.col,
+                    )
+            if not isinstance(parameter, MorphismParam):
+                continue
+            name = bindings.morphisms[parameter.name]
+            declaration = self._program_decls.get(name) or self._program_templates.get(
+                name
+            )
+            if declaration is None:
+                declaration = next(
+                    (
+                        s
+                        for s in self._module.statements
+                        if isinstance(s, MorphismDecl) and name in s.names
+                    ),
+                    None,
+                )
+            actual = self._morphisms.get(name)
+            if declaration is None and actual is None:
+                raise CompileError(
+                    f"morphism {name!r} passed as {parameter.name!r} is not declared",
+                    node.line,
+                    node.col,
+                )
+            for side in ("domain", "codomain"):
+                expected = self._resolve_any_space(
+                    self._rename_type(getattr(parameter, side), types)
+                )
+                received = (
+                    self._resolve_any_space(getattr(declaration, side))
+                    if declaration is not None
+                    else getattr(actual, side)
+                )
+                if expected != received:
+                    raise CompileError(
+                        f"morphism parameter {parameter.name!r} has incompatible {side}: {name!r} does not inhabit its declared Mor type",
+                        node.line,
+                        node.col,
+                    )
+
     def _instantiate_template(
         self,
         tmpl: ProgramDecl,
-        bind_name: str,
+        bind_name: str | tuple[str, ...],
         args: tuple,
         call_site: ProgramStep,
     ) -> tuple[ProgramStep, ...]:
@@ -2376,6 +2473,79 @@ class _ProgramsMixin:
         substitution lemma: substituting actuals for formals
         commutes with denotation up to renaming-equivalence.
         """
+        if tmpl.value_parameters or tmpl.binders:
+            binders = (bind_name,) if isinstance(bind_name, str) else bind_name
+            prefix = "_".join(binders)
+            from quivers.dsl.program_templates import (
+                TemplateError,
+                instantiate_program,
+                runtime_program_parameters,
+                static_program_parameters,
+                template_bindings,
+            )
+
+            static_count = len(static_program_parameters(tmpl))
+            arguments = tuple(
+                argument
+                if isinstance(argument, DrawArg)
+                else DrawArgName(text=argument)
+                if isinstance(argument, str)
+                else DrawArgScalar(value=float(argument))
+                for argument in args
+            )
+            bound = {
+                argument.text: LetExprVar(name=argument.text)
+                for argument in arguments[static_count:]
+                if isinstance(argument, DrawArgName)
+            }
+            try:
+                bindings = template_bindings(
+                    tmpl,
+                    arguments[static_count:],
+                    bound,
+                    static_arguments=arguments[:static_count],
+                )
+                self._validate_template_static_types(tmpl, bindings, call_site)
+                objects = dict(bindings.objects)
+                for parameter, argument in zip(
+                    static_program_parameters(tmpl),
+                    arguments[:static_count],
+                    strict=True,
+                ):
+                    if isinstance(parameter, QiecIndexBinder) and isinstance(
+                        argument, DrawArgScalar
+                    ):
+                        object_name = f"__qvr_static${tmpl.name}${prefix}${parameter.name}${int(argument.value)}"
+                        self._objects[object_name] = FinSet(
+                            name=object_name, cardinality=int(argument.value)
+                        )
+                        objects[parameter.name] = object_name
+                    elif isinstance(parameter, QiecIndexBinder) and isinstance(
+                        argument, DrawArgName
+                    ):
+                        if argument.text in self._objects:
+                            objects[parameter.name] = argument.text
+                # Capture actuals once before substitution. Apart from preserving
+                # argument evaluation, aliases make indexed tensor inputs usable
+                # without copying or repeatedly evaluating their expressions.
+                values = dict(bindings.values)
+                captures = []
+                for parameter in runtime_program_parameters(tmpl):
+                    if isinstance(values[parameter.name], LetExprVar | LetExprLiteral):
+                        continue
+                    alias = f"{prefix}$arg${parameter.name}"
+                    captures.append(LetStep(name=alias, value=values[parameter.name]))
+                    values[parameter.name] = LetExprVar(name=alias)
+                bindings = bindings.with_(objects=objects, values=values)
+                return self._expand_bind_steps(
+                    (*captures, *instantiate_program(tmpl, binders, bindings))
+                )
+            except TemplateError as error:
+                raise CompileError(
+                    error.message, call_site.line, call_site.col
+                ) from error
+
+        assert isinstance(bind_name, str)
         type_params = tmpl.type_params or ()
         if len(args) != len(type_params):
             raise CompileError(
@@ -2384,6 +2554,31 @@ class _ProgramsMixin:
                 call_site.line,
                 call_site.col,
             )
+        from quivers.dsl.program_templates import (
+            template_bindings,
+            static_program_parameters,
+            TemplateError,
+        )
+
+        static_count = len(static_program_parameters(tmpl))
+        actuals = tuple(
+            argument
+            if isinstance(argument, DrawArg)
+            else DrawArgName(text=argument)
+            if isinstance(argument, str)
+            else DrawArgScalar(value=float(argument))
+            for argument in args
+        )
+        try:
+            checked_bindings = template_bindings(
+                tmpl,
+                actuals[static_count:],
+                {},
+                static_arguments=actuals[:static_count],
+            )
+        except TemplateError as error:
+            raise CompileError(error.message, call_site.line, call_site.col) from error
+        self._validate_template_static_types(tmpl, checked_bindings, call_site)
         # Build the parameter-substitution environment.
         type_subst: dict[str, ObjectExpr] = {}
         value_subst: dict[str, str | float] = {}
@@ -2635,19 +2830,17 @@ class _ProgramsMixin:
         self, texpr: ObjectExpr, type_subst: dict[str, ObjectExpr]
     ) -> ObjectExpr:
         """Substitute object parameters inside a type expression."""
-        if isinstance(texpr, TypeName):
-            if texpr.name in type_subst:
-                return type_subst[texpr.name]
-            return texpr
-        if isinstance(texpr, ObjectProduct):
-            return ObjectProduct(
-                components=tuple(
-                    self._rename_type(c, type_subst) for c in texpr.components
-                ),
-                line=texpr.line,
-                col=texpr.col,
-            )
-        return texpr
+        from quivers.dsl.program_templates import (
+            TemplateError,
+            substitute_program_object,
+        )
+
+        try:
+            return substitute_program_object(texpr, type_subst)
+        except TemplateError as error:
+            raise CompileError(
+                error.message, getattr(texpr, "line", 0), getattr(texpr, "col", 0)
+            ) from error
 
     def _rename_args(
         self,
@@ -3006,6 +3199,12 @@ class _ProgramsMixin:
                 expr.line,
                 expr.col,
             )
+        if expr.static_args:
+            raise CompileError(
+                f"contraction {expr.callee!r} accepts runtime morphism arguments in parentheses",
+                expr.line,
+                expr.col,
+            )
         if len(expr.args) != len(contraction.input_types):
             raise CompileError(
                 f"contraction {expr.callee!r}: expected "
@@ -3060,17 +3259,37 @@ class _ProgramsMixin:
         template at concrete parameters.
         """
         tmpl = self._program_templates[name]
-        type_params = tmpl.type_params or ()
-        param_names = tuple(p.name for p in type_params)
+        from quivers.dsl.program_templates import (
+            static_program_parameters,
+            runtime_program_parameters,
+        )
+
+        static_parameters = static_program_parameters(tmpl)
+        value_parameters = runtime_program_parameters(tmpl)
+        parameters = (*static_parameters, *value_parameters)
+        static_names = tuple(p.name for p in static_parameters)
+        param_names = tuple(p.name for p in parameters)
+        partial_static = bool(static_parameters)
 
         def _invoke(*args, **kwargs) -> Program:
+            if partial_static and not args and not kwargs and static_names:
+                raise CompileError(
+                    f"cannot infer static arguments of {name!r}: {list(static_names)}; "
+                    "provide explicit arguments or bind runtime data with checked shapes",
+                    tmpl.line,
+                    tmpl.col,
+                )
             if args and kwargs:
                 raise TypeError(
                     f"template {name!r}: pass either all positional or all "
                     f"keyword arguments, not both"
                 )
             if kwargs:
-                missing = [n for n in param_names if n not in kwargs]
+                missing = [
+                    n
+                    for n in (static_names if partial_static else param_names)
+                    if n not in kwargs
+                ]
                 extra = [k for k in kwargs if k not in param_names]
                 if missing:
                     raise TypeError(f"template {name!r} missing arguments: {missing}")
@@ -3078,23 +3297,60 @@ class _ProgramsMixin:
                     raise TypeError(
                         f"template {name!r} got unexpected arguments: {extra}"
                     )
-                ordered = tuple(kwargs[n] for n in param_names)
+                ordered = tuple(kwargs.get(n, n) for n in param_names)
             else:
+                if partial_static and len(args) == len(static_names):
+                    args = (*args, *(p.name for p in value_parameters))
                 if len(args) != len(param_names):
                     raise TypeError(
                         f"template {name!r} expects {len(param_names)} "
                         f"arguments, got {len(args)}"
                     )
                 ordered = args
-            for parameter, argument in zip(type_params, ordered, strict=True):
-                if not isinstance(parameter, ScalarParam):
+            for parameter, argument in zip(parameters, ordered, strict=True):
+                if isinstance(parameter, QiecIndexBinder):
+                    if (
+                        isinstance(argument, bool)
+                        or not isinstance(argument, Integral)
+                        or argument < 0
+                    ):
+                        raise TypeError(
+                            f"static extent {parameter.name!r} requires a nonnegative integer"
+                        )
+                    continue
+                scalar_kind = (
+                    parameter.scalar_kind
+                    if isinstance(parameter, ScalarParam)
+                    else (
+                        parameter.type_expr.name
+                        if isinstance(parameter, QiecValueParameter)
+                        and isinstance(parameter.type_expr, QiecTypeName)
+                        and parameter.type_expr.name in {"Real", "Nat"}
+                        else None
+                    )
+                )
+                if scalar_kind is None:
+                    if not isinstance(argument, str):
+                        if isinstance(parameter, QiecValueParameter):
+                            raise TypeError(
+                                f"runtime value {parameter.name!r} must be supplied as data through Model.bind"
+                            )
+                        raise TypeError(
+                            f"static parameter {parameter.name!r} requires a declared name"
+                        )
+                    continue
+                if (
+                    partial_static
+                    and isinstance(argument, str)
+                    and argument == parameter.name
+                ):
                     continue
                 if isinstance(argument, bool) or not isinstance(argument, RealNumber):
                     raise TypeError(
                         f"template {name!r}: parameter {parameter.name!r} "
-                        f"requires a {parameter.scalar_kind} number"
+                        f"requires a {scalar_kind} number"
                     )
-                if parameter.scalar_kind == "Nat" and (
+                if scalar_kind == "Nat" and (
                     not isinstance(argument, Integral) or argument < 0
                 ):
                     raise TypeError(
@@ -3104,7 +3360,8 @@ class _ProgramsMixin:
             normalized = tuple(str(a) if not isinstance(a, str) else a for a in ordered)
             call_expr = ExprMorphismCall(
                 callee=name,
-                args=normalized,
+                static_args=normalized[: len(static_parameters)],
+                args=normalized[len(static_parameters) :],
                 line=tmpl.line,
                 col=tmpl.col,
             )
@@ -3114,6 +3371,82 @@ class _ProgramsMixin:
         _invoke.__name__ = name
         _invoke.__qualname__ = f"template:{name}"
         return _invoke
+
+    def _compile_typed_program_application(
+        self,
+        expr: ExprMorphismCall,
+        template: ProgramDecl,
+        static_arguments: tuple[DrawArg, ...],
+        arguments: tuple[DrawArg, ...],
+    ):
+        """Compile a typed application through its checked wrapper computation."""
+        from quivers.dsl.program_templates import template_bindings
+
+        bindings = template_bindings(
+            template, arguments, {}, static_arguments=static_arguments
+        )
+        object_substitution: dict[str, ObjectExpr] = {
+            name: TypeName(name=actual) for name, actual in bindings.objects.items()
+        }
+        for name, actual in bindings.statics.items():
+            if isinstance(actual, DrawArgScalar):
+                object_substitution[name] = TypeName(name=str(int(actual.value)))
+            elif isinstance(actual, DrawArgName) and actual.text in self._objects:
+                object_substitution[name] = TypeName(name=actual.text)
+        base = f"__tmpl_call${expr.callee}${expr.line}${expr.col}"
+        unique_name = base
+        suffix = 0
+        while unique_name in self._morphisms:
+            suffix += 1
+            unique_name = f"{base}#{suffix}"
+        wrapper = ProgramDecl(
+            name=unique_name,
+            domain=self._rename_type(template.domain, object_substitution),
+            codomain=self._rename_type(template.codomain, object_substitution),
+            draws=(
+                SampleStep(
+                    vars=template.return_vars,
+                    morphism=expr.callee,
+                    static_args=static_arguments,
+                    args=arguments,
+                    line=expr.line,
+                    col=expr.col,
+                ),
+            ),
+            return_vars=template.return_vars,
+            return_labels=template.return_labels,
+            options=template.options,
+            line=expr.line,
+            col=expr.col,
+        )
+        source = self._qiec_source if self._qiec_source is not None else self._module
+        checked = self._lower_qiec(
+            source.with_(statements=(*source.statements, wrapper))
+        )
+        entry = next(
+            (entry for entry in checked.entries if entry.name == unique_name), None
+        )
+        if entry is None:
+            raise CompileError(
+                f"typed application of {expr.callee!r} has no checked computation",
+                expr.line,
+                expr.col,
+            )
+        cached = self._qiec_module
+        self._qiec_module = checked
+        self._instantiated_program_contracts[unique_name] = (
+            entry,
+            StaticSubstitution(),
+        )
+        try:
+            self._compile_program(wrapper)
+            target = self._morphisms.pop(unique_name)
+            if isinstance(target, MonadicProgram | CheckedProgram):
+                self._attach_program_contract(target, checked, entry)
+        finally:
+            self._instantiated_program_contracts.pop(unique_name, None)
+            self._qiec_module = cached
+        return target
 
     def _compile_program_template_call(self, expr: ExprMorphismCall):
         """Instantiate a parametric program template at a define-binding
@@ -3131,8 +3464,49 @@ class _ProgramsMixin:
         into an enclosing program.
         """
         tmpl = self._program_templates[expr.callee]
+        from quivers.dsl.program_templates import (
+            TemplateError,
+            validate_program_application,
+            template_bindings,
+        )
+
+        def argument(text: str) -> DrawArg:
+            try:
+                return DrawArgScalar(value=float(text), line=expr.line, col=expr.col)
+            except ValueError:
+                return DrawArgName(text=text, line=expr.line, col=expr.col)
+
+        static_arguments = tuple(argument(text) for text in expr.static_args)
+        runtime_arguments = tuple(argument(text) for text in expr.args)
+        try:
+            validate_program_application(
+                tmpl, runtime_arguments, static_arguments=static_arguments
+            )
+        except TemplateError as error:
+            raise CompileError(error.message, expr.line, expr.col) from error
+        bindings = template_bindings(
+            tmpl, runtime_arguments, {}, static_arguments=static_arguments
+        )
+        self._validate_template_static_types(tmpl, bindings, expr)
+        for argument in runtime_arguments:
+            if isinstance(argument, DrawArgName) and (
+                argument.text in self._objects or argument.text in self._spaces
+            ):
+                raise CompileError(
+                    f"object {argument.text!r} is static and cannot fill a runtime parameter",
+                    expr.line,
+                    expr.col,
+                )
+        if tmpl.binders or any(
+            not isinstance(parameter.type_expr, QiecTypeName)
+            or parameter.type_expr.name not in {"Real", "Nat"}
+            for parameter in tmpl.value_parameters
+        ):
+            return self._compile_typed_program_application(
+                expr, tmpl, static_arguments, runtime_arguments
+            )
         type_params = tmpl.type_params or ()
-        args = expr.args
+        args = (*expr.static_args, *expr.args)
         if len(args) != len(type_params):
             raise CompileError(
                 f"template {expr.callee!r} expects {len(type_params)} "
@@ -3225,6 +3599,20 @@ class _ProgramsMixin:
             self._rename_step(step, type_subst, value_subst, empty_rename)
             for step in expanded_body
         )
+        returned_parameters = tuple(
+            LetStep(
+                name=name,
+                value=(
+                    LetExprLiteral(value=value)
+                    if isinstance(value, float | int)
+                    else LetExprVar(name=value)
+                ),
+            )
+            for name in tmpl.return_vars
+            if name in value_subst
+            for value in (value_subst[name],)
+        )
+        substituted_body = (*returned_parameters, *substituted_body)
         synth_domain = self._rename_type(tmpl.domain, type_subst)
         synth_codomain = self._rename_type(tmpl.codomain, type_subst)
         synth_name = f"__tmpl_call${expr.callee}${expr.line}${expr.col}"
@@ -3273,10 +3661,36 @@ class _ProgramsMixin:
             )
         )
         if entry is not None:
+            remaining: dict[str, ProgramParameter] = {}
+            for parameter in entry.parameters:
+                supplied = value_subst.get(parameter.name)
+                if isinstance(supplied, float | int):
+                    continue
+                parameter = parameter.with_(
+                    name=supplied if isinstance(supplied, str) else parameter.name,
+                    type=substitute_type(parameter.type, substitution),
+                )
+                previous = remaining.get(parameter.name)
+                if previous is not None:
+                    if previous.type != parameter.type:
+                        raise CompileError(
+                            f"runtime actual {parameter.name!r} fills parameters of incompatible types",
+                            expr.line,
+                            expr.col,
+                        )
+                    parameter = parameter.with_(
+                        role="observation"
+                        if "observation" in {previous.role, parameter.role}
+                        else previous.role,
+                        constraint=previous.constraint or parameter.constraint,
+                    )
+                remaining[parameter.name] = parameter
             entry = entry.with_(
-                parameters=tuple(
-                    p.with_(type=substitute_type(p.type, substitution))
-                    for p in entry.parameters
+                parameters=tuple(remaining.values()),
+                telescope=tuple(
+                    binder
+                    for binder in entry.telescope
+                    if binder.name not in type_subst
                 ),
                 sites=tuple(
                     site.with_(batch=plate.batch, event=plate.event)
@@ -3504,6 +3918,9 @@ class _ProgramsMixin:
             line=decl.line,
             col=decl.col,
         )
+        if decl.binders:
+            self._program_templates[decl.name] = decl
+            return None
         if decl.type_params is not None:
             # Parametric program — store as a template; defer body
             # compilation until each call site instantiates it.
@@ -3522,11 +3939,16 @@ class _ProgramsMixin:
             self._program_templates[decl.name] = decl.with_(
                 draws=self._inline_pure_calls(decl.name, decl.draws)
             )
-            return None
+            if any(
+                not isinstance(parameter, ScalarParam) for parameter in decl.type_params
+            ):
+                return None
         if decl.name in self._morphisms:
             raise CompileError(
                 f"morphism {decl.name!r} already declared", decl.line, decl.col
             )
+        if decl.value_parameters and decl.name not in self._program_templates:
+            self._program_templates[decl.name] = decl
         domain = self._resolve_any_space(decl.domain)
         codomain = self._resolve_any_space(decl.codomain)
         if decl.params is not None:
@@ -3580,6 +4002,16 @@ class _ProgramsMixin:
         # the checked types: of the host data the program reads, and of
         # each let as its operands type it.
         parameter_spaces = self._host_data_spaces(decl.name)
+        for parameter in decl.value_parameters:
+            bound_vars.setdefault(parameter.name, parameter_spaces.get(parameter.name))
+        instantiated = self._instantiated_program_contracts.get(decl.name)
+        entry = instantiated[0] if instantiated is not None else None
+        if entry is not None:
+            for parameter in entry.parameters:
+                if parameter.name in decl.return_vars:
+                    bound_vars.setdefault(
+                        parameter.name, parameter_spaces.get(parameter.name)
+                    )
         self._parameter_space_stack.append(parameter_spaces)
         self._value_extents_stack.append(self._checked_value_extents(decl.name))
         steps: list[Step] = []
@@ -3729,7 +4161,10 @@ class _ProgramsMixin:
                     col=step.col,
                 )
                 family, step_args = self._resolve_draw_morphism(
-                    _synth, bound_vars, cod_space
+                    _synth,
+                    bound_vars,
+                    cod_space,
+                    plate_rows=None if is_matrix_draw else idx_space.size,
                 )
                 if step.name in bound_vars:
                     raise CompileError(

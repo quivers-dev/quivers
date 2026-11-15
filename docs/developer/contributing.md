@@ -287,11 +287,14 @@ Each syntax construct is a `dx.Model`, and recursive sums (`ObjectExpr`, `Expr`,
 ```python
 from typing import Literal
 from quivers.dsl.ast_nodes import ObjectExpr, OptionEntry, ProgramParam, ProgramStep, Statement
+from quivers.dsl.ast_nodes.qiec import QiecBinder, QiecValueParameter
 
 class ProgramDecl(Statement):
     name: str
     params: tuple[str, ...] | None = None
     type_params: tuple[ProgramParam, ...] | None = None
+    binders: tuple[QiecBinder, ...] = ()
+    value_parameters: tuple[QiecValueParameter, ...] = ()
     domain: ObjectExpr
     codomain: ObjectExpr
     options: tuple[OptionEntry, ...] = ()
@@ -303,6 +306,12 @@ class ProgramDecl(Statement):
     col: int = 0
     kind: Literal["program_decl"] = "program_decl"
 ```
+
+`type_params` holds program-specific static object and morphism parameters;
+`binders` holds the shared QIEC static telescope; and `value_parameters` holds
+typed runtime inputs. Bare domain names remain in `params`. Header annotations
+thus share the core's checked parameter representation, without adding a new
+kind of executable body step.
 
 ### 2. Resolution
 
@@ -394,6 +403,20 @@ Commit messages follow the conventional form `type(scope): summary`. The type is
 `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `build`, or `ci`, and the scope names a module
 or package (`inference`, `continuous`, `transpile`, `dsl`). Work on a branch and open a pull
 request against `main`.
+
+Keep feature commits separate from the version and changelog preparation commit.
+Prepare those commits in that order, then open the pull request using the
+repository template, with concrete examples and validation results. Merge only
+after the required checks pass. A release tag follows the merge and successful
+main-branch CI; opening or updating a feature pull request does not authorize a
+tag or release. Root and developer changelogs must remain byte-identical.
+
+Grammar changes prepare their untagged HEAD snapshots during development.
+Use `python grammars/qvr/vcs/build_schemas.py --revision HEAD` to append the
+current schema without rebuilding tagged history. Historical schema identities
+and `SCHEMA_COMMITS` entries are immutable; a feature branch must not reset them.
+The [migration guide](../guides/migration.md#maintaining-the-migration-chain)
+describes that preparation and the later tagged historical snapshots.
 
 ## Questions and Issues
 

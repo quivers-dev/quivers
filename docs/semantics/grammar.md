@@ -442,6 +442,13 @@ pragma_outer        := '#['  pragma_entry (',' pragma_entry)* ']'
 pragma_inner        := '#!['  pragma_entry (',' pragma_entry)* ']'
 pragma_entry        := IDENT [ '=' option_value ]
 
+rule_decl           := 'rule' IDENT '[' IDENT (',' IDENT)* ']'
+                       ':' type_expr (',' type_expr)* '|-' type_expr
+schema_decl         := 'schema' IDENT '[' schema_parameter (',' schema_parameter)* ']'
+                       ':' type_expr '->' type_expr
+schema_parameter    := IDENT (',' IDENT)* ':' type_expr
+# Rule and schema binders range over static category patterns.
+
 deduction_decl      := 'deduction' IDENT ':' type_expr '->' type_expr
                        [ option_block ] NEWLINE
                        INDENT deduction_body_entry+ DEDENT
@@ -463,17 +470,16 @@ deduction_rule      := 'rule' IDENT ':' premise_list ('|-' | '⊢')
 # Deduction options: semiring, start, depth, tolerance, max_iterations,
 # axioms, signature, encoder, normalize.
 
-typed_program_param := IDENT ':' param_kind
-param_kind          := object_kind | scalar_kind | morphism_kind
+program_static_param := qiec_static_binder
+                      | IDENT ':' (object_kind | morphism_kind)
+program_value_param  := IDENT [ ':' qiec_type ]
 object_kind         := 'FinSet' | 'Space' | 'Object'
-scalar_kind         := 'Real'   | 'Nat'
 morphism_kind       := 'Mor' '[' type_expr ',' type_expr ']'
 
 effect_set          := effect (',' effect)*
 effect              := 'Sample' | 'Score' | 'Marginal' | 'Pure'
 
-data_step           := 'data' IDENT ':' qiec_type
-# A declaration of an external input, collected before checking the body.
+# External values are parameters of the program, not body steps.
 # Finite object cardinalities may be '_' for inference when data are bound.
 
 sample_step         := 'sample' var_pattern [ ':' type_expr ] '<-' IDENT
@@ -503,7 +509,9 @@ marginalize_step    := 'marginalize' IDENT [ ':' type_expr ] '<-' IDENT
 
 let_index           := IDENT '[' let_arith (',' let_arith)* ']'
 
-program_decl        := 'program' IDENT [ '(' param_list ')' ]
+program_decl        := 'program' IDENT
+                       [ '[' program_static_param (',' program_static_param)* ']' ]
+                       [ '(' program_value_param (',' program_value_param)* ')' ]
                        ':' type_expr '->' type_expr
                        [ option_block ]
                        NEWLINE INDENT program_step* return_step DEDENT
@@ -532,13 +540,18 @@ change_base_postfix := expr '.' 'change_base' '(' expr ')'
 morphism_call       := IDENT '(' expr (',' expr)* ')'
 ```
 
-A program is *parametric* when its parameter list has a `typed_program_param`. The compiler expands a
-parametric program at each call site instead of compiling it on its own
+A program's static telescope uses the QIEC binders for types, effects, and
+indices, with additional object and morphism kinds. Its runtime telescope
+supplies values at the resulting types. A bare runtime
+parameter names a component of the domain; a typed parameter declares an
+external input. A typed runtime parameter alone does not make a program a
+static template. The compiler expands a static template at a specialized call site
 ([Programs as kernels §3.2](programs.md#32-calls-of-programs)). The option `effects` is checked as in
 [Programs as kernels §2.8](programs.md#28-effect-signatures), and `over = M` declares a program over the
 posterior draws of `M`, whose latent variables become parameters of the program. The `composition`
 declaration is described on [Composition rules §3](composition-rules.md#3-declaring-a-composition-rule).
-A call `IDENT(arg_1, ..., arg_n)` is resolved against the contractions, the parametric programs, and the
+A program call uses `IDENT[static_arguments](value_arguments)`, omitting brackets
+when it has no explicit static arguments. A call `IDENT(arg_1, ..., arg_n)` is resolved against the contractions, the parametric programs, and the
 morphisms of the module, in that order ([Expressions §2.13](expressions.md#213-operadic-contraction-call)).
 
 ## 11. QIEC fragment {#11-qiec-fragment}
@@ -546,11 +559,16 @@ morphisms of the module, in that order ([Expressions §2.13](expressions.md#213-
 The Quivers Indexed Effect Core (QIEC) adds its own declarations and computations to the module
 grammar ([Typing and checking](typing.md)). A *telescope* is an ordered list of binders in which later
 types may mention earlier variables [@debruijn1991telescopic]. Square brackets bind static types,
-indices, or effect interfaces, and parentheses bind family indices or computation values. The EBNF below
+indices, or effect interfaces, and parentheses bind family indices or computation
+and program values. Family indices remain static, refinable type information.
+The EBNF below
 is abridged, and `grammars/qvr/grammar.js` is authoritative:
 
 ```ebnf
 index_decl        := 'index' IDENT '=' index_constructor ('|' index_constructor)*
+static_telescope  := '[' qiec_static_binder (',' qiec_static_binder)* ']'
+qiec_static_binder := IDENT ':' ('Type' | 'Effect' | IDENT)
+index_telescope   := '(' qiec_static_binder (',' qiec_static_binder)* ')'
 family_decl       := 'family' IDENT [static_telescope] [index_telescope]
                      ':' KIND constructor_decl+
 constructor_decl  := 'constructor' IDENT [static_telescope] ':'

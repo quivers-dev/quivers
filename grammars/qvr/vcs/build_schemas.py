@@ -20,7 +20,11 @@ identifier git uses.
 
 Usage:
 
-    python grammars/qvr/vcs/build_schemas.py [--reset]
+    python grammars/qvr/vcs/build_schemas.py --revision HEAD
+
+Feature work appends only the working grammar. Tagged history and its pinned
+identities are immutable; rebuilding the full store with ``--reset`` is reserved
+for deliberate history maintenance.
 """
 
 from __future__ import annotations

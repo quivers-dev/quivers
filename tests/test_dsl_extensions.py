@@ -50,7 +50,7 @@ class TestBundleDecl:
         src = textwrap.dedent("""
             object Atoms : {NP, S}
             object Cat : FreeResiduated(Atoms, depth=1, ops=[slash])
-            schema fa(X, Y : Cat) : (X/Y) * Y -> X
+            schema fa[X, Y : Cat] : (X/Y) * Y -> X
             bundle B : [fa]
         """)
         m = parse(textwrap.dedent(src))
@@ -63,8 +63,8 @@ class TestBundleDecl:
         src = textwrap.dedent("""
             object Atoms : {NP, S, VP}
             object Cat : FreeResiduated(Atoms, depth=2, ops=[slash])
-            schema fa(X, Y : Cat) : (X/Y) * Y -> X
-            schema ba(X, Y : Cat) : Y * (X\\Y) -> X
+            schema fa[X, Y : Cat] : (X/Y) * Y -> X
+            schema ba[X, Y : Cat] : Y * (X\\Y) -> X
             bundle CCG : [fa, ba]
         """)
         m = parse(textwrap.dedent(src))
@@ -140,7 +140,7 @@ class TestConstraintSolver:
         src = textwrap.dedent("""
             object X : FinSet 3
             object Y : FinSet 4
-            schema bad(A : X) : (A/A) * Y -> Y
+            schema bad[A : X] : (A/A) * Y -> Y
         """)
         m = parse(textwrap.dedent(src))
         v = check_constraints(m)
@@ -162,7 +162,7 @@ class TestConstraintSolver:
         src = textwrap.dedent("""
             object Atoms : {NP, S}
             object Cat : FreeResiduated(Atoms, depth=1, ops=[slash])
-            schema bad(X : Cat) : x(X) -> X
+            schema bad[X : Cat] : x(X) -> X
         """)
         m = parse(textwrap.dedent(src))
         v = check_constraints(m)
@@ -172,7 +172,7 @@ class TestConstraintSolver:
         src = textwrap.dedent("""
             object Atoms : {NP, S}
             object Cat : FreeResiduated(Atoms, depth=1, ops=[slash])
-            schema ok(X : Cat) : Cont_S(X) -> Cont_S(X)
+            schema ok[X : Cat] : Cont_S(X) -> Cont_S(X)
         """)
         m = parse(textwrap.dedent(src))
         v = check_constraints(m)
