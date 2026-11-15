@@ -514,7 +514,7 @@ def test_parametric_template_call_wrong_arity_errors() -> None:
     define bad = p[f]()
     export bad
     """
-    with pytest.raises(CompileError, match="expects 2 arguments"):
+    with pytest.raises(CompileError, match=r"takes 2 static argument\(s\).*supplies 1"):
         loads(textwrap.dedent(src))
 
 

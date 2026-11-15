@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import sys
+import os
+from pathlib import Path
 
 from jupyter_client import KernelManager
 import pytest
 
 from quivers import __version__
+import quivers
 
 
 @pytest.mark.timeout(90)
@@ -20,7 +23,14 @@ def test_kernel_protocol_executes_qiec_and_preserves_silent_errors(tmp_path) -> 
         "_run_f",
         "{connection_file}",
     ]
-    manager.start_kernel(cwd=str(tmp_path))
+    # The notebook changes directory; retain the package tested by this
+    # process even when PYTHONPATH contains a relative source directory.
+    package_root = str(Path(quivers.__file__).resolve().parent.parent)
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (package_root, environment.get("PYTHONPATH", ""))
+    )
+    manager.start_kernel(cwd=str(tmp_path), env=environment)
     client = manager.blocking_client()
     client.start_channels()
     try:

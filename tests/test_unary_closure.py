@@ -431,9 +431,9 @@ def test_schema_parser_with_cyclic_unary_rules() -> None:
     """Cyclic unary rules: no reference entry, and a divergent chart raises."""
     source = _EXAMPLE.read_text()
     source = source.replace(
-        "schema perm (X, Y : Cat) : X / Y -> X \\ Y",
-        "schema perm (X, Y : Cat) : X / Y -> X \\ Y\n"
-        "schema unperm (X, Y : Cat) : X \\ Y -> X / Y",
+        "schema perm[X, Y : Cat] : X / Y -> X \\ Y",
+        "schema perm[X, Y : Cat] : X / Y -> X \\ Y\n"
+        "schema unperm[X, Y : Cat] : X \\ Y -> X / Y",
     ).replace(
         "bundle lp_rules : [fwd_app, bwd_app, perm]",
         "bundle lp_rules : [fwd_app, bwd_app, perm, unperm]",
