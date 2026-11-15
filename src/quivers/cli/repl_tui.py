@@ -67,7 +67,11 @@ from quivers.analysis.scope import (
     top_level_bindings,
 )
 from quivers.cli.repl_highlight import to_rich_text, tokenize
-from quivers.cli.repl_complete import all_completions, public_meta_commands
+from quivers.cli.repl_complete import (
+    _completion_prefix,
+    all_completions,
+    public_meta_commands,
+)
 from quivers.cli.repl_session import (
     HELP_CATEGORIES,
     KEY_BINDINGS,
@@ -822,10 +826,7 @@ def _word_prefix(line: str, col: int) -> str:
 
     A leading ``:`` is preserved so meta-command completion works.
     """
-    i = col
-    while i > 0 and (line[i - 1].isalnum() or line[i - 1] in "_:."):
-        i -= 1
-    return line[i:col]
+    return _completion_prefix(line, col)
 
 
 def _load_history() -> list[str]:

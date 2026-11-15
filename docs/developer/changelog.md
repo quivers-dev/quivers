@@ -4,6 +4,15 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.64.2] - 2026-11-14
+
+### Fixed
+
+- **Editor adapters use current launch and parser contracts.** Zed includes a compiled language-server adapter and pins the current grammar through its supported manifest fields. CI compares the pinned parser and query bytes and builds the adapter. VS Code discovers project virtual environments by default, honors explicit commands, restarts on launch-setting changes, and attaches to unsaved QVR documents. Its declared minimum editor version matches the language-client dependency.
+- **Notebook failures remain errors in silent execution.** Failed responses stop the cell and return structured error details. Blank lines within indented declarations remain intact, meta-commands delimit chunks, and completion and inspection retain command arguments and qualified names. The kernel no longer advertises an unbundled CodeMirror mode.
+- **Tooling reports the installed package version.** The LSP and notebook metadata use the package version, and all three command-line entry points accept `--version`. Incremental LSP edits decode UTF-16 columns, outgoing ranges encode them, and closing a document clears its diagnostics.
+- **Load-command completion includes its path argument.** The shared REPL completer resolves file prefixes after `:load`.
+
 ## [0.64.1] - 2026-11-14
 
 ### Fixed

@@ -24,7 +24,7 @@ import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from quivers.cli.repl_complete import all_completions
+from quivers.cli.repl_complete import _completion_prefix, all_completions
 from quivers.cli.repl_session import Diagnostic, ReplResponse, ReplSession
 from quivers.dsl.pygments_lexer import QvrLexer
 
@@ -109,7 +109,7 @@ def run_plain(session: ReplSession) -> int:
                     Matching names with their replacement positions.
                 """
                 del complete_event
-                word = document.get_word_before_cursor(WORD=True)
+                word = _completion_prefix(document.text, document.cursor_position)
                 for c in all_completions(session, word):
                     yield Completion(
                         text=c.text,

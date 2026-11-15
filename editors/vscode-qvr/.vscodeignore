@@ -4,3 +4,4 @@ tsconfig.json
 .vscode/**
 node_modules/@types/**
 node_modules/typescript/**
+tests/**

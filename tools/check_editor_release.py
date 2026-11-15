@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
+import tomllib
 from pathlib import Path
 import sys
 from zipfile import ZipFile
@@ -19,6 +22,52 @@ PARITY_FILES = (
     "out/extension.js",
     "out/extension.js.map",
 )
+
+
+def check_grammar_pin() -> int:
+    """Require Zed's immutable parser revision to match every current parser input.
+
+    Fetch the revision before running this check in a shallow checkout. Matching
+    the input bytes also makes the current-parser query tests apply to Zed.
+    """
+    zed = ROOT / "editors/zed-extension-qvr"
+    manifest = tomllib.loads((zed / "extension.toml").read_text())
+    grammar = manifest["grammars"]["qvr"]
+    revision = grammar["rev"]
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        sys.stderr.write("Zed grammar rev must be a full immutable commit SHA\n")
+        return 1
+    failures = []
+    for relative in (
+        "grammar.js",
+        "src/parser.c",
+        "src/scanner.c",
+        "src/node-types.json",
+        "src/grammar.json",
+        "src/tree_sitter/parser.h",
+        "src/tree_sitter/alloc.h",
+        "src/tree_sitter/array.h",
+        "queries/highlights.scm",
+    ):
+        path = f"grammars/qvr/{relative}"
+        result = subprocess.run(
+            ["git", "show", f"{revision}:{path}"],
+            cwd=ROOT,
+            capture_output=True,
+        )
+        if result.returncode or result.stdout != (ROOT / path).read_bytes():
+            failures.append(path)
+    if (zed / "languages/qvr/highlights.scm").read_bytes() != (
+        ROOT / "grammars/qvr/queries/highlights.scm"
+    ).read_bytes():
+        failures.append("Zed highlight query mirror")
+    if failures:
+        sys.stderr.write(
+            f"Zed grammar pin {revision} is missing or stale: {', '.join(failures)}\n"
+        )
+        return 1
+    print(f"OK Zed grammar {revision}: parser inputs and highlight queries match")
+    return 0
 
 
 def main(*, full: bool = False) -> int:
@@ -67,4 +116,8 @@ def main(*, full: bool = False) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(full="--full" in sys.argv[1:]))
+    raise SystemExit(
+        check_grammar_pin()
+        if "--grammar-pin" in sys.argv[1:]
+        else main(full="--full" in sys.argv[1:])
+    )

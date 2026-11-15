@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import argparse
+
+from quivers import __version__
 import json
 import sys
 import tempfile
@@ -168,6 +170,9 @@ def main(args: argparse.Namespace) -> int:
 def _entry() -> int:
     """Console-script entry point for ``qvr-kernel``."""
     parser = argparse.ArgumentParser(prog="qvr-kernel")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
     sub = parser.add_subparsers(dest="kernel_cmd", required=True)
     install_p = sub.add_parser("install")
     install_p.add_argument("--user", action="store_true")

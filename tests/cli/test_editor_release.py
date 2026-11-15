@@ -60,7 +60,7 @@ def test_textmate_recognizes_every_distribution_family() -> None:
 
 def test_zed_uses_an_immutable_grammar_revision() -> None:
     manifest = tomllib.loads((ZED / "extension.toml").read_text())
-    revision = manifest["grammars"]["qvr"]["commit"]
+    revision = manifest["grammars"]["qvr"]["rev"]
     assert re.fullmatch(r"[0-9a-f]{40}", revision)
 
 
@@ -332,3 +332,28 @@ def test_docs_highlighter_check_tolerates_missing_docs_extras(
 
     monkeypatch.setattr(builtins, "__import__", _without_docs_extras)
     assert _docs_hook_namespace()["QvrLexer"] is QvrLexer
+
+
+def test_zed_manifest_has_a_compiled_language_server_adapter() -> None:
+    manifest = tomllib.loads((ZED / "extension.toml").read_text())
+    assert set(manifest["grammars"]["qvr"]) == {"repository", "rev", "path"}
+    assert "binary" not in manifest["language_servers"]["qvr-lsp"]
+    cargo = tomllib.loads((ZED / "Cargo.toml").read_text())
+    assert cargo["package"]["version"] == manifest["version"]
+    assert cargo["lib"]["crate-type"] == ["cdylib"]
+
+
+def test_grammar_pin_check_rejects_a_stale_parser(monkeypatch, capsys) -> None:
+    from types import SimpleNamespace
+    from tools import check_editor_release as checker
+
+    def git_show(args, **kwargs):
+        relative = args[-1].split(":", 1)[1]
+        data = (ROOT / relative).read_bytes()
+        if relative.endswith("parser.c"):
+            data += b"stale"
+        return SimpleNamespace(returncode=0, stdout=data)
+
+    monkeypatch.setattr(checker.subprocess, "run", git_show)
+    assert checker.check_grammar_pin() == 1
+    assert "parser.c" in capsys.readouterr().err

@@ -35,6 +35,8 @@ Textual front end is an optional dependency.
 from __future__ import annotations
 
 import argparse
+
+from quivers import __version__
 import importlib
 import sys
 from typing import TYPE_CHECKING, Callable
@@ -119,6 +121,9 @@ def main() -> int:
     """
 
     parser = argparse.ArgumentParser(prog="qvr", description=__doc__)
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     check = sub.add_parser(

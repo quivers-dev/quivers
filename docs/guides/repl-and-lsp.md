@@ -7,8 +7,8 @@ in notebooks, and a server for the
 [Language Server Protocol](https://microsoft.github.io/language-server-protocol/) (LSP)
 gives the same checks in an editor. All four use one bundled
 [tree-sitter](https://tree-sitter.github.io/) parser for QVR, the same compiler
-([`quivers.dsl.Compiler`](../api/dsl/compiler.md)), and one highlighting table, so a
-name has the same color in the TUI, the editor, and notebook output.
+([`quivers.dsl.Compiler`](../api/dsl/compiler.md)), and shared token classification. Frontends choose their own color themes;
+notebook input highlighting also depends on the frontend.
 [QVR execution and tooling](../reference/qvr/execution-and-tooling.md) gives the
 shorter reference for entry points, providers, and the LSP.
 
@@ -999,8 +999,11 @@ Cell semantics:
 
 - Leading-`:` lines are dispatched as meta-commands.
 - Other lines are appended to the live module and compiled.
-- Blank lines separate independent chunks within a cell, so a cell can mix
-  meta-commands and declarations.
+- Blank lines before a new top-level declaration separate chunks. Blank lines
+  inside indented declarations remain part of the declaration. A top-level
+  meta-command starts its own chunk, with or without a preceding blank line.
+- A failed chunk stops the cell and returns structured error details. Silent
+  execution suppresses output messages but retains the error status.
 - `:quit` ends the cell: the chunks after it are not run, and the
   kernel stays up. Shut the kernel down from the front end.
 
@@ -1010,8 +1013,13 @@ Notebook features:
   and LSP.
 - **Inspect (`Shift-Tab`)** routes through `:info`, showing the
   declaration in the inspector panel.
-- The kernelspec advertises `pygments_lexer: qvr` so cell content
-  is highlighted by the bundled Pygments lexer.
+- The kernel's language metadata advertises `pygments_lexer: qvr`. Frontends
+  that support Pygments use the bundled lexer. The package does not include a
+  CodeMirror mode; live input highlighting in JupyterLab depends on frontend
+  support. VS Code notebooks can use the QVR extension's language support.
+- `qvr --version`, `qvr-lsp --version`, and `qvr-kernel --version` report the
+  installed package version. The server and kernel report that same version
+  during their protocol handshakes.
 
 ## The Language Server
 
@@ -1051,7 +1059,7 @@ Settings:
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `qvr.lsp.enabled` | `true` | Master toggle |
-| `qvr.lsp.path` | `qvr-lsp` | Override the executable path |
+| `qvr.lsp.path` | empty | Override the executable path |
 | `qvr.lsp.args` | `[]` | Extra CLI arguments |
 | `qvr.transpileTarget` | `""` | A transpile target whose limits the server reports as diagnostics, or an empty string to turn them off |
 
