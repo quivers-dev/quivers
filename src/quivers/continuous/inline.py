@@ -1741,7 +1741,7 @@ def _beta_binomial_builder(params: list[torch.Tensor]) -> D.Distribution:
     return _BetaBinomial(total_count, a, b)
 
 
-_DIM_DEPENDENT_FAMILIES: frozenset[str] = frozenset({"LKJCholesky"})
+_DIM_DEPENDENT_FAMILIES: frozenset[str] = frozenset({"LKJCholesky", "Dirichlet"})
 
 
 def _dim_dependent_builder(
@@ -1751,12 +1751,29 @@ def _dim_dependent_builder(
     distribution needs the matrix / vector dimension at construction
     time.
 
-    Currently used for `LKJCholesky`, whose ``dim`` argument fixes the
-    Cholesky factor's shape; the closure resolves the dim from the
-    codomain (FinSet cardinality or Euclidean / CholeskyFactor dim)
-    and embeds it.
+    LKJ's dimension fixes its Cholesky factor's shape. Dirichlet uses
+    the codomain dimension to broadcast one symmetric concentration over
+    every simplex coordinate. The closures retain that dimension, with
+    expansion as a view so gradients return to the supplied concentration.
     """
     dim = _codomain_dim_or_raise(family, codomain)
+    if family == "Dirichlet":
+        if dim < 1:
+            raise ValueError("Dirichlet requires a positive event dimension")
+
+        def _dirichlet(params: list[torch.Tensor]) -> D.Distribution:
+            concentration = parameter_domains.positive_parameter(params[0])
+            if concentration.dim() == 0:
+                concentration = concentration.expand(dim)
+            elif concentration.shape[-1] == 1:
+                concentration = concentration.expand(*concentration.shape[:-1], dim)
+            elif concentration.shape[-1] != dim:
+                raise ValueError(
+                    f"Dirichlet concentration has width {concentration.shape[-1]}, but its event dimension is {dim}"
+                )
+            return D.Dirichlet(concentration)
+
+        return _dirichlet
     if family == "LKJCholesky":
 
         def _builder(params: list[torch.Tensor]) -> D.Distribution:

@@ -435,6 +435,9 @@ def test_every_registry_family_is_covered() -> None:
     assert set(FAMILIES) <= backend.families
     core = set(FAMILIES) - set(CASES)
     assert core == {
+        "AsymmetricLaplace",
+        "ExGaussian",
+        "InverseGaussian",
         "Normal",
         "LogNormal",
         "HalfNormal",

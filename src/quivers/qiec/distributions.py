@@ -1015,6 +1015,248 @@ def _times(count: int, log_mass: float) -> float:
     return 0.0 if count == 0 else count * log_mass
 
 
+def _log_erfcx_positive(value: float) -> float:
+    """Log scaled complementary error function for a nonnegative argument.
+
+    Parameters
+    ----------
+    value : float
+        A nonnegative argument.
+
+    Returns
+    -------
+    float
+        Log of the scaled complementary error function, including its tail limit.
+    """
+    if value < 5:
+        return value * value + math.log(math.erfc(value))
+    fraction = 0.0
+    for index in range(40, 0, -1):
+        fraction = (index / 2) / (value + fraction)
+    return -0.5 * math.log(math.pi) - math.log(value + fraction)
+
+
+def _exgaussian_parameters(a: Mapping[str, object]) -> tuple[float, float, float]:
+    """Read a Normal location/scale and a positive Exponential rate.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, scale, and Exponential rate.
+
+    Returns
+    -------
+    tuple[float, float, float]
+        Validated parameters in constructor order.
+
+    Raises
+    ------
+    DistributionError
+        If scale or rate is nonpositive, or any parameter is malformed.
+    """
+    loc = _real(a, "loc", "ExGaussian")
+    scale = _real(a, "scale", "ExGaussian")
+    rate = _real(a, "rate", "ExGaussian")
+    if scale <= 0 or rate <= 0:
+        raise DistributionError("ExGaussian needs scale > 0 and rate > 0")
+    return loc, scale, rate
+
+
+def _exgaussian_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw independent Normal and Exponential components and add them.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, scale, and Exponential rate.
+    rng : random.Random
+        Local generator used for both component draws.
+
+    Returns
+    -------
+    object
+        One draw from the named response distribution.
+    """
+    loc, scale, rate = _exgaussian_parameters(a)
+    return rng.gauss(loc, scale) + rng.expovariate(rate)
+
+
+def _exgaussian_density(a: Mapping[str, object], value: object) -> float:
+    """Score an exponentially modified Gaussian without left-tail underflow.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, scale, and Exponential rate.
+    value : object
+        Real evaluation point.
+
+    Returns
+    -------
+    float
+        Log density at the point; negative infinity outside the support.
+    """
+    loc, scale, rate = _exgaussian_parameters(a)
+    point = _finite_value(value, "ExGaussian")
+    standardized = (point - loc) / scale
+    rate_scale = rate * scale
+    difference = rate_scale - standardized
+    if difference > 0:
+        return (
+            math.log(rate)
+            - math.log(2)
+            - 0.5 * standardized**2
+            + _log_erfcx_positive(difference / math.sqrt(2))
+        )
+    return (
+        math.log(rate)
+        + 0.5 * rate_scale**2
+        - rate_scale * standardized
+        + math.log(0.5 * math.erfc(difference / math.sqrt(2)))
+    )
+
+
+def _inverse_gaussian_parameters(a: Mapping[str, object]) -> tuple[float, float]:
+    """Read the positive mean and shape of an inverse Gaussian.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named response mean and positive shape.
+
+    Returns
+    -------
+    tuple[float, float]
+        Validated parameters in constructor order.
+
+    Raises
+    ------
+    DistributionError
+        If mean or shape is nonpositive, or any parameter is malformed.
+    """
+    mu = _real(a, "mu", "InverseGaussian")
+    shape = _real(a, "shape", "InverseGaussian")
+    if mu <= 0 or shape <= 0:
+        raise DistributionError("InverseGaussian needs mu > 0 and shape > 0")
+    return mu, shape
+
+
+def _inverse_gaussian_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw an inverse Gaussian using the exact quadratic transformation.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named response mean and positive shape.
+    rng : random.Random
+        Local generator used for the transformation and branch choice.
+
+    Returns
+    -------
+    object
+        One draw from the named response distribution.
+    """
+    mu, shape = _inverse_gaussian_parameters(a)
+    t = mu * rng.gauss(0, 1) ** 2 / (2 * shape)
+    smaller = mu / (1 + t + math.sqrt(t) * math.sqrt(t + 2))
+    return smaller if rng.random() <= mu / (mu + smaller) else mu * (mu / smaller)
+
+
+def _inverse_gaussian_density(a: Mapping[str, object], value: object) -> float:
+    """Score the inverse Gaussian in mean/shape parameterization.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named response mean and positive shape.
+    value : object
+        Real evaluation point.
+
+    Returns
+    -------
+    float
+        Log density at the point; negative infinity outside the support.
+    """
+    mu, shape = _inverse_gaussian_parameters(a)
+    point = _finite_value(value, "InverseGaussian")
+    if point <= 0:
+        return -math.inf
+    return (
+        0.5 * (math.log(shape) - math.log(2 * math.pi) - 3 * math.log(point))
+        - 0.5 * shape / point * ((point - mu) / mu) ** 2
+    )
+
+
+def _asymmetric_laplace_parameters(
+    a: Mapping[str, object],
+) -> tuple[float, float, float]:
+    """Read the location, positive scale, and strictly interior quantile.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, positive scale, and interior quantile.
+
+    Returns
+    -------
+    tuple[float, float, float]
+        Validated parameters in constructor order.
+
+    Raises
+    ------
+    DistributionError
+        If scale is nonpositive, quantile is not interior, or a parameter is malformed.
+    """
+    loc = _real(a, "loc", "AsymmetricLaplace")
+    scale = _real(a, "scale", "AsymmetricLaplace")
+    quantile = _real(a, "quantile", "AsymmetricLaplace")
+    if scale <= 0 or not 0 < quantile < 1:
+        raise DistributionError(
+            "AsymmetricLaplace needs scale > 0 and 0 < quantile < 1"
+        )
+    return loc, scale, quantile
+
+
+def _asymmetric_laplace_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw the difference of exponentials in the quantile parameterization.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, positive scale, and interior quantile.
+    rng : random.Random
+        Local generator used for both Exponential draws.
+
+    Returns
+    -------
+    object
+        One draw from the named response distribution.
+    """
+    loc, scale, quantile = _asymmetric_laplace_parameters(a)
+    return loc + scale * (rng.expovariate(quantile) - rng.expovariate(1 - quantile))
+
+
+def _asymmetric_laplace_density(a: Mapping[str, object], value: object) -> float:
+    """Score the check-loss density in the quantile parameterization.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, positive scale, and interior quantile.
+    value : object
+        Real evaluation point.
+
+    Returns
+    -------
+    float
+        Log density at the point; negative infinity outside the support.
+    """
+    loc, scale, quantile = _asymmetric_laplace_parameters(a)
+    residual = (_finite_value(value, "AsymmetricLaplace") - loc) / scale
+    loss = residual * (quantile - int(residual < 0))
+    return math.log(quantile) + math.log1p(-quantile) - math.log(scale) - loss
+
+
 def _laplace_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``Laplace``.
 
@@ -1222,6 +1464,9 @@ _SAMPLERS: Mapping[str, Sampler] = MappingProxyType(
         "Binomial": _binomial_sample,
         "Geometric": _geometric_sample,
         "Laplace": _laplace_sample,
+        "AsymmetricLaplace": _asymmetric_laplace_sample,
+        "ExGaussian": _exgaussian_sample,
+        "InverseGaussian": _inverse_gaussian_sample,
         "Cauchy": _cauchy_sample,
         "StudentT": _studentt_sample,
         "Dirichlet": _dirichlet_sample,
@@ -1245,6 +1490,9 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
         "Binomial": _binomial_density,
         "Geometric": _geometric_density,
         "Laplace": _laplace_density,
+        "AsymmetricLaplace": _asymmetric_laplace_density,
+        "ExGaussian": _exgaussian_density,
+        "InverseGaussian": _inverse_gaussian_density,
         "Cauchy": _cauchy_density,
         "StudentT": _studentt_density,
         "Dirichlet": _dirichlet_density,

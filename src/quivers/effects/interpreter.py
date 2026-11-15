@@ -24,6 +24,7 @@ outer one gives.
 
 from __future__ import annotations
 
+import math
 import weakref
 from collections.abc import Callable, Mapping
 from typing import TypeIs
@@ -733,14 +734,16 @@ def _event_numel(morphism: torch.nn.Module | None) -> int | None:
     Returns
     -------
     int | None
-        The width of a continuous codomain, one for a discrete codomain,
-        or ``None`` when the site has no morphism.
+        The number of coordinates in a continuous codomain's carrier,
+        one for a discrete codomain, or ``None`` when the site has no
+        morphism. Matrix carriers use their full shape rather than their
+        matrix dimension.
     """
     if morphism is None:
         return None
     codomain = getattr(morphism, "codomain", None)
     if isinstance(codomain, ContinuousSpace):
-        return int(getattr(codomain, "dim"))
+        return math.prod(getattr(codomain, "shape", codomain.event_shape))
     return 1
 
 
@@ -1874,6 +1877,15 @@ def check_host_data(
     """
     extents: dict[str, tuple[int, str]] = {}
     per_run_data: dict[str, bool] = {}
+    nonnegative = (
+        {
+            parameter.name
+            for parameter in program.input_contract.parameters
+            if parameter.constraint == "nonnegative"
+        }
+        if program.input_contract is not None
+        else set()
+    )
     for name, expected in program.host_data_types.items():
         if name not in data:
             continue
@@ -1886,7 +1898,12 @@ def check_host_data(
             supplied = _string_shape(name, data[name], rendered)
             value = None
         else:
-            value = torch.as_tensor(data[name])
+            try:
+                value = torch.as_tensor(data[name])
+            except (TypeError, ValueError, RuntimeError) as error:
+                raise TypeError(
+                    f"host datum {name!r} cannot be read at checked type {rendered}"
+                ) from error
             supplied = tuple(value.shape)
         layouts = [tuple(dimensions)]
         if name in program.host_data_shared and dimensions:
@@ -1923,6 +1940,8 @@ def check_host_data(
                 f"program reads it at type {rendered}, whose elements are "
                 f"{render_static(element)}"
             )
+        if value is not None and name in nonnegative and bool((value < 0).any()):
+            raise ValueError(f"host datum {name!r} must be a nonnegative integer")
     for name, bounds in program.host_index_bounds.items():
         if name not in data:
             continue
@@ -2291,7 +2310,11 @@ def _vectorized_sites(
         else:
             return None
         codomain = getattr(morphism, "codomain", None)
-        if isinstance(codomain, ContinuousSpace) and len(codomain.event_shape) == 1:
+        if (
+            isinstance(codomain, ContinuousSpace)
+            and getattr(codomain, "shape", None) is None
+            and len(codomain.event_shape) == 1
+        ):
             # A continuous draw is one row of its event per run, so a
             # scalar's runs are a column, never a row the event reads.
             rows = rows.reshape(runs, single)

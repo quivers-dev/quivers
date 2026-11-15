@@ -1,0 +1,5 @@
+object X : Real 1
+program model : X -> X
+    observe y <- ExGaussian(loc=0.3, scale=0.7, rate=1.4)
+    return y
+export model

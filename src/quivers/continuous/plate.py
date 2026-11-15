@@ -231,6 +231,9 @@ class PlateDraw(ContinuousMorphism):
         self._index_size = index_size
         self._index_shape = shape
         self._family = family
+        from quivers.continuous.inline import FixedDistribution
+
+        self._fixed_parameters = isinstance(family, FixedDistribution)
         self._per_row_shape = per_row_shape
         self._per_row_dim = per_row_dim
         # Width of the conditioning input a single row of the family
@@ -239,7 +242,9 @@ class PlateDraw(ContinuousMorphism):
         # network, so it must equal the domain's feature width.
         dom = actual_domain
         if hasattr(dom, "dim"):
-            self._domain_width = max(1, int(dom.dim))
+            self._domain_width = max(
+                1, int(dom.row_width if isinstance(dom, Euclidean) else dom.dim)
+            )
         elif hasattr(dom, "shape"):
             shape = tuple(dom.shape)
             self._domain_width = int(torch.tensor(shape).prod().item()) if shape else 1
@@ -338,10 +343,22 @@ class PlateDraw(ContinuousMorphism):
         # positive-support family realised as a restricted base
         # measure, say); those ignore the input's leading axis but
         # still honour the explicit sample shape.
-        row_input = self._row_conditioning(x, 1, device)
-        base = self._family.rsample(
-            row_input, sample_shape=torch.Size((self._index_size,))
+        per_row = isinstance(
+            getattr(self._family, "param_source", None), LookupSource
+        ) or (
+            not self._fixed_parameters
+            and x is not None
+            and self._index_size > 1
+            and x.numel() == self._index_size * self._domain_width
         )
+        if per_row:
+            row_input = self._row_conditioning(x, self._index_size, device)
+            base = self._family.rsample(row_input)
+        else:
+            row_input = self._row_conditioning(x, 1, device)
+            base = self._family.rsample(
+                row_input, sample_shape=torch.Size((self._index_size,))
+            )
         expected = self._index_size * self._per_row_dim
         if base.numel() != expected:
             raise ValueError(
@@ -714,6 +731,26 @@ class VectorisedObserve(ContinuousMorphism):
         different value (e.g. a clamped observation) is supported
         for fast prior-predictive checks.
         """
+        return self.log_prob_pointwise(x, y).sum()
+
+    def log_prob_pointwise(
+        self, x: torch.Tensor, y: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Score each observation row without summing the observation plate.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Family parameters at each row, or shared across rows.
+        y : torch.Tensor or None
+            Observations; the registered response when omitted.
+
+        Returns
+        -------
+        torch.Tensor
+            One log density per observation row. Event dimensions and each
+            row's array axes are reduced together, as in ``log_prob``.
+        """
         target = y if y is not None else cast("torch.Tensor", self._response)
         if self._array_shape:
             # Each entry of a row's array is one observation of the
@@ -725,10 +762,14 @@ class VectorisedObserve(ContinuousMorphism):
                 if x.shape[0] == target.shape[0]
                 else x.expand(target.shape[0], *x.shape[1:])
             )
-            return self._family.log_prob(
-                self._array_rows(rows), self._align_response(flat)
-            ).sum()
-        return self._family.log_prob(x, self._align_response(target)).sum()
+            return (
+                self._family.log_prob(
+                    self._array_rows(rows), self._align_response(flat)
+                )
+                .reshape(target.shape[0], entries)
+                .sum(dim=-1)
+            )
+        return self._family.log_prob(x, self._align_response(target))
 
     def log_prob_rows(
         self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor

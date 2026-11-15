@@ -35,6 +35,9 @@ import torch.nn.functional as F
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 
+from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
+from quivers.continuous._response_time import ExGaussian, InverseGaussian
+
 from quivers.continuous._closed_probability import (
     ClosedBernoulli,
     ClosedBinomial,
@@ -757,6 +760,30 @@ ConditionalLaplace = _make_family(
     "Conditional Laplace(loc(x), scale(x)). Sharp peak, heavier tails than normal.",
 )
 """Conditional Laplace(loc(x), scale(x)). Sharp peak, heavier tails than normal."""
+
+ConditionalAsymmetricLaplace = _make_family(
+    "ConditionalAsymmetricLaplace",
+    AsymmetricLaplace,
+    [("loc", "id"), ("scale", "softplus"), ("quantile", "sigmoid")],
+    "Conditional asymmetric Laplace with input-driven location, scale, and quantile.",
+)
+"""Conditional quantile regression distribution with three input-driven parameters."""
+
+ConditionalExGaussian = _make_family(
+    "ConditionalExGaussian",
+    ExGaussian,
+    [("loc", "id"), ("scale", "softplus"), ("rate", "softplus")],
+    "Conditional exponentially modified Gaussian with location, Normal scale, and Exponential rate.",
+)
+"""Conditional sum of a Normal and an independent Exponential variable."""
+
+ConditionalInverseGaussian = _make_family(
+    "ConditionalInverseGaussian",
+    InverseGaussian,
+    [("mu", "softplus"), ("shape", "softplus")],
+    "Conditional inverse Gaussian with input-driven mean and shape.",
+)
+"""Conditional inverse Gaussian with implicit reparameterized sampling."""
 
 ConditionalGumbel = _make_family(
     "ConditionalGumbel",
@@ -4168,6 +4195,9 @@ __all__ = [
     "ConditionalDirichlet",
     "ConditionalCauchy",
     "ConditionalLaplace",
+    "ConditionalAsymmetricLaplace",
+    "ConditionalExGaussian",
+    "ConditionalInverseGaussian",
     "ConditionalGumbel",
     "ConditionalLogNormal",
     "ConditionalStudentT",

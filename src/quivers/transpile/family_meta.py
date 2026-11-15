@@ -19,8 +19,13 @@ from torch.distributions.distribution import Distribution
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
+from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
+from quivers.continuous._response_time import ExGaussian, InverseGaussian
 from quivers.continuous.measure import Normalize, PointMass, Restrict
 from quivers.continuous.families import (
+    ConditionalAsymmetricLaplace,
+    ConditionalExGaussian,
+    ConditionalInverseGaussian,
     ConditionalBernoulli,
     ConditionalBeta,
     ConditionalBetaBinomial,
@@ -611,6 +616,24 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "pymc": {"loc": "alpha", "scale": "beta"},
             "webppl": {"loc": "location"},
         },
+    ),
+    "ExGaussian": FamilyMeta(
+        qvr_name="ExGaussian",
+        distribution_class=ExGaussian,
+        quivers_class=ConditionalExGaussian,
+        target_names={},
+    ),
+    "InverseGaussian": FamilyMeta(
+        qvr_name="InverseGaussian",
+        distribution_class=InverseGaussian,
+        quivers_class=ConditionalInverseGaussian,
+        target_names={},
+    ),
+    "AsymmetricLaplace": FamilyMeta(
+        qvr_name="AsymmetricLaplace",
+        distribution_class=AsymmetricLaplace,
+        quivers_class=ConditionalAsymmetricLaplace,
+        target_names={},
     ),
     "Laplace": FamilyMeta(
         qvr_name="Laplace",

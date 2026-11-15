@@ -1,0 +1,5 @@
+object X : Real 1
+program model : X -> X
+    observe y <- AsymmetricLaplace(loc=0.0, scale=1.0, quantile=0.8)
+    return y
+export model
