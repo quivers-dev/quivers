@@ -226,6 +226,37 @@ def test_group_index_range_infers_smallest_zero_based_space():
     assert bound.schema.describe()["group_idx"]["type"] == "Tensor[Int]([3])"
 
 
+def test_matrix_shape_infers_two_finite_extents():
+    source = (
+        SOURCE.replace("object Out", "object Feature : FinSet _\nobject Out")
+        .replace(
+            "data x : Tensor[Real]([Row])", "data x : Tensor[Real]([Row, Feature])"
+        )
+        .replace("b * x", "b * sum(x)")
+    )
+    bound = Model(source).bind({"x": torch.ones(3, 2), "y": torch.zeros(3)})
+    assert bound.schema.describe()["x"]["type"] == "Tensor[Real]([3, 2])"
+    point = torch.tensor([0.25])
+    expected = torch.distributions.Normal(0.0, 1.0).log_prob(point) + 3 * (
+        torch.distributions.Normal(2 * point, 1.0).log_prob(torch.tensor(0.0))
+    )
+    torch.testing.assert_close(bound.trace({"b": point}).log_joint, expected)
+
+
+def test_exact_group_extent_must_contain_all_external_indices():
+    source = GROUPED.replace(
+        "    sample a", "    data table : Tensor[Real]([Group])\n    sample a"
+    )
+    with pytest.raises(CompileError, match="Group.*indices.*group_idx"):
+        Model(source).bind(
+            {
+                "table": torch.zeros(2),
+                "group_idx": torch.tensor([0, 1, 2]),
+                "y": torch.zeros(3),
+            }
+        )
+
+
 @pytest.mark.parametrize("indices", [torch.tensor([-1, 0, 1]), torch.tensor([0, 1, 3])])
 def test_fixed_group_bounds_reject_invalid_external_indices(indices):
     source = GROUPED.replace("object Group : FinSet _", "object Group : FinSet 3")

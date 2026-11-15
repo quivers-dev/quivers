@@ -1,8 +1,10 @@
 """Tests for the convergence estimators of `quivers.diagnostics`.
 
-The oracle is ArviZ (``arviz.rhat``, ``arviz.ess``, ``arviz.mcse``),
-evaluated on fixed seeded chains. The quivers estimators run the same
-float64 algorithm, so on finite, non-constant input the two differ
+The oracles are ArviZ (``arviz.rhat``, ``arviz.ess``, ``arviz.mcse``),
+evaluated on fixed seeded chains, and a NumPy moment calculation for
+SD-MCSE using ArviZ's ESS of squared deviations. This tests the documented
+delta-method estimator independently of changes to ArviZ's SD-MCSE definition.
+The quivers estimators run the same float64 calculations, so the results differ
 only by floating-point summation order and FFT padding length, both
 of order 1e-15 relative. The tolerance is fixed at ``rel=1e-10``: wide
 enough for that rounding, and many orders of magnitude below the
@@ -115,9 +117,17 @@ def test_quantile_ess_matches_arviz(name: str, prob: float) -> None:
 
 @pytest.mark.parametrize("name", sorted(CASES))
 @pytest.mark.parametrize("method", ["mean", "sd"])
-def test_mcse_matches_arviz(name: str, method: str) -> None:
+def test_mcse_matches_moment_and_ess_oracles(name: str, method: str) -> None:
     draws = CASES[name]
-    expected = float(az.mcse(draws, method=method))
+    if method == "sd":
+        squared = (draws - draws.mean()) ** 2
+        variance = squared.mean()
+        effective = float(az.ess(squared, method="mean"))
+        expected = math.sqrt(
+            ((squared**2).mean() - variance**2) / (4 * variance * effective)
+        )
+    else:
+        expected = float(az.mcse(draws, method=method))
     assert float(mcse(_tensor(draws), method=method)) == pytest.approx(  # type: ignore[arg-type]
         expected, rel=REL
     )

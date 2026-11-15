@@ -19,8 +19,9 @@ Simpson, Carpenter, and Bürkner (2021,
 
 Autocorrelations pool the chains and include the between-chain
 variance, and the effective sample size truncates the autocorrelation
-sum with Geyer's initial monotone sequence. The definitions agree with
-ArviZ's ``rhat``, ``ess``, and ``mcse`` on finite, non-constant input.
+sum with Geyer's initial monotone sequence. R-hat, ESS, and mean and
+quantile MCSE follow ArviZ's definitions on finite, non-constant input.
+SD-MCSE uses the fourth central moment and the ESS of squared deviations.
 
 The module needs only torch. `quivers.inference.MCMCResult` computes
 its ``r_hat``, ``ess``, and ``ess_tail`` through these functions, so
