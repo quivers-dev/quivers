@@ -6,9 +6,8 @@ dispatcher the REPL uses; bare cells are sent through
 `ReplSession.dispatch` and evaluated as either a statement
 block or an expression.
 
-Highlighting is delegated to the front end via the standard
-``mimetype`` field (``text/x-qvr``); JupyterLab picks up the
-``CodeMirror`` mode the kernelspec advertises.
+The kernel advertises the bundled Pygments lexer. Live cell highlighting
+depends on the notebook frontend; no CodeMirror mode is bundled.
 """
 
 from __future__ import annotations
@@ -17,7 +16,8 @@ from typing import Any
 
 from ipykernel.kernelbase import Kernel
 
-from quivers.cli.repl_complete import all_completions
+from quivers import __version__
+from quivers.cli.repl_complete import _completion_prefix, all_completions
 from quivers.cli.repl_session import ReplSession
 
 
@@ -36,15 +36,15 @@ class QuiversKernel(Kernel):
     """
 
     implementation = "quivers"
-    implementation_version = "0.1.0"
+    implementation_version = __version__
     language = "qvr"
-    language_version = "0.20"
+    language_version = __version__
     language_info = {
         "name": "qvr",
         "mimetype": "text/x-qvr",
         "file_extension": ".qvr",
         "pygments_lexer": "qvr",
-        "codemirror_mode": "qvr",
+        "version": __version__,
     }
     banner = "quivers REPL kernel"
 
@@ -88,10 +88,11 @@ class QuiversKernel(Kernel):
         -------
         dict[str, Any]
             The execute reply: ``"error"`` status if any chunk reported
-            an error diagnostic, ``"ok"`` otherwise.
+            an error diagnostic or failed response, ``"ok"`` otherwise.
+            Execution stops at the first failed chunk, including in silent mode.
         """
         del store_history, user_expressions, allow_stdin, cell_id
-        had_error = False
+        failure: dict[str, Any] | None = None
         for raw_line in _split_cell(code):
             response = self.repl.dispatch(raw_line)
             if response.body == "__quit__":
@@ -108,6 +109,19 @@ class QuiversKernel(Kernel):
                         },
                     )
                 break
+            errors = [d for d in response.diagnostics if d.severity == "error"]
+            if not response.ok or errors:
+                failure = {
+                    "ename": errors[0].code or "QvrError" if errors else "QvrError",
+                    "evalue": "\n".join(d.message for d in errors) or response.body,
+                    "traceback": [
+                        f"{d.code or 'QvrError'}: {d.message}" for d in errors
+                    ]
+                    or [response.body],
+                }
+                if not silent:
+                    self.send_response(self.iopub_socket, "error", failure)
+                break
             if not silent:
                 if response.body:
                     stream = "stderr" if not response.ok else "stdout"
@@ -117,7 +131,6 @@ class QuiversKernel(Kernel):
                         {"name": stream, "text": response.body + "\n"},
                     )
                 for diag in response.diagnostics:
-                    had_error = had_error or diag.severity == "error"
                     self.send_response(
                         self.iopub_socket,
                         "stream",
@@ -126,8 +139,14 @@ class QuiversKernel(Kernel):
                             "text": f"{diag.severity}[{diag.code}]: {diag.message}\n",
                         },
                     )
+        if failure is not None:
+            return {
+                "status": "error",
+                "execution_count": self.execution_count,
+                **failure,
+            }
         return {
-            "status": "error" if had_error else "ok",
+            "status": "ok",
             "execution_count": self.execution_count,
             "payload": [],
             "user_expressions": {},
@@ -168,43 +187,38 @@ class QuiversKernel(Kernel):
 
 
 def _split_cell(code: str) -> list[str]:
-    """Treat a cell as a series of independent lines.
-
-    Meta-commands are line-oriented; statements may span multiple lines
-    but the parser handles any whitespace inside a single chunk. We
-    split on blank-line boundaries so the user can write either form.
-    """
+    """Keep declaration blocks intact and dispatch top-level meta-command lines."""
     out: list[str] = []
     block: list[str] = []
     for line in code.splitlines():
-        if not line.strip():
-            if block:
+        if line.startswith(":"):
+            if block and any(part.strip() for part in block):
                 out.append("\n".join(block))
-                block = []
-            continue
-        if line.startswith(":") and not block:
+            block = []
             out.append(line)
-        else:
+        elif not line.strip():
+            # Keep blank lines inside indented QVR declarations intact.
             block.append(line)
-    if block:
+        else:
+            if block and not block[-1].strip() and not line[0].isspace():
+                out.append("\n".join(block).rstrip())
+                block = []
+            block.append(line)
+    if block and any(part.strip() for part in block):
         out.append("\n".join(block))
     return out
 
 
 def _prefix_at(code: str, cursor_pos: int) -> str:
-    text = code[:cursor_pos]
-    i = len(text)
-    while i > 0 and (text[i - 1].isalnum() or text[i - 1] in "_:."):
-        i -= 1
-    return text[i:]
+    return _completion_prefix(code, cursor_pos)
 
 
 def _word_at(code: str, cursor_pos: int) -> str:
     i = cursor_pos
-    while i > 0 and (code[i - 1].isalnum() or code[i - 1] == "_"):
+    while i > 0 and (code[i - 1].isalnum() or code[i - 1] in "_:."):
         i -= 1
     j = cursor_pos
-    while j < len(code) and (code[j].isalnum() or code[j] == "_"):
+    while j < len(code) and (code[j].isalnum() or code[j] in "_:."):
         j += 1
     return code[i:j]
 

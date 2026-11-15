@@ -41,6 +41,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.resolveServerCommand = resolveServerCommand;
 exports.activate = activate;
 exports.deactivate = deactivate;
 const fs = __importStar(require("fs"));
@@ -48,13 +49,14 @@ const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const node_1 = require("vscode-languageclient/node");
 let client;
+let pending = Promise.resolve();
+let deactivating = false;
 /**
  * Locate the `qvr-lsp` executable.
  *
  * Resolution order:
  *  1. `qvr.lsp.path` setting (literal path; `${workspaceFolder}` is
- *     expanded). If the setting names a missing file we fall through
- *     so a stale config doesn't black-hole hover.
+ *     expanded). An explicit command is honored, including PATH commands.
  *  2. `<workspace>/.venv/bin/qvr-lsp` (uv / venv convention).
  *  3. `<workspace>/.venv/Scripts/qvr-lsp.exe` (Windows venv).
  *  4. `VIRTUAL_ENV/bin/qvr-lsp` if the env var is set.
@@ -68,9 +70,7 @@ function resolveServerCommand() {
     const configured = config.get("lsp.path", "");
     if (configured) {
         const expanded = configured.replace(/\$\{workspaceFolder\}/g, workspaceRoot);
-        if (expanded === "qvr-lsp" || fs.existsSync(expanded)) {
-            return expanded;
-        }
+        return expanded;
     }
     const candidates = [];
     if (workspaceRoot) {
@@ -89,7 +89,7 @@ function resolveServerCommand() {
     }
     return "qvr-lsp";
 }
-function activate(context) {
+async function startClient() {
     const config = vscode.workspace.getConfiguration("qvr");
     if (!config.get("lsp.enabled", true)) {
         return;
@@ -106,21 +106,39 @@ function activate(context) {
         transport: node_1.TransportKind.stdio,
     };
     const clientOptions = {
-        documentSelector: [{ scheme: "file", language: "qvr" }],
+        documentSelector: [{ language: "qvr" }],
         synchronize: {
             configurationSection: "qvr",
-            fileEvents: vscode.workspace.createFileSystemWatcher("**/*.qvr"),
         },
     };
     client = new node_1.LanguageClient("qvr", "QVR Language Server", serverOptions, clientOptions);
-    context.subscriptions.push({
-        dispose: () => {
-            void client?.stop();
-        },
-    });
-    client.start();
+    await client.start();
 }
-function deactivate() {
-    return client?.stop();
+async function activate(context) {
+    deactivating = false;
+    const restart = () => {
+        pending = pending.then(async () => {
+            await client?.stop();
+            client = undefined;
+            if (!deactivating) {
+                await startClient();
+            }
+        }).catch((error) => {
+            void vscode.window.showErrorMessage(`QVR language server: ${String(error)}`);
+        });
+        return pending;
+    };
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+        if (["qvr.lsp.path", "qvr.lsp.args", "qvr.lsp.enabled"].some((key) => event.affectsConfiguration(key))) {
+            void restart();
+        }
+    }));
+    await restart();
+}
+async function deactivate() {
+    deactivating = true;
+    await pending;
+    await client?.stop();
+    client = undefined;
 }
 //# sourceMappingURL=extension.js.map

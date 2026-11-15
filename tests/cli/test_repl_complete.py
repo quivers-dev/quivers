@@ -136,3 +136,21 @@ def test_meta_command_short_alias_completes() -> None:
 def test_session_with_no_loaded_module_returns_meta_only() -> None:
     cs = all_completions(ReplSession(), ":lo")
     assert any(c.text == ":load" for c in cs)
+
+
+def test_load_command_completes_its_path_argument(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "model.qvr").write_text("object X : FinSet 2\n")
+    assert any(
+        c.text == ":load model.qvr" for c in all_completions(ReplSession(), ":load mod")
+    )
+
+
+def test_all_interactive_frontends_retain_command_arguments() -> None:
+    from quivers.cli.repl_complete import _completion_prefix
+    from quivers.cli.repl_tui import _word_prefix
+    from quivers.kernel.quivers_kernel import _prefix_at
+
+    for source in (":load ./mod", ":transpile sta"):
+        for prefix in (_completion_prefix, _word_prefix, _prefix_at):
+            assert prefix(source, len(source)) == source

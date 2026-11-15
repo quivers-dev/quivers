@@ -19,13 +19,13 @@ pip install 'quivers[lsp]'
 qvr-lsp --help
 ```
 
-Then install `vscode-qvr-0.7.1.vsix` from the corresponding Quivers GitHub
+Then install `vscode-qvr-0.7.2.vsix` from the corresponding Quivers GitHub
 release:
 
 ```sh
-code --install-extension vscode-qvr-0.7.1.vsix
+code --install-extension vscode-qvr-0.7.2.vsix
 # or
-cursor --install-extension vscode-qvr-0.7.1.vsix
+cursor --install-extension vscode-qvr-0.7.2.vsix
 ```
 
 To package the extension from a checkout:
@@ -34,7 +34,7 @@ To package the extension from a checkout:
 cd editors/vscode-qvr
 npm ci
 npm run package
-code --install-extension vscode-qvr-0.7.1.vsix
+code --install-extension vscode-qvr-0.7.2.vsix
 ```
 
 ## Language features
@@ -57,7 +57,7 @@ of the language's type-and-effect rules.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `qvr.lsp.enabled` | `true` | Start the QVR language server. |
-| `qvr.lsp.path` | `qvr-lsp` | Executable path; `${workspaceFolder}` is expanded. |
+| `qvr.lsp.path` | empty | Executable path; `${workspaceFolder}` is expanded. |
 | `qvr.lsp.args` | `[]` | Extra arguments passed when the server starts. |
 | `qvr.transpileTarget` | none | Publish live capability diagnostics for one target. |
 
@@ -75,6 +75,13 @@ computation can lower to Pyro:
   "qvr.transpileTarget": "pyro"
 }
 ```
+
+An empty `qvr.lsp.path` enables environment discovery. An explicit value names
+an executable path or a command on `PATH`; a missing explicit executable produces
+a launch error. Changing the path, arguments, or enabled setting restarts the
+client. Saved and untitled QVR documents receive language-server features.
+VS Code and compatible editors must support the extension's declared minimum
+version, which follows the language-client dependency.
 
 ## Verify the language surface
 

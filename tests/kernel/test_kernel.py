@@ -13,6 +13,8 @@ from __future__ import annotations
 import gc
 import warnings
 
+import pytest
+
 from quivers.kernel.quivers_kernel import (
     _prefix_at,
     _split_cell,
@@ -187,3 +189,45 @@ def test_quit_in_a_silent_cell_writes_nothing() -> None:
     out = k.do_execute(":quit", silent=True)
     assert out["status"] == "ok"
     assert k._captured == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("silent", [False, True])
+@pytest.mark.parametrize("source", ["@@@ invalid @@@", ":unknown-command"])
+def test_error_reply_is_complete_and_stops_later_chunks(silent, source) -> None:
+    kernel = _kernel()
+    reply = kernel.do_execute(source + "\n\nobject Never : FinSet 2", silent=silent)
+    assert reply["status"] == "error"
+    assert reply["ename"] and reply["evalue"] and reply["traceback"]
+    assert not kernel.repl.info("Never").ok
+    if silent:
+        assert kernel._captured == []
+    else:
+        assert any(kind == "error" for kind, _ in kernel._captured)
+
+
+def test_kernel_versions_follow_the_installed_package() -> None:
+    from quivers import __version__
+    from quivers.kernel.quivers_kernel import QuiversKernel
+
+    assert QuiversKernel.implementation_version == __version__
+    assert QuiversKernel.language_info["version"] == __version__
+    assert "codemirror_mode" not in QuiversKernel.language_info
+
+
+def test_notebook_preserves_blank_lines_inside_a_computation() -> None:
+    kernel = _kernel()
+    reply = kernel.do_execute(
+        "define answer() : Int !{} =\n\n    return 42\n:run answer", silent=False
+    )
+    assert reply["status"] == "ok"
+    assert any("42" in str(content) for _, content in kernel._captured)
+
+
+def test_notebook_completes_transpile_arguments_and_inspects_scoped_names() -> None:
+    kernel = _kernel()
+    code = ":transpile sta"
+    reply = kernel.do_complete(code, len(code))
+    assert ":transpile stan" in reply["matches"]
+    assert reply["cursor_start"] == 0
+    assert _word_at("model::weight", 10) == "model::weight"
+    assert _word_at("State.get", 7) == "State.get"

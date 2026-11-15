@@ -22,13 +22,15 @@ TUI exactly.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
-from typing import cast
+from collections.abc import Generator, Iterator
+from typing import Any, cast
 
 import didactic.api as dx
 from pygls.lsp.server import LanguageServer
+from pygls.protocol.language_server import LanguageServerProtocol, lsp_method
 from lsprotocol import types as lsp
 
+from quivers import __version__
 from quivers.analysis.scope import ScopedRef, resolve_scoped_path
 from quivers.cli.repl_complete import all_completions
 from quivers.cli.repl_highlight import (
@@ -85,7 +87,7 @@ from quivers.lsp.document import DocumentState, decl_names
 SERVER_NAME = "qvr-lsp"
 """The server name reported to clients and attached to diagnostics."""
 
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = __version__
 """The server version reported to clients in the initialize response."""
 
 _TARGET_UNCHANGED = object()
@@ -111,6 +113,24 @@ def _target_from_settings(settings: object) -> str | None | object:
     return _TARGET_UNCHANGED
 
 
+class _QvrProtocol(LanguageServerProtocol):
+    """Negotiate the UTF-16 encoding used by QVR ranges and semantic tokens."""
+
+    @lsp_method(lsp.INITIALIZE)
+    def lsp_initialize(
+        self, params: lsp.InitializeParams
+    ) -> Generator[Any, Any, lsp.InitializeResult]:
+        # LSP requires every client to support UTF-16, even when it lists a
+        # different preference. Limit negotiation before pygls creates its
+        # workspace so its incremental edits and our ranges use one encoding.
+        if params.capabilities.general is None:
+            params.capabilities.general = lsp.GeneralClientCapabilities()
+        params.capabilities.general.position_encodings = [
+            lsp.PositionEncodingKind.Utf16
+        ]
+        return (yield from super().lsp_initialize(params))
+
+
 def build_server(*, target: str | None = None) -> LanguageServer:
     """Build a QVR language server with every feature registered.
 
@@ -128,7 +148,9 @@ def build_server(*, target: str | None = None) -> LanguageServer:
         The configured pygls server, ready for ``start_io`` or
         ``start_tcp``.
     """
-    server = LanguageServer(name=SERVER_NAME, version=SERVER_VERSION)
+    server = LanguageServer(
+        name=SERVER_NAME, version=SERVER_VERSION, protocol_cls=_QvrProtocol
+    )
     docs: dict[str, DocumentState] = {}
     selected_target = target
 
@@ -171,8 +193,11 @@ def build_server(*, target: str | None = None) -> LanguageServer:
         _publish(ls, doc)
 
     @server.feature(lsp.TEXT_DOCUMENT_DID_CLOSE)
-    def _did_close(_ls: LanguageServer, params: lsp.DidCloseTextDocumentParams) -> None:
+    def _did_close(ls: LanguageServer, params: lsp.DidCloseTextDocumentParams) -> None:
         docs.pop(params.text_document.uri, None)
+        ls.text_document_publish_diagnostics(
+            lsp.PublishDiagnosticsParams(uri=params.text_document.uri, diagnostics=[])
+        )
 
     @server.feature(lsp.WORKSPACE_DID_CHANGE_CONFIGURATION)
     def _did_change_configuration(
@@ -221,7 +246,8 @@ def build_server(*, target: str | None = None) -> LanguageServer:
         doc = docs.get(params.text_document.uri)
         if doc is None:
             return None
-        scoped = _scoped_ref_at(doc, params.position.line, params.position.character)
+        position = _python_position(doc.source, params.position)
+        scoped = _scoped_ref_at(doc, position.line, position.character)
         if scoped is not None:
             return lsp.Hover(
                 contents=lsp.MarkupContent(
@@ -229,14 +255,14 @@ def build_server(*, target: str | None = None) -> LanguageServer:
                     value=_render_scoped_hover(doc, scoped),
                 )
             )
-        name = doc.name_at_position(params.position.line, params.position.character)
+        name = doc.name_at_position(position.line, position.character)
         if name is None:
             return None
         body = _render_hover(
             doc,
             name,
-            line=params.position.line,
-            col=params.position.character,
+            line=position.line,
+            col=position.character,
         )
         if body is None:
             return None
@@ -253,7 +279,8 @@ def build_server(*, target: str | None = None) -> LanguageServer:
         doc = docs.get(params.text_document.uri)
         if doc is None:
             return None
-        scoped = _scoped_ref_at(doc, params.position.line, params.position.character)
+        position = _python_position(doc.source, params.position)
+        scoped = _scoped_ref_at(doc, position.line, position.character)
         if scoped is not None:
             target = _scoped_ref_position(doc, scoped)
             if target is None:
@@ -263,18 +290,18 @@ def build_server(*, target: str | None = None) -> LanguageServer:
                 lsp.Location(
                     uri=doc.uri,
                     range=lsp.Range(
-                        start=lsp.Position(line=line, character=col),
-                        end=lsp.Position(line=line, character=col + len(scoped.name)),
+                        start=_wire_position(doc.source, line, col),
+                        end=_wire_position(doc.source, line, col + len(scoped.name)),
                     ),
                 )
             ]
-        name = doc.name_at_position(params.position.line, params.position.character)
+        name = doc.name_at_position(position.line, position.character)
         if name is None:
             return None
         decl = doc.find_decl(
             name,
-            line=params.position.line,
-            col=params.position.character,
+            line=position.line,
+            col=position.character,
         )
         if decl is None:
             return None
@@ -283,8 +310,8 @@ def build_server(*, target: str | None = None) -> LanguageServer:
             lsp.Location(
                 uri=doc.uri,
                 range=lsp.Range(
-                    start=lsp.Position(line=line, character=col),
-                    end=lsp.Position(line=line, character=col + len(name)),
+                    start=_wire_position(doc.source, line, col),
+                    end=_wire_position(doc.source, line, col + len(name)),
                 ),
             )
         ]
@@ -296,15 +323,16 @@ def build_server(*, target: str | None = None) -> LanguageServer:
         doc = docs.get(params.text_document.uri)
         if doc is None:
             return None
-        name = doc.name_at_position(params.position.line, params.position.character)
+        position = _python_position(doc.source, params.position)
+        name = doc.name_at_position(position.line, position.character)
         if name is None:
             return None
         return list(
             _find_references(
                 doc,
                 name,
-                line=params.position.line,
-                col=params.position.character,
+                line=position.line,
+                col=position.character,
             )
         )
 
@@ -315,18 +343,19 @@ def build_server(*, target: str | None = None) -> LanguageServer:
         doc = docs.get(params.text_document.uri)
         if doc is None:
             return None
-        name = doc.name_at_position(params.position.line, params.position.character)
+        position = _python_position(doc.source, params.position)
+        name = doc.name_at_position(position.line, position.character)
         if name is None:
             return None
-        if _renameable_declaration(doc, name, params.position) is None:
+        if _renameable_declaration(doc, name, position) is None:
             return None
-        line, col = params.position.line, params.position.character
+        line, col = position.line, position.character
         text = doc.source.splitlines()[line]
         start = text.rfind(name, 0, col + len(name))
         return lsp.PrepareRenameResult_Type1(
             range=lsp.Range(
-                start=lsp.Position(line=line, character=start),
-                end=lsp.Position(line=line, character=start + len(name)),
+                start=_wire_position(doc.source, line, start),
+                end=_wire_position(doc.source, line, start + len(name)),
             ),
             placeholder=name,
         )
@@ -338,10 +367,11 @@ def build_server(*, target: str | None = None) -> LanguageServer:
         doc = docs.get(params.text_document.uri)
         if doc is None:
             return None
-        name = doc.name_at_position(params.position.line, params.position.character)
+        position = _python_position(doc.source, params.position)
+        name = doc.name_at_position(position.line, position.character)
         if name is None:
             return None
-        if _renameable_declaration(doc, name, params.position) is None:
+        if _renameable_declaration(doc, name, position) is None:
             return None
         if not params.new_name.isidentifier():
             return None
@@ -350,8 +380,8 @@ def build_server(*, target: str | None = None) -> LanguageServer:
             for location in _find_references(
                 doc,
                 name,
-                line=params.position.line,
-                col=params.position.character,
+                line=position.line,
+                col=position.character,
             )
         ]
         if not edits:
@@ -379,17 +409,18 @@ def build_server(*, target: str | None = None) -> LanguageServer:
         doc = docs.get(params.text_document.uri)
         if doc is None:
             return lsp.CompletionList(is_incomplete=False, items=[])
+        position = _python_position(doc.source, params.position)
         session = ReplSession()
         session._module = doc.module  # noqa: SLF001
         session._compiler = doc.compiler  # noqa: SLF001
         session._qiec_module = doc.qiec_module  # noqa: SLF001
         session._env = doc.env  # noqa: SLF001
-        prefix = _prefix_at(doc.source, params.position.line, params.position.character)
+        prefix = _prefix_at(doc.source, position.line, position.character)
         items = _qiec_local_completion_items(
             doc,
             prefix,
-            line=params.position.line,
-            col=params.position.character,
+            line=position.line,
+            col=position.character,
         )
         local_names = {item.label for item in items}
         items.extend(
@@ -476,10 +507,28 @@ def _to_lsp_diag(d: Diagnostic, doc: DocumentState) -> lsp.Diagnostic:
     line = max(0, d.line - 1) if d.line else 0
     col = max(0, d.col)
     end_line = max(0, (d.end_line or d.line or 1) - 1)
-    end_col = max(col + 1, d.end_col or col + 1)
+    end_col = d.end_col if d.end_col is not None else col + 1
+    if end_line == line:
+        end_col = max(col + 1, end_col)
+    if d.line:
+        lines = doc.source.split("\n")
+        if line < len(lines):
+            col = len(
+                lines[line].encode("utf-8")[:col].decode("utf-8", errors="ignore")
+            )
+        if end_line < len(lines):
+            end_col = len(
+                lines[end_line]
+                .encode("utf-8")[:end_col]
+                .decode("utf-8", errors="ignore")
+            )
+        end = _wire_position(doc.source, end_line, end_col)
+    else:
+        end = lsp.Position(line=0, character=0)
     if end_line == 0 and not d.line:
         # Whole-file diagnostic when position is unknown.
         end_line, end_col = _lsp_eof_position(doc.source)
+        end = lsp.Position(line=end_line, character=end_col)
     severity_map = {
         "error": lsp.DiagnosticSeverity.Error,
         "warning": lsp.DiagnosticSeverity.Warning,
@@ -488,8 +537,8 @@ def _to_lsp_diag(d: Diagnostic, doc: DocumentState) -> lsp.Diagnostic:
     }
     return lsp.Diagnostic(
         range=lsp.Range(
-            start=lsp.Position(line=line, character=col),
-            end=lsp.Position(line=end_line, character=end_col),
+            start=_wire_position(doc.source, line, col),
+            end=end,
         ),
         message=d.message,
         severity=severity_map.get(d.severity, lsp.DiagnosticSeverity.Error),
@@ -537,6 +586,31 @@ def _lsp_eof_position(source: str) -> tuple[int, int]:
     return len(lines) - 1, len(final_line.encode("utf-16-le")) // 2
 
 
+def _python_column(text: str, units: int) -> int:
+    """Convert a UTF-16 column to a Python string index."""
+    return len(
+        text.encode("utf-16-le")[: max(0, units) * 2].decode(
+            "utf-16-le", errors="ignore"
+        )
+    )
+
+
+def _python_position(source: str, position: lsp.Position) -> lsp.Position:
+    """Decode an incoming LSP position before querying the source."""
+    lines = source.split("\n")
+    text = lines[position.line] if position.line < len(lines) else ""
+    return lsp.Position(
+        line=position.line, character=_python_column(text, position.character)
+    )
+
+
+def _wire_position(source: str, line: int, col: int) -> lsp.Position:
+    """Encode a Python source position as UTF-16 for the client."""
+    lines = source.split("\n")
+    text = lines[line] if line < len(lines) else ""
+    return lsp.Position(line=line, character=len(text[:col].encode("utf-16-le")) // 2)
+
+
 def _apply_partial(source: str, change: lsp.TextDocumentContentChangePartial) -> str:
     """Apply one incremental change to ``source``."""
     rng = change.range
@@ -544,7 +618,9 @@ def _apply_partial(source: str, change: lsp.TextDocumentContentChangePartial) ->
 
     def offset(line: int, character: int) -> int:
         line = min(line, len(lines) - 1)
-        return sum(len(line_text) + 1 for line_text in lines[:line]) + character
+        return sum(len(line_text) + 1 for line_text in lines[:line]) + _python_column(
+            lines[line], character
+        )
 
     start = offset(rng.start.line, rng.start.character)
     end = offset(rng.end.line, rng.end.character)
@@ -724,7 +800,9 @@ def _render_hover(
 
     parts: list[str] = []
     site = (
-        call_site_at(doc.module, line, col)
+        call_site_at(
+            doc.module, line, len(doc.source.splitlines()[line][:col].encode("utf-8"))
+        )
         if line is not None and col is not None
         else None
     )
@@ -972,8 +1050,8 @@ def _statement_symbols(
         for name in decl_names(stmt):
             line, col = _name_position(doc, stmt, name)
             rng = lsp.Range(
-                start=lsp.Position(line=line, character=col),
-                end=lsp.Position(line=line, character=col + len(name)),
+                start=_wire_position(doc.source, line, col),
+                end=_wire_position(doc.source, line, col + len(name)),
             )
             out.append(
                 lsp.DocumentSymbol(
@@ -1022,8 +1100,8 @@ def _statement_symbol_children(
             continue
         line, col = _name_position(doc, member, name)
         rng = lsp.Range(
-            start=lsp.Position(line=line, character=col),
-            end=lsp.Position(line=line, character=col + len(name)),
+            start=_wire_position(doc.source, line, col),
+            end=_wire_position(doc.source, line, col + len(name)),
         )
         out.append(
             lsp.DocumentSymbol(
@@ -1057,7 +1135,12 @@ def _statement_symbol_children(
 
 
 def _symbol_at(
-    name: str, line: int, col: int, kind: lsp.SymbolKind, detail: str | None = None
+    doc: DocumentState,
+    name: str,
+    line: int,
+    col: int,
+    kind: lsp.SymbolKind,
+    detail: str | None = None,
 ) -> lsp.DocumentSymbol:
     """A document symbol anchored at one identifier.
 
@@ -1079,9 +1162,12 @@ def _symbol_at(
     lsp.DocumentSymbol
         The symbol, its range the identifier's own.
     """
+    lines = doc.source.split("\n")
+    if line < len(lines):
+        col = len(lines[line].encode("utf-8")[:col].decode("utf-8", errors="ignore"))
     rng = lsp.Range(
-        start=lsp.Position(line=line, character=col),
-        end=lsp.Position(line=line, character=col + len(name)),
+        start=_wire_position(doc.source, line, col),
+        end=_wire_position(doc.source, line, col + len(name)),
     )
     return lsp.DocumentSymbol(
         name=name, kind=kind, range=rng, selection_range=rng, detail=detail
@@ -1115,7 +1201,9 @@ def _body_symbols(doc: DocumentState, owner: str) -> list[lsp.DocumentSymbol]:
             if binding.kind == "scoped-instance"
             else lsp.SymbolKind.Variable
         )
-        out.append((line, col, _symbol_at(binding.name, line, col, kind, binding.kind)))
+        out.append(
+            (line, col, _symbol_at(doc, binding.name, line, col, kind, binding.kind))
+        )
     for site in call_sites(doc.module):
         if site.owner != owner:
             continue
@@ -1126,7 +1214,7 @@ def _body_symbols(doc: DocumentState, owner: str) -> list[lsp.DocumentSymbol]:
                 line,
                 site.col,
                 _symbol_at(
-                    site.callee, line, site.col, lsp.SymbolKind.Function, detail
+                    doc, site.callee, line, site.col, lsp.SymbolKind.Function, detail
                 ),
             )
         )
@@ -1181,7 +1269,7 @@ def _program_step_symbols(
             if isinstance(step, CallStep):
                 detail = f"call {step.call.callee}"
             symbol = _symbol_at(
-                ", ".join(names), line, col, lsp.SymbolKind.Variable, detail
+                doc, ", ".join(names), line, col, lsp.SymbolKind.Variable, detail
             )
             scope = getattr(step, "scope", None)
             if isinstance(scope, tuple) and scope:
@@ -1264,8 +1352,8 @@ def _find_references(
                 yield lsp.Location(
                     uri=doc.uri,
                     range=lsp.Range(
-                        start=lsp.Position(line=lineno, character=idx),
-                        end=lsp.Position(line=lineno, character=idx + len(name)),
+                        start=_wire_position(doc.source, lineno, idx),
+                        end=_wire_position(doc.source, lineno, idx + len(name)),
                     ),
                 )
             start = idx + len(name)

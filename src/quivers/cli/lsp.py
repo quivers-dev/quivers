@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import argparse
+
+from quivers import __version__
 import sys
 
 if TYPE_CHECKING:
@@ -57,6 +59,9 @@ def main(args: argparse.Namespace) -> int:
 def _entry() -> int:
     """Console-script entry point for ``qvr-lsp``."""
     parser = argparse.ArgumentParser(prog="qvr-lsp")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
     parser.add_argument("--tcp", type=int, default=None, metavar="PORT")
     parser.add_argument(
         "--target",

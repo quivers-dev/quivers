@@ -74,13 +74,26 @@ jobs:
 
       - name: Recompile VS Code extension from its lockfile
         working-directory: editors/vscode-qvr
-        run: npm ci && npm run compile
+        run: npm ci && npm test
 
       - name: Verify checked-in extension output
         run: git diff --exit-code -- editors/vscode-qvr/out
 
       - name: Verify editor source and archive parity
         run: python tools/check_editor_release.py --full
+
+      - name: Verify pinned Zed grammar and query compatibility
+        run: |
+          revision=$(python -c 'import tomllib; print(tomllib.load(open("editors/zed-extension-qvr/extension.toml", "rb"))["grammars"]["qvr"]["rev"])')
+          git fetch --no-tags --depth=1 origin "$revision"
+          python tools/check_editor_release.py --grammar-pin
+
+      - name: Build Zed language server adapter
+        working-directory: editors/zed-extension-qvr
+        run: |
+          rustup target add wasm32-wasip2
+          cargo fmt --check
+          cargo build --locked --release --target wasm32-wasip2
 
   type-check:
     name: Type check

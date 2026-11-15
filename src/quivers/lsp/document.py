@@ -288,7 +288,7 @@ class DocumentState:
         source_lines = self.source.splitlines()
         if line >= len(source_lines):
             return ()
-        source_col = col if col is not None else len(source_lines[line])
+        source_col = len(source_lines[line][:col].encode("utf-8"))
         visible: list[QiecLocalDecl] = []
 
         if isinstance(owner, QiecFamilyDecl):

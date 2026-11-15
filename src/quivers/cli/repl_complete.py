@@ -82,6 +82,18 @@ def public_meta_commands() -> tuple[str, ...]:
     return tuple(commands)
 
 
+def _completion_prefix(code: str, cursor: int) -> str:
+    """Retain command arguments that participate in shared completion."""
+    text = code[:cursor]
+    line = text.rsplit("\n", 1)[-1].lstrip()
+    if line.startswith((":load ", ":transpile ")):
+        return line
+    start = len(text)
+    while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "_:./~-"):
+        start -= 1
+    return text[start:]
+
+
 def all_completions(session: ReplSession, prefix: str) -> list[Completion]:
     """Return every candidate whose text starts with ``prefix``.
 
@@ -266,11 +278,13 @@ def _keyword_completions(prefix: str) -> list[Completion]:
 
 def _path_completions(prefix: str) -> list[Completion]:
     """File-path completions for :load."""
-    if "/" not in prefix and not prefix.endswith(".qvr"):
+    head = ":load " if prefix.startswith(":load ") else ""
+    typed = prefix[len(head) :]
+    if not head and "/" not in typed and not typed.endswith(".qvr"):
         return []
     out: list[Completion] = []
-    for match in sorted(glob.glob(prefix + "*")):
-        out.append(Completion(text=match, kind="path", detail="path"))
+    for match in sorted(glob.glob(typed + "*")):
+        out.append(Completion(text=head + match, kind="path", detail="path"))
     return out
 
 

@@ -503,3 +503,52 @@ def test_a_malformed_scan_option_is_a_located_diagnostic() -> None:
     assert diagnostic.severity == "error"
     assert "outputs are 'last'" in diagnostic.message
     assert (diagnostic.line, diagnostic.col) == (1, 27)
+
+
+def test_server_version_follows_the_installed_package() -> None:
+    from quivers import __version__
+    from quivers.lsp.server import SERVER_VERSION
+
+    assert SERVER_VERSION == __version__
+
+
+def test_incremental_edits_decode_utf16_columns() -> None:
+    from quivers.lsp.server import _apply_partial
+
+    source = "# 😀 comment\nobject X : FinSet 3\n"
+    changed = _apply_partial(
+        source,
+        lsp.TextDocumentContentChangePartial(
+            range=lsp.Range(
+                start=lsp.Position(line=0, character=5),
+                end=lsp.Position(line=0, character=12),
+            ),
+            text="updated",
+        ),
+    )
+    assert changed == "# 😀 updated\nobject X : FinSet 3\n"
+
+
+def test_close_clears_diagnostics() -> None:
+    server = build_server()
+    published = []
+    server.text_document_publish_diagnostics = published.append
+    server.protocol.fm.features[lsp.TEXT_DOCUMENT_DID_CLOSE](
+        lsp.DidCloseTextDocumentParams(
+            text_document=lsp.TextDocumentIdentifier(uri="file:///closed.qvr")
+        )
+    )
+    assert published[-1].diagnostics == []
+
+
+def test_diagnostic_columns_convert_utf8_bytes_to_utf16() -> None:
+    from quivers.cli.repl_session import Diagnostic
+
+    doc = DocumentState(uri="untitled:unicode.qvr")
+    doc.source = "# 😀 invalid"
+    diagnostic = Diagnostic(
+        message="invalid", severity="error", line=1, col=7, end_line=1, end_col=14
+    )
+    result = _to_lsp_diag(diagnostic, doc)
+    assert result.range.start.character == 5
+    assert result.range.end.character == 12

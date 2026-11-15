@@ -1,7 +1,7 @@
 id = "qvr"
 name = "QVR"
 description = "Syntax highlighting for the Quivers DSL (.qvr files)."
-version = "0.3.0"
+version = "0.4.0"
 schema_version = 1
 authors = ["Aaron Steven White <aaronstevenwhite@gmail.com>"]
 repository = "https://github.com/quivers-dev/quivers"
@@ -10,11 +10,9 @@ repository = "https://github.com/quivers-dev/quivers"
 repository = "https://github.com/quivers-dev/quivers"
 # Immutable commit containing the current QVR grammar. Update this pin whenever
 # grammar.js or its generated parser/query assets change.
-commit = "0e82ac98706a571709c759a8717caf39cb3ffe25"
+rev = "59568b3dbaec70cddfa6d4ab1045512063059309"
 path = "grammars/qvr"
 
 [language_servers.qvr-lsp]
 name = "QVR Language Server"
 languages = ["qvr"]
-binary.path = "qvr-lsp"
-binary.arguments = []

@@ -173,15 +173,15 @@ Install the packaged extension into VS Code (or Cursor):
 
 ```bash
 cd editors/vscode-qvr
-npm install
-npx tsc -p .
-npx @vscode/vsce package --allow-missing-repository --no-yarn
+npm ci
+npm test
+npm run package
 code --install-extension vscode-qvr-*.vsix
 # or: cursor --install-extension vscode-qvr-*.vsix
 ```
 
 The extension looks for `qvr-lsp` in (1) the `qvr.lsp.path`
-setting (with `${workspaceFolder}` expansion), (2)
+setting when nonempty (with `${workspaceFolder}` expansion), (2)
 `<workspace>/.venv/bin/qvr-lsp`, (3) `$VIRTUAL_ENV/bin/qvr-lsp`, or
 (4) plain `qvr-lsp` on `$PATH`. Install the LSP extra with
 `pip install 'quivers[lsp]'`.

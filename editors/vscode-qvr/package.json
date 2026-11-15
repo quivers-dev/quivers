@@ -2,14 +2,14 @@
   "name": "vscode-qvr",
   "displayName": "QVR Language Support",
   "description": "Syntax highlighting and LSP support for the Quivers QVR probabilistic programming language",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "publisher": "quivers",
   "repository": {
     "type": "git",
     "url": "https://github.com/quivers-dev/quivers"
   },
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
     "Programming Languages"
@@ -44,8 +44,8 @@
       "properties": {
         "qvr.lsp.path": {
           "type": "string",
-          "default": "qvr-lsp",
-          "description": "Path to the qvr-lsp executable (falls back to `qvr lsp` if unset)."
+          "default": "",
+          "description": "Language server command or path. Leave empty to discover a workspace or active virtual environment, then PATH. Supports ${workspaceFolder}."
         },
         "qvr.lsp.enabled": {
           "type": "boolean",
@@ -86,7 +86,8 @@
     "vscode:prepublish": "tsc -p ./",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "npm run compile && vsce package --out vscode-qvr-${npm_package_version}.vsix"
+    "package": "npm run compile && vsce package --out vscode-qvr-${npm_package_version}.vsix",
+    "test": "npm run compile && node --test tests/*.test.cjs"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"

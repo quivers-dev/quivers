@@ -716,3 +716,25 @@ def test_instance_qualified_operations_substitute_the_instance_arguments() -> No
         "instance cell : State[Int]"
     )
     assert "-- declared at <repl>:7:0" in session.dispatch(":info cell").body
+
+
+@pytest.mark.parametrize(
+    "module_name,entry,program",
+    [
+        ("quivers.cli", "main", "qvr"),
+        ("quivers.cli.lsp", "_entry", "qvr-lsp"),
+        ("quivers.kernel.install", "_entry", "qvr-kernel"),
+    ],
+)
+def test_entry_points_report_the_installed_version(
+    module_name, entry, program, monkeypatch, capsys
+) -> None:
+    import importlib
+    import sys
+    from quivers import __version__
+
+    monkeypatch.setattr(sys, "argv", [program, "--version"])
+    with pytest.raises(SystemExit) as exit_info:
+        getattr(importlib.import_module(module_name), entry)()
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.strip() == f"{program} {__version__}"
