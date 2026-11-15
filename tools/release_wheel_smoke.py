@@ -7,6 +7,8 @@ from pathlib import Path
 import sys
 import tempfile
 
+import torch
+
 import quivers
 from quivers.cli.migrations import CHAIN, compose_migration, vcs_coverage_report
 from quivers.cli.migrations import _grammar as migration_grammar
@@ -16,6 +18,7 @@ from quivers.dsl.pygments_lexer import QvrLexer
 from quivers.cli import check_file as check_one
 from quivers.dsl import Compiler
 from quivers.qiec import invoke_entry
+from quivers.modeling import Model
 from quivers.transpile import available_targets, transpile
 
 
@@ -108,6 +111,24 @@ def main() -> None:
         )
         if run.value != 0.5 or run.log_joint is None:
             raise SystemExit("installed-wheel program run returned the wrong value")
+        symbolic = (
+            path.read_text()
+            .replace("FinSet 4", "FinSet _")
+            .replace("    sample a", "    data y : Tensor[Real]([Obs])\n    sample a")
+        )
+        model = Model(symbolic)
+        bound = model.bind({"y": torch.tensor([0.1, 0.2, 0.3, 0.4])})
+        if bound.schema.describe()["y"] != {
+            "role": "observation",
+            "type": "Tensor[Real]([4])",
+        }:
+            raise SystemExit("installed-wheel model lost its specialized data contract")
+        recorded = bound.trace({"a": torch.tensor([0.5])})
+        if (
+            recorded.output.item() != 0.5
+            or not torch.isfinite(recorded.log_joint).all()
+        ):
+            raise SystemExit("installed-wheel model trace returned an invalid result")
 
     available = set(migration_grammar.available_revisions())
     missing = set(CHAIN) - available

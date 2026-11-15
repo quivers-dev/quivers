@@ -63,11 +63,36 @@ def test_lsp_stdio_handshake_diagnostics_and_close() -> None:
                     "uri": uri,
                     "languageId": "qvr",
                     "version": 1,
-                    "text": "define answer() : Int !{} =\n    return 42\n",
+                    "text": (
+                        "object Row : FinSet _\n"
+                        "object Out : Real 1\n"
+                        "program regression : Row -> Out\n"
+                        "    data x : Tensor[Real]([Row])\n"
+                        "    sample b <- Normal(loc=0.0, scale=1.0)\n"
+                        "    let mu = b * x\n"
+                        "    observe y : Row <- Normal(loc=mu, scale=1.0)\n"
+                        "    return b\n"
+                        "export regression\n"
+                    ),
                 }
             },
         )
         assert receive()["params"]["diagnostics"] == []
+        send(
+            "textDocument/hover",
+            {"textDocument": {"uri": uri}, "position": {"line": 5, "character": 17}},
+            3,
+        )
+        assert (
+            "data x : Tensor[Real]([Row])" in receive()["result"]["contents"]["value"]
+        )
+        send(
+            "textDocument/definition",
+            {"textDocument": {"uri": uri}, "position": {"line": 5, "character": 17}},
+            4,
+        )
+        definition = receive()["result"]
+        assert definition[0]["range"]["start"]["line"] == 3
         send(
             "textDocument/didChange",
             {

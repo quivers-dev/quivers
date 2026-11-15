@@ -34,6 +34,27 @@ def test_kernel_protocol_executes_qiec_and_preserves_silent_errors(tmp_path) -> 
             timeout=20,
         )["content"]
         assert reply["status"] == "ok"
+        reply = client.execute(
+            "object Row : FinSet _\n"
+            "object Out : Real 1\n"
+            "program regression : Row -> Out\n"
+            "    data x : Tensor[Real]([Row])\n"
+            "    sample b <- Normal(loc=0.0, scale=1.0)\n"
+            "    let mu = b * x\n"
+            "    observe y : Row <- Normal(loc=mu, scale=1.0)\n"
+            "    return b\n"
+            "export regression\n"
+            ":type regression::x\n"
+            ":run regression --data x=[1.0,2.0] --data y=[0.5,1.0]",
+            reply=True,
+            timeout=20,
+        )["content"]
+        assert reply["status"] == "ok"
+        inspected = client.inspect("regression::x", 13, reply=True, timeout=15)[
+            "content"
+        ]
+        assert inspected["found"]
+        assert "Tensor[Real]([Row])" in inspected["data"]["text/plain"]
         reply = client.execute("@@@ invalid @@@", silent=True, reply=True, timeout=15)[
             "content"
         ]
