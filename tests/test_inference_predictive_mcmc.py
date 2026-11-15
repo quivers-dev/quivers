@@ -233,6 +233,26 @@ _DISCRETE_ARGUMENTS: dict[str, tuple[str, str | None, list[float]]] = {
     ),
     "ZeroInflatedPoisson": ("zero_prob=q, rate=r", None, [0, 2, 0, 3, 0, 1]),
     "HurdlePoisson": ("zero_prob=q, rate=r", None, [0, 2, 0, 3, 0, 1]),
+    "ZeroInflatedNegativeBinomial": (
+        "zero_prob=q, total_count=3.0, probs=q",
+        "zero_prob=0.2, total_count=3.0, probs=0.4",
+        [0, 2, 0, 3, 0, 1],
+    ),
+    "HurdleNegativeBinomial": (
+        "zero_prob=q, total_count=3.0, probs=q",
+        "zero_prob=0.2, total_count=3.0, probs=0.4",
+        [0, 2, 0, 3, 0, 1],
+    ),
+    "ZeroInflatedBinomial": (
+        "zero_prob=q, total_count=5.0, probs=q",
+        "zero_prob=0.2, total_count=5.0, probs=0.4",
+        [0, 2, 0, 3, 0, 1],
+    ),
+    "ZeroInflatedBetaBinomial": (
+        "zero_prob=q, total_count=5.0, concentration1=r, concentration0=1.0",
+        "zero_prob=0.2, total_count=5.0, concentration1=2.0, concentration0=1.0",
+        [0, 2, 0, 3, 0, 1],
+    ),
     "OrderedLogistic": ("predictor=a, cutpoints=cuts", None, [0, 1, 2, 1, 0, 2]),
     "OrderedProbit": (
         "eta=a, cutpoints=cuts",
