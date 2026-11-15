@@ -29,9 +29,20 @@ only during inference, so $\Psi_{\mathsf{Edward2}} = \mathrm{id}$.
 ## Family parameterizations
 
 Edward2's families are the `Distribution` classes of
-[TensorFlow Probability](https://www.tensorflow.org/probability/api_docs/python/tfp/distributions), and the
-map is the identity for every family with a TensorFlow Probability class:
+[TensorFlow Probability](https://www.tensorflow.org/probability/api_docs/python/tfp/distributions).
+When the parameterizations agree, the map is the identity:
 $\pi_{F, \mathsf{Edward2}} = \mathrm{id}$ and $c_{F, \mathsf{Edward2}} = 0$.
+For HalfCauchy and HalfStudentT, the renderer additionally supplies their
+fixed zero location.
+
+In particular, `HalfStudentT(df, scale)` becomes
+`edward2.HalfStudentT(df=df, loc=0, scale=scale)`, using TensorFlow
+Probability's normalized
+[half-Student-t distribution](https://www.tensorflow.org/probability/api_docs/python/tfp/distributions/HalfStudentT).
+For $y\geq0$,
+its density is twice the zero-centered Student-t density, and its samples
+are nonnegative. Thus this mapping has no omitted normalization constant;
+the tape records the same half-family law used for sampling.
 
 ## Emitted constructs
 
@@ -62,3 +73,7 @@ distribution with `_qvr_qiec_factor(name, weight)`, so the tape carries the weig
 - **Level 2.** Python's `ast` parser accepts the modules of the syntax matrix.
 - **Level 3.** On selected fixtures, the probe on the tape is compared with the QVR density on the shared grid
   and tolerance ([evidence](index.md#6-evidence-tiers)).
+  A separate HalfStudentT runtime probe checks normalized densities,
+  scale gradients, support, and the mean and empirical CDF of 60,000
+  draws under TensorFlow 2.18 and TensorFlow Probability 0.25. This
+  evidence concerns that family and runtime combination.

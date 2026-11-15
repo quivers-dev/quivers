@@ -165,8 +165,8 @@ class _Edward2Ctx(RenderContext):
 #: ``IRArgNumber(0)`` under the ``"loc"`` arg name so TFP sees a
 #: complete (loc, scale) pair. The injected ``loc=0`` is the standard
 #: half-distribution origin and matches the QVR-side semantics for
-#: HalfCauchy / HalfNormal.
-_PREPEND_LOC_ZERO: frozenset[str] = frozenset({"HalfCauchy"})
+#: HalfCauchy / HalfStudentT.
+_PREPEND_LOC_ZERO: frozenset[str] = frozenset({"HalfCauchy", "HalfStudentT"})
 
 
 #: Edward2-local argument renames layered on top of
@@ -1282,19 +1282,6 @@ class Edward2Renderer(RendererBase):
                 bindings=bindings,
                 callee_chain=callee_chain,
             )
-
-        # ``HalfStudentT`` has no TFP class. A half-Student-t with
-        # ``(df, scale)`` is the fold of ``StudentT(df, 0, scale)`` onto
-        # the nonnegative half-line; its density there is
-        # ``StudentT(df, 0, scale)`` scaled by 2, so the two agree up to
-        # the additive constant ``log 2`` on the family's positive
-        # support. The renderer emits the location-scale StudentT and
-        # relies on the fold being an additive-constant shift.
-        if family == "HalfStudentT":
-            dist_class = "StudentT"
-            args = (args[0], IRArgNumber(value=0.0), *args[1:])
-            arg_names = (arg_names[0], "loc", *arg_names[1:])
-            meta = self._lookup_meta("StudentT")
 
         callee = attribute(py, (*callee_chain, dist_class))
         aliases = {

@@ -82,6 +82,7 @@ PROBE_MODULES = frozenset(
         "test_construct_numeric",
         "test_equivalence_sensitivity",
         "test_expected_offsets",
+        "test_edward2_half_student_numeric",
         "test_export_equivalence",
         "test_gallery_numeric_equivalence",
         "test_log_space_family_numeric",

@@ -95,7 +95,7 @@ and needs a per-family term here when they are not."""
 _DROPS_HALF_NORMALIZER: dict[str, frozenset[str]] = {
     "HalfCauchy": frozenset({"stan", "gen", "webppl"}),
     "HalfNormal": frozenset({"stan", "gen", "webppl"}),
-    "HalfStudentT": frozenset({"stan", "edward2"}),
+    "HalfStudentT": frozenset({"stan"}),
 }
 """Per folded family, the targets whose emit is the symmetric base
 density with no truncation renormalization.
@@ -111,16 +111,10 @@ wrapper, against `numpyro / pyro / pymc / edward2 -> "HalfCauchy"`
 renormalizes) and `bugs / jags -> "dt"` carrying a one-sided truncation
 suffix that JAGS renormalizes over.
 
-`HalfStudentT` splits differently. `stan -> "student_t"` is a bare
-base, and so is `edward2`: TFP ships no `HalfStudentT` class, so
-`renderers/edward2.py` rewrites the site to the location-scale
-`edward2.StudentT(df, 0, scale)` and leans on the fold being an
-additive-constant shift, which is exactly a dropped `log 2` per site.
-`gen -> "half_student_t"`, `turing -> "HalfStudentT"` and
-`webppl -> "HalfStudentT"` all resolve to a grafted runtime helper
-whose scorer adds `log 2` explicitly, so those three targets keep the
-renormalizer for this family while dropping it for the other two. A
-single per-target flag cannot express that, hence the keying by family.
+`HalfStudentT` uses the symmetric base only on Stan. Edward2 uses
+TFP's native `HalfStudentT(df, loc=0, scale)`, preserving its support
+and normalization. Gen, Turing, and WebPPL use normalized folded
+runtime helpers. The per-family table records these differences.
 
 `bugs` and `jags` keep a zero here for `HalfStudentT` for the same
 reason they do for the other two folded families: the renderer writes
@@ -139,27 +133,12 @@ emitted program, so a renderer that switches to a native or truncated
 spelling cannot leave a stale entry behind."""
 
 
-_RENDERER_SPELLING_OVERRIDES: dict[tuple[str, str], str] = {
-    ("edward2", "HalfStudentT"): "StudentT",
-}
+_RENDERER_SPELLING_OVERRIDES: dict[tuple[str, str], str] = {}
 """Draw-site spellings a renderer substitutes for the registered one.
 
-[`FAMILY_META`][quivers.transpile.family_meta.FAMILY_META] records the
-name a family resolves to on each target, but a renderer may replace
-that name at the site when the target ships no such class. Reading the
-name table alone would then charge the cell nothing while its emit
-drops a renormalizer at every site, which is precisely the
-point-independent error this module exists to catch.
-
-`edward2` is the one such case. TFP has no `HalfStudentT`, so
-`renderers/edward2.py` emits `edward2.StudentT(df, 0, scale)` and
-carries the non-negativity nowhere at all, while `FAMILY_META` still
-reads `edward2 -> "HalfStudentT"`.
-
-Each entry is checked against the emitted program by
-`test_drop_table_agrees_with_the_family_registry`: the substituted name
-must appear in the emit and the registered name must not, so an
-override cannot outlive the renderer branch that motivated it."""
+Each future override must agree with the emitted program; the registry
+currently describes every folded family's effective spelling.
+"""
 
 
 _HALF_FAMILY_PROBE_ARGS: dict[str, str] = {
@@ -596,7 +575,7 @@ _EXPECTED_OFFSET: dict[tuple[str, str], ExpectedOffset] = {
     # to, which is nothing: `runtime_turing.jl` folds `TDist` with an
     # explicit `+ log(2)`.
     ("bugs", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
-    ("edward2", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=2),
+    ("edward2", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
     ("gen", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
     ("jags", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
     ("numpyro", "half_student_t_hierarchical"): _derived(half_sites=2, dropped_sites=0),
@@ -1498,29 +1477,22 @@ def test_zeros_trick_table_agrees_with_the_emit() -> None:
 
 def test_drop_table_agrees_with_the_family_registry() -> None:
     """Every target in
-        [`_DROPS_HALF_NORMALIZER`][tests.transpile.test_expected_offsets._DROPS_HALF_NORMALIZER]
-        spells the half-families as a symmetric base, and no target outside
-        it does.
+    [`_DROPS_HALF_NORMALIZER`][tests.transpile.test_expected_offsets._DROPS_HALF_NORMALIZER]
+    spells the half-families as a symmetric base, and no target outside
+    it does.
 
-        The drop table is the hinge of the whole derivation: it decides
-        which cells expect `n * log 2` and which expect zero. Pinning it as
-        a literal set and never re-checking it would let a renderer switch
-        `HalfCauchy` from `cauchy` to a native or truncated spelling while
-        the registry kept charging the cell a `log 2` it no longer drops.
+    The drop table is the hinge of the whole derivation: it decides
+    which cells expect `n * log 2` and which expect zero. Pinning it as
+    a literal set and never re-checking it would let a renderer switch
+    `HalfCauchy` from `cauchy` to a native or truncated spelling while
+    the registry kept charging the cell a `log 2` it no longer drops.
 
-        The reconciliation is against the *effective* spelling: the name
-        [`FAMILY_META`][quivers.transpile.family_meta.FAMILY_META] resolves
-        the family to, amended by
-        [`_RENDERER_SPELLING_OVERRIDES`][tests.transpile.test_expected_offsets._RENDERER_SPELLING_OVERRIDES]
-        where the renderer rewrites the draw site rather than take that
-        resolution. The name table alone is not enough, and the way it
-        fails is exactly the failure this module is built around: Edward2's
-        `HalfStudentT` reads as a native folded class in `FAMILY_META` and
-        emits as the bare `edward2.StudentT`, so a derivation off the table
-        would name zero for a cell that drops `log 2` at every site and the
-        constant-spread check would never notice. Each override is
-    thus held against the emitted program rather than taken on
-        trust.
+    The reconciliation is against the *effective* spelling: the name
+    [`FAMILY_META`][quivers.transpile.family_meta.FAMILY_META] resolves
+    the family to, amended by
+    [`_RENDERER_SPELLING_OVERRIDES`][tests.transpile.test_expected_offsets._RENDERER_SPELLING_OVERRIDES]
+    where the renderer rewrites the draw site rather than take that
+    resolution. Each override must agree with the emitted program.
     """
     symmetric_bases = {
         "cauchy",

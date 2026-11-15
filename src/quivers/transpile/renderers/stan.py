@@ -987,7 +987,9 @@ class StanRenderer(RendererBase):
         promoted_k = self._vector_promotions.get(name)
         class_width = self._class_index_widths.get(name)
         if promoted_k is not None:
-            self._emit_vector_type_of_size(ctx, tvt, promoted_k)
+            self._emit_type(
+                ctx, tvt, sup, (DimStatic(size=promoted_k, name="_promoted"),)
+            )
         elif class_width is not None:
             # A class-index outcome holds the QVR code of a class of its
             # family's alphabet, `0` to `K - 1`; the log-pmf reads it one
@@ -1049,11 +1051,22 @@ class StanRenderer(RendererBase):
             or is_real_unit_interval(sup)
             or is_real_bounded_interval(sup)
         ):
+            lower, upper = None, None
+            if is_real_positive(sup):
+                lower = 0
+            elif is_real_unit_interval(sup):
+                lower, upper = 0, 1
+            elif is_real_bounded_interval(sup):
+                lower, upper = real_interval_bounds(sup)
             if len(event_dims) == 1:
-                self._emit_vector_type(ctx, tvt_vid, event_dims)
+                self._emit_vector_type(
+                    ctx, tvt_vid, event_dims, lower=lower, upper=upper
+                )
                 return
             if len(event_dims) == 2:
-                self._emit_matrix_type(ctx, tvt_vid, event_dims)
+                self._emit_matrix_type(
+                    ctx, tvt_vid, event_dims, lower=lower, upper=upper
+                )
                 return
         # Scalar real family.
         if is_real_scalar(sup):
@@ -1139,6 +1152,9 @@ class StanRenderer(RendererBase):
         ctx: RenderContext,
         tvt_vid: str,
         event_dims: tuple[Dim, ...],
+        *,
+        lower: int | float | None = None,
+        upper: int | float | None = None,
     ) -> None:
         if len(event_dims) != 1:
             raise UnsupportedConstruct(
@@ -1150,27 +1166,8 @@ class StanRenderer(RendererBase):
             )
         vt = self._fresh(ctx, "vt")
         ctx.sb.vertex(vt, "vector_type")
+        self._maybe_emit_range_constraint(ctx, vt, lower, upper)
         size_vid = self._dim_size_vertex(ctx, event_dims[0])
-        ctx.sb.edge(vt, size_vid, "child_of")
-        ctx.sb.edge(tvt_vid, vt, "child_of")
-
-    def _emit_vector_type_of_size(
-        self,
-        ctx: RenderContext,
-        tvt_vid: str,
-        size: int,
-    ) -> None:
-        """Emit a `vector[K]` type child under `tvt_vid` with a
-        literal integer size.
-
-        Used by the vector-promotion path: chain-tail variables whose
-        downstream consumer binds them to an event_dim>=1 slot are
-        declared as `vector[K]` (wrapped in `array[batch]` when the
-        producer had batch dims) rather than scalar `real`.
-        """
-        vt = self._fresh(ctx, "vt")
-        ctx.sb.vertex(vt, "vector_type")
-        size_vid = self._int_literal(ctx, size)
         ctx.sb.edge(vt, size_vid, "child_of")
         ctx.sb.edge(tvt_vid, vt, "child_of")
 
@@ -1259,6 +1256,9 @@ class StanRenderer(RendererBase):
         ctx: RenderContext,
         tvt_vid: str,
         event_dims: tuple[Dim, ...],
+        *,
+        lower: int | float | None = None,
+        upper: int | float | None = None,
     ) -> None:
         if len(event_dims) != 2:
             raise UnsupportedConstruct(
@@ -1270,6 +1270,7 @@ class StanRenderer(RendererBase):
             )
         mt = self._fresh(ctx, "mt")
         ctx.sb.vertex(mt, "matrix_type")
+        self._maybe_emit_range_constraint(ctx, mt, lower, upper)
         row_vid = self._dim_size_vertex(ctx, event_dims[0])
         col_vid = self._dim_size_vertex(ctx, event_dims[1])
         ctx.sb.edge(mt, row_vid, "child_of")
@@ -3841,7 +3842,9 @@ class StanRenderer(RendererBase):
         tvt = self._fresh(ctx, "tpvt")
         ctx.sb.vertex(tvt, "top_var_type")
         if promoted_k is not None:
-            self._emit_vector_type_of_size(ctx, tvt, promoted_k)
+            self._emit_type(
+                ctx, tvt, sup, (DimStatic(size=promoted_k, name="_promoted"),)
+            )
         else:
             self._emit_type(ctx, tvt, sup, stan_plate.event_dims)
         ctx.sb.edge(decl, tvt, "child_of")

@@ -45,6 +45,17 @@ $$
 where $C$ may depend on the model and the data but not on $u$. When the probe leaves the Jacobian out, its
 value is compared with the QVR density directly.
 
+A consumer may require a plate of scalar sites as a component vector,
+as when `MixtureNormal` reads component locations and scales. This
+representation change preserves each producer's support constraints.
+For instance, HalfNormal, HalfCauchy, HalfStudentT, and Gamma sites become
+`vector<lower=0>[K]`; Beta sites become
+`vector<lower=0, upper=1>[K]`; and `Uniform(low=-2, high=3)` becomes
+`vector<lower=-2, upper=3>[K]`. The vector declaration retains the
+coordinatewise constraint and thus Stan's corresponding change of
+variables ([constrained vector declarations](https://mc-stan.org/docs/reference-manual/types.html#vectors)).
+It contributes no additional distribution factor.
+
 ## Family parameterizations
 
 Stan's families are parameterized as in the
@@ -56,6 +67,7 @@ conversion or a constant:
 | `Normal(μ, σ)` | `normal(μ, σ)` | identity | 0 |
 | `HalfNormal(σ)` | `normal(0, σ)` on a parameter declared `<lower=0>` | $\sigma \mapsto (0, \sigma)$ | $-\log 2$ |
 | `HalfCauchy(γ)` | `cauchy(0, γ)` on a parameter declared `<lower=0>` | $\gamma \mapsto (0, \gamma)$ | $-\log 2$ |
+| `HalfStudentT(ν, σ)` | `student_t(ν, 0, σ)` on a parameter declared `<lower=0>` | $(\nu, \sigma) \mapsto (\nu, 0, \sigma)$ | $-\log 2$ |
 | `MultivariateNormal(μ, Σ)` | `multi_normal(μ, Σ)` | identity | 0 |
 | `LKJCorrCholesky(η)` | `lkj_corr_cholesky(η)` | identity | 0 |
 | `Dirichlet(α)` | `dirichlet(α)` | identity, a scalar broadcast by `rep_vector` | 0 |
