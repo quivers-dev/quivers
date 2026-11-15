@@ -56,12 +56,21 @@ from quivers.transpile._api import UnsupportedConstruct
 
 #: The pointwise math builtins a let expression may apply: every scalar
 #: primitive of the builtin registry except the conversions between
-#: integers, reals, and weights, which the planner reads structurally.
+#: integers, reals, and weights, and the checked weight operations, which
+#: the planner keeps as canonical QIEC runtime terms.
 MATH_BUILTINS: Mapping[str, int] = {
     name: min(spec.qiec_arities)
     for name, spec in sorted(BUILTIN_REGISTRY.items())
     if spec.qiec_form == "primitive"
-    and name not in {"int", "real", "weight", "weight_value"}
+    and name
+    not in {
+        "int",
+        "real",
+        "weight",
+        "weight_value",
+        "observation_weight",
+        "scale_weight",
+    }
 }
 
 

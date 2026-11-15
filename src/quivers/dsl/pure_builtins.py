@@ -12,6 +12,7 @@ primitives implicitly.
 from __future__ import annotations
 
 import inspect
+import math
 from collections.abc import Callable, Mapping
 from typing import Literal
 
@@ -34,6 +35,70 @@ LAYER_NORM_EPS = 1e-5
 #: The offset ``rms_norm`` adds to the mean square when no ``eps`` is
 #: given.
 RMS_NORM_EPS = 1e-6
+
+
+def _eager_observation_weight(value: torch.Tensor | float) -> torch.Tensor | float:
+    """Check the same finite, nonnegative carrier as the reference primitive.
+
+    Parameters
+    ----------
+    value : torch.Tensor | float
+        A real scalar or a floating tensor of observation weights.
+
+    Returns
+    -------
+    torch.Tensor | float
+        The supplied value, unchanged and retaining its gradients.
+
+    Raises
+    ------
+    ValueError
+        If a weight is nonfinite or negative, or the tensor dtype is not real.
+    """
+    if isinstance(value, torch.Tensor):
+        valid = value.is_floating_point() and bool(
+            (torch.isfinite(value) & (value >= 0)).all()
+        )
+    else:
+        valid = not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    if not valid:
+        raise ValueError(
+            "observation weights must be finite and nonnegative real values"
+        )
+    return value
+
+
+def _eager_scale_weight(
+    coefficient: torch.Tensor | float, density: torch.Tensor | float
+) -> torch.Tensor | float:
+    """Multiply log weights with zero absorbing even an infinite density.
+
+    Parameters
+    ----------
+    coefficient : torch.Tensor | float
+        The scalar coefficient, or one coefficient per density position.
+    density : torch.Tensor | float
+        The log density at each position.
+
+    Returns
+    -------
+    torch.Tensor | float
+        The product, with zero-coefficient positions masked before multiplication.
+    """
+    if not isinstance(coefficient, torch.Tensor) and not isinstance(
+        density, torch.Tensor
+    ):
+        return 0.0 if coefficient == 0 else coefficient * density
+    if isinstance(density, torch.Tensor):
+        weight = torch.as_tensor(coefficient, device=density.device)
+        value = density
+    else:
+        assert isinstance(coefficient, torch.Tensor)
+        weight = coefficient
+        value = torch.as_tensor(density, device=weight.device)
+    safe = torch.where(weight == 0, torch.zeros_like(value), value)
+    return weight * safe
+
 
 #: Eager implementations for the deterministic-expression builtin surface.
 #: Higher-order collection forms are compiled specially because they consume
@@ -150,6 +215,8 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     ),
     "weight": lambda a: a,
     "weight_value": lambda a: a,
+    "observation_weight": _eager_observation_weight,
+    "scale_weight": _eager_scale_weight,
     "concat": lambda *parts: torch.cat(parts, dim=-1),
     "slice": lambda a, start, length: a[..., int(start) : int(start) + int(length)],
 }
@@ -188,6 +255,8 @@ _BUILTIN_PRIMITIVES: Mapping[str, Mapping[tuple[TypeExpr, ...], str]] = {
     "max": {(INT, INT): "max_int", (REAL, REAL): "max_real"},
     "weight": {(REAL,): "as_weight"},
     "weight_value": {(LOG_WEIGHT,): "weight_value"},
+    "observation_weight": {(REAL,): "observation_weight"},
+    "scale_weight": {(REAL, LOG_WEIGHT): "scale_weight"},
     **{
         name: {(REAL,): name}
         for name in (

@@ -788,6 +788,8 @@ def test_a_template_making_a_refused_call_is_refused_at_the_call() -> None:
     line = RECURSIVE_TEMPLATE.splitlines().index("    let k <- triangle(3)") + 1
     assert message.startswith(f"line {line}, col 4: program 'part' cannot be fit")
     assert "reaches a recursive call (`triangle` -> `triangle`)" in message
+    assert "a$k" not in message
+    assert "triangle(3)" in RECURSIVE_TEMPLATE.splitlines()[line - 1]
 
 
 SCALAR_PARAMETER = """
@@ -891,3 +893,39 @@ def test_a_plated_latent_passed_to_a_scalar_parameter_is_refused_when_checked() 
         "declare the parameter as Tensor[Real]([8]) and `map` over it inside the "
         "computation" in message
     )
+
+
+@pytest.mark.parametrize("header", ["", "[K : FinSet]"])
+def test_ordinary_and_static_program_tuple_returns_inline_at_source_binders(
+    header: str,
+) -> None:
+    static = "[Row]" if header else ""
+    source = f"""object Row : FinSet 3
+object Out : Real 1
+program pair{header} : Row -> Out
+    sample left <- Normal(loc=0.0, scale=1.0)
+    sample right <- Normal(loc=left, scale=0.5)
+    return (left, right)
+program main : Row -> Out
+    sample (u, v) <- pair{static}()
+    let result = u + v
+    return result
+export main
+"""
+    program = loads(source).morphism
+    assert isinstance(program, MonadicProgram)
+    u = torch.tensor([0.3], requires_grad=True)
+    v = torch.tensor([-0.4], requires_grad=True)
+    actual = program.log_joint(torch.zeros(1, 1), {"u": u, "v": v}).sum()
+    expected = (
+        torch.distributions.Normal(0.0, 1.0).log_prob(u).sum()
+        + torch.distributions.Normal(u, 0.5).log_prob(v).sum()
+    )
+    assert float(actual.detach()) == pytest.approx(float(expected.detach()), rel=1e-6)
+    assert [
+        float(value) for value in torch.autograd.grad(actual, (u, v))
+    ] == pytest.approx(
+        [float(value) for value in torch.autograd.grad(expected, (u, v))]
+    )
+    reference = loads(source).run("main", data={}, sites={"u": 0.3, "v": -0.4})
+    assert reference.log_joint == pytest.approx(float(expected.detach()), rel=1e-6)

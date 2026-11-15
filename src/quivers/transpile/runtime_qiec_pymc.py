@@ -15,6 +15,7 @@ is added to the scored value.
 # bridge is read.
 
 import pytensor.tensor as _qvr_qiec_pt
+from pytensor.raise_op import Assert as _qvr_qiec_assert
 
 
 class _QvrQiecShifted:
@@ -95,8 +96,36 @@ def _qvr_qiec_native_operations(
     }
 
 
+def _qvr_qiec_pt_observation_weight(value):
+    tensor = _qvr_qiec_pt.as_tensor_variable(value)
+    if not tensor.dtype.startswith("float"):
+        raise ValueError(
+            "observation weights must be finite and nonnegative real values"
+        )
+    is_nan = _qvr_qiec_pt.isnan(tensor)
+    is_infinite = _qvr_qiec_pt.isinf(tensor)
+    # PyTensor's overloads also describe non-tensor inputs; this path has
+    # already constructed a floating TensorVariable, so both are predicates.
+    assert is_nan is not None and is_infinite is not None
+    valid = _qvr_qiec_pt.all(~is_nan & ~is_infinite & (tensor >= 0))
+    return _qvr_qiec_assert("observation weights must be finite and nonnegative")(
+        tensor, valid
+    )
+
+
+def _qvr_qiec_pt_scale_weight(coefficient, density):
+    coefficient = _qvr_qiec_pt.as_tensor_variable(coefficient)
+    density = _qvr_qiec_pt.as_tensor_variable(density)
+    safe = _qvr_qiec_pt.switch(
+        _qvr_qiec_pt.eq(coefficient, 0), _qvr_qiec_pt.zeros_like(density), density
+    )
+    return coefficient * safe
+
+
 _qvr_qiec_host_math.update(
     {
+        "observation_weight": _qvr_qiec_pt_observation_weight,
+        "scale_weight": _qvr_qiec_pt_scale_weight,
         "min_real": _qvr_qiec_pt.minimum,
         "max_real": _qvr_qiec_pt.maximum,
         "pow_real": _qvr_qiec_pt.power,

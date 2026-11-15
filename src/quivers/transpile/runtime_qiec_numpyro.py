@@ -14,6 +14,7 @@ discrete family can index its probabilities with it.
 
 import jax as _qvr_qiec_jax
 import jax.scipy.special as _qvr_qiec_jax_special
+from jax.experimental import io_callback as _qvr_qiec_io_callback
 
 
 def _qvr_qiec_nested(value):
@@ -83,8 +84,41 @@ def _qvr_qiec_native_operations(
     }
 
 
+def _qvr_qiec_jax_observation_weight(value):
+    tensor = jnp.asarray(value)
+    if not jnp.issubdtype(tensor.dtype, jnp.floating):
+        raise ValueError(
+            "observation weights must be finite and nonnegative real values"
+        )
+    valid = jnp.all(jnp.isfinite(tensor) & (tensor >= 0))
+
+    def require_valid(flag):
+        if not bool(flag):
+            raise ValueError("observation weights must be finite and nonnegative")
+
+    if isinstance(tensor, _qvr_qiec_jax.core.Tracer):
+        # Validation is an IO effect rather than an elidable debug callback.
+        # Only a stopped Boolean crosses the host boundary, leaving the
+        # checked tensor's identity derivative intact. Independent checks
+        # need no ordering, which also permits vmap over the computation.
+        _qvr_qiec_io_callback(
+            require_valid, None, _qvr_qiec_jax.lax.stop_gradient(valid), ordered=False
+        )
+    else:
+        require_valid(valid)
+    return tensor
+
+
+def _qvr_qiec_jax_scale_weight(coefficient, density):
+    coefficient, density = jnp.asarray(coefficient), jnp.asarray(density)
+    safe = jnp.where(coefficient == 0, jnp.zeros_like(density), density)
+    return coefficient * safe
+
+
 _qvr_qiec_host_math.update(
     {
+        "observation_weight": _qvr_qiec_jax_observation_weight,
+        "scale_weight": _qvr_qiec_jax_scale_weight,
         "min_real": jnp.minimum,
         "max_real": jnp.maximum,
         "pow_real": jnp.power,

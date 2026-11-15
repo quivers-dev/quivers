@@ -136,6 +136,8 @@ from quivers.dsl.ast_nodes import (
     TypeName,
     ObjectProduct,
     VectorisedObserveStep,
+    OptionName,
+    OptionNumber,
 )
 from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.compiler._options import (
@@ -1505,7 +1507,39 @@ _MULTIVARIATE_REAL_FAMILIES: frozenset[str] = frozenset(
 """Families whose sample is one real vector over the event axis."""
 
 _SAMPLE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "iid_over"})
-_OBSERVE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"via", "over", "iid_over"})
+_OBSERVE_STEP_OPTION_KEYS: frozenset[str] = frozenset(
+    {"via", "over", "iid_over", "weights"}
+)
+
+
+def _observation_weights(options, line: int, col: int) -> str | float | None:
+    """Read the named or constant power-likelihood weight of an observation."""
+    option = find_option(options, "weights")
+    if option is None:
+        return None
+    if isinstance(option.value, OptionName):
+        return option.value.value
+    if isinstance(option.value, OptionNumber):
+        value = option.value.value
+        if math.isfinite(value) and value >= 0:
+            return value
+        raise CompileError(
+            "observation weights must be finite and nonnegative", line, col
+        )
+    raise CompileError("observation weights require a value name or number", line, col)
+
+
+def _rename_observation_weights(
+    weights: str | float | None,
+    value_subst: dict[str, str | float],
+    rename: dict[str, str],
+) -> str | float | None:
+    """Preserve observation-weight references through template specialization."""
+    if isinstance(weights, str):
+        return value_subst.get(weights, rename.get(weights, weights))
+    return weights
+
+
 _MARGINALIZE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "reduction"})
 _PROGRAM_OPTION_KEYS: frozenset[str] = frozenset({"effects", "posterior_of"})
 _CONTRACTION_OPTION_KEYS: frozenset[str] = frozenset({"rule", "wiring", "share"})
@@ -1774,6 +1808,7 @@ class _ProgramsMixin:
                 else step.args,
                 index=step.index,
                 mode="score",
+                weights=_observation_weights(step.options, step.line, step.col),
                 axes=axes,
                 via=step.via,
                 via_axes=step.via_axes,
@@ -1889,6 +1924,7 @@ class _ProgramsMixin:
                             morphism=step.morphism,
                             args=step.args,
                             is_observed=True,
+                            weights=step.weights,
                             line=step.line,
                             col=step.col,
                         )
@@ -1907,6 +1943,7 @@ class _ProgramsMixin:
                             morphism=step.morphism,
                             args=step.args,
                             response_var=step.vars[0],
+                            weights=step.weights,
                             index_map_var=step.via,
                             index_map_axes=step.via_axes,
                             axes=step.axes,
@@ -2134,6 +2171,7 @@ class _ProgramsMixin:
                                 index_map_var=scoped_step.index_map_var,
                                 index_map_axes=scoped_step.index_map_axes,
                                 ll_slot=ll_slot,
+                                weights=scoped_step.weights,
                                 line=scoped_step.line,
                                 col=scoped_step.col,
                             )
@@ -2360,13 +2398,6 @@ class _ProgramsMixin:
                     self._program_templates.get(step.morphism)
                     or self._program_decls[step.morphism]
                 )
-                if len(step.vars) != 1 and not (tmpl.value_parameters or tmpl.binders):
-                    raise CompileError(
-                        f"template call {step.morphism!r} may bind only one "
-                        f"variable, got tuple {step.vars}",
-                        step.line,
-                        step.col,
-                    )
                 bind_name = step.vars[0] if len(step.vars) == 1 else step.vars
                 args = step.args or ()
                 inst = self._instantiate_template(tmpl, bind_name, args, step)
@@ -2473,7 +2504,16 @@ class _ProgramsMixin:
         substitution lemma: substituting actuals for formals
         commutes with denotation up to renaming-equivalence.
         """
-        if tmpl.value_parameters or tmpl.binders:
+        if tmpl.name in self._call_refusals:
+            # Keep the source computation's located refusal before freshening
+            # its locals; generated aliases are not names the user can edit.
+            self._refuse_computation_calls(tmpl.name, tmpl.draws)
+        if (
+            tmpl.value_parameters
+            or tmpl.binders
+            or isinstance(bind_name, tuple)
+            or not tmpl.type_params
+        ):
             binders = (bind_name,) if isinstance(bind_name, str) else bind_name
             prefix = "_".join(binders)
             from quivers.dsl.program_templates import (
@@ -2943,6 +2983,7 @@ class _ProgramsMixin:
                 morphism=new_morph,
                 args=self._rename_args(step.args, value_subst, rename),
                 is_observed=step.is_observed,
+                weights=_rename_observation_weights(step.weights, value_subst, rename),
                 axes=step.axes,
                 line=step.line,
                 col=step.col,
@@ -2997,6 +3038,11 @@ class _ProgramsMixin:
                 morphism=new_morph,
                 args=self._rename_args(step.args, value_subst, rename),
                 response_var=rename.get(step.response_var, step.response_var),
+                weights=_rename_observation_weights(step.weights, value_subst, rename),
+                index_map_var=rename.get(step.index_map_var, step.index_map_var)
+                if step.index_map_var is not None
+                else None,
+                index_map_axes=step.index_map_axes,
                 axes=step.axes,
                 line=step.line,
                 col=step.col,
@@ -3067,6 +3113,7 @@ class _ProgramsMixin:
                 else None,
                 index_map_axes=step.index_map_axes,
                 ll_slot=step.ll_slot,
+                weights=_rename_observation_weights(step.weights, value_subst, rename),
                 line=step.line,
                 col=step.col,
             )
@@ -4248,6 +4295,7 @@ class _ProgramsMixin:
                     _slot=ll_slot,
                     _N_decl=num_rows,
                     _K=class_size,
+                    _weights=step.weights,
                 ) -> torch.Tensor:
                     # Take the row count from the response tensor at
                     # runtime: the per-row index axis carries the
@@ -4289,26 +4337,65 @@ class _ProgramsMixin:
                     else:
                         parts = [_lookup_arg(env, a) for a in _args]
 
+                    original_rows = _N
+                    class_parts = [p.dim() >= 1 and p.shape[0] == _K for p in parts]
+                    row_parts = [
+                        p.dim() >= 1 and p.shape[0] == _N and not is_class
+                        for p, is_class in zip(parts, class_parts, strict=True)
+                    ]
+                    active_rows = None
+                    weights = None
+                    if _weights is not None:
+                        from quivers.effects._observation_weights import checked_weights
+
+                        weights = checked_weights(
+                            env[_weights] if isinstance(_weights, str) else _weights,
+                            response,
+                            _N,
+                        ).expand(_N)
+                        active_rows = torch.nonzero(
+                            weights > 0, as_tuple=False
+                        ).flatten()
+                        if active_rows.numel() == 0:
+                            zero = (weights * 0.0).sum()
+                            for part in parts:
+                                zero = zero + (part * 0.0).sum()
+                            return zero.expand(_N, _K)
+                        if active_rows.numel() == _N:
+                            # Dense weights need no response/parameter copies.
+                            active_rows = None
+                        else:
+                            response = response.index_select(0, active_rows)
+                            parts = [
+                                part.index_select(0, active_rows.to(part.device))
+                                if is_row
+                                else part
+                                for part, is_row in zip(parts, row_parts, strict=True)
+                            ]
+                            _N = int(active_rows.numel())
+
                     # Detect whether any parameter carries the class
                     # axis. If so, broadcast each part to leading
                     # (N, K) plus any trailing event dims and call
                     # the family's underlying distribution builder
                     # directly so the inline family's split-by-dim
                     # path doesn't shrink the event axis.
-                    needs_cross = any(p.dim() >= 1 and p.shape[0] == _K for p in parts)
+                    needs_cross = any(class_parts)
                     if needs_cross:
                         event_shape: tuple[int, ...] = ()
                         bcast_parts = []
-                        for p in parts:
+                        for p, is_class, is_row in zip(
+                            parts, class_parts, row_parts, strict=True
+                        ):
                             if p.dim() == 0:
                                 bcast_parts.append(p.expand(_N, _K))
-                            elif p.shape[0] == _K:
+                            elif is_class:
                                 bcast_parts.append(p.unsqueeze(0))
                                 if p.dim() > 1:
                                     event_shape = torch.broadcast_shapes(
                                         event_shape, tuple(p.shape[1:])
                                     )
-                            elif p.shape[0] == _N:
+                            elif is_row:
                                 bcast_parts.append(p.unsqueeze(1))
                                 if p.dim() > 1:
                                     event_shape = torch.broadcast_shapes(
@@ -4376,7 +4463,13 @@ class _ProgramsMixin:
                         ll = ll.unsqueeze(-1).expand(-1, _K)
                     elif ll.dim() == 0:
                         ll = ll.reshape(1, 1).expand(_N, _K)
-                    return ll
+                    if active_rows is not None:
+                        assert weights is not None
+                        ll = ll * weights.index_select(0, active_rows).unsqueeze(-1)
+                        return ll.new_zeros(original_rows, _K).index_copy(
+                            0, active_rows, ll
+                        )
+                    return ll if weights is None else ll * weights.unsqueeze(-1)
 
                 bound_vars[ll_slot] = None
                 steps.append(
@@ -4384,7 +4477,16 @@ class _ProgramsMixin:
                         name=ll_slot,
                         value=reading(
                             _captured_observe,
-                            (resp_var, "_x_input", *_arg_names(step_args or ())),
+                            (
+                                resp_var,
+                                "_x_input",
+                                *_arg_names(step_args or ()),
+                                *(
+                                    (step.weights,)
+                                    if isinstance(step.weights, str)
+                                    else ()
+                                ),
+                            ),
                         ),
                     )
                 )
@@ -4460,7 +4562,10 @@ class _ProgramsMixin:
                     bound_vars[step.response_var] = family.codomain
                 steps.append(
                     Observe(
-                        names=(step.response_var,), morphism=vec_obs, args=step_args
+                        names=(step.response_var,),
+                        morphism=vec_obs,
+                        args=step_args,
+                        weights=step.weights,
                     )
                 )
                 continue
@@ -5018,9 +5123,14 @@ class _ProgramsMixin:
                     draw.col,
                 )
             steps.append(
-                (Observe if draw.is_observed else Draw)(
-                    names=draw.vars, morphism=morph, args=step_args
+                Observe(
+                    names=draw.vars,
+                    morphism=morph,
+                    args=step_args,
+                    weights=draw.weights,
                 )
+                if draw.is_observed
+                else Draw(names=draw.vars, morphism=morph, args=step_args)
             )
         for rv in decl.return_vars:
             if rv not in bound_vars:
@@ -5949,6 +6059,16 @@ class _ProgramsMixin:
         # ``(N,)``) need no such reshape. A vector-valued parameter is
         # the single ``var`` slot whose declared width exceeds one.
         shared_vector_theta = _shared_vector_parameter(obs_family)
+        observation_weights = observe_step.weights if observe_step is not None else None
+        observed_array_shape = ()
+        if isinstance(observe_step, VectorisedObserveStep):
+            array = self._independent_over_axes(
+                observe_step.morphism,
+                observe_step.axes,
+                observe_step.line,
+                observe_step.col,
+            )
+            observed_array_shape = array[0] if array is not None else ()
 
         _CATEGORICAL = prior_family == "Categorical"
         _BERNOULLI = prior_family == "Bernoulli"
@@ -5978,6 +6098,9 @@ class _ProgramsMixin:
             _parameterization: str | None = prior_parameterization,
             _reduction: str = reduction,
             _shared_vector: bool = shared_vector_theta,
+            _weights: str | float | None = observation_weights,
+            _plated: bool = isinstance(observe_step, VectorisedObserveStep),
+            _array_shape: tuple[int, ...] = observed_array_shape,
         ) -> torch.Tensor:
             probs = _lookup_arg(env, _prior_arg)
             if _categorical:
@@ -6007,7 +6130,28 @@ class _ProgramsMixin:
                     for name, fn in _lets:
                         local[name] = fn(local)
                     theta = _observation_parameter(local, _obs_args, _shared_vector)
-                    ll_cols.append(_obs_family.log_prob(theta, response))
+                    if _weights is None:
+                        ll_cols.append(_obs_family.log_prob(theta, response))
+                    else:
+                        from quivers.effects._observation_weights import (
+                            WeightedObservation,
+                        )
+
+                        family = (
+                            VectorisedObserve(
+                                _obs_family, response, array_shape=_array_shape
+                            )
+                            if _plated
+                            else _obs_family
+                        )
+                        weights = (
+                            local[_weights] if isinstance(_weights, str) else _weights
+                        )
+                        ll_cols.append(
+                            WeightedObservation(
+                                family, family, weights, theta
+                            ).log_prob_pointwise(theta, response)
+                        )
                 per_class = torch.stack(ll_cols, dim=-1)
                 if log_prior.dim() < per_class.dim():
                     # One latent for the whole body. The block
@@ -6063,6 +6207,8 @@ class _ProgramsMixin:
             )
         )
         marginal_reads: set[str] = {*_arg_names((prior_arg,)), "_x_input"}
+        if isinstance(observation_weights, str):
+            marginal_reads.add(observation_weights)
         for name, fn in body_lets:
             bound_vars[name] = None
             steps.append(Let(name=name, value=fn))

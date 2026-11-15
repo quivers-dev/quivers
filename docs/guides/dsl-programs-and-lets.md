@@ -548,7 +548,17 @@ every transpile target read the primitives in
 this way, and a [contraction declaration](dsl-contractions.md) reduces over a named
 axis.
 
-**Conversions and weights**: `real`, `int`, `weight`, `weight_value`.
+**Conversions and weights**: `real`, `int`, `weight`, `weight_value`,
+`observation_weight`, `scale_weight`.
+
+`observation_weight(w)` checks a finite nonnegative `Real` and returns it.
+`scale_weight(w, ell)` takes a `Real` and a `LogWeight`, returning zero when
+`w` is zero and their product otherwise. These are checked QIEC primitives;
+their validation and zero-weight rule are part of their meaning. For a `Real`
+log density, write
+`weight_value(scale_weight(observation_weight(w), weight(ell)))`.
+The [observation option](../reference/qvr/probabilistic-programs.md#observation-weights)
+uses the same operations before reducing rows or groups.
 
 **Arithmetic and comparisons**: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`,
 `>=`, `&&`, `||`, and the call forms `pow`, `abs`, `min`, and `max`. The

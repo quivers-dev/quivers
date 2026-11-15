@@ -77,8 +77,49 @@ def _qvr_qiec_torch(function):
     )
 
 
+def _qvr_qiec_torch_observation_weight(value):
+    tensor = _qvr_qiec_torch_module.as_tensor(value)
+    if not tensor.is_floating_point() or not bool(
+        (_qvr_qiec_torch_module.isfinite(tensor) & (tensor >= 0)).all()
+    ):
+        raise ValueError(
+            "observation weights must be finite and nonnegative real values"
+        )
+    return tensor
+
+
+def _qvr_qiec_torch_weight_array(value, device):
+    if isinstance(value, tuple):
+        if not value:
+            return _qvr_qiec_torch_module.empty((0,), device=device)
+        # as_tensor(tuple_of_live_tensors) copies their scalar values and
+        # severs autograd. Stack the checked tensor positions instead.
+        return _qvr_qiec_torch_module.stack(
+            tuple(_qvr_qiec_torch_weight_array(item, device) for item in value)
+        )
+    return _qvr_qiec_torch_module.as_tensor(value, device=device)
+
+
+def _qvr_qiec_torch_scale_weight(coefficient, density):
+    device = (
+        density.device
+        if isinstance(density, _qvr_qiec_torch_module.Tensor)
+        else coefficient.device
+        if isinstance(coefficient, _qvr_qiec_torch_module.Tensor)
+        else None
+    )
+    coefficient = _qvr_qiec_torch_weight_array(coefficient, device)
+    density = _qvr_qiec_torch_weight_array(density, device)
+    safe = _qvr_qiec_torch_module.where(
+        coefficient == 0, _qvr_qiec_torch_module.zeros_like(density), density
+    )
+    return coefficient * safe
+
+
 _qvr_qiec_host_math.update(
     {
+        "observation_weight": _qvr_qiec_torch_observation_weight,
+        "scale_weight": _qvr_qiec_torch_scale_weight,
         "min_real": _qvr_qiec_torch(_qvr_qiec_torch_module.minimum),
         "max_real": _qvr_qiec_torch(_qvr_qiec_torch_module.maximum),
         "pow_real": _qvr_qiec_torch(_qvr_qiec_torch_module.pow),

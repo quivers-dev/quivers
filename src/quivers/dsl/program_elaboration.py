@@ -3776,36 +3776,24 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             "log-density",
             step,
         )
+        density: Value = LogDensity(
+            sampleable=distribution,
+            value=Var(local=observed),
+            origin=origin,
+            batch=distribution.plate.batch,
+        )
+        density = self._weighted_observation(
+            density, distribution.plate, step, scope, state
+        )
         weight_scope = _weight_scope(scope)
         if weight_scope is None:
-            weight: Value = WeightSum(
-                value=LogDensity(
-                    sampleable=distribution,
-                    value=Var(local=observed),
-                    origin=origin,
-                    batch=distribution.plate.batch,
-                )
-            )
-            self._add_score(state.score, weight, scope, state, step)
+            self._add_score(state.score, WeightSum(value=density), scope, state, step)
             return
         assert weight_scope.weight_type_cell[0] is not None
         if weight_scope.group is None:
-            weight = WeightSum(
-                value=LogDensity(
-                    sampleable=distribution,
-                    value=Var(local=observed),
-                    origin=origin,
-                    batch=distribution.plate.batch,
-                )
-            )
+            weight: Value = WeightSum(value=density)
         else:
             batch = distribution.plate.batch
-            density = LogDensity(
-                sampleable=distribution,
-                value=Var(local=observed),
-                origin=origin,
-                batch=batch,
-            )
             if via is not None:
                 if len(batch) != 1:
                     self._fail(
@@ -3838,6 +3826,111 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         assert weight_scope.weight_instance_cell[0] is not None
         self._add_weight(
             weight_scope.weight_instance_cell[0], weight, scope, state, step
+        )
+
+    def _weighted_observation(
+        self: _Elaborator,
+        density: Value,
+        plate: PlateShape,
+        step: ObserveStep,
+        scope: _Scope,
+        state: _ProgramState,
+    ) -> Value:
+        """Validate and scale observation densities before reducing their batch.
+
+        Parameters
+        ----------
+        density : Value
+            The unreduced observation log density.
+        plate : PlateShape
+            Its independent batch and joint event axes.
+        step : ObserveStep
+            The source observation carrying an optional weights option.
+        scope : _Scope
+            The lexical bindings the weight may read.
+        state : _ProgramState
+            The program's accumulating input contract.
+
+        Returns
+        -------
+        Value
+            The density scaled by validated weights, or the original density.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the option is malformed or its type or shape is incompatible.
+        """
+        entries = tuple(entry for entry in step.options if entry.key == "weights")
+        if not entries:
+            return density
+        if len(entries) != 1:
+            self._fail(
+                step, "an observation has one weights option", code="qiec-program"
+            )
+        option = entries[0].value
+        dimensions = tuple(axis.size for axis in plate.batch)
+        expected = tensor_type(REAL, dimensions) if dimensions else REAL
+        if isinstance(option, OptionNumber):
+            if not math.isfinite(option.value) or option.value < 0:
+                self._fail(
+                    step,
+                    "observation weights must be finite and nonnegative",
+                    code="qiec-program",
+                )
+            weight: Value = _literal(option.value, False)
+            weight_shape: tuple[IndexTerm, ...] | None = None
+        elif isinstance(option, OptionName) and option.value not in {"true", "false"}:
+            local = scope.lookup(option.value)
+            if local is None:
+                static_names = {
+                    str(parameter.name)
+                    for parameter in static_program_parameters(state.declaration)
+                }
+                if (
+                    option.value in self._program_objects
+                    or option.value in static_names
+                ):
+                    self._fail(
+                        step,
+                        f"observation weights require a runtime value; {option.value!r} is static",
+                        code="qiec-program",
+                    )
+                local = self._declare_parameter(
+                    option.value,
+                    self._pinned_types.get(option.value, expected),
+                    "data",
+                    scope,
+                    state,
+                    step,
+                    axes=tuple(axis.name for axis in plate.batch),
+                )
+            weight = Var(local=local)
+            actual = local.type
+            if actual != REAL and actual != expected:
+                self._fail(
+                    step,
+                    f"observation weights {option.value!r} must be Real or "
+                    f"{self._render(expected)}, got {self._render(actual)}",
+                    code="qiec-program",
+                )
+            weight_shape = dimensions if actual != REAL else None
+        else:
+            self._fail(
+                step,
+                "observation weights require a numeric literal or a value name",
+                code="qiec-program",
+            )
+        path = ("programs", state.declaration.name, "sites", step.vars[0], "weights")
+        checked = self._primitive(
+            "observation_weight", (weight,), step, (*path, "validate"), weight_shape
+        )
+        return self._primitive(
+            "scale_weight",
+            (checked, density),
+            step,
+            (*path, "scale"),
+            dimensions or None,
         )
 
     def _add_score(
@@ -6155,10 +6248,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     plate = self._step_plate(step, record, morphism, own_group)
                     batch = plate.batch[0] if plate.batch else None
                     if batch is not None:
-                        for argument in step.args or ():
-                            for name in _argument_names(argument):
-                                for free in depends.get(name, set()):
-                                    axes.setdefault(free, batch)
+                        consumed = {
+                            name
+                            for argument in step.args or ()
+                            for name in _argument_names(argument)
+                        }
+                        if isinstance(step, ObserveStep):
+                            weight = _option_entry(step.options, "weights")
+                            if isinstance(weight, OptionName):
+                                consumed.add(weight.value)
+                        for name in consumed:
+                            for free in depends.get(name, set()):
+                                axes.setdefault(free, batch)
                     bound.update(names)
                     if isinstance(step, MarginalizeStep):
                         visit(step.scope, own_group)

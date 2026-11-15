@@ -123,6 +123,31 @@ general not a subprobability kernel. The observed values are given at run time w
 inputs ([observations](../guides/programs.md#the-observations-dict)), and normalization is left to
 [inference](#6-inference-and-conditioning).
 
+#### Power-likelihood weights {#observation-weights}
+
+An observation with `[weights=w]` replaces its log likelihood $\ell$ by
+$h(w,\ell)$, where $h(0,\ell)=0$ and $h(w,\ell)=w\ell$ for $w>0$.
+Every weight is finite and nonnegative. The resulting kernel is
+
+$$
+\mathcal{S}_w(\phi,B)
+=\mathbf{1}_B(\phi)\exp h(w(\phi),\ell(\phi)).
+$$
+
+This is a *power likelihood*: a positive weight raises the density to that
+power, while a zero weight contributes the multiplicative identity, including
+where the raw density is zero. The zero branch contributes no score and has
+zero gradient with respect to the density's parameters. A runtime must select
+that branch without forming an undefined product such as $0\cdot(-\infty)$.
+
+This operation changes only the selected observation factor. Priors and other
+score steps retain their original factors. The powered factor need not
+integrate to one as a response density; sampling at fixed parameters continues
+to use the original distribution. Its fitted posterior, and thus posterior
+predictive distribution, may change. An input annotation adds no factor:
+`w : Real` or `w : Tensor[Real]([Row])` supplies an admissible value, and the
+observation option applies it to a likelihood.
+
 ### 2.3 Deterministic bindings
 
 A binding
@@ -250,6 +275,13 @@ An argument written `theta[N]` reads the value of the plate variable `theta` at 
 `marginalize`
 ([§2.7](#27-grouped-marginalize-with-multi-observe-fibration)).
 
+With `[weights=w]`, each row's log density is replaced by
+$h(w(n),\log p_F(r_{\mathrm{obs}}(n);\theta_F(\bar a,n,\phi)))$
+before summing over the plate. A scalar broadcasts over its batch positions;
+a tensor must have exactly the batch shape, excluding event coordinates.
+Subsampling selects the same positions from observations and weights, then
+applies the sampling correction once to their weighted log-density sum.
+
 ### 2.6 Summing out a discrete latent variable {#26-marginalize}
 
 A block
@@ -347,6 +379,12 @@ where $\ell_m(n, k) = \log p_{F_m}(r^{\mathrm{obs}}_m(n) ; \theta_m(n, k, \phi))
 of row $n$ of observation $m$ under class $k$, $\pi(g, k)$ is the prior weight of class $k$ in group
 $g$, and $\operatorname{aggr}_R$ is the reduction over $k$: log-sum-exp by default, which sums the
 class out, or `sum` or `mean`.
+
+A weighted observation replaces $\ell_m(n,k)$ by
+$h(w_m(n),\ell_m(n,k))$ before summing over the fiber and applying
+$\operatorname{aggr}_R$. The latent prior $\log\pi(g,k)$ retains its
+original coefficient. Thus weights act on each component's response likelihood
+inside the latent aggregation.
 
 The prior may be the same for every group, $\pi(g, k) = \pi(k)$, or a plate over $G$, as in
 `marginalize z : K <- Categorical(probs=theta) [over=G]` with `theta : G`, where group $g$ draws its

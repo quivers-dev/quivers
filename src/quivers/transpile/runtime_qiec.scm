@@ -171,7 +171,11 @@
     (cons "as_weight" exact->inexact)
     (cons "weight_value" exact->inexact)
     (cons "add_weight" +)
-    (cons "scale_weight" *)))
+    (cons "scale_weight" (lambda (a b) (if (= a 0) 0.0 (* a b))))
+    (cons "observation_weight" (lambda (a)
+      (if (and (real? a) (= a a) (not (= (abs a) +inf.0)) (>= a 0))
+          a
+          (error '_qvr-qiec "observation weights must be finite and nonnegative"))))))
 (define (_qvr-qiec-sigmoid value)
   (if (>= value 0.0)
       (/ 1.0 (+ 1.0 (exp (- value))))

@@ -181,6 +181,27 @@ Inside a grouped `marginalize`, `via=group_idx` requires one index map for each 
 groups the positions are flattened in row major order, the last factor varying fastest. The values of an
 index map are data inputs and must be valid integer indices when the program runs.
 
+#### Observation weight checking
+
+For `observe y : Row <- F(...) [weights=w]`, the weight has type `Real` or
+`Tensor[Real]` over exactly the observation's batch axes. A declared scalar
+broadcasts across those axes. The observation's event coordinates are excluded
+from the weight shape: one multivariate observation receives one power after its
+joint log density is formed. An otherwise unbound weight name is inferred as
+a tensor over the batch axes, or a scalar `Real` when no batch axis is present.
+
+The shape and element type are checked before execution; finiteness and
+nonnegativity are checked on the supplied or computed values when the program
+runs. Booleans are refused. The checked pure primitive `observation_weight`
+retains the value after validation, and `scale_weight` applies it to the
+observation's `LogWeight` before `WeightSum` or `SegmentSum`.
+`scale_weight` implements the zero-weight branch defined in the
+[observation semantics](programs.md#observation-weights).
+
+A weight parameter is an ordinary input annotation and adds no effect. Its use
+by `observe` retains the observation's `Score` effect; weighting does not
+introduce another sampling request or modify the prior.
+
 ### 3.3 Effect annotations
 
 The program option `[effects=[...]]` accepts `Sample`, `Score`, `Marginal`, and `Pure`. A `sample`

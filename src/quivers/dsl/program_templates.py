@@ -63,6 +63,9 @@ from quivers.dsl.ast_nodes import (
     ObjectParam,
     ObjectProduct,
     ObserveStep,
+    OptionEntry,
+    OptionName,
+    OptionNumber,
     ProgramDecl,
     ProgramStep,
     ReturnStep,
@@ -438,6 +441,9 @@ def _rename_step(
             args=_rename_args(step.args, values, rename),
             index=None if step.index is None else _rename_object(step.index, objects),
             axes=_rename_axes(step.axes, objects),
+            options=_rename_observation_options(step.options, values, rename)
+            if isinstance(step, ObserveStep)
+            else step.options,
         )
     if isinstance(step, MarginalizeStep):
         return step.with_(
@@ -470,6 +476,52 @@ def _rename_step(
             ),
         )
     return step
+
+
+def _rename_observation_options(
+    options: tuple[OptionEntry, ...],
+    values: Mapping[str, LetExprNode],
+    rename: Mapping[str, str],
+) -> tuple[OptionEntry, ...]:
+    """Substitute weight dependencies with the same capture avoidance as values.
+
+    Parameters
+    ----------
+    options : tuple[OptionEntry, ...]
+        The observation's authored options.
+    values : Mapping[str, LetExprNode]
+        Actual runtime values replacing formal parameter names.
+    rename : Mapping[str, str]
+        Fresh names replacing locals of the instantiated body.
+
+    Returns
+    -------
+    tuple[OptionEntry, ...]
+        The options with each weight dependency substituted.
+
+    Raises
+    ------
+    TemplateError
+        If an actual weight expression has not been captured as a name or number.
+    """
+    result: list[OptionEntry] = []
+    for entry in options:
+        option = entry.value
+        if entry.key == "weights" and isinstance(option, OptionName):
+            actual = values.get(option.value)
+            if actual is None:
+                option = option.with_(value=rename.get(option.value, option.value))
+            elif isinstance(actual, LetExprVar):
+                option = option.with_(value=actual.name)
+            elif isinstance(actual, LetExprLiteral):
+                option = OptionNumber(value=actual.value)
+            else:
+                raise TemplateError(
+                    "observation weights require a named value or number"
+                )
+            entry = entry.with_(value=option)
+        result.append(entry)
+    return tuple(result)
 
 
 def _rename_static_args(

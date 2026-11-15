@@ -16,7 +16,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
-from quivers.continuous.morphisms import ContinuousMorphism
+from quivers.continuous.morphisms import ContinuousMorphism, MarginalizedFactor
 
 
 class TorchSampleable(ValueModel):
@@ -34,11 +34,15 @@ class TorchSampleable(ValueModel):
         The morphism as the program declares it, which a trace records
         and a strategy reads the family of; the drawing morphism itself
         when no parameter store rebinds it.
+    raw_morphism
+        The parameterized response distribution before likelihood weighting
+        or observation subsampling, used for raw likelihood extraction.
     """
 
     morphism: ContinuousMorphism = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     input: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     declared: ContinuousMorphism = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    raw_morphism: ContinuousMorphism = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
     def __init__(
         self,
@@ -46,6 +50,7 @@ class TorchSampleable(ValueModel):
         morphism: ContinuousMorphism,
         input: torch.Tensor,
         declared: ContinuousMorphism | None = None,
+        raw_morphism: ContinuousMorphism | None = None,
     ) -> None:
         """Construct a sampleable holding live runtime references by identity.
 
@@ -57,6 +62,8 @@ class TorchSampleable(ValueModel):
             The tensor conditioning the morphism.
         declared : ContinuousMorphism or None
             The declared site morphism, defaulting to the sampling morphism.
+        raw_morphism : ContinuousMorphism or None
+            The unweighted response morphism, defaulting to the sampling morphism.
 
         Raises
         ------
@@ -68,6 +75,7 @@ class TorchSampleable(ValueModel):
             morphism=morphism,
             input=input,
             declared=morphism if declared is None else declared,
+            raw_morphism=morphism if raw_morphism is None else raw_morphism,
         )
 
     @dx.model_validator()
@@ -85,6 +93,8 @@ class TorchSampleable(ValueModel):
             raise TypeError("sampleable morphisms must be ContinuousMorphism values")
         if not isinstance(self.input, torch.Tensor):
             raise TypeError("sampleable input must be a torch.Tensor")
+        if not isinstance(self.raw_morphism, ContinuousMorphism):
+            raise TypeError("the raw sampleable morphism must be a ContinuousMorphism")
 
     def rsample(self) -> torch.Tensor:
         """Draw a reparameterised sample.
@@ -152,6 +162,35 @@ class TorchSampleable(ValueModel):
         raise TypeError(
             f"{type(self.morphism).__name__} exposes no distribution parameters"
         )
+
+    def raw_log_prob_pointwise(self, value: torch.Tensor) -> torch.Tensor:
+        """Read the response density before likelihood weighting or subsampling.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            The observed response values.
+
+        Returns
+        -------
+        torch.Tensor
+            Raw log densities, one per observation row when the family has
+            a plate, with event dimensions reduced.
+
+        Raises
+        ------
+        TypeError
+            If the site belongs to a marginalized factor and requires a
+            marginal-likelihood observer.
+        """
+        if isinstance(self.declared, MarginalizedFactor):
+            raise TypeError("this observation requires a marginal-likelihood observer")
+        pointwise = getattr(self.raw_morphism, "log_prob_pointwise", None)
+        if callable(pointwise):
+            result = pointwise(self.input, value)
+            assert isinstance(result, torch.Tensor)
+            return result
+        return self.raw_morphism.log_prob(self.input, value)
 
 
 __all__ = ["TorchSampleable"]

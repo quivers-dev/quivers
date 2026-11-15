@@ -607,6 +607,18 @@ def _expression(
         if isinstance(value.value, str):
             return LetExprString(value=value.value)
     if isinstance(value, PrimitiveApplication):
+        if value.name in {"observation_weight", "scale_weight"}:
+            if target == RUNTIME_TARGET:
+                return LetExprCall(
+                    func=value.name,
+                    args=tuple(
+                        _expression(argument, cards, target, program)
+                        for argument in value.arguments
+                    ),
+                )
+            # These checked weight operations retain canonical runtime
+            # semantics; they are not unchecked target math-library calls.
+            return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
         if value.name == "int_to_real" and target in _INTEGRAL_ARITHMETIC_TARGETS:
             return LetExprBinOp(
                 op="*",

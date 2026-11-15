@@ -305,7 +305,15 @@ def test_every_target_settles_every_surface_builtin() -> None:
     surface = {
         builtin
         for builtin in PRIMITIVE_BUILTINS.values()
-        if builtin not in {"int", "real", "weight", "weight_value"}
+        if builtin
+        not in {
+            "int",
+            "real",
+            "weight",
+            "weight_value",
+            "observation_weight",
+            "scale_weight",
+        }
     }
     assert set(MATH_BUILTINS) == surface
     assert set(_UNARY) | set(_BINARY) | set(_TERNARY) == surface

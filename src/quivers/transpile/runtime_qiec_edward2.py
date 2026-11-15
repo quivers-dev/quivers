@@ -100,8 +100,41 @@ def _qvr_qiec_tf_trunc(value):
     return tf.math.sign(tensor) * tf.floor(tf.abs(tensor))
 
 
+def _qvr_qiec_tf_observation_weight(value):
+    tensor = tf.convert_to_tensor(value)
+    if not tensor.dtype.is_floating:
+        raise ValueError(
+            "observation weights must be finite and nonnegative real values"
+        )
+    finite = tf.debugging.assert_all_finite(
+        tensor, "observation weights must be finite and nonnegative"
+    )
+    nonnegative = tf.debugging.assert_non_negative(
+        finite, message="observation weights must be finite and nonnegative"
+    )
+    dependencies = [] if nonnegative is None else [nonnegative]
+    with tf.control_dependencies(dependencies):
+        return tf.identity(finite)
+
+
+def _qvr_qiec_tf_scale_weight(coefficient, density):
+    coefficient, density = _qvr_qiec_tensors((coefficient, density))
+    # Preserve explicit float64 host inputs alongside ordinary float32
+    # literals. Other real host dtypes compute in at least float32.
+    dtype = (
+        tf.float64
+        if coefficient.dtype == tf.float64 or density.dtype == tf.float64
+        else tf.float32
+    )
+    coefficient, density = tf.cast(coefficient, dtype), tf.cast(density, dtype)
+    safe = tf.where(coefficient == 0, tf.zeros_like(density), density)
+    return coefficient * safe
+
+
 _qvr_qiec_host_math.update(
     {
+        "observation_weight": _qvr_qiec_tf_observation_weight,
+        "scale_weight": _qvr_qiec_tf_scale_weight,
         "min_real": _qvr_qiec_tf("minimum"),
         "max_real": _qvr_qiec_tf("maximum"),
         "pow_real": _qvr_qiec_tf("pow"),

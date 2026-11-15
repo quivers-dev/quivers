@@ -388,6 +388,7 @@ class BindStep(ProgramStep):
     via: str | None = None
     via_axes: tuple[str, ...] | None = None
     reduction: str | None = None
+    weights: str | float | None = None
     line: int = 0
     col: int = 0
     kind: Literal["bind_step"] = "bind_step"
@@ -406,6 +407,7 @@ class DrawStep(ProgramStep):
     args: tuple[DrawArg, ...] | None = None
     is_observed: bool = False
     axes: AxisSpec | None = None
+    weights: str | float | None = None
     line: int = 0
     col: int = 0
     kind: Literal["draw_step"] = "draw_step"
@@ -447,6 +449,7 @@ class VectorisedObserveStep(ProgramStep):
     index_map_var: str | None = None
     index_map_axes: tuple[str, ...] | None = None
     axes: AxisSpec | None = None
+    weights: str | float | None = None
     line: int = 0
     col: int = 0
     kind: Literal["vectorized_observe_step"] = "vectorized_observe_step"
@@ -480,6 +483,7 @@ class GroupedBodyObserveStep(ProgramStep):
     index_map_var: str | None = None
     index_map_axes: tuple[str, ...] | None = None
     ll_slot: str = ""
+    weights: str | float | None = None
     line: int = 0
     col: int = 0
     kind: Literal["grouped_body_observe_step"] = "grouped_body_observe_step"

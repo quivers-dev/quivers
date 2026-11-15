@@ -1,0 +1,8 @@
+# Exercises observation power weights independently of ordinary observations.
+object Row : FinSet 3
+object Out : Real 1
+program weighted(w : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out
+    sample slope <- Normal(loc=0.0, scale=1.0)
+    observe y : Row <- Normal(loc=slope, scale=1.0) [weights=w]
+    return slope
+export weighted

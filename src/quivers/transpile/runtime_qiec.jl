@@ -173,7 +173,10 @@ const _qvr_qiec_primitives = Dict{String, Any}(
     "as_weight" => a -> Float64(a),
     "weight_value" => a -> Float64(a),
     "add_weight" => (a, b) -> a + b,
-    "scale_weight" => (a, b) -> a * b,
+    "scale_weight" => (a, b) -> iszero(a) ? 0.0 : a * b,
+    "observation_weight" => a ->
+        a isa Real && !(a isa Bool) && isfinite(a) && a >= 0 ? a :
+        error("observation weights must be finite and nonnegative"),
 )
 _qvr_qiec_sigmoid(value) = value >= 0.0 ? 1.0 / (1.0 + exp(-value)) : exp(value) / (1.0 + exp(value))
 _qvr_qiec_softplus(value) = max(value, 0.0) + log1p(exp(-abs(value)))

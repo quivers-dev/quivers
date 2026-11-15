@@ -196,6 +196,10 @@ class Observe(Step):
     args : tuple[StepArgument, ...] | None
         The bindings the morphism reads, or ``None`` for the program
         input.
+    weights : float | StepArgument | None
+        A nonnegative finite power-likelihood weight, or a binding with one
+        weight per observation row. It changes scoring and leaves sampling
+        and the underlying response density unchanged.
     kind : Literal["observe"]
         The variant tag.
     """
@@ -205,6 +209,9 @@ class Observe(Step):
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     args: tuple[StepArgument, ...] | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    weights: float | StepArgument | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     kind: Literal["observe"] = "observe"

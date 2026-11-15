@@ -95,6 +95,30 @@ A real-valued domain that the program reads needs an explicit one-run `input`.
 Observation rows belong to the QVR plates; an input with several rows would mean
 several independent executions of the entire model and is refused here.
 
+## Weight observation likelihoods
+
+Add `[weights=w]` to an observation to give its rows power-likelihood weights.
+Declare `w : Tensor[Real]([Row])` in the runtime header when one weight belongs
+to each row, and include `"w"` with `x` and `y` in the data passed to
+`Model.bind`. A declared scalar `w : Real` or a literal such as `[weights=0.5]`
+uses the same power for every row. The
+[language reference](../reference/qvr/probabilistic-programs.md#observation-weights)
+gives a complete weighted regression.
+
+Weights must be finite and nonnegative, and tensor weights must match the
+observation batch shape. Event components of one multivariate response share
+one weight. A zero-weight row contributes zero score and zero likelihood
+parameter gradient, even if its raw log density is negative infinity. Weights
+are applied before row or group reductions; subsampling selects the matching
+weights and applies its sampling correction once. Priors keep their original
+scores, and weights are not normalized automatically.
+
+These weights change the fitting target. At fixed parameters, the response
+sampler and predictive distribution retain their original behavior. A fitted
+posterior can change, so its posterior predictive results can change as well.
+Keep weights with the other checked inputs when rebinding; declaring a weight
+input alone performs no scoring.
+
 ## Choose reusable fitting components
 
 The default `MCMCMethod()` runs four seeded NUTS chains, with 500 warmup
@@ -185,9 +209,12 @@ assert new_pointwise["y"].shape[-1] == 2
 ```
 
 MCMC output has chain and draw axes followed by the response's observation
-axes; variational output has one pseudo-chain. These are raw likelihood terms,
-without the prior or posterior normalization. Summing the observation axes
-recovers that response's contribution to the joint density. Event coordinates
+axes; variational output has one pseudo-chain. These are raw, unweighted
+likelihood terms, without the prior or posterior normalization, including when
+the fitting target uses `[weights=w]`. For an unweighted observation, summing
+the observation axes recovers that response's contribution to the joint
+density. To reconstruct a weighted contribution, apply the checked weights to
+the raw terms with the zero-weight convention before summing. Event coordinates
 of one multivariate response are reduced together, while independent response
 rows remain separate.
 

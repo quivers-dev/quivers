@@ -411,6 +411,21 @@ that number to the trace of the compiled runtime on the same models.
 A program body binds a call of a computation with `let x <- helper(args)`, and a computation calls
 a program by its name.
 
+An observation's `[weights=w]` option elaborates through existing value and
+weight operations. The pure primitive `observation_weight : Real -> Real`
+checks that each scalar weight is finite and nonnegative. The checked value
+and raw `LogDensity` result enter `scale_weight` before `WeightSum` or
+`SegmentSum`; a zero weight selects zero without forming an undefined
+product of zero and infinity. No new weight AST type or input effect is needed.
+Tensor weights follow the observation batch shape, excluding event axes.
+
+Grouped marginalization weights each component's observed log density before
+fiber summation and latent aggregation. Subsampling gathers the weights with
+the same row selection and applies its sampling factor once. Keep the raw
+response density available independently: `ModelFit.log_likelihood` exposes
+unweighted terms, and prediction samples the original response distribution
+at fixed parameters. Weighting an observation does not alter prior scores.
+
 <!-- compile: qiec -->
 ```qvr
 object Obs : FinSet 4

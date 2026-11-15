@@ -36,8 +36,8 @@ from quivers.core.morphisms import extract_morphism
 from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.spaces import ContinuousSpace
 from quivers.continuous.program_steps import Call as CallStep
-from quivers.continuous.program_steps import Draw, Let, Observe, Scan, Score
-from quivers.continuous.programs import install_evaluator
+from quivers.continuous.program_steps import Draw, Indexed, Let, Observe, Scan, Score
+from quivers.continuous.programs import install_evaluator, _lookup_arg
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.base import (
@@ -289,6 +289,32 @@ class _ParameterizedMorphism(ContinuousMorphism):
             The log density of the kept rows.
         """
         return self._call("log_prob_rows", x, y, *rows)
+
+    def score_dependencies(self) -> tuple[torch.Tensor, ...]:
+        """Return the live parameter overrides used by density evaluation.
+
+        Returns
+        -------
+        tuple[torch.Tensor, ...]
+            Runtime parameter values, including tensors not registered on
+            the original morphism, which retain zero-score gradients.
+        """
+        return tuple(self._values.values())
+
+    def log_prob_pointwise(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Read raw row densities under the supplied parameter values."""
+        method = (
+            "log_prob_pointwise"
+            if callable(getattr(self._inner, "log_prob_pointwise", None))
+            else "log_prob"
+        )
+        return self._call(method, x, y)
+
+    def log_prob_pointwise_rows(
+        self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor
+    ) -> torch.Tensor:
+        """Read selected raw row densities under the supplied parameters."""
+        return self._call("log_prob_pointwise_rows", x, y, *rows)
 
     def __getattr__(self, name: str) -> torch.Tensor | torch.nn.Module:
         """Read a submodule, or any other attribute from the inner morphism.
@@ -1245,6 +1271,17 @@ class _HostSteps:
         drawing: ContinuousMorphism = (
             _ParameterizedMorphism(morphism, values) if values else morphism
         )
+        raw_morphism = drawing
+        if isinstance(spec, Observe) and spec.weights is not None:
+            from quivers.effects._observation_weights import WeightedObservation
+
+            stripped, _ = self._one_run(step, env)
+            weights = (
+                _lookup_arg(stripped, spec.weights)
+                if isinstance(spec.weights, str | Indexed)
+                else spec.weights
+            )
+            drawing = WeightedObservation(drawing, morphism, weights, inp)
         subsampled = _subsampled_rows(self.run, step, spec, morphism)
         if subsampled is not None:
             rows, factor = subsampled
@@ -1254,7 +1291,9 @@ class _HostSteps:
             drawing = _SubsampledMorphism(drawing, rows, factor)
         if drawing is morphism:
             return TorchSampleable(morphism=morphism, input=inp)
-        return TorchSampleable(morphism=drawing, input=inp, declared=morphism)
+        return TorchSampleable(
+            morphism=drawing, input=inp, declared=morphism, raw_morphism=raw_morphism
+        )
 
     def _parameters(
         self, site: str, morphism: ContinuousMorphism, context: ClauseContext

@@ -240,6 +240,64 @@ A family whose value is a vector takes it in one named parameter.
 `Dirichlet(concentration=[1.0, 2.0, 3.0])` gives an explicit vector, and a single literal,
 `Dirichlet(concentration=1.0)`, is a symmetric concentration over a fixed output extent.
 
+## Observation weights {#observation-weights}
+
+An observation can raise each response likelihood to a finite nonnegative
+power. The option `[weights=w]` reads the weights from a named value;
+`[weights=0.5]` applies one constant power to every observation.
+
+<!-- compile: qiec -->
+```qvr
+object Row : FinSet _
+object Out : Real 1
+
+program weighted_regression(
+    x : Tensor[Real]([Row]),
+    y : Tensor[Real]([Row]),
+    w : Tensor[Real]([Row]),
+) : Row -> Out
+    sample slope <- Normal(loc=0.0, scale=1.0)
+    let mean = slope * x
+    observe y : Row <- Normal(loc=mean, scale=1.0) [weights=w]
+    return slope
+
+export weighted_regression
+```
+
+Each row contributes `w[row] * log_prob(y[row])` before the observation rows
+are summed. A zero weight contributes zero even when the raw log density is
+negative infinity; its likelihood contribution has zero parameter gradient.
+The prior on `slope` retains its original score. Weights remain at the supplied
+scale, and the number of response rows is unchanged.
+
+An undeclared `w` is inferred as a `Tensor[Real]` over the observation's batch
+axes, or a scalar `Real` when there are no batch axes. An explicitly declared
+`w : Real` broadcasts one scalar over the batch axes. A tensor weight must
+match the batch shape exactly: components of one multivariate event share one
+weight. Value validation rejects
+Boolean, negative, and nonfinite weights. The option accepts a name or a
+numeric literal; bind a computed expression with `let` and name that binding.
+
+Inside `marginalize`, each component's observed log density is weighted before
+row or group reduction and latent aggregation. With subsampling, the selected
+rows select their corresponding weights, then the sampling correction is
+applied once. Declaring a weight parameter alone performs no scoring; the
+observation option selects this likelihood treatment.
+
+At fixed model parameters, sampling and prediction use the original response
+distribution. Fitting the weighted target may change the posterior and thus its
+posterior predictive results. Raw pointwise
+[`ModelFit.log_likelihood`](../../guides/model-data-and-fitting.md#extract-pointwise-log-likelihoods)
+remains unweighted. The [semantics](../../semantics/programs.md#observation-weights)
+defines the zero-weight convention and order of reductions.
+
+The native executor and QIEC reference machine support weighted observations.
+All eleven external transpilation targets currently refuse this source form
+with `qiec:weighted-observe:<program>`, where the final component names the
+entry. Authored calls of the checked weight primitives have their own
+[capability boundary](computations.md#built-in-values-and-distributions);
+the [measured support matrix](../../transpile-support.md) records both cases.
+
 ## Open input extents
 
 When no declared object fixes the length of a tensor input, elaboration adds a static `Nat` binder,

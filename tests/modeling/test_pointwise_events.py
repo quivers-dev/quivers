@@ -69,3 +69,21 @@ def test_pointwise_arrays_reduce_each_rows_independent_elements(array_shape):
         torch.autograd.grad(actual.sum(), location, retain_graph=True)[0],
         torch.autograd.grad(expected.sum(), location)[0],
     )
+
+
+@pytest.mark.parametrize("array_shape", [(), (2,), (2, 3)])
+def test_empty_observation_plates_retain_empty_row_axis(array_shape):
+    location = torch.tensor([0.3, -0.5], dtype=torch.float64, requires_grad=True)
+    family = FixedDistribution(
+        Euclidean(name="response", dim=2),
+        lambda batch, device: torch.distributions.Normal(location, 0.7),
+    )
+    observation = VectorisedObserve(
+        family, torch.empty(0, *array_shape, 2), array_shape=array_shape
+    )
+    pointwise = observation.log_prob_pointwise(torch.empty(0, 1))
+    assert pointwise.shape == (0,)
+    torch.testing.assert_close(pointwise.sum(), torch.tensor(0.0, dtype=torch.float64))
+    torch.testing.assert_close(
+        torch.autograd.grad(pointwise.sum(), location)[0], torch.zeros_like(location)
+    )

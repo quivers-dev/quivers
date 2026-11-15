@@ -192,6 +192,24 @@ The reference machine implements every family in the
 converts parameters to the target's own conventions when it emits code. Inside a `program` step,
 family arguments are named ([fixed and conditional families](probabilistic-programs.md#fixed-and-conditional-families)).
 
+The checked weight primitives are available in authored computations as well.
+`observation_weight : Real -> Real` validates a finite nonnegative power, and
+`scale_weight : Real * LogWeight -> LogWeight` returns the zero log score for
+a zero coefficient, including when the raw log weight is negative infinity:
+
+<!-- compile: qiec -->
+```qvr
+define weighted_log_density(w : Real, ell : Real) : Real !{} =
+    return weight_value(scale_weight(observation_weight(w), weight(ell)))
+```
+
+These calls perform pure value operations. An observation's
+[`weights` option](probabilistic-programs.md#observation-weights) uses their
+result in a scoring step; a computation can return it without adding a score.
+Support for authored primitive calls is checked separately from direct
+observation rendering. BUGS, JAGS, and Stan refuse these computation calls
+with capability diagnostics.
+
 ## Entry points
 
 Every `define` in the source is an [entry point](execution-and-tooling.md#list-entry-points). The

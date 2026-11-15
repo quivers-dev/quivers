@@ -756,25 +756,30 @@ class VectorisedObserve(ContinuousMorphism):
             # Each entry of a row's array is one observation of the
             # per-row family at that row's parameters.
             entries = math.prod(self._array_shape)
-            flat = target.reshape(target.shape[0] * entries, -1).squeeze(-1)
+            event_size = math.prod(target.shape[1 + len(self._array_shape) :])
+            flat = target.reshape(target.shape[0] * entries, event_size).squeeze(-1)
             rows = (
                 x
                 if x.shape[0] == target.shape[0]
                 else x.expand(target.shape[0], *x.shape[1:])
             )
-            return (
-                self._family.log_prob(
-                    self._array_rows(rows), self._align_response(flat)
-                )
-                .reshape(target.shape[0], entries)
-                .sum(dim=-1)
+            density = self._family.log_prob(
+                self._array_rows(rows), self._align_response(flat)
             )
-        return self._family.log_prob(x, self._align_response(target))
+            return (
+                density.reshape(target.shape[0], entries, *density.shape[1:])
+                .flatten(start_dim=1)
+                .sum(-1)
+            )
+        density = self._family.log_prob(x, self._align_response(target))
+        if density.ndim > 1:
+            density = density.flatten(start_dim=1).sum(-1)
+        return density
 
-    def log_prob_rows(
+    def log_prob_pointwise_rows(
         self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor
     ) -> torch.Tensor:
-        """Sum of the per-observation log-densities at a subset of the rows.
+        """Per-observation log densities at a selected subset of the rows.
 
         Parameters
         ----------
@@ -792,7 +797,7 @@ class VectorisedObserve(ContinuousMorphism):
         Returns
         -------
         torch.Tensor
-            The summed log-density of the kept rows.
+            One log density per kept observation row, after event reduction.
 
         Raises
         ------
@@ -843,7 +848,28 @@ class VectorisedObserve(ContinuousMorphism):
                 f"{int(x.shape[0])} rows, neither the plate's {plate_rows}, "
                 f"the {count} kept, nor one shared row"
             )
-        return self.log_prob(theta, target)
+        return self.log_prob_pointwise(theta, target)
+
+    def log_prob_rows(
+        self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor
+    ) -> torch.Tensor:
+        """Sum the log densities of the selected observation rows.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Shared, full-row, or selected-row family parameters.
+        y : torch.Tensor
+            Full or selected observation rows.
+        *rows : torch.Tensor
+            Kept indices for the observation axis and each array axis.
+
+        Returns
+        -------
+        torch.Tensor
+            Total log density of the selected rows.
+        """
+        return self.log_prob_pointwise_rows(x, y, *rows).sum()
 
     def log_likelihood(self, theta: torch.Tensor) -> torch.Tensor:
         """Alias for ``log_prob(theta)``; preserved for the Python

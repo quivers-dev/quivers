@@ -106,6 +106,18 @@ def _expected_unsupported_kinds(fixture: _load.Fixture, backend: str) -> set[str
 # entry. A regression surfaces because the raised kinds match a
 # different prefix; either update the entry or fix the renderer.
 _EXPECTED_ORTHOGONAL_RAISES: dict[tuple[str, str, str], str] = {
+    # Weighted observations retain their site metadata in native execution;
+    # external targets currently refuse this observation capability explicitly.
+    **{
+        (backend, "steps", "observe_weighted"): "qiec:weighted-observe:"
+        for backend in _BACKENDS
+    },
+    # Authored checked-weight primitives have dynamic host implementations,
+    # but these static targets lack the weight capability.
+    **{
+        (backend, "statements", "qiec_weight_primitives"): "qiec:capability:weight"
+        for backend in ("bugs", "jags", "stan")
+    },
     # Static graphical targets preserve only the closed, monomorphic,
     # effect-free scalar QIEC fragment.
     ("stan", "statements", "qiec_effectful_computation"): "qiec:",

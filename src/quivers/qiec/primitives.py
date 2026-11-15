@@ -72,6 +72,29 @@ class PrimitiveSignature(QiecModel):
         return PrimitiveId.derive("builtin", self.name)
 
 
+def _observation_weight(value: float) -> float:
+    """Validate a finite, nonnegative observation weight.
+
+    Parameters
+    ----------
+    value : float
+        The coefficient multiplying one observation's log density.
+
+    Returns
+    -------
+    float
+        The supplied coefficient, unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the coefficient is negative, nonfinite, or boolean.
+    """
+    if isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise ValueError("observation weights must be finite and nonnegative")
+    return value
+
+
 def _truncating_division(dividend: int, divisor: int) -> int:
     """Integer division rounding toward zero, as every host target does.
 
@@ -441,13 +464,18 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Callable[..., object]], ...] = (
     _signature("softplus", (REAL,), REAL, "activation", _softplus),
     _signature("logsigmoid", (REAL,), REAL, "activation", lambda a: -_softplus(-a)),
     _signature("softsign", (REAL,), REAL, "activation", lambda a: a / (1.0 + abs(a))),
+    _signature("observation_weight", (REAL,), REAL, "weight", _observation_weight),
     _signature("as_weight", (REAL,), LOG_WEIGHT, "weight", float),
     _signature("weight_value", (LOG_WEIGHT,), REAL, "weight", float),
     _signature(
         "add_weight", (LOG_WEIGHT, LOG_WEIGHT), LOG_WEIGHT, "weight", lambda a, b: a + b
     ),
     _signature(
-        "scale_weight", (REAL, LOG_WEIGHT), LOG_WEIGHT, "weight", lambda a, b: a * b
+        "scale_weight",
+        (REAL, LOG_WEIGHT),
+        LOG_WEIGHT,
+        "weight",
+        lambda a, b: 0.0 if a == 0 else a * b,
     ),
 )
 

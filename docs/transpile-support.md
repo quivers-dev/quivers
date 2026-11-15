@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 47 programs of the [examples gallery](examples/index.md) and for 145 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 47 programs of the [examples gallery](examples/index.md) and for 147 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 14 / 47          | 73 / 145   |
-| [church](semantics/transpile-correctness/church.md)   | 16 / 47          | 94 / 145   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 23 / 47          | 109 / 145  |
-| [gen](semantics/transpile-correctness/gen.md)         | 21 / 47          | 98 / 145   |
-| [jags](semantics/transpile-correctness/jags.md)       | 20 / 47          | 83 / 145   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 24 / 47          | 124 / 145  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 23 / 47          | 110 / 145  |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 24 / 47          | 126 / 145  |
-| [stan](semantics/transpile-correctness/stan.md)       | 23 / 47          | 99 / 145   |
-| [turing](semantics/transpile-correctness/turing.md)   | 21 / 47          | 102 / 145  |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 23 / 47          | 103 / 145  |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 14 / 47          | 73 / 147   |
+| [church](semantics/transpile-correctness/church.md)   | 16 / 47          | 95 / 147   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 23 / 47          | 110 / 147  |
+| [gen](semantics/transpile-correctness/gen.md)         | 21 / 47          | 99 / 147   |
+| [jags](semantics/transpile-correctness/jags.md)       | 20 / 47          | 83 / 147   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 24 / 47          | 125 / 147  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 23 / 47          | 111 / 147  |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 24 / 47          | 127 / 147  |
+| [stan](semantics/transpile-correctness/stan.md)       | 23 / 47          | 99 / 147   |
+| [turing](semantics/transpile-correctness/turing.md)   | 21 / 47          | 103 / 147  |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 23 / 47          | 104 / 147  |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -133,6 +133,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `statements/program_decl_scalar`        | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `statements/qiec_computation_decl`      | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `statements/qiec_effectful_computation` | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
+| `statements/qiec_weight_primitives`     | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `statements/rule_decl`                  | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `statements/schema_decl`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `statements/signature_decl`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
@@ -185,6 +186,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/observe_vector_location_let`              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_vector_parameter_data`            | no   | no     | no      | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_vector_scale_rate`                | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_weighted`                         | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/return_step`                              | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/sample_bernoulli_logits`                  | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/sample_class_code`                        | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | no   | yes    | yes    |
@@ -613,6 +615,22 @@ Each backend words it differently; this is bugs's. `bugs` on `schema_chart_parse
 
 ```text
 QIEC computation `lp_parser__run` is a deduction's entry, which enumerates its derivations through a search handler that resumes once per alternative, and BUGS has no runtime for that search. Run the deduction on the reference machine with `run_deduction`, or keep the program's chart out of the transpiled model.
+```
+
+### `qiec:weighted-observe:weighted`
+
+Refused for: `steps/observe_weighted`.
+
+Reported kinds:
+
+```text
+qiec:weighted-observe:weighted
+```
+
+Each backend words it differently; this is bugs's. `bugs` on `steps/observe_weighted` reports:
+
+```text
+bugs cannot transpile this checked QIEC construct: weighted-observe:weighted
 ```
 
 ### `scan:marginal:no-lowering:cell`
@@ -1438,6 +1456,27 @@ qiec:capability:perform:read
 bugs cannot transpile this program:
   - QIEC computation `read` requires the `effectful-row` QIEC capability, but BUGS has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
   - QIEC computation `read` requires the `perform` QIEC capability, but BUGS has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
+```
+
+**`qiec:capability:named-parameter:weighted_log_density`, `qiec:capability:weight:weighted_log_density`**
+
+Refused for: `statements/qiec_weight_primitives`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+qiec:capability:named-parameter:weighted_log_density
+qiec:capability:weight:weighted_log_density
+```
+
+`bugs` on `statements/qiec_weight_primitives` reports:
+
+```text
+bugs cannot transpile this program:
+  - QIEC computation `weighted_log_density` requires the `named-parameter` QIEC capability, but BUGS has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
+  - QIEC computation `weighted_log_density` requires the `weight` QIEC capability, but BUGS has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
 ```
 
 ### church
@@ -2828,6 +2867,27 @@ jags cannot transpile this program:
   - QIEC computation `read` requires the `perform` QIEC capability, but JAGS has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
 ```
 
+**`qiec:capability:named-parameter:weighted_log_density`, `qiec:capability:weight:weighted_log_density`**
+
+Refused for: `statements/qiec_weight_primitives`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+qiec:capability:named-parameter:weighted_log_density
+qiec:capability:weight:weighted_log_density
+```
+
+`jags` on `statements/qiec_weight_primitives` reports:
+
+```text
+jags cannot transpile this program:
+  - QIEC computation `weighted_log_density` requires the `named-parameter` QIEC capability, but JAGS has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
+  - QIEC computation `weighted_log_density` requires the `weight` QIEC capability, but JAGS has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
+```
+
 ### numpyro
 
 Every program below renders on at least one other backend and is refused here.
@@ -3270,6 +3330,24 @@ qiec:capability:perform:read
 stan cannot transpile this program:
   - QIEC computation `read` requires the `effectful-row` QIEC capability, but Stan has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
   - QIEC computation `read` requires the `perform` QIEC capability, but Stan has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
+```
+
+**`qiec:capability:weight:weighted_log_density`**
+
+Refused for: `statements/qiec_weight_primitives`.
+
+Renders on: `church`, `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+qiec:capability:weight:weighted_log_density
+```
+
+`stan` on `statements/qiec_weight_primitives` reports:
+
+```text
+QIEC computation `weighted_log_density` requires the `weight` QIEC capability, but Stan has no semantics-preserving lowering for it. Choose a target whose QIEC capability set includes this feature, or change the computation; silently erasing it would change the program.
 ```
 
 **`sample:discrete-latent:group`**

@@ -332,3 +332,35 @@ program p[K : FinSet](spread : Real) : K -> Out
         (1, 39),
         (2, 15),
     }
+
+
+def test_observation_weight_option_uses_its_lexical_header_parameter() -> None:
+    source = """object Row : FinSet 3
+object Out : Real 1
+program first(w : Tensor[Real]([Row])) : Row -> Out
+    observe y : Row <- Normal(loc=0.0, scale=1.0) [weights=w]
+    return y
+program second(w : Real) : Row -> Out
+    observe y : Row <- Normal(loc=0.0, scale=1.0) [weights=w]
+    return y
+export first
+"""
+    document = DocumentState(uri="file:///tmp/weighted-observation.qvr")
+    document.update(source=source, version=1)
+    use = source.splitlines()[3].rindex("w]")
+    second_use = source.splitlines()[6].rindex("w]")
+    declaration = document.find_decl("w", line=3, col=use)
+    assert type(declaration).__name__ == "QiecValueParameter"
+    assert getattr(declaration, "line", 0) == 3
+    assert _reference_positions(document, "w", line=3, col=use) == {(2, 14), (3, use)}
+    assert _reference_positions(document, "w", line=6, col=second_use) == {
+        (5, 15),
+        (6, second_use),
+    }
+    hover = _render_hover(document, "w", line=3, col=use)
+    assert hover is not None and "w : Tensor[Real]([Row])" in hover
+    items = {
+        item.label: item
+        for item in _qiec_local_completion_items(document, "", line=3, col=use)
+    }
+    assert items["w"].detail == "w : Tensor[Real]([Row])"

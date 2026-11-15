@@ -55,7 +55,7 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetFactorBinder,
     LetFactorCase,
 )
-from quivers.dsl.let_expr_traversal import walk_let_expr
+from quivers.dsl.let_expr_traversal import let_expr_children
 from quivers.transpile._resolve import build_let_table, build_morphism_table
 from quivers.transpile._python_calls import PYTHON_TARGETS, python_call_renderable
 from quivers.qiec import QiecModule, validate_module
@@ -142,6 +142,7 @@ from quivers.transpile.ir import (
     IRMarginalize,
     IRNode,
     IRObserve,
+    IRQiecValueExpr,
     IRProgram,
     IRReturn,
     IRSample,
@@ -534,6 +535,11 @@ class _ProgramWalk:
                 )
             via = index.local.name
             density = density.value
+        if isinstance(density, PrimitiveApplication) and density.name == "scale_weight":
+            raise UnsupportedConstruct(
+                f"qvr-{self.planner.target}",
+                [f"qiec:weighted-observe:{self.program.name}"],
+            )
         if isinstance(density, LogDensity) and isinstance(density.value, Var):
             observation = density.value.local.name
             if isinstance(density.sampleable, DistributionValue):
@@ -971,7 +977,12 @@ class _ProgramWalk:
             Whether every comprehension axis is an object of the source
             and, on a Python target, every call has a spelling.
         """
-        for node in walk_let_expr(expression):
+        pending = [expression]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, IRQiecValueExpr):
+                return False
+            pending.extend(let_expr_children(node))
             if isinstance(node, LetExprFactor):
                 for binder in node.binders:
                     index = binder.index

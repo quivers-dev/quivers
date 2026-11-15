@@ -444,3 +444,25 @@ def test_morphism_is_a_leaf():
     assert ref is not None
     assert ref.kind == "morphism"
     assert dict(scope_children(ref)) == {}
+
+
+def test_weighted_observation_exposes_declared_weight_and_computed_local_scopes():
+    from types import SimpleNamespace
+
+    from quivers.dsl import parse
+
+    module = parse("""object Row : FinSet 3
+object Out : Real 1
+program main(w : Tensor[Real]([Row])) : Row -> Out
+    let adjusted = w * 2.0
+    observe y : Row <- Normal(loc=0.0, scale=1.0) [weights=adjusted]
+    return y
+""")
+    compiler = SimpleNamespace(_module=module)
+    weight = resolve_scoped_path(compiler, "main::w")
+    adjusted = resolve_scoped_path(compiler, "main::adjusted")
+    assert weight is not None and weight.kind == "data-input"
+    assert adjusted is not None and adjusted.kind == "let-site"
+    assert [reference.path for reference in find_all_references(compiler, "w")] == [
+        "main::w"
+    ]

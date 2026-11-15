@@ -251,8 +251,15 @@ _qvr_qiec_primitives = {
     "as_weight": lambda a: a,
     "weight_value": lambda a: a,
     "add_weight": lambda a, b: a + b,
-    "scale_weight": lambda a, b: a * b,
+    "scale_weight": lambda a, b: 0.0 if a == 0 else a * b,
+    "observation_weight": lambda a: _qvr_qiec_observation_weight(a),
 }
+
+
+def _qvr_qiec_observation_weight(value):
+    if isinstance(value, bool) or not _qvr_qiec_math.isfinite(value) or value < 0:
+        raise ValueError("observation weights must be finite and nonnegative")
+    return value
 
 
 def _qvr_qiec_sigmoid(value):
@@ -365,9 +372,22 @@ def _qvr_qiec_primitive(name, arguments):
         raise KeyError("unknown QIEC primitive " + name)
     values = tuple(_qvr_qiec_value(argument) for argument in arguments)
     host = _qvr_qiec_host_math.get(name)
-    if host is not None and any(_qvr_qiec_is_host(value) for value in values):
-        return _qvr_qiec_broadcast(host, values)
-    return _qvr_qiec_broadcast(implementation, values)
+    if host is None:
+        return _qvr_qiec_broadcast(implementation, values)
+    if name in {"observation_weight", "scale_weight"} and any(
+        _qvr_qiec_is_host(value) for value in values
+    ):
+        return host(*values)
+
+    def apply(*entries):
+        function = (
+            host
+            if any(_qvr_qiec_is_host(entry) for entry in entries)
+            else implementation
+        )
+        return function(*entries)
+
+    return _qvr_qiec_broadcast(apply, values)
 
 
 def _qvr_qiec_gather(value, index):

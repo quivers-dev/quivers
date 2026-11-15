@@ -819,11 +819,16 @@ class ModelFit(ValueModel):
                         if observed_name not in observations or site.sampleable is None:
                             continue
                         sampleable = site.sampleable
+                        raw_pointwise = getattr(
+                            sampleable, "raw_log_prob_pointwise", None
+                        )
                         pointwise = getattr(
                             sampleable.morphism, "log_prob_pointwise", None
                         )
                         density = (
-                            pointwise(sampleable.input, site.value)
+                            raw_pointwise(site.value)
+                            if callable(raw_pointwise)
+                            else pointwise(sampleable.input, site.value)
                             if callable(pointwise)
                             else sampleable.log_prob(site.value)
                         )

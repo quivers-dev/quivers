@@ -288,7 +288,13 @@ var _qvr_qiec_primitives = {
   as_weight: function(a) { return a; },
   weight_value: function(a) { return a; },
   add_weight: function(a, b) { return a + b; },
-  scale_weight: function(a, b) { return a * b; }
+  scale_weight: function(a, b) { return a === 0 ? 0 : a * b; },
+  observation_weight: function(a) {
+    if (typeof a !== "number" || !(a === a && Math.abs(a) !== Infinity) || a < 0) {
+      error("observation weights must be finite and nonnegative");
+    }
+    return a;
+  }
 };
 var _qvr_qiec_broadcast = function(implementation, args) {
   var tensors = filter(function(argument) { return Array.isArray(argument); }, args);
