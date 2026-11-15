@@ -12,11 +12,19 @@ remaining work against brms and the open enhancement issues as of November 15, 2
 
 ## brms coverage
 
-The comparison uses the published brms 2.23.2
+The released comparison baseline is
+[brms 2.23.0 on CRAN](https://CRAN.R-project.org/package=brms), published
+September 9, 2025, with its
+[source metadata pinned at `b124949c`](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/DESCRIPTION).
+The audit also checks the official development snapshot
+[`f4f906dc`, dated November 12, 2026](https://github.com/paul-buerkner/brms/commit/f4f906dc0db56fd42b58cdd7d57e76b40f650331),
+whose [metadata identifies version 2.23.2](https://github.com/paul-buerkner/brms/blob/f4f906dc0db56fd42b58cdd7d57e76b40f650331/DESCRIPTION).
+That development version is distinct from the CRAN release. The website's
 [reference index](https://paulbuerkner.com/brms/reference/index.html),
 [formula specification](https://paulbuerkner.com/brms/reference/brmsformula.html),
 [family catalog](https://paulbuerkner.com/brms/reference/brmsfamily.html), and
-[fitting interface](https://paulbuerkner.com/brms/reference/brm.html).
+[fitting interface](https://paulbuerkner.com/brms/reference/brm.html)
+describe the development version.
 These sources establish the comparison's scope; the QVR assessments below come
 from the implementation and its tests. Full brms coverage is not established.
 
@@ -45,16 +53,34 @@ interaction, an independent density or prediction oracle, and a stated tolerance
 For instance, comparing correlated effects requires checking the covariance
 model; matching a formula's printed text would not establish the same prior.
 
-After the four count additions, the following 15 families in the published
-brms catalog still lack formula frontends: `skew_normal`, `shifted_lognormal`,
+The pinned [released family registry](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/family-lists.R)
+and [development family registry](https://github.com/paul-buerkner/brms/blob/f4f906dc0db56fd42b58cdd7d57e76b40f650331/R/family-lists.R)
+each contain 49 named entries plus `custom`; their definitions agree apart
+from trailing whitespace. QVR's 30 formula entries cover 29 of those names
+after normalizing `student`/`student_t`, `negbinomial`/`negative_binomial`,
+and `inverse.gaussian`/`inverse_gaussian`. Its remaining entry is generic
+mixture composition. This name comparison does not establish equivalent
+parameterizations, links, or fitting behavior.
+
+Twenty source-registry entries still lack QVR formula frontends. Fifteen
+appear in the website's family catalog: `skew_normal`, `shifted_lognormal`,
 `frechet`, `gen_extreme_value`, `wiener`, `dirichlet`, `logistic_normal`, `cox`,
 `hurdle_cumulative`, `multinomial`, `dirichlet_multinomial`, `sratio`, `cratio`,
-`acat`, and `xbeta`. This comparison follows the
-[brms family catalog](https://paulbuerkner.com/brms/reference/brmsfamily.html),
-normalizing names such as `student`/`student_t` and
-`negbinomial`/`negative_binomial`. These are family gaps, not the complete
-parity requirements: links, thresholds, response modifiers, interactions,
-and the other workflows in the table still need separate acceptance tests.
+`acat`, and `xbeta`. Five further entries are present in both pinned source
+registries: `com_poisson`, `discrete_weibull`,
+`zero_inflated_asym_laplace`, `negbinomial2`, and `dirichlet2`.
+The released [constructor source](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/families.R)
+marks these five as unexported or not yet officially supported; they are
+not new development-only families. `negbinomial2` and `dirichlet2` are
+alternate parameterizations rather than additional distribution laws.
+
+The released registry also includes `squareplus` and `softit` links,
+which the website's abbreviated link lists do not enumerate. Thus neither
+the family count nor QVR's 15 inverse links establishes full coverage.
+Links, thresholds, response modifiers, interactions, and the other
+workflows in the table need separate acceptance tests against each pinned
+baseline. Future audits should compare released and development sources
+independently, retaining their commit identities and support status.
 
 ## Open enhancement issues
 
