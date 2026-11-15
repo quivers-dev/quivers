@@ -20,4 +20,9 @@ training rows, including native class probabilities and expected counts. Their
 [posterior workflow](../../guides/analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
 describes shapes, labels, link scales, and expectations.
 
+`fit`, `formula_to_qvr`, and `get_prior` accept `weights="column"` for
+observation-only likelihood weights. The column is retained on the parsed
+formula; posterior predictors use the unweighted response law at each draw.
+See [likelihood weights](../../guides/analysis-data-and-formulas.md#likelihood-weights).
+
 ::: quivers.formulas._fit

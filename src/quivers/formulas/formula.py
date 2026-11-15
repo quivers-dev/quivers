@@ -150,7 +150,10 @@ def _read_only_columns(columns: Mapping[str, np.ndarray]) -> dict[str, np.ndarra
 
 
 class FixedColumn(ValueModel):
-    """One column of the fixed-effects design matrix.
+    """One evaluated numeric column retained by a regression formula.
+
+    Fixed-design columns receive coefficients. Offset and response-weight
+    columns reuse the same immutable data record without coefficient sites.
 
     Columns compare by value: ``data`` is stored as a read-only copy
     made at construction and compared exactly (dtype, shape, and
@@ -167,7 +170,8 @@ class FixedColumn(ValueModel):
         multi-column terms like ``poly(x, 2)``.
     qvr_name : str
         QVR-legal identifier derived from `name` (alnum / ``_``
-        only); used as the variable name in the emitted program.
+        only). Fixed-design inputs use this identifier; offsets and
+        response weights use compiler-owned input names.
     is_intercept : bool
         ``True`` for the constant-1 column.
     data : np.ndarray
@@ -216,8 +220,8 @@ class Formula(ValueModel):
 
     Formulas compare by value over every field: two formulas are equal
     only when their formula strings, response names, fixed columns
-    (labels and data), random terms, response values, group levels,
-    and group indices all agree. The arrays are stored as read-only
+    (labels and data), random terms, offsets, response weights, response
+    values, group levels, and group indices all agree. The arrays are stored as read-only
     copies made at construction.
 
     Attributes
@@ -236,6 +240,9 @@ class Formula(ValueModel):
     group_levels : dict[str, tuple[str, ...]]
         Canonical level ordering per grouping factor, used to derive
         deterministic plate-index tensors.
+    response_weights : FixedColumn or None
+        Retained nonnegative finite likelihood weights, one per response row.
+        Weights multiply response log densities and receive no coefficient.
     offsets : tuple[FixedColumn, ...]
         Evaluated ``offset(expr)`` and ``exposure(expr)`` contributions on
         the linear-predictor scale. These columns receive no coefficients.
@@ -258,6 +265,9 @@ class Formula(ValueModel):
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
     offsets: tuple[FixedColumn, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    response_weights: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
 
@@ -289,6 +299,9 @@ class FormulaData(ValueModel):
         Original group names keyed by normalized group name.
     group_levels : dict[str, tuple[str, ...]]
         Canonical level order for each group.
+    response_weights : FixedColumn or None
+        Retained nonnegative finite likelihood weights, one per response row.
+        Weights multiply response log densities and receive no coefficient.
     offsets : tuple[FixedColumn, ...]
         Evaluated ``offset(expr)`` and ``exposure(expr)`` contributions on
         the linear-predictor scale. These columns receive no coefficients.
@@ -317,6 +330,9 @@ class FormulaData(ValueModel):
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
     offsets: tuple[FixedColumn, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    response_weights: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     random_terms: tuple[RandomTerm, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
@@ -470,6 +486,7 @@ def formula_from_data(
     formula: str,
     data: IntoDataFrame,
     *,
+    weights: str | None = None,
     extra_namespace: Mapping[str, object] | None = None,
 ) -> Formula:
     """Build a typed `Formula` IR by lifting
@@ -500,6 +517,10 @@ def formula_from_data(
         Formula string in brms / lme4 syntax.
     data : IntoDataFrame
         Pandas, polars, or any other Narwhals-compatible dataframe.
+    weights : str or None
+        Name of a numeric, finite, nonnegative likelihood-weight column.
+        Its values are retained without normalization and must align with
+        every response row after formula evaluation.
     extra_namespace : Mapping[str, object], optional
         Additional names visible inside the formula's expression
         evaluation, merged on top of the R-style transforms.
@@ -515,10 +536,27 @@ def formula_from_data(
     ------
     ValueError
         If the formula has no response on the left of ``~``, or a
-        random term is not of the form ``(slope | group)``.
+        random term is invalid, an offset modifier is used inside an
+        interaction or group, or weights are nonnumeric, negative, nonfinite,
+        or misaligned with the evaluated response rows.
     """
     nw_df = nw.from_native(data, eager_only=True)
     pandas_df = nw_df.to_pandas()
+    response_weights = None
+    if weights is not None:
+        if not isinstance(weights, str) or weights not in pandas_df.columns:
+            raise ValueError("weights must name an existing dataframe column")
+        values = np.asarray(pandas_df[weights])
+        if values.ndim != 1 or values.dtype.kind not in "iuf":
+            raise ValueError("weights require a real numeric column")
+        if not np.isfinite(values).all() or np.any(values < 0):
+            raise ValueError("weights must be finite and nonnegative")
+        response_weights = FixedColumn(
+            term=weights,
+            name=weights,
+            qvr_name="formula_weights",
+            data=values.astype(np.float64),
+        )
     namespace: dict[str, object] = dict(_R_TRANSFORMS)
     if extra_namespace:
         if {"offset", "exposure"} & extra_namespace.keys():
@@ -620,11 +658,20 @@ def formula_from_data(
         np.asarray(dm.response.design_matrix).reshape(-1).astype(np.float64)
     )
 
+    if (
+        response_weights is not None
+        and response_weights.data.shape != response_values.shape
+    ):
+        raise ValueError(
+            "weights must align with every evaluated response row; missing model values cannot drop weighted rows"
+        )
+
     return Formula(
         formula=formula,
         response_name=response_name,
         fixed_columns=tuple(fixed_columns),
         offsets=tuple(offsets),
+        response_weights=response_weights,
         random_terms=tuple(random_terms),
         response_values=response_values,
         group_levels=group_levels,

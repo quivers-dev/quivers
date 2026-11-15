@@ -83,6 +83,8 @@ from quivers.dsl.ast_nodes import (
     DrawArgNamed,
     Module,
     ObserveStep,
+    OptionEntry,
+    OptionName,
     ProgramDecl,
     ProgramStep,
     SampleStep,
@@ -209,6 +211,7 @@ def _draw(
     *,
     index: TypeName | None = None,
     mode: Literal["sample", "score", "marginal"] = "sample",
+    weights: str | None = None,
 ) -> SampleStep | ObserveStep:
     """Build a surface program step for a draw of ``var`` from ``family``.
 
@@ -238,6 +241,9 @@ def _draw(
             morphism=family,
             args=tagged_args,
             index=index,
+            options=()
+            if weights is None
+            else (OptionEntry(key="weights", value=OptionName(value=weights)),),
         )
     return SampleStep(
         vars=(var,),
@@ -760,6 +766,27 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError(
                     "zero_inflated_beta requires finite response values in [0, 1)"
                 )
+        if formula.response_weights is not None:
+            weights = formula.response_weights.data
+            if weights.shape != formula.response_values.shape:
+                raise ValueError("weights must align with every evaluated response row")
+            if (
+                weights.dtype.kind not in "iuf"
+                or not np.isfinite(weights).all()
+                or np.any(weights < 0)
+            ):
+                raise ValueError("weights must be finite nonnegative real values")
+            if (
+                _qvr_name(formula.response_name) == "formula_weights"
+                or self._predictor_name == "formula_weights"
+                or any(
+                    column.qvr_name == "formula_weights"
+                    for column in formula.fixed_columns
+                )
+            ):
+                raise ValueError(
+                    "formula_weights is reserved for response likelihood weights"
+                )
         group_codings: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {}
         for name, predictor in (("mu", formula), *self._distributional.items()):
             if predictor.response_values.shape != formula.response_values.shape:
@@ -837,6 +864,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             group_indices=dict(formula.group_indices),
             random_terms=formula.random_terms,
             offsets=formula.offsets,
+            response_weights=formula.response_weights,
         )
         return module, complement
 
@@ -1002,15 +1030,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             fixed_columns=tuple(fixed_columns),
             random_terms=tuple(random_terms),
             offsets=complement.offsets,
+            response_weights=complement.response_weights,
             response_values=complement.response_values,
             group_levels=complement.group_levels,
             group_indices=complement.group_indices,
         )
 
     def fixed_column_observations(self, formula: Formula) -> dict[str, torch.Tensor]:
-        """Per-column free-variable bindings for the host-data
-        channel.  One entry per non-intercept fixed column, shape
-        ``(N,)``.
+        """Bind retained covariates, offsets, and response likelihood weights.
 
         Parameters
         ----------
@@ -1020,11 +1047,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Returns
         -------
         dict[str, torch.Tensor]
-            Each non-intercept column's ``float32`` data, keyed by its
-            QVR name. Auxiliary-predictor columns use the prefix
-            ``dpar_<parameter>_`` and are included once per predictor.
+            Numeric predictor and offset columns as ``float32`` tensors,
+            keyed by their QVR input names. Auxiliary columns use the prefix
+            ``dpar_<parameter>_``. Response weights retain their stored
+            ``float64`` precision under the ``formula_weights`` key.
         """
         obs: dict[str, torch.Tensor] = {}
+        if formula.response_weights is not None:
+            obs["formula_weights"] = torch.as_tensor(
+                formula.response_weights.data.copy()
+            )
         for col in formula.fixed_columns:
             if col.is_intercept:
                 continue
@@ -2024,8 +2056,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
 
         return _add(*linear_terms) if linear_terms else LetExprLiteral(value=0.0)
 
-    def _group_parameters(self, formula: Formula) -> tuple[QiecValueParameter, ...]:
-        """Declare the integer index arrays supplied by evaluated group coding.
+    def _runtime_parameters(self, formula: Formula) -> tuple[QiecValueParameter, ...]:
+        """Declare checked group-index and response-weight input tensors.
 
         Parameters
         ----------
@@ -2035,7 +2067,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Returns
         -------
         tuple[QiecValueParameter, ...]
-            One checked runtime tensor parameter per grouping factor.
+            Checked integer group indices and an optional Real row-weight tensor.
         """
         groups = dict.fromkeys(
             group
@@ -2047,10 +2079,20 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             static_arguments=(QiecTypeName(name="Int"),),
             indices=(QiecShapeIndex(dimensions=(QiecIndexName(name="Resp"),)),),
         )
-        return tuple(
+        parameters = tuple(
             QiecValueParameter(name=f"{_qvr_name(group)}_idx", type_expr=index_type)
             for group in groups
         )
+        if formula.response_weights is not None:
+            weight_type = QiecTypeApplication(
+                constructor="Tensor",
+                static_arguments=(QiecTypeName(name="Real"),),
+                indices=(QiecShapeIndex(dimensions=(QiecIndexName(name="Resp"),)),),
+            )
+            parameters += (
+                QiecValueParameter(name="formula_weights", type_expr=weight_type),
+            )
+        return parameters
 
     def _build_module(self, formula: Formula) -> Module:
         statements: list[Statement] = []
@@ -2084,13 +2126,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     ("mu",),
                     index=TypeName(name="Resp"),
                     mode="score",
+                    weights="formula_weights"
+                    if formula.response_weights is not None
+                    else None,
                 )
             )
             statements.append(
                 ProgramDecl(
                     name="model",
                     params=None,
-                    value_parameters=self._group_parameters(formula),
+                    value_parameters=self._runtime_parameters(formula),
                     domain=TypeName(name="Resp"),
                     codomain=TypeName(name="Resp"),
                     draws=tuple(program_steps),
@@ -2295,13 +2340,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 obs_args,
                 index=TypeName(name="Resp"),
                 mode="score",
+                weights="formula_weights"
+                if formula.response_weights is not None
+                else None,
             )
         )
 
         program_decl = ProgramDecl(
             name="model",
             params=None,
-            value_parameters=self._group_parameters(formula),
+            value_parameters=self._runtime_parameters(formula),
             domain=TypeName(name="Resp"),
             codomain=TypeName(name="Resp"),
             draws=tuple(program_steps),

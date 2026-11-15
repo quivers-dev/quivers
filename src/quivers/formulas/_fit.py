@@ -566,6 +566,7 @@ def fit(
     *,
     data: IntoDataFrame,
     family: str | Family = "gaussian",
+    weights: str | None = None,
     distributional: Mapping[str, str] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     method: Literal["nuts", "hmc", "svi"] = "nuts",
@@ -608,6 +609,10 @@ def fit(
     family : str or Family
         Registered response family or a family value. ``Family.with_links``
         selects location or auxiliary inverse links.
+    weights : str or None
+        Numeric column of finite nonnegative likelihood weights. Values
+        multiply each response's log density, retain their original scale,
+        and do not weight priors or posterior predictions.
     distributional : Mapping[str, str] or None
         Auxiliary-parameter formulas, for instance
         ``{"sigma": "~ z + (1 | g)"}``. The optional left-hand side must
@@ -703,7 +708,7 @@ def fit(
         else:
             family_obj = family
 
-        parsed = formula_from_data(formula, data)
+        parsed = formula_from_data(formula, data, weights=weights)
         parameter_formulas = _parse_distributional(
             distributional, data, parsed.response_name
         )
@@ -834,6 +839,7 @@ def formula_to_qvr(
     *,
     data: IntoDataFrame,
     family: str | Family = "gaussian",
+    weights: str | None = None,
     distributional: Mapping[str, str] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     fixed_prior: str = "Normal(0.0, 5.0)",
@@ -857,11 +863,14 @@ def formula_to_qvr(
     ``{"sigma": "~ z"}``; the corresponding linked predictors are emitted
     in the same QVR program as the location formula. ``fixed_parameters``
     instead binds auxiliary parameters to constants on their natural scale.
+    ``weights="column"`` retains nonnegative likelihood weights and emits
+    them only on the response observation; priors and predictions are unweighted.
     """
     lens, parsed = _formula_lens(
         formula,
         data=data,
         family=family,
+        weights=weights,
         distributional=distributional,
         fixed_parameters=fixed_parameters,
         fixed_prior=fixed_prior,
@@ -886,6 +895,7 @@ def get_prior(
     *,
     data: IntoDataFrame,
     family: str | Family = "gaussian",
+    weights: str | None = None,
     distributional: Mapping[str, str] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     fixed_prior: str = "Normal(0.0, 5.0)",
@@ -913,6 +923,10 @@ def get_prior(
         Rows used to evaluate design matrices and autoscale default priors.
     family : str or Family
         Registered response family or a family value with selected links.
+    weights : str or None
+        Numeric column of finite nonnegative likelihood weights. Values
+        multiply each response's log density, retain their original scale,
+        and do not weight priors or posterior predictions.
     distributional : Mapping[str, str] or None
         Separate formulas for auxiliary parameters.
     fixed_parameters : Mapping[str, float] or None
@@ -946,6 +960,7 @@ def get_prior(
         formula,
         data=data,
         family=family,
+        weights=weights,
         distributional=distributional,
         fixed_parameters=fixed_parameters,
         fixed_prior=fixed_prior,
@@ -966,6 +981,7 @@ def _formula_lens(
     *,
     data: IntoDataFrame,
     family: str | Family = "gaussian",
+    weights: str | None = None,
     distributional: Mapping[str, str] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     fixed_prior: str = "Normal(0.0, 5.0)",
@@ -988,7 +1004,7 @@ def _formula_lens(
         family_obj = families[family]
     else:
         family_obj = family
-    parsed = formula_from_data(formula, data)
+    parsed = formula_from_data(formula, data, weights=weights)
     parameter_formulas = _parse_distributional(
         distributional, data, parsed.response_name
     )

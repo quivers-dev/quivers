@@ -192,6 +192,58 @@ standalone additive terms; interactions, wrappers around these modifiers, and
 random coefficients on them raise errors. The modifiers' names are reserved in
 the formula evaluation namespace.
 
+### Likelihood weights
+
+Pass `weights="column"` to multiply each response log density by its row's
+weight. Priors retain their original scores. The weights keep their supplied
+scale; the interface does not divide them by their sum or mean. For instance,
+this count model includes both observation exposure and likelihood weights:
+
+```python
+import pandas as pd
+from quivers.formulas import fit, get_prior
+
+weighted_counts = pd.DataFrame({
+    "events": [0, 2, 1, 4],
+    "x": [-1.0, 0.0, 0.5, 1.0],
+    "hours": [0.5, 1.0, 2.0, 4.0],
+    "importance": [0.0, 0.5, 2.0, 1.0],
+})
+weighted_fit = fit(
+    "events ~ x + exposure(hours)",
+    data=weighted_counts,
+    family="poisson",
+    weights="importance",
+    method="svi",
+    num_steps=10,
+    seed=7,
+)
+priors = get_prior(
+    "events ~ x + exposure(hours)",
+    data=weighted_counts,
+    family="poisson",
+    weights="importance",
+)
+assert set(priors) == {"intercept", "beta_x"}
+assert weighted_fit.posterior_epred(num_samples=5).shape == (1, 5, 4)
+```
+
+The exposure changes the Poisson mean. The likelihood weight scales the log
+density at that mean; fractional weights are allowed, and a zero weight excludes
+the row's likelihood contribution. Group and auxiliary-parameter priors are
+also unweighted. Changing weights changes the fitted posterior. At fixed
+posterior coefficients, the response distribution used for predictions is
+unchanged, and raw pointwise likelihoods retain the unweighted density.
+
+A weight column must contain finite nonnegative real numbers. Boolean, string,
+and complex columns are rejected. The evaluated response and weight rows must
+remain aligned; missing model values that would drop weighted rows raise an
+error. Prepare a common set of rows before fitting. The read-only column is
+retained in `Formula.response_weights` and its lens complement. Emitted QVR
+declares a checked `Tensor[Real]([Resp])` input and attaches
+`[weights=formula_weights]` to the response observation, with no weight
+coefficient or prior.
+
 ### Correlated group effects
 
 A random-effects block assigns a joint distribution to its coefficients. For
