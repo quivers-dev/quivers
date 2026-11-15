@@ -1188,16 +1188,19 @@ def _graft_parsed_children(
 
 
 def _reachable(schema: panproto.Schema, roots: tuple[str, ...]) -> tuple[str, ...]:
+    outgoing: dict[str, list[str]] = {}
+    for edge in schema.edges:
+        outgoing.setdefault(edge.src, []).append(edge.tgt)
     seen = set(roots)
     ordered = list(roots)
     cursor = 0
     while cursor < len(ordered):
         source = ordered[cursor]
         cursor += 1
-        for edge in schema.edges:
-            if edge.src == source and edge.tgt not in seen:
-                seen.add(edge.tgt)
-                ordered.append(edge.tgt)
+        for target in outgoing.get(source, ()):
+            if target not in seen:
+                seen.add(target)
+                ordered.append(target)
     return tuple(ordered)
 
 
