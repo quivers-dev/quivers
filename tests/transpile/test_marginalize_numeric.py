@@ -49,6 +49,7 @@ import torch.distributions as D
 from quivers.dsl.compiler import Compiler
 from quivers.dsl.parser import parse
 from quivers.inference.trace import trace
+from quivers.qiec import BOOL, INT, tensor_shape
 from quivers.transpile import UnsupportedConstruct, transpile
 from tests.transpile import _docker, _equivalence
 from tests.transpile.probes._protocol import Point
@@ -317,27 +318,17 @@ _BACKENDS: dict[str, tuple[str, str, str]] = {
 
 
 def _coerce(
-    value: float | int | list[float] | list[int], *, integer: bool
+    value: float | int | list[float] | list[int], *, dtype: torch.dtype
 ) -> torch.Tensor:
     """Coerce a host-supplied value to the natural tensor shape for the QVR trace.
 
     Scalars land as 0-D tensors (so a `factor c : Cls in <expr>` body
     over a sample-site latent does not pick up a phantom trailing axis
     when the latent is scalar); lists land as 1-D tensors.
-    Discrete-index-map inputs ride on the ``integer`` flag and are
-    coerced to ``torch.long`` so
-    [`marginalize_grouped`][quivers.continuous.plate.marginalize_grouped]'s
-    `index_add` sees a `LongTensor` group index.
+    The checked element type chooses the dtype: boolean observations
+    remain boolean, indices remain integral, and real values use float64.
     """
-    if isinstance(value, list):
-        return torch.tensor(
-            [int(v) for v in value] if integer else [float(v) for v in value],
-            dtype=torch.long if integer else _DOUBLE,
-        )
-    return torch.tensor(
-        int(value) if integer else float(value),
-        dtype=torch.long if integer else _DOUBLE,
-    )
+    return torch.tensor(value, dtype=dtype)
 
 
 def _qvr_log_densities(
@@ -356,8 +347,8 @@ def _qvr_log_densities(
     tensor does not pick up a phantom trailing axis that
     [`marginalize_grouped`][quivers.continuous.plate.marginalize_grouped]
     then rejects. The coercion is shape-aware (lists stay 1-D,
-    scalars stay 0-D), and the integer-index-map ``idx`` rides on
-    ``torch.long`` so `index_add` accepts it.
+    scalars stay 0-D). Data dtypes come from the checked contract,
+    including boolean observations and integer index maps.
     """
     del scratch  # in-process trace; no scratch files needed.
     prior = torch.get_default_dtype()
@@ -376,9 +367,19 @@ def _qvr_log_densities(
         for pt in points:
             obs_dict: dict[str, torch.Tensor] = {}
             for k, v in pt.params.items():
-                obs_dict[k] = _coerce(v, integer=False)
+                obs_dict[k] = _coerce(v, dtype=_DOUBLE)
             for k, v in pt.data.items():
-                obs_dict[k] = _coerce(v, integer=(k == "idx"))
+                type_ = monadic.host_data_types.get(k)
+                split = tensor_shape(type_) if type_ is not None else None
+                element = type_ if split is None else split[0]
+                dtype = (
+                    torch.bool
+                    if element == BOOL
+                    else torch.long
+                    if element == INT
+                    else _DOUBLE
+                )
+                obs_dict[k] = _coerce(v, dtype=dtype)
             x = torch.zeros(1, 1, dtype=_DOUBLE)
             tr = trace(monadic, x, observations=obs_dict)
             if tr.log_joint is None:
