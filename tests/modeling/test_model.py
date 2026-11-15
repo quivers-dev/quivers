@@ -353,3 +353,24 @@ export m
     bound = model.bind({"x": torch.tensor(1.0)})
     with pytest.raises(TypeError, match="enhancement #232"):
         bound.require_tensor_program()
+
+
+@pytest.mark.parametrize("invalid", ["typo", True, torch.tensor(1.0)])
+def test_python_template_boundary_rejects_untyped_scalar_arguments(invalid):
+    source = SOURCE.replace("FinSet _", "FinSet 3").replace(
+        "program regression :", "program regression(scale : Real) :"
+    )
+    data = {"x": torch.ones(3), "y": torch.zeros(3)}
+    with pytest.raises(TypeError, match="parameter 'scale'.*Real"):
+        Model(source).bind(data, parameters={"scale": invalid})
+    with pytest.raises(TypeError, match="parameter 'scale'.*Real"):
+        loads(source).regression(scale=invalid)
+
+
+@pytest.mark.parametrize("invalid", [-1, 1.5, True])
+def test_python_template_boundary_checks_natural_arguments(invalid):
+    source = SOURCE.replace("FinSet _", "FinSet 3").replace(
+        "program regression :", "program regression(count : Nat) :"
+    )
+    with pytest.raises(TypeError, match="parameter 'count'"):
+        loads(source).regression(count=invalid)

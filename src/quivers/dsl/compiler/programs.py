@@ -3085,6 +3085,21 @@ class _ProgramsMixin:
                         f"arguments, got {len(args)}"
                     )
                 ordered = args
+            for parameter, argument in zip(type_params, ordered, strict=True):
+                if not isinstance(parameter, ScalarParam):
+                    continue
+                if isinstance(argument, bool) or not isinstance(argument, int | float):
+                    raise TypeError(
+                        f"template {name!r}: parameter {parameter.name!r} "
+                        f"requires a {parameter.scalar_kind} number"
+                    )
+                if parameter.scalar_kind == "Nat" and (
+                    not isinstance(argument, int) or argument < 0
+                ):
+                    raise TypeError(
+                        f"template {name!r}: parameter {parameter.name!r} "
+                        "requires a nonnegative integer"
+                    )
             normalized = tuple(str(a) if not isinstance(a, str) else a for a in ordered)
             call_expr = ExprMorphismCall(
                 callee=name,
