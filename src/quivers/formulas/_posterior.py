@@ -208,3 +208,43 @@ def row_binding(value: torch.Tensor, rows: int, categories: int = 0) -> torch.Te
     if value.numel() == 1 and not categories:
         return value.reshape(1).expand(rows)
     return value.reshape(shape)
+
+
+def collect_draws(
+    values: Iterator[torch.Tensor], shape: tuple[int, int]
+) -> torch.Tensor:
+    """Collect posterior row values into one preallocated output tensor.
+
+    Parameters
+    ----------
+    values : Iterator[torch.Tensor]
+        One response or predictor array per chain and draw.
+    shape : tuple[int, int]
+        The chain count and draw count, in iteration order.
+
+    Returns
+    -------
+    torch.Tensor
+        The collected arrays with leading chain and draw axes.
+
+    Raises
+    ------
+    ValueError
+        If the iterator's count or value shapes differ from the contract.
+    """
+    count = shape[0] * shape[1]
+    result: torch.Tensor | None = None
+    completed = 0
+    with torch.no_grad():
+        for index, value in enumerate(values):
+            if index >= count:
+                raise ValueError("posterior replay produced too many draws")
+            if result is None:
+                result = value.new_empty((count, *value.shape))
+            elif result.shape[1:] != value.shape:
+                raise ValueError("posterior value shape changes between draws")
+            result[index].copy_(value)
+            completed = index + 1
+    if result is None or completed != count:
+        raise ValueError("posterior replay did not produce every retained draw")
+    return result.reshape(*shape, *result.shape[1:])

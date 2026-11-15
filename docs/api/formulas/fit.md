@@ -20,6 +20,7 @@ fitted bindings on the training rows. The first two expose predictors and
 response expectations; `posterior_predict` independently samples responses
 conditional on each posterior draw. Its tensor has shape `(chain, draw, row)`;
 categorical and ordinal responses use integer codes in `category_labels` order.
+All three prediction helpers reuse the compiled program and fill one preallocated output tensor.
 The [posterior workflow](../../guides/analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
 describes shapes, labels, link scales, and expectations.
 

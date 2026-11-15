@@ -333,7 +333,12 @@ class BayesianFit(ValueModel):
             If a parameter has no fitted predictor or an ordinal inverse
             link is requested without its thresholds.
         """
-        from quivers.formulas._posterior import draw_count, replay, row_binding
+        from quivers.formulas._posterior import (
+            collect_draws,
+            draw_count,
+            replay,
+            row_binding,
+        )
 
         self._formula_predictor(parameter)
         ordinal = self.family.observe_family in {"OrderedLogistic", "OrderedProbit"}
@@ -354,12 +359,13 @@ class BayesianFit(ValueModel):
             if self.family.observe_family == "Categorical"
             else 0
         )
-        values = [
-            row_binding(recorded.sites[binding].value, rows, categories)
-            for recorded in replay(self, draws, shape)
-        ]
-        stacked = torch.stack(values)
-        return stacked.reshape(*shape, *stacked.shape[1:])
+        return collect_draws(
+            (
+                row_binding(recorded.sites[binding].value, rows, categories)
+                for recorded in replay(self, draws, shape)
+            ),
+            shape,
+        )
 
     def posterior_epred(
         self, *, num_samples: int | None = None, seed: int = 0
@@ -391,6 +397,7 @@ class BayesianFit(ValueModel):
             response would require a specified angular convention.
         """
         from quivers.formulas._posterior import (
+            collect_draws,
             draw_count,
             replay,
             response_distribution,
@@ -406,42 +413,43 @@ class BayesianFit(ValueModel):
         rows = self.formula.response_values.shape[0]
         response = _qvr_name(self.formula.response_name)
         categories = len(self.category_labels)
-        values: list[torch.Tensor] = []
-        for recorded in replay(self, draws, shape):
-            distribution = response_distribution(recorded, response)
-            if self.family.observe_family == "Categorical":
-                if not isinstance(distribution, torch.distributions.Categorical):
-                    raise TypeError(
-                        "the categorical response has no native class probabilities"
-                    )
-                value = distribution.probs
-            elif categories:
-                codes = torch.arange(
-                    categories, device=recorded.sites[response].value.device
-                )
-                value = (
-                    distribution.log_prob(
-                        codes.reshape(
-                            categories, *([1] * len(distribution.batch_shape))
+
+        def values():
+            for recorded in replay(self, draws, shape):
+                distribution = response_distribution(recorded, response)
+                if self.family.observe_family == "Categorical":
+                    if not isinstance(distribution, torch.distributions.Categorical):
+                        raise TypeError(
+                            "the categorical response has no native class probabilities"
                         )
+                    value = distribution.probs
+                elif categories:
+                    codes = torch.arange(
+                        categories, device=recorded.sites[response].value.device
                     )
-                    .exp()
-                    .movedim(0, -1)
-                )
-            else:
-                try:
-                    value = distribution.mean
-                except NotImplementedError as error:
-                    raise TypeError(
-                        f"{self.family.observe_family} exposes no native response expectation"
-                    ) from error
-            if not torch.isfinite(value).all():
-                raise ValueError(
-                    f"{self.family.observe_family} has an undefined or nonfinite response mean at a posterior draw"
-                )
-            values.append(row_binding(value, rows, categories))
-        stacked = torch.stack(values)
-        return stacked.reshape(*shape, *stacked.shape[1:])
+                    value = (
+                        distribution.log_prob(
+                            codes.reshape(
+                                categories, *([1] * len(distribution.batch_shape))
+                            )
+                        )
+                        .exp()
+                        .movedim(0, -1)
+                    )
+                else:
+                    try:
+                        value = distribution.mean
+                    except NotImplementedError as error:
+                        raise TypeError(
+                            f"{self.family.observe_family} exposes no native response expectation"
+                        ) from error
+                if not torch.isfinite(value).all():
+                    raise ValueError(
+                        f"{self.family.observe_family} has an undefined or nonfinite response mean at a posterior draw"
+                    )
+                yield row_binding(value, rows, categories)
+
+        return collect_draws(values(), shape)
 
     def posterior_predict(
         self, *, num_samples: int | None = None, seed: int = 0
@@ -472,32 +480,34 @@ class BayesianFit(ValueModel):
         TypeError
             If the response has no native sampling operation.
         """
-        from quivers.formulas._posterior import draw_count, replay, row_binding
+        from quivers.formulas._posterior import (
+            collect_draws,
+            draw_count,
+            replay,
+            row_binding,
+        )
 
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         rows = self.formula.response_values.shape[0]
         response = _qvr_name(self.formula.response_name)
-        result: torch.Tensor | None = None
-        # Guide sampling uses its own seed and restores the caller's RNG.
-        # A distinct stream avoids coupling response noise to guide noise.
-        with torch.random.fork_rng(devices=[]), torch.no_grad():
-            torch.random.default_generator.manual_seed((seed + 1) % 2**64)
-            for index, recorded in enumerate(replay(self, draws, shape)):
+
+        def values():
+            for recorded in replay(self, draws, shape):
                 sampleable = recorded.sites[response].sampleable
                 if sampleable is None:
                     raise TypeError("the response has no native sampling operation")
                 # The native observation expands shared parameters before
                 # sampling, so different rows receive independent draws.
-                value = row_binding(
+                yield row_binding(
                     sampleable.raw_morphism.rsample(sampleable.input), rows
                 )
-                if result is None:
-                    result = value.new_empty((*shape, rows))
-                result.reshape(-1, rows)[index].copy_(value)
-        if result is None:
-            raise ValueError("the posterior has no retained predictive draws")
-        return result
+
+        # Guide sampling uses its own seed and restores the caller's RNG.
+        # A distinct stream avoids coupling response noise to guide noise.
+        with torch.random.fork_rng(devices=[]), torch.no_grad():
+            torch.random.default_generator.manual_seed((seed + 1) % 2**64)
+            return collect_draws(values(), shape)
 
     def _formula_predictor(self, parameter: str) -> tuple[Formula, str]:
         """Read retained predictor metadata without re-evaluating its formula.
