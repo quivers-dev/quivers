@@ -6,6 +6,7 @@ from typing import Literal, cast
 
 from quivers.dsl.ast_nodes import (
     AxisSpec,
+    DataStep,
     CallStep,
     QiecCallComputation,
     LetStep,
@@ -26,7 +27,7 @@ from quivers.dsl.parser._helpers import _walk_draw_arg
 from quivers.dsl.parser._registry import ParseError, _Tree
 from quivers.dsl.parser.expressions import _walk_let_arith, _walk_type
 from quivers.dsl.parser.options import _walk_option_block
-from quivers.dsl.parser.qiec import _walk_computation
+from quivers.dsl.parser.qiec import _walk_computation, _walk_type as _walk_qiec_type
 
 # ---------------------------------------------------------------------------
 # program step dispatch
@@ -35,6 +36,18 @@ from quivers.dsl.parser.qiec import _walk_computation
 
 def _walk_program_step(t: _Tree, vid: str) -> ProgramStep:
     k = t.kind(vid)
+    if k == "data_step":
+        line, col = t.line_col(vid)
+        name = t.field(vid, "name")
+        type_vid = t.field(vid, "type")
+        if name is None or type_vid is None:
+            raise ParseError("data declaration requires a name and type")
+        return DataStep(
+            name=t.text(name),
+            type_expr=_walk_qiec_type(t, type_vid),
+            line=line,
+            col=col,
+        )
     if k == "sample_step":
         return _walk_sample_step(t, vid)
     if k == "observe_step":

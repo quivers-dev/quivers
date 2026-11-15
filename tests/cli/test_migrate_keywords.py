@@ -7,7 +7,7 @@ import pytest
 from quivers.cli import migrations
 from quivers.cli.migrations import MigrationError, compose_migration
 from quivers.cli.migrations import v0_19_0_to_v0_62_0 as preceding
-from quivers.cli.migrations import v0_62_0_to_head as keywords
+from quivers.cli.migrations import v0_62_0_to_v0_64_2 as keywords
 from quivers.dsl import CompileError, ParseError, loads, parse
 
 

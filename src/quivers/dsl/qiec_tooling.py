@@ -38,6 +38,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecIndexDecl,
 )
 from quivers.dsl.compiler import Compiler, CompileError
+from quivers.dsl._data_inference import has_inferred_objects
 from quivers.dsl.emit import module_to_source, static_argument_to_source
 from quivers.dsl.qiec_lowering import (
     QIEC_STATEMENT_TYPES,
@@ -290,7 +291,7 @@ def analyze_module(
         compiler = Compiler(non_qiec_module, lower_qiec=False)
     compile_error: CompileError | None = None
     try:
-        env = compiler.compile_env()
+        env = {} if has_inferred_objects(module) else compiler.compile_env()
     except CompileError as error:
         compile_error = error
         env = {}

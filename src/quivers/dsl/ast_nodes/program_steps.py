@@ -32,7 +32,7 @@ import didactic.api as dx
 from quivers.dsl.ast_nodes._shared import AxisSpec, OptionEntry
 from quivers.dsl.ast_nodes.let_expressions import LetExprNode
 from quivers.dsl.ast_nodes.objects import ObjectExpr
-from quivers.dsl.ast_nodes.qiec import QiecCallComputation
+from quivers.dsl.ast_nodes.qiec import QiecCallComputation, QiecTypeExpr
 
 
 class DrawArg(dx.TaggedUnion, discriminator="kind"):
@@ -166,6 +166,30 @@ def atom_to_draw_arg(value: str | float | int | DrawArg) -> DrawArg:
 
 class ProgramStep(dx.TaggedUnion, discriminator="kind"):
     """Sum of program-block step node kinds."""
+
+
+class DataStep(ProgramStep):
+    """Declare an external value at a QIEC type inside a program.
+
+    Parameters
+    ----------
+    name : str
+        External symbol supplied by the caller.
+    type_expr : QiecTypeExpr
+        Declared type, including tensor dimensions where applicable.
+    line : int
+        One-based source line, or zero when unknown.
+    col : int
+        Zero-based source column.
+    kind : str
+        Tagged-union discriminator.
+    """
+
+    name: str
+    type_expr: QiecTypeExpr
+    line: int = 0
+    col: int = 0
+    kind: Literal["data_step"] = "data_step"
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +509,7 @@ class GroupedBodyObserveStep(ProgramStep):
 __all__ = [
     "BindStep",
     "CallStep",
+    "DataStep",
     "DrawArg",
     "DrawArgDist",
     "DrawArgIndex",

@@ -270,7 +270,7 @@ Three identifiers name three formats, and each can change without the others:
 
 | Identifier | Names |
 | --- | --- |
-| `qvr-source/v0.20` | the source grammar and its elaboration to QIEC |
+| `qvr-source/v0.21` | the source grammar and its elaboration to QIEC |
 | `qiec-core/v1alpha1` | the typed core that checked modules are written in |
 | `qiec-json/v1` | the deterministic JSON serialization of a checked module |
 

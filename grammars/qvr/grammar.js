@@ -1533,7 +1533,16 @@ module.exports = grammar({
       ']',
     ),
 
+    data_step: $ => seq(
+      'data',
+      field('name', $.identifier),
+      ':',
+      field('type', $._qiec_type_expr),
+      $._newline,
+    ),
+
     _program_step: $ => choice(
+      $.data_step,
       $.sample_step,
       $.observe_step,
       $.marginalize_step,

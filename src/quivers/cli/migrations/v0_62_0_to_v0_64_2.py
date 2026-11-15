@@ -20,7 +20,7 @@ from quivers.cli.migrations._common import (
 
 
 _SOURCE_REV = "v0.62.0"
-_TARGET_REV = "HEAD"
+_TARGET_REV = "v0.64.2"
 type _Edit = tuple[int, int, bytes]
 _DECLARATION_KINDS = frozenset({"morphism_decl", "program_decl", "composition_decl"})
 

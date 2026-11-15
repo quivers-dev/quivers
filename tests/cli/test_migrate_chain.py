@@ -32,13 +32,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_chain_has_every_release_and_explicit_head_terminus() -> None:
-    assert CHAIN[-7:] == (
+    assert CHAIN[-8:] == (
         "v0.15.0",
         "v0.16.0",
         "v0.17.0",
         "v0.18.0",
         "v0.19.0",
         "v0.62.0",
+        "v0.64.2",
         "HEAD",
     )
     pairs = set(zip(CHAIN, CHAIN[1:]))
@@ -47,7 +48,7 @@ def test_chain_has_every_release_and_explicit_head_terminus() -> None:
 
 
 def test_released_identity_segment_shares_one_grammar_commit() -> None:
-    commits = {commit_id(ref) for ref in CHAIN[-7:-3]}
+    commits = {commit_id(ref) for ref in ("v0.15.0", "v0.16.0", "v0.17.0", "v0.18.0")}
     assert len(commits) == 1
     assert "" not in commits
 
@@ -104,9 +105,9 @@ def test_vcs_coverage_spans_every_chain_edge() -> None:
     assert all(not report.removed_rules for report in identity_reports)
 
     head_report = reports[-1]
-    assert (head_report.from_ref, head_report.to_ref) == ("v0.62.0", "HEAD")
+    assert (head_report.from_ref, head_report.to_ref) == ("v0.64.2", "HEAD")
     assert not head_report.removed_rules
-    assert ("v0.62.0", "HEAD") not in IDENTITY_PAIRS
+    assert ("v0.64.2", "HEAD") not in IDENTITY_PAIRS
 
 
 def test_v018_to_v019_additive_hop_is_byte_preserving_and_validated() -> None:

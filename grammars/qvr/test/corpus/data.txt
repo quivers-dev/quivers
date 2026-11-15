@@ -1,0 +1,86 @@
+==================
+Declared external tensor and inferred row extent
+==================
+object Row : FinSet _
+object Out : Real 1
+program regression : Row -> Out
+    data x : Tensor[Real]([Row])
+    data y : Tensor[Real]([Row])
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let mu = b * x
+    observe y : Row <- Normal(loc=mu, scale=1.0)
+    return b
+export regression
+
+---
+
+(source_file
+  (object_decl
+    (identifier)
+    (discrete_constructor
+      (identifier)))
+  (object_decl
+    (identifier)
+    (continuous_constructor
+      (integer)))
+  (program_decl
+    (identifier)
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
+    (data_step
+      (identifier)
+      (qiec_type_application
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier)))
+        (qiec_shape_index
+          (qiec_index_name
+            (identifier)))))
+    (data_step
+      (identifier)
+      (qiec_type_application
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier)))
+        (qiec_shape_index
+          (qiec_index_name
+            (identifier)))))
+    (sample_step
+      (identifier)
+      (identifier)
+      (named_draw_arg
+        (identifier)
+        (signed_number
+          (float)))
+      (named_draw_arg
+        (identifier)
+        (signed_number
+          (float))))
+    (let_step
+      (identifier)
+      (let_binop
+        (let_var
+          (identifier))
+        (let_var
+          (identifier))))
+    (observe_step
+      (identifier)
+      (object_atom
+        (identifier))
+      (identifier)
+      (named_draw_arg
+        (identifier)
+        (identifier))
+      (named_draw_arg
+        (identifier)
+        (signed_number
+          (float))))
+    (return_step
+      (identifier)))
+  (export_decl
+    (expr_ident
+      (identifier))))

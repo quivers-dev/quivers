@@ -176,6 +176,7 @@ nav:
       - DSL Programs and Let-Expressions: guides/dsl-programs-and-lets.md
       - DSL Contractions: guides/dsl-contractions.md
       - Probabilistic Programs: guides/programs.md
+      - Model Data and Fitting: guides/model-data-and-fitting.md
       - Hierarchical Programs: guides/programs-hierarchical.md
       - Continuous Spaces and Morphisms: guides/continuous-spaces.md
       - Continuous Distribution Families: guides/continuous-families.md
@@ -414,6 +415,7 @@ nav:
       - ArviZ DataTree Adapter: api/diagnostics/arviz_io.md
       - Model Comparison: api/diagnostics/comparison.md
       - Predictive Checks: api/diagnostics/predictive_checks.md
+    - Model Binding and Fitting: api/modeling.md
     - Formulas:
       - Overview: api/formulas/index.md
       - Parsed Formula IR: api/formulas/formula.md
@@ -482,6 +484,7 @@ nav:
   - Develop:
     - Overview: developer/contributing.md
     - Public API and Exports: developer/public-api.md
+    - Model Interface Capability Audit: developer/model-interface-roadmap.md
     - Quivers Indexed Effect Core: developer/qiec.md
     - Changelog: developer/changelog.md
     - Inference benchmark results: developer/inference-benchmarks.md

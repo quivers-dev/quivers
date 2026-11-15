@@ -74,7 +74,8 @@ from quivers.continuous.deterministic import SequenceFunction
 from quivers.continuous.scan import ScanMorphism
 from quivers.core.morphisms import Morphism, as_torch_module
 from quivers.core.objects import FinSet, ProductSet
-from quivers.qiec.types import TypeExpr
+from quivers.qiec.types import IndexTerm, TypeExpr
+from quivers.qiec.programs import ProgramEntry
 
 
 def _lookup_arg(
@@ -494,6 +495,11 @@ class MonadicProgram(ContinuousMorphism):
 
     Attributes
     ----------
+    input_contract : ProgramEntry or None
+        Checked external parameters and site metadata, when compiled from QVR.
+    host_index_bounds : dict[str, tuple[IndexTerm, ...]]
+        Bounds of finite axes indexed directly by each external datum. A run
+        refuses negative and out-of-range indices before evaluating a gather.
     host_data_types : dict[str, TypeExpr]
         The checked type of each host datum the program reads by name,
         keyed by name. The DSL compiler fills it from the program's
@@ -546,6 +552,8 @@ class MonadicProgram(ContinuousMorphism):
         # downstream inference / dispatch code.
         self.effect_set: frozenset[str] | None = effect_set
         self.host_data_types: dict[str, TypeExpr] = {}
+        self.input_contract: ProgramEntry | None = None
+        self.host_index_bounds: dict[str, tuple[IndexTerm, ...]] = {}
         self.host_data_shared: frozenset[str] = frozenset()
         self.host_data_notes: dict[str, str] = {}
         self.site_plates: dict[str, tuple[tuple[str, int | None], ...]] = {}

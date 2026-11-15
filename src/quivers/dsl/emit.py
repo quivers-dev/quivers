@@ -142,6 +142,7 @@ from quivers.dsl.ast_nodes.program_steps import (
     GroupedMarginalizeStep,
     CallStep,
     LetStep,
+    DataStep,
     MarginalizeStep,
     ObserveStep,
     PlateDrawStep,
@@ -819,6 +820,8 @@ def _emit_draw_head(
 
 
 def _emit_program_step(step: ProgramStep, indent: int) -> list[str]:
+    if isinstance(step, DataStep):
+        return [f"{_pad(indent)}data {step.name} : {_emit_qiec_type(step.type_expr)}"]
     if isinstance(step, SampleStep):
         binder = _emit_var_pattern(step.vars)
         return [

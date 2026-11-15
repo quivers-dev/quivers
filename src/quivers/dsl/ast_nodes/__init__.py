@@ -118,6 +118,7 @@ from quivers.dsl.ast_nodes.let_expressions import (
 )
 from quivers.dsl.ast_nodes.module import Module
 from quivers.dsl.ast_nodes.program_steps import (
+    DataStep,
     BindStep,
     CallStep,
     DrawArg,
@@ -251,6 +252,7 @@ __all__ = [
     "DecoderDecl",
     "DeductionDecl",
     "DiscreteConstructor",
+    "DataStep",
     "DrawArg",
     "DrawArgDist",
     "DrawArgIndex",

@@ -43,6 +43,7 @@ _LINE_COMMENT = re.compile(rb"#[^\n]*")
 #: Each binder position, as the CST node kind holding it and the field
 #: naming the bound identifier.
 _BINDER_FIELDS: dict[str, tuple[str, str]] = {
+    "data_step": ("name", "data declaration"),
     "sample_step": ("vars", "sample site"),
     "observe_step": ("vars", "observed site"),
     "marginalize_step": ("var", "marginalized variable"),

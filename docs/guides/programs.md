@@ -470,3 +470,6 @@ torch.testing.assert_close(factors.log_prob(torch.zeros(1), draw).squeeze(), ref
   intercepts, monotone effects, and marginalizing a discrete latent once per group.
 - [Inference Foundations](inference-foundations.md): how programs are fit by
   variational inference and MCMC.
+
+For data-driven finite dimensions and reusable fitting components, see
+[Model data and fitting](model-data-and-fitting.md).

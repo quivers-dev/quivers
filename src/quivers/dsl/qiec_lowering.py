@@ -189,7 +189,7 @@ from quivers.qiec import (
 )
 
 
-QVR_SOURCE_VERSION = "qvr-source/v0.20"
+QVR_SOURCE_VERSION = "qvr-source/v0.21"
 """The source protocol a `QvrQiecLowerer` route accepts.
 
 `lower_qvr_to_qiec` checks its ``source_version`` argument against this
@@ -303,7 +303,7 @@ def has_qiec_surface(module: surface.Module) -> bool:
             and (
                 statement.type_params is None
                 or all(
-                    isinstance(parameter, surface.ScalarParam)
+                    isinstance(parameter, surface.ScalarParam | surface.ObjectParam)
                     for parameter in statement.type_params
                 )
             )
@@ -2790,7 +2790,7 @@ class _Elaborator(
         if isinstance(authored, surface.QiecIndexName):
             bound = (static_bindings or {}).get(authored.name)
             if bound is not None:
-                if isinstance(bound, IndexVariable):
+                if isinstance(bound, IndexVariable | IndexLiteral):
                     if bound.sort != expected:
                         self._fail(
                             authored,

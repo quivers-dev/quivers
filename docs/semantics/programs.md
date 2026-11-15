@@ -727,3 +727,36 @@ Whether this is the posterior $p(\mathbf w \mid s_1, \ldots, s_N)$ depends on wh
   which do not satisfy these constraints. A caller who wants this reading parameterizes the local rule
   probabilities explicitly, for instance by Dirichlet draws [@johnson2007bayesian] or a softmax for
   each left-hand side, and scores the normalized grammar.
+
+## External data and inferred finite objects
+
+A program's **external data context** (EDC), written $\Delta$, contains each
+external symbol at the type required by its uses. A declaration `data x : T`
+asserts $x:T\in\Delta$. It contributes no random draw or score; elaboration
+checks the assertion and exposes `x` as a parameter of the existing computation.
+An observation declaration can refer to the same symbol, giving that parameter
+its observation role.
+
+For fixed external values $d\in\llbracket\Delta\rrbracket$, the program has the
+same kernel denotation as its body evaluated at $d$. The declaration thus
+restricts admissible inputs without adding a probabilistic factor. A declaration
+whose type conflicts with a use is rejected before execution.
+
+An object `object A : FinSet _` introduces a natural-number extent variable $a$.
+Binding data first solves the extent constraints, then specializes the checked
+program at that solution. A tensor with checked dimension $a$ and supplied
+length $n$ contributes the equation $a=n$. A directly read external gather index
+$i$ into that axis contributes $0\leq i_j<a$ for each supplied entry.
+
+Exact extent equations must agree. When only gather indices constrain a finite
+axis and at least one index is supplied, binding uses the least admissible
+cardinality, $a=1+\max_j i_j$. This choice is an explicit interpretation of the
+underscore: positions absent from the observations need an explicit cardinality
+or additional shape evidence. An empty index array supplies no such choice.
+
+For a resulting cardinality $n$, specialization substitutes $n$ into every
+occurrence of $a$ in the checked types and executes the ordinary finite program.
+It introduces no posterior distribution over cardinalities. Runtime validation
+checks supplied tensor shapes and dtypes, and rejects external gather indices
+outside their checked axes. The compiler's input contract and the runtime's
+checks thus describe the same specialized program.

@@ -30,6 +30,8 @@ import didactic.api as dx
 from quivers.dsl.ast_nodes import (
     AxisSpec,
     CallStep,
+    DataStep,
+    QiecIndexName,
     DrawArg,
     DrawArgDist,
     DrawArgIndex,
@@ -279,6 +281,11 @@ def _rename_step(
         a name fits.
     """
     objects, values, morphisms = bindings.objects, bindings.values, bindings.morphisms
+    if isinstance(step, DataStep):
+        return step.with_(
+            name=rename.get(step.name, step.name),
+            type_expr=_rename_data_syntax(step.type_expr, objects),
+        )
     if isinstance(step, (SampleStep, ObserveStep)):
         return step.with_(
             vars=tuple(rename.get(name, name) for name in step.vars),
@@ -317,6 +324,24 @@ def _rename_step(
             ),
         )
     return step
+
+
+def _rename_data_syntax(node: dx.Model, objects: Mapping[str, str]) -> dx.Model:
+    """Substitute object extents inside an external type declaration."""
+    if isinstance(node, QiecIndexName):
+        return node.with_(name=objects.get(node.name, node.name))
+
+    def rewrite(value: object) -> object:
+        if isinstance(value, dx.Model):
+            return _rename_data_syntax(value, objects)
+        if isinstance(value, tuple):
+            return tuple(rewrite(item) for item in value)
+        return value
+
+    changes = {
+        name: rewrite(getattr(node, name)) for name in type(node).__field_specs__
+    }
+    return node.with_(**changes)
 
 
 def _rename_morphism(

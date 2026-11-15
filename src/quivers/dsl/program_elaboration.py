@@ -33,6 +33,7 @@ from quivers.qiec._models import QiecModel
 from quivers.dsl.ast_nodes import (
     CallStep,
     ContinuousConstructor,
+    DataStep,
     DiscreteConstructor,
     DrawArg,
     DrawArgDist,
@@ -2579,6 +2580,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         random = self._program_instance(RANDOM_INSTANCE, "Random")
         score = self._program_instance(SCORE_INSTANCE, "Score")
         state = _ProgramState(declaration=declaration, random=random, score=score)
+        for info in self._program_objects.values():
+            if isinstance(info.extent, IndexVariable):
+                state.extents[info.extent.name] = IndexBinder(
+                    name=info.extent.name, sort=NAT
+                )
         row = self._markov_rows.get(declaration.name)
         if row is not None:
             state.markov_row_cell[0], state.markov_entry_cell[0] = row
@@ -2673,7 +2679,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         role=role,
                         type=scope.locals[name].type,
                         axes=state.parameter_axes.get(name, ()),
-                        per_row=name in state.per_row,
+                        per_row=name in state.per_row
+                        and name not in state.declared_data,
                     )
                     for name, role in state.parameters
                 ),
@@ -2948,6 +2955,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"here but as {self._render(existing.type)} elsewhere",
                     code="qiec-program",
                 )
+            if role == "observation":
+                state.parameters[:] = [
+                    (key, "observation" if key == name else value)
+                    for key, value in state.parameters
+                ]
             if scope is not root:
                 scope.referenced.add(name)
             return root.locals[name]
@@ -3027,6 +3039,38 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         QiecDiagnosticError
             If a step is of a kind the elaboration does not admit.
         """
+        declared_here = set()
+        for step in steps:
+            if not isinstance(step, DataStep):
+                continue
+            existing_role = next(
+                (role for name, role in state.parameters if name == step.name), None
+            )
+            if step.name in declared_here or (
+                scope.lookup(step.name) is not None
+                and existing_role not in {"data", "index_map", "observation"}
+            ):
+                self._fail(
+                    step,
+                    f"duplicate data declaration {step.name!r}",
+                    code="qiec-program",
+                )
+            declared_here.add(step.name)
+            state.declared_data.add(step.name)
+            bindings = {
+                name: _extent(info.extent)
+                for name, info in self._program_objects.items()
+                if info.extent is not None
+            }
+            declared_type = self._lower_type(
+                step.type_expr, tuple(state.extents.values()), bindings
+            )
+            self._declare_parameter(
+                step.name, declared_type, "data", scope, state, step
+            )
+            split = tensor_shape(declared_type)
+            if split is not None:
+                state.batch_shapes[step.name] = tuple(split[1])
         for step in steps:
             if isinstance(step, SampleStep):
                 self._elaborate_sample(step, scope, state)
@@ -3040,7 +3084,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 self._elaborate_score(step, scope, state)
             elif isinstance(step, MarginalizeStep):
                 self._elaborate_marginalize(step, scope, state)
-            elif isinstance(step, ReturnStep):
+            elif isinstance(step, ReturnStep | DataStep):
                 continue
             else:
                 self._fail(
@@ -10017,6 +10061,9 @@ class _ProgramState(QiecModel):
     parameters: list[tuple[str, ParameterRole]] = dx.field(
         default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    declared_data: set[str] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     sites: list[ProgramSite] = dx.field(
         default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -10464,6 +10511,13 @@ def _object_expr_info(
         sizes = [_size_argument(item, table) for item in expr.args]
         if any(size is None for size in sizes):
             return None
+        if len(sizes) == 1 and isinstance(sizes[0], IndexVariable):
+            return ObjectInfo(
+                extent=sizes[0],
+                real_width=sizes[0] if expr.constructor == "Real" else None,
+            )
+        if any(isinstance(size, IndexVariable) for size in sizes):
+            return None
         extents = [cast(int, size) for size in sizes]
         if expr.constructor == "Real":
             width = 1
@@ -10488,7 +10542,9 @@ def _object_expr_info(
     return None
 
 
-def _size_argument(argument: str, table: Mapping[str, ObjectInfo]) -> int | None:
+def _size_argument(
+    argument: str, table: Mapping[str, ObjectInfo]
+) -> int | IndexVariable | None:
     """Resolve a constructor size argument.
 
     Parameters
@@ -10506,9 +10562,7 @@ def _size_argument(argument: str, table: Mapping[str, ObjectInfo]) -> int | None
     if argument.isdigit():
         return int(argument)
     prior = table.get(argument)
-    return (
-        None if prior is None or prior.extent is None else _fixed_extent(prior.extent)
-    )
+    return None if prior is None else prior.extent
 
 
 def _object_table(statements: Sequence[object]) -> dict[str, ObjectInfo]:
@@ -10533,7 +10587,14 @@ def _object_table(statements: Sequence[object]) -> dict[str, ObjectInfo]:
         if isinstance(statement.init, TypeEnumSet):
             info = ObjectInfo(extent=len(statement.init.elements), finite=True)
         elif isinstance(statement.init, TypeFromExpr):
-            info = _object_expr_info(statement.init.expr, table)
+            expr = statement.init.expr
+            if isinstance(expr, DiscreteConstructor) and expr.args == ("_",):
+                for name in statement.names:
+                    table[name] = ObjectInfo(
+                        extent=IndexVariable(name=name, sort=NAT), finite=True
+                    )
+                continue
+            info = _object_expr_info(expr, table)
         if info is None:
             continue
         for name in statement.names:

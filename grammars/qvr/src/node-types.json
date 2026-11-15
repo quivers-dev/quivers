@@ -1255,6 +1255,48 @@
     }
   },
   {
+    "type": "data_step",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qiec_function_type",
+            "named": true
+          },
+          {
+            "type": "qiec_product_type",
+            "named": true
+          },
+          {
+            "type": "qiec_type_application",
+            "named": true
+          },
+          {
+            "type": "qiec_type_name",
+            "named": true
+          },
+          {
+            "type": "qiec_type_paren",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "decoder_binder_select",
     "named": true,
     "fields": {
@@ -5306,6 +5348,10 @@
             "named": true
           },
           {
+            "type": "data_step",
+            "named": true
+          },
+          {
             "type": "let_step",
             "named": true
           },
@@ -6935,6 +6981,10 @@
         "types": [
           {
             "type": "call_step",
+            "named": true
+          },
+          {
+            "type": "data_step",
             "named": true
           },
           {

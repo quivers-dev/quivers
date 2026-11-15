@@ -96,7 +96,7 @@ module to an intermediate representation (IR) shared by all targets and render i
 flowchart TB
     subgraph AUTHOR["Source boundary"]
         direction LR
-        S["QVR source<br/><small>qvr-source/v0.20</small>"] -->|parse| P["Quivers parser"] --> A["Typed source AST"]
+        S["QVR source<br/><small>qvr-source/v0.21</small>"] -->|parse| P["Quivers parser"] --> A["Typed source AST"]
     end
     subgraph CORE["Checked interchange boundary"]
         direction LR

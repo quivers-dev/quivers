@@ -46,6 +46,7 @@ from quivers.effects.base import (
     RunContext,
     _handler_stack,
 )
+from quivers.effects.checked_program import CheckedProgram
 from quivers.effects.program_module import (
     INPUT_NAME,
     SCAN_POSITION,
@@ -1827,7 +1828,7 @@ def _element_admits(element: TypeExpr, value: torch.Tensor) -> bool:
 
 
 def check_host_data(
-    program: MonadicProgram,
+    program: MonadicProgram | CheckedProgram,
     data: Mapping[str, torch.Tensor | float | int],
     runs: int | None = None,
 ) -> dict[str, bool]:
@@ -1848,7 +1849,7 @@ def check_host_data(
 
     Parameters
     ----------
-    program : MonadicProgram
+    program : MonadicProgram or CheckedProgram
         The program, whose ``host_data_types`` give the checked types.
     data : Mapping[str, torch.Tensor | float | int]
         The supplied host data, by name.
@@ -1922,6 +1923,21 @@ def check_host_data(
                 f"program reads it at type {rendered}, whose elements are "
                 f"{render_static(element)}"
             )
+    for name, bounds in program.host_index_bounds.items():
+        if name not in data:
+            continue
+        value = torch.as_tensor(data[name])
+        for bound in bounds:
+            if isinstance(bound, IndexLiteral):
+                size = bound.value
+            elif isinstance(bound, IndexVariable) and bound.name in extents:
+                size = extents[bound.name][0]
+            else:
+                continue
+            if bool(((value < 0) | (value >= size)).any()):
+                raise ValueError(
+                    f"index datum {name!r} must contain indices in [0, {size})"
+                )
     return per_run_data
 
 

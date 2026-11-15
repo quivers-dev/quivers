@@ -78,6 +78,7 @@ from quivers.core.objects import FinSet, ProductSet, SetObject
 from quivers.core.wiring import EinsumWiring
 from quivers.dsl.ast_nodes import (
     AxisSpec,
+    DataStep,
     BindStep,
     ContractionDecl,
     ContractionInput,
@@ -170,7 +171,16 @@ from quivers.dsl.step_resolution import StepResolutionError, _expr_ident_names
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
-from quivers.qiec import QiecModule
+from quivers.qiec import (
+    QiecModule,
+    NAT,
+    PlateShape,
+    StaticSubstitution,
+    substitute_computation,
+    substitute_plate,
+    substitute_static,
+    substitute_type,
+)
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.terms import Computation, Local
@@ -1785,6 +1795,8 @@ class _ProgramsMixin:
         """
         out: list[ProgramStep] = []
         for raw in steps:
+            if isinstance(raw, DataStep):
+                continue
             step = self._surface_to_bind(raw)
             if isinstance(step, LetStep):
                 out.append(step)
@@ -3221,8 +3233,62 @@ class _ProgramsMixin:
             line=expr.line,
             col=expr.col,
         )
-        self._compile_program(synth)
-        return self._morphisms.pop(unique_name)
+        module = self.qiec_module
+        entry = (
+            next((e for e in module.entries if e.name == expr.callee), None)
+            if module is not None
+            else None
+        )
+        substitution = StaticSubstitution(
+            indices=tuple(
+                (
+                    name,
+                    IndexLiteral(
+                        value=(
+                            space.cardinality
+                            if isinstance(space, SetObject)
+                            else space.dim
+                        ),
+                        sort=NAT,
+                    ),
+                )
+                for name, value in type_subst.items()
+                for space in (self._resolve_any_space(value),)
+            )
+        )
+        if entry is not None:
+            entry = entry.with_(
+                parameters=tuple(
+                    p.with_(type=substitute_type(p.type, substitution))
+                    for p in entry.parameters
+                ),
+                sites=tuple(
+                    site.with_(batch=plate.batch, event=plate.event)
+                    for site in entry.sites
+                    for plate in (
+                        substitute_plate(
+                            PlateShape(batch=site.batch, event=site.event), substitution
+                        ),
+                    )
+                ),
+            )
+            self._instantiated_program_contracts[unique_name] = (entry, substitution)
+        try:
+            self._compile_program(synth)
+        finally:
+            self._instantiated_program_contracts.pop(unique_name, None)
+        target = self._morphisms.pop(unique_name)
+        if (
+            entry is not None
+            and module is not None
+            and isinstance(target, MonadicProgram)
+        ):
+            self._attach_program_contract(target, module, entry)
+            target.host_index_bounds = {
+                name: tuple(substitute_static(bound, substitution) for bound in bounds)
+                for name, bounds in target.host_index_bounds.items()
+            }
+        return target
 
     def _compile_contraction(self, decl: ContractionDecl) -> None:
         """Compile a ``contraction`` declaration into a callable
@@ -5878,7 +5944,12 @@ class _ProgramsMixin:
             return {}
         if module is None:
             return {}
-        entry = next((e for e in module.entries if e.name == program), None)
+        instantiated = self._instantiated_program_contracts.get(program)
+        entry = (
+            instantiated[0]
+            if instantiated is not None
+            else next((e for e in module.entries if e.name == program), None)
+        )
         if entry is None:
             return {}
         plates = {axis.name for site in entry.sites for axis in site.batch}
@@ -5927,7 +5998,12 @@ class _ProgramsMixin:
             return {}
         if module is None:
             return {}
-        entry = next((e for e in module.entries if e.name == program), None)
+        instantiated = self._instantiated_program_contracts.get(program)
+        entry = (
+            instantiated[0]
+            if instantiated is not None
+            else next((e for e in module.entries if e.name == program), None)
+        )
         if entry is None:
             return {}
         computation = next(
@@ -5935,6 +6011,14 @@ class _ProgramsMixin:
         )
         if computation is None:
             return {}
+        if instantiated is not None:
+            substitution = instantiated[1]
+            parameters = tuple(
+                local.with_(type=substitute_type(local.type, substitution))
+                for local in computation.parameters
+            )
+            body = substitute_computation(computation.body, substitution)
+            return _checked_local_extents(parameters, body)
         return _checked_local_extents(computation.parameters, computation.body)
 
     def _annotation_is_event_axis(

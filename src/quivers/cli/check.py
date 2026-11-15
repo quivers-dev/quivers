@@ -41,6 +41,7 @@ from quivers.dsl import (
     non_qiec_projection,
     parse,
 )
+from quivers.dsl._data_inference import has_inferred_objects
 from quivers.dsl.compiler._validate import validate_family_arg_shapes
 from quivers.dsl.constraints import check_constraints
 from quivers.dsl.qiec_tooling import (
@@ -230,7 +231,8 @@ def check_file(path: Path, *, target: str | None = None) -> list[CheckDiagnostic
         return diags
 
     try:
-        compiler.compile()
+        if not has_inferred_objects(module):
+            compiler.compile()
     except CompileError as error:
         diags.append(
             CheckDiagnostic(

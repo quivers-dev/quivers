@@ -8,6 +8,7 @@ from quivers.continuous.deterministic import LearnedFunction
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
 from quivers.continuous.morphisms import AnySpace
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.checked_program import CheckedProgram
 from quivers.core.objects import SetObject
 from quivers.program import Program
 from quivers.dsl.ast_nodes import (
@@ -57,6 +58,7 @@ from quivers.dsl.qiec_lowering import (
 )
 from quivers.qiec import QiecModule
 from quivers.qiec.terms import PlateAxis
+from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.types import IndexLiteral
 from quivers.qiec.entries import EntryPoint, entry_point, entry_points
 from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
@@ -175,6 +177,7 @@ class Compiler(
         # stored as their unsubstituted AST decl. Instantiated at each call
         # site by parameter substitution + α-renaming of internal latents.
         self._program_templates: dict[str, ProgramDecl] = {}
+        self._instantiated_program_contracts = {}
         # The located refusal of the first call each program keeps
         # because it cannot be lowered to compiled runtime steps.
         self._call_refusals: dict[str, CompileError] = {}
@@ -414,6 +417,7 @@ class Compiler(
         CompileError
             On semantic errors (undefined names, type mismatches, etc.).
         """
+        self._specialize_data_objects()
         for stmt in self._module.statements:
             self._compile_statement(stmt)
         qiec_module = self.qiec_module
@@ -480,6 +484,20 @@ class Compiler(
                 system.losses[name] = program.losses
         return program
 
+    def _specialize_data_objects(self) -> None:
+        from quivers.dsl._data_inference import infer_data_objects
+
+        source = self._qiec_source if self._qiec_source is not None else self._module
+        resolved = infer_data_objects(source, getattr(self, "_data_bindings", {}))
+        if resolved is source:
+            return
+        self._qiec_module = None
+        if self._qiec_source is not None:
+            self._qiec_source = resolved
+            self._module = non_qiec_projection(resolved)
+        else:
+            self._module = resolved
+
     def _attach_host_data_types(self, module: QiecModule) -> None:
         """Give each compiled program the checked types of its host data.
 
@@ -502,20 +520,32 @@ class Compiler(
         }
         for entry in module.entries:
             target = compiled.get(entry.name)
-            if not isinstance(target, MonadicProgram):
+            if not isinstance(target, MonadicProgram | CheckedProgram):
                 continue
-            target.host_data_types = {
-                parameter.name: parameter.type
-                for parameter in entry.parameters
-                if parameter.role in ("data", "index_map")
-            }
-            target.host_data_shared = frozenset(
-                parameter.name for parameter in entry.parameters if parameter.per_row
-            )
-            target.site_plates = {
-                site.name: _plate_axes(site.batch) for site in entry.sites
-            }
-            target.host_data_notes = passed_data_notes(module, entry.name)
+            self._attach_program_contract(target, module, entry)
+
+    def _attach_program_contract(
+        self,
+        target: MonadicProgram | CheckedProgram,
+        module: QiecModule,
+        entry: ProgramEntry,
+    ) -> None:
+        from quivers.dsl._data_inference import external_index_bounds
+
+        target.input_contract = entry
+        target.host_index_bounds = external_index_bounds(module, entry)
+        target.host_data_types = {
+            parameter.name: parameter.type
+            for parameter in entry.parameters
+            if parameter.role in ("data", "index_map", "observation")
+        }
+        target.host_data_shared = frozenset(
+            parameter.name for parameter in entry.parameters if parameter.per_row
+        )
+        target.site_plates = {
+            site.name: _plate_axes(site.batch) for site in entry.sites
+        }
+        target.host_data_notes = passed_data_notes(module, entry.name)
 
     def _attach_secondary_exports(self, program: "Program") -> None:
         """Expose every export after the first as a named attribute.
@@ -562,12 +592,14 @@ class Compiler(
             (parametric templates), deductions, signatures, encoders,
             decoders, losses, bundles, contractions, transformations.
         """
+        self._specialize_data_objects()
         for stmt in self._module.statements:
             self._compile_statement(stmt)
         env: dict = {}
         env["__algebra__"] = self._algebra
         qiec_module = self.qiec_module
         if qiec_module is not None:
+            self._attach_host_data_types(qiec_module)
             env["__qiec__"] = qiec_module
         for name, obj in self._objects.items():
             env[name] = obj
