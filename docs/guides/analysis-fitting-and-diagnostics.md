@@ -91,7 +91,11 @@ the features the model is meant to explain.
 The [diagnostics adapter](../api/diagnostics/index.md) converts quivers' inference
 records for [ArviZ](https://python.arviz.org/) and returns an
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)
-with ArviZ-compatible groups.
+with ArviZ-compatible groups. A formula fit's `posterior_predict` method
+supplies replicated responses on its retained training rows, including response
+noise and preserving separate chain and draw axes. Its
+[posterior workflow](analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
+distinguishes these draws from linear predictors and expected responses.
 
 <!-- python: skip -->
 ```python
@@ -100,6 +104,7 @@ from quivers.diagnostics import (
     to_datatree, compare, loo, posterior_predictive_check,
 )
 
+pp_a = fit_a.posterior_predict(seed=7)
 idata_a = to_datatree(
     fit_a.posterior,
     observed_data={"y": y_obs},

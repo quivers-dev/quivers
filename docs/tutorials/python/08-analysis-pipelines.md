@@ -399,13 +399,10 @@ The model with the predictor ranks first and takes most of the stacking weight. 
 
 ## Posterior predictive checks
 
-[`posterior_predictive_check`](../../api/diagnostics/predictive_checks.md) computes the posterior predictive p-value $\Pr(T(y^{\text{rep}}) \ge T(y))$ of a test statistic $T$ [@gelman1996predictive]. Draw replicated responses under each posterior draw of the intercept and slope, and compare their mean with the observed mean:
+[`posterior_predictive_check`](../../api/diagnostics/predictive_checks.md) computes the posterior predictive p-value $\Pr(T(y^{\text{rep}}) \ge T(y))$ of a test statistic $T$ [@gelman1996predictive]. `BayesianFit.posterior_predict` draws replicated responses from the fitted native model on its retained training rows. It keeps separate chain and draw axes and includes response noise. Compare the replicated mean with the observed mean:
 
 ```python
-samples = res_with_x.posterior.samples
-ic, bx = samples["intercept"], samples["beta_x"]
-p_pp = torch.sigmoid(ic[..., None] + bx[..., None] * x_t)
-pp = torch.bernoulli(p_pp).float()         # (chain, draw, N) replicated y's
+pp = res_with_x.posterior_predict(seed=7)  # (chain, draw, row)
 
 idata = to_datatree(
     res_with_x.posterior,
@@ -421,7 +418,7 @@ print(f"ppp (mean):    {ppc['ppp']:.3f}")
 ```text
 observed mean: 0.312
 predictive mean: 0.314
-ppp (mean):    0.540
+ppp (mean):    0.527
 ```
 
 A p-value near 0.5 puts the observed mean in the middle of the replicated distribution. Values near 0 or 1 suggest that the model misses the statistic. The mean of a Bernoulli outcome is a weak test, since a model with an intercept tends to reproduce it. The built-in statistics are `mean`, `median`, `sd`, `var`, `min`, `max`, `q05`, and `q95`, and a callable is also accepted. `by=` computes the check separately for each level of a named dimension of the data.

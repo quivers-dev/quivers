@@ -15,9 +15,12 @@ describes coefficient names, priors, and group coding.
 
 `BayesianFit.draws` preserves chain and draw axes. `fixed_effects`, `random_effects`,
 and `coefficients` expose population and group coefficients with retained labels.
-`posterior_linpred` and `posterior_epred` replay native fitted bindings on the
-training rows, including native class probabilities and expected counts. Their
-[posterior workflow](../../guides/analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
+`posterior_linpred`, `posterior_epred`, and `posterior_predict` replay native
+fitted bindings on the training rows. The first two expose predictors and
+response expectations; `posterior_predict` independently samples responses
+conditional on each posterior draw. Its tensor has shape `(chain, draw, row)`;
+categorical and ordinal responses use integer codes in `category_labels` order.
+The [posterior workflow](../../guides/analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
 describes shapes, labels, link scales, and expectations.
 
 `fit`, `formula_to_qvr`, and `get_prior` accept `weights="column"` for

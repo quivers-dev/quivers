@@ -828,6 +828,9 @@ linear = posterior_fit.posterior_linpred(num_samples=5, seed=7)
 expected = posterior_fit.posterior_epred(num_samples=5, seed=7)
 assert linear.shape == expected.shape == (1, 5, 4)
 torch.testing.assert_close(linear, expected)  # Gaussian identity-link mean.
+replicated = posterior_fit.posterior_predict(num_samples=5, seed=7)
+assert replicated.shape == (1, 5, 4)
+assert not torch.equal(replicated, expected)  # Includes response noise.
 scale_coefficients = posterior_fit.fixed_effects(parameter="sigma", num_samples=5)
 assert "z" in scale_coefficients
 ```
@@ -848,6 +851,16 @@ asymmetric Laplace predictor specifies a quantile, while its expected response
 is the distribution's mean. Mixture expectations include component weights, and
 inflated-beta expectations include boundary mass.
 
+`posterior_predict` returns a tensor of replicated responses with shape
+`(chain, draw, row)`. Each posterior draw supplies an independent response
+for each training row, including when rows share all distribution parameters.
+It uses the native response sampler, so binomial draws respect each row's trial
+count and hurdle draws include the zero atom. Categorical and ordinal draws are
+integer codes in `category_labels` order. Likelihood weights affect fitting;
+they do not change this response law at a fixed posterior draw. Sampling uses
+separate latent and response random streams and preserves the caller's CPU
+random state, including when sampling fails.
+
 Ordinal and categorical expected responses are category probabilities with shape
 `(chain, draw, row, category)`; `category_labels` gives the category-axis order.
 Categorical linear predictors include the reference category's zero logit.
@@ -863,6 +876,8 @@ group levels; this formula interface currently exposes training-row predictions.
 Undefined means, including a Cauchy mean or a Student-t draw without a finite
 mean, raise an error. Circular responses require an angular convention and are
 also refused by `posterior_epred`.
+`posterior_predict` can still sample these families because it does not require
+a response expectation.
 
 ## See also
 

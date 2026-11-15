@@ -443,6 +443,62 @@ class BayesianFit(ValueModel):
         stacked = torch.stack(values)
         return stacked.reshape(*shape, *stacked.shape[1:])
 
+    def posterior_predict(
+        self, *, num_samples: int | None = None, seed: int = 0
+    ) -> torch.Tensor:
+        """Sample native response distributions on retained training rows.
+
+        Parameters
+        ----------
+        num_samples : int or None
+            Maximum draws per MCMC chain, or fresh guide draws, following
+            `draws`. Each posterior draw supplies one response per row.
+        seed : int
+            Seed for separate latent and response random streams. The
+            caller's CPU RNG state is restored on return or failure.
+
+        Returns
+        -------
+        torch.Tensor
+            Predictive responses, shape ``(chain, draw, row)``. Categorical
+            and ordinal responses contain integer codes in `category_labels`;
+            binomial responses contain counts. Likelihood weights do not
+            alter the response sampling law at a fixed posterior draw.
+
+        Raises
+        ------
+        ValueError
+            If the requested count or retained posterior layout is invalid.
+        TypeError
+            If the response has no native sampling operation.
+        """
+        from quivers.formulas._posterior import draw_count, replay, row_binding
+
+        shape = draw_count(self.posterior, num_samples)
+        draws = self.draws(num_samples=num_samples, seed=seed)
+        rows = self.formula.response_values.shape[0]
+        response = _qvr_name(self.formula.response_name)
+        result: torch.Tensor | None = None
+        # Guide sampling uses its own seed and restores the caller's RNG.
+        # A distinct stream avoids coupling response noise to guide noise.
+        with torch.random.fork_rng(devices=[]), torch.no_grad():
+            torch.random.default_generator.manual_seed((seed + 1) % 2**64)
+            for index, recorded in enumerate(replay(self, draws, shape)):
+                sampleable = recorded.sites[response].sampleable
+                if sampleable is None:
+                    raise TypeError("the response has no native sampling operation")
+                # The native observation expands shared parameters before
+                # sampling, so different rows receive independent draws.
+                value = row_binding(
+                    sampleable.raw_morphism.rsample(sampleable.input), rows
+                )
+                if result is None:
+                    result = value.new_empty((*shape, rows))
+                result.reshape(-1, rows)[index].copy_(value)
+        if result is None:
+            raise ValueError("the posterior has no retained predictive draws")
+        return result
+
     def _formula_predictor(self, parameter: str) -> tuple[Formula, str]:
         """Read retained predictor metadata without re-evaluating its formula.
 
