@@ -9,6 +9,7 @@ surface step into one of these specialized IR shapes at the entry to
 
 Surface AST (what the parser emits):
 
+* `DataStep` - ``data name : Type``
 * `SampleStep` - ``sample v[: A] <- F(args) [options]``
 * `ObserveStep` - ``observe v[: A] <- F(args) [options]``
 * `MarginalizeStep` - ``marginalize c[: K] <- F(args) [options] : scope``

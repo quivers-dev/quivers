@@ -109,7 +109,7 @@ losses = variational.losses
 
 The default guide is built from a trace, including a scan's individual sites.
 Variational draws have one pseudo-chain; they do not supply MCMC convergence
-evidence. `summary()` therefore requires an MCMC result.
+evidence. `summary()` thus requires an MCMC result.
 
 `model.fit(data, method=method)` combines binding and inference. Keep the bound
 instance when several methods should use the same initialized model. A method's
