@@ -8,6 +8,11 @@ evaluations to approximate the posterior. [Variational inference](inference-svi.
 fits an adjustable approximation to it, and [MCMC](inference-mcmc.md) builds a sequence
 of draws from it.
 
+For QVR models, [checked model fitting](../tutorials/qvr/00-model-interface.md)
+packages the common binding, guide, optimizer, and training-loop setup. It derives
+external input types and observation roles from the program. This guide opens
+those components to explain their behavior and customization.
+
 ## Architecture
 
 For a first model, list its named sample sites, decide which are observed, and choose

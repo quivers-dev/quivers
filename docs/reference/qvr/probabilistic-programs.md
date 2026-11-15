@@ -38,6 +38,7 @@ posterior is computed by an [inference driver](../../guides/inference-foundation
 
 | Step | Checked meaning |
 | --- | --- |
+| `data x : Type` | declare the checked type of an externally supplied value; this declaration performs no effect |
 | `sample x <- FAMILY(...)` | `Random.sample` at site `x` |
 | `sample x : Plate <- FAMILY(...)` | one draw per element of the object `Plate`, as a [plate](https://en.wikipedia.org/wiki/Plate_notation) of conditionally independent draws [@koller2009probabilistic] |
 | `observe y <- FAMILY(...)` | `Score.add(log_prob(FAMILY(...), y))` |
@@ -52,6 +53,15 @@ A program body is sequential, and a name is available to the steps after its bin
 an expression reads but no step binds is a data input of the program, not a global.
 
 ## Data inputs {#host-data}
+
+Optional `data name : Type` declarations use QIEC types, such as
+`Tensor[Real]([Row])` or `Tensor[Int]([Row])`. They are collected before checking
+the body, so every use must agree with the declared type; they do not bind sampled
+values or reclassify an observation as a covariate. `observe` determines the role.
+`object Row : FinSet _` requests specialization from supplied checked shapes or
+direct index evidence. See [data binding and fitting](../../guides/model-data-and-fitting.md)
+for the inference rules and [interactive inspection](../../guides/repl-and-lsp.md#checked-data-in-interactive-tools)
+for symbolic checking, completion, and notebook use.
 
 A *data input* is a name the program reads but does not bind, given at run time with the
 observations, as a variable of Stan's `data` block is [@carpenter2017stan]. Each data input has one

@@ -4,6 +4,11 @@ QVR programs for probabilistic regression, latent-variable models, state-space m
 
 The [transpilation support matrix](../transpile-support.md) records which backends accept each source under `docs/examples/source/`. The [reference evaluator](../developer/qiec.md#reference-evaluator) executes the QIEC programs under `docs/examples/qiec/`.
 
+For reusable binding and fitting, start with [checked model fitting](../tutorials/qvr/00-model-interface.md).
+`Model` derives the external names and observation roles from QVR and can infer
+finite dimensions. The component-level examples below also expose guides,
+objectives, optimizers, and inference loops when these are part of the example.
+
 ## Choose a first example
 
 Start with [Bayesian regression](bayesian-regression.md) to connect unknown

@@ -3,6 +3,10 @@
 Fit a [Bayesian linear regression](https://en.wikipedia.org/wiki/Bayesian_linear_regression)
 to simulated data and summarize its posterior.
 
+For data-dependent model dimensions and fitting without manual guide setup,
+start with [checked model fitting](../tutorials/qvr/00-model-interface.md).
+The examples below also show the underlying compiler and inference components.
+
 ## 1. Install
 
 ```bash

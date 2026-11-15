@@ -472,6 +472,10 @@ morphism_kind       := 'Mor' '[' type_expr ',' type_expr ']'
 effect_set          := effect (',' effect)*
 effect              := 'Sample' | 'Score' | 'Marginal' | 'Pure'
 
+data_step           := 'data' IDENT ':' qiec_type
+# A declaration of an external input, collected before checking the body.
+# Finite object cardinalities may be '_' for inference when data are bound.
+
 sample_step         := 'sample' var_pattern [ ':' type_expr ] '<-' IDENT
                        [ '(' draw_arg_list ')' ] [ option_block ]
 # Draw options: over, iid_over.

@@ -132,13 +132,23 @@ fitting the model. Check the file from the command line:
 qvr check regression.qvr
 ```
 
-Load the checked model in Python:
+Bind and fit the checked model in Python. External names and observation roles
+come from QVR:
 
 ```python
-from quivers.dsl import load
+from pathlib import Path
+from quivers.modeling import Model, VariationalMethod
 
-regression = load("regression.qvr").morphism
+regression = Model(Path("regression.qvr").read_text())
+fit = regression.fit(data, method=VariationalMethod(num_steps=2000, seed=7))
+replicated = fit.predict(num_samples=100)
 ```
+
+Here `data` maps `x` and `y` to floating tensors. To infer the row count, replace
+`FinSet 100` with `FinSet _`; optional declarations such as
+`data x : Tensor[Real]([Item])` make external types explicit. The
+[checked fitting tutorial](https://quivers.dev/tutorials/qvr/00-model-interface/)
+gives an executable example and shows input errors before inference.
 
 The [end-to-end quickstart](https://quivers.dev/getting-started/quickstart/)
 shows how to supply data, fit this model, and summarize its posterior. For

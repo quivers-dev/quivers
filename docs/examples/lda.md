@@ -95,6 +95,40 @@ observations = {"w": w, "doc_idx": doc_idx, "token_idx": token_idx}
 x_in = torch.zeros(1, 1)
 ```
 
+### Bind through the checked interface
+
+The document and token counts can be inferred from the data. Keep the topic and
+vocabulary sizes explicit: the observed words do not determine the intended
+latent topic count or the size of an unseen vocabulary. Optional declarations
+also make the index and response types inspectable before binding.
+
+```python
+from pathlib import Path
+from quivers.modeling import Model
+
+source = Path("docs/examples/source/lda.qvr").read_text()
+source = source.replace("object Doc : FinSet 20", "object Doc : FinSet _")
+source = source.replace("object Token : FinSet 1000", "object Token : FinSet _")
+source = source.replace(
+    "    sample theta",
+    "    data doc_idx : Tensor[Int]([Token])\n"
+    "    data token_idx : Tensor[Int]([Token])\n"
+    "    data w : Tensor[Int]([Token])\n"
+    "    sample theta",
+    1,
+)
+specification = Model(source)
+print(specification.schema.describe())
+bound = specification.bind(observations, parameters={"alpha": 1.0, "beta": 1.0})
+print(bound.schema.describe())
+```
+
+`Token` follows the common array length, and `Doc` is the least zero-based extent
+containing `doc_idx`. A larger explicit `Doc` retains documents absent from the
+sample. Index values must be nonnegative integers; all three arrays must agree
+on `Token`. The [binding guide](../guides/model-data-and-fitting.md) describes the
+full inference and validation rules.
+
 ### The log joint against a per-token mixture
 
 At a traced draw of `theta` and `phi`, the compiled runtime's log joint must equal the Dirichlet priors plus $\sum_n \log \sum_k \theta_{d(n)}[k] \phi_k[w_n]$ in float64 to a relative 1e-5, and the document-level mixture must differ by more than a relative 1e-3. The [reference machine](../developer/qiec.md#reference-evaluator), given fixed `theta` and `phi`, must equal the same reference calculation to a relative 1e-9.

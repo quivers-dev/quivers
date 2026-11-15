@@ -1187,3 +1187,65 @@ Each frontend is a thin adapter:
 - [`quivers.cli.repl_prompt`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_prompt.py), prompt_toolkit single-line frontend.
 - [`quivers.kernel.quivers_kernel`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/kernel/quivers_kernel.py), ipykernel adapter.
 - [`quivers.lsp.server`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/lsp/server.py), pygls server.
+
+## Checked data in interactive tools
+
+A model with inferred dimensions can be checked and inspected before data are
+available. Save this source as `regression.qvr`:
+
+<!-- compile: qiec -->
+```qvr
+object Row : FinSet _
+object Out : Real 1
+program regression : Row -> Out
+    data x : Tensor[Real]([Row])
+    data y : Tensor[Real]([Row])
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let mu = b * x
+    observe y : Row <- Normal(loc=mu, scale=1.0)
+    return b
+export regression
+```
+
+`qvr check regression.qvr` checks the symbolic program. The language server uses
+the same checked projection for diagnostics, formatting, highlighting, and
+navigation. Within `regression`, completion offers `x` and `y` with their declared
+types; hover and go-to-definition resolve them to their `data` declarations.
+These names are local to the program rather than module globals.
+
+The REPL and its TUI retain the symbolic objects and program in their environment
+browsers. Scoped inspection exposes the declarations:
+
+```text
+:load regression.qvr
+:browse programs
+:type regression::x
+:info regression::x
+:run
+:run regression --data x=[1.0,2.0,3.0] --data y=[0.5,1.0,1.5] --seed 7
+```
+
+`:type regression::x` reports `x :: Tensor[Real]([Row])`. `:run` lists the checked
+entry with its input roles, while the invocation infers `Row` from the supplied
+arrays. Conflicting row lengths fail at the data boundary.
+
+The QVR Jupyter kernel accepts the same source and meta-commands in cells; its
+completion and inspection use the shared session. A notebook using the Python
+kernel can instead fit the source through [`Model`](model-data-and-fitting.md):
+
+```python
+from pathlib import Path
+import torch
+from quivers.modeling import Model, VariationalMethod
+
+model = Model(Path("regression.qvr").read_text())
+fit = model.fit(
+    {"x": torch.tensor([1.0, 2.0, 3.0]), "y": torch.tensor([0.5, 1.0, 1.5])},
+    method=VariationalMethod(num_steps=1000, seed=7),
+)
+```
+
+The reference-machine `:run` executes a model once. The Python fitting interface
+specializes and validates a tensor model, then runs the chosen inference method.
+Typed structured bindings and tensor fitting of `CheckedProgram` remain subject
+to the limits listed in the [capability audit](../developer/model-interface-roadmap.md).

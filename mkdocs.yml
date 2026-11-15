@@ -141,6 +141,7 @@ nav:
       - Editor support and syntax highlighting: getting-started/highlighting.md
     - Tutorial overview: tutorials/index.md
     - QVR tutorials:
+      - Checked model fitting: tutorials/qvr/00-model-interface.md
       - 1. Your first model: tutorials/qvr/01-first-model.md
       - 2. Generalized linear models: tutorials/qvr/02-glms.md
       - 3. Hierarchical models: tutorials/qvr/03-hierarchical.md
