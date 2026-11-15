@@ -289,6 +289,7 @@ value. The built-in families:
 | `cumulative` | logit on the cumulative probabilities (`OrderedLogistic`) | learned ordered cutpoints |
 | `zero_inflated_poisson` | log (exp) | `zi ~ Beta(2.0, 2.0)` |
 | `hurdle_poisson` | log (exp) | `zi ~ Beta(2.0, 2.0)` |
+| `zero_inflated_beta` | logit | `phi` (precision), `zi` (zero probability) |
 | `zero_one_inflated_beta` | logit (sigmoid) | precision `phi` and boundary probabilities `zoi`, `coi` |
 | `asym_laplace` | identity for the selected quantile | `sigma ~ HalfCauchy(2.0)`, `quantile ~ Beta(2.0, 2.0)` unless fixed |
 | `lognormal` | identity for log-location | `sigma ~ HalfCauchy(2.0)` |
@@ -340,6 +341,45 @@ Monte Carlo moments and moment gradients, and SVI/HMC/NUTS execution are covered
 in `tests/continuous/test_response_time_families.py` and
 `tests/test_formula_distributional.py`. External transpilation backends currently
 reject both families with explicit unsupported-family diagnostics.
+
+### Zero-inflated beta regression
+
+Use `zero_inflated_beta` for responses with exact zeros and continuous values
+strictly below one. `zi` is the zero-atom probability; `mu` is the mean of the
+interior Beta component, and `phi` is its precision. The response expectation is
+`(1 - zi) * mu`:
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+proportions = pd.DataFrame({
+    "fraction": [0.0, 0.2, 0.7, 0.0],
+    "x": [-1.0, 0.0, 1.0, 2.0],
+    "z": [0.2, -0.3, 0.0, 0.5],
+})
+zero_beta_fit = fit(
+    "fraction ~ x",
+    data=proportions,
+    family="zero_inflated_beta",
+    distributional={"zi": "~ z"},
+    fixed_parameters={"phi": 8.0},
+    method="svi",
+    num_steps=10,
+    seed=13,
+)
+interior_means = zero_beta_fit.posterior_linpred(transform=True, num_samples=5)
+response_means = zero_beta_fit.posterior_epred(num_samples=5)
+assert interior_means.shape == response_means.shape == (1, 5, 4)
+```
+
+Both `phi` and `zi` can be regressed or fixed, with log and logit links by
+default. Fixed `zi=0` gives an ordinary Beta distribution; fixed `zi=1` gives a
+point mass at zero. Observations equal to one require the
+`zero_one_inflated_beta` family. The emitted QVR reuses that native distribution
+with its conditional one-atom probability `coi` fixed at zero, so zero-only
+inflation creates no one-atom latent or prior. External backend emission follows
+the native family's capability checks and currently reports unsupported targets.
 
 ### Quantile regression and fixed auxiliary parameters
 

@@ -749,6 +749,17 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for a categorical or cumulative family), or a prior does
             not parse as ``"Family(arg, ...)"``.
         """
+        if self._family.name == "zero_inflated_beta":
+            response = np.asarray(formula.response_values)
+            if (
+                response.size == 0
+                or not np.isfinite(response).all()
+                or np.any(response < 0)
+                or np.any(response >= 1)
+            ):
+                raise ValueError(
+                    "zero_inflated_beta requires finite response values in [0, 1)"
+                )
         group_codings: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {}
         for name, predictor in (("mu", formula), *self._distributional.items()):
             if predictor.response_values.shape != formula.response_values.shape:
@@ -2225,6 +2236,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 ]
             )
             obs_args = ("beta_concentration1", "beta_concentration0")
+        elif self._family.name == "zero_inflated_beta":
+            # A zero-only inflation is exactly the native zero/one mixture
+            # with its conditional one-atom probability fixed at zero.
+            obs_args = ("mu", "phi", "zi", 0.0)
         elif self._family.name == "student_t":
             # QVR follows torch's ``StudentT(df, loc, scale)`` ordering;
             # the formula surface names those slots ``nu``, ``mu``, and

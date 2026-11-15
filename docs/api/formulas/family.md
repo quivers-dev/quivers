@@ -10,4 +10,9 @@ while `Family.with_links(sigma="softplus")` changes a distributional scale link;
 [link selection](../../guides/analysis-data-and-formulas.md#distributional-regression-and-link-selection)
 gives the supported names and parameterizations.
 
+`zero_inflated_beta` uses logit mean and zero-probability links plus a log
+precision link. It lowers to native `ZeroOneInflatedBeta` with `coi=0`, retaining
+only the `phi` and `zi` auxiliaries. Its response mean includes the zero-atom
+weight; see the [regression example](../../guides/analysis-data-and-formulas.md#zero-inflated-beta-regression).
+
 ::: quivers.formulas.family
