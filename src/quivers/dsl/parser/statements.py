@@ -48,6 +48,9 @@ from quivers.dsl.ast_nodes import (
     ProgramDecl,
     ProgramParam,
     ProgramStep,
+    ScalarParam,
+    QiecValueParameter,
+    QiecTypeName,
     RuleDecl,
     SchemaDecl,
     SchemaParameter,
@@ -78,7 +81,12 @@ from quivers.dsl.parser.program_steps import (
     _walk_program_step,
     _walk_return_pattern,
 )
-from quivers.dsl.parser.qiec import _QIEC_STATEMENT_KINDS, _walk_qiec_statement
+from quivers.dsl.parser.qiec import (
+    _QIEC_STATEMENT_KINDS,
+    _walk_qiec_statement,
+    _walk_binder,
+    _walk_type as _walk_qiec_type,
+)
 
 # ---------------------------------------------------------------------------
 # top-level dispatcher
@@ -1010,23 +1018,47 @@ def _walk_program_decl(t: _Tree, vid: str, line: int, col: int) -> ProgramDecl:
     options = _walk_option_block(t, opt_vid) if opt_vid else ()
     data_params: list[str] = []
     type_params_list: list[ProgramParam] = []
-    for pv in t.fields(vid, "params"):
-        pk = t.kind(pv)
-        if pk == "typed_program_param":
-            type_params_list.append(_walk_program_param(t, pv))
-        elif pk == "identifier":
-            data_params.append(t.text(pv))
+    binders = []
+    for parameter in t.fields(vid, "binders"):
+        if t.kind(parameter) == "typed_program_param":
+            type_params_list.append(_walk_program_param(t, parameter))
         else:
-            raise ParseError(f"unexpected program param kind {pk} at {pv}")
-    if data_params and type_params_list:
+            binders.append(_walk_binder(t, parameter))
+    values = []
+    for parameter in (*t.fields(vid, "params"), *t.fields(vid, "parameters")):
+        if t.kind(parameter) == "identifier":
+            data_params.append(t.text(parameter))
+            continue
+        parameter_line, parameter_col = t.line_col(parameter)
+        values.append(
+            QiecValueParameter(
+                name=_required_text(t, t.field(parameter, "name"), parameter, "name"),
+                type_expr=_walk_qiec_type(t, _required_field(t, parameter, "type")),
+                line=parameter_line,
+                col=parameter_col,
+            )
+        )
+    if data_params and values:
         raise ParseError(
-            f"program {_required_text(t, name_vid, vid, 'name')!r} "
-            "mixes bare data parameters and typed template parameters"
+            "program parameters must be either domain names or typed values"
+        )
+    # Scalar-only applications can be partially applied by the tensor compiler.
+    # Their source interface remains the ordinary runtime value telescope.
+    if values and all(
+        isinstance(p.type_expr, QiecTypeName) and p.type_expr.name in {"Real", "Nat"}
+        for p in values
+    ):
+        type_params_list.extend(
+            ScalarParam(
+                name=p.name,
+                scalar_kind=p.type_expr.name,
+                line=p.line,
+                col=p.col,
+            )
+            for p in values
         )
     params: tuple[str, ...] | None = tuple(data_params) if data_params else None
-    type_params: tuple[ProgramParam, ...] | None = (
-        tuple(type_params_list) if type_params_list else None
-    )
+    type_params = tuple(type_params_list) if type_params_list else None
     steps: list[ProgramStep] = []
     for sv in t.fields(vid, "steps"):
         steps.append(_walk_program_step(t, sv))
@@ -1046,6 +1078,8 @@ def _walk_program_decl(t: _Tree, vid: str, line: int, col: int) -> ProgramDecl:
         name=_required_text(t, name_vid, vid, "name"),
         params=params,
         type_params=type_params,
+        binders=tuple(binders),
+        value_parameters=tuple(values),
         domain=_walk_type(t, dom_vid),
         codomain=_walk_type(t, cod_vid),
         options=options,

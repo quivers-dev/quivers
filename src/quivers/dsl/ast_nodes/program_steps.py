@@ -1,4 +1,4 @@
-"""Program-block step AST nodes (). The
+"""Program-block step AST nodes. The
 parser emits one AST class per surface step keyword. The internal
 IR forms (``DrawStep``, ``PlateDrawStep``, ``VectorisedObserveStep``,
 ``GroupedLatentInitStep``, ``GroupedBodyObserveStep``,
@@ -9,7 +9,6 @@ surface step into one of these specialized IR shapes at the entry to
 
 Surface AST (what the parser emits):
 
-* `DataStep` - ``data name : Type``
 * `SampleStep` - ``sample v[: A] <- F(args) [options]``
 * `ObserveStep` - ``observe v[: A] <- F(args) [options]``
 * `MarginalizeStep` - ``marginalize c[: K] <- F(args) [options] : scope``
@@ -33,7 +32,7 @@ import didactic.api as dx
 from quivers.dsl.ast_nodes._shared import AxisSpec, OptionEntry
 from quivers.dsl.ast_nodes.let_expressions import LetExprNode
 from quivers.dsl.ast_nodes.objects import ObjectExpr
-from quivers.dsl.ast_nodes.qiec import QiecCallComputation, QiecTypeExpr
+from quivers.dsl.ast_nodes.qiec import QiecCallComputation
 
 
 class DrawArg(dx.TaggedUnion, discriminator="kind"):
@@ -169,30 +168,6 @@ class ProgramStep(dx.TaggedUnion, discriminator="kind"):
     """Sum of program-block step node kinds."""
 
 
-class DataStep(ProgramStep):
-    """Declare an external value at a QIEC type inside a program.
-
-    Parameters
-    ----------
-    name : str
-        External symbol supplied by the caller.
-    type_expr : QiecTypeExpr
-        Declared type, including tensor dimensions where applicable.
-    line : int
-        One-based source line, or zero when unknown.
-    col : int
-        Zero-based source column.
-    kind : str
-        Tagged-union discriminator.
-    """
-
-    name: str
-    type_expr: QiecTypeExpr
-    line: int = 0
-    col: int = 0
-    kind: Literal["data_step"] = "data_step"
-
-
 # ---------------------------------------------------------------------------
 # Surface program steps
 # ---------------------------------------------------------------------------
@@ -214,6 +189,7 @@ class SampleStep(ProgramStep):
     vars: tuple[str, ...]
     morphism: str
     args: tuple[DrawArg, ...] | None = None
+    static_args: tuple[DrawArg, ...] = ()
     index: ObjectExpr | None = None
     axes: AxisSpec | None = None
     options: tuple[OptionEntry, ...] = ()
@@ -235,6 +211,7 @@ class ObserveStep(ProgramStep):
     vars: tuple[str, ...]
     morphism: str
     args: tuple[DrawArg, ...] | None = None
+    static_args: tuple[DrawArg, ...] = ()
     index: ObjectExpr | None = None
     axes: AxisSpec | None = None
     via: str | None = None
@@ -260,6 +237,7 @@ class MarginalizeStep(ProgramStep):
     var: str
     morphism: str
     args: tuple[DrawArg, ...] | None = None
+    static_args: tuple[DrawArg, ...] = ()
     index: ObjectExpr | None = None
     over: str | None = None
     over_objs: tuple[str, ...] | None = None
@@ -510,7 +488,6 @@ class GroupedBodyObserveStep(ProgramStep):
 __all__ = [
     "BindStep",
     "CallStep",
-    "DataStep",
     "DrawArg",
     "DrawArgDist",
     "DrawArgIndex",

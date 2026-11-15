@@ -3,9 +3,7 @@ Declared external tensor and inferred row extent
 ==================
 object Row : FinSet _
 object Out : Real 1
-program regression : Row -> Out
-    data x : Tensor[Real]([Row])
-    data y : Tensor[Real]([Row])
+program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out
     sample b <- Normal(loc=0.0, scale=1.0)
     let mu = b * x
     observe y : Row <- Normal(loc=mu, scale=1.0)
@@ -25,11 +23,7 @@ export regression
       (integer)))
   (program_decl
     (identifier)
-    (object_atom
-      (identifier))
-    (object_atom
-      (identifier))
-    (data_step
+    (qiec_value_parameter
       (identifier)
       (qiec_type_application
         (identifier)
@@ -39,7 +33,7 @@ export regression
         (qiec_shape_index
           (qiec_index_name
             (identifier)))))
-    (data_step
+    (qiec_value_parameter
       (identifier)
       (qiec_type_application
         (identifier)
@@ -49,6 +43,10 @@ export regression
         (qiec_shape_index
           (qiec_index_name
             (identifier)))))
+    (object_atom
+      (identifier))
+    (object_atom
+      (identifier))
     (sample_step
       (identifier)
       (identifier)

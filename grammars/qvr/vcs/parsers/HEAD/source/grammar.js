@@ -74,7 +74,10 @@ module.exports = grammar({
 
   word: $ => $.identifier,
 
-  conflicts: _ => [],
+  conflicts: $ => [
+    [$._program_static_arguments, $.option_entry],
+  ],
+
 
   rules: {
     // -----------------------------------------------------------------
@@ -82,6 +85,8 @@ module.exports = grammar({
     // -----------------------------------------------------------------
 
     source_file: $ => seq(repeat($._top), $._eof),
+
+    _list_newlines: $ => repeat1($._newline),
 
     /* Allow blank lines between top-level statements: the scanner
      * emits a NEWLINE for each, and we tolerate them here. */
@@ -336,15 +341,7 @@ module.exports = grammar({
       'define',
       field('name', $.identifier),
       optional(field('binders', $.qiec_static_telescope)),
-      optional(seq(
-        '(',
-        optional(seq(
-          field('parameters', $.qiec_value_parameter),
-          repeat(seq(',', field('parameters', $.qiec_value_parameter))),
-          optional(','),
-        )),
-        ')',
-      )),
+      optional($._qiec_value_parameters),
       ':',
       field('result', $._qiec_type_expr),
       field('row', $.qiec_effect_row),
@@ -354,6 +351,8 @@ module.exports = grammar({
       field('body', $._qiec_computation),
       $._dedent,
     ),
+
+    _qiec_value_parameters: $ => parenthesizedList($, field('parameters', $.qiec_value_parameter)),
 
     qiec_value_parameter: $ => seq(
       field('name', $.identifier),
@@ -365,13 +364,7 @@ module.exports = grammar({
     // QIEC static language
     // -----------------------------------------------------------------
 
-    qiec_static_telescope: $ => seq(
-      '[',
-      field('binders', $._qiec_static_binder),
-      repeat(seq(',', field('binders', $._qiec_static_binder))),
-      optional(','),
-      ']',
-    ),
+    qiec_static_telescope: $ => bracketedList($, '[', field('binders', $._qiec_static_binder), ']'),
 
     _qiec_static_binder: $ => choice(
       $.qiec_type_binder,
@@ -397,13 +390,7 @@ module.exports = grammar({
       field('sort', $.qiec_index_sort),
     ),
 
-    qiec_index_telescope: $ => seq(
-      '(',
-      field('binders', $.qiec_index_binder),
-      repeat(seq(',', field('binders', $.qiec_index_binder))),
-      optional(','),
-      ')',
-    ),
+    qiec_index_telescope: $ => bracketedList($, '(', field('binders', $.qiec_index_binder), ')'),
 
     qiec_type_kind: _ => 'Type',
     qiec_effect_kind: _ => 'Effect',
@@ -978,7 +965,7 @@ module.exports = grammar({
       optional(field('docs', $.doc_comment_group)),
       'rule',
       field('name', $.identifier),
-      bracketedList($, '(', field('variables', $.identifier), ')'),
+      bracketedList($, '[', field('variables', $.identifier), ']'),
       ':',
       field('premises', commaSep1($._object_expr)),
       choice('|-', '⊢'),
@@ -994,7 +981,7 @@ module.exports = grammar({
       optional(field('docs', $.doc_comment_group)),
       'schema',
       field('name', $.identifier),
-      bracketedList($, '(', field('parameters', $.schema_parameter), ')'),
+      bracketedList($, '[', field('parameters', $.schema_parameter), ']'),
       ':',
       field('domain', $._object_expr),
       '->',
@@ -1491,7 +1478,8 @@ module.exports = grammar({
       optional(field('docs', $.doc_comment_group)),
       'program',
       field('name', $.identifier),
-      optional(bracketedList($, '(', field('params', $._program_param), ')')),
+      optional(bracketedList($, '[', field('binders', choice($.typed_program_param, $._qiec_static_binder)), ']')),
+      optional(choice($._qiec_value_parameters, bracketedList($, '(', field('params', $.identifier), ')'))),
       ':',
       field('domain', $._object_expr),
       '->',
@@ -1504,11 +1492,6 @@ module.exports = grammar({
       $._dedent,
     ),
 
-    _program_param: $ => choice(
-      $.identifier,
-      $.typed_program_param,
-    ),
-
     typed_program_param: $ => seq(
       field('name', $.identifier),
       ':',
@@ -1517,7 +1500,6 @@ module.exports = grammar({
 
     _param_kind: $ => choice(
       $.object_kind,
-      $.scalar_kind,
       $.morphism_kind,
     ),
 
@@ -1533,16 +1515,7 @@ module.exports = grammar({
       ']',
     ),
 
-    data_step: $ => seq(
-      'data',
-      field('name', $.identifier),
-      ':',
-      field('type', $._qiec_type_expr),
-      $._newline,
-    ),
-
     _program_step: $ => choice(
-      $.data_step,
       $.sample_step,
       $.observe_step,
       $.marginalize_step,
@@ -1551,13 +1524,25 @@ module.exports = grammar({
       $.score_step,
     ),
 
+    // Shared argument productions keep the three draw forms in one parser
+    // automaton. Static application is distinguished from options by the
+    // mandatory following runtime argument list, including an empty ().
+    _program_static_arguments: $ => bracketedList($, '[', field('static_args', choice($.identifier, $.signed_number)), ']'),
+
+    _program_value_arguments: $ => parenthesizedList($, field('args', $._draw_arg)),
+
+    _program_arguments: $ => seq(
+      optional($._program_static_arguments),
+      $._program_value_arguments,
+    ),
+
     sample_step: $ => seq(
       'sample',
       field('vars', $._var_pattern),
       optional(seq(':', field('index', $._object_expr))),
       '<-',
       field('morphism', $.identifier),
-      optional(bracketedList($, '(', field('args', $._draw_arg), ')')),
+      optional($._program_arguments),
       optional(field('options', $.option_block)),
       $._newline,
     ),
@@ -1568,7 +1553,7 @@ module.exports = grammar({
       optional(seq(':', field('index', $._object_expr))),
       '<-',
       field('morphism', $.identifier),
-      optional(bracketedList($, '(', field('args', $._draw_arg), ')')),
+      optional($._program_arguments),
       optional(field('options', $.option_block)),
       $._newline,
     ),
@@ -1579,7 +1564,7 @@ module.exports = grammar({
       optional(seq(':', field('index', $._object_expr))),
       '<-',
       field('morphism', $.identifier),
-      optional(bracketedList($, '(', field('args', $._draw_arg), ')')),
+      optional($._program_arguments),
       optional(field('options', $.option_block)),
       $._newline,
       $._indent,
@@ -1892,7 +1877,7 @@ module.exports = grammar({
     method_call: $ => choice(
       seq(
         field('name', 'marginalize'),
-        bracketedList($, '(', field('args', $.identifier), ')'),
+        parenthesizedList($, field('args', $.identifier)),
       ),
       seq(field('name', choice('curry_right', 'curry_left'))),
       seq(
@@ -1927,9 +1912,14 @@ module.exports = grammar({
       $.expr_ident,
     ),
 
+    _morphism_value_arguments: $ => prec(20, bracketedList($, '(', field('args', $.identifier), ')')),
+
     morphism_call: $ => prec(20, seq(
       field('callee', $.identifier),
-      bracketedList($, '(', field('args', $.identifier), ')'),
+      choice(
+        seq(optional($._program_static_arguments), $._morphism_value_arguments),
+        seq($._program_static_arguments, '(', ')'),
+      ),
     )),
 
     expr_paren: $ => seq('(', $._expr, ')'),
@@ -2249,17 +2239,18 @@ function bracketedList($, open, item, close) {
       open,
       $._newline,
       $._indent,
-      repeat1(seq(item, ',', $._newline)),
+      optional($._list_newlines),
+      repeat1(seq(item, ',', $._list_newlines)),
       $._dedent,
       close,
     ),
     seq(
       open,
       $._newline,
-      repeat($._newline),
+      optional($._list_newlines),
       item,
-      repeat(seq(',', repeat1($._newline), item)),
-      optional(seq(',', repeat($._newline))),
+      repeat(seq(',', $._list_newlines, item)),
+      optional(seq(',', optional($._list_newlines))),
       close,
     ),
   );

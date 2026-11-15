@@ -142,7 +142,6 @@ from quivers.dsl.ast_nodes.program_steps import (
     GroupedMarginalizeStep,
     CallStep,
     LetStep,
-    DataStep,
     MarginalizeStep,
     ObserveStep,
     PlateDrawStep,
@@ -524,11 +523,11 @@ def _emit_expr(e: Expr) -> str:
     if isinstance(e, ExprChartFold):
         return _emit_chart_fold_expr(e)
     if isinstance(e, ExprMorphismCall):
-        if not e.args:
-            raise EmitError(
-                f"emit: morphism call {e.callee!r} requires at least one argument"
-            )
-        return f"{e.callee}({', '.join(e.args)})"
+        return (
+            f"{e.callee}"
+            + ("[" + ", ".join(e.static_args) + "]" if e.static_args else "")
+            + f"({', '.join(e.args)})"
+        )
     raise EmitError(f"emit: unknown Expr kind {type(e).__name__!r}")
 
 
@@ -752,7 +751,12 @@ def _emit_draw_args(args: tuple[DrawArg, ...] | None) -> str:
     return "(" + ", ".join(_emit_draw_arg(a) for a in args) + ")"
 
 
-def draw_call_to_source(head: str, args: tuple[DrawArg, ...] | None) -> str:
+def draw_call_to_source(
+    head: str,
+    args: tuple[DrawArg, ...] | None,
+    *,
+    static_args: tuple[DrawArg, ...] = (),
+) -> str:
     """A draw's right-hand side as QVR source.
 
     Parameters
@@ -760,21 +764,30 @@ def draw_call_to_source(head: str, args: tuple[DrawArg, ...] | None) -> str:
     head : str
         The family or morphism drawn from.
     args : tuple[DrawArg, ...] or None
-        The draw's arguments, keyword or positional.
+        The draw's runtime arguments, keyword or positional.
+    static_args : tuple[DrawArg, ...]
+        Static specialization arguments, written in square brackets.
 
     Returns
     -------
     str
         ``head`` followed by its parenthesized arguments as written,
-        as in ``Dirichlet(concentration=1.0)``, or ``head`` alone when
-        the draw passes none.
+        as in ``Dirichlet(concentration=1.0)``. Static arguments precede
+        the value list, including an empty list in ``head[Object]()``.
+        A call without either argument list emits ``head`` alone.
 
     Raises
     ------
     EmitError
         If an argument has no source spelling.
     """
-    return f"{head}{_emit_draw_args(args)}"
+    static = (
+        "[" + ", ".join(_emit_draw_arg(argument) for argument in static_args) + "]"
+        if static_args
+        else ""
+    )
+    runtime = _emit_draw_args(args) if args else "()" if static_args else ""
+    return f"{head}{static}{runtime}"
 
 
 # ---------------------------------------------------------------------------
@@ -810,18 +823,22 @@ def _emit_draw_head(
     args: tuple[DrawArg, ...] | None,
     options: tuple[OptionEntry, ...],
     indent: int,
+    static_args: tuple[DrawArg, ...] = (),
 ) -> str:
+    static = (
+        "[" + ", ".join(_emit_draw_arg(a) for a in static_args) + "]"
+        if static_args
+        else ""
+    )
     if index is not None:
         binder = f"{binder} : {_emit_object_expr(index)}"
     return (
-        f"{_pad(indent)}{keyword} {binder} <- {morphism}"
-        f"{_emit_draw_args(args)}{_emit_options(options)}"
+        f"{_pad(indent)}{keyword} {binder} <- {morphism}{static}"
+        f"{_emit_draw_args(args) if args else '()' if static_args else ''}{_emit_options(options)}"
     )
 
 
 def _emit_program_step(step: ProgramStep, indent: int) -> list[str]:
-    if isinstance(step, DataStep):
-        return [f"{_pad(indent)}data {step.name} : {_emit_qiec_type(step.type_expr)}"]
     if isinstance(step, SampleStep):
         binder = _emit_var_pattern(step.vars)
         return [
@@ -833,6 +850,7 @@ def _emit_program_step(step: ProgramStep, indent: int) -> list[str]:
                 step.args,
                 step.options,
                 indent,
+                step.static_args,
             )
         ]
     if isinstance(step, ObserveStep):
@@ -846,6 +864,7 @@ def _emit_program_step(step: ProgramStep, indent: int) -> list[str]:
                 step.args,
                 step.options,
                 indent,
+                step.static_args,
             )
         ]
     if isinstance(step, MarginalizeStep):
@@ -860,6 +879,7 @@ def _emit_program_step(step: ProgramStep, indent: int) -> list[str]:
                 step.args,
                 step.options,
                 indent,
+                step.static_args,
             )
         ]
         for inner in step.scope:
@@ -1605,7 +1625,7 @@ def _emit_rule(decl: RuleDecl, indent: int) -> str:
         raise EmitError(f"emit: rule {decl.name!r} requires at least one variable")
     premises = ", ".join(_emit_object_expr(p) for p in decl.premises)
     text = (
-        f"rule {decl.name}(" + ", ".join(decl.variables) + ") : "
+        f"rule {decl.name}[" + ", ".join(decl.variables) + "] : "
         f"{premises} |- {_emit_object_expr(decl.conclusion)}"
     )
     return _with_docs(decl.docs, indent, text)
@@ -1619,7 +1639,7 @@ def _emit_schema(decl: SchemaDecl, indent: int) -> str:
         for p in decl.parameters
     )
     text = (
-        f"schema {decl.name}({params}) : "
+        f"schema {decl.name}[{params}] : "
         f"{_emit_object_expr(decl.domain)} -> {_emit_object_expr(decl.codomain)}"
     )
     return _with_docs(decl.docs, indent, text)
@@ -1949,15 +1969,42 @@ def _emit_loss(decl: LossDecl, indent: int) -> str:
 
 def _emit_program(decl: ProgramDecl, indent: int) -> str:
     lines = _doc_lines(decl.docs, indent)
-    if decl.params and decl.type_params:
-        raise EmitError(f"emit: program {decl.name!r} mixes bare and typed parameters")
+    static_parameters = sorted(
+        (
+            *decl.binders,
+            *(p for p in decl.type_params or () if not isinstance(p, ScalarParam)),
+        ),
+        key=lambda parameter: (parameter.line, parameter.col),
+    )
+    static = [
+        _emit_program_param(parameter)
+        if isinstance(parameter, ProgramParam)
+        else _emit_qiec_binder(parameter)
+        for parameter in static_parameters
+    ]
+    prefix = "[" + ", ".join(static) + "]" if static else ""
     params = ""
     if decl.params:
         params = "(" + ", ".join(decl.params) + ")"
+    elif decl.value_parameters:
+        params = (
+            "("
+            + ", ".join(
+                f"{p.name} : {_emit_qiec_type(p.type_expr)}"
+                for p in decl.value_parameters
+            )
+            + ")"
+        )
     elif decl.type_params:
-        params = "(" + ", ".join(_emit_program_param(p) for p in decl.type_params) + ")"
+        scalars = [
+            _emit_program_param(p)
+            for p in decl.type_params
+            if isinstance(p, ScalarParam)
+        ]
+        if scalars:
+            params = "(" + ", ".join(scalars) + ")"
     lines.append(
-        f"{_pad(indent)}program {decl.name}{params} : "
+        f"{_pad(indent)}program {decl.name}{prefix}{params} : "
         f"{_emit_object_expr(decl.domain)} -> {_emit_object_expr(decl.codomain)}"
         f"{_emit_options(decl.options)}"
     )

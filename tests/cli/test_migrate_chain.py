@@ -106,7 +106,7 @@ def test_vcs_coverage_spans_every_chain_edge() -> None:
 
     head_report = reports[-1]
     assert (head_report.from_ref, head_report.to_ref) == ("v0.64.2", "HEAD")
-    assert not head_report.removed_rules
+    assert head_report.removed_rules == ("_program_param",)
     assert ("v0.64.2", "HEAD") not in IDENTITY_PAIRS
 
 
@@ -253,7 +253,7 @@ def test_v02_historical_fixture_composes_through_head() -> None:
     )
     migrated = compose_migration("v0.2.0", "HEAD")(source)
     assert b"composition ProductFuzzy [level=algebra]\n" in migrated
-    assert b"rule app(X, Y) : (X/Y) * Y |- X\n" in migrated
+    assert b"rule app[X, Y] : (X/Y) * Y |- X\n" in migrated
     assert b"morphism c : A -> B [role=kernel] ~ Normal\n" in migrated
     assert b"morphism s : A -> B [role=kernel]\n" in migrated
     assert b"    sample x <- c\n" in migrated

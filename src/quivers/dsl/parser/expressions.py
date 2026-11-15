@@ -340,6 +340,7 @@ def _walk_expr(t: _Tree, vid: str) -> Expr:
         return ExprMorphismCall(
             callee=t.text(callee_vid),
             args=tuple(t.text(av) for av in t.fields(vid, "args")),
+            static_args=tuple(t.text(av) for av in t.fields(vid, "static_args")),
             line=line,
             col=col,
         )
