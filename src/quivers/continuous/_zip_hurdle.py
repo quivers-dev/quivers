@@ -305,6 +305,17 @@ class ZeroOneInflatedBeta(Distribution):
             validate_args=self._validate_args,
         )
 
+    @property
+    def mean(self) -> Tensor:
+        """Expected response, including the atom at one and the interior mean.
+
+        Returns
+        -------
+        Tensor
+            The atom-at-one contribution plus the weighted interior mean.
+        """
+        return self.zoi * self.coi + (1 - self.zoi) * self.mu
+
     def log_prob(self, value: Tensor) -> Tensor:
         if self._validate_args:
             self._validate_sample(value)

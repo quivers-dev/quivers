@@ -45,7 +45,7 @@ from quivers.formulas.family import (
 from quivers.formulas.compile import (
     FormulaToQVRModule,
 )
-from quivers.formulas._fit import BayesianFit, fit, formula_to_qvr
+from quivers.formulas._fit import BayesianFit, fit, formula_to_qvr, get_prior
 
 __all__ = [
     # formula
@@ -66,4 +66,5 @@ __all__ = [
     "BayesianFit",
     "fit",
     "formula_to_qvr",
+    "get_prior",
 ]

@@ -5,6 +5,9 @@ the observations, and its [link function](https://en.wikipedia.org/wiki/Generali
 connects the linear predictor to a parameter of that distribution [@nelder1972glm]. In
 [Bernoulli regression](../../tutorials/qvr/02-glms.md), the inverse logit maps an unconstrained
 predictor to a probability. The module gives `Family`, `Link`, and `AuxParam`, and the `families`
-and `links` registries.
+and `links` registries. `Family.with_links(mu="probit")` selects a location link,
+while `Family.with_links(sigma="softplus")` changes a distributional scale link;
+[link selection](../../guides/analysis-data-and-formulas.md#distributional-regression-and-link-selection)
+gives the supported names and parameterizations.
 
 ::: quivers.formulas.family

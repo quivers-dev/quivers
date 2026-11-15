@@ -134,7 +134,7 @@ class FixedColumn(ValueModel):
     data: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(_read_only))
 
 
-class RandomTerm(dx.Model):
+class RandomTerm(ValueModel):
     """One random-effect group, e.g. ``(1 | g)`` or ``(x | g)``.
 
     Attributes
@@ -144,10 +144,23 @@ class RandomTerm(dx.Model):
         variable name.
     group : str
         Grouping factor name.
+    correlation_id : str or None
+        Correlation-block identity; ``None`` requests independent effects.
+    shared : bool
+        Whether the identity was explicitly named and can join blocks across
+        location and auxiliary formulas.
+    column : FixedColumn or None
+        Evaluated slope column, including categorical contrasts and numeric
+        transforms. The intercept uses a constant column.
     """
 
     slope: str
     group: str
+    correlation_id: str | None = None
+    shared: bool = False
+    column: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 class Formula(ValueModel):
@@ -185,7 +198,9 @@ class Formula(ValueModel):
     fixed_columns: tuple[FixedColumn, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
-    random_terms: tuple[RandomTerm, ...] = ()
+    random_terms: tuple[RandomTerm, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     response_values: np.ndarray = dx.field(
         opaque=True, extras=opaque_by_value(_read_only)
     )
@@ -223,6 +238,9 @@ class FormulaData(ValueModel):
         Canonical level order for each group.
     group_indices : dict[str, tuple[int, ...]]
         Per-row integer codes for each group.
+    random_terms : tuple[RandomTerm, ...]
+        Original slope-column data and correlation identities, matched to
+        the group/slope structure decoded from the emitted module.
     """
 
     formula: str = ""
@@ -241,6 +259,9 @@ class FormulaData(ValueModel):
     group_original_names: dict[str, str] = dx.field(default_factory=dict)
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
+    random_terms: tuple[RandomTerm, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def _qvr_name(raw: str) -> str:
@@ -304,6 +325,88 @@ def _explode_term(term_name: str, term, n_obs: int) -> list[FixedColumn]:
     ]
 
 
+def _random_blocks(
+    formula: str,
+) -> tuple[str, dict[tuple[str, str], tuple[str | None, bool]]]:
+    """Normalize bar notation and retain each random-effect correlation block."""
+    replacements: list[tuple[int, int, str]] = []
+    metadata: dict[tuple[str, str], tuple[str | None, bool]] = {}
+    starts: list[int] = []
+    quote: str | None = None
+    escaped = False
+    block_counts: dict[str, int] = {}
+    for position, char in enumerate(formula):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "(":
+            starts.append(position)
+        elif char == ")" and starts:
+            start = starts.pop()
+            body = formula[start + 1 : position]
+            depth = 0
+            bars: list[int] = []
+            body_quote: str | None = None
+            body_escaped = False
+            for offset, token in enumerate(body):
+                if body_quote is not None:
+                    if body_escaped:
+                        body_escaped = False
+                    elif token == "\\":
+                        body_escaped = True
+                    elif token == body_quote:
+                        body_quote = None
+                    continue
+                if token in {"'", '"'}:
+                    body_quote = token
+                elif token == "(":
+                    depth += 1
+                elif token == ")":
+                    depth -= 1
+                elif token == "|" and depth == 0:
+                    bars.append(offset)
+            if not bars:
+                continue
+            boundaries = [-1, *bars, len(body)]
+            pieces = [
+                body[left + 1 : right].strip()
+                for left, right in zip(boundaries, boundaries[1:])
+            ]
+            if len(pieces) == 2:
+                lhs, group = pieces
+                block_counts[group] = block_counts.get(group, 0) + 1
+                ordinal = block_counts[group]
+                identity = group if ordinal == 1 else f"{group}_{ordinal}"
+                shared = False
+            elif len(pieces) == 3:
+                lhs, identity, group = pieces
+                shared = bool(identity)
+                if not shared:
+                    identity = None
+            else:
+                raise ValueError(f"invalid random-effect block ({body})")
+            normalized = f"({lhs} | {group})"
+            replacements.append((start, position + 1, normalized))
+            model = fo.model_description(normalized)
+            for term in model.group_terms:
+                key = (term.expr.name, term.factor.name)
+                if key in metadata:
+                    raise ValueError(
+                        f"random coefficient {key[0]!r} for {key[1]!r} appears in multiple blocks"
+                    )
+                metadata[key] = (identity, shared)
+    for start, end, replacement in reversed(replacements):
+        formula = formula[:start] + replacement + formula[end:]
+    return formula, metadata
+
+
 def formula_from_data(
     formula: str,
     data: IntoDataFrame,
@@ -357,7 +460,8 @@ def formula_from_data(
     namespace: dict[str, object] = dict(_R_TRANSFORMS)
     if extra_namespace:
         namespace.update(extra_namespace)
-    dm = fo.design_matrices(formula, data=pandas_df, extra_namespace=namespace)
+    normalized, random_blocks = _random_blocks(formula)
+    dm = fo.design_matrices(normalized, data=pandas_df, extra_namespace=namespace)
     if dm.response is None:
         raise ValueError(
             f"formula_from_data: formula {formula!r} has no response "
@@ -375,18 +479,19 @@ def formula_from_data(
     group_levels: dict[str, tuple[str, ...]] = {}
     group_indices: dict[str, tuple[int, ...]] = {}
     if dm.group is not None:
-        for term_name in dm.group.terms.keys():
-            if "|" not in term_name:
-                raise ValueError(
-                    f"formula_from_data: unexpected random term name "
-                    f"{term_name!r}; expected `(slope | group)` syntax"
+        for term in dm.group.terms.values():
+            group = term.factor.name
+            identity, shared = random_blocks.get((term.expr.name, group), (None, False))
+            for column in _explode_term(term.expr.name, term.expr, n_obs):
+                random_terms.append(
+                    RandomTerm(
+                        slope="Intercept" if column.is_intercept else column.name,
+                        group=group,
+                        correlation_id=identity,
+                        shared=shared,
+                        column=column,
+                    )
                 )
-            slope, group = term_name.split("|", 1)
-            slope = slope.strip()
-            group = group.strip()
-            if slope == "1":
-                slope = "Intercept"
-            random_terms.append(RandomTerm(slope=slope, group=group))
             if group not in group_levels:
                 levels = tuple(
                     str(v) for v in nw_df[group].drop_nulls().unique().sort().to_list()

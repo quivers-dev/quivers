@@ -138,11 +138,88 @@ gives a `Module` that compiles to the same program.
   `sqrt`, `abs`, `sin`, `cos`, `tan`, `log10`, `log2`, `log1p`, `expm1`, `asin`, `acos`,
   `atan`, `sinh`, `cosh`, `tanh`.
 - **Random-effect groups** `(1 | g)`, `(1 + x | g)`, `(x | g)`,
-  `(0 + x | g)` parse as in brms and lme4. Several slopes in one group become
-  independent random-effect terms, as with lme4's uncorrelated `(... || g)`, and
-  correlated slopes are not supported.
+  `(0 + x | g)` use one group coefficient per design column. Coefficients within
+  a single-bar block share an LKJ correlation prior; `(1 + x || g)` makes them
+  independent. Explicit IDs, as in `(1 + x | effects | g)`, can share a
+  correlation block across location and auxiliary formulas.
 - **Interactions** `x:z` (elementwise product, one coefficient) and
   `x*z` (expands to `x + z + x:z`, three coefficients).
+
+### Correlated group effects
+
+A random-effects block assigns a joint distribution to its coefficients. For
+`(1 + x | group)`, the group intercept and slope have separate positive scales
+and a shared correlation. QVR emits an LKJ Cholesky draw `cor_group` and the
+coefficient scales `sigma_group_Intercept` and `sigma_group_x`. Its covariance is
+`diag(scale) @ cor_group @ cor_group.T @ diag(scale)`.
+
+The default `correlation_prior="LKJCholesky(1.0)"` is uniform over correlation
+matrices. `priors={"cor_group": "LKJCholesky(2.0)"}` changes one block's prior;
+`correlation_prior` changes the default for every block. Both `fit` and
+`formula_to_qvr` accept it. Centered scalar-response models draw the group
+coefficients through Gaussian conditional distributions. Noncentered models draw
+standard Normal innovations and multiply by the same Cholesky factor. These give
+the same covariance model, with different inference coordinates.
+
+Separate blocks remain independent. For instance, `(1 | group) + (0 + x | group)`
+has no intercept–slope correlation, while `(1 + x || group)` explicitly requests
+independence within one block. To share a correlation across formulas, give the
+blocks the same ID:
+
+<!-- python: skip -->
+```python
+from quivers.formulas import formula_to_qvr
+
+# Use the same dataframe for the location and scale predictors.
+shared_source = formula_to_qvr(
+    "y ~ x + (1 | effects | group)",
+    data=frame,
+    distributional={"sigma": "~ z + (1 | effects | group)"},
+)
+```
+
+This emits a single `cor_shared_effects` matrix joining the location and scale
+intercepts. Shared IDs require the same grouping factor and coding. Ambiguous
+block names and repeated coefficients across blocks fail before fitting.
+
+Categorical models expand each block over all non-reference logits, so a
+three-category `(1 + x | group)` model has a four-dimensional correlation
+matrix. This includes correlations between slopes and between response-category
+coefficients. Categorical group effects currently use the noncentered
+parameterization. Numeric transforms and categorical slope contrasts retain their
+evaluated design columns, including when the corresponding fixed slope is absent.
+The generated runtime telescope declares each group index array as
+`Tensor[Int]([Resp])`.
+
+### Inspecting priors
+
+`get_prior` evaluates the design matrices and returns the actual overrideable
+parameter names and distribution calls before inference. Default slope scales
+include column autoscaling; explicit overrides retain their supplied scale.
+Conditional group draws and standard Normal innovations define the group
+parameterization and are excluded from the override mapping.
+
+```python
+import pandas as pd
+from quivers.formulas import get_prior, formula_to_qvr
+
+prior_data = pd.DataFrame({
+    "y": [0.1, 0.5, 0.2, 0.7],
+    "x": [1.0, 2.0, 3.0, 4.0],
+    "group": ["a", "a", "b", "b"],
+})
+priors = get_prior("y ~ x + (1 + x | group)", data=prior_data)
+assert "beta_x" in priors and "cor_group" in priors
+source = formula_to_qvr(
+    "y ~ x + (1 + x | group)",
+    data=prior_data,
+    priors={"beta_x": "Normal(0.0, 0.5)", "cor_group": "LKJCholesky(2.0)"},
+)
+```
+
+Misspelled and unused prior names raise `ValueError` before fitting. This also
+catches an override for a scalar auxiliary parameter after that parameter has
+received a distributional formula: its coefficient names must be used instead.
 
 ### Family registry
 
@@ -155,6 +232,7 @@ value. The built-in families:
 | `gaussian` | identity | `sigma ~ HalfCauchy(2.0)` |
 | `bernoulli` | logit (sigmoid) | none |
 | `binomial` | logit (sigmoid) | known trial count |
+| `beta_binomial` | logit (sigmoid) | known trial count, precision `phi ~ HalfCauchy(2.0)` |
 | `categorical` | reference-category multinomial logit | one coefficient and random effect per non-reference category |
 | `poisson` | log (exp) | none |
 | `negative_binomial` | log (exp) | `disp ~ Gamma(2.0, 2.0)` |
@@ -164,13 +242,169 @@ value. The built-in families:
 | `cumulative` | logit on the cumulative probabilities (`OrderedLogistic`) | learned ordered cutpoints |
 | `zero_inflated_poisson` | log (exp) | `zi ~ Beta(2.0, 2.0)` |
 | `hurdle_poisson` | log (exp) | `zi ~ Beta(2.0, 2.0)` |
+| `zero_one_inflated_beta` | logit (sigmoid) | precision `phi` and boundary probabilities `zoi`, `coi` |
+| `asym_laplace` | identity for the selected quantile | `sigma ~ HalfCauchy(2.0)`, `quantile ~ Beta(2.0, 2.0)` unless fixed |
+| `lognormal` | identity for log-location | `sigma ~ HalfCauchy(2.0)` |
+| `exgaussian` | identity for the response mean | Normal scale `sigma`, Exponential mean `beta` |
+| `inverse_gaussian` | log for the response mean | `shape ~ Gamma(2.0, 2.0)` |
+| `exponential` | log for mean | none |
+| `geometric` | log for mean count | none |
+| `weibull` | log for mean | `shape ~ Gamma(2.0, 2.0)` |
+| `von_mises` | tangent half-angle (`2 * atan`) | `kappa ~ Gamma(2.0, 2.0)` |
 | `mixture` | identity | component logits, centered location offsets, and positive scales |
 
 A new family is a [`Family`](../api/formulas/family.md#quivers.formulas.family.Family)
 value with its own observation family and link. The table's priors on auxiliary
 parameters are the library's defaults.
 
-For binomial data, `binomial_trials` is either one common positive
+### Response-time families
+
+`exgaussian` models a response as a Normal component plus an independent
+Exponential component. The formula predictor gives the response mean `mu`, not
+the Normal component's mean: compilation uses `loc = mu - beta`, Normal scale
+`sigma`, and Exponential rate `1 / beta`. `inverse_gaussian` likewise predicts
+the response mean, with variance `mu**3 / shape`. Both parameterizations follow
+[brms's response-distribution definitions](https://paulbuerkner.com/brms/articles/brms_families.html#response-time-models).
+
+```python
+import pandas as pd
+from quivers.formulas import formula_to_qvr
+
+latency_data = pd.DataFrame({
+    "latency": [0.3, 0.8, 1.1, 1.8],
+    "condition": [-1.0, -1.0, 1.0, 1.0],
+})
+latency_source = formula_to_qvr(
+    "latency ~ condition", data=latency_data, family="exgaussian",
+    distributional={"beta": "~ condition"},
+    fixed_parameters={"sigma": 0.2},
+)
+positive_source = formula_to_qvr(
+    "latency ~ condition", data=latency_data, family="inverse_gaussian",
+    distributional={"shape": "~ condition"},
+)
+```
+
+The ExGaussian sampler adds reparameterized Normal and Exponential draws.
+The inverse Gaussian sampler has no rejection loop and uses implicit CDF
+derivatives for gradients, with common tail-density factors canceled before
+evaluation. Independent SciPy densities and CDFs, numerical derivative checks,
+Monte Carlo moments and moment gradients, and SVI/HMC/NUTS execution are covered
+in `tests/continuous/test_response_time_families.py` and
+`tests/test_formula_distributional.py`. External transpilation backends currently
+reject both families with explicit unsupported-family diagnostics.
+
+### Quantile regression and fixed auxiliary parameters
+
+The asymmetric Laplace family predicts a selected response quantile rather than
+its mean. `fixed_parameters` holds auxiliary parameters constant on their natural
+scale; the compiler emits deterministic bindings and inference allocates no
+latent coordinates for them. This option also applies to other families, for
+instance `fixed_parameters={"sigma": 0.5}` for a known Gaussian residual scale.
+
+```python
+import pandas as pd
+from quivers.formulas import fit, get_prior
+
+quantile_data = pd.DataFrame({
+    "y": [-0.5, 0.2, 0.7, 1.2],
+    "x": [-1.0, 0.0, 1.0, 2.0],
+})
+quantile_fit = fit(
+    "y ~ x",
+    data=quantile_data,
+    family="asym_laplace",
+    fixed_parameters={"quantile": 0.9},
+    method="svi",
+    num_steps=10,
+)
+assert "let quantile = 0.9" in quantile_fit.qvr_source
+assert "quantile" not in get_prior(
+    "y ~ x", data=quantile_data, family="asym_laplace",
+    fixed_parameters={"quantile": 0.9},
+)
+```
+
+The density is `q * (1-q) / sigma * exp(-rho_q((y-mu)/sigma))`, where
+`rho_q(u) = u * (q - I[u < 0])`. Thus the probability below `mu` is `q`.
+At `q=0.5`, this equals a Laplace distribution with scale `2 * sigma`;
+`sigma` is the check-loss scale, not the response standard deviation.
+The native implementation also provides CDF and inverse-CDF evaluation and
+reparameterized draws through a difference of two exponential variables.
+These parameterizations are checked against
+[brms's definition](https://paulbuerkner.com/brms/articles/brms_families.html#quantile-regression)
+and an independent SciPy density in `tests/continuous/test_asymmetric_laplace.py`.
+External transpilation backends currently reject this family with an explicit
+unsupported-family diagnostic.
+
+Fixed parameters cannot also have distributional formulas or prior overrides.
+Quantiles must lie strictly between zero and one, scales must be positive, and
+inflation probabilities may include either endpoint. If the quantile is left
+unfixed, its default prior is `Beta(2.0, 2.0)`; it may also have a distributional
+formula with a logit link.
+
+### Distributional regression and link selection
+
+A **distributional regression** gives a response parameter its own predictor. For
+instance, a Gaussian model may let both the mean and the residual scale vary with
+observed predictors. `distributional` maps an auxiliary parameter to its formula;
+`"~ z"` and `"sigma ~ z"` are equivalent when the parameter is `sigma`.
+
+```python
+import pandas as pd
+from quivers.formulas import families, formula_to_qvr
+
+frame = pd.DataFrame({
+    "y": [0.1, 1.0, -0.5, 0.7],
+    "x": [-1.0, 0.0, 1.0, 2.0],
+    "z": [0.0, 1.0, -1.0, 0.5],
+    "group": ["a", "a", "b", "b"],
+})
+source = formula_to_qvr(
+    "y ~ x + (1 | group)",
+    data=frame,
+    family=families["gaussian"].with_links(sigma="softplus"),
+    distributional={"sigma": "~ z + (1 | group)"},
+    priors={"dpar_sigma_intercept": "Normal(0.0, 1.0)"},
+)
+```
+
+The mean and scale predictors have separate coefficients and group effects. The
+scale predictor's names start with `dpar_sigma_`: its intercept is
+`dpar_sigma_intercept`, the slope of `z` is `dpar_sigma_beta_z`, and its group
+scale is `dpar_sigma_sigma_group_Intercept`. Both predictors share the same
+coding of `group`, so each row refers to the same group in both predictors.
+The group effects themselves are independent across predictors unless their
+blocks carry the same explicit ID, such as `(1 | effects | group)` in both
+formulas.
+
+`fit` accepts the same `distributional` mapping and retains the evaluated design
+matrices in `BayesianFit.distributional`. Each predictor supports the existing
+fixed terms, transforms, and group effects. The compiler evaluates
+these design matrices once, then emits one QVR program; optimization does not
+reparse formulas. Group coding or row-count conflicts fail before inference.
+
+Unspecified auxiliary parameters retain their scalar priors from the family
+registry. A regressed parameter instead receives priors on its coefficients;
+for instance, the prior on `dpar_sigma_intercept` describes the scale predictor
+before its inverse link. Giving a prior for `sigma` itself at the same time
+raises an error. `fixed_prior` and `random_scale_prior` apply to both location
+and auxiliary predictors, with the same column autoscaling rules.
+
+[`Family.with_links`](../api/formulas/family.md#quivers.formulas.family.Family.with_links)
+returns a family value with selected links, using `mu` for location and auxiliary
+parameter names for other predictors. For instance,
+`families["bernoulli"].with_links(mu="probit")` chooses probit regression.
+The link registry includes `identity`, `logit`, `log`, `softmax`, `inverse`,
+`probit`, `probit_approx`, `cloglog`, `cauchit`, `sqrt`, `inverse_square`, `logm1`,
+`log1p`, `softplus`, and `tan_half`. Link names describe the forward link;
+the compiler emits its inverse. `sqrt` thus squares the predictor, while
+`inverse_square` emits its reciprocal square root. Positive and probability
+parameters must still lie in their distribution's support. Categorical models
+require softmax; cumulative ordinal models support logit and probit, which select
+`OrderedLogistic` and `OrderedProbit` respectively.
+
+For binomial and beta-binomial data, `binomial_trials` is either one common positive
 integer or the name of a data column with one count per row:
 
 <!-- python: skip -->
@@ -197,7 +431,12 @@ Beta uses mean `mu` and precision `phi`, then emits
 `sigma` to QVR's `(df, loc, scale)` order. The beta family is the mean and precision form of beta
 regression [@ferrari2004beta]. Zero-inflated [@lambert1992zip] and hurdle
 Poisson models read `zi` as the probability of a structural zero and `mu` as the
-Poisson rate.
+Poisson rate. Exponential and geometric models likewise predict their response
+mean: they emit rates `1 / mu` and success probabilities `1 / (1 + mu)`.
+Following the [brms response parameterizations](https://paulbuerkner.com/brms/articles/brms_families.html),
+Weibull models use `scale = mu / Gamma(1 + 1 / shape)`, so `mu` remains the mean
+rather than the Weibull scale. Lognormal models predict the Normal location of
+the log response, and von Mises models predict its circular location.
 
 ### Unordered categorical mixed models
 
@@ -369,6 +608,78 @@ call, whose numeric arguments become floats and whose identifier arguments refer
 other latents of the program. An explicit prior is emitted exactly as written, without
 the scaling above. The full call shape lives in
 [Fitting and Diagnostics](analysis-fitting-and-diagnostics.md#prior-overrides).
+
+### Posterior coefficients and predictions
+
+`BayesianFit` reuses the fitted native program for posterior inspection.
+`fixed_effects` labels population coefficients by their evaluated design columns;
+`random_effects` reads native per-group adjustments, including their scales and
+correlations; and `coefficients` combines population coefficients with those
+adjustments. Correlated transforms are evaluated once per group before gathering
+the adjustments for response rows.
+
+```python
+import pandas as pd
+import torch
+from quivers.formulas import fit
+
+posterior_data = pd.DataFrame({
+    "y": [0.1, 0.8, -0.2, 0.4],
+    "x": [-1.0, 0.0, 1.0, 2.0],
+    "z": [0.2, -0.5, 0.0, 0.7],
+    "participant": ["a", "a", "b", "b"],
+})
+# A short run illustrates the returned array structure.
+posterior_fit = fit(
+    "y ~ x + (1 + x | participant)", data=posterior_data,
+    distributional={"sigma": "~ z"}, method="svi", num_steps=10,
+)
+fixed = posterior_fit.fixed_effects(num_samples=5, seed=7)
+adjustments = posterior_fit.random_effects(num_samples=5, seed=7)
+combined = posterior_fit.coefficients(num_samples=5, seed=7)
+assert fixed["x"].shape == (1, 5)
+assert adjustments["participant"]["x"].shape == (1, 5, 2)
+assert posterior_fit.group_levels["participant"] == ("a", "b")
+
+linear = posterior_fit.posterior_linpred(num_samples=5, seed=7)
+expected = posterior_fit.posterior_epred(num_samples=5, seed=7)
+assert linear.shape == expected.shape == (1, 5, 4)
+torch.testing.assert_close(linear, expected)  # Gaussian identity-link mean.
+scale_coefficients = posterior_fit.fixed_effects(parameter="sigma", num_samples=5)
+assert "z" in scale_coefficients
+```
+
+Arrays retain separate `chain` and `draw` axes. An SVI guide supplies one
+pseudo-chain; it does not supply an MCMC convergence diagnostic. MCMC results
+retain their actual chains. `num_samples` caps retained draws per chain, or
+selects the number of fresh guide samples; its default keeps every MCMC draw
+and draws 100 guide samples. Guide draws are reproducible under `seed` and
+preserve the caller's CPU random state.
+
+`posterior_linpred` returns the native linear predictor on the retained training
+rows. `transform=True` instead returns the inverse-link binding. These differ
+from `posterior_epred`, which evaluates the native response expectation. For
+instance, a binomial transformed predictor is a success probability, while its
+expected response multiplies that probability by the actual trial count. An
+asymmetric Laplace predictor specifies a quantile, while its expected response
+is the distribution's mean. Mixture expectations include component weights, and
+inflated-beta expectations include boundary mass.
+
+Ordinal and categorical expected responses are category probabilities with shape
+`(chain, draw, row, category)`; `category_labels` gives the category-axis order.
+Categorical linear predictors include the reference category's zero logit.
+Their coefficient arrays use `K-1` entries in `category_labels[1:]` order, with
+an additional level axis for group adjustments. For ordinal models,
+`posterior_linpred(transform=True)` fails because probabilities also depend on
+thresholds; `posterior_epred` evaluates those probabilities directly.
+
+These helpers use the evaluated design matrices and fitted group coding.
+They do not reparse formulas or compile a new program for each draw. Predictions
+on new data require retained formula encodings and a specified policy for new
+group levels; this formula interface currently exposes training-row predictions.
+Undefined means, including a Cauchy mean or a Student-t draw without a finite
+mean, raise an error. Circular responses require an angular convention and are
+also refused by `posterior_epred`.
 
 ## See also
 
