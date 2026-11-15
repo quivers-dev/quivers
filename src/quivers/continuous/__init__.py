@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 from quivers.continuous import (
     _asymmetric_laplace,
     _response_time,
+    _positive_hurdle,
     _ordered,
     _zip_hurdle,
     bijectors,
@@ -58,6 +59,7 @@ from quivers.continuous import (
 )
 from quivers.continuous._asymmetric_laplace import *  # noqa: F403
 from quivers.continuous._response_time import *  # noqa: F403
+from quivers.continuous._positive_hurdle import *  # noqa: F403
 from quivers.continuous._ordered import *  # noqa: F403
 from quivers.continuous._zip_hurdle import *  # noqa: F403
 from quivers.continuous.bijectors import *  # noqa: F403
@@ -186,6 +188,7 @@ __all__ += log_space.__all__
 __all__ += boundaries.__all__
 __all__ += _asymmetric_laplace.__all__
 __all__ += _response_time.__all__
+__all__ += _positive_hurdle.__all__
 __all__ += flows.__all__
 __all__ += scan.__all__
 __all__ += deterministic.__all__

@@ -437,6 +437,8 @@ def test_every_registry_family_is_covered() -> None:
     assert core == {
         "AsymmetricLaplace",
         "ExGaussian",
+        "HurdleGamma",
+        "HurdleLogNormal",
         "InverseGaussian",
         "Normal",
         "LogNormal",

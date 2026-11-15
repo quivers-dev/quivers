@@ -363,10 +363,19 @@ class TestFamilyMetaWiring:
             assert meta.quivers_class is quivers_cls
             assert meta.distribution_class.__name__ == qvr_name
 
-    def test_registry_size_unchanged(self) -> None:
-        # A registered family is one a target can be asked to emit, so
-        # the count is pinned: a family arriving without its per-target
-        # names, or leaving, changes what `transpile` accepts.
+    def test_catalog_size_and_new_response_family_wiring(self) -> None:
         from quivers.transpile.family_meta import FAMILY_META
 
-        assert len(FAMILY_META) == 60
+        added = {
+            "AsymmetricLaplace",
+            "ExGaussian",
+            "InverseGaussian",
+            "HurdleGamma",
+            "HurdleLogNormal",
+        }
+        assert added <= FAMILY_META.keys()
+        for family in added:
+            meta = FAMILY_META[family]
+            assert meta.distribution_class.__name__ == family
+            assert meta.quivers_class.__name__ == f"Conditional{family}"
+        assert len(FAMILY_META) == 65

@@ -94,6 +94,22 @@ gamma = ConditionalGamma(domain, codomain)
 samples = gamma.rsample(x)  # positive
 ```
 
+### Zero atoms with positive responses
+
+`HurdleGamma(zero_prob, concentration, rate)` combines a structural zero with a
+Gamma response. `HurdleLogNormal(zero_prob, loc, scale)` combines it with a
+LogNormal response. Both constructors are exported by `quivers.continuous`;
+their `ConditionalHurdleGamma` and `ConditionalHurdleLogNormal` wrappers compute
+parameters from a learned input map. The positive component contributes no mass
+to the zero atom, including when its continuous density diverges at zero.
+
+The native distributions expose density/mass, CDF, mean, variance, expansion,
+and sampling. Sampling includes a discrete gate and has no pathwise derivative;
+likelihood and response-moment parameters remain differentiable. The
+[formula interface](analysis-data-and-formulas.md#positive-hurdle-regressions)
+uses `hu` for the structural zero probability and retains the component family's
+usual mean/shape or log-location/log-scale conventions.
+
 ### Families on the unit interval {#unit-interval-families}
 
 For outputs in $(0, 1)$:
@@ -245,7 +261,7 @@ that choice explicit:
 
 | Family | Event dimensions | Interpretation |
 |---|---|---|
-| `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `AsymmetricLaplace`, `ExGaussian`, `InverseGaussian`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli`, `Horseshoe` | 0 | Scalar; every codomain axis is iid by default |
+| `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `AsymmetricLaplace`, `ExGaussian`, `InverseGaussian`, `HurdleGamma`, `HurdleLogNormal`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli`, `Horseshoe` | 0 | Scalar; every codomain axis is iid by default |
 | `MultivariateNormal`, `LowRankMVN`, `Dirichlet`, `OneHotCategorical`, `RelaxedOneHotCategorical`, `LogisticNormal`, `GP` | 1 | Vector; one named event axis carries the joint distribution |
 | `Wishart`, `InverseWishart`, `MatrixNormal`, `LKJCholesky` | 2 | Matrix; two named event axes carry the joint distribution |
 

@@ -18,6 +18,8 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
     "Laplace": ("loc", "scale"),
     "AsymmetricLaplace": ("loc", "scale", "quantile"),
     "ExGaussian": ("loc", "scale", "rate"),
+    "HurdleGamma": ("zero_prob", "concentration", "rate"),
+    "HurdleLogNormal": ("zero_prob", "loc", "scale"),
     "InverseGaussian": ("mu", "shape"),
     "Gumbel": ("loc", "scale"),
     "LogNormal": ("loc", "scale"),

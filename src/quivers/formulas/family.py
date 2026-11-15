@@ -314,6 +314,24 @@ families: Mapping[str, Family] = {
             ),
         ),
     ),
+    "hurdle_gamma": Family(
+        name="hurdle_gamma",
+        location_link=_LOG,
+        observe_family="HurdleGamma",
+        aux_params=(
+            AuxParam(name="shape", prior="HalfCauchy(2.0)", link=_LOG),
+            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT),
+        ),
+    ),
+    "hurdle_lognormal": Family(
+        name="hurdle_lognormal",
+        location_link=_IDENTITY,
+        observe_family="HurdleLogNormal",
+        aux_params=(
+            AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
+            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT),
+        ),
+    ),
     "zero_inflated_beta": Family(
         name="zero_inflated_beta",
         location_link=_LOGIT,

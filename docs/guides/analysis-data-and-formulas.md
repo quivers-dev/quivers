@@ -289,6 +289,8 @@ value. The built-in families:
 | `cumulative` | logit on the cumulative probabilities (`OrderedLogistic`) | learned ordered cutpoints |
 | `zero_inflated_poisson` | log (exp) | `zi ~ Beta(2.0, 2.0)` |
 | `hurdle_poisson` | log (exp) | `zi ~ Beta(2.0, 2.0)` |
+| `hurdle_gamma` | log | `shape`, `hu` (zero probability) |
+| `hurdle_lognormal` | identity | `sigma` (log-scale), `hu` (zero probability) |
 | `zero_inflated_beta` | logit | `phi` (precision), `zi` (zero probability) |
 | `zero_one_inflated_beta` | logit (sigmoid) | precision `phi` and boundary probabilities `zoi`, `coi` |
 | `asym_laplace` | identity for the selected quantile | `sigma ~ HalfCauchy(2.0)`, `quantile ~ Beta(2.0, 2.0)` unless fixed |
@@ -341,6 +343,48 @@ Monte Carlo moments and moment gradients, and SVI/HMC/NUTS execution are covered
 in `tests/continuous/test_response_time_families.py` and
 `tests/test_formula_distributional.py`. External transpilation backends currently
 reject both families with explicit unsupported-family diagnostics.
+
+### Positive hurdle regressions
+
+Use `hurdle_gamma` or `hurdle_lognormal` for nonnegative responses with a
+structural zero process and a positive component. The `hu` parameter gives the
+probability of zero. Each component parameter and `hu` can be regressed,
+assigned a prior, or fixed on its natural scale:
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+amounts = pd.DataFrame({
+    "amount": [0.0, 0.2, 0.7, 0.0],
+    "x": [-1.0, 0.0, 1.0, 2.0],
+    "z": [0.2, -0.3, 0.0, 0.5],
+})
+hurdle_fit = fit(
+    "amount ~ x",
+    data=amounts,
+    family="hurdle_gamma",
+    distributional={"hu": "~ z"},
+    fixed_parameters={"shape": 0.4},
+    method="svi",
+    num_steps=10,
+    seed=19,
+)
+mean_amounts = hurdle_fit.posterior_epred(num_samples=5)
+assert mean_amounts.shape == (1, 5, 4)
+```
+
+For Gamma, the main predictor's inverse link gives the positive-component mean
+`mu`, and `shape` gives its shape. The complete response mean is `(1-hu)*mu`.
+For LogNormal, the main predictor gives the underlying Normal mean `mu`, and
+`sigma` gives its standard deviation. Its response mean is
+`(1-hu)*exp(mu + sigma**2/2)`. `posterior_epred` includes these component moments
+and hurdle weights; `posterior_linpred` reports the selected predictor.
+
+Fixed `hu=0` recovers the positive component, and fixed `hu=1` gives a point
+mass at zero. Native sampling draws the structural zero gate exactly, while
+likelihood derivatives remain available for fitting observed responses.
+External backend emission currently reports these native families as unsupported.
 
 ### Zero-inflated beta regression
 

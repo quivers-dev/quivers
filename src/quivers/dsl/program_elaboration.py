@@ -330,6 +330,16 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     ),
     "Gumbel": (("loc", "identity"), ("scale", "softplus")),
     "ExGaussian": (("loc", "identity"), ("scale", "softplus"), ("rate", "softplus")),
+    "HurdleGamma": (
+        ("zero_prob", "sigmoid"),
+        ("concentration", "softplus"),
+        ("rate", "softplus"),
+    ),
+    "HurdleLogNormal": (
+        ("zero_prob", "sigmoid"),
+        ("loc", "identity"),
+        ("scale", "softplus"),
+    ),
     "InverseGaussian": (("mu", "softplus"), ("shape", "softplus")),
     "LogNormal": (("loc", "identity"), ("scale", "softplus")),
     "StudentT": (

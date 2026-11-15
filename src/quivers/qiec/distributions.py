@@ -777,6 +777,143 @@ def _gamma_density(a: Mapping[str, object], value: object) -> float:
     )
 
 
+def _hurdle_probability(a: Mapping[str, object], family: str) -> float:
+    """Validate the hurdle probability and positive-component parameters.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Natural-scale family parameters.
+    family : str
+        HurdleGamma or HurdleLogNormal.
+
+    Returns
+    -------
+    float
+        Probability of the structural zero atom.
+
+    Raises
+    ------
+    DistributionError
+        If the probability or a component parameter is invalid.
+    """
+    probability = _real(a, "zero_prob", family)
+    if not 0 <= probability <= 1:
+        raise DistributionError(f"{family} needs zero_prob in [0, 1]")
+    if family == "HurdleGamma":
+        if _real(a, "concentration", family) <= 0 or _real(a, "rate", family) <= 0:
+            raise DistributionError("HurdleGamma needs concentration > 0 and rate > 0")
+    elif _real(a, "scale", family) <= 0:
+        raise DistributionError("HurdleLogNormal needs scale > 0")
+    else:
+        _real(a, "loc", family)
+    return probability
+
+
+def _hurdle_density(
+    a: Mapping[str, object], value: object, family: str, density: Density
+) -> float:
+    """Score an atom or positive density against their disjoint reference measures.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Natural-scale family parameters.
+    value : object
+        Response being scored.
+    family : str
+        Name used for validation diagnostics.
+    density : Density
+        Positive-component density under its original parameter names.
+
+    Returns
+    -------
+    float
+        Log mass at zero, log density above zero, or negative infinity.
+    """
+    probability = _hurdle_probability(a, family)
+    point = _finite_value(value, family)
+    if point == 0:
+        return math.log(probability) if probability > 0 else -math.inf
+    if point < 0 or probability == 1:
+        return -math.inf
+    return math.log1p(-probability) + density(a, point)
+
+
+def _hurdle_gamma_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw a zero atom or positive Gamma variate.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Zero probability, concentration, and rate.
+    rng : random.Random
+        Random generator.
+
+    Returns
+    -------
+    object
+        Zero or a positive Gamma draw.
+    """
+    probability = _hurdle_probability(a, "HurdleGamma")
+    return 0.0 if rng.random() < probability else _gamma_sample(a, rng)
+
+
+def _hurdle_gamma_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate the zero-atom/Gamma density.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Zero probability, concentration, and rate.
+    value : object
+        Response being scored.
+
+    Returns
+    -------
+    float
+        Log mass or positive-response log density.
+    """
+    return _hurdle_density(a, value, "HurdleGamma", _gamma_density)
+
+
+def _hurdle_lognormal_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw a zero atom or positive LogNormal variate.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Zero probability, log location, and log scale.
+    rng : random.Random
+        Random generator.
+
+    Returns
+    -------
+    object
+        Zero or a positive LogNormal draw.
+    """
+    probability = _hurdle_probability(a, "HurdleLogNormal")
+    return 0.0 if rng.random() < probability else _lognormal_sample(a, rng)
+
+
+def _hurdle_lognormal_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate the zero-atom/LogNormal density.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Zero probability, log location, and log scale.
+    value : object
+        Response being scored.
+
+    Returns
+    -------
+    float
+        Log mass or positive-response log density.
+    """
+    return _hurdle_density(a, value, "HurdleLogNormal", _lognormal_density)
+
+
 def _exponential_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``Exponential``.
 
@@ -1467,6 +1604,8 @@ _SAMPLERS: Mapping[str, Sampler] = MappingProxyType(
         "AsymmetricLaplace": _asymmetric_laplace_sample,
         "ExGaussian": _exgaussian_sample,
         "InverseGaussian": _inverse_gaussian_sample,
+        "HurdleGamma": _hurdle_gamma_sample,
+        "HurdleLogNormal": _hurdle_lognormal_sample,
         "Cauchy": _cauchy_sample,
         "StudentT": _studentt_sample,
         "Dirichlet": _dirichlet_sample,
@@ -1493,6 +1632,8 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
         "AsymmetricLaplace": _asymmetric_laplace_density,
         "ExGaussian": _exgaussian_density,
         "InverseGaussian": _inverse_gaussian_density,
+        "HurdleGamma": _hurdle_gamma_density,
+        "HurdleLogNormal": _hurdle_lognormal_density,
         "Cauchy": _cauchy_density,
         "StudentT": _studentt_density,
         "Dirichlet": _dirichlet_density,

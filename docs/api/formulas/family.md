@@ -15,4 +15,10 @@ precision link. It lowers to native `ZeroOneInflatedBeta` with `coi=0`, retainin
 only the `phi` and `zi` auxiliaries. Its response mean includes the zero-atom
 weight; see the [regression example](../../guides/analysis-data-and-formulas.md#zero-inflated-beta-regression).
 
+`hurdle_gamma` uses positive-component mean/shape parameters;
+`hurdle_lognormal` uses log-location/log-scale parameters. Both have a `hu`
+auxiliary with a logit link and exact zero-atom semantics. Their response
+expectations include the positive-component probability, as shown in the
+[hurdle guide](../../guides/analysis-data-and-formulas.md#positive-hurdle-regressions).
+
 ::: quivers.formulas.family

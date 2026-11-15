@@ -21,10 +21,13 @@ from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
 from quivers.continuous._response_time import ExGaussian, InverseGaussian
+from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
 from quivers.continuous.measure import Normalize, PointMass, Restrict
 from quivers.continuous.families import (
     ConditionalAsymmetricLaplace,
     ConditionalExGaussian,
+    ConditionalHurdleGamma,
+    ConditionalHurdleLogNormal,
     ConditionalInverseGaussian,
     ConditionalBernoulli,
     ConditionalBeta,
@@ -616,6 +619,18 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "pymc": {"loc": "alpha", "scale": "beta"},
             "webppl": {"loc": "location"},
         },
+    ),
+    "HurdleGamma": FamilyMeta(
+        qvr_name="HurdleGamma",
+        distribution_class=HurdleGamma,
+        quivers_class=ConditionalHurdleGamma,
+        target_names={},
+    ),
+    "HurdleLogNormal": FamilyMeta(
+        qvr_name="HurdleLogNormal",
+        distribution_class=HurdleLogNormal,
+        quivers_class=ConditionalHurdleLogNormal,
+        target_names={},
     ),
     "ExGaussian": FamilyMeta(
         qvr_name="ExGaussian",

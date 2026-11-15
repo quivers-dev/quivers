@@ -411,6 +411,38 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
+        name="HurdleGamma",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
+            FamilyParameter(name="rate", constraint="positive", rank=0),
+        ),
+        support="nonnegative",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="HurdleLogNormal",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
+        support="nonnegative",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="ExGaussian",
         parameters=(
             FamilyParameter(name="loc", constraint="real", rank=0),

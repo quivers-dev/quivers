@@ -37,6 +37,7 @@ from torch.distributions import constraints as _constraints
 
 from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
 from quivers.continuous._response_time import ExGaussian, InverseGaussian
+from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
 
 from quivers.continuous._closed_probability import (
     ClosedBernoulli,
@@ -784,6 +785,24 @@ ConditionalInverseGaussian = _make_family(
     "Conditional inverse Gaussian with input-driven mean and shape.",
 )
 """Conditional inverse Gaussian with implicit reparameterized sampling."""
+
+ConditionalHurdleGamma = _make_family(
+    "ConditionalHurdleGamma",
+    HurdleGamma,
+    [("zero_prob", "sigmoid"), ("concentration", "softplus"), ("rate", "softplus")],
+    "Conditional structural zero probability and Gamma shape/rate response.",
+    discrete=False,
+)
+"""Conditional zero atom combined with a positive Gamma component."""
+
+ConditionalHurdleLogNormal = _make_family(
+    "ConditionalHurdleLogNormal",
+    HurdleLogNormal,
+    [("zero_prob", "sigmoid"), ("loc", "id"), ("scale", "softplus")],
+    "Conditional structural zero probability and LogNormal log-location/log-scale response.",
+    discrete=False,
+)
+"""Conditional zero atom combined with a positive LogNormal component."""
 
 ConditionalGumbel = _make_family(
     "ConditionalGumbel",
@@ -4197,6 +4216,8 @@ __all__ = [
     "ConditionalLaplace",
     "ConditionalAsymmetricLaplace",
     "ConditionalExGaussian",
+    "ConditionalHurdleGamma",
+    "ConditionalHurdleLogNormal",
     "ConditionalInverseGaussian",
     "ConditionalGumbel",
     "ConditionalLogNormal",

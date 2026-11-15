@@ -1,0 +1,5 @@
+object Row : FinSet 3
+program model : Row -> Row
+    observe y : Row <- HurdleGamma(zero_prob=0.3, concentration=0.4, rate=1.7)
+    return y
+export model

@@ -313,9 +313,15 @@ def test_family_meta_carries_all_thirteen_phase_a_entries() -> None:
         assert qvr_name in FAMILY_META
 
 
-def test_family_meta_total_count_unchanged() -> None:
-    # A registered family is one a target can be asked to emit, so
-    # the count is pinned: a family arriving without its per-target
-    # names, or leaving, changes what `transpile` accepts, and this
-    # is where that shows up.
-    assert len(FAMILY_META) == 60
+def test_family_meta_catalog_count_includes_new_response_families() -> None:
+    # These additions extend the existing 60-family catalog. Pin their
+    # names independently so an unrelated replacement cannot satisfy the count.
+    added = {
+        "AsymmetricLaplace",
+        "ExGaussian",
+        "InverseGaussian",
+        "HurdleGamma",
+        "HurdleLogNormal",
+    }
+    assert added <= FAMILY_META.keys()
+    assert len(FAMILY_META) == 65

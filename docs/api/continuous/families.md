@@ -30,3 +30,18 @@ samples use an exact vectorized transformation and implicit CDF derivatives;
 its discrete sampler branch is not differentiated as though it were fixed.
 
 ::: quivers.continuous._response_time
+
+## Positive hurdle distributions
+
+`HurdleGamma(zero_prob, concentration, rate)` and
+`HurdleLogNormal(zero_prob, loc, scale)` combine an exact zero atom with a
+strictly positive component. `ConditionalHurdleGamma` and
+`ConditionalHurdleLogNormal` learn those parameters from their input.
+Both native distributions provide log mass at zero, positive-response log
+density, CDF, response mean/variance, broadcasting, and sampling. The structural
+zero gate makes sampling non-reparameterized. Their scoring and moment
+parameters remain differentiable, including finite permitted-event gradients
+at zero probabilities of zero and one. The Gamma CDF inherits PyTorch's
+incomplete-gamma derivative limitations for its concentration parameter.
+
+::: quivers.continuous._positive_hurdle

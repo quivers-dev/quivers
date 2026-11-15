@@ -174,7 +174,7 @@ def response_distribution(recorded: Trace, response: str) -> Distribution:
     sampleable = recorded.sites[response].sampleable
     if sampleable is None:
         raise TypeError("the response has no native conditional distribution")
-    morphism = sampleable.morphism
+    morphism = getattr(sampleable, "raw_morphism", sampleable.morphism)
     if isinstance(morphism, VectorisedObserve):
         morphism = morphism._family
     builder = getattr(morphism, "_get_dist", None)

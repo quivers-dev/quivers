@@ -662,7 +662,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     raise ValueError(
                         f"fixed parameter {name!r} must be strictly between zero and one"
                     )
-            elif name in {"zi", "zoi", "coi"}:
+            elif name in {"zi", "zoi", "coi", "hu"}:
                 if not 0 <= value <= 1:
                     raise ValueError(f"fixed parameter {name!r} must be in [0, 1]")
             elif value <= 0:
@@ -2211,6 +2211,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
             )
             obs_args = ("weibull_scale", "shape")
+        elif self._family.name == "hurdle_gamma":
+            program_steps.append(
+                _let("hurdle_gamma_rate", _div(_var("shape"), _var("mu")))
+            )
+            obs_args = ("hu", "shape", "hurdle_gamma_rate")
+        elif self._family.name == "hurdle_lognormal":
+            obs_args = ("hu", "mu", "sigma")
         elif self._family.name == "gamma":
             # The formula surface uses the brms mean/shape convention.
             # QVR's Gamma constructor follows torch and accepts
