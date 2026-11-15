@@ -93,7 +93,7 @@ The source checker classifies the names in a body:
 
 | A name that is | Becomes |
 | --- | --- |
-| declared in the static telescope `[...]` | an index, object, or morphism parameter in $\Delta$ |
+| declared in the static telescope `[...]` | a type, effect, index, object, or morphism parameter in $\Delta$ |
 | declared with a type in the runtime telescope `(...)` | an external value parameter in $\Gamma_v$ |
 | declared as a bare domain parameter | a projection of the declared domain |
 | bound by `sample`, a call, or `let` | a local binding in $\Phi$ |

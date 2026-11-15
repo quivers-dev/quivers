@@ -28,8 +28,8 @@ define NAME[STATIC_BINDERS](VALUE_PARAMETERS) : RESULT !{EFFECT_ROW} =
 
 The brackets hold the binders that specialization closes, the parentheses hold runtime values, the
 type after `:` is the type of the returned value, and `!{...}` lists the effect instances the body
-may leave unhandled. Both telescopes are optional, but a computation with no value parameters still
-writes `()`. A static binder ranges over `Type`, an index type, or `Effect`, and a `Nat` binder may
+may leave unhandled. Both telescopes are optional; `()` explicitly gives an empty
+value telescope. A static binder ranges over `Type`, an index type, or `Effect`, and a `Nat` binder may
 receive an integer literal at a call site.
 
 Programs use the same staged header convention, with object and morphism

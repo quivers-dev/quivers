@@ -380,6 +380,22 @@ of row $n$ of observation $m$ under class $k$, $\pi(g, k)$ is the prior weight o
 $g$, and $\operatorname{aggr}_R$ is the reduction over $k$: log-sum-exp by default, which sums the
 class out, or `sum` or `mean`.
 
+The class values, groups, and observation rows have separate index objects. In
+`marginalize c : Class <- ... [over=Group]`, the value of `c` is indexed by
+`Group`, and each entry selects an element of `Class`. If `mu` is indexed by
+`Class` and `x` by `Group`, then `let center = mu[c] + x` is indexed by
+`Group`. Each observation with map $\iota_m : N_m \to G$ pulls this value back
+to its own rows: its mean at row $n$ is
+$\mu(c(\iota_m(n))) + x(\iota_m(n))$. The `via` map thus applies to the
+observation's group-indexed arguments, including intermediate values defined
+by `let`.
+
+Equal cardinalities do not identify index objects. A value indexed by `Row`
+cannot be added implicitly to one indexed by `Group`, even when
+$|\mathrm{Row}| = |\mathrm{Group}|$. Such a `let` requires an explicit index
+map; the observation's `via` option does not reindex expressions elsewhere
+in the block.
+
 A weighted observation replaces $\ell_m(n,k)$ by
 $h(w_m(n),\ell_m(n,k))$ before summing over the fiber and applying
 $\operatorname{aggr}_R$. The latent prior $\log\pi(g,k)$ retains its
@@ -408,13 +424,39 @@ For a product of groups $G_1 \times G_2 \times \cdots$ paired with `via = produc
 also written `via = [idx_1, idx_2, ...]`, on each observation, the groups are the tuples, ordered with the last factor varying fastest: a row
 goes to position $\iota(n) = \sum_i \iota_i(n) \prod_{j > i} |G_j|$.
 
-A grouped block may contain another. The inner block then contributes one value for each of its
-own groups to the outer group's sum, and its group set must be either the outer set $G$ itself or a
-product $G \times H$. In the second case the inner values are summed along the projection
-$G \times H \to G$, and an inner argument indexed by $G$, such as a prior `theta[z]` selected by the
-outer latent, is read at the $G$ component. A `sample` inside a block that reads nothing the block
-binds is drawn once before the block, since every value of the latent shares it. A draw whose
-arguments read the latent would be one draw for each class, and the compiler rejects it.
+A grouped block may contain another. Each latent introduces its own class
+axis, and reducing the inner latent removes only that axis. Arguments and
+intermediate values retain their dependence on every enclosing class. For two
+latents over the same group coordinates, the default reductions contribute
+
+$$
+\sum_g \log\sum_a \exp\Bigl(
+    \log\pi_g(a) + \log\sum_b \exp\bigl(
+        \log\rho_g(a,b) +
+        \sum_{n:\iota(n)=g}\ell(n,a,b)
+    \bigr)
+\Bigr).
+$$
+
+The class sets need not have equal cardinalities. A third enclosing latent
+adds another class argument to the likelihood and another outer reduction;
+it is not identified with either existing axis. Observation weights replace
+each $\ell$ by $h(w,\ell)$ before these reductions, leaving the priors unchanged.
+
+The inner block contributes one aggregate per inner group to the enclosing
+block. Equal checked group extents align positionwise, including when their
+object names differ. An inner product of groups may instead refine the outer
+group by a projection, as $G\times H\to G$; reducing its additional group
+coordinates preserves all enclosing class axes. This group aggregation does
+not supply arbitrary missing axes to likelihood parameters. Each parameter
+must still satisfy the inner block's checked shape: an outer-group vector
+cannot be passed directly where an inner product-group tensor is required.
+Such an incompatible use receives a located diagnostic.
+
+A `sample` inside a block that reads nothing the block binds is drawn once
+before the block, since every value of the latent shares it. A draw whose
+arguments read the latent would be one draw for each class, and the compiler
+rejects it.
 
 ### 2.8 Effect annotations {#28-effect-signatures}
 
@@ -588,6 +630,20 @@ the specialized parameter types, including a tensor's element type and shape.
 For a runtime `Nat` formal, the current checker admits a nonnegative integer
 literal or an input already carrying the nonnegative constraint. It refuses
 an arbitrary computed or sampled `Int`, whose nonnegativity it cannot prove.
+
+A program with no runtime parameters may still have static parameters. Here
+the expression specializes both the finite domain and the result dimension
+at three; its empty `()` supplies no runtime values:
+
+<!-- compile: qiec -->
+```qvr
+program prior[n : Nat]() : FinSet n -> Real n
+    sample z : FinSet n <- Normal(loc=0.0, scale=1.0)
+    return z
+
+define fixed = prior[3]()
+export fixed
+```
 
 ### 3.3 Calls of computations
 

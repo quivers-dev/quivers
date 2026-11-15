@@ -98,6 +98,9 @@ rejected: the checker does not yet prove that an integer expression is nonnegati
 Bare parameters, as in `program f(a, b) : A * B -> C`, remain shorthand for
 the components of the declared domain. Typed external values are additional
 inputs; declaring them does not change the program's domain or add an execution axis.
+One runtime header uses either bare domain names or typed value parameters;
+the two forms are not mixed in one list. An explicit `()` declares no runtime
+parameters.
 
 A static natural number can itself index a finite plate:
 
@@ -159,7 +162,7 @@ type is inferred from the name's uses:
 | fills a family parameter of a draw over a plate directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
 | subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table with one open extent per index, plus one per axis of a row when the gathered rows fill a vector parameter (several index vectors in one subscript select one entry per position, `x[i[n], j[n]]`) |
 | combined entry by entry with a value of known shape, as in `x * resid` | that value's shape |
-| read by a `let` that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
+| read by a `let` that a plated `sample`, `observe`, or `marginalize` step consumes, when the surrounding types determine one batch axis | a vector over that axis |
 | used as an index, or gathered from in an index position as in `E[tokens[q], k]` | a tensor of `Int` |
 | none of the above | a scalar `Real`, or `Int` for an index |
 
@@ -175,6 +178,14 @@ extent. The extent can also be fixed by combining it
 entry by entry with a value over the intended object, or by reading it entrywise in a factor, as in
 `sum(factor i : Item in weight[i] * resid[i])`. A name whose uses fix two different shapes is
 refused the same way.
+
+Grouped blocks distinguish the group axis from each observation's row axis.
+A typed group covariate preserves its group axis through a `let`, and the
+observation's `via` map pulls it back to rows. An undeclared input whose axis
+cannot be determined from its uses requires a header annotation; the compiler
+does not choose an axis because two extents happen to agree. For instance,
+declare `x : Tensor[Real]([Group])` when `let center = mu[c] + x` uses one
+covariate per group ([grouped marginalization](#exact-marginalization)).
 
 A data input that fills a family parameter of a draw over a plate directly may also be given without the
 plate axis: a scalar `sigma` for `scale=sigma`, or one cutpoint vector of shape `(cuts_extent,)` for
@@ -412,11 +423,12 @@ object Item : FinSet 3
 object Row : FinSet 6
 object Component : FinSet 2
 
-program mixture : Row -> Row
+program mixture(x : Tensor[Real]([Item])) : Row -> Row
     sample probs <- Dirichlet(concentration=2.0) [over=Component]
     sample mean : Component <- Normal(loc=0.0, scale=3.0)
     marginalize z : Component <- Categorical(probs=probs) [over=Item, reduction=logsumexp]
-        observe y : Row <- Normal(loc=mean[z], scale=1.0) [via=item_idx]
+        let center = mean[z] + x
+        observe y : Row <- Normal(loc=center, scale=1.0) [via=item_idx]
     return mean
 
 export mixture
@@ -426,7 +438,7 @@ export mixture
 observation rows to items. For an item $g$ with rows $\iota^{-1}(g)$, the block adds
 
 $$
-\log \sum_{k} \pi_k \prod_{n \in \iota^{-1}(g)} \mathcal{N}(y_n; \mu_k, 1)
+\log \sum_{k} \pi_k \prod_{n \in \iota^{-1}(g)} \mathcal{N}(y_n; \mu_k + x_g, 1)
 $$
 
 to the log joint, where $\iota$ is the index map, $\pi$ is `probs`, $\mu$ is `mean`, and
@@ -435,6 +447,22 @@ rows of one item thus share one assignment, and their likelihoods are multiplied
 components ([grouped marginalization](../../guides/programs-hierarchical.md)). For product groups,
 write `[over=[School, Subject]]` and `[via=[school_idx, subject_idx]]`. The product is flattened in
 row-major order, the last factor varying fastest.
+
+The latent's values are component codes, but the latent itself is indexed by
+the grouping object. Here `z` has three entries, one per `Item`, each
+selecting one of two `Component` values. The `let` combines `mean[z]` with
+the item-indexed covariate `x`, so `center` is also indexed by `Item`.
+An observation with `[via=item_idx]` gathers `center` at each row's item
+before scoring that row. For instance, the map
+`item_idx = [2, 0, 2, 1, 0, 1]` uses centers
+`[center[2], center[0], center[2], center[1], center[0], center[1]]`.
+Each observation uses its own map.
+
+`Row`, `Item`, and `Component` remain distinct even if two have the same
+number of elements. A `let` that combines unrelated row-indexed and
+item-indexed values requires an explicit index map. The `via` option applies
+at its observation; it does not implicitly reindex other expressions in the
+block ([grouped semantics](../../semantics/programs.md#27-grouped-marginalize-with-multi-observe-fibration)).
 
 The values of the latent are the elements of its declared index object, here the two elements of
 `Component`, numbered from zero. Every target enumerates exactly those values, whatever form the
@@ -452,10 +480,23 @@ The reductions are:
 | `sum` | the arithmetic sum of the block's weights |
 | `mean` | the arithmetic mean of the block's weights |
 
-A nested grouped block returns one aggregate per group to the enclosing block. The inner grouping
-must coincide with the enclosing one or refine it by a projection of a product. A `sample` inside a
-block that reads nothing the block binds is hoisted and drawn once. A draw that depends on the
-summed latent is refused, because it would change the finite sum the block states.
+A nested grouped block retains a separate class axis for each enclosing
+latent. An inner likelihood may depend on both an outer and an inner class,
+including through chained `let` bindings; the inner reduction removes only
+its own class axis. Two or three class sets may have different cardinalities.
+Each observation's `via` map still gathers group-indexed values to that
+observation's rows before their scores are aggregated.
+
+The inner block returns one aggregate per group to the enclosing block.
+Equal checked group extents align positionwise, even with distinct object
+names. An inner product grouping can refine the enclosing grouping by
+projection, but its likelihood parameters must satisfy the inner checked
+shape. An outer-group vector does not implicitly become a tensor over the
+inner product group; an incompatible use is refused
+([nested grouped semantics](../../semantics/programs.md#27-grouped-marginalize-with-multi-observe-fibration)).
+A `sample` inside a block that reads nothing the block binds is hoisted and
+drawn once. A draw that depends on the summed latent is refused, because it
+would change the finite sum the block states.
 
 ## Scans
 

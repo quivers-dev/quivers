@@ -251,6 +251,14 @@ where $\Phi_w$ is the einsum of [Composition rules §4](composition-rules.md#4-o
 The call checks that each argument has as many entries as its declared type, and a mismatch is a
 `CompileError`.
 
+A program specialization such as `p[Row](data)` uses the static list to
+select the program's types before supplying its runtime values. Its
+denotation is the corresponding member of the kernel family in
+[Programs as kernels §3.1](programs.md#31-static-and-runtime-telescopes).
+The brackets do not change a contraction's parenthesized morphism inputs;
+contraction application combines the supplied morphisms under its declared
+wiring.
+
 ## 3. Copying, iteration, and recurrence
 
 ### 3.1 Fan {#31-fan}

@@ -472,7 +472,9 @@ deduction_rule      := 'rule' IDENT ':' premise_list ('|-' | '⊢')
 
 program_static_param := qiec_static_binder
                       | IDENT ':' (object_kind | morphism_kind)
-program_value_param  := IDENT [ ':' qiec_type ]
+program_value_params := IDENT (',' IDENT)*
+                      | program_value_param (',' program_value_param)*
+program_value_param  := IDENT ':' qiec_type
 object_kind         := 'FinSet' | 'Space' | 'Object'
 morphism_kind       := 'Mor' '[' type_expr ',' type_expr ']'
 
@@ -483,25 +485,29 @@ effect              := 'Sample' | 'Score' | 'Marginal' | 'Pure'
 # Finite object cardinalities may be '_' for inference when data are bound.
 
 sample_step         := 'sample' var_pattern [ ':' type_expr ] '<-' IDENT
-                       [ '(' draw_arg_list ')' ] [ option_block ]
+                       [ program_arguments ] [ option_block ]
 # Draw options: over, iid_over.
 
 observe_step        := 'observe' IDENT [ ':' type_expr ]
-                       '<-' IDENT [ '(' draw_arg_list ')' ]
+                       '<-' IDENT [ program_arguments ]
                        [ option_block ]
 # Observation options: via = idx (an index map into the group of an
-# enclosing grouped marginalize), over, iid_over.
+# enclosing grouped marginalize), weights, over, iid_over.
+
+program_arguments   := [ '[' program_static_arg (',' program_static_arg)* ']' ]
+                       '(' [ draw_arg_list ] ')'
+program_static_arg  := IDENT | ['-'] (INT | FLOAT)
 
 score_step          := 'score' IDENT '=' let_arith
 
 call_step           := 'let' IDENT '<-' qiec_call
 # Binds the result of a computation declared with `define`; the callee's
-# effect row joins the program's. Only the checked QIEC module runs a call
-# step. A call of a program with open input extents writes no static
-# arguments, since the extents are read from the arguments' types.
+# effect row joins the program's. The compiled runtime inlines supported
+# calls; other checked calls run on the reference machine. Tensor extents
+# may be inferred from the actual arguments' types.
 
 marginalize_step    := 'marginalize' IDENT [ ':' type_expr ] '<-' IDENT
-                       [ '(' draw_arg_list ')' ]
+                       [ program_arguments ]
                        [ option_block ]
                        NEWLINE INDENT program_step+ DEDENT
 # Options: over = G, over = product(G_1, ...), or over = [G_1, ...] for the
@@ -511,7 +517,7 @@ let_index           := IDENT '[' let_arith (',' let_arith)* ']'
 
 program_decl        := 'program' IDENT
                        [ '[' program_static_param (',' program_static_param)* ']' ]
-                       [ '(' program_value_param (',' program_value_param)* ')' ]
+                       [ '(' [ program_value_params ] ')' ]
                        ':' type_expr '->' type_expr
                        [ option_block ]
                        NEWLINE INDENT program_step* return_step DEDENT
@@ -537,7 +543,9 @@ contraction_input   := IDENT ':' type_expr '->' type_expr
 
 trans_compose       := expr '>>>' expr
 change_base_postfix := expr '.' 'change_base' '(' expr ')'
-morphism_call       := IDENT '(' expr (',' expr)* ')'
+morphism_call       := IDENT [ '[' program_static_arg (',' program_static_arg)* ']' ]
+                       '(' IDENT (',' IDENT)* ')'
+                     | IDENT '[' program_static_arg (',' program_static_arg)* ']' '(' ')'
 ```
 
 A program's static telescope uses the QIEC binders for types, effects, and
@@ -553,6 +561,9 @@ declaration is described on [Composition rules §3](composition-rules.md#3-decla
 A program call uses `IDENT[static_arguments](value_arguments)`, omitting brackets
 when it has no explicit static arguments. A call `IDENT(arg_1, ..., arg_n)` is resolved against the contractions, the parametric programs, and the
 morphisms of the module, in that order ([Expressions §2.13](expressions.md#213-operadic-contraction-call)).
+In a morphism expression, runtime actuals are names. An explicit static list
+also permits an empty runtime list, as in `define fixed = prior[3]()`. A bare
+nullary form such as `Flow()` retains its distribution-family interpretation.
 
 ## 11. QIEC fragment {#11-qiec-fragment}
 
@@ -585,7 +596,7 @@ operation_clause  := IDENT [static_telescope] ['(' local (',' local)* ')']
                      'resumes' grade ['=>' computation]
 grade             := '0' | 'aff' | '1' | 'omega'
 
-computation_decl  := 'define' IDENT [static_telescope] ['(' value_params ')']
+computation_decl  := 'define' IDENT [static_telescope] ['(' [value_params] ')']
                      ':' type effect_row '=' computation
 effect_row        := '!{' [IDENT (',' IDENT)*]
                      ['|' IDENT ['lacks' IDENT (',' IDENT)*]] '}'

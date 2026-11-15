@@ -167,6 +167,7 @@ from quivers.dsl.composite_lets import (
     scan_let_call,
 )
 from quivers.dsl.let_expr_traversal import (
+    let_expr_children,
     free_let_callees,
     free_let_names,
     map_let_expr,
@@ -987,7 +988,8 @@ def _project_nested_aggregates(
     Parameters
     ----------
     aggregates : torch.Tensor
-        The inner block's aggregates, flat over its product plate.
+        The inner block's aggregates, flat over its product plate, followed
+        by any enclosing class axes.
     inner_sizes : tuple[int, ...]
         The cardinality of each factor of the inner plate.
     kept_axes : tuple[int, ...]
@@ -1000,7 +1002,7 @@ def _project_nested_aggregates(
     Returns
     -------
     torch.Tensor
-        The aggregates over the enclosing plate, flat.
+        The aggregates over the enclosing plate, preserving class axes.
 
     Raises
     ------
@@ -1010,13 +1012,14 @@ def _project_nested_aggregates(
     total = 1
     for size in inner_sizes:
         total *= size
-    if tuple(aggregates.shape) != (total,):
+    if aggregates.dim() < 1 or aggregates.shape[0] != total:
         raise ValueError(
             f"grouped marginalize: the nested block at slot {slot!r} must "
             f"contribute one aggregate per position of its plate "
             f"{inner_sizes}; got shape {tuple(aggregates.shape)}"
         )
-    shaped = aggregates.reshape(inner_sizes)
+    extra_shape = tuple(aggregates.shape[1:])
+    shaped = aggregates.reshape(*inner_sizes, *extra_shape)
     summed_axes = tuple(
         axis for axis in range(len(inner_sizes)) if axis not in kept_axes
     )
@@ -1026,7 +1029,11 @@ def _project_nested_aggregates(
         order = tuple(remaining.index(axis) for axis in kept_axes)
     else:
         order = kept_axes
-    return shaped.permute(order).reshape(-1)
+    order = (*order, *range(len(kept_axes), shaped.dim()))
+    kept_size = 1
+    for axis in kept_axes:
+        kept_size *= inner_sizes[axis]
+    return shaped.permute(order).reshape(kept_size, *extra_shape)
 
 
 # Value carried by a let-binding at compile time.  The let
@@ -1158,6 +1165,121 @@ def _family_log_prob(arguments: list[LetValue]) -> torch.Tensor:
             ) from error
     observed = torch.as_tensor(value, dtype=torch.get_default_dtype())
     return build_torch_distribution(spec, parameters).log_prob(observed)
+
+
+def _grouped_data_dependencies(
+    expression: LetExprNode,
+    group_shapes: Mapping[str, tuple[int, ...]],
+    extents: Mapping[str, tuple[int, ...]],
+    dependencies: Mapping[str, frozenset[str]],
+    classes: Mapping[str, frozenset[str]],
+) -> frozenset[str]:
+    """Read group-varying operands without mistaking a class gather for one.
+
+    Parameters
+    ----------
+    expression : LetExprNode
+        The pure let expression.
+    group_shapes : Mapping[str, tuple[int, ...]]
+        Canonical group extents keyed by the grouped latent.
+    extents : Mapping[str, tuple[int, ...]]
+        Checked binding extents.
+    dependencies : Mapping[str, frozenset[str]]
+        Group-varying dependencies of earlier bindings.
+    classes : Mapping[str, frozenset[str]]
+        Enumeration dependencies of earlier bindings.
+
+    Returns
+    -------
+    frozenset[str]
+        Grouped latents whose group coordinates the expression varies over.
+    """
+    if isinstance(expression, LetExprVar):
+        return dependencies.get(expression.name, frozenset())
+    if isinstance(expression, LetExprIndex) and isinstance(
+        expression.array, LetExprVar
+    ):
+        indices = frozenset().union(
+            *(
+                classes.get(name, frozenset())
+                for index in expression.indices
+                for name in _let_expr_reads(index)
+            )
+        )
+        if indices:
+            remaining = extents.get(expression.array.name, ())[
+                len(expression.indices) :
+            ]
+            return frozenset(
+                latent
+                for latent, shape in group_shapes.items()
+                if remaining[: len(shape)] == shape
+            )
+    return frozenset().union(
+        *(
+            _grouped_data_dependencies(
+                child, group_shapes, extents, dependencies, classes
+            )
+            for child in let_expr_children(expression)
+        )
+    )
+
+
+def _classwise_let(
+    function: Callable[[dict[str, LetValue]], LetValue],
+    classes: tuple[str, ...],
+    sizes: tuple[int, ...],
+    input_classes: Mapping[str, tuple[str, ...]],
+) -> Callable[[dict[str, LetValue]], LetValue]:
+    """Evaluate a multi-class or class-and-group let at each class coordinate.
+
+    Parameters
+    ----------
+    function : Callable[[dict], torch.Tensor]
+        The compiled pure let, reading one class coordinate and batched groups.
+    classes : tuple[str, ...]
+        Lexically ordered grouped latent names the result depends on.
+    sizes : tuple[int, ...]
+        Their finite enumeration extents.
+    input_classes : Mapping[str, tuple[str, ...]]
+        Leading enumeration axes carried by each class-dependent operand.
+
+    Returns
+    -------
+    Callable[[dict], torch.Tensor]
+        A let retaining those leading class axes and all group axes.
+    """
+    positions = {name: index for index, name in enumerate(classes)}
+    selections = tuple(
+        (name, tuple(positions[axis] for axis in axes))
+        for name, axes in input_classes.items()
+    )
+
+    def evaluate(env: dict[str, LetValue]) -> torch.Tensor:
+        """Stack evaluations at the finite class coordinates.
+
+        Parameters
+        ----------
+        env : dict
+            Runtime bindings, with group arrays kept batched.
+
+        Returns
+        -------
+        torch.Tensor
+            Results with leading class axes followed by group and event axes.
+        """
+        values = []
+        for coordinate in _cartesian_product(*(range(size) for size in sizes)):
+            local = dict(env)
+            for name, axes in selections:
+                value = cast(torch.Tensor, env[name])
+                for position in axes:
+                    value = value[coordinate[position]]
+                local[name] = value
+            values.append(cast(torch.Tensor, function(local)))
+        return torch.stack(values).reshape(*sizes, *values[0].shape)
+
+    return evaluate
 
 
 def _checked_layout(
@@ -4062,7 +4184,55 @@ class _ProgramsMixin:
         self._parameter_space_stack.append(parameter_spaces)
         self._value_extents_stack.append(self._checked_value_extents(decl.name))
         steps: list[Step] = []
+        # A grouped latent is an enumeration axis, even when its extent
+        # coincides with an observation plate. Track its lexical uses,
+        # including through deterministic bindings, independently of shape.
+        grouped_dependencies: dict[str, frozenset[str]] = {}
+        class_sizes: dict[str, int] = {}
+        classwise_bindings: set[str] = set()
+        group_shapes = {
+            step.var_name: tuple(
+                int(self._objects[name].size)
+                for name in (
+                    step.over_objs
+                    or ((step.over_obj,) if step.over_obj is not None else ())
+                )
+            )
+            for step in expanded_draws
+            if isinstance(step, GroupedMarginalizeStep)
+            and (step.over_objs or step.over_obj)
+        }
+        checked_extents = self._value_extents_stack[-1]
+        group_data_dependencies = {
+            name: frozenset(
+                latent
+                for latent, shape in group_shapes.items()
+                if extents[: len(shape)] == shape
+            )
+            for name, extents in checked_extents.items()
+        }
         for step in expanded_draws:
+            if isinstance(step, GroupedLatentInitStep):
+                grouped_dependencies[step.latent_name] = frozenset((step.latent_name,))
+                class_sizes[step.latent_name] = step.class_size
+            elif isinstance(step, LetStep):
+                reads = self._let_reads(step.value)
+                grouped_dependencies[step.name] = frozenset().union(
+                    *(grouped_dependencies.get(name, frozenset()) for name in reads)
+                )
+                group_data_dependencies[step.name] = _grouped_data_dependencies(
+                    step.value,
+                    group_shapes,
+                    checked_extents,
+                    group_data_dependencies,
+                    grouped_dependencies,
+                )
+                if (
+                    len(grouped_dependencies[step.name]) > 1
+                    or grouped_dependencies[step.name]
+                    & group_data_dependencies[step.name]
+                ):
+                    classwise_bindings.add(step.name)
             if isinstance(step, PlateDrawStep):
                 # draw v : A -> B ~ Family(args).  By the natural iso
                 # Kern(1, B^A) ≅ Kern(A, B), the plate variable IS a
@@ -4276,7 +4446,7 @@ class _ProgramsMixin:
                     col=step.col,
                 )
                 family, step_args = self._resolve_draw_morphism(
-                    _synth, bound_vars, codomain
+                    _synth, bound_vars, codomain, plate_rows=idx_space.size
                 )
                 # Register the response variable so the runtime can
                 # supply data via the observations dict.
@@ -4285,7 +4455,50 @@ class _ProgramsMixin:
                 resp_var = step.response_var
                 ll_slot = step.ll_slot or step.latent_name
                 num_rows = int(idx_space.size)
-                class_size = int(step.class_size or 1)
+                argument_classes = tuple(
+                    tuple(
+                        latent
+                        for latent in class_sizes
+                        if any(
+                            latent in grouped_dependencies.get(name, ())
+                            for name in _arg_names((argument,))
+                        )
+                    )
+                    for argument in step_args or ()
+                )
+                likelihood_classes = tuple(
+                    latent
+                    for latent in class_sizes
+                    if latent == step.latent_name
+                    or any(latent in axes for axes in argument_classes)
+                )
+                likelihood_sizes = tuple(
+                    class_sizes[name] for name in likelihood_classes
+                )
+                group_arguments = tuple(
+                    step.latent_name in group_data_dependencies.get(argument, ())
+                    if isinstance(argument, str)
+                    else checked_extents.get(argument.name, ())[
+                        len(argument.indices) :
+                    ][: len(group_shapes[step.latent_name])]
+                    == group_shapes[step.latent_name]
+                    for argument in step_args or ()
+                )
+                parameter_spec = cast(
+                    tuple[tuple[str, object], ...],
+                    getattr(family, "_param_spec", ()) or (),
+                )
+                parameter_ranks = cast(
+                    tuple[int, ...], getattr(family, "_param_event_ranks", ())
+                )
+                variable_ranks = tuple(
+                    rank
+                    for (kind, _), rank in zip(
+                        parameter_spec or (), parameter_ranks, strict=True
+                    )
+                    if kind == "var"
+                )
+                grouped_dependencies[ll_slot] = frozenset(likelihood_classes)
 
                 def _captured_observe(
                     env: dict,
@@ -4294,8 +4507,15 @@ class _ProgramsMixin:
                     _resp=resp_var,
                     _slot=ll_slot,
                     _N_decl=num_rows,
-                    _K=class_size,
+                    _class_names=likelihood_classes,
+                    _class_shape=likelihood_sizes,
+                    _argument_classes=argument_classes,
+                    _variable_ranks=variable_ranks,
                     _weights=step.weights,
+                    _group_arguments=group_arguments,
+                    _group_rank=len(group_shapes[step.latent_name]),
+                    _via=step.index_map_var,
+                    _via_axes=step.index_map_axes,
                 ) -> torch.Tensor:
                     # Take the row count from the response tensor at
                     # runtime: the per-row index axis carries the
@@ -4338,10 +4558,45 @@ class _ProgramsMixin:
                         parts = [_lookup_arg(env, a) for a in _args]
 
                     original_rows = _N
-                    class_parts = [p.dim() >= 1 and p.shape[0] == _K for p in parts]
+                    argument_axes = _argument_classes or ((),) * len(parts)
+                    ranks = _variable_ranks or (0,) * len(parts)
+                    group_parts = tuple(
+                        grouped and part.dim() >= len(axes) + _group_rank + rank
+                        for part, axes, grouped, rank in zip(
+                            parts,
+                            argument_axes,
+                            _group_arguments or (False,) * len(parts),
+                            ranks,
+                            strict=True,
+                        )
+                    )
+                    if any(group_parts):
+                        if _via_axes is not None:
+                            indices = tuple(
+                                _index_map_tensor(env, name).reshape(-1)
+                                for name in _via_axes
+                            )
+                        else:
+                            assert _via is not None
+                            indices = (_index_map_tensor(env, _via).reshape(-1),)
+                        pulled = []
+                        for part, axes, grouped in zip(
+                            parts, argument_axes, group_parts, strict=True
+                        ):
+                            if grouped:
+                                part = part[
+                                    (
+                                        *(slice(None) for _ in axes),
+                                        *(index.to(part.device) for index in indices),
+                                    )
+                                ].movedim(len(axes), 0)
+                            pulled.append(part)
+                        parts = pulled
                     row_parts = [
-                        p.dim() >= 1 and p.shape[0] == _N and not is_class
-                        for p, is_class in zip(parts, class_parts, strict=True)
+                        grouped or (not axes and p.dim() > rank and p.shape[0] == _N)
+                        for p, axes, grouped, rank in zip(
+                            parts, argument_axes, group_parts, ranks, strict=True
+                        )
                     ]
                     active_rows = None
                     weights = None
@@ -4360,7 +4615,7 @@ class _ProgramsMixin:
                             zero = (weights * 0.0).sum()
                             for part in parts:
                                 zero = zero + (part * 0.0).sum()
-                            return zero.expand(_N, _K)
+                            return zero.expand(_N, *_class_shape)
                         if active_rows.numel() == _N:
                             # Dense weights need no response/parameter copies.
                             active_rows = None
@@ -4380,40 +4635,48 @@ class _ProgramsMixin:
                     # the family's underlying distribution builder
                     # directly so the inline family's split-by-dim
                     # path doesn't shrink the event axis.
-                    needs_cross = any(class_parts)
+                    needs_cross = any(argument_axes)
                     if needs_cross:
+                        coordinate_parameters = not any(ranks)
                         event_shape: tuple[int, ...] = ()
-                        bcast_parts = []
-                        for p, is_class, is_row in zip(
-                            parts, class_parts, row_parts, strict=True
+                        aligned_parts = []
+                        for p, axes, is_row in zip(
+                            parts, argument_axes, row_parts, strict=True
                         ):
-                            if p.dim() == 0:
-                                bcast_parts.append(p.expand(_N, _K))
-                            elif is_class:
-                                bcast_parts.append(p.unsqueeze(0))
-                                if p.dim() > 1:
-                                    event_shape = torch.broadcast_shapes(
-                                        event_shape, tuple(p.shape[1:])
-                                    )
-                            elif is_row:
-                                bcast_parts.append(p.unsqueeze(1))
-                                if p.dim() > 1:
-                                    event_shape = torch.broadcast_shapes(
-                                        event_shape, tuple(p.shape[1:])
-                                    )
-                            else:
-                                bcast_parts.append(p)
-                        target = (_N, _K) + tuple(event_shape)
+                            offset = int(is_row)
+                            suffix = tuple(p.shape[offset + len(axes) :])
+                            axis_sizes = dict(
+                                zip(
+                                    axes,
+                                    p.shape[offset : offset + len(axes)],
+                                    strict=True,
+                                )
+                            )
+                            shape = (
+                                p.shape[0] if is_row else 1,
+                                *(axis_sizes.get(name, 1) for name in _class_names),
+                                *suffix,
+                            )
+                            aligned_parts.append(p.reshape(shape))
+                            if coordinate_parameters:
+                                event_shape = torch.broadcast_shapes(
+                                    event_shape, suffix
+                                )
+                        prefix = (_N, *_class_shape)
                         resolved = []
-                        for p in bcast_parts:
-                            try:
-                                resolved.append(p.expand(target))
-                            except RuntimeError:
-                                resolved.append(p)
-                        # A family applied to literals beside variables
-                        # records the literals in its parameter spec;
-                        # they take their place among the broadcast
-                        # variable parts before the builder runs.
+                        for p in aligned_parts:
+                            suffix = tuple(p.shape[1 + len(_class_shape) :])
+                            if coordinate_parameters:
+                                p = p.reshape(
+                                    *p.shape[: 1 + len(_class_shape)],
+                                    *((1,) * (len(event_shape) - len(suffix))),
+                                    *suffix,
+                                )
+                                suffix = event_shape
+                            resolved.append(p.expand(*prefix, *suffix))
+                        target = (*prefix, *event_shape)
+                        # Literal parameters share the resolved tensors' device;
+                        # only declared class axes are broadcast as enumerations.
                         spec = getattr(_family, "_param_spec", None)
                         if spec is not None:
                             full: list[torch.Tensor] = []
@@ -4424,9 +4687,8 @@ class _ProgramsMixin:
                                         torch.full(
                                             target,
                                             float(literal),
-                                            dtype=resolved[0].dtype
-                                            if resolved
-                                            else torch.get_default_dtype(),
+                                            dtype=resolved[0].dtype,
+                                            device=resolved[0].device,
                                         )
                                     )
                                 else:
@@ -4444,6 +4706,30 @@ class _ProgramsMixin:
                         if _family._discrete:
                             resp_broadcast = resp_broadcast.float()
                         ll = dist.log_prob(resp_broadcast)
+                    elif getattr(_family, "_param_spec", None) is not None:
+                        # Row-only arguments retain their rows even when
+                        # an intermediate let has no checked plate width.
+                        # Feed their resolved values to the builder rather
+                        # than interpreting their rows as shared features.
+                        resolved = []
+                        variable_parts = iter(parts)
+                        for kind, literal in _family._param_spec:
+                            resolved.append(
+                                parts[0].new_tensor(float(literal))
+                                if kind == "lit"
+                                else next(variable_parts)
+                            )
+                        dist = _family._dist_builder(resolved)
+                        target = response
+                        while target.dim() < len(dist.batch_shape) + len(
+                            dist.event_shape
+                        ):
+                            target = target.unsqueeze(-1)
+                        if _family._discrete:
+                            target = target.float()
+                        ll = dist.log_prob(target)
+                        if ll.dim() > 1:
+                            ll = ll.reshape(_N, -1).sum(-1)
                     else:
                         if len(parts) > 1:
                             common_shape = torch.broadcast_shapes(
@@ -4454,22 +4740,25 @@ class _ProgramsMixin:
                         else:
                             theta = parts[0]
                         ll = _family.log_prob(theta, response)
-                    # Reshape to (N, K). When the body's per-row
-                    # log-likelihood has no class dependence (every
-                    # parameter is N-shaped or scalar) we tile across
-                    # K so the marginalize's scatter accumulator
-                    # always receives a (N, K) tensor.
-                    if ll.dim() == 1:
-                        ll = ll.unsqueeze(-1).expand(-1, _K)
-                    elif ll.dim() == 0:
-                        ll = ll.reshape(1, 1).expand(_N, _K)
+                    # Each lexical class axis is retained until its own
+                    # grouped reduction; independent coordinate events sum here.
+                    if needs_cross:
+                        if ll.dim() > 1 + len(_class_shape):
+                            ll = ll.reshape(_N, *_class_shape, -1).sum(-1)
+                    else:
+                        ll = ll.reshape(_N, *((1,) * len(_class_shape))).expand(
+                            _N, *_class_shape
+                        )
+                    weight_shape = (-1, *((1,) * len(_class_shape)))
                     if active_rows is not None:
                         assert weights is not None
-                        ll = ll * weights.index_select(0, active_rows).unsqueeze(-1)
-                        return ll.new_zeros(original_rows, _K).index_copy(
+                        ll = ll * weights.index_select(0, active_rows).reshape(
+                            weight_shape
+                        )
+                        return ll.new_zeros(original_rows, *_class_shape).index_copy(
                             0, active_rows, ll
                         )
-                    return ll if weights is None else ll * weights.unsqueeze(-1)
+                    return ll if weights is None else ll * weights.reshape(weight_shape)
 
                 bound_vars[ll_slot] = None
                 steps.append(
@@ -4481,6 +4770,12 @@ class _ProgramsMixin:
                                 resp_var,
                                 "_x_input",
                                 *_arg_names(step_args or ()),
+                                *(
+                                    (step.index_map_var,)
+                                    if step.index_map_var is not None
+                                    else ()
+                                ),
+                                *(step.index_map_axes or ()),
                                 *(
                                     (step.weights,)
                                     if isinstance(step.weights, str)
@@ -4746,6 +5041,33 @@ class _ProgramsMixin:
                         step.body_ll_var is not None
                         and step.body_ll_var != step.var_name
                     )
+                    prior_classes = tuple(
+                        name
+                        for name in class_sizes
+                        if name != step.var_name
+                        and any(
+                            name in grouped_dependencies.get(binding, ())
+                            for binding in (probs_var, *probs_indices)
+                        )
+                    )
+                    slot_classes = {
+                        slot: tuple(
+                            name
+                            for name in class_sizes
+                            if name in grouped_dependencies.get(slot, ())
+                        )
+                        for slot, _, _ in observe_specs
+                    }
+                    reduction_classes = tuple(
+                        name
+                        for name in class_sizes
+                        if name == step.var_name
+                        or name in prior_classes
+                        or any(name in axes for axes in slot_classes.values())
+                    )
+                    reduction_sizes = tuple(
+                        class_sizes[name] for name in reduction_classes
+                    )
 
                     def _marginalize_grouped_callable(
                         env: dict,
@@ -4763,6 +5085,11 @@ class _ProgramsMixin:
                         _parameterization: str = parameterization,
                         _product: bool = is_product,
                         _per_group: bool = is_nested_inner,
+                        _slot_classes=slot_classes,
+                        _class_names=reduction_classes,
+                        _class_sizes=reduction_sizes,
+                        _prior_classes=prior_classes,
+                        _latent=step.var_name,
                     ) -> torch.Tensor:
                         # Collect per-observe (ll, idx) pairs from
                         # env, with the shape contract that each
@@ -4782,7 +5109,12 @@ class _ProgramsMixin:
                                 ll = _project_nested_aggregates(
                                     ll, inner_sizes, kept_axes, slot
                                 )
-                                ll = ll.unsqueeze(-1).expand(-1, _k)
+                            axes = _slot_classes[slot]
+                            source_sizes = dict(zip(axes, ll.shape[1:], strict=True))
+                            ll = ll.reshape(
+                                ll.shape[0],
+                                *(source_sizes.get(name, 1) for name in _class_names),
+                            ).expand(ll.shape[0], *_class_sizes)
                             if ll.shape[-1] != _k:
                                 raise ValueError(
                                     f"grouped marginalize: per-row "
@@ -4823,8 +5155,50 @@ class _ProgramsMixin:
                                     idx_list.append(positions)
                         probs = env[_probs]
                         for index_name in _probs_indices:
-                            probs = probs[env[index_name].to(torch.long)]
+                            probs = probs[
+                                env[index_name].to(
+                                    device=probs.device, dtype=torch.long
+                                )
+                            ]
                         log_prior = _categorical_log_prior(probs, _parameterization)
+                        if _prior_classes:
+                            # Conditional priors retain their named enclosing
+                            # class axes. Add the prior exactly once per group;
+                            # the reducer's shared prior is then the neutral zero.
+                            class_rank = len(_prior_classes)
+                            axis_sizes = dict(
+                                zip(
+                                    _prior_classes,
+                                    log_prior.shape[:class_rank],
+                                    strict=True,
+                                )
+                            )
+                            axis_sizes[_latent] = _k
+                            remaining = tuple(log_prior.shape[class_rank:-1])
+                            total_groups = math.prod(_sizes)
+                            if remaining:
+                                if remaining != _sizes:
+                                    raise ValueError(
+                                        "grouped marginalize: conditional prior "
+                                        f"group axes must be {_sizes}; got {remaining}"
+                                    )
+                                log_prior = log_prior.reshape(
+                                    *log_prior.shape[:class_rank], total_groups, _k
+                                ).movedim(class_rank, 0)
+                            else:
+                                log_prior = log_prior.unsqueeze(0)
+                            prior_rows = log_prior.reshape(
+                                log_prior.shape[0],
+                                *(axis_sizes.get(name, 1) for name in _class_names),
+                            ).expand(total_groups, *_class_sizes)
+                            positions = torch.arange(total_groups, device=probs.device)
+                            ll_list.append(prior_rows)
+                            idx_list.append(
+                                tuple(torch.unravel_index(positions, _sizes))
+                                if _product
+                                else positions
+                            )
+                            log_prior = log_prior.new_zeros(_k)
                         # The block's latent is indexed by its grouping
                         # plate: one class per group, drawn from that
                         # group's prior row when the prior is a
@@ -4866,6 +5240,9 @@ class _ProgramsMixin:
                         step.body_ll_var
                         if is_nested_inner
                         else f"_marg_{step.var_name}"
+                    )
+                    grouped_dependencies[marg_name] = frozenset(
+                        name for name in reduction_classes if name != step.var_name
                     )
                     bound_vars[marg_name] = None
                     marginal_reads: list[str] = [probs_var, *probs_indices]
@@ -4999,6 +5376,29 @@ class _ProgramsMixin:
                         ),
                         reads,
                     )
+                    if step.name in classwise_bindings:
+                        classes = tuple(
+                            name
+                            for name in class_sizes
+                            if name in grouped_dependencies[step.name]
+                        )
+                        compiled_fn = reading(
+                            _classwise_let(
+                                compiled_fn,
+                                classes,
+                                tuple(class_sizes[name] for name in classes),
+                                {
+                                    name: tuple(
+                                        axis
+                                        for axis in classes
+                                        if axis in grouped_dependencies.get(name, ())
+                                    )
+                                    for name in reads
+                                    if grouped_dependencies.get(name)
+                                },
+                            ),
+                            reads,
+                        )
                     bound_vars[step.name] = None
                     let_space = _let_space(
                         step.value,

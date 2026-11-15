@@ -253,10 +253,12 @@ loss_decl      := 'loss' IDENT [option_block] INDENT let_arith DEDENT
    required `return`. *)
 program_decl   := 'program' IDENT
                   ['[' program_static (',' program_static)* ']']
-                  ['(' program_value (',' program_value)* ')']
+                  ['(' [program_value_params] ')']
                   ':' object_expr '->' object_expr [option_block]
                   INDENT program_step* return_step DEDENT
-program_value  := IDENT [':' qiec_type]
+program_value_params := IDENT (',' IDENT)*
+                      | program_value (',' program_value)*
+program_value  := IDENT ':' qiec_type
 program_static := IDENT ':' static_kind
 static_kind    := 'FinSet' | 'Space' | 'Object' | 'Nat' | 'Type' | 'Effect' | IDENT
                 | 'Mor' '[' object_expr ',' object_expr ']'
@@ -264,13 +266,17 @@ program_step   := sample_step | observe_step | marginalize_step
                 | let_step | score_step
 
 sample_step    := 'sample' var_pattern [':' object_expr]
-                  '<-' IDENT ['(' draw_arg (',' draw_arg)* ')'] [option_block]
+                  '<-' IDENT [program_arguments] [option_block]
 observe_step   := 'observe' IDENT [':' object_expr]
-                  '<-' IDENT ['(' draw_arg (',' draw_arg)* ')'] [option_block]
+                  '<-' IDENT [program_arguments] [option_block]
 marginalize_step
                := 'marginalize' IDENT [':' object_expr]
-                  '<-' IDENT ['(' draw_arg (',' draw_arg)* ')'] [option_block]
+                  '<-' IDENT [program_arguments] [option_block]
                   INDENT program_step+ DEDENT
+program_arguments
+               := ['[' program_static_arg (',' program_static_arg)* ']']
+                  '(' [draw_arg (',' draw_arg)*] ')'
+program_static_arg := IDENT | ['-'] (INT | FLOAT)
 let_step       := 'let' IDENT '=' let_arith
 score_step     := 'score' IDENT '=' let_arith
 return_step    := 'return' return_pattern
