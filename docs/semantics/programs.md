@@ -760,3 +760,8 @@ It introduces no posterior distribution over cardinalities. Runtime validation
 checks supplied tensor shapes and dtypes, and rejects external gather indices
 outside their checked axes. The compiler's input contract and the runtime's
 checks thus describe the same specialized program.
+
+A leading execution axis supplies one EDC valuation per run. The tensor
+executor applies the same checked kernel to each valuation, separating runs
+before a grouped marginal is evaluated. Observation plates stay inside each
+execution.

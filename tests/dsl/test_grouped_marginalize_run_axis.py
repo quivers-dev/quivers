@@ -1,15 +1,14 @@
-"""A grouped marginalize reads observations with a leading run axis.
+"""Grouped marginals score one run at a time under the tensor executor.
 
-An input of one row is one run, and the run's data may carry the run axis
-of length one in front of the plate. A grouped `marginalize ... [via=idx]`
-scores such data as the same data without the axis, against the grouped
-mixture computed by hand; data for several runs on that axis are refused,
-since a grouped block scores one run at a time.
+Checked observations identify a leading run axis. The executor separates
+independent runs before evaluating a grouped block; each result agrees with
+the grouped mixture computed by hand.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import pytest
 import torch
@@ -38,8 +37,17 @@ _Y = [0.125, 0.25, 1.5, 2.0]
 _IDX = [0, 0, 1, 1]
 
 
-def _expected() -> float:
+def _expected(
+    observations: Sequence[float] = _Y, means: Sequence[float] = _MU
+) -> float:
     """The joint in double precision: priors plus the grouped mixture.
+
+    Parameters
+    ----------
+    observations : Sequence[float]
+        Responses for one run.
+    means : Sequence[float]
+        Component locations for that run.
 
     Returns
     -------
@@ -55,7 +63,7 @@ def _expected() -> float:
     )
     prior += float(
         D.Normal(torch.tensor(0.0, dtype=f64), 5.0)
-        .log_prob(torch.tensor(_MU, dtype=f64))
+        .log_prob(torch.tensor(means, dtype=f64))
         .sum()
     )
     prior += 2 * float(
@@ -69,8 +77,8 @@ def _expected() -> float:
         for k in range(2):
             rows = [
                 float(
-                    D.Normal(torch.tensor(_MU[k], dtype=f64), 1.0).log_prob(
-                        torch.tensor(_Y[n], dtype=f64)
+                    D.Normal(torch.tensor(means[k], dtype=f64), 1.0).log_prob(
+                        torch.tensor(observations[n], dtype=f64)
                     )
                 )
                 for n in range(4)
@@ -100,14 +108,17 @@ def test_one_run_scores_the_grouped_mixture(leading: bool) -> None:
     assert joint == pytest.approx(_expected(), rel=2.0**-18)
 
 
-def test_data_for_several_runs_are_refused() -> None:
+def test_several_runs_score_independent_grouped_mixtures() -> None:
     program = loads(_SOURCE).morphism
+    second_y = [0.0, 0.4, 1.7, 2.2]
+    second_mu = [-0.5, 1.5]
     values = {
         "probs": torch.tensor([_PROBS, _PROBS]),
-        "mu_k": torch.tensor([_MU, _MU]),
+        "mu_k": torch.tensor([_MU, second_mu]),
         "sd_k": torch.tensor([[1.0, 1.0], [1.0, 1.0]]),
         "group_idx": torch.tensor(_IDX),
-        "y": torch.tensor([_Y, _Y]),
+        "y": torch.tensor([_Y, second_y]),
     }
-    with pytest.raises(ValueError, match="one run at a time"):
-        program.log_joint(torch.zeros(2, 1), values)
+    actual = program.log_joint(torch.zeros(2, 1), values)
+    expected = torch.tensor([_expected(), _expected(second_y, second_mu)])
+    torch.testing.assert_close(actual, expected, rtol=2.0**-18, atol=2.0**-18)
