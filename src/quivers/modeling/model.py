@@ -10,9 +10,10 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous import ContinuousSpace, MonadicProgram
 from quivers.dsl import Compiler, CompileError, Module, parse, lower_qvr_to_qiec
-from quivers.dsl.ast_nodes import ProgramDecl
+from quivers.dsl.ast_nodes import ExportDecl, ExprIdent, ProgramDecl
 from quivers.effects import CheckedProgram
 from quivers.effects.interpreter import check_host_data
+from quivers.effects.program_module import once_sites, scanned_sites
 from quivers.inference import Guide, MCMC, MCMCResult, Predictive, Trace, trace
 from quivers.diagnostics import ConvergenceSummary, summary
 from quivers.program import Program
@@ -163,8 +164,30 @@ class BoundModel(ValueModel):
             If the selected entry cannot use the tensor inference runtime.
         """
         program = self.require_tensor_program()
-        posterior = sampler.run(program, self.input, dict(self.data))
+        posterior = sampler.run(program, self.input, self.tensor_data())
         return ModelFit(model=self, posterior=posterior)
+
+    def tensor_data(self) -> dict[str, object]:
+        """Adapt external values to the native tensor executor's one-run layout.
+
+        Scanned observations acquire a leading run axis through tensor views.
+        The stored binding retains its checked shapes and original objects.
+
+        Returns
+        -------
+        dict[str, object]
+            Values for a custom tensor inference method or guide constructor.
+
+        Raises
+        ------
+        TypeError
+            If the entry requires reference execution.
+        """
+        values = dict(self.data)
+        repeated = scanned_sites(self.require_tensor_program())
+        for name in set(self.schema.observations) & repeated:
+            values[name] = torch.as_tensor(values[name]).unsqueeze(0)
+        return values
 
     def require_tensor_program(self) -> MonadicProgram:
         """Select the tensor runtime or explain its current capability limit.
@@ -192,6 +215,7 @@ class BoundModel(ValueModel):
         ----------
         sites : Mapping[str, torch.Tensor] or None
             Latent values to condition on; external data come from the binding.
+            A scanned position can be addressed as ``name@position``.
 
         Returns
         -------
@@ -204,12 +228,19 @@ class BoundModel(ValueModel):
             If conditioning names an external input or an unknown sample site.
         """
         supplied = {} if sites is None else dict(sites)
-        allowed = {s.name for s in self.schema.entry.sites if s.kind == "sample"}
-        if unknown := set(supplied) - allowed:
+        program = self.require_tensor_program()
+        repeated = scanned_sites(program)
+        allowed = (set(once_sites(program)) | repeated) - set(self.schema.observations)
+        unknown = set()
+        for name in supplied:
+            base, at, occurrence = name.rpartition("@")
+            if name not in allowed and not (
+                at and occurrence.isdigit() and base in allowed and base in repeated
+            ):
+                unknown.add(name)
+        if unknown:
             raise ValueError(f"unknown latent sites: {sorted(unknown)}")
-        return trace(
-            self.require_tensor_program(), self.input, {**self.data, **supplied}
-        )
+        return trace(program, self.input, {**self.tensor_data(), **supplied})
 
 
 class ModelFit(ValueModel):
@@ -337,7 +368,8 @@ class Model:
     source : str
         QVR source, optionally declaring objects as ``FinSet _``.
     entry : str or None
-        Program to select; a module with several programs requires a name.
+        Program to select. Defaults to the first exported program, or the
+        only program when none is exported.
     """
 
     def __init__(self, source: str, *, entry: str | None = None) -> None:
@@ -345,9 +377,19 @@ class Model:
         self.syntax: Module = parse(source)
         names = [s.name for s in self.syntax.statements if isinstance(s, ProgramDecl)]
         if entry is None:
-            if len(names) != 1:
+            exported = [
+                s.expr.name
+                for s in self.syntax.statements
+                if isinstance(s, ExportDecl)
+                and isinstance(s.expr, ExprIdent)
+                and s.expr.name in names
+            ]
+            if exported:
+                entry = exported[0]
+            elif len(names) == 1:
+                entry = names[0]
+            else:
                 raise ValueError(f"select an entry from {names}")
-            entry = names[0]
         if entry not in names:
             raise ValueError(f"unknown program {entry!r}; choose from {names}")
         self.entry = entry

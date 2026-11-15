@@ -123,7 +123,7 @@ class VariationalMethod(ValueModel):
         program = model.require_tensor_program()
         with torch.random.fork_rng(devices=[]):
             torch.random.default_generator.manual_seed(self.seed)
-            data = dict(model.data)
+            data = model.tensor_data()
             guide = (
                 self.guide_factory(model)
                 if self.guide_factory is not None

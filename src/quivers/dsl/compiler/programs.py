@@ -11,6 +11,7 @@ from abc import abstractmethod
 import math
 from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 from itertools import product as _cartesian_product
+from numbers import Integral, Real as RealNumber
 from typing import Literal, cast
 import didactic.api as dx
 import torch
@@ -3088,13 +3089,13 @@ class _ProgramsMixin:
             for parameter, argument in zip(type_params, ordered, strict=True):
                 if not isinstance(parameter, ScalarParam):
                     continue
-                if isinstance(argument, bool) or not isinstance(argument, int | float):
+                if isinstance(argument, bool) or not isinstance(argument, RealNumber):
                     raise TypeError(
                         f"template {name!r}: parameter {parameter.name!r} "
                         f"requires a {parameter.scalar_kind} number"
                     )
                 if parameter.scalar_kind == "Nat" and (
-                    not isinstance(argument, int) or argument < 0
+                    not isinstance(argument, Integral) or argument < 0
                 ):
                     raise TypeError(
                         f"template {name!r}: parameter {parameter.name!r} "

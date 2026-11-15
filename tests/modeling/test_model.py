@@ -374,3 +374,40 @@ def test_python_template_boundary_checks_natural_arguments(invalid):
     )
     with pytest.raises(TypeError, match="parameter 'count'"):
         loads(source).regression(count=invalid)
+
+
+def test_python_template_boundary_accepts_numpy_numbers():
+    import numpy as np
+
+    source = SOURCE.replace("FinSet _", "FinSet 3")
+    real = source.replace("program regression :", "program regression(scale : Real) :")
+    natural = source.replace(
+        "program regression :", "program regression(count : Nat) :"
+    )
+    assert loads(real).regression(scale=np.float32(0.5)).morphism is not None
+    assert loads(natural).regression(count=np.int64(2)).morphism is not None
+
+
+def test_scanned_observations_bind_at_checked_shape_and_fit_all_positions():
+    from tests.dsl.test_scan_program_cells import STATE_SPACE
+    from quivers.inference import trace
+
+    drivers = torch.zeros(1, 3, 2)
+    observations = torch.zeros(3, 2)
+    model = Model(STATE_SPACE)
+    assert model.entry == "ssm"
+    bound = model.bind({"o": observations}, input=drivers)
+    latents = {f"s@{t}": torch.full((1, 3), t * 0.1) for t in range(3)}
+    actual = bound.trace(latents)
+    expected = trace(
+        bound.require_tensor_program(),
+        drivers,
+        {"o": observations.unsqueeze(0), **latents},
+    )
+    torch.testing.assert_close(actual.log_joint, expected.log_joint)
+    assert bound.data["o"] is observations
+    with pytest.raises(ValueError, match="never reached.*s@99"):
+        bound.trace({"s@99": torch.zeros(1, 3)})
+    fit = bound.infer(VariationalMethod(num_steps=2))
+    assert set(fit.draws(num_samples=2)) == {"s@0", "s@1", "s@2"}
+    assert len(fit.losses) == 2

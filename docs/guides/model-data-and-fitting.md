@@ -54,6 +54,10 @@ The schema reports `x` as data and `y` as an observation, both at
 `Tensor[Real]([Row])`. It retains the checked type objects in `schema.types`;
 `describe()` renders them for display.
 
+`Model` selects the first exported program by default. Helper programs, such as
+a scan's step, need no separate selection. Use `entry="name"` to select another
+program; several programs without an export require an explicit choice.
+
 ```python
 import torch
 
@@ -115,6 +119,12 @@ evidence. `summary()` thus requires an MCMC result.
 instance when several methods should use the same initialized model. A method's
 `run(bound)` can also return its own result type: messages, optimization bounds,
 and certificates need not be converted into posterior draws.
+
+Scanned observations use their checked sequence shape in `bound.data`; fitting
+adds the one-run axis expected by the tensor executor through a view. Custom
+tensor methods and guide factories can obtain these values with
+`bound.tensor_data()`. `bound.trace` also accepts a scanned latent's address,
+such as `s@2`, to condition one position without marking it as an external input.
 
 ## Infer only dimensions determined by data
 
