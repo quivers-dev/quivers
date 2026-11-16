@@ -356,16 +356,24 @@ def main(argv: list[str] | None = None) -> int:
         passed. ``1`` under ``--check`` when something is incomplete, so
         the command can gate a build.
     """
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description=(__doc__ or "Audit required docstring sections.").splitlines()[0]
+    )
     parser.add_argument("paths", nargs="*", type=pathlib.Path)
     parser.add_argument("--list", action="store_true", help="name every callable")
     parser.add_argument("--check", action="store_true", help="exit 1 if incomplete")
     arguments = parser.parse_args(argv)
 
     roots = arguments.paths or [pathlib.Path("src/quivers")]
+    missing = [str(root) for root in roots if not root.exists()]
+    if missing:
+        parser.error(f"audit paths do not exist: {', '.join(missing)}")
+    modules = _modules(roots)
+    if arguments.check and not modules:
+        parser.error("no Python modules found in the requested audit paths")
     per_file: collections.Counter[str] = collections.Counter()
     total = 0
-    for module in _modules(roots):
+    for module in modules:
         findings = audit(module)
         if not findings:
             continue
@@ -375,7 +383,10 @@ def main(argv: list[str] | None = None) -> int:
             for name, line, missing in findings:
                 print(f"{module}:{line}: {name} missing {', '.join(missing)}")
 
-    print(f"{total} incomplete docstring(s) across {len(per_file)} file(s)")
+    print(
+        f"{total} incomplete docstring(s) across {len(per_file)} file(s) "
+        f"with findings; audited {len(modules)} Python file(s)"
+    )
     if not arguments.list:
         for name, count in per_file.most_common():
             print(f"  {count:>4}  {name}")

@@ -391,6 +391,18 @@ Continuous integration runs the following on every pull request, and each can be
 | Rendered math | `python scripts/check_rendered_math.py site` |
 | Tests | the tiers above |
 
+The docstring audit reports the number of Python files examined separately
+from files with findings. Missing paths and an empty `--check` scope fail
+rather than reporting an unaudited success.
+
+Probe selection compares the exact base and head commit trees from the
+Actions event. Missing commits are fetched individually at depth one;
+selection does not call GitHub's pull-request-files or generated-diff API.
+Markdown-only changes and unchanged trees skip probes. Every other changed
+path, including a deleted source file or either side of a rename, enables
+them. Filenames are read with NUL delimiters, and manual runs always enable
+probes. A failed fetch or diff fails detection rather than skipping tests.
+
 Wheel CI also installs the built artifact and runs
 `python tools/release_wheel_smoke.py <checkout-path>` with the source checkout
 excluded from `PYTHONPATH`. This check disables parser compiler fallbacks and

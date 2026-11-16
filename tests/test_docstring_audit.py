@@ -79,3 +79,61 @@ class Child(Base):
         self.field = actual
 ''')
     assert audit(source) == []
+
+
+def test_check_directory_audits_nested_python_modules(tmp_path: Path, capsys) -> None:
+    from tools.docstring_audit import main
+
+    package = tmp_path / "package"
+    nested = package / "nested"
+    nested.mkdir(parents=True)
+    (package / "complete.py").write_text('''def complete():
+    """Perform no operation."""
+    pass
+''')
+    (nested / "incomplete.py").write_text('''def incomplete(value):
+    """Return the supplied value."""
+    return value
+''')
+    assert main(["--check", str(package)]) == 1
+    summary = capsys.readouterr().out
+    assert "1 incomplete docstring(s) across 1 file(s) with findings" in summary
+    assert "audited 2 Python file(s)" in summary
+    assert "incomplete.py" in summary
+
+
+def test_clean_audit_reports_number_of_examined_files(tmp_path: Path, capsys) -> None:
+    from tools.docstring_audit import main
+
+    (tmp_path / "complete.py").write_text('''def complete():
+    """Perform no operation."""
+    pass
+''')
+    assert main(["--check", str(tmp_path)]) == 0
+    summary = capsys.readouterr().out
+    assert "0 incomplete docstring(s) across 0 file(s) with findings" in summary
+    assert "audited 1 Python file(s)" in summary
+
+
+def test_missing_audit_directory_is_an_error(tmp_path: Path, capsys) -> None:
+    import pytest
+
+    from tools.docstring_audit import main
+
+    with pytest.raises(SystemExit) as error:
+        main(["--check", str(tmp_path / "missing")])
+    assert error.value.code == 2
+    assert "audit paths do not exist" in capsys.readouterr().err
+
+
+def test_check_empty_audit_directory_cannot_report_success(
+    tmp_path: Path, capsys
+) -> None:
+    import pytest
+
+    from tools.docstring_audit import main
+
+    with pytest.raises(SystemExit) as error:
+        main(["--check", str(tmp_path)])
+    assert error.value.code == 2
+    assert "no Python modules found" in capsys.readouterr().err

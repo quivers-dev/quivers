@@ -26,7 +26,6 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       probes: ${{ steps.filter.outputs.probes }}
     steps:
@@ -35,14 +34,7 @@ jobs:
 
       - name: Determine whether probe tests are required
         id: filter
-        uses: dorny/paths-filter@v3
-        with:
-          predicate-quantifier: every
-          filters: |
-            probes:
-              - "**"
-              - "!*.md"
-              - "!**/*.md"
+        run: python3 tools/ci_changes.py
 
   lint:
     name: Lint
@@ -64,10 +56,10 @@ jobs:
         run: python -m pip install 'ruff>=0.15,<0.16'
 
       - name: Check lint rules
-        run: ruff check src/ tests/ hatch_build.py tools/release_wheel_smoke.py tools/check_editor_release.py tools/check_api_reference.py
+        run: ruff check src/ tests/ hatch_build.py tools/release_wheel_smoke.py tools/check_editor_release.py tools/check_api_reference.py tools/ci_changes.py
 
       - name: Check formatting
-        run: ruff format --check src/ tests/ hatch_build.py tools/release_wheel_smoke.py tools/check_editor_release.py tools/check_api_reference.py
+        run: ruff format --check src/ tests/ hatch_build.py tools/release_wheel_smoke.py tools/check_editor_release.py tools/check_api_reference.py tools/ci_changes.py
 
       - name: Audit docstrings
         run: python tools/docstring_audit.py --check src/quivers/qiec
