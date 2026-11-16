@@ -13,6 +13,7 @@ from collections.abc import Iterator
 import torch
 
 from quivers.continuous.programs import MonadicProgram
+from quivers.inference._posterior import sample_count
 from quivers.inference.guides import Guide
 from quivers.inference.mcmc.driver import MCMCResult
 from quivers.inference.trace import trace
@@ -51,7 +52,8 @@ class Predictive:
     TypeError
         If ``posterior`` is neither a `Guide` nor an `MCMCResult`.
     ValueError
-        If the resolved ``num_samples`` is less than one.
+        If ``num_samples`` is not a positive integer, or the posterior
+        has no retained draws.
     """
 
     def __init__(
@@ -67,17 +69,14 @@ class Predictive:
             )
         self.model = model
         self.posterior = posterior
-        if isinstance(posterior, MCMCResult):
-            available = posterior.num_chains * posterior.num_samples
-            self.num_samples = (
-                min(num_samples, available) if num_samples is not None else available
-            )
-        else:
-            self.num_samples = num_samples if num_samples is not None else 100
-        if self.num_samples < 1:
-            raise ValueError(
-                f"Predictive: num_samples must be >= 1, got {self.num_samples}"
-            )
+        self.num_samples = sample_count(
+            num_samples,
+            available=(
+                posterior.num_chains * posterior.num_samples
+                if isinstance(posterior, MCMCResult)
+                else None
+            ),
+        )
 
     def _iter_mcmc_latents(self) -> Iterator[dict[str, torch.Tensor]]:
         """Return ``num_samples`` recorded posterior draws, one dict each,

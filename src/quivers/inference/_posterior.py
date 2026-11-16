@@ -11,26 +11,30 @@ from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
 
 
-def draw_count(
-    posterior: MCMCResult | Guide, num_samples: int | None
-) -> tuple[int, int]:
-    """Resolve chain and draw counts, retaining recorded chain boundaries."""
+def sample_count(num_samples: int | None, *, available: int | None = None) -> int:
+    """Validate a requested draw budget and cap it at recorded availability."""
     if num_samples is not None and (
         isinstance(num_samples, bool)
         or not isinstance(num_samples, int)
         or num_samples < 1
     ):
         raise ValueError("num_samples must be a positive integer")
+    if available is None:
+        return 100 if num_samples is None else num_samples
+    if available < 1:
+        raise ValueError("the posterior has no retained draws")
+    return available if num_samples is None else min(num_samples, available)
+
+
+def draw_count(
+    posterior: MCMCResult | Guide, num_samples: int | None
+) -> tuple[int, int]:
+    """Resolve chain and draw counts, retaining recorded chain boundaries."""
     if isinstance(posterior, MCMCResult):
-        count = (
-            posterior.num_samples
-            if num_samples is None
-            else min(num_samples, posterior.num_samples)
+        return posterior.num_chains, sample_count(
+            num_samples, available=posterior.num_samples
         )
-        if count < 1:
-            raise ValueError("the posterior has no retained draws")
-        return posterior.num_chains, count
-    return 1, 100 if num_samples is None else num_samples
+    return 1, sample_count(num_samples)
 
 
 def constrained_draws(

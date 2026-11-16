@@ -103,7 +103,7 @@ def test_predictive_rejects_zero_num_samples() -> None:
 
     model = _normal_normal_model()
     guide = AutoNormalGuide(model, observed_names={"y"})
-    with pytest.raises(ValueError, match="num_samples must be >= 1"):
+    with pytest.raises(ValueError, match="num_samples must be a positive integer"):
         Predictive(model, guide, num_samples=0)
 
 
@@ -112,8 +112,31 @@ def test_predictive_negative_num_samples_rejected() -> None:
 
     model = _normal_normal_model()
     guide = AutoNormalGuide(model, observed_names={"y"})
-    with pytest.raises(ValueError, match="num_samples must be >= 1"):
+    with pytest.raises(ValueError, match="num_samples must be a positive integer"):
         Predictive(model, guide, num_samples=-5)
+
+
+@pytest.mark.parametrize("invalid", [True, False, 1.5, float("nan"), "2"])
+@pytest.mark.parametrize("recorded", [False, True])
+def test_predictive_rejects_noninteger_budgets_before_posterior_sampling(
+    invalid, recorded
+) -> None:
+    model = _normal_normal_model()
+    if recorded:
+        posterior = MCMCResult(
+            samples={"mu": torch.zeros(2, 3)},
+            log_densities=torch.zeros(2, 3),
+            acceptance_rates=torch.ones(2),
+            divergence_counts=torch.zeros(2, dtype=torch.int64),
+            num_warmup=0,
+            num_samples=3,
+        )
+    else:
+        posterior = AutoNormalGuide(model, observed_names={"y"})
+    state = torch.random.get_rng_state().clone()
+    with pytest.raises(ValueError, match="num_samples must be a positive integer"):
+        Predictive(model, posterior, num_samples=invalid)
+    assert torch.equal(torch.random.get_rng_state(), state)
 
 
 def test_predictive_with_guide_default_num_samples() -> None:
