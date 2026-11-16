@@ -44,7 +44,6 @@ from quivers.continuous._zero_inflated_count import BetaBinomial as _BetaBinomia
 from quivers.continuous._closed_probability import (
     ClosedBernoulli,
     ClosedGeometric,
-    ClosedPoisson,
     _ValidatedCategorical,
 )
 from quivers.continuous._lkj import OnionLKJCholesky
@@ -2170,101 +2169,29 @@ def _eval_draw_arg_value(
     raise TypeError(f"_eval_draw_arg_value: unexpected arg type {type(arg).__name__}")
 
 
-def _build_inner_distribution(
-    arg: DrawArgDist,
-    variable_types,
-):
-    """Recursively build a `torch.distributions.Distribution` (or
-    `Measure`) from a `DrawArgDist`, dispatching on the family name.
-    Used by the compositional measure algebra to evaluate
-    distribution-valued arguments before passing them to the outer
-    family's constructor.
+def _build_inner_distribution(arg: DrawArgDist, variable_types):
+    """Resolve a nested literal through the canonical native constructor.
 
-    Recognises every operator in `_OPERATOR_FAMILIES` plus the base
-    families registered in `_FIXED_FACTORIES` and `_FAMILY_BUILDERS`
-    (with all-literal args; variable-bound base families inside a
-    compositional expression are deferred to the operator's runtime
-    evaluation).
+    Parameters
+    ----------
+    arg : DrawArgDist
+        Structural family call retaining its keyword parameterization.
+    variable_types : dict or None
+        Existing source-value context for recursive literal evaluation.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        The same raw law used by dynamic constructors and pure values.
     """
-    family = arg.family
-    if family in _OPERATOR_FAMILIES:
-        return _build_operator_value(family, arg.args, variable_types)
-    if family in _BASE_DISTRIBUTION_BUILDERS:
-        bound_args, _ = _bind_inline_arguments(family, arg.args)
-        evaluated_args = [_eval_draw_arg_value(a, variable_types) for a in bound_args]
-        if any(isinstance(v, str) for v in evaluated_args):
-            raise ValueError(
-                f"Inline distribution {family}({arg.args}): "
-                "variable-bound base families inside a compositional "
-                "expression require the operator's runtime evaluation; "
-                "use the standalone form or a let-binding."
-            )
-        return _BASE_DISTRIBUTION_BUILDERS[family](evaluated_args)
-    raise ValueError(
-        f"unknown inline family {family!r} in compositional "
-        f"expression; operators: {sorted(_OPERATOR_FAMILIES)}; bases: "
-        f"{sorted(_BASE_DISTRIBUTION_BUILDERS)}"
+    values, names = _bind_inline_arguments(arg.family, arg.args)
+    return _raw_distribution_value(
+        arg.family,
+        {
+            name: _eval_draw_arg_value(value, variable_types)
+            for name, value in zip(names or (), values, strict=True)
+        },
     )
-
-
-# Closed-form constructors for base distributions used inside
-# compositional expressions. Each takes a list of evaluated args
-# (floats, after recursing through `_eval_draw_arg_value`) and
-# returns a `torch.distributions.Distribution` instance. Only the
-# families that compose naturally with the operator algebra are
-# listed; user-supplied families can be registered here at runtime.
-_BASE_DISTRIBUTION_BUILDERS: dict = {
-    "Normal": lambda a: D.Normal(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "Cauchy": lambda a: D.Cauchy(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "Laplace": lambda a: D.Laplace(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "StudentT": lambda a: D.StudentT(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]) if len(a) > 1 else torch.tensor(0.0),
-        torch.as_tensor(a[2]) if len(a) > 2 else torch.tensor(1.0),
-    ),
-    "Beta": lambda a: D.Beta(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "Gamma": lambda a: D.Gamma(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "Exponential": lambda a: D.Exponential(
-        torch.as_tensor(a[0]),
-    ),
-    "LogGamma": lambda a: LogGamma(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-        validate_args=True,
-    ),
-    "LogitBeta": lambda a: LogitBeta(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-        validate_args=True,
-    ),
-    "Poisson": lambda a: ClosedPoisson(torch.as_tensor(a[0])),
-    "Bernoulli": lambda a: ClosedBernoulli(probs=torch.as_tensor(a[0])),
-    "Uniform": lambda a: D.Uniform(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "HalfNormal": lambda a: D.HalfNormal(torch.as_tensor(a[0])),
-    "HalfCauchy": lambda a: D.HalfCauchy(torch.as_tensor(a[0])),
-    "LogNormal": lambda a: D.LogNormal(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-}
 
 
 def _build_operator_value(
@@ -2541,6 +2468,14 @@ def _make_dynamic_operator_distribution(
             argument = argument.value
         if isinstance(argument, DrawArgDist):
             return node(argument.family, argument.args)
+        if (
+            owner == "Independent"
+            and name == "reinterpreted_batch_ndims"
+            and isinstance(argument, DrawArgScalar)
+        ):
+            # This argument determines event structure; the shared constructor
+            # validates it unchanged rather than receiving a broadcast head.
+            return (lambda params: argument.value), argument.value
         if isinstance(argument, DrawArgList) and any(
             isinstance(item, DrawArgDist)
             or isinstance(item, DrawArgName)
@@ -2659,7 +2594,7 @@ def _make_dynamic_operator_distribution(
     build, prototype = node(family, args)
     support = prototype.support
     assert isinstance(support, _constraints.Constraint)
-    if references and prototype.event_shape and isinstance(codomain, Euclidean):
+    if prototype.event_shape and isinstance(codomain, Euclidean):
         codomain = Euclidean(name=codomain.name, dim=math.prod(prototype.event_shape))
     widths = tuple(
         int(width) if width is not None else None
@@ -2683,41 +2618,7 @@ def _make_dynamic_operator_distribution(
     )
     for i, reference in enumerate(dict.fromkeys(references.values())):
         morph.add_module(f"_sampleable_reference_{i}", reference)
-    return morph, tuple(names)
-
-
-def _make_operator_distribution(
-    family: str,
-    args,
-    codomain: AnySpace,
-    variable_types,
-    parameter_names: tuple[str, ...] | None,
-):
-    """Build a `FixedDistribution` wrapper around a compositional
-    measure expression. The expression has no free QVR variables;
-    all arguments are evaluated at compile time to a closed-form
-    `Distribution` / `Measure` instance.
-    """
-    fake_dist = _build_operator_value(
-        family,
-        tuple(args),
-        variable_types,
-        bound=True,
-        parameter_names=parameter_names,
-    )
-    support = getattr(fake_dist, "support", _constraints.real)
-    discrete = isinstance(support, type(_constraints.nonnegative_integer))
-
-    def builder(batch: int, device: torch.device):
-        return fake_dist
-
-    morph = FixedDistribution(
-        codomain,
-        builder,
-        discrete=discrete,
-        support=support,
-    )
-    return (morph, None)
+    return morph, tuple(names) if names else None
 
 
 def _param_row_width(vtype: AnySpace, event_rank: int) -> int:
@@ -3016,21 +2917,11 @@ def make_inline_distribution(
         If a gather indexes more axes than its value's checked extents
         have.
     """
-    if family in _OPERATOR_FAMILIES and (
-        sampleable_references or _dynamic_distribution_arguments(args)
-    ):
+    if family in _OPERATOR_FAMILIES:
         return _make_dynamic_operator_distribution(
             family, args, codomain, variable_types, value_extents, sampleable_references
         )
     args, selected_parameters = _bind_inline_arguments(family, args)
-    if family in _OPERATOR_FAMILIES:
-        return _make_operator_distribution(
-            family,
-            args,
-            codomain,
-            variable_types,
-            selected_parameters,
-        )
     args = _normalize_inline_args(args)
     # An indexed reference counts as a variable reference for the
     # purposes of picking the fixed vs mixed factory dispatch, alongside
