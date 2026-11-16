@@ -21,8 +21,27 @@ def _unique_parameters(*sources: Iterable[torch.Tensor]) -> list[torch.Tensor]:
     """Retain shared model and guide parameters exactly once, in stable order."""
     return list(
         {
-            id(parameter): parameter for source in sources for parameter in source
+            id(parameter): parameter
+            for source in sources
+            for parameter in source
+            if parameter.requires_grad
         }.values()
+    )
+
+
+def _prepare_optimizer(
+    *sources: Iterable[torch.Tensor],
+    learning_rate: float,
+    factory: Callable[[Iterable[torch.Tensor]], torch.optim.Optimizer] | None = None,
+) -> torch.optim.Optimizer | None:
+    """Prepare one optimizer over unique trainable parameters, if any exist."""
+    parameters = _unique_parameters(*sources)
+    if not parameters:
+        return None
+    return (
+        factory(parameters)
+        if factory is not None
+        else torch.optim.Adam(parameters, lr=learning_rate)
     )
 
 
@@ -35,8 +54,10 @@ class SVI:
         Generative model.
     guide : Guide
         Variational guide.
-    optim : torch.optim.Optimizer
-        Optimiser for both model and guide parameters.
+    optim : torch.optim.Optimizer or None
+        Optimizer for model and guide parameters. None is valid only when
+        neither has trainable parameters; steps then evaluate the objective
+        without constructing phantom parameters or taking a gradient step.
     objective : Objective
         Variational objective (ELBO, IWAEBound, RenyiBound,
         VRIWAEBound, …).
@@ -46,9 +67,13 @@ class SVI:
         self,
         model: MonadicProgram,
         guide: Guide,
-        optim: torch.optim.Optimizer,
+        optim: torch.optim.Optimizer | None,
         objective: Objective,
     ) -> None:
+        if optim is None and _unique_parameters(model.parameters(), guide.parameters()):
+            raise ValueError(
+                "an optimizer is required for trainable model or guide parameters"
+            )
         self.model = model
         self.guide = guide
         self.optim = optim
@@ -75,12 +100,14 @@ class SVI:
         float
             Scalar loss for this step.
         """
-        self.optim.zero_grad()
+        if self.optim is not None:
+            self.optim.zero_grad()
         loss_val = self.objective(self.model, self.guide, x, observations)
         if not bool(torch.isfinite(loss_val).all()):
             raise ValueError("nonfinite variational objective")
-        loss_val.backward()
-        self.optim.step()
+        if self.optim is not None:
+            loss_val.backward()
+            self.optim.step()
         return loss_val.item()
 
     def run(

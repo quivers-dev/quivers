@@ -21,7 +21,7 @@ from quivers.inference import (
     SVI,
 )
 from quivers.modeling.model import BoundModel, ModelFit
-from quivers.inference.svi import _unique_parameters
+from quivers.inference.svi import _prepare_optimizer
 
 
 class MCMCMethod(ValueModel):
@@ -189,11 +189,11 @@ class VariationalMethod(ValueModel):
                     observations=data,
                 )
             )
-            parameters = _unique_parameters(program.parameters(), guide.parameters())
-            optimizer = (
-                self.optimizer_factory(parameters)
-                if self.optimizer_factory is not None
-                else torch.optim.Adam(parameters, lr=self.learning_rate)
+            optimizer = _prepare_optimizer(
+                program.parameters(),
+                guide.parameters(),
+                learning_rate=self.learning_rate,
+                factory=self.optimizer_factory,
             )
             svi = SVI(program, guide, optimizer, self.objective)
             losses = svi.run(

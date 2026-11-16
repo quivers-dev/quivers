@@ -2571,14 +2571,14 @@ def _fit_svi(
         if initial_values
         else guide_cls(program, observed_names=set(observations))
     )
-    from quivers.inference.svi import _unique_parameters
+    from quivers.inference.svi import _prepare_optimizer
 
-    parameters = _unique_parameters(
+    optimizer = _prepare_optimizer(
         program.parameters(),
         guide.parameters(),
         () if predictor is None else predictor.parameters(),
+        learning_rate=learning_rate,
     )
-    optimizer = torch.optim.Adam(parameters, lr=learning_rate)
     svi = SVI(program, guide, optimizer, ELBO())
     n_obs = int(observations[next(iter(observations))].shape[0])
     # One run of the program: its observation rows come from the data
