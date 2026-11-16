@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+from quivers._count_capacity import _MAX_EXACT_COUNT
+from quivers.formulas._count_data import checked_integer_data
 import torch
 
 from quivers.formulas.formula import Formula
@@ -66,19 +68,17 @@ def _response_values_tensor(values: np.ndarray, dtype: torch.dtype) -> torch.Ten
         If an integer/Boolean observation cannot inhabit its declared carrier.
     """
     if dtype in {torch.int64, torch.bool}:
-        bound = 1 if dtype == torch.bool else 2**53
-        if (
-            values.dtype.kind not in "biuf"
-            or not np.isfinite(values).all()
-            or np.any(values > bound)
-            or np.any(values < (0 if dtype == torch.bool else -bound))
-            or np.any(values != np.floor(values))
-        ):
-            raise ValueError(
+        checked_integer_data(
+            values,
+            signed=dtype != torch.bool,
+            allow_bool=True,
+            maximum=1 if dtype == torch.bool else _MAX_EXACT_COUNT,
+            error=(
                 "Boolean responses require exact zero/one values"
                 if dtype == torch.bool
                 else "integer responses require finite integral values within exact Float64 scoring capacity 2**53"
-            )
+            ),
+        )
     return torch.as_tensor(values.copy(), dtype=dtype)
 
 
@@ -143,21 +143,14 @@ def count_totals(formula: Formula) -> torch.Tensor:
         If an event is negative, fractional, nonfinite, or exceeds capacity.
     """
     values = np.asarray(formula.response_values)
-    if (
-        values.ndim != 2
-        or values.dtype.kind not in "iuf"
-        or not np.isfinite(values).all()
-        or np.any(values < 0)
-        or np.any(values > 2**53)
-        or np.any(values != np.floor(values))
-    ):
-        raise ValueError(
-            "vector count responses require finite nonnegative integers at most 2**53"
-        )
+    error = "vector count responses require finite nonnegative integers at most 2**53"
+    if values.ndim != 2:
+        raise ValueError(error)
+    checked_integer_data(values, error=error)
     totals = np.zeros(values.shape[0], dtype=np.int64)
     for column in values.T:
         totals += column.astype(np.int64)
-        if np.any(totals > 2**53):
+        if np.any(totals > _MAX_EXACT_COUNT):
             raise ValueError("vector count row totals must be at most 2**53")
     return torch.as_tensor(totals)
 

@@ -15,7 +15,10 @@ to produce canonical ``.qvr`` source.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 import numpy as np
+from quivers._count_capacity import _MAX_EXACT_COUNT
+from quivers.formulas._count_data import checked_integer_data
 from pathlib import Path
 from typing import Literal, Mapping, Unpack
 
@@ -1583,27 +1586,31 @@ def fit(
                 f"fit: num_steps counts SVI optimization steps, and method={method!r} "
                 "runs MCMC; give num_warmup, num_samples, and num_chains"
             )
-        if isinstance(family, str):
-            if family not in families:
-                raise ValueError(
-                    f"fit: unknown family {family!r}; choices are {sorted(families)}"
-                )
-            family_obj = families[family]
-        else:
-            family_obj = family
-        parsed, design = _threshold_formula_and_design(
-            nonlinear_response_source(formula, nonlinear),
-            data,
-            thresholds_by=thresholds_by,
+        predictor_name = "neural_eta" if predictor is not None else None
+        prepared = _prepare_formula(
+            formula,
+            data=data,
+            family=family,
             weights=weights,
             decision=decision,
-            groups=(family_obj.baseline.by,)
-            if family_obj.baseline is not None and family_obj.baseline.by is not None
-            else (),
+            distributional=distributional,
+            nonlinear=nonlinear,
+            fixed_parameters=fixed_parameters,
+            fixed_prior=fixed_prior,
+            random_scale_prior=random_scale_prior,
+            correlation_prior=correlation_prior,
+            priors=priors,
+            reparameterize=reparameterize,
+            binomial_trials=binomial_trials,
+            thresholds_by=thresholds_by,
+            mixture_components=mixture_components,
+            predictor_name=predictor_name,
+            caller="fit",
         )
-        from quivers.formulas._response_roles import included_data, retained_trials
-
-        data = included_data(parsed, data)
+        lens, parsed = prepared.lens, prepared.formula
+        family_obj = prepared.family
+        binomial_trials = prepared.binomial_trials
+        parameter_formulas, graph = prepared.distributional, prepared.graph
         selection = parsed.modifiers.subset
         if selection is not None and predictor_data is not None:
             if predictor_data.shape[0] != selection.size:
@@ -1613,31 +1620,6 @@ def fit(
             predictor_data = predictor_data.index_select(
                 0, torch.tensor(selection.positions, device=predictor_data.device)
             )
-        binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
-        parameter_designs: dict[str, DesignMatrices] = {}
-        parsed = parsed.with_(formula=formula)
-        graph = build_predictor_graph(
-            formula,
-            nonlinear,
-            distributional,
-            data,
-            parsed.response_name,
-            family_parameters=frozenset(
-                {"mu", *(aux.name for aux in family_obj.aux_params)}
-            ),
-            designs=parameter_designs,
-        )
-        parameter_formulas = _parse_distributional(
-            {
-                name: value
-                for name, value in (distributional or {}).items()
-                if isinstance(value, str)
-            },
-            data,
-            parsed.response_name,
-            designs=parameter_designs,
-        )
-        predictor_name = "neural_eta" if predictor is not None else None
         if predictor is not None and predictor_data is None:
             raise ValueError(
                 "fit: predictor_data is required when predictor is supplied"
@@ -1653,21 +1635,6 @@ def fit(
                 "fit: a trainable external predictor requires method='svi'; "
                 "freeze its parameters before using NUTS or HMC"
             )
-        lens = FormulaToQVRModule(
-            family_obj,
-            fixed_prior=fixed_prior,
-            random_scale_prior=random_scale_prior,
-            correlation_prior=correlation_prior,
-            user_priors=priors,
-            reparameterize=reparameterize,
-            binomial_trials=binomial_trials,
-            thresholds_by=thresholds_by,
-            mixture_components=mixture_components,
-            predictor_name=predictor_name,
-            distributional=parameter_formulas,
-            predictor_graph=graph,
-            fixed_parameters=dict(fixed_parameters or {}),
-        )
         module, complement = lens.forward(parsed)
         compiler = Compiler(module)
         program_runtime = compiler.compile()
@@ -1690,7 +1657,8 @@ def fit(
                     list(codes), dtype=torch.long
                 )
         if family_obj.trials_parameter is not None:
-            trials = _response_trials(parsed, data, binomial_trials, caller="fit")
+            trials = prepared.trials
+            assert trials is not None
             if parsed.response_layout.event_shape:
                 observations["formula_trials"] = trials
             if (
@@ -1828,7 +1796,7 @@ def fit(
             fixed_parameters=dict(fixed_parameters or {}),
             prediction_plan=FormulaPredictionPlan(
                 module=module,
-                designs={"mu": design, **parameter_designs},
+                designs=prepared.designs,
                 group_layouts=complement.group_layouts,
             ),
         )
@@ -1990,6 +1958,20 @@ def get_prior(
     return lens.get_prior(parsed)
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedFormula:
+    """Ephemeral shared preparation, including live fitted design evaluators."""
+
+    lens: FormulaToQVRModule
+    formula: Formula
+    family: Family
+    binomial_trials: int | str | None
+    designs: dict[str, DesignMatrices]
+    distributional: dict[str, Formula]
+    graph: PredictorGraph | None
+    trials: torch.Tensor | None
+
+
 def _formula_lens(
     formula: str,
     *,
@@ -2010,17 +1992,60 @@ def _formula_lens(
     mixture_components: int = 2,
     predictor_name: str | None = None,
 ) -> tuple[FormulaToQVRModule, Formula]:
-    """Evaluate and configure the shared source/inspection compilation path."""
+    """Use common preparation for source emission and prior inspection."""
+    prepared = _prepare_formula(
+        formula,
+        data=data,
+        family=family,
+        weights=weights,
+        decision=decision,
+        distributional=distributional,
+        nonlinear=nonlinear,
+        fixed_parameters=fixed_parameters,
+        fixed_prior=fixed_prior,
+        random_scale_prior=random_scale_prior,
+        correlation_prior=correlation_prior,
+        priors=priors,
+        reparameterize=reparameterize,
+        binomial_trials=binomial_trials,
+        thresholds_by=thresholds_by,
+        mixture_components=mixture_components,
+        predictor_name=predictor_name,
+    )
+    return prepared.lens, prepared.formula
+
+
+def _prepare_formula(
+    formula: str,
+    *,
+    data: IntoDataFrame,
+    family: str | Family = "gaussian",
+    weights: str | None = None,
+    decision: str | None = None,
+    distributional: Mapping[str, str | NonlinearExpression] | None = None,
+    nonlinear: Mapping[str, str | NonlinearExpression] | None = None,
+    fixed_parameters: Mapping[str, float] | None = None,
+    fixed_prior: str = "Normal(0.0, 5.0)",
+    random_scale_prior: str = "HalfNormal(1.0)",
+    correlation_prior: str = "LKJCholesky(1.0)",
+    priors: Mapping[str, str] | None = None,
+    reparameterize: Literal["centered", "noncentered"] = "noncentered",
+    binomial_trials: int | str | None = None,
+    thresholds_by: str | None = None,
+    mixture_components: int = 2,
+    predictor_name: str | None = None,
+    caller: str = "formula_to_qvr",
+) -> _PreparedFormula:
+    """Prepare one retained design and compiler configuration for every entry."""
     if isinstance(family, str):
         if family not in families:
             raise ValueError(
-                f"formula_to_qvr: unknown family {family!r}; choices are "
-                f"{sorted(families)}"
+                f"{caller}: unknown family {family!r}; choices are {sorted(families)}"
             )
         family_obj = families[family]
     else:
         family_obj = family
-    parsed, _ = _threshold_formula_and_design(
+    parsed, design = _threshold_formula_and_design(
         nonlinear_response_source(formula, nonlinear),
         data,
         thresholds_by=thresholds_by,
@@ -2035,6 +2060,7 @@ def _formula_lens(
     data = included_data(parsed, data)
     binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
     parsed = parsed.with_(formula=formula)
+    parameter_designs: dict[str, DesignMatrices] = {}
     graph = build_predictor_graph(
         formula,
         nonlinear,
@@ -2044,6 +2070,7 @@ def _formula_lens(
         family_parameters=frozenset(
             {"mu", *(aux.name for aux in family_obj.aux_params)}
         ),
+        designs=parameter_designs,
     )
     parameter_formulas = _parse_distributional(
         {
@@ -2053,9 +2080,13 @@ def _formula_lens(
         },
         data,
         parsed.response_name,
+        designs=parameter_designs,
     )
-    if family_obj.trials_parameter is not None:
-        _response_trials(parsed, data, binomial_trials, caller="formula_to_qvr")
+    trials = (
+        _response_trials(parsed, data, binomial_trials, caller=caller)
+        if family_obj.trials_parameter is not None
+        else None
+    )
     lens = FormulaToQVRModule(
         family_obj,
         fixed_prior=fixed_prior,
@@ -2071,7 +2102,16 @@ def _formula_lens(
         predictor_graph=graph,
         fixed_parameters=fixed_parameters,
     )
-    return lens, parsed
+    return _PreparedFormula(
+        lens,
+        parsed,
+        family_obj,
+        binomial_trials,
+        {"mu": design, **parameter_designs},
+        parameter_formulas,
+        graph,
+        trials,
+    )
 
 
 def _threshold_formula_and_design(
@@ -2392,7 +2432,7 @@ def _binomial_trial_tensor(
             "binomial_trials must be a nonnegative integer or a column name"
         )
     if isinstance(trials, int):
-        if trials < 0 or trials > 2**53:
+        if trials < 0 or trials > _MAX_EXACT_COUNT:
             raise ValueError(
                 "binomial_trials must be a nonnegative integer at most 2**53"
             )
@@ -2403,31 +2443,15 @@ def _binomial_trial_tensor(
     if trials not in frame.columns:
         raise ValueError(f"binomial_trials column {trials!r} is not in the data")
     column = frame[trials].to_numpy()
-    if column.dtype.kind not in "iuf":
-        raise ValueError("binomial_trials must contain nonnegative finite integers")
-    if (column > 2**53).any():
-        raise ValueError("binomial_trials must contain integers at most 2**53")
-    try:
-        values = torch.as_tensor(column.copy()).reshape(-1)
-    except (TypeError, ValueError, OverflowError) as error:
+    checked_integer_data(
+        column,
+        error="binomial_trials must contain nonnegative finite integers at most 2**53",
+    )
+    if column.shape != (n_obs,):
         raise ValueError(
-            "binomial_trials must contain supported real numeric values"
-        ) from error
-    if values.shape[0] != n_obs:
-        raise ValueError(
-            f"binomial_trials column has {values.shape[0]} rows, expected {n_obs}"
+            f"binomial_trials column has {column.size} rows, expected {n_obs}"
         )
-    if values.is_floating_point():
-        if not torch.isfinite(values).all() or torch.any(values < 0):
-            raise ValueError("binomial_trials must contain nonnegative finite integers")
-        if not torch.equal(values, values.round()):
-            raise ValueError("binomial_trials must contain integers")
-    integer_values = values.to(dtype=torch.long)
-    if torch.any(integer_values < 0):
-        raise ValueError(
-            "binomial_trials must contain nonnegative signed 64-bit integers"
-        )
-    return integer_values
+    return torch.as_tensor(column.astype(np.int64, copy=True))
 
 
 def _predictor_output(

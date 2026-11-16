@@ -8,6 +8,7 @@ from numbers import Real
 from typing import TYPE_CHECKING, TypedDict
 
 import numpy as np
+from quivers.formulas._count_data import checked_integer_data
 import pandas as pd
 import torch
 from narwhals.typing import IntoDataFrame
@@ -419,14 +420,9 @@ def bind_roles(
         )
     if "trials" in sources:
         values = _values(frame, sources["trials"], "trials")
-        if (
-            values.dtype.kind not in "iuf"
-            or not np.isfinite(values).all()
-            or np.any(values < 0)
-            or np.any(values > 2**53)
-            or np.any(values != np.floor(values))
-        ):
-            raise ValueError("trials require nonnegative integers at most 2**53")
+        checked_integer_data(
+            values, error="trials require nonnegative integers at most 2**53"
+        )
         bindings["trials"] = column("trials", values.astype(np.int64))
     bindings["sources"] = tuple(sorted(sources.items()))
     return frame, bindings

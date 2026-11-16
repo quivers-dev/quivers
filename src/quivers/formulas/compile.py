@@ -59,6 +59,8 @@ GetPut holds for every `Formula` ``f``: ``backward(*forward(f)) == f``.
 
 from __future__ import annotations
 
+from quivers._count_capacity import _MAX_EXACT_COUNT
+
 import math
 from typing import Literal, Mapping
 
@@ -895,7 +897,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
         if isinstance(binomial_trials, int) and binomial_trials < 0:
             raise ValueError("FormulaToQVRModule: binomial_trials must be nonnegative")
-        if isinstance(binomial_trials, int) and binomial_trials > 2**53:
+        if isinstance(binomial_trials, int) and binomial_trials > _MAX_EXACT_COUNT:
             raise ValueError(
                 "FormulaToQVRModule: binomial_trials must be at most 2**53"
             )
