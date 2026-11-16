@@ -112,6 +112,7 @@ from quivers.continuous.spaces import (
     Correlation,
     Covariance,
     Euclidean,
+    ContinuousSpace,
     LowerTriangular,
     Orthogonal,
     Stiefel,
@@ -310,15 +311,19 @@ class PlateDraw(ContinuousMorphism):
         elif isinstance(family.codomain, _MATRIX_SPACES):
             per_row_shape = family.codomain.shape
             per_row_dim = math.prod(per_row_shape)
-        elif hasattr(family.codomain, "dim"):
-            per_row_dim = int(family.codomain.dim)
-            per_row_shape = (per_row_dim,)
+        elif isinstance(family.codomain, ContinuousSpace):
+            per_row_shape = family.codomain.event_shape
+            per_row_dim = math.prod(per_row_shape)
         else:
             per_row_shape = tuple(family.codomain.shape)
             per_row_dim = (
                 int(torch.tensor(per_row_shape).prod().item()) if per_row_shape else 1
             )
-        if per_row_shape == (1,) and family.support.event_dim == 0:
+        explicit_shape = (
+            isinstance(family.codomain, Euclidean)
+            and family.codomain.intrinsic_shape is not None
+        )
+        if per_row_shape == (1,) and family.support.event_dim == 0 and not explicit_shape:
             per_row_shape = ()
         # `plate_rows` keeps the row structure of the flattened
         # codomain recoverable: a consumer that reads the variable as
