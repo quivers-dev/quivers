@@ -465,7 +465,11 @@ shared prior dependency projection, retaining conditional prior inputs while
 omitting downstream likelihood computations.
 [`TemperedPotential`](../api/inference/mcmc.md#quivers.inference.smc.TemperedPotential)
 evaluates $\log p(z) + \beta \log L(z)$ and returns the two parts
-separately.
+separately. Tempering requires the complete joint to come from the declared
+native steps. An overridden `MonadicProgram.log_joint` is opaque to this
+partition and is refused before execution; custom factor callbacks belong
+in typed `Score` steps. Ordinary `PotentialFn` scoring still supports its
+existing exact fallback for overridden joints.
 
 Each step does four things.
 

@@ -53,7 +53,7 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.programs import MonadicProgram
-from quivers.effects.joint_plan import JointPlan
+from quivers.effects.joint_plan import JointPlan, _has_custom_joint
 from quivers.effects.subsample import refuse_subsampling
 from quivers.inference.mcmc.driver import (
     MCMC,
@@ -174,6 +174,27 @@ def _conditional_ess(log_weights: torch.Tensor, increments: torch.Tensor) -> flo
     return float(torch.exp(numerator - denominator))
 
 
+def _require_partitionable_joint(model: MonadicProgram) -> None:
+    """Require observable typed factors before decomposing the log joint.
+
+    Parameters
+    ----------
+    model : MonadicProgram
+        Program whose draw and score steps define the complete joint.
+
+    Raises
+    ------
+    ValueError
+        If an opaque joint override has no declared prior/likelihood roles.
+    """
+    if _has_custom_joint(model):
+        raise ValueError(
+            "SMC tempering requires the canonical MonadicProgram.log_joint; "
+            "an overridden log_joint does not expose prior/likelihood factor roles. "
+            "Express additional factors as typed Score steps."
+        )
+
+
 class TemperedPotential(PotentialFn):
     """The potential of a tempered posterior :math:`p(z)\\, L(z)^\\beta`.
 
@@ -203,7 +224,8 @@ class TemperedPotential(PotentialFn):
     ------
     ValueError
         If ``temperature`` is outside ``[0, 1]``, or the input or data
-        are refused as by `PotentialFn`.
+        are refused as by `PotentialFn`, or an opaque joint override
+        prevents role decomposition.
     """
 
     def __init__(
@@ -214,6 +236,7 @@ class TemperedPotential(PotentialFn):
         observations: dict[str, torch.Tensor],
         temperature: float = 1.0,
     ) -> None:
+        _require_partitionable_joint(model)
         super().__init__(model, registry, x, observations)
         self._temperature = _check_temperature(temperature)
         from quivers.inference._prior_projection import _score_steps
@@ -274,6 +297,7 @@ class TemperedPotential(PotentialFn):
             Any error the program raises other than one marking the
             position as outside its support.
         """
+        _require_partitionable_joint(self._model)
         refuse_subsampling("TemperedPotential")
         self._counts[0] += 1
         trace_side, log_det_total = self._trace_side(z)
@@ -628,10 +652,12 @@ class SMC:
         ValueError
             If ``x`` has more than one row, the data are outside their
             support, the kernel's Gibbs sites do not fit the model, a plate
-            is subsampled, or an explicit prior potential has unknown mass.
+            is subsampled, an explicit prior potential has unknown mass,
+            or an opaque joint override prevents role decomposition.
         RuntimeError
             If no temperature step keeps the target ESS.
         """
+        _require_partitionable_joint(model)
         _require_one_run(x, "SMC.run")
         refuse_subsampling("SMC.run")
         from quivers.inference.prior import _ancestral_program

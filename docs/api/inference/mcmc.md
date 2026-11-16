@@ -38,7 +38,11 @@ path: prior potentials remain in the prior term, while observations and
 likelihood scores are tempered. `SMC.run` initializes through the shared
 ancestral prior projection and refuses unknown prior-potential normalizers.
 Its log normalizing constant is ordinary model evidence only when the
-sampling and prior factors have that interpretation.
+sampling and prior factors have that interpretation. Both `SMC.run` and
+`TemperedPotential` refuse opaque `MonadicProgram.log_joint` overrides,
+which expose no prior/likelihood roles. Factor callbacks inside typed `Score`
+steps retain those roles. This restriction does not change ordinary
+`PotentialFn` scoring of overridden joints.
 
 ::: quivers.inference.smc
 
