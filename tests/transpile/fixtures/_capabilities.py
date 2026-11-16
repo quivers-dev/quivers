@@ -6,6 +6,10 @@ PARAMETERIZATION_REFUSALS: dict[tuple[str, str], str] = {}
 # external cells are actual measured capability refusals, not numeric claims.
 for _fixture, _family, _rendered in (
     ("steps/observe_bernstein_hazard_log_rate", "BernsteinHazard", ()),
+    *(
+        ("steps/observe_multivariate_student_" + schema, "MultivariateStudentT", ())
+        for schema in ("factor", "covariance", "precision")
+    ),
     ("steps/observe_multinomial_logits", "Multinomial", ()),
     ("steps/observe_dirichlet_multinomial", "DirichletMultinomial", ()),
     ("steps/observe_com_poisson_log_rate", "COMPoisson", ()),

@@ -92,6 +92,13 @@ _INLINE_OBSERVE: dict[str, str] = {
 # Existing curated sources are literal snapshots: regeneration must not
 # rewrite a valid measured fixture just to change its presentation.
 _SPECIAL_SOURCES: dict[str, str] = {
+    "MultivariateStudentT": """object Row : FinSet 3
+object Dim : FinSet 2
+program model : Row -> Row
+    observe v : Row <- MultivariateStudentT(df=5.0, loc=[0.0, 1.0], scale_tril=[[1.0, 0.0], [0.5, 1.0]]) [over=Dim]
+    return v
+export model
+""",
     "AdditiveLogRatioNormal": """object Row : FinSet 3
 object Component : FinSet 3
 program model : Row -> Row

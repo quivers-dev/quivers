@@ -208,6 +208,7 @@
     "MixtureNormal"
     "Multinomial"
     "MultivariateNormal"
+    "MultivariateStudentT"
     "NegativeBinomial"
     "Normal"
     "Normalize"

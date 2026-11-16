@@ -1,0 +1,6 @@
+object Row : FinSet 3
+object Dim : FinSet 2
+program model : Row -> Row
+    observe v : Row <- MultivariateStudentT(df=5.0, loc=[0.0, 1.0], covariance_matrix=[[1.0, 0.5], [0.5, 1.25]]) [over=Dim]
+    return v
+export model

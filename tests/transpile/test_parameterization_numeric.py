@@ -60,6 +60,30 @@ def _t(value: torch.Tensor | Host) -> torch.Tensor:
     return torch.as_tensor(value, dtype=torch.float64)
 
 
+def _multivariate_student_oracle(value: torch.Tensor | Host) -> torch.Tensor:
+    """Score the fixed two-dimensional law using its independent dense formula.
+
+    Parameters
+    ----------
+    value : torch.Tensor or Host
+        Three vector observations in the fixture's original order.
+
+    Returns
+    -------
+    torch.Tensor
+        Joint density with one shared radial Student variable per event.
+    """
+    delta = _t(value) - _t([0.0, 1.0])
+    covariance = _t(_COVARIANCE)
+    quadratic = (delta * (delta @ torch.linalg.inv(covariance))).sum(-1)
+    constant = math.lgamma(3.5) - math.lgamma(2.5) - math.log(5 * math.pi)
+    return (
+        constant
+        - 0.5 * torch.linalg.slogdet(covariance)[1]
+        - 3.5 * torch.log1p(quadratic / 5)
+    ).sum()
+
+
 def _eta(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     return D.Normal(_t(0.0), _t(2.0)).log_prob(_t(v["eta"]))
 
@@ -185,6 +209,30 @@ _CASES: dict[
             ).log_prob(_t(v["v"])[:, 1:].log() - _t(v["v"])[:, :1].log())
             - _t(v["v"]).log().sum(-1)
         ).sum(),
+    ),
+    "multivariate-student-factor": (
+        "MultivariateStudentT",
+        "scale_tril",
+        "steps/observe_multivariate_student_factor",
+        {"v": [[0.2, 0.3], [0.6, -0.1], [-0.4, 0.7]]},
+        [{}],
+        lambda v: _multivariate_student_oracle(v["v"]),
+    ),
+    "multivariate-student-covariance": (
+        "MultivariateStudentT",
+        "covariance_matrix",
+        "steps/observe_multivariate_student_covariance",
+        {"v": [[0.2, 0.3], [0.6, -0.1], [-0.4, 0.7]]},
+        [{}],
+        lambda v: _multivariate_student_oracle(v["v"]),
+    ),
+    "multivariate-student-precision": (
+        "MultivariateStudentT",
+        "precision_matrix",
+        "steps/observe_multivariate_student_precision",
+        {"v": [[0.2, 0.3], [0.6, -0.1], [-0.4, 0.7]]},
+        [{}],
+        lambda v: _multivariate_student_oracle(v["v"]),
     ),
     "mvn-covariance": (
         "MultivariateNormal",
