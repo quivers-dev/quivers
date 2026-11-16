@@ -8,6 +8,12 @@ mass or [normalizes it](../../semantics/programs.md#5-algebraic-laws-and-their-s
 [`normalize_at_boundary`](#quivers.continuous.measure.normalize_at_boundary) renormalizes a
 subprobability measure where it is sampled or scored.
 
+`Independent(base, reinterpreted_batch_ndims=0)` is the identity case:
+it preserves every base batch and intrinsic event axis, raw mass, and interval
+query. Positive counts reinterpret that many trailing batch axes as one event
+and multiply their masses. Counts must be nonnegative integers no larger than
+the base batch rank. The identity case does not reduce the batch axes.
+
 ## Raw masses and interval endpoints
 
 `log_interval_mass(low, high, lower_closed=..., upper_closed=...)` integrates

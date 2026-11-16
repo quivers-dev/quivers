@@ -13,6 +13,7 @@ normalization of positive-mass sub-measures.
 from __future__ import annotations
 
 import math
+import operator
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
@@ -1979,7 +1980,8 @@ class Independent(Measure):
     base : Distribution
         Independent coordinate laws or raw measures.
     reinterpreted_batch_ndims : int
-        Number of trailing batch axes forming one event.
+        Nonnegative number of trailing batch axes forming one event. Zero
+        preserves the base law's batch and event axes.
     validate_args : bool or None
         Optional Torch argument-validation policy."""
 
@@ -1992,9 +1994,12 @@ class Independent(Measure):
         reinterpreted_batch_ndims: int,
         validate_args: bool | None = None,
     ) -> None:
-        if reinterpreted_batch_ndims < 1:
+        if isinstance(reinterpreted_batch_ndims, bool):
+            raise TypeError("Independent: reinterpreted_batch_ndims must be an integer")
+        reinterpreted_batch_ndims = operator.index(reinterpreted_batch_ndims)
+        if reinterpreted_batch_ndims < 0:
             raise ValueError(
-                "Independent: reinterpreted_batch_ndims must be >= 1, "
+                "Independent: reinterpreted_batch_ndims must be >= 0, "
                 f"got {reinterpreted_batch_ndims}"
             )
         self.base = base
@@ -2028,6 +2033,8 @@ class Independent(Measure):
             Log total mass with only independent batch axes retained.
         """
         inner = _native_log_mass(self.base, batch_axes=len(self.base.batch_shape))
+        if self.reinterpreted_batch_ndims == 0:
+            return inner
         return inner.sum(
             tuple(range(inner.ndim - self.reinterpreted_batch_ndims, inner.ndim))
         )
@@ -2053,6 +2060,8 @@ class Independent(Measure):
         mass = log_interval_mass(
             self.base, low, high, lower_closed=lower_closed, upper_closed=upper_closed
         )
+        if self.reinterpreted_batch_ndims == 0:
+            return mass
         return mass.sum(
             tuple(range(mass.ndim - self.reinterpreted_batch_ndims, mass.ndim))
         )

@@ -389,3 +389,65 @@ def test_operator_measure_draws_one_value_per_row_and_coordinate() -> None:
     inside = normal.cdf(torch.tensor(1.0)) - normal.cdf(torch.tensor(-1.0))
     truncated = normal.log_prob(shift[:, 0]) - torch.log(inside)
     assert torch.allclose(joint, half + truncated, atol=1e-5)
+
+
+def test_independent_zero_preserves_each_raw_batch_mass_and_interval_gradient():
+    import numpy as np
+    from scipy.special import ndtr
+
+    theta = torch.tensor(0.2, dtype=torch.double, requires_grad=True)
+    offsets = torch.tensor([[-0.5, 0.0, 0.5], [1.0, 1.5, 2.0]], dtype=torch.double)
+    normal = torch.distributions.Normal(theta + offsets, 0.8)
+    base = Restrict(normal, low=-0.5, high=1.2)
+    unchanged = Independent(base, 0)
+    assert unchanged.batch_shape == base.batch_shape == (2, 3)
+    assert unchanged.event_shape == base.event_shape == ()
+    loc = 0.2 + offsets.numpy()
+    expected_mass = np.log(ndtr((1.2 - loc) / 0.8) - ndtr((-0.5 - loc) / 0.8))
+    expected_interval = np.log(ndtr((0.7 - loc) / 0.8) - ndtr((-0.2 - loc) / 0.8))
+    torch.testing.assert_close(unchanged.log_normalizer(), torch.tensor(expected_mass))
+    actual_interval = unchanged.log_interval_mass(-0.2, 0.7)
+    torch.testing.assert_close(actual_interval, torch.tensor(expected_interval))
+    # Differentiate the independent closed Normal CDF expression, retaining every row.
+    expected = (
+        normal.cdf(torch.tensor(0.7, dtype=torch.double))
+        - normal.cdf(torch.tensor(-0.2, dtype=torch.double))
+    ).log()
+    got_gradient = torch.autograd.grad(actual_interval.sum(), theta, retain_graph=True)[
+        0
+    ]
+    want_gradient = torch.autograd.grad(expected.sum(), theta)[0]
+    torch.testing.assert_close(got_gradient, want_gradient)
+
+
+def test_independent_zero_preserves_vector_events_samples_and_batch_selection():
+    from quivers.continuous._batch_selection import select_batch
+
+    mean = torch.arange(12, dtype=torch.double).reshape(2, 3, 2)
+    base = torch.distributions.MultivariateNormal(
+        mean, torch.eye(2, dtype=torch.double)
+    )
+    unchanged = Independent(base, 0)
+    assert unchanged.batch_shape == (2, 3)
+    assert unchanged.event_shape == (2,)
+    values = mean + 0.2
+    torch.testing.assert_close(unchanged.log_prob(values), base.log_prob(values))
+    with torch.random.fork_rng():
+        torch.manual_seed(7)
+        first = base.sample((4,))
+        torch.manual_seed(7)
+        second = unchanged.sample((4,))
+    torch.testing.assert_close(first, second)
+    active = torch.tensor([[True, False, True], [False, True, False]])
+    selected = select_batch(unchanged, active)
+    assert selected.batch_shape == (3,)
+    assert selected.event_shape == (2,)
+    torch.testing.assert_close(
+        selected.log_prob(values[active]), base.log_prob(values)[active]
+    )
+
+
+@pytest.mark.parametrize("invalid", [True, False, 0.0, 1.5, -1, 3])
+def test_independent_requires_a_nonnegative_integer_within_the_batch_rank(invalid):
+    with pytest.raises((TypeError, ValueError)):
+        Independent(torch.distributions.Normal(torch.zeros(2, 3), 1.0), invalid)
