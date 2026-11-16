@@ -53,10 +53,12 @@ if TYPE_CHECKING:
     )
     from quivers.diagnostics.posterior import (
         PosteriorAnalysis,
+        PosteriorCovariance,
         PosteriorSummary,
         WAICResult,
         waic,
     )
+    from quivers.diagnostics.regression import bayesian_r2
     from quivers.diagnostics.comparison import compare, loo
     from quivers.diagnostics.predictive_checks import (
         STATISTICS,
@@ -76,8 +78,10 @@ if TYPE_CHECKING:
     )
 
 _LAZY_EXPORTS: dict[str, str] = {
+    "bayesian_r2": "quivers.diagnostics.regression",
     "PosteriorAnalysis": "quivers.diagnostics.posterior",
     "PosteriorSummary": "quivers.diagnostics.posterior",
+    "PosteriorCovariance": "quivers.diagnostics.posterior",
     "WAICResult": "quivers.diagnostics.posterior",
     "waic": "quivers.diagnostics.posterior",
     "sbc": "quivers.diagnostics.calibration",
@@ -139,8 +143,10 @@ def __getattr__(name: str) -> _LazyExport:
 
 
 __all__ = [
+    "bayesian_r2",
     "PosteriorAnalysis",
     "PosteriorSummary",
+    "PosteriorCovariance",
     "WAICResult",
     "waic",
     "rhat",

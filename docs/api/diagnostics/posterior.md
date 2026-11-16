@@ -11,6 +11,34 @@ each latent site's event coordinates. Recorded MCMC chains also supply a
 `ConvergenceSummary`; variational draws supply `None`. Their one pseudo-chain
 records array shape, without asserting MCMC convergence.
 
+## Joint covariance and correlation
+
+`analysis.covariance(var_names=None, ddof=1)` returns a `PosteriorCovariance`
+containing both empirical covariance and Pearson correlation. It pools chain
+and draw axes by default; `chainwise=True` returns one matrix per retained
+chain axis. The divisor is the reduced sample count minus `ddof`, which must be a
+nonnegative integer smaller than that count. No convergence diagnostic is
+implied by either matrix.
+
+Selected variables retain their requested order. Each event flattens in
+row-major order, while `coordinates` retains each exact `(site, index_tuple)`;
+`variables`, `event_shapes`, and `sample_shape` retain the original layout.
+Pass `dims` and `coords` as for `to_datatree`: the same validator checks named
+axis extents and label lengths. `dimension_names` and `coordinate_labels`
+identify each matrix column without parsing a rendered name. Chain and draw
+labels remain available even when those axes were reduced.
+
+These summaries use retained tensors and one joint Float64 matrix, without
+resampling or likelihood evaluation. Boolean and integer prior draws are
+numeric inputs; original integers outside the exact Float64 range are refused
+before conversion. Coordinate labels retain their original values.
+Missing and nonfinite draws are refused, without pairwise deletion. A constant
+coordinate has zero covariance and NaN correlations with every coordinate,
+including itself. Mathematical covariances below Float64 resolution may
+underflow; correlations are computed from scaled coordinates independently
+of that underflow. Unrepresentable covariance magnitudes cause an explicit
+error. Tensor mappings and returned tensor storage remain caller-owned.
+
 ## Observation units and predictive scores
 
 Log-likelihood tensors have shape `(chain, draw, *observation_shape)`, after

@@ -138,6 +138,39 @@ The [executable workflow](analysis-data-and-formulas.md#raw-likelihoods-and-reta
 shows the shared interface. Lower-level samplers can use the adapters below
 when they need custom coordinates or predictive groups.
 
+Joint parameter dependence uses the same retained analysis. `covariance`
+returns covariance and correlation together; it does not draw again. Site
+names and event indices remain separate, including when labels contain
+punctuation:
+
+```python
+import torch
+from quivers.diagnostics import PosteriorAnalysis
+
+retained = PosteriorAnalysis(
+    samples={
+        "intercept": torch.tensor([[0.1, 0.3, 0.2, 0.5]]),
+        "slope": torch.tensor([[[0.2, 0.5], [0.4, 0.6], [0.1, 0.3], [0.6, 0.8]]]),
+    },
+    log_likelihood={}, kind="variational",
+)
+dependence = retained.covariance(
+    dims={"slope": ["condition"]},
+    coords={"condition": ["control", "treatment"]},
+)
+assert dependence.covariance.shape == dependence.correlation.shape == (3, 3)
+assert dependence.coordinates == (("intercept", ()), ("slope", (0,)), ("slope", (1,)))
+assert dependence.coordinate_labels == ((), ("control",), ("treatment",))
+```
+
+For a fitted model, replace `retained` with either source or formula
+`result.analysis(...)`. The default pools posterior chains and draws;
+`chainwise=True` retains one matrix per chain. `ddof=1` uses sample covariance.
+Missing values fail explicitly, and constant coordinates have NaN correlations.
+These matrices describe dependence among draws; they do not establish MCMC
+convergence. The [API reference](../api/diagnostics/posterior.md#joint-covariance-and-correlation)
+states the coordinate and numeric-capacity policies.
+
 The [diagnostics adapter](../api/diagnostics/index.md) converts quivers' inference
 records for [ArviZ](https://python.arviz.org/) and returns an
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)

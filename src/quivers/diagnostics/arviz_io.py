@@ -19,6 +19,7 @@ import arviz as az
 import torch
 import xarray as xr
 
+from quivers.diagnostics._coordinates import axis_labels, event_dimensions
 from quivers.diagnostics.calibration import SBCResult
 from quivers.inference.mcmc.driver import MCMCResult
 
@@ -57,6 +58,20 @@ def _groups_to_datatree(
     for group, tensors in groups.items():
         if not tensors:
             continue
+        sampled = group not in {"observed_data", "constant_data"}
+        event_dimensions(
+            {
+                key: value.shape[2:] if sampled else value.shape
+                for key, value in tensors.items()
+            },
+            coords=coords,
+            dims=dims,
+        )
+        if sampled:
+            for value in tensors.values():
+                if value.ndim >= 2:
+                    axis_labels("chain", value.shape[0], coords)
+                    axis_labels("draw", value.shape[1], coords)
         converted = {}
         for key, values in tensors.items():
             array = _tensor_to_numpy(values)

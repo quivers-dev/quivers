@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import math
+from itertools import product
 from typing import TYPE_CHECKING, Literal
 
 import didactic.api as dx
 import torch
 
-from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.diagnostics.convergence import (
     ConvergenceSummary,
     summary as convergence_summary,
@@ -60,6 +61,52 @@ class PosteriorSummary(ValueModel):
     probs: tuple[float, ...]
     quantiles: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     convergence: ConvergenceSummary | None = None
+
+
+class PosteriorCovariance(ValueModel):
+    """Joint empirical covariance and correlation of retained coordinates.
+
+    Parameters
+    ----------
+    covariance, correlation : torch.Tensor
+        Float64 square matrices, or one matrix per chain when ``chainwise``.
+        A constant coordinate has zero covariance and NaN correlations.
+    coordinates : tuple[tuple[str, tuple[int, ...]], ...]
+        Matrix columns as an exact variable name and row-major event index.
+        The same coordinates label matrix rows; no string parsing is needed.
+    dimension_names, coordinate_labels : tuple
+        Event dimension names and their original labels for each matrix column.
+    variables, event_shapes : tuple
+        Selected variable order and corresponding original event shapes.
+    sample_shape : tuple[int, int]
+        Original chain and draw counts, before the empirical reduction.
+    chain_labels, draw_labels : tuple
+        Original sample-axis labels, or their positional defaults.
+    ddof : int
+        Degrees of freedom subtracted from the pooled or per-chain draw count.
+    chainwise : bool
+        Whether each chain was summarized separately.
+    kind : str
+        Original draw provenance; this record adds no convergence diagnostics.
+    """
+
+    covariance: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    correlation: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    coordinates: tuple[tuple[str, tuple[int, ...]], ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    dimension_names: tuple[tuple[str, ...], ...]
+    coordinate_labels: tuple[tuple[object, ...], ...] = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    variables: tuple[str, ...]
+    event_shapes: tuple[tuple[int, ...], ...]
+    sample_shape: tuple[int, int] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    chain_labels: tuple[object, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    draw_labels: tuple[object, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    ddof: int
+    chainwise: bool
+    kind: Literal["mcmc", "variational", "prior"]
 
 
 class WAICResult(ValueModel):
@@ -294,6 +341,137 @@ class PosteriorAnalysis(ValueModel):
             )
         return result
 
+    def covariance(
+        self,
+        var_names: Sequence[str] | None = None,
+        *,
+        ddof: int = 1,
+        chainwise: bool = False,
+        coords: Mapping[str, Sequence[object]] | None = None,
+        dims: Mapping[str, Sequence[str]] | None = None,
+    ) -> PosteriorCovariance:
+        """Summarize joint empirical dependence without replaying a posterior.
+
+        Parameters
+        ----------
+        var_names : Sequence[str] or None
+            Distinct selected sites, in matrix order; None selects insertion order.
+            Each site's event coordinates flatten in row-major order.
+        ddof : int
+            Nonnegative degrees of freedom, strictly below the reduced count.
+        chainwise : bool
+            Retain a separate matrix per chain instead of pooling chain and draw.
+        coords : Mapping[str, Sequence[object]] or None
+            Labels for named event axes and optional chain/draw axes.
+        dims : Mapping[str, Sequence[str]] or None
+            Event-axis names per site, following the DataTree convention.
+
+        Returns
+        -------
+        PosteriorCovariance
+            Float64 covariance and Pearson correlation, structural coordinate
+            labels, sample-axis labels, and provenance. Constants have NaN
+            correlations. No convergence statistics are manufactured.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If axes, labels, selection, ddof, devices, or numeric carriers are
+            invalid; missing/nonfinite draws are refused, without deletion.
+            Integer values outside the exact Float64 range are refused before
+            casting, as are unrepresentable covariance results.
+        """
+        from quivers.diagnostics._coordinates import axis_labels, event_dimensions
+        from quivers.diagnostics._numeric import real_samples
+
+        self._validate_axes()
+        if isinstance(var_names, str | bytes):
+            raise TypeError("var_names must be a sequence of site names")
+        names = tuple(self.samples) if var_names is None else tuple(var_names)
+        if any(not isinstance(name, str) for name in names):
+            raise TypeError("posterior variable names must be strings")
+        if not names or len(set(names)) != len(names):
+            raise ValueError("covariance requires a nonempty distinct site selection")
+        unknown = set(names) - self.samples.keys()
+        if unknown:
+            raise ValueError(f"unknown posterior variables: {sorted(unknown)}")
+        if isinstance(ddof, bool) or not isinstance(ddof, int) or ddof < 0:
+            raise ValueError("ddof must be a nonnegative integer")
+        if not isinstance(chainwise, bool):
+            raise TypeError("chainwise must be Boolean")
+        first = self.samples[names[0]]
+        sample_shape = (first.shape[0], first.shape[1])
+        chains, draws = sample_shape
+        count = draws if chainwise else chains * draws
+        if ddof >= count:
+            raise ValueError("ddof must be smaller than the reduced sample count")
+        shapes = {name: tuple(self.samples[name].shape[2:]) for name in names}
+        dimensions = event_dimensions(shapes, coords=coords, dims=dims)
+        chain_labels = axis_labels("chain", chains, coords)
+        draw_labels = axis_labels("draw", draws, coords)
+        columns, structural, dimension_names, labels = [], [], [], []
+        device = self.samples[names[0]].device
+        for name in names:
+            values = self.samples[name]
+            if values.device != device:
+                raise ValueError("covariance requires samples on one device")
+            columns.append(
+                real_samples(values, label="covariance").reshape(chains, draws, -1)
+            )
+            dim_names = dimensions[name]
+            dim_labels = [
+                axis_labels(dim, size, coords)
+                for dim, size in zip(dim_names, shapes[name], strict=True)
+            ]
+            for index in product(*(range(size) for size in shapes[name])):
+                structural.append((name, index))
+                dimension_names.append(dim_names)
+                labels.append(
+                    tuple(
+                        label[position]
+                        for label, position in zip(dim_labels, index, strict=True)
+                    )
+                )
+        values = torch.cat(columns, dim=-1)
+        if not chainwise:
+            values = values.flatten(0, 1)
+        # Anchor subtraction retains small differences around a large common
+        # offset. Scaling also handles opposite finite endpoints whose
+        # subtraction would overflow, without summing their raw magnitudes.
+        delta = values - values[..., :1, :]
+        working = torch.where(
+            torch.isfinite(delta).all(dim=-2, keepdim=True), delta, values
+        )
+        scale = working.abs().amax(dim=-2, keepdim=True)
+        normalized = working / torch.where(scale == 0, 1.0, scale)
+        centered = normalized - normalized.mean(dim=-2, keepdim=True)
+        gram = centered.transpose(-1, -2) @ centered / (count - ddof)
+        mantissa, exponent = torch.frexp(scale.squeeze(-2))
+        base_mantissa, base_exponent = torch.frexp(gram)
+        covariance = torch.ldexp(
+            base_mantissa * mantissa.unsqueeze(-1) * mantissa.unsqueeze(-2),
+            base_exponent + exponent.unsqueeze(-1) + exponent.unsqueeze(-2),
+        )
+        if not bool(torch.isfinite(covariance).all()):
+            raise ValueError("covariance exceeds Float64 capacity")
+        sd = gram.diagonal(dim1=-2, dim2=-1).sqrt()
+        correlation = (gram / sd.unsqueeze(-1) / sd.unsqueeze(-2)).clamp(-1.0, 1.0)
+        return PosteriorCovariance(
+            covariance=covariance,
+            correlation=correlation,
+            coordinates=tuple(structural),
+            dimension_names=tuple(dimension_names),
+            coordinate_labels=tuple(labels),
+            variables=names,
+            event_shapes=tuple(shapes.values()),
+            sample_shape=sample_shape,
+            chain_labels=chain_labels,
+            draw_labels=draw_labels,
+            ddof=ddof,
+            chainwise=chainwise,
+            kind=self.kind,
+        )
+
     def _likelihood_name(self, var_name: str | None) -> str:
         """Select one observation variable without silently adding score units."""
         if var_name is None:
@@ -386,4 +564,10 @@ class PosteriorAnalysis(ValueModel):
         )
 
 
-__all__ = ["PosteriorAnalysis", "PosteriorSummary", "WAICResult", "waic"]
+__all__ = [
+    "PosteriorAnalysis",
+    "PosteriorSummary",
+    "PosteriorCovariance",
+    "WAICResult",
+    "waic",
+]
