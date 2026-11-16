@@ -6,6 +6,12 @@ Posterior draws carry the uncertainty in the coefficients, and predictive draws 
 of the response given those coefficients. `formula_to_qvr` emits the QVR source of a formula. `get_prior` returns the
 effective named priors, including autoscaled defaults, without running inference.
 Unknown or unused prior overrides raise `ValueError` before fitting.
+`BayesianFit.update(data=None, **overrides)` reuses a retained fitting recipe
+with the original raw dataframe and all canonical fit settings. It fits a fresh
+posterior, with isolated initial neural state and explicit clone/reference data
+ownership. Method changes clear inherited inactive budgets; explicit invalid
+overrides still fail. See [updating and refitting](../../guides/model-refits.md)
+for data ownership and adapters to the shared cross-validation runner.
 `sample_prior="yes"` retains an independent prior stream without changing the
 fitted posterior; `sample_prior="only"` disables observation likelihoods during
 the selected inference method and retains priors and explicit score potentials.

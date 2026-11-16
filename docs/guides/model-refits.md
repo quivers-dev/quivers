@@ -98,3 +98,60 @@ It delegates uncertainty and joint predictive scoring to the existing runner.
 `save_fits=True` retains actual fold fits and their data; its additional storage
 is explicit. Refit accuracy still depends on the chosen inference method and
 its budget.
+
+## Formula models
+
+`BayesianFit.update` accepts replacement raw data and overrides of the existing
+`fit` arguments, including the formula, family, priors, method, and budgets.
+The recipe captures every argument through that fitting signature. Unknown
+overrides fail before model preparation. A method change clears inherited
+budgets belonging to the previous method; explicitly supplied incompatible
+budgets still raise the usual fitting error.
+
+<!-- python: run -->
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+frame = pd.DataFrame({"y": [.3, .6, .2, .8], "x": [-1., 0., 1., 2.]})
+regression = fit("y ~ x", data=frame, method="svi", num_steps=2, seed=7)
+intercept_only = regression.update(formula="y ~ 1", num_steps=3)
+assert len(intercept_only.formula.fixed_columns) == 1
+assert len(regression.formula.fixed_columns) == 2
+```
+
+Fresh fitting evaluates transforms, contrasts, group coding, default prior
+scales, and training-domain constraints on its own training rows. Prediction
+continues to use its fitted encodings and retained cutpoints. Neural recipes
+retain the original predictor state and predictor inputs before training or
+subset selection. Every refit copies that initial state, so it can train a new
+predictor without changing an earlier fit.
+
+The same generic callback supports formula refits with an explicit dataframe
+partitioner and the existing raw likelihood accessor:
+
+<!-- python: run -->
+```python
+from quivers.modeling import refit_callback
+
+formula_callback = refit_callback(
+    regression.refit_recipe,
+    partition=lambda data, rows: data.iloc[list(rows)].copy(),
+    score=lambda fitted, held_out, seed: fitted.log_likelihood(
+        new_data=held_out, num_samples=8, seed=seed,
+    ),
+    method_factory=lambda settings, seed: {**settings, "seed": seed},
+)
+formula_comparison = cross_validate(
+    FoldPlan(assignments=(0, 0, 1, 1), seed=13), formula_callback,
+)
+assert formula_comparison.complete
+```
+
+An adapter also owns fold-specific auxiliary inputs. For instance, a neural
+refitter must pass the original split's `predictor_data` to fitting and held-out
+scoring. A `FoldSplit` callback can supply those explicitly through `update`
+and `log_likelihood`; the runner still owns partition validation and predictive
+reductions. Selecting original rows should preserve every authored response
+role. Group exclusions and fresh levels require their usual explicit prediction
+policy, and a changed trial design requires validated held-out trial inputs.

@@ -70,6 +70,7 @@ from quivers.inference import (
     SMC,
     SMCResult,
 )
+from quivers.modeling.refit import RefitRecipe, SnapshotPolicy
 from quivers.inference._posterior import draw_count
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
@@ -119,13 +120,17 @@ class BayesianFit(ValueModel):
         inspection emits the fitted model without re-evaluating transforms.
     predictor_graph : PredictorGraph or None
         Named nonlinear designs, typed expressions, and numeric input contracts.
+    refit_recipe : RefitRecipe or None
+        Retained original data and canonical fitting configuration, held by identity.
+        Clone ownership is the default; explicit reference ownership observes mutations.
     prediction_plan : FormulaPredictionPlan or None
         Live fitted evaluators for new-data prediction. The versioned runtime
         plan is held by identity and explicitly refuses durable serialization.
 
     Fits compare by value over the formula, family, and settings, and
     by identity over the live objects: the program, the posterior, the
-    observations mapping, the predictor, its data, and the prediction plan. Two fits are
+    observations mapping, the predictor, its data, the prediction plan, and the
+    refit recipe. Two fits are
     thus equal exactly when they share those objects and agree on
     everything else.
     """
@@ -174,6 +179,38 @@ class BayesianFit(ValueModel):
     prediction_plan: FormulaPredictionPlan | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+
+    refit_recipe: (
+        RefitRecipe[IntoDataFrame, Mapping[str, object], BayesianFit] | None
+    ) = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+    def update(
+        self, data: IntoDataFrame | None = None, **overrides: object
+    ) -> BayesianFit:
+        """Fit retained or replacement rows through the original fitting recipe.
+
+        Parameters
+        ----------
+        data : IntoDataFrame or None
+            Original-frame snapshot by default, or replacement unprepared rows.
+        **overrides : object
+            Explicit overrides of the canonical fit arguments, including formula,
+            family, priors, inference method, budgets, or random seed. Changing
+            methods resets inactive budgets unless explicitly overridden.
+
+        Returns
+        -------
+        BayesianFit
+            A fresh fitted result; the retained posterior and predictor are unchanged.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If no recipe was retained or an override fails canonical fit validation.
+        """
+        from quivers.formulas._refit import update_fit
+
+        return update_fit(self, data, overrides)
 
     def evidence(self, sampler: SMC) -> SMCResult:
         """Estimate the retained formula target's normalizing constant with SMC.
@@ -1729,6 +1766,7 @@ def fit(
     sample_prior: PriorMode = "no",
     num_prior_samples: int = 100,
     prior_seed: int | None = None,
+    snapshot_policy: SnapshotPolicy = "clone",
 ) -> BayesianFit:
     """Compile a brms-style formula, fit it, and return the result.
 
@@ -1836,6 +1874,11 @@ def fit(
         Isolated prior stream. None uses seed + 1 modulo 2**64. Retaining
         prior draws does not change fitted posterior draws or losses.
 
+    snapshot_policy : {"clone", "reference"}
+        Retain one independent original-data snapshot for update/refit by default.
+        Reference mode shares caller data explicitly. Predictor initial states are
+        copied before each refit, so fits do not share trained mutable parameters.
+
     Returns
     -------
     BayesianFit
@@ -1850,6 +1893,11 @@ def fit(
         or HMC; ``num_warmup``, ``num_samples``, or ``num_chains`` to
         SVI).
     """
+    from quivers.formulas._refit import capture_recipe
+
+    refit_recipe = capture_recipe(
+        fit, data=data, arguments=locals(), snapshot_policy=snapshot_policy
+    )
     with torch.random.fork_rng(devices=[]):
         torch.random.set_rng_state(torch.Generator().manual_seed(seed).get_state())
         if method == "svi":
@@ -2060,6 +2108,7 @@ def fit(
         )
 
         return BayesianFit(
+            refit_recipe=refit_recipe,
             formula=parsed,
             family=family_obj,
             program=program,
