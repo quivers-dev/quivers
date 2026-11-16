@@ -3586,19 +3586,17 @@ def _reinterpreted(a: Mapping[str, object], base: object) -> int:
     Raises
     ------
     DistributionError
-        If the count is not the base's batch rank: the reference machine
-        scores a plated draw as one event or as independent batch
-        positions, and a base with more batch axes than are reinterpreted
-        would leave batch positions no single point can be scored at.
+        If the count is not an actual nonnegative integer or exceeds the
+        base's batch rank. Leading batch axes remain independently scored.
     """
-    count = int(real_parameter(a, "reinterpreted_batch_ndims", "Independent"))
-    batch = getattr(base, "batch", ())
-    if count != len(batch):
-        raise DistributionError(
-            f"Independent reinterprets {count} batch axes of a base with "
-            f"{len(batch)}; the reference machine joins a base's whole plate"
+    from quivers._independent import independent_ndims
+
+    try:
+        return independent_ndims(
+            a["reinterpreted_batch_ndims"], len(getattr(base, "batch", ()))
         )
-    return count
+    except (KeyError, TypeError, ValueError) as error:
+        raise DistributionError(str(error)) from error
 
 
 def _independent_density(a: Mapping[str, object], value: object) -> float:
@@ -4476,7 +4474,9 @@ def _independent_log_mass(a: Mapping[str, object]) -> float:
     float
         The base's log mass, which a plated base totals over its plate.
     """
-    return _log_mass_of(_sampleable(a, "base", "Independent"))
+    base = _sampleable(a, "base", "Independent")
+    _reinterpreted(a, base)
+    return _log_mass_of(base)
 
 
 #: Log masses of the families that are not probability measures, or are

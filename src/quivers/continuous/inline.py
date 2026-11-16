@@ -424,6 +424,12 @@ class MixedInlineDistribution(ContinuousMorphism):
     param_integers : tuple[bool, ...], optional
         Parameters constrained to integers. Literal and constant counts
         retain float64 precision independently of the input's dtype.
+    param_batch_ndims : tuple[int | None, ...] or None
+        Checked count of enclosing batch axes read by each parameter;
+        None leaves the legacy scalar/vector packing convention in effect.
+    structural_batch_ndims : int
+        Intrinsic base batch rank proved by a compositional constructor,
+        separate from the conditioning input's leading run axis.
     """
 
     def __init__(
@@ -437,6 +443,8 @@ class MixedInlineDistribution(ContinuousMorphism):
         param_event_ranks: tuple[int, ...] | None = None,
         param_shapes: tuple[tuple[int, ...] | None, ...] | None = None,
         param_integers: tuple[bool, ...] | None = None,
+        param_batch_ndims: tuple[int | None, ...] | None = None,
+        structural_batch_ndims: int = 0,
     ) -> None:
         super().__init__(domain, codomain)
         self._param_spec = param_spec
@@ -472,6 +480,10 @@ class MixedInlineDistribution(ContinuousMorphism):
                 f"param_spec length {len(param_spec)}"
             )
         self._context_parameters: frozenset[int] = frozenset()
+        self._param_batch_ndims = param_batch_ndims or (None,) * len(param_spec)
+        if len(self._param_batch_ndims) != len(param_spec):
+            raise ValueError("parameter batch ranks must match parameter packing")
+        self._structural_batch_ndims = structural_batch_ndims
         self._param_shapes: tuple[tuple[int, ...] | None, ...] = (
             param_shapes
             if param_shapes is not None
@@ -534,6 +546,8 @@ class MixedInlineDistribution(ContinuousMorphism):
             param_event_ranks=self._param_event_ranks,
             param_shapes=self._param_shapes,
             param_integers=self._param_integers,
+            param_batch_ndims=self._param_batch_ndims,
+            structural_batch_ndims=self._structural_batch_ndims,
         )
 
     def _resolve_params(self, x: torch.Tensor) -> list[torch.Tensor]:
@@ -825,7 +839,11 @@ class MixedInlineDistribution(ContinuousMorphism):
                 whole_event = event_dim > 0 and tuple(
                     y_in.shape[y_in.dim() - event_dim :]
                 ) == tuple(dist.event_shape)
-                y_in = y_in.unsqueeze(0) if whole_event else y_in.unsqueeze(-1)
+                y_in = (
+                    y_in.unsqueeze(0)
+                    if whole_event or getattr(self, "_structural_batch_ndims", 0)
+                    else y_in.unsqueeze(-1)
+                )
             while y_in.dim() > target_dim and y_in.shape[-1] == 1:
                 y_in = y_in.squeeze(-1)
         lp = (
@@ -2274,7 +2292,7 @@ def _build_operator_value(
                 f"got {len(evaluated)} args"
             )
         base, n = evaluated
-        return _MeasureIndependent(base, int(n))
+        return _MeasureIndependent(base, n)
     if family == "Normalize":
         if len(evaluated) != 1:
             raise ValueError(f"Normalize: expected 1 arg, got {len(evaluated)}")
@@ -2350,7 +2368,13 @@ def _dynamic_distribution_arguments(arguments):
 
 
 def _make_dynamic_operator_distribution(
-    family, args, codomain, variable_types, value_extents, sampleable_references=None
+    family,
+    args,
+    codomain,
+    variable_types,
+    value_extents,
+    sampleable_references=None,
+    batch_ndims=0,
 ):
     """Compose runtime distribution values using the shared inline packing plan.
 
@@ -2369,13 +2393,15 @@ def _make_dynamic_operator_distribution(
     sampleable_references : Mapping or None
         Actual registered native kernels consuming the original program input.
         All references share one packed context slot and retain parameter identity.
+    batch_ndims : int
+        Explicit enclosing observation/array batch rank, independent of sizes.
 
     Returns
     -------
     tuple
         One mixed morphism and its ordinary source-value arguments.
     """
-    specs, ranks, shapes, integers, names = [], [], [], [], []
+    specs, ranks, shapes, integers, names, consumed_ranks = [], [], [], [], [], []
     references = {} if sampleable_references is None else sampleable_references
     context_positions = {}
     variable_types = {} if variable_types is None else dict(variable_types)
@@ -2406,6 +2432,7 @@ def _make_dynamic_operator_distribution(
             ranks.append(0)
             shapes.append(None)
             integers.append(False)
+            consumed_ranks.append(None)
             names.append(input_name)
             variable_types[input_name] = context_domain
         elif reference.domain != context_positions[input_name][1]:
@@ -2460,11 +2487,11 @@ def _make_dynamic_operator_distribution(
 
         return build, prototype
 
-    def value(argument, owner, name, rank, integer):
+    def value(argument, owner, name, rank, integer, reserve=None):
         if isinstance(argument, DrawArgNamed):
             argument = argument.value
         if isinstance(argument, DrawArgDist):
-            return node(argument.family, argument.args)
+            return node(argument.family, argument.args, reserve)
         if (
             owner == "Independent"
             and name == "reinterpreted_batch_ndims"
@@ -2480,7 +2507,8 @@ def _make_dynamic_operator_distribution(
             for item in argument.items
         ):
             children = [
-                value(item, owner, name, rank, integer) for item in argument.items
+                value(item, owner, name, rank, integer, reserve)
+                for item in argument.items
             ]
             return (
                 lambda params: [fn(params) for fn, _ in children],
@@ -2493,19 +2521,43 @@ def _make_dynamic_operator_distribution(
             if text in {"true", "false"} or text in BIJECTORS_BY_NAME:
                 literal = _eval_draw_arg_value(argument, variable_types)
                 return (lambda params: literal), literal
+        packing_rank = rank
+        consumed = None
+        if (
+            reserve is not None
+            and not FAMILIES[FAMILY_ALIASES.get(owner, owner) or owner].compositional
+        ):
+            from quivers._independent import reserved_parameter_axes
+
+            kind, payload = _inline_argument(argument)
+            checked = (
+                (value_extents or {}).get(payload)
+                if isinstance(payload, str)
+                else tuple(payload.shape)
+                if isinstance(payload, torch.Tensor)
+                else ()
+            )
+            if checked is not None:
+                consumed, retained = reserved_parameter_axes(
+                    tuple(checked), rank, batch_ndims, reserve
+                )
+                packing_rank = len(retained)
         plan, own_shapes, own_names = _inline_parameter_layout(
             owner,
             (argument,),
             (name,),
-            (rank,),
+            (packing_rank,),
             variable_types,
             value_extents,
         )
+        if reserve is not None and packing_rank == 0 and plan[0][0] == "var":
+            plan[0] = ("var", 1)
         position = len(specs)
         specs.extend(plan)
-        ranks.append(rank)
+        ranks.append(packing_rank)
         shapes.extend(own_shapes)
         integers.append(integer)
+        consumed_ranks.append(consumed)
         names.extend(own_names)
         kind, payload = plan[0]
         if kind == "const":
@@ -2519,13 +2571,24 @@ def _make_dynamic_operator_distribution(
             probe = torch.ones(shape)
         return (lambda params: params[position]), probe
 
-    def node(current, arguments):
+    def node(current, arguments, reserve=None):
         bound, parameters = _bind_inline_arguments(current, tuple(arguments))
         assert parameters is not None
+        if current == "Independent":
+            from quivers._independent import independent_ndims
+
+            raw = bound[parameters.index("reinterpreted_batch_ndims")]
+            if isinstance(raw, DrawArgNamed):
+                raw = raw.value
+            if not isinstance(raw, DrawArgScalar):
+                raise ValueError(
+                    "Independent requires a static integer reinterpreted_batch_ndims"
+                )
+            reserve = independent_ndims(raw.value) + (reserve or 0)
         own_ranks = _registry_event_ranks(current, parameters)
         own_integers = _registry_integer_parameters(current, parameters)
         children = [
-            value(arg, current, name, rank, integer)
+            value(arg, current, name, rank, integer, reserve)
             for arg, name, rank, integer in zip(
                 bound, parameters, own_ranks, own_integers, strict=True
             )
@@ -2536,12 +2599,22 @@ def _make_dynamic_operator_distribution(
         event_shape = tuple(getattr(codomain, "event_shape", ())) if event_rank else ()
 
         def build(params):
+            values = {
+                name: fn(params)
+                for name, (fn, _) in zip(parameters, children, strict=True)
+            }
+            if reserve is not None:
+                for name, rank in zip(parameters, own_ranks, strict=True):
+                    item = values[name]
+                    if isinstance(item, torch.Tensor):
+                        missing = len(prototype.batch_shape) - (item.ndim - 1 - rank)
+                        if missing > 0:
+                            values[name] = item.reshape(
+                                item.shape[0], *((1,) * missing), *item.shape[1:]
+                            )
             return _raw_distribution_value(
                 current,
-                {
-                    name: fn(params)
-                    for name, (fn, _) in zip(parameters, children, strict=True)
-                },
+                values,
                 event_shape,
             )
 
@@ -2609,6 +2682,8 @@ def _make_dynamic_operator_distribution(
         param_event_ranks=tuple(ranks),
         param_shapes=tuple(shapes),
         param_integers=tuple(integers),
+        param_batch_ndims=tuple(consumed_ranks),
+        structural_batch_ndims=len(prototype.batch_shape),
     )
     morph._context_parameters = frozenset(
         position for position, _ in context_positions.values()
@@ -2872,6 +2947,7 @@ def make_inline_distribution(
     value_extents: Mapping[str, tuple[int, ...]] | None = None,
     *,
     sampleable_references: Mapping[str, tuple[ContinuousMorphism, str]] | None = None,
+    batch_ndims: int = 0,
 ) -> tuple[ContinuousMorphism, tuple[StepArgument, ...] | None]:
     """Create an inline distribution from family name and mixed args.
 
@@ -2903,6 +2979,8 @@ def make_inline_distribution(
         Native kernel references in sampleable argument positions. Their
         original input context is packed once, independently of scalar or
         event-valued constructor parameters.
+    batch_ndims : int
+        Explicit enclosing batch rank retained by the checked observation layout.
 
     Returns
     -------
@@ -2918,7 +2996,13 @@ def make_inline_distribution(
     """
     if family in _OPERATOR_FAMILIES:
         return _make_dynamic_operator_distribution(
-            family, args, codomain, variable_types, value_extents, sampleable_references
+            family,
+            args,
+            codomain,
+            variable_types,
+            value_extents,
+            sampleable_references,
+            batch_ndims,
         )
     args, selected_parameters = _bind_inline_arguments(family, args)
     args = _normalize_inline_args(args)

@@ -171,7 +171,9 @@ def tensor_rank(value: object) -> int:
     return 0
 
 
-def _slice_at(value: object, position: Sequence[int], rank: int) -> object:
+def _slice_at(
+    value: object, position: Sequence[int], rank: int, *, plate_rank: int | None = None
+) -> object:
     """Read an argument at one plate position, broadcasting shorter ranks.
 
     Parameters
@@ -183,6 +185,9 @@ def _slice_at(value: object, position: Sequence[int], rank: int) -> object:
         The plate position, outermost axis first.
     rank : int
         The parameter's own rank.
+    plate_rank : int or None
+        Full plate rank when selecting only a leading prefix. Unselected
+        trailing broadcast axes must remain intact.
 
     Returns
     -------
@@ -191,10 +196,31 @@ def _slice_at(value: object, position: Sequence[int], rank: int) -> object:
         it carries no plate dimensions, else the slice its trailing plate
         dimensions select.
     """
+    full_rank = len(position) if plate_rank is None else plate_rank
+    leaf = value
+    depth = 0
+    while isinstance(leaf, tuple) and leaf:
+        depth += 1
+        leaf = leaf[0]
+    if isinstance(leaf, RuntimeDistribution):
+        container_batch = max(depth - rank, 0)
+        leading = container_batch + len(leaf.batch)
+        selected = position[max(full_rank - leading, 0) :]
+        for index in selected[:container_batch]:
+            value = value[index]  # type: ignore[index]
+        remaining = selected[container_batch:]
+        if isinstance(value, tuple) and rank:
+            return tuple(
+                _slice_at(item, remaining, rank - 1, plate_rank=len(leaf.batch))
+                for item in value
+            )
+        if isinstance(value, RuntimeDistribution) and remaining:
+            return value.at(tuple(remaining))
+        return value
     leading = tensor_rank(value) - rank
     if leading <= 0:
         return value
-    for index in position[len(position) - leading :]:
+    for index in position[max(full_rank - leading, 0) :]:
         value = value[index]  # type: ignore[index]
     return value
 
@@ -400,7 +426,10 @@ class RuntimeDistribution(QiecModel):
             )
         arguments = {
             name: self._broadcast(
-                name, _slice_at(value, position, self.ranks.get(name, 0))
+                name,
+                _slice_at(
+                    value, position, self.ranks.get(name, 0), plate_rank=len(shape)
+                ),
             )
             for name, value in self.arguments.items()
         }
@@ -533,6 +562,60 @@ class RuntimeDistribution(QiecModel):
             return total(())
         kept = shape[:batch_axes]
         return _nest({position: total(position) for position in _positions(kept)}, kept)
+
+    @overload
+    def log_prob(self, value: object, keep_batch: Literal[False] = False) -> float:
+        """Read the total log density.
+
+        Parameters
+        ----------
+        value : object
+            Outcome with all batch and event coordinates.
+        keep_batch : Literal[False]
+            Sum all independent batch positions.
+
+        Returns
+        -------
+        float
+            Total log density, possibly negative infinity.
+        """
+        ...
+
+    @overload
+    def log_prob(self, value: object, keep_batch: Literal[True]) -> object:
+        """Retain separate batch-position log densities.
+
+        Parameters
+        ----------
+        value : object
+            Outcome with all batch and event coordinates.
+        keep_batch : Literal[True]
+            Retain the batch partition.
+
+        Returns
+        -------
+        object
+            Scalar or nested tuple of batch log densities.
+        """
+        ...
+
+    @overload
+    def log_prob(self, value: object, keep_batch: bool) -> object:
+        """Choose total or batch-preserving log density at runtime.
+
+        Parameters
+        ----------
+        value : object
+            Outcome with all batch and event coordinates.
+        keep_batch : bool
+            Whether to retain separate batch-position scores.
+
+        Returns
+        -------
+        object
+            Total scalar or nested tuple of batch log densities.
+        """
+        ...
 
     def log_prob(self, value: object, keep_batch: bool = False) -> object:
         """Evaluate the log density at a value through the installed backend.

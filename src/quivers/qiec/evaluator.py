@@ -2297,13 +2297,17 @@ class Evaluator:
                     _extent(PlateAxis(name="event", size=dimension))
                     for dimension in split[1][len(split[1]) - record.event_rank :]
                 )
+            arguments = {
+                name: self._value(argument, environment)
+                for name, argument in value.arguments
+            }
+            from quivers.qiec._distribution_axes import distribution_axes
+
+            batch = tuple(_extent(axis) for axis in distribution_axes(value)[0])
             return RuntimeDistribution(
                 family=value.name,
-                arguments={
-                    name: self._value(argument, environment)
-                    for name, argument in value.arguments
-                },
-                batch=tuple(_extent(axis) for axis in value.plate.batch),
+                arguments=arguments,
+                batch=batch,
                 event=tuple(_extent(axis) for axis in value.plate.event)[
                     : max(len(value.plate.event) - record.event_rank, 0)
                 ],

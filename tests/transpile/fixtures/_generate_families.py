@@ -59,6 +59,7 @@ _INLINE_SAMPLE: dict[str, str] = {
 # Observations exercise their family directly without requiring a
 # discrete latent, which would independently prevent Stan compilation.
 _INLINE_OBSERVE: dict[str, str] = {
+    "Independent": "base=Normal(loc=[0.0, 0.0], scale=1.0), reinterpreted_batch_ndims=1",
     "BernsteinHazard": "breaks=[0.0, 1.0], controls=[[1.0]], rate=1.0",
     "ExtendedBeta": "mu=0.3, phi=4.0, kappa=0.2",
     "BetaBinomial": "total_count=4.0, concentration1=2.0, concentration0=2.0",
@@ -194,15 +195,7 @@ export transformed_fixture
 }
 
 
-EXCLUDED_FAMILIES: dict[str, str] = {
-    "Independent": (
-        "A nontrivial Independent needs a batched base distribution. The checked "
-        "nested Normal rejects an undeclared intrinsic batch; parameters over "
-        "an enclosing observation plate are gathered coordinate-wise instead. "
-        "A scalar base cannot reinterpret a batch axis. Python/QIEC "
-        "distribution tests cover this family; no valid program fixture is claimed."
-    ),
-}
+EXCLUDED_FAMILIES: dict[str, str] = {}
 
 
 # Families generated with morphism-kernel form (Real codomain).

@@ -79,6 +79,8 @@ from quivers.qiec import (
     ComputationSignature,
     ResumptionType,
     DistributionValue,
+    PlateAxis,
+    PlateShape,
     LogDensity,
     LogMass,
     SiteValue,
@@ -4133,6 +4135,7 @@ class _Elaborator(
         static_bindings: Mapping[str, StaticArgument] | None,
         path: tuple[str | int, ...],
         expected: TypeExpr | None = None,
+        reserved_batch_ndims: int | None = None,
     ) -> DistributionValue:
         """Lower ``Family(args...)`` to a distribution construction.
 
@@ -4154,6 +4157,8 @@ class _Elaborator(
         expected : TypeExpr or None
             The ``Sampleable`` type the position calls for, when fixed;
             it supplies the event shape of a family no parameter fixes.
+        reserved_batch_ndims : int or None
+            Intrinsic base batch axes retained by an enclosing Independent.
 
         Returns
         -------
@@ -4182,7 +4187,26 @@ class _Elaborator(
             )
         except TypeError as error:
             self._fail(authored, str(error), code="qiec-distribution")
+        reserve = reserved_batch_ndims
+        if record.name == "Independent":
+            from quivers._independent import independent_ndims
+
+            count_argument = authored.args[
+                record.parameter_names.index("reinterpreted_batch_ndims")
+            ]
+            count = self._lower_value(count_argument, scope, context, static_bindings)
+            if not isinstance(count, LiteralValue):
+                self._fail(
+                    authored,
+                    "Independent requires a static integer reinterpreted_batch_ndims",
+                    code="qiec-distribution",
+                )
+            try:
+                reserve = independent_ndims(count.value) + (reserve or 0)
+            except (TypeError, ValueError) as error:
+                self._fail(authored, str(error), code="qiec-distribution")
         arguments: list[tuple[str, Value]] = []
+        intrinsic_batch: tuple[IndexTerm, ...] = ()
         for position, (parameter, argument) in enumerate(
             zip(record.parameters, authored.args, strict=False)
         ):
@@ -4191,7 +4215,53 @@ class _Elaborator(
                 not in ("boolean", "sampleable", "transform", "numeric")
                 and "integer" not in parameter.constraint
             )
-            if parameter.rank > 0 and isinstance(argument, surface.LetExprList):
+            if (
+                parameter.constraint == "sampleable"
+                and isinstance(argument, surface.LetExprList)
+                and reserve is not None
+            ):
+                items = tuple(
+                    self._lower_family_application(
+                        item,
+                        scope,
+                        context,
+                        static_bindings,
+                        (*path, position, index),
+                        reserved_batch_ndims=reserve,
+                    )
+                    if isinstance(item, surface.LetExprCall) and item.func in FAMILIES
+                    else self._lower_value(item, scope, context, static_bindings)
+                    for index, item in enumerate(argument.items)
+                )
+                if not items:
+                    self._fail(
+                        argument,
+                        "a mixture needs at least one component",
+                        code="qiec-distribution",
+                    )
+                value = TensorValue(
+                    items=items,
+                    result_type=tensor_type(
+                        self._value_type(items[0], context, argument),
+                        (_extent(len(items)),),
+                    ),
+                )
+            elif (
+                parameter.constraint == "sampleable"
+                and isinstance(argument, surface.LetExprCall)
+                and argument.func in FAMILIES
+            ):
+                value = self._lower_family_application(
+                    argument,
+                    scope,
+                    context,
+                    static_bindings,
+                    (*path, position),
+                    reserved_batch_ndims=reserve,
+                )
+            elif (parameter.rank > 0 or reserve is not None and numeric) and isinstance(
+                argument, surface.LetExprList
+            ):
                 value: Value = self._lower_tensor_literal(
                     argument,
                     scope,
@@ -4208,9 +4278,31 @@ class _Elaborator(
                     context,
                     static_bindings,
                     (*path, position),
-                    REAL if numeric and parameter.rank == 0 else None,
+                    REAL
+                    if numeric
+                    and parameter.rank == 0
+                    and not (
+                        reserve is not None and isinstance(argument, surface.LetExprVar)
+                    )
+                    else None,
                 )
             arguments.append((parameter.name, value))
+            if reserve is not None and not record.compositional:
+                shape = tensor_shape(self._value_type(value, context, argument))
+                batch = (
+                    tuple(shape[1][: -parameter.rank] if parameter.rank else shape[1])
+                    if shape is not None
+                    else ()
+                )
+                if batch:
+                    shorter, longer = sorted((intrinsic_batch, batch), key=len)
+                    if shorter and longer[-len(shorter) :] != shorter:
+                        self._fail(
+                            authored,
+                            "Independent base parameters have incompatible batch axes",
+                            code="qiec-distribution",
+                        )
+                    intrinsic_batch = longer
         # Use the same sample-carrier and dependent-shape rules as the kernel.
         value = DistributionValue(
             family=record.id,
@@ -4218,6 +4310,12 @@ class _Elaborator(
             arguments=tuple(arguments),
             result_type=expected or sampleable_type(record.element),
             origin=self._origin(authored, path, "distribution"),
+            plate=PlateShape(
+                batch=tuple(
+                    PlateAxis(name=f"__independent_batch_{i}", size=extent)
+                    for i, extent in enumerate(intrinsic_batch)
+                )
+            ),
         )
         argument_types = {
             name: self._value_type(argument, context, authored)

@@ -4293,6 +4293,31 @@ class _ProgramsMixin:
         self._parameter_space_stack.append(parameter_spaces)
         self._sampleable_context_stack.append(sampleable_contexts)
         self._value_extents_stack.append(self._checked_value_extents(decl.name))
+        checked_batch_shapes = {}
+        checked_module = self.qiec_module
+        if checked_module is not None:
+            instantiated = self._instantiated_program_contracts.get(decl.name)
+            checked_entry = (
+                instantiated[0]
+                if instantiated is not None
+                else next(
+                    (
+                        entry
+                        for entry in checked_module.entries
+                        if entry.name == decl.name
+                    ),
+                    None,
+                )
+            )
+            if checked_entry is not None:
+                for site in checked_entry.sites:
+                    plate = PlateShape(batch=site.batch, event=site.event)
+                    if instantiated is not None:
+                        plate = substitute_plate(plate, instantiated[1])
+                    if all(isinstance(axis.size, IndexLiteral) for axis in plate.batch):
+                        checked_batch_shapes[site.name] = tuple(
+                            int(axis.size.value) for axis in plate.batch
+                        )
         steps: list[Step] = []
         # A grouped latent is an enumeration axis, even when its extent
         # coincides with an observation plate. Track its lexical uses,
@@ -4396,6 +4421,9 @@ class _ProgramsMixin:
                 array = self._independent_over_axes(
                     step.morphism, getattr(step, "axes", None), step.line, step.col
                 )
+                checked_batch = checked_batch_shapes.get(step.name)
+                if checked_batch and len(checked_batch) > 1:
+                    array = (checked_batch[1:], None if array is None else array[1])
                 if array is not None:
                     array_shape, event_axes = array
                     family, step_args = self._resolve_draw_morphism(
@@ -4410,6 +4438,8 @@ class _ProgramsMixin:
                         ),
                         bound_vars,
                         Euclidean(name=f"_{step.name}", dim=1),
+                        plate_rows=idx_space.size,
+                        batch_ndims=1 + len(array_shape),
                     )
                     if step.name in bound_vars:
                         raise CompileError(
@@ -4956,6 +4986,9 @@ class _ProgramsMixin:
                     step.morphism, step.axes, step.line, step.col
                 )
                 array_shape = () if array is None else array[0]
+                checked_batch = checked_batch_shapes.get(step.response_var)
+                if checked_batch and len(checked_batch) > 1:
+                    array_shape = checked_batch[1:]
                 _synth = DrawStep(
                     vars=(step.index_var,),
                     morphism=step.morphism,
@@ -4976,6 +5009,7 @@ class _ProgramsMixin:
                     if array is None
                     else Euclidean(name=f"_{step.response_var}", dim=1),
                     plate_rows=idx_space.size,
+                    batch_ndims=1 + len(array_shape),
                 )
                 # Build a placeholder response of the right shape; the
                 # actual values are supplied at fit time via the
@@ -4996,7 +5030,10 @@ class _ProgramsMixin:
                 resp_shape = (resp_shape[0], *array_shape, *resp_shape[1:])
                 placeholder = torch.zeros(*resp_shape)
                 vec_obs = VectorisedObserve(
-                    family, placeholder, array_shape=array_shape
+                    family,
+                    placeholder,
+                    array_shape=array_shape,
+                    array_is_batch=bool(checked_batch and len(checked_batch) > 1),
                 )
                 # The step's response_var is the data column supplied
                 # at fit time. We expose it as the bound name so the
@@ -7004,6 +7041,7 @@ class _ProgramsMixin:
         program_codomain: SetObject | ContinuousSpace | None,
         *,
         plate_rows: int | None = None,
+        batch_ndims: int | None = None,
     ) -> tuple:
         """Resolve a draw step's morphism, handling both named morphisms
         and inline distribution families.
@@ -7021,6 +7059,9 @@ class _ProgramsMixin:
             over, one family per row; ``None`` for a draw of its own.
             A vector over the plate's rows filling a rank-0 parameter
             holds one entry per row, which the family reads at its row.
+        batch_ndims : int or None
+            Explicit row and independent array rank. None uses one axis
+            for a plate and zero for an unplated construction.
 
         Returns
         -------
@@ -7180,6 +7221,11 @@ class _ProgramsMixin:
                     value_extents=value_extents,
                     variable_types=variable_types,
                     sampleable_references=sampleable_references,
+                    batch_ndims=(
+                        int(plate_rows is not None)
+                        if batch_ndims is None
+                        else batch_ndims
+                    ),
                 )
                 broadcast = self._broadcast_codomain(draw, morph, axes_override)
                 if broadcast is not None:
@@ -7190,6 +7236,11 @@ class _ProgramsMixin:
                         value_extents=value_extents,
                         variable_types=variable_types,
                         sampleable_references=sampleable_references,
+                        batch_ndims=(
+                            int(plate_rows is not None)
+                            if batch_ndims is None
+                            else batch_ndims
+                        ),
                     )
             except UnsizedParameterError as exc:
                 # An inline family the checked program cannot size is

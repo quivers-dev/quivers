@@ -14,6 +14,31 @@ query. Positive counts reinterpret that many trailing batch axes as one event
 and multiply their masses. Counts must be nonnegative integers no larger than
 the base batch rank. The identity case does not reduce the batch axes.
 
+An intrinsic base event follows the reinterpreted batch axes. For a base with
+batch shape `(2, 3)` and event shape `(4,)`, a count of one gives batch `(2,)`
+and event `(3, 4)`; zero retains `(2, 3)` and `(4,)`. Boolean and fractional
+counts are invalid. Native construction and checked source use the same
+axis-count validation; [source examples](../../guides/continuous-families.md#independent-product-events)
+show how typed headers distinguish outer rows from base batch axes.
+
+<!-- python: run -->
+```python
+import torch
+from quivers.continuous.measure import Independent, Normalize, Restrict
+
+base = torch.distributions.Normal(torch.zeros(2, 3), torch.ones(2, 3))
+product = Independent(Restrict(base, -1.0, 1.0), 1)
+assert product.batch_shape == torch.Size((2,))
+assert product.event_shape == torch.Size((3,))
+normalized = Normalize(product)
+point = torch.zeros(2, 3)
+expected = base.log_prob(point).sum(-1) - product.log_normalizer()
+torch.testing.assert_close(normalized.log_prob(point), expected)
+```
+
+This restriction retains its raw coordinate masses until `Normalize` divides
+by their product. Reinterpreting batch axes does not normalize the base.
+
 ## Raw masses and interval endpoints
 
 `log_interval_mass(low, high, lower_closed=..., upper_closed=...)` integrates

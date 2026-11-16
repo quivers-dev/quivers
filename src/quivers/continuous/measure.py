@@ -13,7 +13,6 @@ normalization of positive-mass sub-measures.
 from __future__ import annotations
 
 import math
-import operator
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
@@ -22,6 +21,7 @@ from torch import Tensor
 from torch.distributions import constraints as _constraints, biject_to, transform_to
 from torch.distributions.distribution import Distribution
 from torch.distributions.transforms import Transform, SigmoidTransform
+from quivers._independent import independent_ndims
 
 from quivers.continuous.bijectors import Bijector
 from quivers.continuous._truncated_normal import TruncatedNormal
@@ -1994,14 +1994,15 @@ class Independent(Measure):
         reinterpreted_batch_ndims: int,
         validate_args: bool | None = None,
     ) -> None:
-        if isinstance(reinterpreted_batch_ndims, bool):
-            raise TypeError("Independent: reinterpreted_batch_ndims must be an integer")
-        reinterpreted_batch_ndims = operator.index(reinterpreted_batch_ndims)
-        if reinterpreted_batch_ndims < 0:
-            raise ValueError(
-                "Independent: reinterpreted_batch_ndims must be >= 0, "
-                f"got {reinterpreted_batch_ndims}"
-            )
+        if isinstance(reinterpreted_batch_ndims, Tensor):
+            if reinterpreted_batch_ndims.ndim != 0:
+                raise TypeError(
+                    "Independent: reinterpreted_batch_ndims must be a scalar integer"
+                )
+            reinterpreted_batch_ndims = reinterpreted_batch_ndims.item()
+        reinterpreted_batch_ndims = independent_ndims(
+            reinterpreted_batch_ndims, len(base.batch_shape)
+        )
         self.base = base
         self.reinterpreted_batch_ndims = int(reinterpreted_batch_ndims)
         self._inner = torch.distributions.Independent(
@@ -2129,7 +2130,9 @@ class Independent(Measure):
         -------
         Tensor
             Raw log density or mass at the evaluation points."""
-        return self._inner.log_prob(value)
+        score = self.base.log_prob(value)
+        dims = self.reinterpreted_batch_ndims
+        return score.sum(tuple(range(-dims, 0))) if dims else score
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         """Draws from the normalized law with leading sample dimensions.

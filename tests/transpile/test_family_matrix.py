@@ -153,7 +153,7 @@ _EXPECTED_REFUSALS: dict[tuple[str, str], str] = {
     **{
         (backend, family.lower()): f"nested-distribution-arg:{family}:"
         for backend in _BACKENDS
-        for family in ("Mixture", "Transformed")
+        for family in ("Mixture", "Transformed", "Independent")
     },
 }
 

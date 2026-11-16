@@ -186,6 +186,22 @@ to total mass one, `Transformed` (or `Pushforward`) takes the
 [pushforward](https://en.wikipedia.org/wiki/Pushforward_measure) along a bijection, and
 `Independent` reinterprets batch axes as event axes.
 
+`Independent(base, n)` requires an actual nonnegative integer literal `n`,
+no larger than the base batch rank. It reserves those trailing base batch axes
+before an enclosing program consumes its row axes. Zero retains the base
+partition. This rule also applies in pure computations:
+
+<!-- compile: qiec -->
+```qvr
+define product_law() : Sampleable[Tensor[Real]([2])] !{} =
+    return Independent(Normal([0.0, 0.3], 0.8), 1)
+```
+
+This computation constructs a two-coordinate event; it performs no sampling
+or scoring. A declaration's static `[...]` telescope and runtime `(...)`
+parameters retain their ordinary staging rules. The integer argument here is
+a distribution-constructor argument, rather than a new binder form.
+
 A constructor must supply one complete parameter schema. Pure computation
 calls use positional arguments in the semantic registry's order; draw and
 observe constructors use named arguments. Both routes check the same complete

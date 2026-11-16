@@ -126,6 +126,45 @@ Checked reference execution draws the same weight sites, or accepts their
 explicit values for a joint-density comparison. Each run has its own drawn
 weights; two aliases within that run do not introduce independent copies.
 
+### Independent product events {#independent-product-events}
+
+A distribution retains a **batch/event partition** $(B,E)$: batch positions
+index separate measures, while event coordinates belong to one outcome.
+For $B=(b_1,\ldots,b_p)$ and $0\leq n\leq p$, `Independent(base, n)` has
+
+$$
+B'=(b_1,\ldots,b_{p-n}),\qquad
+E'=(b_{p-n+1},\ldots,b_p)\mathbin{+\!+}E.
+$$
+
+The case $n=0$ retains $(B,E)$ without reducing a batch axis. At a remaining
+batch position $i$, the log density and total log mass are respectively
+
+$$
+\log p_{\mathrm{Independent}(d,n)}(y_i)
+ = \sum_j \log p_{d_{i,j}}(y_{i,j}),\qquad
+\log |\mathrm{Independent}(d,n)_i|
+ = \sum_j \log |d_{i,j}|,
+$$
+
+where $j$ ranges over the reinterpreted batch positions. An intrinsic event
+of $d$ is reduced by its own density, so this sum does not reduce it twice.
+Raw restrictions retain their masses through this construction; normalization
+at a sampling or scoring boundary divides by the resulting total mass once.
+
+Checked source reserves the trailing base batch axes before consuming the
+explicit enclosing observation axes. Thus a parameter declared
+`Tensor[Real]([Row, Coordinate])` can supply one vector per `Row`, while
+`Tensor[Real]([Coordinate])` supplies a vector shared across rows. Equal extents
+leave these roles distinct. The runtime `(...)` telescope declares the values
+and their shapes; static `[...]` binders specialize dimensions under the same
+rules as other program parameters. Neither declaration creates a random effect.
+`Independent` itself is a pure constructor, and its axis count must be a
+nonnegative integer literal no larger than the checked base batch rank.
+Native execution and the reference interpreter retain this partition through
+nested restrictions, normalization, and mixtures. External renderers currently
+refuse the nested distribution arguments explicitly.
+
 ## 2. Steps
 
 ### 2.1 Draws {#21-bind}

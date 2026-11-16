@@ -1919,6 +1919,17 @@ def _plated_sample_type(
             if inner is not None:
                 element = inner
             break
+    inherited: tuple[IndexTerm, ...] = ()
+    if family.compositional:
+        from quivers.qiec._distribution_axes import distribution_axes
+
+        try:
+            distribution_axes(value)
+        except (TypeError, ValueError) as error:
+            raise KernelError(str(error), "qiec-distribution") from error
+        shape = tensor_shape(element)
+        if shape is not None:
+            element, inherited = shape
     element_name = (
         element.constructor.name
         if isinstance(element, TypeApplication)
@@ -1978,7 +1989,7 @@ def _plated_sample_type(
         event_axes if event_axes or not family.event_rank else natural
     )
     batch = tuple(axis.size for axis in plate.batch)
-    dimensions = (*batch, *event)
+    dimensions = (*batch, *event, *inherited)
     if not dimensions:
         return sampleable_type(element)
     return sampleable_type(tensor_type(element, dimensions))
@@ -2360,8 +2371,17 @@ def _infer_distribution(
                 "qiec-distribution",
             ) from error
         actual = infer_value(argument, registry, context)
+        parameter_plate = value.plate
+        if family.compositional:
+            from quivers.qiec._distribution_axes import distribution_axes
+
+            try:
+                batch, event = distribution_axes(value)
+                parameter_plate = PlateShape(batch=batch, event=event)
+            except (TypeError, ValueError) as error:
+                raise KernelError(str(error), "qiec-distribution") from error
         expectation = _parameter_expectation(
-            parameter, actual, value.plate, family.event_rank
+            parameter, actual, parameter_plate, family.event_rank
         )
         if expectation is not None:
             raise KernelError(
@@ -2565,9 +2585,11 @@ def infer_value(
             )
         if not value.batch:
             return LOG_WEIGHT
+        from quivers.qiec._distribution_axes import distribution_axes
+
         if not (
             isinstance(value.sampleable, DistributionValue)
-            and value.sampleable.plate.batch == value.batch
+            and distribution_axes(value.sampleable)[0] == value.batch
         ):
             raise KernelError(
                 f"{query} keeps its weights apart over batch axes only for a "

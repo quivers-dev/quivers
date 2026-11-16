@@ -1803,7 +1803,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         name="Mixture",
         parameters=(
             FamilyParameter(name="weights", constraint="simplex", rank=1),
-            FamilyParameter(name="component", constraint="sampleable", rank=0),
+            FamilyParameter(name="component", constraint="sampleable", rank=1),
         ),
         support="dependent",
         element=REAL,

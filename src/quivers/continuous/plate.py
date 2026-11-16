@@ -141,6 +141,106 @@ draw: a row of a plated draw over such a set holds a single index.
 """
 
 
+def _array_parameter_rows(
+    family: ContinuousMorphism,
+    x: torch.Tensor,
+    rows: int,
+    array_shape: tuple[int, ...],
+) -> torch.Tensor:
+    """Share checked parameter-block expansion between draws and observations.
+
+    Parameters
+    ----------
+    family : ContinuousMorphism
+        Numeric parameter packing and structural batch-rank proofs.
+    x : torch.Tensor
+        Shared, row-wise, or already flattened parameter feature rows.
+    rows : int
+        Number of outer rows before independent array axes.
+    array_shape : tuple[int, ...]
+        Explicit independent array axes; dimensions do not select ownership.
+
+    Returns
+    -------
+    torch.Tensor
+        One parameter feature row per row and independent array position.
+    """
+    entries = math.prod(array_shape)
+    if x.shape[0] == rows * entries:
+        # The checked packing may already supply one parameter row for
+        # every independent array entry. Do not replicate those rows.
+        return x
+    spec = getattr(family, "_param_spec", None)
+    if spec is not None and x.dim() == 2:
+        widths = [width for kind, width in spec if kind == "var"]
+        ranks = getattr(family, "_param_batch_ndims", ())
+        varying = (
+            [rank for (kind, _), rank in zip(spec, ranks, strict=True) if kind == "var"]
+            if ranks
+            else []
+        )
+        known_widths = [width for width in widths if width is not None]
+        known_ranks = [rank for rank in varying if rank is not None]
+        if (
+            widths
+            and len(known_widths) == len(widths)
+            and len(known_ranks) == len(widths)
+        ):
+            selected = [min(max(rank - 1, 0), len(array_shape)) for rank in known_ranks]
+            feature_widths = [
+                width * math.prod(array_shape[:axes])
+                for width, axes in zip(known_widths, selected, strict=True)
+            ]
+            if x.shape[-1] == sum(feature_widths):
+                blocks = []
+                offset = 0
+                for width, axes, columns in zip(
+                    known_widths, selected, feature_widths, strict=True
+                ):
+                    block = x[:, offset : offset + columns].reshape(
+                        x.shape[0],
+                        *array_shape[:axes],
+                        *((1,) * (len(array_shape) - axes)),
+                        width,
+                    )
+                    blocks.append(block.expand(x.shape[0], *array_shape, width))
+                    offset += columns
+                return torch.cat(blocks, dim=-1).reshape(
+                    x.shape[0] * entries, sum(known_widths)
+                )
+        if (
+            widths
+            and len(known_widths) == len(widths)
+            and x.shape[-1] == sum(known_widths) * entries
+        ):
+            blocks = []
+            offset = 0
+            for width in known_widths:
+                block = x[:, offset : offset + width * entries].reshape(
+                    x.shape[0], entries, width
+                )
+                blocks.append(block)
+                offset += width * entries
+            return torch.cat(blocks, dim=-1).reshape(
+                x.shape[0] * entries, sum(known_widths)
+            )
+        if (
+            widths
+            and entries > 1
+            and all(width is None or width == 1 for width in widths)
+            and int(x.shape[-1]) == len(widths) * entries
+        ):
+            # Every parameter holds one value per entry of the row's
+            # array, laid out parameter by parameter: each entry
+            # reads its own value of each.
+            return (
+                x.reshape(x.shape[0], len(widths), entries)
+                .transpose(1, 2)
+                .reshape(x.shape[0] * entries, len(widths))
+            )
+    return x.repeat_interleave(entries, dim=0)
+
+
 class PlateDraw(ContinuousMorphism):
     """A finite-domain-indexed draw, as a Kern-morphism ``A → B``.
 
@@ -291,6 +391,20 @@ class PlateDraw(ContinuousMorphism):
         elements of its finite domain is drawn one row per element by
         a plate over that domain, so each row is conditioned on its own
         index.
+
+        Parameters
+        ----------
+        x : torch.Tensor or None
+            Shared or row-indexed conditioning features.
+        n_rows : int
+            Number of independent parameter rows to produce.
+        device : torch.device or None
+            Device used for fixed-family placeholder inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            Conditioning rows with checked independent-array packing.
         """
         width = self._domain_width
         if isinstance(getattr(self._family, "param_source", None), LookupSource):
@@ -299,6 +413,10 @@ class PlateDraw(ContinuousMorphism):
         if x is None or x.numel() == 0:
             return torch.zeros(n_rows, width, device=device)
         xf = x if x.dim() == 2 else x.reshape(1, -1)
+        if len(self._index_shape) > 1 and n_rows == self._index_size:
+            xf = _array_parameter_rows(
+                self._family, xf, self._index_shape[0], self._index_shape[1:]
+            )
         if xf.shape[-1] != width:
             if xf.numel() == width:
                 xf = xf.reshape(1, width)
@@ -578,6 +696,11 @@ class VectorisedObserve(ContinuousMorphism):
         one-dimensional continuous codomain also accepts ``(N,)``,
         which gains its event axis in `_align_response`; a discrete
         codomain takes ``(N,)`` indices and has no event axis.
+    array_shape : tuple[int, ...]
+        Independent coordinates after the outer observation axis.
+    array_is_batch : bool
+        Retain these coordinates in pointwise scores when the checked
+        distribution declares them batch axes rather than event coordinates.
     """
 
     def __init__(
@@ -586,10 +709,12 @@ class VectorisedObserve(ContinuousMorphism):
         response: torch.Tensor,
         *,
         array_shape: tuple[int, ...] = (),
+        array_is_batch: bool = False,
     ) -> None:
         super().__init__(family.domain, family.codomain)
         self._family = family
         self._array_shape = tuple(array_shape)
+        self._array_is_batch = array_is_batch
         self.register_buffer("_response", response.detach())
 
     @property
@@ -623,25 +748,9 @@ class VectorisedObserve(ContinuousMorphism):
         torch.Tensor
             The parameters, one row per entry of every row's array.
         """
-        entries = math.prod(self._array_shape)
-        spec = getattr(self._family, "_param_spec", None)
-        if spec is not None and x.dim() == 2:
-            widths = [width for kind, width in spec if kind == "var"]
-            if (
-                widths
-                and entries > 1
-                and all(width is None or width == 1 for width in widths)
-                and int(x.shape[-1]) == len(widths) * entries
-            ):
-                # Every parameter holds one value per entry of the row's
-                # array, laid out parameter by parameter: each entry
-                # reads its own value of each.
-                return (
-                    x.reshape(x.shape[0], len(widths), entries)
-                    .transpose(1, 2)
-                    .reshape(x.shape[0] * entries, len(widths))
-                )
-        return x.repeat_interleave(entries, dim=0)
+        return _array_parameter_rows(
+            self._family, x, int(self.response.shape[0]), self._array_shape
+        )
 
     @property
     def response(self) -> torch.Tensor:
@@ -974,7 +1083,7 @@ class VectorisedObserve(ContinuousMorphism):
             flat = target.reshape(target.shape[0] * entries, event_size).squeeze(-1)
             rows = (
                 x
-                if x.shape[0] == target.shape[0]
+                if x.shape[0] in (target.shape[0], target.shape[0] * entries)
                 else x.expand(target.shape[0], *x.shape[1:])
             )
             theta, point = self._array_rows(rows), self._align_response(flat)
@@ -985,10 +1094,14 @@ class VectorisedObserve(ContinuousMorphism):
                     theta, point, self._event_layout(event, target, flatten=True)
                 )
             )
+            # Retain the proved response width even for an empty row axis;
+            # inferring -1 from zero elements is ambiguous.
+            score_width = math.prod(density.shape[1:])
+            per_entry = density.reshape(target.shape[0], entries, score_width).sum(-1)
             return (
-                density.reshape(target.shape[0], entries, *density.shape[1:])
-                .flatten(start_dim=1)
-                .sum(-1)
+                per_entry.reshape(target.shape[0], *self._array_shape)
+                if self._array_is_batch
+                else per_entry.sum(-1)
             )
         point = self._align_response(target)
         density = (

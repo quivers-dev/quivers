@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from quivers._observation import EVENT_OPTIONS
 from quivers.dsl.ast_nodes import ObserveStep, OptionName, OptionNumber
 from quivers.dsl.program_templates import static_program_parameters
+from quivers.qiec._distribution_axes import distribution_axes
 from quivers.qiec.canonical import (
     LOG_WEIGHT,
     sampled_element,
@@ -29,6 +30,7 @@ from quivers.qiec.terms import (
     Var,
 )
 from quivers.qiec.types import BOOL, INT, REAL
+from quivers.transpile._pure_calls import replace_locals
 
 if TYPE_CHECKING:
     from quivers.dsl.program_elaboration import _Elaborator, _ProgramState, _Scope
@@ -73,22 +75,23 @@ def recorded_density(
     entries = {
         entry.key: entry.value for entry in step.options if entry.key in EVENT_OPTIONS
     }
+    response_batch, response_event = distribution_axes(distribution)
     if not entries:
         return LogDensity(
             sampleable=distribution,
             value=observed,
             origin=distribution.origin,
-            batch=distribution.plate.batch,
+            batch=response_batch,
         )
     if len(entries) != sum(entry.key in EVENT_OPTIONS for entry in step.options):
         e._fail(step, "observation event options must occur once", code="qiec-program")
     if "cens_upper" in entries and "cens" not in entries:
         e._fail(step, "cens_upper requires a cens status", code="qiec-program")
-    if distribution.plate.event or FAMILIES[distribution.name].event_rank:
+    if response_event:
         e._fail(
             step, "recorded events require scalar response events", code="qiec-program"
         )
-    dimensions = tuple(axis.size for axis in distribution.plate.batch)
+    dimensions = tuple(axis.size for axis in response_batch)
     path = ("programs", state.declaration.name, "sites", step.vars[0], "event")
     values: dict[str, Value] = {}
     for key, option in entries.items():
@@ -144,7 +147,7 @@ def recorded_density(
                     scope,
                     state,
                     step,
-                    axes=tuple(axis.name for axis in distribution.plate.batch),
+                    axes=tuple(axis.name for axis in response_batch),
                 )
             if local.type not in (carrier, expected):
                 e._fail(
@@ -167,20 +170,33 @@ def recorded_density(
         locals={**scope.locals, **{index.name: index for index in indices}}
     )
 
-    def scalar(value: Value, intrinsic: int = 0) -> Value:
+    def scalar(value: Value, intrinsic: int = 0, consumed: int = 0) -> Value:
+        if isinstance(value, Comprehension):
+            # A measure constructor retains explicit enclosing replication as
+            # a comprehension. Discharge that binder before selecting any
+            # remaining base batch coordinates; its Sampleable tensor type
+            # alone does not distinguish those coordinates from events.
+            if consumed >= len(indices) or value.extent != dimensions[consumed]:
+                e._fail(
+                    step,
+                    "event measure has incompatible enclosing batch axes",
+                    code="qiec-program",
+                )
+            body = replace_locals(
+                value.body, {value.binder: Var(local=indices[consumed])}
+            )
+            return scalar(body, intrinsic, consumed + 1)
         if isinstance(value, DistributionValue):
             record = FAMILIES[value.name]
             ranks = {parameter.name: parameter.rank for parameter in record.parameters}
             arguments = tuple(
-                (name, scalar(argument, ranks.get(name, 0)))
+                (name, scalar(argument, ranks.get(name, 0), consumed))
                 for name, argument in value.arguments
             )
             # Nested constructions keep intrinsic component/event axes; only
             # the enclosing response replication is discharged here.
             batch = tuple(
-                axis
-                for axis in value.plate.batch
-                if axis not in distribution.plate.batch
+                axis for axis in value.plate.batch if axis not in response_batch
             )
             provisional = value.with_(
                 arguments=arguments,

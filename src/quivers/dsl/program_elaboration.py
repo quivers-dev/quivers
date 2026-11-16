@@ -3387,13 +3387,16 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         request = self._sample_request(
             state.random, name, sampled, distribution, step, state
         )
+        from quivers.qiec._distribution_axes import distribution_axes
+
+        batch_axes, event_axes = distribution_axes(distribution)
         state.sites.append(
             ProgramSite(
                 name=name,
                 kind="sample",
                 family=distribution.name,
-                batch=distribution.plate.batch,
-                event=distribution.plate.event,
+                batch=batch_axes,
+                event=event_axes,
             )
         )
         self._bind_step(scope, name, sampled, Perform(request=request), step)
@@ -3855,6 +3858,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         distribution = self._step_distribution(
             step, scope, state, name, via=via, group=group
         )
+        from quivers.qiec._distribution_axes import distribution_axes
+
+        batch_axes, event_axes = distribution_axes(distribution)
         observed_type = self._sampled_type(distribution)
         if state.markov_row_cell[0] is not None and name == state.markov_entry_cell[0]:
             # The row of a marginalized chain's cell scores the entry it
@@ -3878,18 +3884,15 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 scope,
                 state,
                 step,
-                axes=tuple(
-                    axis.name
-                    for axis in (*distribution.plate.batch, *distribution.plate.event)
-                ),
+                axes=tuple(axis.name for axis in (*batch_axes, *event_axes)),
             )
         state.sites.append(
             ProgramSite(
                 name=name,
                 kind="observe",
                 family=distribution.name,
-                batch=distribution.plate.batch,
-                event=distribution.plate.event,
+                batch=batch_axes,
+                event=event_axes,
             )
         )
         from quivers.dsl._observation_lowering import recorded_density
@@ -3898,7 +3901,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             self, distribution, Var(local=observed), step, scope, state
         )
         density = self._weighted_observation(
-            density, distribution.plate, step, scope, state
+            density, PlateShape(batch=batch_axes, event=event_axes), step, scope, state
         )
         weight_scope = _weight_scope(scope)
         if weight_scope is None:
@@ -9099,6 +9102,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         state: _ProgramState,
         node: object,
         positions: tuple[tuple[PlateAxis, Local], ...] = (),
+        reserved_batch_ndims: int | None = None,
     ) -> Value:
         """Lower a list of distributions to a tensor of sampleables.
 
@@ -9114,6 +9118,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             The source node.
         positions : tuple[tuple[PlateAxis, Local], ...]
             Declared enclosing batch coordinates used by component parameters.
+        reserved_batch_ndims : int or None
+            Trailing intrinsic batch axes reserved by an enclosing Independent.
 
         Returns
         -------
@@ -9134,7 +9140,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         for item in argument.items:
             if isinstance(item, DrawArgDist):
                 lowered = self._nested_distribution(
-                    item, scope, state, node, positions=positions
+                    item,
+                    scope,
+                    state,
+                    node,
+                    positions=positions,
+                    reserved_batch_ndims=reserved_batch_ndims,
                 )
             elif isinstance(item, DrawArgName):
                 lowered = self._draw_argument(
@@ -9162,7 +9173,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             if elements == {INT, REAL}:
                 items = [
                     self._nested_distribution(
-                        item, scope, state, node, element=INT, positions=positions
+                        item,
+                        scope,
+                        state,
+                        node,
+                        element=INT,
+                        positions=positions,
+                        reserved_batch_ndims=reserved_batch_ndims,
                     )
                     if isinstance(item, DrawArgDist)
                     and item.family == "PointMass"
@@ -9189,6 +9206,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         node: object,
         element: TypeApplication | None = None,
         positions: tuple[tuple[PlateAxis, Local], ...] = (),
+        reserved_batch_ndims: int | None = None,
     ) -> DistributionValue:
         """Lower a nested family application in argument position.
 
@@ -9209,6 +9227,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         positions : tuple[tuple[PlateAxis, Local], ...]
             Declared enclosing batch coordinates. Only parameter dimensions
             preceding each family's intrinsic rank are gathered at them.
+        reserved_batch_ndims : int or None
+            Minimum number of trailing base batch dimensions reserved by an
+            enclosing Independent. None preserves ordinary scalar-call rules.
 
         Returns
         -------
@@ -9236,7 +9257,24 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         except TypeError as error:
             self._fail(node, str(error), code="qiec-program")
+        reserve = reserved_batch_ndims
+        if record.name == "Independent":
+            from quivers._independent import independent_ndims
+
+            raw_count = dict(bound).get("reinterpreted_batch_ndims")
+            if not isinstance(raw_count, DrawArgScalar):
+                self._fail(
+                    node,
+                    "Independent requires a static integer reinterpreted_batch_ndims",
+                    code="qiec-distribution",
+                )
+            try:
+                count = independent_ndims(raw_count.value)
+            except (TypeError, ValueError) as error:
+                self._fail(node, str(error), code="qiec-distribution")
+            reserve = count + (reserved_batch_ndims or 0)
         arguments = []
+        intrinsic_batch: tuple[IndexTerm, ...] = ()
         for parameter_name, parameter_argument in bound:
             try:
                 parameter = _semantic_family_parameter(
@@ -9258,6 +9296,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     state,
                     node,
                     positions=positions,
+                    reserved_batch_ndims=reserve,
                 )
             elif (
                 isinstance(parameter_argument, DrawArgList)
@@ -9269,6 +9308,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     state,
                     node,
                     positions=positions,
+                    reserved_batch_ndims=reserve,
                 )
             else:
                 lowered = self._draw_argument(
@@ -9283,19 +9323,26 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
                 shape = tensor_shape(self._value_type(lowered, scope.context(), node))
                 leading = len(shape[1]) - parameter.rank if shape is not None else 0
-                if leading > 0 and positions:
+                consumed = leading
+                if reserve is not None and shape is not None:
+                    from quivers._independent import reserved_parameter_axes
+
+                    consumed, _ = reserved_parameter_axes(
+                        tuple(shape[1]), parameter.rank, len(positions), reserve
+                    )
+                if consumed > 0 and positions:
                     assert shape is not None
                     axes = tuple(axis.size for axis, _ in positions)
                     if (
-                        leading > len(axes)
-                        or tuple(shape[1][:leading]) != axes[-leading:]
+                        consumed > len(axes)
+                        or tuple(shape[1][:consumed]) != axes[-consumed:]
                     ):
                         self._fail(
                             node,
                             f"parameter {parameter_name!r} of {record.name!r} has batch axes that do not follow the declared plate",
                             code="qiec-distribution",
                         )
-                    for _, position in positions[-leading:]:
+                    for _, position in positions[-consumed:]:
                         assert shape is not None
                         lowered = Gather(
                             value=lowered,
@@ -9307,7 +9354,28 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         shape = tensor_shape(
                             self._value_type(lowered, scope.context(), node)
                         )
+                if (
+                    reserve is not None
+                    and not record.compositional
+                    and shape is not None
+                ):
+                    residual = tuple(shape[1][: len(shape[1]) - parameter.rank])
+                    if residual:
+                        shorter, longer = sorted((intrinsic_batch, residual), key=len)
+                        if shorter and longer[-len(shorter) :] != shorter:
+                            self._fail(
+                                node,
+                                "Independent base parameters have incompatible batch axes",
+                                code="qiec-distribution",
+                            )
+                        intrinsic_batch = longer
             arguments.append((parameter.name, lowered))
+        intrinsic_plate = PlateShape(
+            batch=tuple(
+                PlateAxis(name=f"__independent_batch_{i}", size=extent)
+                for i, extent in enumerate(intrinsic_batch)
+            )
+        )
         provisional = DistributionValue(
             family=record.id,
             name=record.name,
@@ -9319,6 +9387,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "distribution",
                 node,
             ),
+            plate=intrinsic_plate,
         )
         return DistributionValue(
             family=record.id,
@@ -9326,6 +9395,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             arguments=tuple(arguments),
             result_type=self._plated_type(provisional, scope, node),
             origin=provisional.origin,
+            plate=intrinsic_plate,
         )
 
     def _morphism_distribution(

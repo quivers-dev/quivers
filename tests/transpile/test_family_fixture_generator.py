@@ -9,7 +9,6 @@ import torch
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import loads
-from quivers.dsl.qiec_lowering import QiecDiagnosticError
 from quivers.inference.trace import trace
 from tests.transpile.fixtures import _generate_families as generator
 
@@ -54,6 +53,7 @@ def test_generator_rejects_incomplete_accounting_before_writing(
     elif change == "overlap":
         monkeypatch.setitem(generator._INLINE_OBSERVE, "Normal", "loc=0, scale=1")
     else:
+        monkeypatch.delitem(generator._INLINE_OBSERVE, "Independent")
         monkeypatch.setitem(generator.EXCLUDED_FAMILIES, "Independent", " ")
     monkeypatch.setattr(generator, "_get_family_registry", lambda: registry)
     destination = tmp_path / "untouched"
@@ -98,27 +98,17 @@ def test_compositional_and_event_fixtures_score_independent_torch_densities(fami
     )
 
 
-@pytest.mark.parametrize(
-    ("plate", "diagnostic"),
-    [
-        ("", "has type Tensor[Real]([2]); it takes a Real"),
-        (" : Row", "has batch axes that do not follow the declared plate"),
-    ],
-)
-def test_independent_source_exclusion_reproduces_checked_batch_limitation(
-    plate, diagnostic
-):
-    source = f"""object Row : FinSet 3
-program model : Row -> Row
-    observe y{plate} <- Independent(base=Normal(loc=[0.0, 0.0], scale=[1.0, 1.0]), reinterpreted_batch_ndims=1)
-    return y
-export model
-"""
-    with pytest.raises(QiecDiagnosticError) as caught:
-        loads(source)
-    assert caught.value.code == "qiec-distribution"
-    assert "parameter 'loc' of 'Normal'" in str(caught.value)
-    assert diagnostic in str(caught.value)
+def test_independent_fixture_retains_inner_event_distinct_from_observation_rows():
+    source = generator.fixture_sources()["Independent"]
+    values = torch.linspace(-1.0, 1.0, 16).reshape(8, 2)
+    recorded = trace(
+        loads(source).morphism,
+        torch.zeros(1, 1, dtype=torch.long),
+        {"y": values},
+    )
+    expected = torch.distributions.Normal(0.0, 1.0).log_prob(values).sum()
+    assert recorded.log_joint is not None
+    torch.testing.assert_close(recorded.log_joint.squeeze(), expected)
 
 
 @pytest.mark.parametrize(

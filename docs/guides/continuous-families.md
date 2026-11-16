@@ -22,10 +22,41 @@ parameters, including its mean. A mean given exactly is written in QVR as
 step.
 
 Registry membership, checked source construction, and external rendering are
-separate capabilities. In particular, native `Independent` requires a batched
-base distribution, which the current checked scalar-family argument contract
-cannot express as an inline source call. Use its native Python construction;
-registration does not establish a QVR source or export form.
+separate capabilities. `Independent` supports native and checked-reference
+execution, including inline source construction. Its nested distribution
+arguments remain explicitly unsupported by all eleven external renderers.
+
+### Independent product events
+
+`Independent` moves a specified number of trailing base batch axes into the
+event. The remaining batch axes retain separate pointwise scores. A typed
+runtime header states the parameter and observation shapes; a static telescope
+can leave the row extent to be inferred from supplied data:
+
+```qvr
+object Coordinate : FinSet 3
+program vectors[n : Nat](
+    location : Tensor[Real]([n, Coordinate]),
+    y : Tensor[Real]([n, Coordinate]),
+) : n -> n
+    observe y : n <- Independent(base=Normal(loc=location, scale=1.0), reinterpreted_batch_ndims=1)
+    return y
+export vectors
+```
+
+Here the last parameter axis belongs to the base batch and becomes a vector
+event. The leading `n` axis indexes observations. A single location vector of
+shape `[Coordinate]` instead broadcasts across those observations. These roles
+follow the checked axis positions, including when both extents equal three.
+Neither equality of sizes nor a host tensor's length establishes axis ownership.
+
+The count is a nonnegative integer literal in checked source. Zero preserves
+all batch and event axes; a smaller count than the base batch rank leaves the
+leading batch axes intact. Existing intrinsic event axes follow the newly
+reinterpreted axes. Restrictions, normalization, and mixtures retain this
+partition, and native and reference execution reduce each event exactly once.
+The [formal rule](../semantics/programs.md#independent-product-events) states the
+batch/event split and raw-mass behavior.
 
 ### Vector count events
 
