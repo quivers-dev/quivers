@@ -5019,6 +5019,17 @@ class _ProgramsMixin:
                     plate_rows=idx_space.size,
                     batch_ndims=1 + len(array_shape),
                 )
+                if step.morphism in self._morphisms and checked_batch:
+                    # A declared kernel already consumes its codomain axes.
+                    # Scalar base laws expose those coordinates as checked
+                    # batch axes, but they are not another array of kernels.
+                    kernel_axes = max(
+                        len(getattr(family.codomain, "event_shape", ()))
+                        - family.support.event_dim,
+                        0,
+                    )
+                    if kernel_axes:
+                        array_shape = array_shape[:-kernel_axes]
                 # Build a placeholder response of the right shape; the
                 # actual values are supplied at fit time via the
                 # `observations[response_var]` dict-entry. The buffer
