@@ -162,3 +162,51 @@ def test_plan_evaluation_retains_full_event_layout_without_summary_reduction():
     actual = _evaluate_contrast(plan, samples)
     torch.testing.assert_close(actual, values.softmax(-1))
     assert plan.dimensions == ("Component",)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_literal_precision_uses_shared_floating_context_independent_of_order(
+    dtype, reverse
+):
+    from quivers.dsl._value_expressions import _parse_value_expression
+    from quivers.dsl.compiler.programs import _ProgramsMixin
+
+    number = 0.1234567890123456
+    entries = [
+        ("single", torch.tensor(0.5, dtype=torch.float32)),
+        ("typed", torch.tensor(0.2, dtype=dtype)),
+    ]
+    environment = dict(reversed(entries) if reverse else entries)
+    decimal = _ProgramsMixin._compile_let_expr(_parse_value_expression(str(number)))(
+        environment
+    )
+    integer = _ProgramsMixin._compile_let_expr(_parse_value_expression("3"))(
+        environment
+    )
+    assert decimal.dtype == dtype and integer.dtype == torch.int64
+    assert decimal.item() == torch.tensor(number, dtype=dtype).item()
+
+
+def test_decimal_literal_contrast_matches_reference_at_double_precision():
+    number = 0.1234567890123456
+    values = torch.tensor([[0.1, 0.2, 0.3]], dtype=torch.double)
+    expression = f"a-{number}"
+    plan = _contrast_plan(
+        ContrastExpression(expression=expression), {"a": values}, None, None
+    )
+    actual = _evaluate_contrast(plan, {"a": values})
+    torch.testing.assert_close(actual, values - number, rtol=0, atol=0)
+    source = loads(f"""object Out:Real 1
+program decimal(a:Real):Out->Out
+    let result=a-{number}
+    return result
+export decimal
+""")
+    native = (
+        trace(source.morphism, torch.zeros(1, 1), {"a": values[0, 0]})
+        .sites["result"]
+        .value
+    )
+    reference = source.run("decimal", data={"a": 0.1, "out": (0.0,)}, sites={}).value
+    assert native.item() == reference == actual[0, 0].item()

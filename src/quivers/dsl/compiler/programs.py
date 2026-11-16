@@ -56,7 +56,7 @@ from quivers.continuous.program_steps import (
     reading,
     reads_of,
 )
-from quivers.continuous.programs import MonadicProgram, _lookup_arg
+from quivers.continuous.programs import MonadicProgram, _lookup_arg, _parameter_dtype
 from quivers.effects.checked_program import CheckedProgram
 from quivers.continuous.param_source import (
     AttentionSource,
@@ -8082,10 +8082,20 @@ class _ProgramsMixin:
             val = int(node.value) if node.integral else node.value
 
             def _literal(env: dict) -> torch.Tensor:
-                for v in env.values():
-                    if isinstance(v, torch.Tensor):
-                        return torch.tensor(val, device=v.device)
-                return torch.tensor(val)
+                # Reuse floating-context promotion without treating unrelated
+                # integer index bindings as packed numeric parameters.
+                tensors = tuple(
+                    value for value in env.values() if isinstance(value, torch.Tensor)
+                )
+                floating = tuple(
+                    value for value in tensors if value.is_floating_point()
+                )
+                reference = floating[0] if floating else tensors[0] if tensors else None
+                return torch.tensor(
+                    val,
+                    device=reference.device if reference is not None else None,
+                    dtype=None if node.integral else _parameter_dtype(floating),
+                )
 
             return _literal
         if isinstance(node, LetExprString):
