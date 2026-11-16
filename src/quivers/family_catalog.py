@@ -14,6 +14,7 @@ from quivers.qiec.family_shapes import match_family_shapes
 from quivers.qiec.kinds import NAT
 from quivers.qiec.types import IndexLiteral
 from quivers.continuous.family_spec import FamilySpec, build_torch_distribution
+from quivers.continuous.param_transforms import _validate_parameter
 
 type DistributionFactory = Callable[[Mapping[str, torch.Tensor]], Distribution]
 """Build one native law from checked, named natural-scale parameters."""
@@ -293,11 +294,11 @@ class FamilyCatalog(Mapping[str, DistributionFamily]):
                     f"custom family parameter {parameter.name!r} requires real numeric values"
                 )
             condition = getattr(constraints, parameter.constraint, None)
-            if isinstance(condition, constraints.Constraint) and not bool(
-                condition.check(value).all()
-            ):
-                raise ValueError(
-                    f"custom family parameter {parameter.name!r} violates {parameter.constraint}"
+            if isinstance(condition, constraints.Constraint):
+                _validate_parameter(
+                    value,
+                    condition,
+                    description=f"custom family parameter {parameter.name!r} violates {parameter.constraint}",
                 )
             if value.ndim < parameter.rank:
                 raise ValueError(

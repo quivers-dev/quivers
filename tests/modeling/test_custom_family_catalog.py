@@ -407,3 +407,49 @@ def test_nested_custom_constructor_retains_native_context_and_sampling_normalize
         torch.autograd.grad(actual, b)[0],
         torch.autograd.grad(expected, b)[0],
     )
+
+
+def test_catalog_domains_share_proposal_rejection_without_hiding_factory_errors():
+    from quivers.inference.mcmc import PotentialFn
+    from quivers.inference.registry import LatentRegistry
+
+    record = FAMILIES["Normal"].with_(name="ProposalNormal", targets={})
+    catalog = FamilyCatalog().with_family(
+        record, lambda p: torch.distributions.Normal(p["loc"], p["scale"])
+    )
+    source = """object One:FinSet 1
+object Out:Real 1
+program p(y:Real):One->Out
+    sample raw <- Normal(loc=0.0,scale=1.0)
+    let scale = exp(raw)
+    observe y <- ProposalNormal(loc=0.0,scale=scale)
+    return raw
+export p
+"""
+    bound = Model(source, families=catalog).bind({"y": torch.tensor(0.0)})
+    registry = LatentRegistry.from_model(bound.program, {"y"})
+    potential = PotentialFn(bound.program, registry, bound.input, dict(bound.data))
+    assert torch.isfinite(potential.check_initial(torch.zeros(1)))
+    value, gradient = potential.value_and_grad(torch.tensor([-1000.0]))
+    assert torch.isneginf(value)
+    torch.testing.assert_close(gradient, torch.zeros(1), rtol=0, atol=0)
+    with pytest.raises(ValueError, match="violates positive"):
+        potential.check_initial(torch.tensor([-1000.0]))
+
+    enabled = False
+
+    def bad_factory(p):
+        if enabled:
+            raise ValueError("custom family parameter 'scale' violates positive")
+        return torch.distributions.Normal(p["loc"], p["scale"])
+
+    other_catalog = FamilyCatalog().with_family(record, bad_factory)
+    other_bound = Model(source, families=other_catalog).bind({"y": torch.tensor(0.0)})
+    other_registry = LatentRegistry.from_model(other_bound.program, {"y"})
+    other_potential = PotentialFn(
+        other_bound.program, other_registry, other_bound.input, dict(other_bound.data)
+    )
+    other_potential.check_initial(torch.zeros(1))
+    enabled = True
+    with pytest.raises(ValueError, match="violates positive"):
+        other_potential.value_and_grad(torch.zeros(1))

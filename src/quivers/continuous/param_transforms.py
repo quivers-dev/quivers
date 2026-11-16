@@ -64,7 +64,9 @@ def positive_parameter(value: Tensor) -> Tensor:
     return value
 
 
-def _validate_parameter(value: Tensor, constraint: constraints.Constraint) -> Tensor:
+def _validate_parameter(
+    value: Tensor, constraint: constraints.Constraint, *, description: str | None = None
+) -> Tensor:
     """Preserve a parameter that satisfies its distribution constraint.
 
     Parameters
@@ -73,6 +75,9 @@ def _validate_parameter(value: Tensor, constraint: constraints.Constraint) -> Te
         The parameter.
     constraint : constraints.Constraint
         Its admissible values.
+    description : str or None
+        Located caller context for a failed constraint; the validator remains
+        the raising boundary used to reject invalid inference proposals.
 
     Returns
     -------
@@ -85,7 +90,7 @@ def _validate_parameter(value: Tensor, constraint: constraints.Constraint) -> Te
         If any entry violates the constraint.
     """
     if not bool(constraint.check(value).all()):
-        raise ValueError(f"inline parameter must satisfy {constraint}")
+        raise ValueError(description or f"inline parameter must satisfy {constraint}")
     return value
 
 
