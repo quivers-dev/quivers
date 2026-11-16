@@ -828,7 +828,11 @@ class MixedInlineDistribution(ContinuousMorphism):
                 y_in = y_in.unsqueeze(0) if whole_event else y_in.unsqueeze(-1)
             while y_in.dim() > target_dim and y_in.shape[-1] == 1:
                 y_in = y_in.squeeze(-1)
-        lp = dist.log_prob(y_in)
+        lp = (
+            dist.log_prob_normalized(y_in)
+            if isinstance(dist, _Measure)
+            else dist.log_prob(y_in)
+        )
         # Scalar parameters read one value per coordinate make the
         # coordinates independent draws of one value: their densities
         # sum, as a fixed distribution's do, leaving one per row.
@@ -2347,6 +2351,236 @@ def _build_operator_value(
     raise ValueError(f"unknown operator family {family!r}")
 
 
+class _SupportOnlyDistribution(D.Distribution):
+    """Retain constructor support metadata without evaluating parameter heads.
+
+    Parameters
+    ----------
+    support : Constraint
+        Checked support of the underlying distribution.
+    batch_shape : tuple
+        Parameter batch axes retained by the constructor.
+    event_shape : tuple
+        Intrinsic event axes, independent of batch axes.
+    """
+
+    def __init__(
+        self, support: _constraints.Constraint, batch_shape=(), event_shape=()
+    ):
+        self._support = support
+        self._atomless = not support.is_discrete
+        self._reference = torch.tensor(0.0)
+        super().__init__(
+            torch.Size(batch_shape), torch.Size(event_shape), validate_args=False
+        )
+
+    @property
+    def arg_constraints(self) -> dict[str, _constraints.Constraint]:
+        return {}
+
+    @property
+    def support(self) -> _constraints.Constraint:
+        return self._support
+
+    def expand(self, batch_shape, _instance=None):
+        return _SupportOnlyDistribution(self.support, batch_shape, self.event_shape)
+
+
+def _dynamic_distribution_arguments(arguments):
+    """Find free values recursively through the distribution argument AST.
+
+    Parameters
+    ----------
+    arguments : tuple
+        Existing source arguments, including nested constructor arguments.
+
+    Returns
+    -------
+    bool
+        Whether construction reads a runtime binding.
+    """
+    for argument in arguments:
+        if isinstance(argument, DrawArgNamed):
+            if _dynamic_distribution_arguments((argument.value,)):
+                return True
+        elif isinstance(argument, DrawArgDist):
+            if _dynamic_distribution_arguments(argument.args):
+                return True
+        elif isinstance(argument, DrawArgList):
+            if _dynamic_distribution_arguments(argument.items):
+                return True
+        elif isinstance(argument, DrawArgIndex | Indexed):
+            return True
+        elif isinstance(argument, DrawArgName | str):
+            name = argument.text if isinstance(argument, DrawArgName) else argument
+            if name not in {"true", "false"} and name not in BIJECTORS_BY_NAME:
+                return True
+    return False
+
+
+def _make_dynamic_operator_distribution(
+    family, args, codomain, variable_types, value_extents
+):
+    """Compose runtime distribution values using the shared inline packing plan.
+
+    Parameters
+    ----------
+    family : str
+        Existing measure operator at a sample or observation boundary.
+    args : tuple
+        Original named or positional constructor arguments.
+    codomain : AnySpace
+        Checked output space and intrinsic event dimensions.
+    variable_types : dict or None
+        Native spaces of values read by nested constructors.
+    value_extents : Mapping or None
+        Checked extents, retaining event dimensions independently of batch axes.
+
+    Returns
+    -------
+    tuple
+        One mixed morphism and its ordinary source-value arguments.
+    """
+    specs, ranks, shapes, integers, names = [], [], [], [], []
+
+    def value(argument, owner, name, rank, integer):
+        if isinstance(argument, DrawArgNamed):
+            argument = argument.value
+        if isinstance(argument, DrawArgDist):
+            return node(argument.family, argument.args)
+        if isinstance(argument, DrawArgList) and any(
+            isinstance(item, DrawArgDist) for item in argument.items
+        ):
+            children = [
+                value(item, owner, name, rank, integer) for item in argument.items
+            ]
+            return (
+                lambda params: [fn(params) for fn, _ in children],
+                [probe for _, probe in children],
+            )
+        if isinstance(argument, DrawArgName | str):
+            text = argument.text if isinstance(argument, DrawArgName) else argument
+            if text in {"true", "false"} or text in BIJECTORS_BY_NAME:
+                literal = _eval_draw_arg_value(argument, variable_types)
+                return (lambda params: literal), literal
+        plan, own_shapes, own_names = _inline_parameter_layout(
+            owner,
+            (argument,),
+            (name,),
+            (rank,),
+            variable_types,
+            value_extents,
+        )
+        position = len(specs)
+        specs.extend(plan)
+        ranks.append(rank)
+        shapes.extend(own_shapes)
+        integers.append(integer)
+        names.extend(own_names)
+        kind, payload = plan[0]
+        if kind == "const":
+            probe = payload
+        elif kind == "lit":
+            probe = payload
+        else:
+            shape = own_shapes[0] or (
+                (int(payload),) if payload and int(payload) > 1 else ()
+            )
+            probe = torch.ones(shape)
+        return (lambda params: params[position]), probe
+
+    def node(current, arguments):
+        bound, parameters = _bind_inline_arguments(current, tuple(arguments))
+        assert parameters is not None
+        own_ranks = _registry_event_ranks(current, parameters)
+        own_integers = _registry_integer_parameters(current, parameters)
+        children = [
+            value(arg, current, name, rank, integer)
+            for arg, name, rank, integer in zip(
+                bound, parameters, own_ranks, own_integers, strict=True
+            )
+        ]
+        event_rank = FAMILIES[
+            FAMILY_ALIASES.get(current, current) or current
+        ].event_rank
+        event_shape = tuple(getattr(codomain, "event_shape", ())) if event_rank else ()
+
+        def build(params):
+            return _raw_distribution_value(
+                current,
+                {
+                    name: fn(params)
+                    for name, (fn, _) in zip(parameters, children, strict=True)
+                },
+                event_shape,
+            )
+
+        probes = {
+            name: probe for name, (_, probe) in zip(parameters, children, strict=True)
+        }
+        if current in _OPERATOR_FAMILIES:
+            if current == "Normalize":
+                base = probes["base"]
+                prototype = _SupportOnlyDistribution(
+                    base.support, base.batch_shape, base.event_shape
+                )
+            elif current in {"Restrict", "Truncate"}:
+                static = {
+                    name: probe
+                    for name, probe, arg in zip(
+                        parameters, probes.values(), bound, strict=True
+                    )
+                    if name != "base" and not _dynamic_distribution_arguments((arg,))
+                }
+                base = probes["base"]
+                if static.get("low") is not None or static.get("high") is not None:
+                    prototype = _raw_distribution_value(
+                        current, {"base": base, **static}
+                    )
+                else:
+                    prototype = _SupportOnlyDistribution(
+                        base.support, base.batch_shape, base.event_shape
+                    )
+            else:
+                prototype = _raw_distribution_value(current, probes)
+        else:
+            support = _FAMILY_SUPPORTS.get(current, _constraints.real)
+            batch_shapes = [
+                tuple(
+                    torch.as_tensor(probe).shape[:-rank]
+                    if rank
+                    else torch.as_tensor(probe).shape
+                )
+                for (_, probe), rank in zip(children, own_ranks, strict=True)
+            ]
+            prototype = _SupportOnlyDistribution(
+                support, torch.broadcast_shapes(*batch_shapes), event_shape
+            )
+        return build, prototype
+
+    build, prototype = node(family, args)
+    support = prototype.support
+    assert isinstance(support, _constraints.Constraint)
+    widths = tuple(
+        int(width) if width is not None else None
+        for kind, width in specs
+        if kind == "var"
+    )
+    domain = _infer_domain(names, variable_types, widths)
+    morph = MixedInlineDistribution(
+        domain,
+        codomain,
+        specs,
+        build,
+        discrete=support.is_discrete,
+        support=support,
+        param_event_ranks=tuple(ranks),
+        param_shapes=tuple(shapes),
+        param_integers=tuple(integers),
+    )
+    return morph, tuple(names)
+
+
 def _make_operator_distribution(
     family: str,
     args,
@@ -2532,6 +2766,99 @@ def _raw_distribution_value(
     return builder([torch.as_tensor(values[name]) for name in names])
 
 
+def _inline_parameter_layout(
+    family,
+    args,
+    param_names,
+    fam_event_ranks,
+    variable_types,
+    value_extents,
+):
+    """Retain the checked parameter packing for direct and nested calls.
+
+    Parameters
+    ----------
+    family : str
+        Family whose parameter constraints govern the arguments.
+    args : tuple
+        Bound numeric arguments from the existing source AST.
+    param_names : tuple
+        Corresponding canonical parameter names.
+    fam_event_ranks : tuple
+        Intrinsic parameter ranks, excluding declared batch axes.
+    variable_types : Mapping or None
+        Native spaces of the bindings read by the arguments.
+    value_extents : Mapping or None
+        Checked binding extents, retaining nominal event dimensions.
+
+    Returns
+    -------
+    tuple
+        Packing specifications, intrinsic shapes, and runtime binding order.
+    """
+    param_spec: list[tuple[str, int | float | torch.Tensor | None]] = []
+    param_shapes: list[tuple[int, ...] | None] = []
+    var_name_order: list[StepArgument] = []
+    for i, arg in enumerate(args):
+        kind, value = _inline_argument(arg)
+        param_shapes.append(None)
+        if kind == "lit" or kind == "const":
+            assert isinstance(value, int | float | torch.Tensor)
+            param_spec.append((kind, value))
+        else:
+            assert isinstance(value, str | Indexed)
+            arg = value
+            # A parameter's width comes from its binding's type; without
+            # one it is left unresolved, for the stacked width to settle.
+            var_dim: int | None = None
+            lookup_name = arg.name if isinstance(arg, Indexed) else arg
+            event_rank = fam_event_ranks[i]
+            checked = (
+                value_extents.get(lookup_name) if value_extents is not None else None
+            )
+            if (
+                isinstance(arg, Indexed)
+                and value_extents is not None
+                and lookup_name in value_extents
+            ):
+                var_dim = _gathered_width(arg, value_extents[lookup_name])
+            elif (
+                not isinstance(arg, Indexed)
+                and event_rank >= 1
+                and checked is not None
+                and len(checked) >= event_rank
+            ):
+                # A vector or matrix parameter's own axes are the trailing
+                # ones of its checked value; any leading axis is a plate's.
+                own = tuple(checked[len(checked) - event_rank :])
+                var_dim = math.prod(own)
+                if event_rank >= 2:
+                    param_shapes[-1] = own
+            elif variable_types and lookup_name in variable_types:
+                vtype = variable_types[lookup_name]
+                if isinstance(arg, Indexed) and isinstance(vtype, Euclidean):
+                    # With no checked extents, a gather from a plate
+                    # selects one of its declared rows; from a value
+                    # with no plate rows its width is left for the
+                    # stacked width to settle.
+                    if vtype.plate_rows is not None:
+                        var_dim = vtype.row_width
+                else:
+                    var_dim = _param_row_width(vtype, fam_event_ranks[i])
+            if event_rank >= 2 and param_shapes[-1] is None:
+                raise UnsizedParameterError(
+                    f"inline {family} reads its {param_names[i]!r} from "
+                    f"{lookup_name!r}, a matrix whose shape the checked program "
+                    "leaves to the data; the compiled runtime sizes every "
+                    "parameter when it builds the program, so fix the draw's "
+                    "event axes with an annotation or ``[over=...]``, or return "
+                    "the draw from a program whose codomain fixes them"
+                )
+            param_spec.append(("var", var_dim))
+            var_name_order.append(arg)
+    return param_spec, param_shapes, var_name_order
+
+
 def make_inline_distribution(
     family: str,
     args: tuple,
@@ -2577,6 +2904,10 @@ def make_inline_distribution(
         If a gather indexes more axes than its value's checked extents
         have.
     """
+    if family in _OPERATOR_FAMILIES and _dynamic_distribution_arguments(args):
+        return _make_dynamic_operator_distribution(
+            family, args, codomain, variable_types, value_extents
+        )
     args, selected_parameters = _bind_inline_arguments(family, args)
     if family in _OPERATOR_FAMILIES:
         return _make_operator_distribution(
@@ -2693,68 +3024,19 @@ def make_inline_distribution(
     fam_event_ranks = _PARAM_EVENT_RANKS.get(family) or _registry_event_ranks(
         family, param_names
     )
-    param_spec: list[tuple[str, int | float | torch.Tensor | None]] = []
-    param_shapes: list[tuple[int, ...] | None] = []
-    var_name_order: list[StepArgument] = []
-    total_var_dim = 0
-    for i, arg in enumerate(args):
-        kind, value = _inline_argument(arg)
-        param_shapes.append(None)
-        if kind == "lit" or kind == "const":
-            assert isinstance(value, int | float | torch.Tensor)
-            param_spec.append((kind, value))
-        else:
-            assert isinstance(value, str | Indexed)
-            arg = value
-            # A parameter's width comes from its binding's type; without
-            # one it is left unresolved, for the stacked width to settle.
-            var_dim: int | None = None
-            lookup_name = arg.name if isinstance(arg, Indexed) else arg
-            event_rank = fam_event_ranks[i]
-            checked = (
-                value_extents.get(lookup_name) if value_extents is not None else None
-            )
-            if (
-                isinstance(arg, Indexed)
-                and value_extents is not None
-                and lookup_name in value_extents
-            ):
-                var_dim = _gathered_width(arg, value_extents[lookup_name])
-            elif (
-                not isinstance(arg, Indexed)
-                and event_rank >= 1
-                and checked is not None
-                and len(checked) >= event_rank
-            ):
-                # A vector or matrix parameter's own axes are the trailing
-                # ones of its checked value; any leading axis is a plate's.
-                own = tuple(checked[len(checked) - event_rank :])
-                var_dim = math.prod(own)
-                if event_rank >= 2:
-                    param_shapes[-1] = own
-            elif variable_types and lookup_name in variable_types:
-                vtype = variable_types[lookup_name]
-                if isinstance(arg, Indexed) and isinstance(vtype, Euclidean):
-                    # With no checked extents, a gather from a plate
-                    # selects one of its declared rows; from a value
-                    # with no plate rows its width is left for the
-                    # stacked width to settle.
-                    if vtype.plate_rows is not None:
-                        var_dim = vtype.row_width
-                else:
-                    var_dim = _param_row_width(vtype, fam_event_ranks[i])
-            if event_rank >= 2 and param_shapes[-1] is None:
-                raise UnsizedParameterError(
-                    f"inline {family} reads its {param_names[i]!r} from "
-                    f"{lookup_name!r}, a matrix whose shape the checked program "
-                    "leaves to the data; the compiled runtime sizes every "
-                    "parameter when it builds the program, so fix the draw's "
-                    "event axes with an annotation or ``[over=...]``, or return "
-                    "the draw from a program whose codomain fixes them"
-                )
-            param_spec.append(("var", var_dim))
-            var_name_order.append(arg)
-            total_var_dim += 1 if var_dim is None else var_dim
+    param_spec, param_shapes, var_name_order = _inline_parameter_layout(
+        family,
+        args,
+        param_names,
+        fam_event_ranks,
+        variable_types,
+        value_extents,
+    )
+    total_var_dim = sum(
+        1 if value is None else int(value)
+        for kind, value in param_spec
+        if kind == "var"
+    )
     if family == "MixtureNormal":
         # QIEC can currently retain the component width for an indexed draw
         # while conservatively typing a derived vector-valued ``let`` as

@@ -139,14 +139,27 @@ def _frame():
     )
 
 
-def _model(hierarchy, *, group=False, categorical=False, concentration=None):
+def _model(
+    hierarchy, *, group=False, categorical=False, concentration=None, bounded=False
+):
     frame = _frame()
     if categorical:
         frame.y = [0, 1, 2, 1]
     formula = formula_from_data("y~0+x+z" + ("+(1||g)" if group else ""), frame)
-    rules = PriorSpec(distribution=hierarchy, block="shared")
+    rules = PriorSpec(
+        distribution=hierarchy,
+        block="shared",
+        lower=-0.5 if bounded else None,
+        upper=0.8 if bounded else None,
+    )
     if group:
-        rules = rules + PriorSpec(distribution=hierarchy, class_="sd", block="shared")
+        rules = rules + PriorSpec(
+            distribution=hierarchy,
+            class_="sd",
+            block="shared",
+            lower=0.1 if bounded else None,
+            upper=0.9 if bounded else None,
+        )
     lens = FormulaToQVRModule(
         families["categorical" if categorical else "gaussian"], user_priors=rules
     )
@@ -170,10 +183,11 @@ def _model(hierarchy, *, group=False, categorical=False, concentration=None):
     return frame, formula, lens, updated, checked, program, observations
 
 
+@pytest.mark.parametrize("bounded", [False, True])
 @pytest.mark.parametrize("group", [False, True])
 @pytest.mark.parametrize("kind", ["horseshoe", "r2d2"])
 def test_sampled_shrinkage_joint_all_latent_gradients_and_reference_match_torch(
-    kind, group
+    kind, group, bounded
 ):
     with _double():
         width = 3 if group else 2
@@ -185,7 +199,7 @@ def test_sampled_shrinkage_joint_all_latent_gradients_and_reference_match_torch(
             else R2D2(mean_R2=0.4, prec_R2=3.0, cons_D2=0.7)
         )
         frame, formula, lens, module, checked, program, observations = _model(
-            hierarchy, group=group
+            hierarchy, group=group, bounded=bounded
         )
         coefficient = torch.tensor([0.2, -0.15], requires_grad=True)
         sigma = torch.tensor(0.6, requires_grad=True)
@@ -240,6 +254,12 @@ def test_sampled_shrinkage_joint_all_latent_gradients_and_reference_match_torch(
             .log_prob(coefficient)
             .sum()
         )
+        if bounded:
+            standard = torch.distributions.Normal(0.0, 1.0)
+            normalizer = standard.cdf(0.8 / scales[:2]) - standard.cdf(
+                -0.5 / scales[:2]
+            )
+            density -= normalizer.log().sum()
         density += torch.distributions.HalfCauchy(2.0).log_prob(sigma)
         if group:
             scale = torch.tensor(0.3, requires_grad=True)
@@ -247,6 +267,11 @@ def test_sampled_shrinkage_joint_all_latent_gradients_and_reference_match_torch(
             sites |= {"sigma_g_Intercept": scale, "z_g_Intercept": z}
             mean += scale * z[observations["g_idx"]]
             density += torch.distributions.HalfNormal(scales[2]).log_prob(scale)
+            if bounded:
+                mass = 2 * (
+                    standard.cdf(0.9 / scales[2]) - standard.cdf(0.1 / scales[2])
+                )
+                density -= mass.log()
             density += torch.distributions.Normal(0.0, 1.0).log_prob(z).sum()
             parameters.extend((scale, z))
         density += (
@@ -305,16 +330,24 @@ def test_integrated_selectors_preserve_catalogue_and_compositional_bounds():
     assert "low=0.0" in bounded["beta_x"]
 
 
+@pytest.mark.parametrize("bounded", [False, True])
 @pytest.mark.parametrize("hierarchy", [RegularizedHorseshoe(par_ratio=0.4), R2D2()])
 @pytest.mark.parametrize("method", ["svi", "hmc", "nuts"])
-def test_shrinkage_fit_prior_view_and_fresh_rows_share_one_model(hierarchy, method):
+def test_shrinkage_fit_prior_view_and_fresh_rows_share_one_model(
+    hierarchy, method, bounded
+):
     from quivers.formulas import fit
 
     fitted = fit(
         "y~0+x+z",
         data=_frame(),
         fixed_parameters={"sigma": 0.7},
-        priors=PriorSpec(distribution=hierarchy, block="shared"),
+        priors=PriorSpec(
+            distribution=hierarchy,
+            block="shared",
+            lower=0.1 if bounded else None,
+            upper=0.8 if bounded else None,
+        ),
         method=method,
         num_steps=2 if method == "svi" else None,
         num_samples=2 if method != "svi" else None,
@@ -325,18 +358,29 @@ def test_shrinkage_fit_prior_view_and_fresh_rows_share_one_model(hierarchy, meth
     before = torch.random.get_rng_state().clone()
     fresh = pd.DataFrame({"x": [0.0, 2.0], "z": [1.0, -0.5]})
     draws = fitted.draws(num_samples=2, seed=71)
+    if bounded:
+        assert all(
+            ((draws[name] >= 0.1) & (draws[name] <= 0.8)).all()
+            for name in ("beta_x", "beta_z")
+        )
     expected = draws["beta_x"][..., None] * torch.tensor([0.0, 2.0])
     expected += draws["beta_z"][..., None] * torch.tensor([1.0, -0.5])
     actual = fitted.posterior_epred(new_data=fresh, num_samples=2, seed=71)
     torch.testing.assert_close(actual, expected)
     assert torch.equal(before, torch.random.get_rng_state())
     prior = fitted.prior_view(num_samples=2, seed=19)
+    if bounded:
+        assert all(
+            ((prior.draws()[name] >= 0.1) & (prior.draws()[name] <= 0.8)).all()
+            for name in ("beta_x", "beta_z")
+        )
     assert prior.posterior_predict(new_data=fresh).shape == (1, 2, 2)
     assert "prior_shared" in fitted.qvr_source
 
 
+@pytest.mark.parametrize("bounded", [False, True])
 @pytest.mark.parametrize("hierarchy", [RegularizedHorseshoe(), R2D2()])
-def test_component_axes_use_one_hierarchy_and_keep_reference_labels(hierarchy):
+def test_component_axes_use_one_hierarchy_and_keep_reference_labels(hierarchy, bounded):
     with _double():
         frame, formula, lens, module, checked, program, observations = _model(
             hierarchy,
@@ -398,7 +442,7 @@ def test_single_coordinate_r2d2_has_no_degenerate_simplex_and_validates_blocks()
     )
     with pytest.raises(ValueError, match="inconsistent hierarchy"):
         formula_to_qvr("y~0+x+z", data=_frame(), priors=conflict)
-    with pytest.raises(ValueError, match="requires unconstrained b or positive sd"):
+    with pytest.raises(ValueError, match="requires b or sd"):
         formula_to_qvr(
             "y~x+(1+x|g)",
             data=_frame(),
@@ -442,7 +486,7 @@ def test_vector_response_hierarchy_reuses_component_layout_and_prediction(
         "cbind(a,b,c)~0+x",
         data=frame,
         family=family,
-        priors=PriorSpec(distribution=R2D2(autoscale=False)),
+        priors=PriorSpec(distribution=R2D2(autoscale=False), lower=-0.5, upper=0.8),
         method="svi",
         num_steps=1,
         seed=81,

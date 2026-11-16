@@ -1849,7 +1849,10 @@ before its consumers without changing latent names.
 
 These are joint prior laws over explicit latent sites, so the same program
 supplies fitting, independent prior draws, and prediction replay. Bounds on
-an ordinary selected prior use normalized measure restriction; they do not
-silently discard prior mass. The sampled global coordinate is dimensionless
+any selected prior use normalized measure restriction. For hierarchical
+priors, each conditional coefficient density is divided by its interval
+mass at the sampled heads; the hyperprior marginals remain unchanged.
+This defines a conditional restriction rather than joint conditioning of
+the entire hierarchy. The sampled global coordinate is dimensionless
 when residual autoscaling is enabled, making that dependency explicit in the
 coefficient kernel.

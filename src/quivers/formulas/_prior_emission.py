@@ -136,14 +136,9 @@ def apply_prior_plan(
         if isinstance(rule.distribution, str):
             continue
         target = by_site[site]
-        if (
-            target.class_ not in {"b", "sd"}
-            or target.upper is not None
-            or rule.lower is not None
-            or rule.upper is not None
-        ):
+        if target.class_ not in {"b", "sd"}:
             raise ValueError(
-                f"shrinkage prior on {site!r} requires unconstrained b or positive sd coordinates"
+                f"shrinkage prior on {site!r} requires b or sd coordinates"
             )
         key = ("block", rule.block) if rule.block is not None else ("rule", rule)
         blocks.setdefault(key, []).append((target, rule))
@@ -325,7 +320,10 @@ def apply_prior_plan(
                 replacement = base_step.with_(args=args)
             else:
                 replacement = base_step.with_(morphism=prior.morphism, args=prior.args)
-            replacements[target.site] = (_let(scale_name, scale), replacement)
+            replacements[target.site] = (
+                _let(scale_name, scale),
+                restrict_prior_step(target, rule, replacement),
+            )
             offset += target.width
     for site, rule in selected.items():
         if not isinstance(rule.distribution, str):
@@ -525,7 +523,34 @@ def ordinary_prior_step(target: PriorTarget, rule: PriorSpec, *, draw) -> Sample
     """
     if not isinstance(rule.distribution, str):
         raise ValueError("ordinary_prior_step requires a QVR distribution expression")
-    prior = draw(target.site, rule.distribution)
+    return restrict_prior_step(target, rule, draw(target.site, rule.distribution))
+
+
+def restrict_prior_step(
+    target: PriorTarget, rule: PriorSpec, prior: SampleStep
+) -> SampleStep:
+    """Normalize a conditional prior on the intersection of its requested bounds.
+
+    Parameters
+    ----------
+    target : PriorTarget
+        Existing nominal coordinates and admissible coefficient domain.
+    rule : PriorSpec
+        Ordinary or hierarchical prior with optional scalar bounds.
+    prior : SampleStep
+        Existing parsed conditional kernel, retaining its original binders.
+
+    Returns
+    -------
+    SampleStep
+        The same kernel or its normalized measure restriction. Hyperprior
+        marginals remain unchanged when the kernel depends on sampled heads.
+
+    Raises
+    ------
+    ValueError
+        If the requested bounds have empty intersection with the target domain.
+    """
     lows = [v for v in (target.lower, rule.lower) if v is not None]
     highs = [v for v in (target.upper, rule.upper) if v is not None]
     lower = max(lows) if lows else None

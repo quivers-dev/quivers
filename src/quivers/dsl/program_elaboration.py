@@ -7134,12 +7134,39 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             # An operator form denotes a measure the step normalizes at its
             # boundary: the construction itself is unplated, and the
             # normalization carries the step's plate.
-            inner = self._nested_distribution(
+            positions = tuple(
+                (axis, Local(name=f"__measure_coordinate_{i}", type=INT))
+                for i, axis in enumerate(plate.batch)
+            )
+            inner_scope = (
+                _Scope(
+                    outer=scope, locals={local.name: local for _, local in positions}
+                )
+                if positions
+                else scope
+            )
+            inner: Value = self._nested_distribution(
                 DrawArgDist(family=resolved.family, args=tuple(step.args)),
-                scope,
+                inner_scope,
                 state,
                 step,
+                positions=positions,
             )
+            # The outer normalization owns replication. Construct a scalar
+            # conditional measure at each declared batch coordinate rather
+            # than making a vector-valued inner event and replicating it again.
+            inner_type = self._value_type(inner, inner_scope.context(), step)
+            if positions:
+                scope.referenced.update(inner_scope.referenced - scope.locals.keys())
+            dimensions = ()
+            for axis, local in reversed(positions):
+                dimensions = (axis.size, *dimensions)
+                inner = Comprehension(
+                    binder=local,
+                    extent=axis.size,
+                    body=inner,
+                    result_type=tensor_type(inner_type, dimensions),
+                )
             normalize = FAMILIES["Normalize"]
             path = ("programs", state.declaration.name, "sites", site, "distribution")
             provisional = DistributionValue(
@@ -9056,6 +9083,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         scope: _Scope,
         state: _ProgramState,
         node: object,
+        positions: tuple[tuple[PlateAxis, Local], ...] = (),
     ) -> Value:
         """Lower a list of distributions to a tensor of sampleables.
 
@@ -9069,6 +9097,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             The program's accumulating state.
         node : object
             The source node.
+        positions : tuple[tuple[PlateAxis, Local], ...]
+            Declared enclosing batch coordinates used by component parameters.
 
         Returns
         -------
@@ -9093,7 +9123,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     "every component of a mixture must be a distribution",
                     code="qiec-program",
                 )
-            items.append(self._nested_distribution(item, scope, state, node))
+            items.append(
+                self._nested_distribution(item, scope, state, node, positions=positions)
+            )
         context = scope.context()
         types = [self._value_type(item, context, node) for item in items]
         if any(item != types[0] for item in types):
@@ -9103,7 +9135,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             elements = {sampled_element(item) for item in types}
             if elements == {INT, REAL}:
                 items = [
-                    self._nested_distribution(item, scope, state, node, element=INT)
+                    self._nested_distribution(
+                        item, scope, state, node, element=INT, positions=positions
+                    )
                     if isinstance(item, DrawArgDist)
                     and item.family == "PointMass"
                     and sampled_element(self._value_type(lowered, context, node))
@@ -9128,6 +9162,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         state: _ProgramState,
         node: object,
         element: TypeApplication | None = None,
+        positions: tuple[tuple[PlateAxis, Local], ...] = (),
     ) -> DistributionValue:
         """Lower a nested family application in argument position.
 
@@ -9145,6 +9180,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             The element type an atom's value is read at, for a
             ``PointMass`` whose siblings fix it; ``None`` reads the
             family's own.
+        positions : tuple[tuple[PlateAxis, Local], ...]
+            Declared enclosing batch coordinates. Only parameter dimensions
+            preceding each family's intrinsic rank are gathered at them.
 
         Returns
         -------
@@ -9172,7 +9210,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 f"use one complete schema: {schema_text}",
                 code="qiec-program",
             )
-        source = {item.parameter: item.value for item in argument.args}
+        named_arguments = cast(tuple[DrawArgNamed, ...], argument.args)
+        source = {item.parameter: item.value for item in named_arguments}
         if len(source) != len(argument.args):
             self._fail(
                 node,
@@ -9201,21 +9240,67 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"family {record.name!r} has no parameter {parameter_name!r}",
                     code="qiec-program",
                 )
-            arguments.append(
-                (
-                    parameter.name,
-                    self._draw_argument(
-                        source[parameter_name],
-                        _ScalarParameter(element)
-                        if element is not None and record.name == "PointMass"
-                        else parameter,
-                        PlateShape(),
-                        scope,
-                        state,
-                        node,
-                    ),
+            parameter_argument = source[parameter_name]
+            if (
+                isinstance(parameter_argument, DrawArgDist)
+                and parameter.constraint == "sampleable"
+            ):
+                lowered = self._nested_distribution(
+                    parameter_argument,
+                    scope,
+                    state,
+                    node,
+                    positions=positions,
                 )
-            )
+            elif (
+                isinstance(parameter_argument, DrawArgList)
+                and parameter.constraint == "sampleable"
+            ):
+                lowered = self._distribution_list(
+                    parameter_argument,
+                    scope,
+                    state,
+                    node,
+                    positions=positions,
+                )
+            else:
+                lowered = self._draw_argument(
+                    parameter_argument,
+                    _ScalarParameter(element)
+                    if element is not None and record.name == "PointMass"
+                    else parameter,
+                    PlateShape(batch=tuple(axis for axis, _ in positions)),
+                    scope,
+                    state,
+                    node,
+                )
+                shape = tensor_shape(self._value_type(lowered, scope.context(), node))
+                leading = len(shape[1]) - parameter.rank if shape is not None else 0
+                if leading > 0 and positions:
+                    assert shape is not None
+                    axes = tuple(axis.size for axis, _ in positions)
+                    if (
+                        leading > len(axes)
+                        or tuple(shape[1][:leading]) != axes[-leading:]
+                    ):
+                        self._fail(
+                            node,
+                            f"parameter {parameter_name!r} of {record.name!r} has batch axes that do not follow the declared plate",
+                            code="qiec-distribution",
+                        )
+                    for _, position in positions[-leading:]:
+                        assert shape is not None
+                        lowered = Gather(
+                            value=lowered,
+                            index=Var(local=position),
+                            result_type=tensor_type(shape[0], shape[1][1:])
+                            if len(shape[1]) > 1
+                            else shape[0],
+                        )
+                        shape = tensor_shape(
+                            self._value_type(lowered, scope.context(), node)
+                        )
+            arguments.append((parameter.name, lowered))
         provisional = DistributionValue(
             family=record.id,
             name=record.name,

@@ -279,8 +279,6 @@ def _per_row_parameters(
         The names of the bindings read at each row.
     """
     record = FAMILIES.get(family)
-    if record is None:
-        return frozenset()
     found: set[str] = set()
     for position, arg in enumerate(args):
         if isinstance(arg, DrawArgNamed):
@@ -291,8 +289,24 @@ def _per_row_parameters(
                 parameter_names[position] if position < len(parameter_names) else None
             )
             value = arg
+        # Constructors retain the same declared plate in their scalar leaves.
+        # Inspect each leaf's semantic parameter rank; vector/matrix event
+        # parameters must remain whole even when their extent equals rows.
+        nested = value.items if isinstance(value, DrawArgList) else (value,)
+        for component in nested:
+            if isinstance(component, DrawArgDist):
+                found.update(
+                    _per_row_parameters(
+                        component.family,
+                        component.args,
+                        get_inline_param_names(component.family) or (),
+                        value_extents,
+                        rows,
+                    )
+                )
         if (
-            parameter is None
+            record is None
+            or parameter is None
             or parameter not in record.parameter_names
             or record.parameter(parameter).rank != 0
             or not isinstance(value, DrawArgName)

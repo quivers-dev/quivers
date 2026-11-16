@@ -93,6 +93,7 @@ def _positive(value, name):
 
 
 type PriorDistribution = str | RegularizedHorseshoe | R2D2
+"""A compositional QVR prior expression or an explicit sampled shrinkage hierarchy."""
 
 
 class PriorSpec(ValueModel):
@@ -187,6 +188,7 @@ class PriorSet(ValueModel):
 
 
 type PriorInput = Mapping[str, str] | PriorSpec | PriorSet | Sequence[PriorSpec]
+"""Authored exact-name overrides or typed rules normalized to one immutable PriorSet."""
 _SELECTORS = ("class_", "coef", "group", "dpar", "nlpar", "site")
 
 
