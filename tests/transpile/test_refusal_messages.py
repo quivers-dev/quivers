@@ -98,6 +98,10 @@ FORWARDING_SITES: dict[tuple[str, str], str] = {
     ("transpile/_resolve.py", "build_morphism_table"): (
         "a StepResolutionError's kinds, whose raise sites are scanned"
     ),
+    ("transpile/_resolve.py", "source_declarations"): (
+        "a StepResolutionError's kinds from the canonical declaration indexes, "
+        "whose raise sites are scanned"
+    ),
     ("transpile/_resolve.py", "param_source_kind"): (
         "a StepResolutionError's kinds, whose raise sites are scanned"
     ),
