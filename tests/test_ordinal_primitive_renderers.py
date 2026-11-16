@@ -508,7 +508,7 @@ def test_pymc_select_keeps_literal_and_symbolic_boolean_conditions(literal):
     import pytensor.tensor as pt
 
     namespace = {}
-    tree = ast.parse((RUNTIME / "runtime_pymc.py").read_text())
+    tree = ast.parse(python_runtime_source(RUNTIME / "runtime_pymc.py").decode())
     nodes = [
         node
         for node in tree.body
