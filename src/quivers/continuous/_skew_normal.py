@@ -5,12 +5,17 @@ from __future__ import annotations
 from functools import lru_cache
 import math
 
-import numpy as np
 import torch
 from torch import Tensor
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
 
+from quivers.continuous._quadrature_constants import (
+    _NODES_32,
+    _WEIGHTS_32,
+    _NODES_128,
+    _WEIGHTS_128,
+)
 from quivers.continuous._shape_families import _check_probability, _log1mexp
 
 
@@ -28,13 +33,15 @@ def _quadrature(device: torch.device) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     tuple[Tensor, Tensor, Tensor, Tensor]
         Unit-interval nodes/weights and finite-tail nodes/log weights.
     """
-    nodes, weights = np.polynomial.legendre.leggauss(32)
-    tail_nodes, tail_weights = np.polynomial.legendre.leggauss(128)
+    nodes = torch.tensor(_NODES_32, dtype=torch.float64, device=device)
+    weights = torch.tensor(_WEIGHTS_32, dtype=torch.float64, device=device)
+    tail_nodes = torch.tensor(_NODES_128, dtype=torch.float64, device=device)
+    tail_weights = torch.tensor(_WEIGHTS_128, dtype=torch.float64, device=device)
     return (
         torch.as_tensor((nodes + 1) / 2, dtype=torch.float64, device=device),
         torch.as_tensor(weights / 2, dtype=torch.float64, device=device),
         torch.as_tensor(20 * (tail_nodes + 1), dtype=torch.float64, device=device),
-        torch.as_tensor(np.log(20 * tail_weights), dtype=torch.float64, device=device),
+        (20 * tail_weights).log(),
     )
 
 
