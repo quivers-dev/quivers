@@ -20,7 +20,7 @@ import numpy as np
 from quivers._count_capacity import _MAX_EXACT_COUNT
 from quivers.formulas._count_data import checked_integer_data
 from pathlib import Path
-from typing import Literal, Mapping, Sequence, Unpack, cast
+from typing import Callable, Literal, Mapping, Sequence, Unpack, cast
 
 import didactic.api as dx
 from formulae.matrices import DesignMatrices
@@ -31,6 +31,7 @@ from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.programs import MonadicProgram
+from quivers.diagnostics.cross_validation import FoldPrediction, FoldSplit
 from quivers.dsl import Compiler
 from quivers.dsl.emit import module_to_source
 from quivers.formulas.compile import FormulaToQVRModule
@@ -211,6 +212,54 @@ class BayesianFit(ValueModel):
         from quivers.formulas._refit import update_fit
 
         return update_fit(self, data, overrides)
+
+    def refit_callback(
+        self,
+        *,
+        method_factory: Callable[[Mapping[str, object], int], Mapping[str, object]],
+        partition: Callable[[IntoDataFrame, tuple[int, ...]], IntoDataFrame]
+        | None = None,
+        num_samples: int | None = None,
+        **prediction: object,
+    ) -> Callable[[FoldSplit], FoldPrediction]:
+        """Adapt retained included rows and neural inputs to explicit refits.
+
+        Parameters
+        ----------
+        method_factory : Callable[[Mapping[str, object], int], Mapping[str, object]]
+            Fold-specific canonical fit settings and seed. Retained row
+            attachments are partitioned automatically and cannot be replaced.
+        partition : Callable[[IntoDataFrame, tuple[int, ...]], IntoDataFrame] or None
+            Optional nonmutating original-frame row selection. By default,
+            Narwhals preserves the dataframe backend and authored columns.
+        num_samples : int or None
+            Per-chain draw budget for raw held-out likelihood scoring.
+        **prediction : object
+            Existing log_likelihood options, including re_formula and explicit
+            new-group policies. The adapter owns rows, neural inputs, and seeds.
+
+        Returns
+        -------
+        Callable[[FoldSplit], FoldPrediction]
+            Callback for cross_validate. Fold indices address fitted included
+            rows; subset positions map them to the original raw frame once.
+            Neural predictor_data follows the same train/test selection.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If retained rows or attachments do not align, a partition has the
+            wrong included-row count, or options fail canonical validation.
+        """
+        from quivers.formulas._cross_validation import formula_refitter
+
+        return formula_refitter(
+            self,
+            method_factory=method_factory,
+            partition=partition,
+            num_samples=num_samples,
+            prediction=prediction,
+        )
 
     def evidence(self, sampler: SMC) -> SMCResult:
         """Estimate the retained formula target's normalizing constant with SMC.

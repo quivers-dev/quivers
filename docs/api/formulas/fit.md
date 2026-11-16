@@ -12,6 +12,13 @@ posterior, with isolated initial neural state and explicit clone/reference data
 ownership. Method changes clear inherited inactive budgets; explicit invalid
 overrides still fail. See [updating and refitting](../../guides/model-refits.md)
 for data ownership and adapters to the shared cross-validation runner.
+`BayesianFit.refit_callback(method_factory=..., num_samples=...)` supplies that
+runner with fresh formula fits and raw held-out likelihoods. Fold coordinates
+address retained included rows; the adapter maps them to original rows and
+partitions retained neural inputs by the same positions. Its method factory
+owns fitting seeds and budgets, while prediction keywords retain the existing
+group-selection and new-level policies. See the
+[formula partition example](../../guides/model-refits.md#formula-models).
 `sample_prior="yes"` retains an independent prior stream without changing the
 fitted posterior; `sample_prior="only"` disables observation likelihoods during
 the selected inference method and retains priors and explicit score potentials.

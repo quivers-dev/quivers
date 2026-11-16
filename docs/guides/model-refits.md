@@ -127,20 +127,15 @@ retain the original predictor state and predictor inputs before training or
 subset selection. Every refit copies that initial state, so it can train a new
 predictor without changing an earlier fit.
 
-The same generic callback supports formula refits with an explicit dataframe
-partitioner and the existing raw likelihood accessor:
+`BayesianFit.refit_callback` partitions the retained raw frame and evaluates
+the existing held-out likelihood accessor. Its split coordinates refer to the
+rows included in the original fit, in their fitted order:
 
 <!-- python: run -->
 ```python
-from quivers.modeling import refit_callback
-
-formula_callback = refit_callback(
-    regression.refit_recipe,
-    partition=lambda data, rows: data.iloc[list(rows)].copy(),
-    score=lambda fitted, held_out, seed: fitted.log_likelihood(
-        new_data=held_out, num_samples=8, seed=seed,
-    ),
+formula_callback = regression.refit_callback(
     method_factory=lambda settings, seed: {**settings, "seed": seed},
+    num_samples=8,
 )
 formula_comparison = cross_validate(
     FoldPlan(assignments=(0, 0, 1, 1), seed=13), formula_callback,
@@ -148,10 +143,20 @@ formula_comparison = cross_validate(
 assert formula_comparison.complete
 ```
 
-An adapter also owns fold-specific auxiliary inputs. For instance, a neural
-refitter must pass the original split's `predictor_data` to fitting and held-out
-scoring. A `FoldSplit` callback can supply those explicitly through `update`
-and `log_likelihood`; the runner still owns partition validation and predictive
-reductions. Selecting original rows should preserve every authored response
-role. Group exclusions and fresh levels require their usual explicit prediction
-policy, and a changed trial design requires validated held-out trial inputs.
+With `subset(keep)`, the callback maps each included-row position back to its
+original raw row before partitioning. It preserves dataframe backends and
+selects by position, independent of dataframe index labels. Retained neural
+`predictor_data` is an explicit row attachment: the same original-row selection
+supplies fitting inputs and held-out inputs. Neural parameters remain part of
+the retained initial predictor state, even when a parameter dimension happens
+to equal the row count. The method factory chooses the fitting seed and budget;
+the split seed separately controls held-out posterior replay.
+
+The callback validates row alignment and finite neural inputs before fitting.
+Pass a nonmutating `partition` function for another frame-selection policy.
+Response roles remain on the selected raw rows, so held-out censoring and
+truncation retain their recorded-event meaning. Prediction keywords such as
+`re_formula`, `allow_new_levels`, and `sample_new_levels` pass to the existing
+raw likelihood accessor; new grouping identities still require an explicit
+policy. The adapter never substitutes posterior predictive samples for held-out
+log probabilities.
