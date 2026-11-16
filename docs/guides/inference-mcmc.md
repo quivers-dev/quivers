@@ -455,10 +455,14 @@ MCMC gives no estimate of the evidence $p(y)$ for model comparison.
 population of particles from the prior to the posterior through the
 tempered targets $\pi_\beta(z) \propto p(z)\, L(z)^\beta$,
 $0 = \beta_0 < \dots < \beta_T = 1$ [@delmoral2006sequential]. Here
-$p(z)$ is the density of the model's latent draws, from which the
-initial particles are drawn exactly by running the model, and $L(z)$
-is everything else the model scores, its observations and its score
-steps.
+$p(z)$ contains latent draw densities and explicit `Score(role="potential")`
+factors; $L(z)$ contains observations and `Score(role="likelihood")`
+factors. Roles come from the checked step records, rather than names such
+as `lik`. `TemperedPotential` preserves prior potentials at every temperature.
+`SMC.run` requires a normalized ancestral prior and refuses explicit prior
+potentials whose mass it cannot determine. Its initial particles use the
+shared prior dependency projection, retaining conditional prior inputs while
+omitting downstream likelihood computations.
 [`TemperedPotential`](../api/inference/mcmc.md#quivers.inference.smc.TemperedPotential)
 evaluates $\log p(z) + \beta \log L(z)$ and returns the two parts
 separately.
@@ -485,11 +489,14 @@ $2.38/\sqrt{D}$ times their spread), then tuned further on a discarded
 pilot run of `num_pilot_steps` transitions. It is then frozen, so every
 move at that temperature leaves $\pi_{\beta'}$ invariant.
 
-The product of the mean incremental weights is an unbiased estimate of
-$p(y)$, and `SMCResult.log_evidence` is its logarithm (so it tends to
-underestimate $\log p(y)$ by about half the estimate's variance).
-Agreement between independent runs, and with MCMC, is a check on both.
-Like `MCMC.run`, `SMC.run` takes an input with one row.
+The product of the mean incremental weights estimates the target's
+normalizing constant, and `SMCResult.log_evidence` is its logarithm.
+This constant is data evidence when the prior and observation factors form
+the corresponding normalized model. Non-unit likelihood weights instead
+define a power target; a response-dependent prior likewise needs its stated
+conditional interpretation. Agreement between independent runs, and with
+MCMC, checks the estimate. Like `MCMC.run`, `SMC.run` takes an input with one
+row and refuses subsampled plates.
 
 <!-- python: skip -->
 ```python

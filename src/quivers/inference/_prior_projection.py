@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 from quivers.continuous.program_steps import (
     Call,
@@ -42,6 +42,28 @@ def _labels(program: MonadicProgram) -> set[str]:
     return labels
 
 
+def _score_steps(program: MonadicProgram) -> Iterator[Score]:
+    """Read typed score specifications through lexical call and scan scopes.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        Native program whose score roles remain attached to their steps.
+
+    Yields
+    ------
+    Score
+        Each score specification in lexical execution order.
+    """
+    for step in program.steps:
+        if isinstance(step, Score):
+            yield step
+        elif isinstance(step, Call) and isinstance(step.program, MonadicProgram):
+            yield from _score_steps(step.program)
+        elif isinstance(step, Scan) and isinstance(step.step, MonadicProgram):
+            yield from _score_steps(step.step)
+
+
 def _has_potential(program: MonadicProgram) -> bool:
     """Check nested scopes for explicit prior potentials.
 
@@ -55,17 +77,7 @@ def _has_potential(program: MonadicProgram) -> bool:
     bool
         Whether projecting this scope must preserve a potential contribution.
     """
-    return any(
-        isinstance(step, Score)
-        and step.role == "potential"
-        or isinstance(step, Call)
-        and isinstance(step.program, MonadicProgram)
-        and _has_potential(step.program)
-        or isinstance(step, Scan)
-        and isinstance(step.step, MonadicProgram)
-        and _has_potential(step.step)
-        for step in program.steps
-    )
+    return any(step.role == "potential" for step in _score_steps(program))
 
 
 def _argument_names(arguments) -> set[str]:
@@ -184,6 +196,10 @@ def _project(model, selected, *, keep_return):
                 elif callable(value):
                     reads = reads_of(value)
                     dependencies.update(preceding if reads is None else reads)
+                if isinstance(step, Score) and step.role == "likelihood":
+                    # A conditional prior may consume the score's value even
+                    # though its likelihood contribution is disabled.
+                    step = Let(name=step.name, value=step.score)
         elif isinstance(step, Call):
             if isinstance(step.program, MonadicProgram):
                 required |= bool(_labels(step.program) & selected) or _has_potential(

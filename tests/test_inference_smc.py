@@ -27,6 +27,7 @@ import torch
 from torch.distributions import MultivariateNormal, Normal
 
 from quivers.continuous import MonadicProgram
+from quivers.continuous.program_steps import Score
 from quivers.dsl import loads
 from quivers.inference import SMC, SMCResult, TemperedPotential, resample
 from quivers.inference.mcmc import (
@@ -43,6 +44,20 @@ from quivers.inference import smc as smc_module
 from quivers.inference.trace import Trace, trace
 from tests.test_inference_mcmc import _scale_likelihood, _score_program
 from tests.test_inference_mcmc_compose import _switch_posterior, _switch_program
+
+
+def _classified_likelihood_model(model: MonadicProgram) -> MonadicProgram:
+    """Declare the likelihood role of the imported MCMC-only score fixtures."""
+    return MonadicProgram(
+        model.domain,
+        model.codomain,
+        tuple(
+            step.with_(role="likelihood") if isinstance(step, Score) else step
+            for step in model.steps
+        ),
+        model._return_vars,
+        params=model._params,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +211,7 @@ def test_a_seeded_run_records_its_latents_whatever_the_global_rng_holds(
         return result
 
     monkeypatch.setattr(smc_module, "trace", recording_trace)
-    model = _score_program(_scale_likelihood, ("b", "y"))
+    model = _classified_likelihood_model(_score_program(_scale_likelihood, ("b", "y")))
     data = {"y": torch.linspace(-1.0, 1.0, 6)}
     sampler = SMC(
         MetropolisKernel(RandomWalkProposal(0.1)),
@@ -315,7 +330,7 @@ def test_gibbs_rejuvenation_estimates_a_mixed_model_evidence() -> None:
         lambda: CycleKernel(
             [GibbsKernel(["z"]), MetropolisKernel(RandomWalkProposal(1.0))]
         ),
-        _switch_program(),
+        _classified_likelihood_model(_switch_program()),
         {},
         particles=150,
     )

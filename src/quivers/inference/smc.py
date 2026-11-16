@@ -8,10 +8,9 @@ through the tempered targets
     \\pi_\\beta(z) \\propto p(z)\\, L(z)^\\beta, \\qquad
     0 = \\beta_0 < \\beta_1 < \\dots < \\beta_T = 1,
 
-where :math:`p(z)` is the density of the model's latent draws (the
-distribution ancestral sampling from the model produces) and
-:math:`L(z)` everything else the model scores: its observations and its
-score steps (Del Moral, Doucet, and Jasra 2006,
+where :math:`p(z)` is the density of the model's latent draws and
+explicit prior potentials, and :math:`L(z)` contains its observations and
+score steps classified as likelihoods (Del Moral, Doucet, and Jasra 2006,
 `doi:10.1111/j.1467-9868.2006.00553.x
 <https://doi.org/10.1111/j.1467-9868.2006.00553.x>`_). Each step
 
@@ -34,9 +33,12 @@ score steps (Del Moral, Doucet, and Jasra 2006,
    every particle then moves under the frozen kernel, so each move
    leaves :math:`\\pi_{\\beta'}` invariant.
 
-The product of the mean incremental weights is an unbiased estimate of
-the evidence :math:`p(y) = \\int p(z) L(z)\\, dz`; its logarithm is
-`SMCResult.log_evidence`.
+The product of the mean incremental weights estimates the normalizing
+constant :math:`Z = \\int p(z) L(z)\\, dz`; its logarithm is
+`SMCResult.log_evidence`. It is data evidence when the factors define a
+normalized prior and sampling model. Arbitrary prior score potentials are
+refused by `SMC.run`, because ancestral initialization does not normalize them.
+Non-unit likelihood weights instead define a power-target normalizing constant.
 """
 
 from __future__ import annotations
@@ -52,6 +54,7 @@ from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.joint_plan import JointPlan
+from quivers.effects.subsample import refuse_subsampling
 from quivers.inference.mcmc.driver import (
     MCMC,
     _check_gibbs_sites,
@@ -174,10 +177,11 @@ def _conditional_ess(log_weights: torch.Tensor, increments: torch.Tensor) -> flo
 class TemperedPotential(PotentialFn):
     """The potential of a tempered posterior :math:`p(z)\\, L(z)^\\beta`.
 
-    :math:`\\log p(z)` is the log-density of the model's latent draws,
-    the sites of the registry and the sites the potential is conditioned
-    on, together with the bijectors' log-Jacobian; :math:`\\log L(z)` is
-    the rest of the model's log joint, its observations and score steps.
+    :math:`\\log p(z)` contains the model's latent draw densities,
+    explicit score potentials, and the bijectors' log-Jacobian.
+    :math:`\\log L(z)` contains observations and scores whose typed role
+    is ``"likelihood"``. Registry and conditioned-site identities determine
+    which draws remain latent; a clamped observed draw belongs to the likelihood.
     At temperature one the potential is the posterior's, at zero the
     prior's.
 
@@ -212,6 +216,11 @@ class TemperedPotential(PotentialFn):
     ) -> None:
         super().__init__(model, registry, x, observations)
         self._temperature = _check_temperature(temperature)
+        from quivers.inference._prior_projection import _score_steps
+
+        self._potential_scores = frozenset(
+            step.name for step in _score_steps(model) if step.role == "potential"
+        )
 
     @property
     def temperature(self) -> float:
@@ -265,21 +274,34 @@ class TemperedPotential(PotentialFn):
             Any error the program raises other than one marking the
             position as outside its support.
         """
+        refuse_subsampling("TemperedPotential")
         self._counts[0] += 1
         trace_side, log_det_total = self._trace_side(z)
         minus_inf = torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)
         try:
-            densities, log_joint = self._densities({**trace_side, **self._observations})
+            densities, _ = self._densities({**trace_side, **self._observations})
         except (ValueError, torch.linalg.LinAlgError) as error:
             if not _rejects_position(error):
                 raise
             return minus_inf, minus_inf
         latent = set(self._registry.names) | set(self._conditioned)
         log_prior = log_det_total
+        log_likelihood = torch.zeros((), device=z.device, dtype=z.dtype)
         for label, density in densities.items():
-            if any(name in latent for name in label.split(",")):
+            base, separator, occurrence = label.rpartition("@")
+            score_name = (
+                base
+                if separator
+                and occurrence.isdigit()
+                and label not in self._potential_scores
+                else label
+            )
+            if score_name in self._potential_scores or any(
+                name in latent for name in label.split(",")
+            ):
                 log_prior = log_prior + density.sum()
-        log_likelihood = log_joint.sum() + log_det_total - log_prior
+            else:
+                log_likelihood = log_likelihood + density.sum()
         if not torch.isfinite(log_prior):
             return minus_inf, minus_inf
         if torch.isnan(log_likelihood):
@@ -371,7 +393,8 @@ class SMCResult(ValueModel):
     log_evidence : float
         The log of the evidence estimate
         :math:`\\prod_t \\sum_i W_i^{(t)} L(z_i)^{\\beta_t - \\beta_{t-1}}`,
-        whose exponent is unbiased for :math:`p(y)`.
+        for the declared target's normalizing constant. It estimates data
+        evidence when the prior and sampling law have that interpretation.
     temperatures : torch.Tensor
         The ladder :math:`\\beta_0 = 0 < \\dots < \\beta_T = 1`, shape
         ``(T + 1,)``.
@@ -604,11 +627,16 @@ class SMC:
         ------
         ValueError
             If ``x`` has more than one row, the data are outside their
-            support, or the kernel's Gibbs sites do not fit the model.
+            support, the kernel's Gibbs sites do not fit the model, a plate
+            is subsampled, or an explicit prior potential has unknown mass.
         RuntimeError
             If no temperature step keeps the target ESS.
         """
         _require_one_run(x, "SMC.run")
+        refuse_subsampling("SMC.run")
+        from quivers.inference.prior import _ancestral_program
+
+        prior_program = _ancestral_program(model)
         _check_observed_support(model, observations, "SMC.run")
         base = self._run_seed()
         # The run that fixes the latents draws from a stream of its own
@@ -626,7 +654,7 @@ class SMC:
         self.kernel._set_generator(generator)
 
         positions, gibbs = self._prior_particles(
-            model, x, observations, registry, gibbs_sites, generator
+            prior_program, x, observations, registry, gibbs_sites, generator
         )
         log_likelihoods = self._log_likelihoods(potential, positions, gibbs)
         n = self.num_particles
@@ -707,10 +735,13 @@ class SMC:
         """
         positions: list[torch.Tensor] = []
         gibbs: list[dict[str, torch.Tensor]] = []
+        from quivers.effects.observation_scoring import observation_scoring
+
         for _ in range(self.num_particles):
-            run = _with_generator(
-                generator, lambda: trace(model, x, observations=observations)
-            )
+            with observation_scoring(False):
+                run = _with_generator(
+                    generator, lambda: trace(model, x, observations=observations)
+                )
             draw = registry.trace_draw(run)
             unconstrained, _ = registry.to_unconstrained(draw)
             positions.append(registry.flatten_unconstrained(unconstrained))
