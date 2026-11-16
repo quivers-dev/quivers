@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -101,6 +101,7 @@ from quivers.dsl.emit import (
 )
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_tooling import (
+    ToolingAnalysis,
     analyze_module,
     prelude_effect,
     qiec_binding_candidates,
@@ -377,13 +378,18 @@ class ReplSession:
         return _resp("\n".join(body_lines), result.diagnostics)
 
     def _install_module(
-        self, module: Module, *, source_path: Path | None = None
+        self,
+        module: Module,
+        *,
+        source_path: Path | None = None,
+        analysis: ToolingAnalysis | None = None,
     ) -> ReplResponse:
-        analysis = analyze_module(
-            module,
-            module_name=qiec_module_name(source_path),
-            file_path=str(source_path) if source_path is not None else "<repl>",
-        )
+        if analysis is None:
+            analysis = analyze_module(
+                module,
+                module_name=qiec_module_name(source_path),
+                file_path=str(source_path) if source_path is not None else "<repl>",
+            )
         diags: list[Diagnostic] = [
             _violation_to_diag(v) for v in check_constraints(analysis.non_qiec_module)
         ]
@@ -455,12 +461,69 @@ class ReplSession:
             except OSError:
                 self._loaded_mtime = None
         self._refresh_watches()
-        body = (
-            f"loaded {source_path}: {_env_counts(analysis.env)}"
-            if source_path is not None
-            else f"installed module: {_env_counts(analysis.env)}"
-        )
+        body = _installed_message(analysis.env, source_path)
         return _resp(body, tuple(diags))
+
+    def _dispatch_object_prelude(
+        self, sources: Sequence[str], *, start: int = 0
+    ) -> tuple[int, tuple[ReplResponse, ...]] | None:
+        """Prepare a closed, pure object prelude once, retaining each chunk's output.
+
+        Executable declarations, symbolic extents, watches, target diagnostics,
+        and errors use ordinary sequential dispatch. Thus neither a future
+        declaration nor fewer stochastic compilations can change a prior chunk.
+        """
+        from quivers.dsl._data_inference import has_inferred_objects
+
+        if (
+            self._watches
+            or self.options.target
+            or any(not isinstance(stmt, ObjectDecl) for stmt in self._module.statements)
+        ):
+            return None
+        additions: list[Module] = []
+        for position in range(start, len(sources)):
+            source = sources[position]
+            if source.lstrip().startswith(":"):
+                break
+            try:
+                parsed = parse(source.strip(), file_path="<repl>")
+            except ParseError:
+                break
+            if not parsed.statements or any(
+                not isinstance(stmt, ObjectDecl) for stmt in parsed.statements
+            ):
+                break
+            additions.append(parsed)
+        if len(additions) < 2:
+            return None
+        combined = _extend_module(
+            self._module, (stmt for module in additions for stmt in module.statements)
+        )
+        if has_inferred_objects(combined):
+            return None
+        analysis = analyze_module(
+            combined,
+            module_name=qiec_module_name(self._loaded_path),
+            file_path=str(self._loaded_path) if self._loaded_path else "<repl>",
+        )
+        if (
+            analysis.compile_error is not None
+            or analysis.qiec_diagnostics
+            or check_constraints(analysis.non_qiec_module)
+        ):
+            return None
+        prefix = dict(self._env)
+        responses = []
+        for addition in additions:
+            for statement in addition.statements:
+                assert isinstance(statement, ObjectDecl)
+                for name in statement.names:
+                    if name in analysis.env:
+                        prefix[name] = analysis.env[name]
+            responses.append(_resp(_installed_message(prefix, self._loaded_path)))
+        self._install_module(combined, source_path=self._loaded_path, analysis=analysis)
+        return len(additions), tuple(responses)
 
     # ----- :type / :kind ------------------------------------------------
     #
@@ -2640,6 +2703,15 @@ def _fuel(text: str) -> int:
 def _env_counts(env: dict[str, Any]) -> str:
     items = sum(1 for k in env if not k.startswith("__"))
     return f"{items} binding(s)"
+
+
+def _installed_message(env: dict[str, Any], source_path: Path | None) -> str:
+    """Present a prepared environment independently of its preparation granularity."""
+    return (
+        f"loaded {source_path}: {_env_counts(env)}"
+        if source_path is not None
+        else f"installed module: {_env_counts(env)}"
+    )
 
 
 def _violation_to_diag(v: Violation) -> Diagnostic:

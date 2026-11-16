@@ -12,13 +12,14 @@ depends on the notebook frontend; no CodeMirror mode is bundled.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from ipykernel.kernelbase import Kernel
 
 from quivers import __version__
 from quivers.cli.repl_complete import _completion_prefix, all_completions
-from quivers.cli.repl_session import ReplSession
+from quivers.cli.repl_session import ReplResponse, ReplSession
 from quivers.dsl import parse, ParseError
 
 
@@ -94,8 +95,7 @@ class QuiversKernel(Kernel):
         """
         del store_history, user_expressions, allow_stdin, cell_id
         failure: dict[str, Any] | None = None
-        for raw_line in _split_cell(code):
-            response = self.repl.dispatch(raw_line)
+        for response in _cell_responses(self.repl, _split_cell(code)):
             if response.body == "__quit__":
                 if not silent:
                     self.send_response(
@@ -185,6 +185,20 @@ class QuiversKernel(Kernel):
             "data": {"text/plain": response.body},
             "metadata": {},
         }
+
+
+def _cell_responses(session: ReplSession, chunks: list[str]) -> Iterator[ReplResponse]:
+    """Batch only pure object preludes; keep all other dispatch lazy and ordered."""
+    index = 0
+    while index < len(chunks):
+        prepared = session._dispatch_object_prelude(chunks, start=index)
+        if prepared is None:
+            yield session.dispatch(chunks[index])
+            index += 1
+        else:
+            consumed, responses = prepared
+            yield from responses
+            index += consumed
 
 
 def _split_cell(code: str) -> list[str]:

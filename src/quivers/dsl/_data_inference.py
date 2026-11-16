@@ -63,6 +63,17 @@ def _shape(value: object, name: str) -> tuple[int, ...]:
     return ()
 
 
+def _checked_source(
+    source: Module, retained: tuple[Module, QiecModule] | None
+) -> QiecModule:
+    """Reuse checked evidence only for the identical, unrevised source AST."""
+    if retained is not None and retained[0] is source:
+        return retained[1]
+    from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
+
+    return lower_qvr_to_qiec(source)
+
+
 def _walk(value: object) -> Iterator[dx.Model]:
     pending = [value]
     seen = set()
@@ -184,14 +195,19 @@ def _substitute_axis_option(
     return value
 
 
-def infer_data_objects(module: Module, data: Mapping[str, object]) -> Module:
+def infer_data_objects(
+    module: Module,
+    data: Mapping[str, object],
+    *,
+    checked_source: tuple[Module, QiecModule] | None = None,
+) -> Module:
     """Replace ``FinSet _`` when the checked inputs provide consistent evidence."""
     inferred = _inferred_objects(module)
     if not inferred:
-        return _specialize_program_parameters(module, data)
-    from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
-
-    checked = lower_qvr_to_qiec(module)
+        return _specialize_program_parameters(
+            module, data, checked_source=checked_source
+        )
+    checked = _checked_source(module, checked_source)
     evidence: dict[str, tuple[int, str]] = {}
     affine_equations: list[tuple[IndexTerm, int]] = []
     affine_sources: set[str] = set()
@@ -282,7 +298,10 @@ def infer_data_objects(module: Module, data: Mapping[str, object]) -> Module:
 
 
 def _specialize_program_parameters(
-    module: Module, data: Mapping[str, object]
+    module: Module,
+    data: Mapping[str, object],
+    *,
+    checked_source: tuple[Module, QiecModule] | None = None,
 ) -> Module:
     """Solve scoped finite binders from explicit arguments and checked shapes.
 
@@ -304,9 +323,7 @@ def _specialize_program_parameters(
     candidates = {name: binders for name, binders in candidates.items() if binders}
     if not candidates or not data:
         return module
-    from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
-
-    checked = lower_qvr_to_qiec(module)
+    checked = _checked_source(module, checked_source)
     solutions: dict[str, dict[str, int]] = {}
     for entry in checked.entries:
         binders = candidates.get(entry.name, {})

@@ -170,6 +170,7 @@ class Model:
         self.entry = entry
         checked = lower_qvr_to_qiec(self.syntax)
         self.checked_module = checked
+        self._checked_source = (self.syntax, checked)
         typed_entry = next((e for e in checked.entries if e.name == entry), None)
         if typed_entry is None:
             raise CompileError(f"entry {entry!r} has no checked input contract")
@@ -314,6 +315,7 @@ class Model:
         with torch.random.fork_rng(devices=[]):
             torch.random.default_generator.manual_seed(seed)
             compiler = Compiler(self.syntax)
+            compiler._reuse_checked_source(*self._checked_source)
             compiler.bind_data({**values, **arguments})
             module = compiler.compile()
             qiec = compiler.qiec_module

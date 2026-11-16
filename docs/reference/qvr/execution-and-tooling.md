@@ -178,6 +178,16 @@ commands that run entry points are:
 The TUI status bar shows the active runtime and the last result. Every command and key binding is
 listed in [Interactive tools: REPL, kernel, and language server](../../guides/repl-and-lsp.md).
 
+The Jupyter kernel preserves each blank-separated chunk's output and stops at the first error.
+A closed object prelude in an object-only session shares one preparation pass. Meta-commands,
+executable declarations, watches, and symbolic extents keep sequential preparation, including
+their generator state and intermediate diagnostics.
+
+[`Model`][quivers.modeling.Model] retains checked evidence for its original source AST. Binding
+can reuse that evidence while the source is identical; object specialization, template cloning,
+and source replacement require fresh checking. Reusing a model thus keeps each binding's data
+and specialized input contract independent.
+
 ## Language-server features
 
 The QVR language server (LSP) uses the compiler's typed source model. It provides:

@@ -509,7 +509,13 @@ class Compiler(
         from quivers.dsl._data_inference import infer_data_objects
 
         source = self._qiec_source if self._qiec_source is not None else self._module
-        resolved = infer_data_objects(source, getattr(self, "_data_bindings", {}))
+        resolved = infer_data_objects(
+            source,
+            getattr(self, "_data_bindings", {}),
+            checked_source=(source, self._qiec_module)
+            if self._qiec_module is not None
+            else None,
+        )
         if resolved is source:
             return
         self._qiec_module = None
@@ -518,6 +524,13 @@ class Compiler(
             self._module = non_qiec_projection(resolved)
         else:
             self._module = resolved
+
+    def _reuse_checked_source(self, source: Module, checked: QiecModule) -> bool:
+        """Seed the lazy checked cache only when source expansion kept its identity."""
+        if self._qiec_source is not source:
+            return False
+        self._qiec_module = checked
+        return True
 
     def _attach_host_data_types(self, module: QiecModule) -> None:
         """Give each compiled program the checked types of its host data.

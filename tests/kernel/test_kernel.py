@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import gc
 import warnings
+from unittest.mock import patch
 
 import pytest
 
@@ -239,3 +240,121 @@ def test_notebook_completes_transpile_arguments_and_inspects_scoped_names() -> N
     assert reply["cursor_start"] == 0
     assert _word_at("model::weight", 10) == "model::weight"
     assert _word_at("State.get", 7) == "State.get"
+
+
+def test_object_prelude_prepares_once_without_changing_chunk_outputs():
+    from quivers.cli.repl_session import ReplSession
+    from quivers.dsl.qiec_tooling import analyze_module
+
+    source = "\n\n".join(f"object X{i}:FinSet {i + 2}" for i in range(4))
+    reference = ReplSession()
+    expected = [reference.dispatch(chunk).body + "\n" for chunk in _split_cell(source)]
+    kernel = _kernel()
+    with patch(
+        "quivers.cli.repl_session.analyze_module", wraps=analyze_module
+    ) as analyze:
+        reply = kernel.do_execute(source, silent=False)
+    assert reply["status"] == "ok"
+    assert analyze.call_count == 1
+    assert len(analyze.call_args.args[0].statements) == 4
+    actual = [content["text"] for kind, content in kernel._captured if kind == "stream"]
+    assert actual == expected
+    assert kernel.repl.module == reference.module
+
+
+def test_object_batching_keeps_meta_commands_between_their_source_preludes():
+    kernel = _kernel()
+    reply = kernel.do_execute(
+        "object A:FinSet 2\n\nobject B:FinSet 3\n:info A\n"
+        "object C:FinSet 4\n\nobject D:FinSet 5\n:info D",
+        silent=False,
+    )
+    assert reply["status"] == "ok"
+    outputs = [
+        content["text"] for kind, content in kernel._captured if kind == "stream"
+    ]
+    assert "1 binding(s)" in outputs[0] and "2 binding(s)" in outputs[1]
+    assert "object A" in outputs[2]
+    assert "3 binding(s)" in outputs[3] and "4 binding(s)" in outputs[4]
+    assert "object D" in outputs[5]
+
+
+@pytest.mark.parametrize("bad", ["object A:FinSet 3", "object B:Missing"])
+def test_failed_object_batch_retains_exact_sequential_error_boundary(bad):
+    from quivers.cli.repl_session import ReplSession
+
+    source = f"object A:FinSet 2\n\n{bad}\n\nobject Never:FinSet 5"
+    reference = ReplSession()
+    expected = []
+    for chunk in _split_cell(source):
+        response = reference.dispatch(chunk)
+        expected.append(response)
+        if not response.ok:
+            break
+    kernel = _kernel()
+    reply = kernel.do_execute(source, silent=False)
+    assert reply["status"] == "error"
+    assert kernel.repl.module == reference.module
+    assert not kernel.repl.info("Never").ok
+    assert reply["evalue"] == "\n".join(d.message for d in expected[-1].diagnostics)
+    outputs = [
+        content["text"] for kind, content in kernel._captured if kind == "stream"
+    ]
+    assert outputs == [expected[0].body + "\n"]
+
+
+def test_object_batches_do_not_reorder_a_forward_reference():
+    kernel = _kernel()
+    reply = kernel.do_execute(
+        "object Alias:Later\n\nobject Later:FinSet 2", silent=True
+    )
+    assert reply["status"] == "error"
+    assert not kernel.repl.info("Later").ok
+
+
+def test_existing_executable_model_keeps_sequential_compilation_and_rng():
+    import torch
+    from quivers.cli.repl_session import ReplSession
+    from quivers.dsl.qiec_tooling import analyze_module
+
+    addition = "object A:FinSet 2\n\nobject B:FinSet 3"
+    with torch.random.fork_rng():
+        torch.manual_seed(812)
+        reference = ReplSession()
+        assert reference.dispatch(SOURCE).ok
+        expected = [
+            reference.dispatch(chunk).body + "\n" for chunk in _split_cell(addition)
+        ]
+        expected_rng = torch.rand(5)
+        torch.manual_seed(812)
+        kernel = _kernel()
+        assert kernel.do_execute(SOURCE, silent=True)["status"] == "ok"
+        with patch(
+            "quivers.cli.repl_session.analyze_module", wraps=analyze_module
+        ) as analyze:
+            assert kernel.do_execute(addition, silent=False)["status"] == "ok"
+        torch.testing.assert_close(torch.rand(5), expected_rng, rtol=0, atol=0)
+    assert analyze.call_count == 2
+    assert [
+        content["text"] for kind, content in kernel._captured if kind == "stream"
+    ] == expected
+
+
+@pytest.mark.parametrize("symbolic", [False, True])
+def test_watches_and_symbolic_preludes_keep_per_chunk_installation(symbolic):
+    from quivers.dsl.qiec_tooling import analyze_module
+
+    kernel = _kernel()
+    if symbolic:
+        source = "object Rows:FinSet _\n\nobject Out:Real 1"
+    else:
+        assert (
+            kernel.do_execute("object A:FinSet 2\n:watch A", silent=True)["status"]
+            == "ok"
+        )
+        source = "object B:FinSet 3\n\nobject C:FinSet 4"
+    with patch(
+        "quivers.cli.repl_session.analyze_module", wraps=analyze_module
+    ) as analyze:
+        assert kernel.do_execute(source, silent=True)["status"] == "ok"
+    assert analyze.call_count == 2
