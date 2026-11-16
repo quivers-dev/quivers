@@ -1979,9 +1979,10 @@ class Independent(Measure):
     ----------
     base : Distribution
         Independent coordinate laws or raw measures.
-    reinterpreted_batch_ndims : int
+    reinterpreted_batch_ndims : int or Tensor
         Nonnegative number of trailing batch axes forming one event. Zero
-        preserves the base law's batch and event axes.
+        preserves the base law's batch and event axes. A tensor must be scalar
+        and carry an integer value.
     validate_args : bool or None
         Optional Torch argument-validation policy."""
 
@@ -1991,23 +1992,22 @@ class Independent(Measure):
     def __init__(
         self,
         base: Distribution,
-        reinterpreted_batch_ndims: int,
+        reinterpreted_batch_ndims: int | Tensor,
         validate_args: bool | None = None,
     ) -> None:
-        if isinstance(reinterpreted_batch_ndims, Tensor):
-            if reinterpreted_batch_ndims.ndim != 0:
+        count_value: object = reinterpreted_batch_ndims
+        if isinstance(count_value, Tensor):
+            if count_value.ndim != 0:
                 raise TypeError(
                     "Independent: reinterpreted_batch_ndims must be a scalar integer"
                 )
-            reinterpreted_batch_ndims = reinterpreted_batch_ndims.item()
-        reinterpreted_batch_ndims = independent_ndims(
-            reinterpreted_batch_ndims, len(base.batch_shape)
-        )
+            count_value = count_value.item()
+        count = independent_ndims(count_value, len(base.batch_shape))
         self.base = base
-        self.reinterpreted_batch_ndims = int(reinterpreted_batch_ndims)
+        self.reinterpreted_batch_ndims = count
         self._inner = torch.distributions.Independent(
             base,
-            reinterpreted_batch_ndims,
+            count,
         )
         super().__init__(
             batch_shape=self._inner.batch_shape,

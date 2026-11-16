@@ -33,6 +33,7 @@ FamilySpec entry.
 from __future__ import annotations
 
 from typing import Literal
+from numbers import Integral, Real
 import math
 from collections.abc import Callable, Mapping
 import torch
@@ -1343,22 +1344,45 @@ def make_fixed_truncated_normal(
 
 
 def make_fixed_categorical(
-    values: float | list[float],
+    values: object,
     codomain: AnySpace,
     *,
     parameterization: str,
 ) -> FixedDistribution:
-    """Create a literal categorical from probabilities or logits."""
+    """Create a literal categorical from probabilities or logits.
+
+    Parameters
+    ----------
+    values : object
+        Real scalar or sequence of real scalar weights. A scalar repeats
+        over the codomain; a scalar tensor retains its numeric value.
+    codomain : AnySpace
+        Existing finite response space fixing the number of categories.
+    parameterization : str
+        The selected ``probs`` or ``logits`` parameterization.
+
+    Returns
+    -------
+    FixedDistribution
+        Native categorical morphism with its ordinary support validation.
+
+    Raises
+    ------
+    TypeError
+        If a weight is not a real scalar literal.
+    ValueError
+        If a weight vector's length differs from the codomain cardinality.
+    """
     cardinality = int(getattr(codomain, "cardinality", getattr(codomain, "size", 2)))
     if isinstance(values, (list, tuple)):
-        vector = [float(value) for value in values]
+        vector = [float(_literal_scalar(value, "Categorical")) for value in values]
         if len(vector) != cardinality:
             raise ValueError(
                 f"Categorical {parameterization} vector has length "
                 f"{len(vector)} but codomain has cardinality={cardinality}"
             )
     else:
-        vector = [float(values)] * cardinality
+        vector = [float(_literal_scalar(values, "Categorical"))] * cardinality
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         parameter = torch.tensor(vector, device=device).expand(batch, cardinality)
@@ -2150,10 +2174,101 @@ def _normalize_inline_args(args):
     return tuple(_unwrap_draw_arg(a) for a in args)
 
 
+type _ConstructorValue = (
+    D.Distribution | torch.Tensor | int | float | bool | str | list[_ConstructorValue]
+)
+
+
+def _literal_scalar(value: object, family: str) -> int | float:
+    """Retain a literal's numeric carrier after checking scalar structure.
+
+    Parameters
+    ----------
+    value : object
+        Evaluated constructor argument, optionally a scalar tensor.
+    family : str
+        Family used in the diagnostic.
+
+    Returns
+    -------
+    int or float
+        Numeric scalar without integer-to-floating conversion.
+
+    Raises
+    ------
+    TypeError
+        If the argument is not a real scalar literal.
+    """
+    if isinstance(value, torch.Tensor) and value.ndim == 0:
+        value = value.item()
+    if isinstance(value, int | float):
+        return value
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        return float(value)
+    raise TypeError(f"{family}: expected a real scalar literal")
+
+
+def _distribution_argument(value: object, family: str) -> D.Distribution:
+    """Check the shared distribution-argument boundary of measure constructors.
+
+    Parameters
+    ----------
+    value : object
+        Evaluated base or mixture-component argument.
+    family : str
+        Measure constructor used in the diagnostic.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        Actual native law, including unnormalized measures.
+
+    Raises
+    ------
+    ValueError
+        If the base is not a native distribution.
+    """
+    if not isinstance(value, D.Distribution):
+        raise ValueError(
+            f"{family}: expected a Distribution argument, got {type(value).__name__}"
+        )
+    return value
+
+
+def _restriction_bound(value: object, family: str) -> torch.Tensor | float | None:
+    """Validate bound structure before the restriction's own numeric conversion.
+
+    Parameters
+    ----------
+    value : object
+        Scalar, numeric sequence, tensor, or absent endpoint.
+    family : str
+        Restriction constructor used in the diagnostic.
+
+    Returns
+    -------
+    torch.Tensor or float or None
+        Tensor preserving its gradients, or literal preserving its precision.
+        Numeric sequences use the restriction's Float64 arithmetic policy.
+
+    Raises
+    ------
+    TypeError
+        If an endpoint is not numeric.
+    """
+    if value is None or isinstance(value, torch.Tensor):
+        return value
+    if isinstance(value, list | tuple):
+        return torch.as_tensor(value, dtype=torch.float64)
+    return _literal_scalar(value, family)
+
+
 def _eval_draw_arg_value(
-    arg,
+    arg: object,
     variable_types,
-):
+) -> _ConstructorValue:
     """Evaluate a draw-arg to a Python value usable inside the
     measure-algebra constructors. Scalars become floats; numeric
     `DrawArgList`s become lists of floats; `DrawArgDist`s become
@@ -2219,7 +2334,7 @@ def _build_operator_value(
     *,
     bound: bool = False,
     parameter_names: tuple[str, ...] | None = None,
-):
+) -> D.Distribution:
     """Evaluate an operator-family call inside a compositional
     expression. Returns a `Distribution` / `Measure` value usable as
     a parameter to an enclosing operator.
@@ -2239,29 +2354,32 @@ def _build_operator_value(
             raise ValueError(
                 f"{family}: expected base, bounds, and optional endpoint flags, got {len(evaluated)} args"
             )
-        base = evaluated[0]
-        if not hasattr(base, "log_prob"):
-            raise ValueError(
-                f"{family}: first arg must be a Distribution, got {type(base).__name__}"
-            )
+        base = _distribution_argument(evaluated[0], family)
         named = dict(zip(names or (), evaluated, strict=False))
         low = named.get("low")
         high = named.get("high")
-        low_t = torch.as_tensor(low) if low is not None else None
-        high_t = torch.as_tensor(high) if high is not None else None
+        low_t = _restriction_bound(low, family)
+        high_t = _restriction_bound(high, family)
+        lower_closed = named.get("lower_closed", True)
+        upper_closed = named.get("upper_closed", True)
+        if not isinstance(lower_closed, bool | torch.Tensor) or not isinstance(
+            upper_closed, bool | torch.Tensor
+        ):
+            raise TypeError(f"{family}: endpoint flags must be Boolean")
         return _MeasureRestrict(
             base,
             low=low_t,
             high=high_t,
-            lower_closed=named.get("lower_closed", True),
-            upper_closed=named.get("upper_closed", True),
+            lower_closed=lower_closed,
+            upper_closed=upper_closed,
         )
     if family == "Pushforward":
         if len(evaluated) != 2:
             raise ValueError(
                 f"Pushforward: expected (base, bijector), got {len(evaluated)} args"
             )
-        base, bij = evaluated
+        base = _distribution_argument(evaluated[0], family)
+        bij = evaluated[1]
         if isinstance(bij, str):
             bij_cls = BIJECTORS_BY_NAME.get(bij)
             if bij_cls is None:
@@ -2284,19 +2402,25 @@ def _build_operator_value(
         weights = torch.as_tensor(weights_raw)
         if not isinstance(components_raw, list):
             raise ValueError("Mixture: components must be a list literal")
-        return _MeasureMixture(weights, components_raw)
+        components: list[D.Distribution] = []
+        for component in components_raw:
+            components.append(_distribution_argument(component, family))
+        return _MeasureMixture(weights, components)
     if family == "Independent":
         if len(evaluated) != 2:
             raise ValueError(
                 "Independent: expected (base, reinterpreted_batch_ndims), "
                 f"got {len(evaluated)} args"
             )
-        base, n = evaluated
+        base = _distribution_argument(evaluated[0], family)
+        n = evaluated[1]
+        if not isinstance(n, int | torch.Tensor):
+            raise TypeError("Independent: reinterpreted_batch_ndims must be an integer")
         return _MeasureIndependent(base, n)
     if family == "Normalize":
         if len(evaluated) != 1:
             raise ValueError(f"Normalize: expected 1 arg, got {len(evaluated)}")
-        return _MeasureNormalize(evaluated[0])
+        return _MeasureNormalize(_distribution_argument(evaluated[0], family))
     raise ValueError(f"unknown operator family {family!r}")
 
 
@@ -2791,8 +2915,13 @@ def _raw_distribution_value(
     if family == "Truncated":
         # The normalized source wrapper is the existing restriction algebra;
         # keep raw Restrict itself unnormalized at query sites.
+        low, high = values["low"], values["high"]
         return _MeasureNormalize(
-            _MeasureRestrict(values["base"], low=values["low"], high=values["high"])
+            _MeasureRestrict(
+                _distribution_argument(values["base"], family),
+                low=_restriction_bound(low, family),
+                high=_restriction_bound(high, family),
+            )
         )
     if family in _OPERATOR_FAMILIES:
         return _build_operator_value(
@@ -3272,7 +3401,10 @@ def _make_fixed_selected_parameters(
                 tensor = literal.expand(batch, *literal.shape)
             else:
                 tensor = torch.full(
-                    (batch, d), float(value), device=device, dtype=dtype
+                    (batch, d),
+                    float(_literal_scalar(value, family)),
+                    device=device,
+                    dtype=dtype,
                 )
             values[name] = _selected_clamp(spec, name, tensor)
         alternative = _ALTERNATIVE_BUILDERS.get((family, parameters))

@@ -195,6 +195,7 @@ from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.qiec import (
     QiecModule,
     ProgramParameter,
+    ProgramEntry,
     NAT,
     PlateShape,
     StaticSubstitution,
@@ -1849,6 +1850,7 @@ class _ProgramsMixin:
     _output_expr: Expr | None
     _groups: dict[str, list[str]]
     _program_templates: dict[str, ProgramDecl]
+    _instantiated_program_contracts: dict[str, tuple[ProgramEntry, StaticSubstitution]]
     _call_refusals: dict[str, CompileError]
     _parameter_space_stack: list[dict[str, AnySpace]]
     _sampleable_context_stack: list[
@@ -4314,10 +4316,16 @@ class _ProgramsMixin:
                     plate = PlateShape(batch=site.batch, event=site.event)
                     if instantiated is not None:
                         plate = substitute_plate(plate, instantiated[1])
-                    if all(isinstance(axis.size, IndexLiteral) for axis in plate.batch):
-                        checked_batch_shapes[site.name] = tuple(
-                            int(axis.size.value) for axis in plate.batch
-                        )
+                    batch_shape: list[int] = []
+                    for axis in plate.batch:
+                        size = axis.size
+                        if not isinstance(size, IndexLiteral) or not isinstance(
+                            size.value, int
+                        ):
+                            break
+                        batch_shape.append(size.value)
+                    else:
+                        checked_batch_shapes[site.name] = tuple(batch_shape)
         steps: list[Step] = []
         # A grouped latent is an enumeration axis, even when its extent
         # coincides with an observation plate. Track its lexical uses,
