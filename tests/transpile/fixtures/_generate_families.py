@@ -197,8 +197,9 @@ export transformed_fixture
 EXCLUDED_FAMILIES: dict[str, str] = {
     "Independent": (
         "A nontrivial Independent needs a batched base distribution. The checked "
-        "program frontend currently rejects tensor-valued Normal parameters, "
-        "and a scalar base cannot reinterpret a batch axis. Python/QIEC "
+        "nested Normal rejects an undeclared intrinsic batch; parameters over "
+        "an enclosing observation plate are gathered coordinate-wise instead. "
+        "A scalar base cannot reinterpret a batch axis. Python/QIEC "
         "distribution tests cover this family; no valid program fixture is claimed."
     ),
 }

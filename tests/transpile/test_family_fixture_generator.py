@@ -9,6 +9,7 @@ import torch
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import loads
+from quivers.dsl.qiec_lowering import QiecDiagnosticError
 from quivers.inference.trace import trace
 from tests.transpile.fixtures import _generate_families as generator
 
@@ -97,15 +98,27 @@ def test_compositional_and_event_fixtures_score_independent_torch_densities(fami
     )
 
 
-def test_independent_source_exclusion_reproduces_checked_batch_limitation():
-    source = """object Row : FinSet 3
+@pytest.mark.parametrize(
+    ("plate", "diagnostic"),
+    [
+        ("", "has type Tensor[Real]([2]); it takes a Real"),
+        (" : Row", "has batch axes that do not follow the declared plate"),
+    ],
+)
+def test_independent_source_exclusion_reproduces_checked_batch_limitation(
+    plate, diagnostic
+):
+    source = f"""object Row : FinSet 3
 program model : Row -> Row
-    observe y : Row <- Independent(base=Normal(loc=[0.0, 0.0], scale=[1.0, 1.0]), reinterpreted_batch_ndims=1)
+    observe y{plate} <- Independent(base=Normal(loc=[0.0, 0.0], scale=[1.0, 1.0]), reinterpreted_batch_ndims=1)
     return y
 export model
 """
-    with pytest.raises(ValueError, match="takes a Real"):
+    with pytest.raises(QiecDiagnosticError) as caught:
         loads(source)
+    assert caught.value.code == "qiec-distribution"
+    assert "parameter 'loc' of 'Normal'" in str(caught.value)
+    assert diagnostic in str(caught.value)
 
 
 @pytest.mark.parametrize(

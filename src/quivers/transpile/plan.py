@@ -1810,6 +1810,15 @@ class _ProgramWalk:
                 return IRArgBroadcast(
                     value=IRArgNumber(value=literal), target_shape=shape
                 )
+            # A normalized product of measures retains its coordinate-wise
+            # construction inside comprehensions. Diagnose that unsupported
+            # distribution argument through the same path as a scalar one;
+            # the comprehension is not a numeric broadcast to erase.
+            body = value.body
+            while isinstance(body, Comprehension):
+                body = body.body
+            if isinstance(body, DistributionValue):
+                return self._arg(body, site, head, plate, morphism)
         if isinstance(value, TensorValue):
             if value.items and all(
                 isinstance(item, TensorValue) for item in value.items
