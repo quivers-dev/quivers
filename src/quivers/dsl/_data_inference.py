@@ -7,6 +7,7 @@ from numbers import Integral
 
 import didactic.api as dx
 import torch
+from quivers.family_catalog import FamilyCatalog
 
 from quivers.dsl.ast_nodes import (
     AxisSpec,
@@ -64,14 +65,16 @@ def _shape(value: object, name: str) -> tuple[int, ...]:
 
 
 def _checked_source(
-    source: Module, retained: tuple[Module, QiecModule] | None
+    source: Module,
+    retained: tuple[Module, QiecModule] | None,
+    families: FamilyCatalog | None = None,
 ) -> QiecModule:
     """Reuse checked evidence only for the identical, unrevised source AST."""
     if retained is not None and retained[0] is source:
         return retained[1]
     from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 
-    return lower_qvr_to_qiec(source)
+    return lower_qvr_to_qiec(source, families=families)
 
 
 def _walk(value: object) -> Iterator[dx.Model]:
@@ -200,14 +203,15 @@ def infer_data_objects(
     data: Mapping[str, object],
     *,
     checked_source: tuple[Module, QiecModule] | None = None,
+    families: FamilyCatalog | None = None,
 ) -> Module:
     """Replace ``FinSet _`` when the checked inputs provide consistent evidence."""
     inferred = _inferred_objects(module)
     if not inferred:
         return _specialize_program_parameters(
-            module, data, checked_source=checked_source
+            module, data, checked_source=checked_source, families=families
         )
-    checked = _checked_source(module, checked_source)
+    checked = _checked_source(module, checked_source, families)
     evidence: dict[str, tuple[int, str]] = {}
     affine_equations: list[tuple[IndexTerm, int]] = []
     affine_sources: set[str] = set()
@@ -293,7 +297,7 @@ def infer_data_objects(
         else:
             statements.append(statement)
     return _specialize_program_parameters(
-        module.with_(statements=tuple(statements)), data
+        module.with_(statements=tuple(statements)), data, families=families
     )
 
 
@@ -302,6 +306,7 @@ def _specialize_program_parameters(
     data: Mapping[str, object],
     *,
     checked_source: tuple[Module, QiecModule] | None = None,
+    families: FamilyCatalog | None = None,
 ) -> Module:
     """Solve scoped finite binders from explicit arguments and checked shapes.
 
@@ -323,7 +328,7 @@ def _specialize_program_parameters(
     candidates = {name: binders for name, binders in candidates.items() if binders}
     if not candidates or not data:
         return module
-    checked = _checked_source(module, checked_source)
+    checked = _checked_source(module, checked_source, families)
     solutions: dict[str, dict[str, int]] = {}
     for entry in checked.entries:
         binders = candidates.get(entry.name, {})

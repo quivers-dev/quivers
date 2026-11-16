@@ -29,6 +29,11 @@ def _family_metadata(distribution):
     tuple or None
         Native and semantic records, or None for an unregistered class.
     """
+    from quivers.qiec.families import DistributionFamily
+
+    declared = getattr(distribution, "_family_contract", None)
+    if isinstance(declared, DistributionFamily):
+        return None, declared
     from quivers.continuous.family_spec import FAMILY_REGISTRY
 
     return _class_metadata(type(distribution), len(FAMILY_REGISTRY))

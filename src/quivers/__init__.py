@@ -320,7 +320,11 @@ from quivers.dsl import (
     CompileError,
 )
 
+from quivers.family_catalog import DistributionFactory, FamilyCatalog
+
 __all__ = [
+    "DistributionFactory",
+    "FamilyCatalog",
     # objects
     "SetObject",
     "FinSet",

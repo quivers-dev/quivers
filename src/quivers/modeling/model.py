@@ -11,6 +11,7 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous import ContinuousSpace, MonadicProgram
 from quivers.dsl import Compiler, CompileError, Module, parse, lower_qvr_to_qiec
+from quivers.family_catalog import FamilyCatalog
 from quivers.dsl.ast_nodes import (
     ExportDecl,
     ExprIdent,
@@ -150,9 +151,18 @@ class Model:
     entry : str or None
         Program to select. Defaults to the first exported program, or the
         only program when none is exported.
+    families : FamilyCatalog or None
+        Immutable native family definitions for this model's compilation.
     """
 
-    def __init__(self, source: str, *, entry: str | None = None) -> None:
+    def __init__(
+        self,
+        source: str,
+        *,
+        entry: str | None = None,
+        families: FamilyCatalog | None = None,
+    ) -> None:
+        self.families = families
         self.source = source
         self.syntax: Module = parse(source)
         names = [s.name for s in self.syntax.statements if isinstance(s, ProgramDecl)]
@@ -173,16 +183,23 @@ class Model:
         if entry not in names:
             raise ValueError(f"unknown program {entry!r}; choose from {names}")
         self.entry = entry
-        checked = lower_qvr_to_qiec(self.syntax)
+        checked = lower_qvr_to_qiec(self.syntax, families=families)
         self.checked_module = checked
         self._checked_source = (self.syntax, checked)
+        self._checked_families = families
         typed_entry = next((e for e in checked.entries if e.name == entry), None)
         if typed_entry is None:
             raise CompileError(f"entry {entry!r} has no checked input contract")
         self.schema = ModelSchema(entry=typed_entry)
 
     @classmethod
-    def from_file(cls, path: str | Path, *, entry: str | None = None) -> Model:
+    def from_file(
+        cls,
+        path: str | Path,
+        *,
+        entry: str | None = None,
+        families: FamilyCatalog | None = None,
+    ) -> Model:
         """Read a QVR model from a file.
 
         Parameters
@@ -191,13 +208,17 @@ class Model:
             UTF-8 source file.
         entry : str or None
             Program to select.
+        families : FamilyCatalog or None
+            Immutable native family definitions for this compilation.
 
         Returns
         -------
         Model
             Parsed reusable model.
         """
-        return cls(Path(path).read_text(encoding="utf-8"), entry=entry)
+        return cls(
+            Path(path).read_text(encoding="utf-8"), entry=entry, families=families
+        )
 
     def fit[Result](
         self,
@@ -324,8 +345,9 @@ class Model:
             )
         with torch.random.fork_rng(devices=[]):
             torch.random.default_generator.manual_seed(seed)
-            compiler = Compiler(self.syntax)
-            compiler._reuse_checked_source(*self._checked_source)
+            compiler = Compiler(self.syntax, families=self.families)
+            if self.families is self._checked_families:
+                compiler._reuse_checked_source(*self._checked_source)
             compiler.bind_data({**values, **arguments})
             module = compiler.compile()
             qiec = compiler.qiec_module

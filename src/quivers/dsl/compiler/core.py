@@ -60,6 +60,8 @@ from quivers.dsl.qiec_lowering import (
     non_qiec_projection,
 )
 from quivers.qiec import QiecModule
+from quivers.family_catalog import FamilyCatalog
+from quivers.qiec.families import FAMILIES
 from quivers.qiec.terms import PlateAxis
 from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.types import IndexLiteral
@@ -123,6 +125,8 @@ class Compiler(
         Whether to lower the checked QIEC projection. Tooling sets this to
         ``False`` only for its classic-compiler recovery pass after QIEC has
         already produced a diagnostic.
+    families : FamilyCatalog or None
+        Immutable custom family contracts and native implementations.
     """
 
     def __init__(
@@ -132,7 +136,10 @@ class Compiler(
         module_name: str | None = None,
         file_path: str = "<source>",
         lower_qiec: bool = True,
+        families: FamilyCatalog | None = None,
     ) -> None:
+        self._family_catalog = families
+        self._distribution_families = families if families is not None else FAMILIES
         self._qiec_module: QiecModule | None = None
         self._deferred_statements: tuple[Statement, ...] = ()
         # The QIEC projection is lowered on first use, after the
@@ -400,6 +407,7 @@ class Compiler(
                 module,
                 module_name=self._qiec_module_name,
                 file_path=self._qiec_file_path,
+                families=self._family_catalog,
             )
         except QiecDiagnosticError as error:
             if error.code != GAP_CODE:
@@ -409,6 +417,7 @@ class Compiler(
                 module_name=self._qiec_module_name,
                 file_path=self._qiec_file_path,
                 elaborate_programs=False,
+                families=self._family_catalog,
             ).with_(
                 gap=error.message,
             )
@@ -520,6 +529,7 @@ class Compiler(
             checked_source=(source, self._qiec_module)
             if self._qiec_module is not None
             else None,
+            families=self._family_catalog,
         )
         if resolved is source:
             return
@@ -533,6 +543,11 @@ class Compiler(
     def _reuse_checked_source(self, source: Module, checked: QiecModule) -> bool:
         """Seed the lazy checked cache only when source expansion kept its identity."""
         if self._qiec_source is not source:
+            return False
+        expected = (
+            self._family_catalog.definitions if self._family_catalog is not None else ()
+        )
+        if checked.distribution_families != expected:
             return False
         self._qiec_module = checked
         return True

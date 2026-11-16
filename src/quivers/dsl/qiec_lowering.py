@@ -42,7 +42,8 @@ from quivers.qiec.canonical import (
     tensor_type,
 )
 from quivers.qiec.builtins import BUILTIN_EFFECTS
-from quivers.qiec.families import FAMILIES
+from quivers.qiec.families import FAMILIES, DistributionFamily
+from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.checking import _plated_sample_type
 from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.effects import render_row
@@ -260,6 +261,9 @@ class QvrQiecSource(dx.Model):
     module_name: str
     file_path: str = "<source>"
     elaborate_programs: bool = True
+    distribution_families: tuple[DistributionFamily, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 class CheckedQvrQiec(QiecModel):
@@ -902,6 +906,7 @@ def lower_qvr_to_qiec(
     source_version: str = QVR_SOURCE_VERSION,
     target_version: str = QIEC_ABI,
     elaborate_programs: bool = True,
+    families: FamilyCatalog | None = None,
 ) -> QiecModule:
     """Check and lower the QIEC projection of one parsed QVR module.
 
@@ -921,6 +926,9 @@ def lower_qvr_to_qiec(
         The kernel ABI to lower to.
     elaborate_programs : bool
         Whether ``program`` declarations become computations.
+    families : FamilyCatalog or None
+        Compilation-local custom distribution contracts and native bindings.
+        Only the semantic contracts are retained in the checked module.
 
     Returns
     -------
@@ -956,6 +964,7 @@ def lower_qvr_to_qiec(
         module_name=module_name,
         file_path=file_path,
         elaborate_programs=elaborate_programs,
+        distribution_families=families.definitions if families is not None else (),
     )
     return lower_checked(
         source,
@@ -1536,7 +1545,13 @@ class _Elaborator(
         # program name: the latent each row binds to its block's weighted
         # shots, and the parameter holding one position's entry.
         self._markov_rows: dict[str, tuple[str, str]] = {}
-        self.registry = KernelRegistry()
+        self.distribution_families = {
+            **FAMILIES,
+            **{item.name: item for item in source.distribution_families},
+        }
+        self.registry = KernelRegistry(
+            distribution_families=source.distribution_families
+        )
         # The type a `return` in the body being lowered should produce. It
         # is a hint for positions that cannot state their type, such as a
         # site literal or an integral literal standing for a real; the
@@ -1586,6 +1601,7 @@ class _Elaborator(
         return QiecModule(
             module=self.source.module_name,
             source_protocol=QVR_SOURCE_VERSION,
+            distribution_families=self.source.distribution_families,
             index_sorts=tuple(self.index_sorts.values()),
             families=tuple(self.families.values()),
             constructors=tuple(self.constructors.values()),
@@ -3239,7 +3255,10 @@ class _Elaborator(
                 result_type=cast(TypeExpr, components[position]),
             )
         if isinstance(authored, surface.LetExprCall):
-            if authored.func in FAMILIES and authored.func not in _BUILTIN_PRIMITIVES:
+            if (
+                authored.func in self.distribution_families
+                and authored.func not in _BUILTIN_PRIMITIVES
+            ):
                 return self._lower_family_application(
                     authored, scope, context, static_bindings, path, expected
                 )
@@ -4171,7 +4190,7 @@ class _Elaborator(
             If more arguments are given than the family has parameters,
             or the construction fails to check.
         """
-        record = FAMILIES[authored.func]
+        record = self.distribution_families[authored.func]
         if len(authored.args) > len(record.parameters):
             self._fail(
                 authored,
@@ -4229,7 +4248,8 @@ class _Elaborator(
                         (*path, position, index),
                         reserved_batch_ndims=reserve,
                     )
-                    if isinstance(item, surface.LetExprCall) and item.func in FAMILIES
+                    if isinstance(item, surface.LetExprCall)
+                    and item.func in self.distribution_families
                     else self._lower_value(item, scope, context, static_bindings)
                     for index, item in enumerate(argument.items)
                 )
@@ -4249,7 +4269,7 @@ class _Elaborator(
             elif (
                 parameter.constraint == "sampleable"
                 and isinstance(argument, surface.LetExprCall)
-                and argument.func in FAMILIES
+                and argument.func in self.distribution_families
             ):
                 value = self._lower_family_application(
                     argument,
@@ -4322,7 +4342,9 @@ class _Elaborator(
             for name, argument in arguments
         }
         try:
-            result_type = _plated_sample_type(value, record, argument_types)
+            result_type = _plated_sample_type(
+                value, record, argument_types, families=self.distribution_families
+            )
         except KernelError as error:
             if not record.event_sources and expected is None and record.event_rank:
                 self._fail(

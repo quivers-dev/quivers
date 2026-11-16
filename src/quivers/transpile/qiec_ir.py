@@ -27,6 +27,7 @@ from quivers.qiec import terms as tm
 from quivers.qiec import types as ty
 from quivers.qiec.identifiers import SourceOrigin, StableId
 from quivers.qiec.primitives import PRIMITIVES
+from quivers.qiec.families import FAMILIES, DistributionFamily
 
 
 type IRScalar = None | bool | int | float | str
@@ -2036,6 +2037,7 @@ class IRQiecModule(dx.Model):
 
     module: str
     source_protocol: str
+    distribution_families: tuple[DistributionFamily, ...] = ()
     index_sorts: tuple[IRQiecUserIndexSort, ...] = ()
     families: tuple[IRQiecFamilyDecl, ...] = ()
     constructors: tuple[IRQiecConstructorDecl, ...] = ()
@@ -2130,6 +2132,8 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
         return value
     if isinstance(value, tuple):
         return tuple(_convert(item) for item in value)
+    if isinstance(value, DistributionFamily):
+        return value
     if isinstance(value, ids.SourceOrigin):
         return IRQiecSourceOrigin(
             module=value.module,
@@ -2670,6 +2674,7 @@ type QiecFeature = Literal[
     "tuple",
     "tensor",
     "distribution",
+    "native-family",
     "plate",
     "log-density",
     "log-mass",
@@ -2993,6 +2998,8 @@ def _body_features(node: IRQiecComputation) -> set[QiecFeature]:
                 value(entry)
         elif isinstance(item, IRQiecDistributionValue):
             required.add("distribution")
+            if item.name not in FAMILIES:
+                required.add("native-family")
             if item.plate.batch or item.plate.event:
                 required.add("plate")
             for argument in item.arguments:

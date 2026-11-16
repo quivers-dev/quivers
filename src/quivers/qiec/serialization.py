@@ -23,6 +23,8 @@ from quivers.qiec.coverage import (
 )
 from quivers.qiec._models import QiecModel, field_types, validate_shape
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
+from quivers.qiec.families import DistributionFamily, FamilyParameter
+from quivers.qiec.family_shapes import FamilyShapeSignature
 from quivers.qiec.effects import (
     ArgumentDef,
     ComputationType,
@@ -137,7 +139,7 @@ from quivers.qiec.types import (
 )
 
 
-QIEC_WIRE_FORMAT = "qiec-json/v1"
+QIEC_WIRE_FORMAT = "qiec-json/v2"
 """The format tag every encoded document carries, checked on decoding."""
 
 type JsonValue = (
@@ -194,6 +196,9 @@ _ENUM_CLASSES = (
 )
 
 _NODE_CLASSES = (
+    DistributionFamily,
+    FamilyParameter,
+    FamilyShapeSignature,
     # source identity and kinds
     SourceOrigin,
     DynamicAddressFrame,
@@ -297,9 +302,13 @@ _NODE_CLASSES = (
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}
 _ENUMS = {_class_tag(class_): class_ for class_ in _ENUM_CLASSES}
-_NODES: dict[str, type[QiecModel]] = {
-    _class_tag(class_): class_ for class_ in _NODE_CLASSES
-}
+_NODES: dict[
+    str,
+    type[QiecModel]
+    | type[DistributionFamily]
+    | type[FamilyParameter]
+    | type[FamilyShapeSignature],
+] = {_class_tag(class_): class_ for class_ in _NODE_CLASSES}
 
 
 def _encode(value: object) -> JsonValue:
@@ -347,7 +356,9 @@ def _encode(value: object) -> JsonValue:
         return {"$tuple": [_encode(item) for item in value]}
     if callable(value):
         raise SerializationError("host callables cannot enter stable QIEC")
-    if isinstance(value, QiecModel):
+    if isinstance(
+        value, (QiecModel, DistributionFamily, FamilyParameter, FamilyShapeSignature)
+    ):
         tag = _class_tag(type(value))
         if tag not in _NODES:
             raise SerializationError(
@@ -356,7 +367,14 @@ def _encode(value: object) -> JsonValue:
         return {
             "$type": tag,
             "fields": [
-                {"name": name, "value": _encode(getattr(value, name))}
+                {
+                    "name": name,
+                    "value": _encode(
+                        tuple(value.targets.items())
+                        if isinstance(value, DistributionFamily) and name == "targets"
+                        else getattr(value, name)
+                    ),
+                }
                 for name in type(value).__field_specs__
             ],
         }
@@ -393,7 +411,7 @@ def _exact_keys(value: dict[str, JsonValue], expected: set[str], subject: str) -
         )
 
 
-def _decode(value: JsonValue) -> object:
+def _decode(value: JsonValue, *, legacy: bool = False) -> object:
     """Decode one value from the wire form.
 
     Parameters
@@ -439,7 +457,7 @@ def _decode(value: JsonValue) -> object:
         items = value["$tuple"]
         if not isinstance(items, list):
             raise SerializationError("$tuple must contain an array")
-        return tuple(_decode(item) for item in items)
+        return tuple(_decode(item, legacy=legacy) for item in items)
 
     if "$id" in value:
         _exact_keys(value, {"$id", "value"}, "identifier")
@@ -476,6 +494,14 @@ def _decode(value: JsonValue) -> object:
         if not isinstance(encoded_fields, list):
             raise SerializationError("kernel node fields must be an array")
         class_ = _NODES[tag]
+        if legacy and class_ in (
+            DistributionFamily,
+            FamilyParameter,
+            FamilyShapeSignature,
+        ):
+            raise SerializationError(
+                "custom distribution metadata requires qiec-json/v2"
+            )
         class_fields = class_.__field_specs__
         expected_names = list(class_fields)
         actual_names: list[str] = []
@@ -490,11 +516,31 @@ def _decode(value: JsonValue) -> object:
             if name in arguments:
                 raise SerializationError(f"duplicate kernel field {name!r}")
             actual_names.append(name)
-            arguments[name] = _decode(encoded_field["value"])
+            arguments[name] = _decode(encoded_field["value"], legacy=legacy)
+        if legacy and class_ is QiecModule:
+            if "distribution_families" in arguments:
+                raise SerializationError(
+                    "qiec-json/v1 cannot declare custom distribution contracts"
+                )
+            # v1 never carried custom contracts. Add precisely its known empty
+            # extension, retaining strict field validation for everything else.
+            position = expected_names.index("distribution_families")
+            actual_names.insert(position, "distribution_families")
+            arguments["distribution_families"] = ()
         if actual_names != expected_names:
             raise SerializationError(
                 f"fields for {tag!r} must be {expected_names!r}, got {actual_names!r}"
             )
+        if class_ is DistributionFamily:
+            targets = arguments.get("targets")
+            if not isinstance(targets, tuple) or any(
+                not isinstance(pair, tuple)
+                or len(pair) != 2
+                or not all(isinstance(item, str) for item in pair)
+                for pair in targets
+            ):
+                raise SerializationError("distribution targets must be string pairs")
+            arguments["targets"] = dict(targets)
         tag_field = class_fields.get("tag")
         if tag_field is not None and not tag_field.is_required:
             actual_tag = arguments["tag"]
@@ -571,13 +617,13 @@ def from_data(data: object) -> object:
         raise SerializationError("QIEC wire envelope must be an object")
     typed = cast(dict[str, JsonValue], data)
     _exact_keys(typed, {"$schema", "abi", "root"}, "QIEC wire envelope")
-    if typed["$schema"] != QIEC_WIRE_FORMAT:
+    if typed["$schema"] not in (QIEC_WIRE_FORMAT, "qiec-json/v1"):
         raise SerializationError(f"unsupported QIEC wire format {typed['$schema']!r}")
     if typed["abi"] != QIEC_ABI:
         raise SerializationError(
             f"QIEC ABI mismatch: expected {QIEC_ABI!r}, got {typed['abi']!r}"
         )
-    return _decode(typed["root"])
+    return _decode(typed["root"], legacy=typed["$schema"] == "qiec-json/v1")
 
 
 def dumps(value: object) -> str:

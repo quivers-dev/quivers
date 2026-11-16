@@ -821,19 +821,23 @@ class MonadicProgram(ContinuousMorphism):
         event_ranks = getattr(parameter_family, "_param_event_ranks", None)
         param_spec = getattr(parameter_family, "_param_spec", None)
         if event_ranks is not None and param_spec is not None:
+            packed_family = getattr(parameter_family, "_family", parameter_family)
             integer_parameters = getattr(
-                getattr(parameter_family, "_family", parameter_family),
+                packed_family,
                 "_param_integers",
                 (),
             )
             if integer_parameters:
                 variables = iter(parts)
-                for (kind, _), integer in zip(
-                    param_spec, integer_parameters, strict=True
+                for position, ((kind, _), integer) in enumerate(
+                    zip(param_spec, integer_parameters, strict=True)
                 ):
                     if kind == "var":
                         value = next(variables)
-                        if integer:
+                        validate = getattr(packed_family, "validate_parameter", None)
+                        if validate is not None:
+                            validate(position, value)
+                        elif integer:
                             _check_trial_count_source(value)
             var_ranks = tuple(
                 event_ranks[i] for i, (k, _) in enumerate(param_spec) if k == "var"

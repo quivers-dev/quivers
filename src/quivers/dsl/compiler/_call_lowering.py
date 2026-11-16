@@ -48,6 +48,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.compiler._prelude import CompileError
 from quivers.dsl.let_expr_traversal import substitute_let_expr, walk_let_expr
 from quivers.dsl.pure_builtins import BUILTIN_REGISTRY
+from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.qiec.canonical import (
     LOG_WEIGHT,
     sampled_element,
@@ -196,8 +197,10 @@ class _Lowering:
         program: str,
         step: CallStep,
         plate: _Plate | None,
+        families: Mapping[str, DistributionFamily] = FAMILIES,
     ) -> None:
         self.computations = computations
+        self.families = families
         self.cards = cards
         self.occupied = occupied
         self.program = program
@@ -226,7 +229,9 @@ class _Lowering:
             If the value has no expression form.
         """
         try:
-            return _expression(value, self.cards, RUNTIME_TARGET, self.program)
+            return _expression(
+                value, self.cards, RUNTIME_TARGET, self.program, families=self.families
+            )
         except UnsupportedConstruct as error:
             raise CallNotLowered(
                 "binds a value the compiled runtime's let expressions have no "
@@ -899,6 +904,10 @@ class CallLowering:
     ) -> None:
         self.program = program
         self.module = module
+        self.families = {
+            **FAMILIES,
+            **{item.name: item for item in module.distribution_families},
+        }
         self.cards = cards
         self.occupied = occupied
         self.computations = {item.name: item for item in module.computations}
@@ -972,6 +981,7 @@ class CallLowering:
                             self.cards,
                             RUNTIME_TARGET,
                             self.program,
+                            families=self.families,
                         )
                     )
                 )
@@ -1037,7 +1047,13 @@ class CallLowering:
                 f"`{callee.name}`, which takes {len(callee.parameters)}"
             )
         lowering = _Lowering(
-            self.computations, self.cards, self.occupied, self.program, step, None
+            self.computations,
+            self.cards,
+            self.occupied,
+            self.program,
+            step,
+            None,
+            families=self.families,
         )
         arguments: list[Value] = []
         for parameter, argument in zip(
@@ -1128,7 +1144,13 @@ class CallLowering:
         index = Local(name=_fresh(f"{step.name}_item", self.occupied), type=INT)
         plate = _Plate(axis, extent, index)
         lowering = _Lowering(
-            self.computations, self.cards, self.occupied, self.program, step, plate
+            self.computations,
+            self.cards,
+            self.occupied,
+            self.program,
+            step,
+            plate,
+            families=self.families,
         )
         if isinstance(source, LetExprVar):
             source_name = source.name

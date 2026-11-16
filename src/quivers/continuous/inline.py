@@ -77,6 +77,7 @@ from quivers.continuous.family_spec import (
 import quivers.continuous.param_transforms as parameter_domains
 from quivers.continuous.bijectors import BIJECTORS_BY_NAME, Bijector
 from quivers.continuous.program_steps import Indexed, StepArgument
+from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.families import FAMILIES
 from quivers.dsl.ast_nodes import (
     DrawArg,
@@ -503,6 +504,9 @@ class MixedInlineDistribution(ContinuousMorphism):
     param_integers : tuple[bool, ...], optional
         Parameters constrained to integers. Literal and constant counts
         retain float64 precision independently of the input's dtype.
+    param_constraints : tuple[str | None, ...] or None
+        Checked custom parameter constraints, distinguishing signed integers
+        and Boolean values from finite trial counts before numeric packing.
     param_batch_ndims : tuple[int | None, ...] or None
         Checked count of enclosing batch axes read by each parameter;
         None leaves the legacy scalar/vector packing convention in effect.
@@ -522,6 +526,7 @@ class MixedInlineDistribution(ContinuousMorphism):
         param_event_ranks: tuple[int, ...] | None = None,
         param_shapes: tuple[tuple[int, ...] | None, ...] | None = None,
         param_integers: tuple[bool, ...] | None = None,
+        param_constraints: tuple[str | None, ...] | None = None,
         param_batch_ndims: tuple[int | None, ...] | None = None,
         structural_batch_ndims: int = 0,
     ) -> None:
@@ -533,15 +538,20 @@ class MixedInlineDistribution(ContinuousMorphism):
         self._param_integers = (
             param_integers if param_integers is not None else (False,) * len(param_spec)
         )
+        self._param_constraints = param_constraints or (None,) * len(param_spec)
+        if len(self._param_constraints) != len(param_spec):
+            raise ValueError("parameter constraints must match the packing slots")
         if len(self._param_integers) != len(param_spec):
             raise ValueError(
                 "MixedInlineDistribution: param_integers length must match param_spec"
             )
-        for (kind, value), integer in zip(
-            param_spec, self._param_integers, strict=True
+        for position, ((kind, value), integer) in enumerate(
+            zip(param_spec, self._param_integers, strict=True)
         ):
-            if integer and kind in {"lit", "const"}:
-                _check_trial_count_source(value)
+            if kind in {"lit", "const"} and (
+                integer or self._param_constraints[position] == "boolean"
+            ):
+                self.validate_parameter(position, value)
         # Per-position event rank. Position 0 = per-row scalar; >= 1 =
         # vector-shaped distribution parameter (cutpoints, mixture
         # weights / locations / scales). Each consumes the number of
@@ -625,9 +635,61 @@ class MixedInlineDistribution(ContinuousMorphism):
             param_event_ranks=self._param_event_ranks,
             param_shapes=self._param_shapes,
             param_integers=self._param_integers,
+            param_constraints=self._param_constraints,
             param_batch_ndims=self._param_batch_ndims,
             structural_batch_ndims=self._structural_batch_ndims,
         )
+
+    def validate_parameter(self, position: int, value: object) -> None:
+        """Validate discrete parameter slots before numeric packing can round them.
+
+        Parameters
+        ----------
+        position : int
+            Declared constructor slot.
+        value : object
+            Original literal or tensor, before concatenation with Real values.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If a Boolean or signed integer violates its carrier, or an integer
+            exceeds this floating packed representation's exact capacity.
+        """
+        constraint = self._param_constraints[position]
+        if constraint == "boolean":
+            tensor = torch.as_tensor(value)
+            if tensor.dtype != torch.bool:
+                raise TypeError("Boolean family parameters require Bool values")
+        elif self._param_integers[position]:
+            if constraint != "integer":
+                _check_trial_count_source(value)
+                return
+            if isinstance(value, bool):
+                raise TypeError(
+                    "signed integer family parameters reject Boolean values"
+                )
+            if isinstance(value, int) and not -(2**53) <= value <= 2**53:
+                raise ValueError(
+                    "signed integer parameter exceeds exact packed capacity 2**53"
+                )
+            tensor = torch.as_tensor(value)
+            if (
+                tensor.dtype == torch.bool
+                or tensor.is_complex()
+                or not bool(
+                    (
+                        torch.isfinite(tensor)
+                        & (tensor >= -(2**53))
+                        & (tensor <= 2**53)
+                    ).all()
+                )
+                or tensor.is_floating_point()
+                and not bool((tensor == tensor.floor()).all())
+            ):
+                raise ValueError(
+                    "signed integer parameter requires integral values within exact packed capacity 2**53"
+                )
 
     def _resolve_params(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Reconstruct full parameter list from input + stored literals.
@@ -709,7 +771,16 @@ class MixedInlineDistribution(ContinuousMorphism):
                 params.append(constant.expand(x.shape[0], *constant.shape))
             else:
                 params.append(next(supplied))
-        return params
+        return [
+            value.to(torch.bool)
+            if constraint == "boolean"
+            else value.to(torch.int64)
+            if constraint is not None and integer
+            else value
+            for value, constraint, integer in zip(
+                params, self._param_constraints, self._param_integers, strict=True
+            )
+        ]
 
     def _is_shared_vector(self, x: torch.Tensor) -> bool:
         """Whether a 1-D input is one shared vector rather than a column.
@@ -1589,7 +1660,9 @@ _OPERATOR_PARAM_NAMES: dict[str, tuple[str, ...]] = {
 }
 
 
-def get_inline_param_names(family: str) -> tuple[str, ...] | None:
+def get_inline_param_names(
+    family: str, families: FamilyCatalog | None = None
+) -> tuple[str, ...] | None:
     """Get the ordered parameter names for an inline family.
 
     Parameters
@@ -1602,6 +1675,8 @@ def get_inline_param_names(family: str) -> tuple[str, ...] | None:
     tuple[str, ...] or None
         Parameter names, or None if not an inline family.
     """
+    if families is not None and families.is_custom(family):
+        return families.parameter_names(family)
     if family in _OPERATOR_PARAM_NAMES:
         return _OPERATOR_PARAM_NAMES[family]
     if family in _FIXED_FACTORIES:
@@ -2590,6 +2665,7 @@ def _make_dynamic_operator_distribution(
     value_extents,
     sampleable_references=None,
     batch_ndims=0,
+    families=None,
 ):
     """Compose runtime distribution values using the shared inline packing plan.
 
@@ -2617,6 +2693,7 @@ def _make_dynamic_operator_distribution(
         One mixed morphism and its ordinary source-value arguments.
     """
     specs, ranks, shapes, integers, names, consumed_ranks = [], [], [], [], [], []
+    parameter_constraints = []
     references = {} if sampleable_references is None else sampleable_references
     context_positions = {}
     variable_types = {} if variable_types is None else dict(variable_types)
@@ -2647,6 +2724,7 @@ def _make_dynamic_operator_distribution(
             ranks.append(0)
             shapes.append(None)
             integers.append(False)
+            parameter_constraints.append(None)
             consumed_ranks.append(None)
             names.append(input_name)
             variable_types[input_name] = context_domain
@@ -2740,7 +2818,9 @@ def _make_dynamic_operator_distribution(
         consumed = None
         if (
             reserve is not None
-            and not FAMILIES[FAMILY_ALIASES.get(owner, owner) or owner].compositional
+            and not (families if families is not None else FAMILIES)[
+                FAMILY_ALIASES.get(owner, owner) or owner
+            ].compositional
         ):
             from quivers._independent import reserved_parameter_axes
 
@@ -2772,6 +2852,11 @@ def _make_dynamic_operator_distribution(
         ranks.append(packing_rank)
         shapes.extend(own_shapes)
         integers.append(integer)
+        parameter_constraints.append(
+            families[owner].parameter(name).constraint
+            if families is not None and families.is_custom(owner)
+            else None
+        )
         consumed_ranks.append(consumed)
         names.extend(own_names)
         kind, payload = plan[0]
@@ -2787,7 +2872,9 @@ def _make_dynamic_operator_distribution(
         return (lambda params: params[position]), probe
 
     def node(current, arguments, reserve=None):
-        bound, parameters = _bind_inline_arguments(current, tuple(arguments))
+        bound, parameters = _bind_inline_arguments(
+            current, tuple(arguments), families=families
+        )
         assert parameters is not None
         if current == "Independent":
             from quivers._independent import independent_ndims
@@ -2800,15 +2887,15 @@ def _make_dynamic_operator_distribution(
                     "Independent requires a static integer reinterpreted_batch_ndims"
                 )
             reserve = independent_ndims(raw.value) + (reserve or 0)
-        own_ranks = _registry_event_ranks(current, parameters)
-        own_integers = _registry_integer_parameters(current, parameters)
+        own_ranks = _registry_event_ranks(current, parameters, families)
+        own_integers = _registry_integer_parameters(current, parameters, families)
         children = [
             value(arg, current, name, rank, integer, reserve)
             for arg, name, rank, integer in zip(
                 bound, parameters, own_ranks, own_integers, strict=True
             )
         ]
-        event_rank = FAMILIES[
+        event_rank = (families if families is not None else FAMILIES)[
             FAMILY_ALIASES.get(current, current) or current
         ].event_rank
         event_shape = tuple(getattr(codomain, "event_shape", ())) if event_rank else ()
@@ -2831,6 +2918,7 @@ def _make_dynamic_operator_distribution(
                 current,
                 values,
                 event_shape,
+                families=families,
             )
 
         probes = {
@@ -2860,9 +2948,13 @@ def _make_dynamic_operator_distribution(
                         base.support, base.batch_shape, base.event_shape
                     )
             else:
-                prototype = _raw_distribution_value(current, probes)
+                prototype = _raw_distribution_value(current, probes, families=families)
         else:
-            support = _FAMILY_SUPPORTS.get(current, _constraints.real)
+            support = (
+                families.support(current)
+                if families is not None and families.is_custom(current)
+                else _FAMILY_SUPPORTS.get(current, _constraints.real)
+            )
             batch_shapes = [
                 tuple(
                     torch.as_tensor(probe).shape[:-rank]
@@ -2900,6 +2992,7 @@ def _make_dynamic_operator_distribution(
         param_event_ranks=tuple(ranks),
         param_shapes=tuple(shapes),
         param_integers=tuple(integers),
+        param_constraints=tuple(parameter_constraints),
         param_batch_ndims=tuple(consumed_ranks),
         structural_batch_ndims=len(prototype.batch_shape),
     )
@@ -2962,6 +3055,8 @@ def _raw_distribution_value(
     arguments: Mapping[str, object],
     event_shape: tuple[int, ...] = (),
     plate_shape: tuple[int, ...] = (),
+    *,
+    families: FamilyCatalog | None = None,
 ) -> D.Distribution:
     """Construct a checked distribution value before boundary normalization.
 
@@ -2990,7 +3085,7 @@ def _raw_distribution_value(
     if plate_shape:
         from quivers.qiec.families import family as semantic_family
 
-        record = semantic_family(family)
+        record = families[family] if families is not None else semantic_family(family)
         ranks = {parameter.name: parameter.rank for parameter in record.parameters}
         for name, value in tuple(values.items()):
             if isinstance(value, D.Distribution):
@@ -3006,6 +3101,16 @@ def _raw_distribution_value(
                 rank = ranks.get(name, 0)
                 intrinsic = tuple(tensor.shape[-rank:]) if rank else ()
                 values[name] = tensor.expand(*plate_shape, *intrinsic)
+    if families is not None and families.is_custom(family):
+        return families.build(
+            family,
+            {
+                name: value
+                if isinstance(value, torch.Tensor)
+                else torch.as_tensor(value)
+                for name, value in values.items()
+            },
+        )
     if family == "Truncated":
         # The normalized source wrapper is the existing restriction algebra;
         # keep raw Restrict itself unnormalized at query sites.
@@ -3171,6 +3276,7 @@ def make_inline_distribution(
     *,
     sampleable_references: Mapping[str, tuple[ContinuousMorphism, str]] | None = None,
     batch_ndims: int = 0,
+    families: FamilyCatalog | None = None,
 ) -> tuple[ContinuousMorphism, tuple[StepArgument, ...] | None]:
     """Create an inline distribution from family name and mixed args.
 
@@ -3217,6 +3323,17 @@ def make_inline_distribution(
         If a gather indexes more axes than its value's checked extents
         have.
     """
+    custom = families is not None and families.is_custom(family)
+    builders = _FAMILY_BUILDERS
+    if custom:
+        assert families is not None
+        record = families[family]
+        names = record.parameter_names
+
+        def custom_builder(values):
+            return families.build(family, dict(zip(names, values, strict=True)))
+
+        builders = {**builders, family: (names, custom_builder, record.discrete)}
     if family in _OPERATOR_FAMILIES:
         return _make_dynamic_operator_distribution(
             family,
@@ -3226,8 +3343,9 @@ def make_inline_distribution(
             value_extents,
             sampleable_references,
             batch_ndims,
+            families,
         )
-    args, selected_parameters = _bind_inline_arguments(family, args)
+    args, selected_parameters = _bind_inline_arguments(family, args, families=families)
     args = _normalize_inline_args(args)
     # An indexed reference counts as a variable reference for the
     # purposes of picking the fixed vs mixed factory dispatch, alongside
@@ -3239,7 +3357,7 @@ def make_inline_distribution(
     literal_tensor = any(isinstance(a, DrawArgList) for a in args) and (
         family not in _VECTOR_PARAM_FAMILIES and family != "Categorical"
     )
-    fixed = not var_names and not (literal_tensor and family in _FAMILY_BUILDERS)
+    fixed = not var_names and not (literal_tensor and family in builders)
     if fixed:
         if family == "Categorical":
             parameterization = (selected_parameters or ("probs",))[0]
@@ -3298,13 +3416,13 @@ def make_inline_distribution(
             else:
                 morph = factory(*args, codomain)
             return (morph, None)
-        if family not in _FAMILY_BUILDERS:
+        if family not in builders:
             raise ValueError(f"no fixed factory for inline family {family!r}")
-    if family not in _FAMILY_BUILDERS:
+    if family not in builders:
         raise ValueError(
             f"no builder for inline family {family!r} with variable arguments"
         )
-    param_names, dist_builder, discrete = _FAMILY_BUILDERS[family]
+    param_names, dist_builder, discrete = builders[family]
     if family == "Categorical" and selected_parameters == ("logits",):
         param_names = ("logits",)
         dist_builder = _categorical_logits_builder
@@ -3337,7 +3455,7 @@ def make_inline_distribution(
             f"inline {family} expects {len(param_names)} args ({', '.join(param_names)}), got {len(args)}"
         )
     fam_event_ranks = _PARAM_EVENT_RANKS.get(family) or _registry_event_ranks(
-        family, param_names
+        family, param_names, families
     )
     param_spec, param_shapes, var_name_order = _inline_parameter_layout(
         family,
@@ -3390,8 +3508,10 @@ def make_inline_distribution(
         if total_var_dim
         else Euclidean(name="_inline_domain", dim=1)
     )
-    fam_support: _constraints.Constraint = _FAMILY_SUPPORTS.get(
-        family, _constraints.real
+    fam_support: _constraints.Constraint = (
+        families.support(family)
+        if custom and families is not None
+        else _FAMILY_SUPPORTS.get(family, _constraints.real)
     )
     # TruncatedNormal / Uniform encode bounded supports via two literal
     # arguments; if both bounds are literal we can specialize the
@@ -3408,7 +3528,7 @@ def make_inline_distribution(
             fam_support = _constraints.interval(lit_args[-2], lit_args[-1])
     # Dimension-dependent families need the codomain's matrix / vector
     # size baked into the builder closure. The registered
-    # `_FAMILY_BUILDERS` entry carries a dim-agnostic builder; here we
+    # `builders` entry carries a dim-agnostic builder; here we
     # replace it with a closure that captures the codomain dim so the
     # resulting torch distribution has the right event_shape at
     # construction.
@@ -3423,16 +3543,23 @@ def make_inline_distribution(
         support=fam_support,
         param_event_ranks=fam_event_ranks,
         param_shapes=tuple(param_shapes),
-        param_integers=_registry_integer_parameters(family, param_names),
+        param_integers=_registry_integer_parameters(family, param_names, families),
+        param_constraints=tuple(
+            families[family].parameter(name).constraint for name in param_names
+        )
+        if custom and families is not None
+        else None,
     )
     return (morph, tuple(var_name_order) if var_name_order else None)
 
 
 def _registry_integer_parameters(
-    family: str, parameters: tuple[str, ...]
+    family: str, parameters: tuple[str, ...], families: FamilyCatalog | None = None
 ) -> tuple[bool, ...]:
     """Identify integer parameters from their checked family constraints."""
-    record = FAMILIES.get(FAMILY_ALIASES.get(family, family))
+    record = (families if families is not None else FAMILIES).get(
+        FAMILY_ALIASES.get(family, family)
+    )
     aliases = PARAMETER_ALIASES.get(family, {})
     return tuple(
         record is not None
@@ -3442,7 +3569,9 @@ def _registry_integer_parameters(
     )
 
 
-def _registry_event_ranks(family: str, parameters: tuple[str, ...]) -> tuple[int, ...]:
+def _registry_event_ranks(
+    family: str, parameters: tuple[str, ...], families: FamilyCatalog | None = None
+) -> tuple[int, ...]:
     """The rank of one value of each parameter, as the family registry records it.
 
     Parameters
@@ -3460,7 +3589,9 @@ def _registry_event_ranks(family: str, parameters: tuple[str, ...]) -> tuple[int
         surface aliases, and zero for a parameter the registry does not
         record.
     """
-    record = FAMILIES.get(FAMILY_ALIASES.get(family, family))
+    record = (families if families is not None else FAMILIES).get(
+        FAMILY_ALIASES.get(family, family)
+    )
     aliases = PARAMETER_ALIASES.get(family, {})
     ranks: list[int] = []
     for name in parameters:
@@ -3575,6 +3706,8 @@ def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.T
 def _bind_inline_arguments(
     family: str,
     args: tuple,
+    *,
+    families: FamilyCatalog | None = None,
 ) -> tuple[tuple, tuple[str, ...] | None]:
     """Validate and order a keyword-only family construction.
 
@@ -3584,7 +3717,9 @@ def _bind_inline_arguments(
     """
     if not args:
         return args, None
-    bound = bind_family_arguments(family, args, get_inline_param_names(family) or ())
+    bound = bind_family_arguments(
+        family, args, get_inline_param_names(family, families) or ()
+    )
     return tuple(value for _, value in bound), tuple(name for name, _ in bound)
 
 

@@ -426,6 +426,7 @@ nav:
       - Refit Cross-Validation: api/diagnostics/cross_validation.md
       - Predictive Checks: api/diagnostics/predictive_checks.md
     - Model Binding and Fitting: api/modeling.md
+    - Custom Distribution Catalogs: api/family-catalog.md
     - Formulas:
       - Overview: api/formulas/index.md
       - Parsed Formula IR: api/formulas/formula.md

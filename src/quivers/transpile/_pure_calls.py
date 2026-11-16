@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Hashable, Mapping
 from typing import Literal, cast
 
+from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.qiec._models import QiecModel
 
 from quivers.dsl.ast_nodes import TypeName
@@ -553,7 +554,11 @@ def _row_reduction(value: Value) -> tuple[str, Value] | None:
 
 
 def _log_prob_call(
-    density: LogDensity, cards: dict[str, int], program: str
+    density: LogDensity,
+    cards: dict[str, int],
+    program: str,
+    *,
+    families: Mapping[str, DistributionFamily] = FAMILIES,
 ) -> LetExprNode:
     """A family's log density at a value, as the compiled runtime reads it.
 
@@ -580,15 +585,24 @@ def _log_prob_call(
     return LetExprCall(
         func=LOG_PROB_CALL,
         args=(
-            _expression(density.sampleable, cards, RUNTIME_TARGET, program),
-            _expression(density.value, cards, RUNTIME_TARGET, program),
+            _expression(
+                density.sampleable, cards, RUNTIME_TARGET, program, families=families
+            ),
+            _expression(
+                density.value, cards, RUNTIME_TARGET, program, families=families
+            ),
             LetExprLiteral(value=len(density.batch), integral=True),
         ),
     )
 
 
 def _expression(
-    value: Value, cards: dict[str, int], target: str, program: str
+    value: Value,
+    cards: dict[str, int],
+    target: str,
+    program: str,
+    *,
+    families: Mapping[str, DistributionFamily] = FAMILIES,
 ) -> LetExprNode:
     """A pure value as a let expression.
 
@@ -631,7 +645,7 @@ def _expression(
             return LetExprCall(
                 func=value.name,
                 args=tuple(
-                    _expression(argument, cards, target, program)
+                    _expression(argument, cards, target, program, families=families)
                     for argument in value.arguments
                 ),
             )
@@ -640,7 +654,7 @@ def _expression(
                 return LetExprCall(
                     func=value.name,
                     args=tuple(
-                        _expression(argument, cards, target, program)
+                        _expression(argument, cards, target, program, families=families)
                         for argument in value.arguments
                     ),
                 )
@@ -651,21 +665,29 @@ def _expression(
             return LetExprBinOp(
                 op="*",
                 left=LetExprLiteral(value=1.0),
-                right=_expression(value.arguments[0], cards, target, program),
+                right=_expression(
+                    value.arguments[0], cards, target, program, families=families
+                ),
             )
         if value.name == "int_to_real" and target in _STRICT_DTYPE_TARGETS:
             return LetExprCall(
                 func="real",
-                args=(_expression(value.arguments[0], cards, target, program),),
+                args=(
+                    _expression(
+                        value.arguments[0], cards, target, program, families=families
+                    ),
+                ),
             )
         if value.name in _TRANSPARENT:
-            return _expression(value.arguments[0], cards, target, program)
+            return _expression(
+                value.arguments[0], cards, target, program, families=families
+            )
         truncating = _TRUNCATING_CALLS.get(value.name)
         if truncating is not None and target not in _INTEGRAL_ARITHMETIC_TARGETS:
             return LetExprCall(
                 func=truncating,
                 args=tuple(
-                    _expression(argument, cards, target, program)
+                    _expression(argument, cards, target, program, families=families)
                     for argument in value.arguments
                 ),
             )
@@ -674,14 +696,16 @@ def _expression(
             left, right = value.arguments
             return LetExprBinOp(
                 op=operator,
-                left=_expression(left, cards, target, program),
-                right=_expression(right, cards, target, program),
+                left=_expression(left, cards, target, program, families=families),
+                right=_expression(right, cards, target, program, families=families),
             )
         unary = _UNARY_OPERATORS.get(value.name)
         if unary is not None and len(value.arguments) == 1:
             return LetExprUnaryOp(
                 op=unary,
-                operand=_expression(value.arguments[0], cards, target, program),
+                operand=_expression(
+                    value.arguments[0], cards, target, program, families=families
+                ),
             )
         if value.name in _BOOL_CONVERSIONS:
             # A Boolean read as a number is one where it holds and zero
@@ -690,7 +714,13 @@ def _expression(
             return spell_builtin(
                 target,
                 "select",
-                (_expression(value.arguments[0], cards, target, program), one, zero),
+                (
+                    _expression(
+                        value.arguments[0], cards, target, program, families=families
+                    ),
+                    one,
+                    zero,
+                ),
             )
         builtin = PRIMITIVE_BUILTINS.get(value.name)
         if builtin is not None:
@@ -698,13 +728,13 @@ def _expression(
                 target,
                 builtin,
                 tuple(
-                    _expression(argument, cards, target, program)
+                    _expression(argument, cards, target, program, families=families)
                     for argument in value.arguments
                 ),
             )
     if isinstance(value, Gather):
-        array = _expression(value.value, cards, target, program)
-        index = _expression(value.index, cards, target, program)
+        array = _expression(value.value, cards, target, program, families=families)
+        index = _expression(value.index, cards, target, program, families=families)
         if isinstance(array, LetExprIndex):
             # Nested gathers read back as one multi-index subscript.
             return LetExprIndex(array=array.array, indices=(*array.indices, index))
@@ -712,29 +742,31 @@ def _expression(
     if isinstance(value, TensorValue):
         return LetExprList(
             items=tuple(
-                _expression(item, cards, target, program) for item in value.items
+                _expression(item, cards, target, program, families=families)
+                for item in value.items
             )
         )
     if isinstance(value, Reduction):
         return LetExprCall(
             func=value.operator,
-            args=(_expression(value.value, cards, target, program),),
+            args=(_expression(value.value, cards, target, program, families=families),),
         )
     rowwise = _row_reduction(value)
     if rowwise is not None:
         operator, reduced = rowwise
         return LetExprCall(
-            func=operator, args=(_expression(reduced, cards, target, program),)
+            func=operator,
+            args=(_expression(reduced, cards, target, program, families=families),),
         )
     if isinstance(value, Rowwise):
         return LetExprCall(
             func=value.operator,
-            args=(_expression(value.value, cards, target, program),),
+            args=(_expression(value.value, cards, target, program, families=families),),
         )
     if isinstance(value, Comprehension):
         axis = _axis_name_of(value.extent, cards)
         binder = LetFactorBinder(var=value.binder.name, index=TypeName(name=axis))
-        body = _expression(value.body, cards, target, program)
+        body = _expression(value.body, cards, target, program, families=families)
         if isinstance(body, LetExprFactor) and body.body is not None:
             # Nested comprehensions read back as one factor over
             # every binder.
@@ -742,15 +774,15 @@ def _expression(
         return LetExprFactor(binders=(binder,), body=body)
     if isinstance(value, WeightSum):
         return LetExprCall(
-            func="sum", args=(_expression(value.value, cards, target, program),)
+            func="sum",
+            args=(_expression(value.value, cards, target, program, families=families),),
         )
     if isinstance(value, DistributionValue) and target == RUNTIME_TARGET:
         from quivers.qiec.canonical import sampled_element, tensor_shape
-        from quivers.qiec.families import family as semantic_family
 
         element = sampled_element(value.result_type)
         split = tensor_shape(element) if element is not None else None
-        rank = semantic_family(value.name).event_rank
+        rank = families[value.name].event_rank
         dimensions = () if split is None or not rank else split[1][-rank:]
 
         def extent(size: IndexTerm) -> int:
@@ -781,20 +813,22 @@ def _expression(
             arguments.extend(
                 (
                     LetExprString(value=name),
-                    _expression(argument, cards, target, program),
+                    _expression(argument, cards, target, program, families=families),
                 )
             )
         return LetExprCall(func=DISTRIBUTION_CALL, args=tuple(arguments))
     if isinstance(value, LetValue):
         if target != RUNTIME_TARGET:
             return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
-        result = _expression(value.body, cards, target, program)
+        result = _expression(value.body, cards, target, program, families=families)
         for binding in reversed(value.bindings):
             result = LetExprCall(
                 func=APPLY_CALL,
                 args=(
                     LetExprLambda(param=binding.binder.name, body=result),
-                    _expression(binding.value, cards, target, program),
+                    _expression(
+                        binding.value, cards, target, program, families=families
+                    ),
                 ),
             )
         return result
@@ -803,7 +837,7 @@ def _expression(
             return LetExprCall(
                 func=CONDITIONAL_CALL,
                 args=tuple(
-                    _expression(item, cards, target, program)
+                    _expression(item, cards, target, program, families=families)
                     for item in (value.condition, value.then, value.otherwise)
                 ),
             )
@@ -812,7 +846,9 @@ def _expression(
         call = LetExprCall(
             func=LOG_MASS_CALL,
             args=(
-                _expression(value.sampleable, cards, target, program),
+                _expression(
+                    value.sampleable, cards, target, program, families=families
+                ),
                 LetExprLiteral(value=len(value.batch), integral=True),
             ),
         )
@@ -820,7 +856,7 @@ def _expression(
     if isinstance(value, LogMass):
         return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
     if isinstance(value, LogDensity) and target == RUNTIME_TARGET:
-        return _log_prob_call(value, cards, program)
+        return _log_prob_call(value, cards, program, families=families)
     if isinstance(value, LogDensity):
         raise UnsupportedConstruct(
             f"qvr-{target}",
@@ -833,7 +869,7 @@ def _expression(
     if isinstance(value, Projection):
         # A component of a product, as the source subscripts a tuple.
         return LetExprIndex(
-            array=_expression(value.value, cards, target, program),
+            array=_expression(value.value, cards, target, program, families=families),
             indices=(LetExprLiteral(value=value.position, integral=True),),
         )
     raise UnsupportedConstruct(

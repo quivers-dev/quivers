@@ -2016,6 +2016,11 @@ class Evaluator:
         self._type_validator = type_validator
         self._computations: dict[ComputationId, NamedComputation] = {}
         self._handler_definitions: dict[HandlerId, HandlerDef] = {}
+        self._native_families = (
+            {item.name for item in module.distribution_families}
+            if module is not None
+            else set()
+        )
         if module is not None:
             self._computations = {item.id: item for item in module.computations}
             self._handler_definitions = {item.id: item for item in module.handlers}
@@ -2288,6 +2293,10 @@ class Evaluator:
                 )
             return source[value.position]
         if isinstance(value, DistributionValue):
+            if self._native_families and value.name in self._native_families:
+                raise EvaluationError(
+                    f"custom native family {value.name!r} requires its native executor; reference callbacks were not supplied"
+                )
             record = family(value.name)
             sampled = sampled_element(value.result_type)
             split = tensor_shape(sampled) if sampled is not None else None

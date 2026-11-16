@@ -127,11 +127,20 @@ handler that declares forwarding passes operations it does not cover to an outer
 ## Stable serialization
 
 [`quivers.qiec.dumps`](../api/qiec/serialization.md) and `quivers.qiec.loads` encode the
-stable core in the `qiec-json/v1` envelope under the ABI identifier `qiec-core/v1alpha1`. The
+stable core in the `qiec-json/v2` envelope under the ABI identifier `qiec-core/v1alpha1`. The
 codec is an allowlist over QIEC records, identifiers, enums, tuples, bytes, and JSON scalars. It
 rejects unknown node tags, malformed records, non-finite floats, runtime attachments, and Python
 callables. Encoding is deterministic: the same core graph yields the same JSON text, and thus
 the same UTF-8 bytes.
+
+Version 2 records compilation-local custom distribution contracts on the module.
+The contracts reuse the checked family parameter and dependent-shape records;
+native factories remain runtime bindings and never enter the wire graph. This
+metadata extension preserves the existing ABI and stable identifiers. A reader
+accepts a version 1 module by supplying its one known missing field,
+`distribution_families=()`. Other missing fields, unknown fields, future wire
+versions, and incompatible ABIs remain errors; decoding never invents a native
+implementation from a family name.
 
 The format and ABI identifiers belong to the serialized format. An authored effect
 declaration contains only its name, its static telescope, and its operation signatures.

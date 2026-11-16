@@ -332,6 +332,57 @@ class ComputationSignature(QiecModel):
     effects: EffectRow = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
+class _DistributionContracts(Mapping[str, DistributionFamily]):
+    """Lookup a small immutable extension without copying the builtin catalog.
+
+    Parameters
+    ----------
+    definitions : tuple[DistributionFamily, ...]
+        Checked compilation-local contracts.
+    """
+
+    def __init__(self, definitions: tuple[DistributionFamily, ...]) -> None:
+        self.definitions = definitions
+
+    def __getitem__(self, name: str) -> DistributionFamily:
+        """Look up a contract.
+
+        Parameters
+        ----------
+        name : str
+            Family name.
+
+        Returns
+        -------
+        DistributionFamily
+            Custom or builtin contract.
+        """
+        for item in self.definitions:
+            if item.name == name:
+                return item
+        return FAMILIES[name]
+
+    def __iter__(self):
+        """Iterate over known family names.
+
+        Returns
+        -------
+        Iterator[str]
+            Builtin and compilation-local names.
+        """
+        return iter((*FAMILIES, *(item.name for item in self.definitions)))
+
+    def __len__(self) -> int:
+        """Count known family names.
+
+        Returns
+        -------
+        int
+            Total number of contracts.
+        """
+        return len(FAMILIES) + len(self.definitions)
+
+
 class KernelRegistry(QiecModel):
     """Resolved declarations used by the reference checker.
 
@@ -340,6 +391,8 @@ class KernelRegistry(QiecModel):
 
     Parameters
     ----------
+    distribution_families
+        Compilation-local distribution contracts, extending the builtin table.
     families
         Indexed data families by identity.
     constructors
@@ -360,6 +413,9 @@ class KernelRegistry(QiecModel):
         rows in diagnostics.
     """
 
+    distribution_families: tuple[DistributionFamily, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     families: dict[FamilyId, FamilyDecl] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -384,6 +440,19 @@ class KernelRegistry(QiecModel):
     instance_names: dict[EffectInstanceId, str] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+
+    @property
+    def distributions(self) -> Mapping[str, DistributionFamily]:
+        """Builtin and explicitly retained custom distribution contracts.
+
+        Returns
+        -------
+        Mapping[str, DistributionFamily]
+            Read-only contract lookup for this checking context.
+        """
+        if not self.distribution_families:
+            return FAMILIES
+        return _DistributionContracts(self.distribution_families)
 
     def _record_type_constructor(self, constructor: TypeConstructorRef) -> None:
         """Remember one type constructor's telescope, or confirm it.
@@ -1866,6 +1935,8 @@ def _plated_sample_type(
     value: DistributionValue,
     family: DistributionFamily,
     argument_types: Mapping[str, TypeExpr],
+    *,
+    families: Mapping[str, DistributionFamily] = FAMILIES,
 ) -> TypeExpr:
     """The sample type of a construction, from its plate and arguments.
 
@@ -1924,7 +1995,7 @@ def _plated_sample_type(
         from quivers.qiec._distribution_axes import distribution_axes
 
         try:
-            distribution_axes(value, families=FAMILIES)
+            distribution_axes(value, families=families)
         except (TypeError, ValueError) as error:
             raise KernelError(str(error), "qiec-distribution") from error
         shape = tensor_shape(element)
@@ -2343,7 +2414,7 @@ def _infer_distribution(
         shape cannot be read off the argument that determines it, or the
         claimed result type disagrees with the family's sample type.
     """
-    family = FAMILIES.get(value.name)
+    family = registry.distributions.get(value.name)
     if family is None:
         raise KernelError(
             f"unknown distribution family {value.name!r}", "qiec-distribution"
@@ -2376,7 +2447,7 @@ def _infer_distribution(
             from quivers.qiec._distribution_axes import distribution_axes
 
             try:
-                batch, event = distribution_axes(value, families=FAMILIES)
+                batch, event = distribution_axes(value, families=registry.distributions)
                 parameter_plate = PlateShape(batch=batch, event=event)
             except (TypeError, ValueError) as error:
                 raise KernelError(str(error), "qiec-distribution") from error
@@ -2403,7 +2474,9 @@ def _infer_distribution(
         )
     except TypeError as error:
         raise KernelError(str(error), "qiec-distribution") from error
-    expected = _plated_sample_type(value, family, argument_types)
+    expected = _plated_sample_type(
+        value, family, argument_types, families=registry.distributions
+    )
     if value.result_type != expected:
         raise KernelError(
             f"family {value.name!r} produces {render_static(expected)}, not the claimed "
@@ -2589,7 +2662,8 @@ def infer_value(
 
         if not (
             isinstance(value.sampleable, DistributionValue)
-            and distribution_axes(value.sampleable, families=FAMILIES)[0] == value.batch
+            and distribution_axes(value.sampleable, families=registry.distributions)[0]
+            == value.batch
         ):
             raise KernelError(
                 f"{query} keeps its weights apart over batch axes only for a "

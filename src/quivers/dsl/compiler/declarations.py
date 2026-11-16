@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import cast
 
 import torch
+from quivers.family_catalog import FamilyCatalog
 
 from quivers.analysis.init_spec import _algebra_init_spec
 from quivers.core.algebras import (
@@ -432,6 +433,7 @@ class _DeclarationsMixin:
     """
 
     _algebra: CompositionRule
+    _family_catalog: FamilyCatalog | None
     _categories: list[str]
     _rules: dict
     _bundles: dict[str, tuple[str, ...]]
@@ -1361,6 +1363,7 @@ class _DeclarationsMixin:
                     family,
                     explicit_args,
                     codomain,
+                    families=self._family_catalog,
                 )
             except (TypeError, ValueError) as exc:
                 raise CompileError(

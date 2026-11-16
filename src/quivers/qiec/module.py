@@ -21,6 +21,7 @@ from quivers.qiec.checking import (
     infer_computation,
 )
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl
+from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.qiec.effects import (
     ComputationType,
     EffectDef,
@@ -173,6 +174,8 @@ class QiecModule(QiecModel):
         The module's name, from which every stable identity in it derives.
     source_protocol
         The source route that produced the module.
+    distribution_families
+        Custom distribution contracts, excluding executable implementations.
     index_sorts
         The user-defined closed index sorts.
     families
@@ -200,6 +203,9 @@ class QiecModule(QiecModel):
 
     module: str
     source_protocol: str
+    distribution_families: tuple[DistributionFamily, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     index_sorts: tuple[UserIndexSort, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -468,7 +474,12 @@ def validate_module(module: QiecModule) -> KernelRegistry:
     if module.abi != QIEC_ABI:
         raise KernelError(f"unsupported QIEC ABI {module.abi!r}")
     _validate_index_sorts(module)
-    registry = KernelRegistry()
+    names = [item.name for item in module.distribution_families]
+    if len(set(names)) != len(names) or any(name in FAMILIES for name in names):
+        raise KernelError(
+            "custom distribution contracts must have distinct nonbuiltin names"
+        )
+    registry = KernelRegistry(distribution_families=module.distribution_families)
     for family in module.families:
         registry.register_family(family)
     for constructor in module.constructors:

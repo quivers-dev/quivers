@@ -153,6 +153,7 @@ from quivers.dsl.compiler._deduction_terms import (
     LET_BOUND_VARIABLES_KEY,
     LET_CONSTRUCTORS_KEY,
     LET_INTERNAL_KEYS,
+    LET_FAMILIES_KEY,
     atom_term,
     variable_term,
 )
@@ -207,7 +208,8 @@ from quivers.qiec import (
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.terms import Computation, Local
-from quivers.qiec.families import FAMILIES
+from quivers.qiec.families import FAMILIES, DistributionFamily
+from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 from quivers.stochastic.agenda import DeductionSystem
 from quivers.structural.decoder import Decoder, decoder_draw_message
@@ -260,6 +262,7 @@ def _per_row_parameters(
     parameter_names: tuple[str, ...] | list[str],
     value_extents: Mapping[str, tuple[int, ...]],
     rows: int,
+    families: FamilyCatalog | None = None,
 ) -> frozenset[str]:
     """The bindings a plated observe reads one entry of per row.
 
@@ -286,7 +289,7 @@ def _per_row_parameters(
     frozenset[str]
         The names of the bindings read at each row.
     """
-    record = FAMILIES.get(family)
+    record = (families if families is not None else FAMILIES).get(family)
     found: set[str] = set()
     for position, arg in enumerate(args):
         if isinstance(arg, DrawArgNamed):
@@ -307,9 +310,10 @@ def _per_row_parameters(
                     _per_row_parameters(
                         component.family,
                         component.args,
-                        get_inline_param_names(component.family) or (),
+                        get_inline_param_names(component.family, families) or (),
                         value_extents,
                         rows,
+                        families,
                     )
                 )
         if (
@@ -1083,6 +1087,7 @@ type LetValue = (
     | list["LetValue"]
     | Morphism
     | ContinuousMorphism
+    | FamilyCatalog
     | Callable[[dict[str, "LetValue"]], "LetValue"]
 )
 
@@ -1843,6 +1848,8 @@ class _ProgramsMixin:
     mixin method.
     """
 
+    _family_catalog: FamilyCatalog | None
+    _distribution_families: Mapping[str, DistributionFamily]
     _algebra: CompositionRule
     _morphisms: dict
     _objects: dict[str, SetObject]
@@ -6973,7 +6980,9 @@ class _ProgramsMixin:
         CompileError
             If a referenced declaration contains a recursive initializer.
         """
-        record = FAMILIES.get(FAMILY_ALIASES.get(family, family) or family)
+        record = self._distribution_families.get(
+            FAMILY_ALIASES.get(family, family) or family
+        )
         if record is None or not any(
             parameter.constraint == "sampleable" for parameter in record.parameters
         ):
@@ -6997,7 +7006,7 @@ class _ProgramsMixin:
                 None,
                 morphisms=morphisms,
                 lets=aliases,
-                family_registry=frozenset(FAMILIES),
+                family_registry=frozenset(self._distribution_families),
                 target="native",
                 native_kernel=True,
             )
@@ -7029,13 +7038,17 @@ class _ProgramsMixin:
             )
 
         def arguments_for(current, args, seen):
-            record = FAMILIES.get(FAMILY_ALIASES.get(current, current) or current)
+            record = self._distribution_families.get(
+                FAMILY_ALIASES.get(current, current) or current
+            )
             if record is None or not any(
                 parameter.constraint == "sampleable" for parameter in record.parameters
             ):
                 return args
             bound = bind_family_arguments(
-                current, args, get_inline_param_names(current) or ()
+                current,
+                args,
+                get_inline_param_names(current, self._family_catalog) or (),
             )
             parameter_aliases = PARAMETER_ALIASES.get(current, {})
             values = []
@@ -7165,7 +7178,7 @@ class _ProgramsMixin:
                         converted.append(str(a))
                 step_args = tuple(converted)
             return (morph, step_args)
-        param_names = get_inline_param_names(draw.morphism)
+        param_names = get_inline_param_names(draw.morphism, self._family_catalog)
         if param_names is not None:
             if draw.args is None:
                 raise CompileError(
@@ -7217,7 +7230,12 @@ class _ProgramsMixin:
                 }
                 if plate_rows is not None:
                     per_row = _per_row_parameters(
-                        draw.morphism, draw.args, param_names, value_extents, plate_rows
+                        draw.morphism,
+                        draw.args,
+                        param_names,
+                        value_extents,
+                        plate_rows,
+                        self._family_catalog,
                     )
                     variable_types = {
                         **variable_types,
@@ -7240,6 +7258,7 @@ class _ProgramsMixin:
                     value_extents=value_extents,
                     variable_types=variable_types,
                     sampleable_references=sampleable_references,
+                    families=self._family_catalog,
                     batch_ndims=(
                         int(plate_rows is not None)
                         if batch_ndims is None
@@ -7255,6 +7274,7 @@ class _ProgramsMixin:
                         value_extents=value_extents,
                         variable_types=variable_types,
                         sampleable_references=sampleable_references,
+                        families=self._family_catalog,
                         batch_ndims=(
                             int(plate_rows is not None)
                             if batch_ndims is None
@@ -7304,8 +7324,8 @@ class _ProgramsMixin:
             draw.col,
         )
 
-    @staticmethod
     def _broadcast_codomain(
+        self,
         draw: DrawStep,
         morph: ContinuousMorphism,
         axes_override: AnySpace | None,
@@ -7338,7 +7358,7 @@ class _ProgramsMixin:
             If two parameters have different extents of more than one
             entry, which do not broadcast.
         """
-        record = FAMILIES.get(draw.morphism)
+        record = self._distribution_families.get(draw.morphism)
         spec = getattr(morph, "_param_spec", None)
         codomain = morph.codomain
         if (
@@ -7523,11 +7543,11 @@ class _ProgramsMixin:
             ``None`` when it is the plate, when the family has no event
             axis of rank one, or when the draw states its axes.
         """
-        record = FAMILIES.get(step.morphism)
+        record = self._distribution_families.get(step.morphism)
         if (
             record is None
             or record.event_rank != 1
-            or get_inline_param_names(step.morphism) is None
+            or get_inline_param_names(step.morphism, self._family_catalog) is None
             or getattr(step, "axes", None) is not None
             or not isinstance(step.index, TypeName)
         ):
@@ -7591,8 +7611,12 @@ class _ProgramsMixin:
             If a matrix-valued family names independent axes, or an
             axis names no finite object.
         """
-        record = FAMILIES.get(family)
-        if axes is None or record is None or get_inline_param_names(family) is None:
+        record = self._distribution_families.get(family)
+        if (
+            axes is None
+            or record is None
+            or get_inline_param_names(family, self._family_catalog) is None
+        ):
             return None
         rank = record.event_rank
         over = tuple(axes.over)
@@ -7851,7 +7875,7 @@ class _ProgramsMixin:
             The inferred codomain.
         """
         bound = bind_family_arguments(
-            family, args, get_inline_param_names(family) or ()
+            family, args, get_inline_param_names(family, self._family_catalog) or ()
         )
         argument_by_name = dict(bound)
         args = tuple(value for _, value in bound)
@@ -7951,7 +7975,24 @@ class _ProgramsMixin:
             return Euclidean(
                 name=f"_{var_names[0]}", dim=math.prod(shape), intrinsic_shape=shape
             )
-        record = FAMILIES.get(family)
+        record = self._distribution_families.get(family)
+        if self._family_catalog is not None and self._family_catalog.is_custom(family):
+            shape = (
+                checked_event
+                if record is not None and record.event_rank
+                else ((event_size,) if event_size is not None else ())
+            )
+            if record is not None and record.event_rank and shape is None:
+                raise CompileError(
+                    f"custom family {family!r} requires checked event dimensions",
+                    line,
+                    col,
+                )
+            return Euclidean(
+                name=f"_{var_names[0]}",
+                dim=math.prod(shape) if shape else 1,
+                intrinsic_shape=shape if shape else None,
+            )
         if (
             record is not None
             and record.event_rank == 1
@@ -8130,7 +8171,7 @@ class _ProgramsMixin:
             else of the draw's own checked value; ``None`` when none is
             fixed or the family has no event axes.
         """
-        record = FAMILIES.get(family)
+        record = self._distribution_families.get(family)
         if record is None or record.event_rank == 0:
             return None
         rank = record.event_rank
@@ -8197,6 +8238,8 @@ class _ProgramsMixin:
             if isinstance(morphism, LearnedFunction):
                 found[name] = morphism
         found["__index_size__"] = self._resolve_index_size
+        if self._family_catalog is not None:
+            found[LET_FAMILIES_KEY] = self._family_catalog
         return found
 
     def _let_reads(self, expr: LetExprNode) -> frozenset[str]:
@@ -8648,6 +8691,12 @@ class _ProgramsMixin:
                         values,
                         tuple(int(v) for v in event),
                         tuple(int(v) for v in plate),
+                        families=catalog
+                        if isinstance(
+                            catalog := _globs_for_check.get(LET_FAMILIES_KEY),
+                            FamilyCatalog,
+                        )
+                        else None,
                     )
                 if func_name == LOG_MASS_CALL:
                     from quivers.continuous._measure_queries import log_mass

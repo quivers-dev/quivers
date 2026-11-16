@@ -1042,7 +1042,11 @@ def _is_gap(kinds: Sequence[str]) -> bool:
     return any(kind.startswith(("param-source:", "scan:")) for kind in kinds)
 
 
-def _unknown_call(expr: LetExprNode, macros: Mapping[str, object]) -> str | None:
+def _unknown_call(
+    expr: LetExprNode,
+    macros: Mapping[str, object],
+    families: Mapping[str, DistributionFamily] = FAMILIES,
+) -> str | None:
     """Name the first call to something the pure layer does not define.
 
     Parameters
@@ -1063,7 +1067,7 @@ def _unknown_call(expr: LetExprNode, macros: Mapping[str, object]) -> str | None
             continue
         if (
             node.func not in PURE_BUILTINS
-            and node.func not in FAMILIES
+            and node.func not in families
             and node.func not in macros
             and node.func not in _CHART_BUILTINS
             and node.func != "site"
@@ -3408,7 +3412,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         from quivers.qiec._distribution_axes import distribution_axes
 
-        batch_axes, event_axes = distribution_axes(distribution, families=FAMILIES)
+        batch_axes, event_axes = distribution_axes(
+            distribution, families=self.distribution_families
+        )
         state.sites.append(
             ProgramSite(
                 name=name,
@@ -3879,7 +3885,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         from quivers.qiec._distribution_axes import distribution_axes
 
-        batch_axes, event_axes = distribution_axes(distribution, families=FAMILIES)
+        batch_axes, event_axes = distribution_axes(
+            distribution, families=self.distribution_families
+        )
         observed_type = self._sampled_type(distribution)
         if state.markov_row_cell[0] is not None and name == state.markov_entry_cell[0]:
             # The row of a marginalized chain's cell scores the entry it
@@ -3923,7 +3931,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             step,
             scope,
             state,
-            families=FAMILIES,
+            families=self.distribution_families,
         )
         density = self._weighted_observation(
             density, PlateShape(batch=batch_axes, event=event_axes), step, scope, state
@@ -5665,7 +5673,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "execution and has no checked QIEC lowering",
                 code="qiec-builtin:host-only",
             )
-        unknown = _unknown_call(expr, self._lambda_macros)
+        unknown = _unknown_call(expr, self._lambda_macros, self.distribution_families)
         if unknown is not None:
             self._fail(
                 node,
@@ -6228,12 +6236,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     step.args,
                     morphisms=self._program_morphisms,
                     lets=self._program_lets,
-                    family_registry=frozenset(FAMILIES),
+                    family_registry=frozenset(self.distribution_families),
                     target="qvr-qiec",
                 )
             except StepResolutionError, TypeError:
                 continue
-            record = FAMILIES.get(resolved.family)
+            record = self.distribution_families.get(resolved.family)
             if record is None:
                 continue
             for argument in step.args:
@@ -6379,7 +6387,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                             step.args,
                             morphisms=self._program_morphisms,
                             lets=self._program_lets,
-                            family_registry=frozenset(FAMILIES),
+                            family_registry=frozenset(self.distribution_families),
                             target="qvr-qiec",
                         )
                     except StepResolutionError, TypeError:
@@ -6389,7 +6397,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         # structurally.
                         bound.update(names)
                         continue
-                    record = FAMILIES.get(resolved.family)
+                    record = self.distribution_families.get(resolved.family)
                     if record is None:
                         bound.update(names)
                         continue
@@ -6621,7 +6629,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         if state.pending_alphabet_cell[0] is not None:
             state.alphabets[latent_name] = state.pending_alphabet_cell[0]
-        record = FAMILIES[distribution.name]
+        record = self.distribution_families[distribution.name]
         if not _enumerable(record):
             # Nothing finite to sum over: the latent is drawn once per
             # position and the scope runs in the enclosing scope, which
@@ -6850,7 +6858,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             when neither names one.
         """
         name = OPERATOR_ALIASES.get(step.morphism, step.morphism)
-        record = FAMILIES.get(name)
+        record = self.distribution_families.get(name)
         if record is not None:
             return record
         morphism = self._program_morphisms.get(step.morphism)
@@ -6859,7 +6867,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         family = _bare_init_family(morphism)
         if family is None and morphism.init_family is not None:
             family = morphism.init_family.family
-        return FAMILIES.get(OPERATOR_ALIASES.get(family or "", family or ""))
+        return self.distribution_families.get(
+            OPERATOR_ALIASES.get(family or "", family or "")
+        )
 
     def _elaborate_continuous_marginalize(
         self: _Elaborator,
@@ -7134,7 +7144,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             self._fail(
                 step, learned_function_draw_message(step.morphism), code="qiec-program"
             )
-        if step.morphism in FAMILIES or step.morphism in OPERATOR_ALIASES:
+        if (
+            step.morphism in self.distribution_families
+            or step.morphism in OPERATOR_ALIASES
+        ):
             # A family applied by name resolves to itself; its arguments
             # are read structurally, nested distributions included.
             resolved = ResolvedDist(
@@ -7147,7 +7160,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     step.args,
                     morphisms=self._program_morphisms,
                     lets=self._program_lets,
-                    family_registry=frozenset(FAMILIES) | frozenset(OPERATOR_ALIASES),
+                    family_registry=frozenset(self.distribution_families)
+                    | frozenset(OPERATOR_ALIASES),
                     target="qvr-qiec",
                 )
             except StepResolutionError as error:
@@ -7170,7 +7184,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     )
                 resolved = network
         family_name = OPERATOR_ALIASES.get(resolved.family, resolved.family)
-        record = FAMILIES.get(family_name)
+        record = self.distribution_families.get(family_name)
         if record is None:
             self._fail(
                 step,
@@ -7216,7 +7230,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     body=inner,
                     result_type=tensor_type(inner_type, dimensions),
                 )
-            normalize = FAMILIES["Normalize"]
+            normalize = self.distribution_families["Normalize"]
             path = ("programs", state.declaration.name, "sites", site, "distribution")
             provisional = DistributionValue(
                 family=normalize.id,
@@ -7368,14 +7382,16 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         QiecDiagnosticError
             If the kernel rejects the construction.
         """
-        record = FAMILIES[value.name]
+        record = self.distribution_families[value.name]
         context = scope.context()
         argument_types = {
             name: self._value_type(argument, context, node)
             for name, argument in value.arguments
         }
         try:
-            return _plated_sample_type(value, record, argument_types)
+            return _plated_sample_type(
+                value, record, argument_types, families=self.distribution_families
+            )
         except KernelError as error:
             self._fail_kernel(node, error, fallback="qiec-program")
 
@@ -7829,7 +7845,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             If more arguments are supplied than the family has
             parameters.
         """
-        direct_family = step.morphism in FAMILIES or step.morphism in OPERATOR_ALIASES
+        direct_family = (
+            step.morphism in self.distribution_families
+            or step.morphism in OPERATOR_ALIASES
+        )
         structural: tuple[DrawArg, ...] = (step.args or ()) if direct_family else ()
         if (
             not structural
@@ -8591,7 +8610,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         None,
                         morphisms=self._program_morphisms,
                         lets=self._program_lets,
-                        family_registry=frozenset(FAMILIES),
+                        family_registry=frozenset(self.distribution_families),
                         target="qvr-qiec",
                         native_kernel=True,
                     )
@@ -9175,7 +9194,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             elif isinstance(item, DrawArgName):
                 lowered = self._draw_argument(
                     item,
-                    FAMILIES["Mixture"].parameter("component"),
+                    self.distribution_families["Mixture"].parameter("component"),
                     PlateShape(batch=tuple(axis for axis, _ in positions)),
                     scope,
                     state,
@@ -9266,7 +9285,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         QiecDiagnosticError
             If the family is unknown.
         """
-        record = FAMILIES.get(OPERATOR_ALIASES.get(argument.family, argument.family))
+        record = self.distribution_families.get(
+            OPERATOR_ALIASES.get(argument.family, argument.family)
+        )
         if record is None:
             self._fail(
                 node,
@@ -9464,7 +9485,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     None,
                     morphisms=self._program_morphisms,
                     lets=self._program_lets,
-                    family_registry=frozenset(FAMILIES),
+                    family_registry=frozenset(self.distribution_families),
                     target="qvr-qiec",
                     native_kernel=True,
                 )
@@ -9492,7 +9513,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 None,
                 morphisms=self._program_morphisms,
                 lets=self._program_lets,
-                family_registry=frozenset(FAMILIES),
+                family_registry=frozenset(self.distribution_families),
                 target="qvr-qiec",
             )
         except StepResolutionError as error:
@@ -9501,7 +9522,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 error.detail,
                 code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
             )
-        record = FAMILIES.get(resolved.family)
+        record = self.distribution_families.get(resolved.family)
         if record is None:
             self._fail(
                 node,
