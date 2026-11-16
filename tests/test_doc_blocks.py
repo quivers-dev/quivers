@@ -1,5 +1,4 @@
-"""Compile every ``qvr`` code block in the docs and run every
-``python`` code block under ``docs/tutorials/``.
+"""Compile QVR documentation and run tutorials and marked Python examples.
 
 QVR blocks
 ----------
@@ -29,14 +28,17 @@ Python blocks
 Each fenced ```python block under ``docs/tutorials/`` is executed in
 order, with per-file shared state: every block sees the namespace
 built by the previous blocks in the same file (matching the way a
-reader copies the chapter into a REPL). The block's mode is chosen by
+reader copies the chapter into a REPL). Outside tutorials, an explicit
+``<!-- python: run -->`` marker opts an example into the same execution.
+The block's mode is chosen by
 the same HTML-comment surface, scoped to a separate marker so QVR and
 Python markers don't collide:
 
 * ``<!-- python: skip -->`` — not a test case. Use for blocks that
   reference on-disk files (``open("foo.qvr")``), shell commands, or
   illustrative fragments that aren't meant to run.
-* (no marker)                — run; failures fail the test.
+* ``<!-- python: run -->`` — run in any documentation page.
+* (no marker) — run in tutorials; elsewhere remain illustrative.
 
 Run with the rest of the suite::
 
@@ -100,11 +102,11 @@ def _qvr_marker_before(text: str, fence_start: int) -> str:
     return m.group(1) if m else "standalone"
 
 
-def _py_marker_before(text: str, fence_start: int) -> str:
+def _py_marker_before(text: str, fence_start: int, *, default: str = "run") -> str:
     line_start = text.rfind("\n", 0, fence_start - 1)
     prev_line = text[line_start + 1 : fence_start].strip()
     m = _PY_MARKER_RE.search(prev_line)
-    return m.group(1) if m else "run"
+    return m.group(1) if m else default
 
 
 def _iter_md_files() -> list[Path]:
@@ -139,17 +141,16 @@ def _collect_qvr_blocks() -> list[tuple[str, int, str, str]]:
 
 
 def _collect_py_blocks() -> list[tuple[str, int, str, str]]:
-    """Return ``(rel_path, block_index, mode, source)`` for every
-    python block under ``docs/tutorials/``.
-    """
+    """Collect tutorial blocks and explicitly runnable examples on other pages."""
     out: list[tuple[str, int, str, str]] = []
-    for md in sorted(_TUTORIAL_ROOT.rglob("*.md")):
+    for md in _iter_md_files():
         text = md.read_text()
         rel = str(md.relative_to(_REPO_ROOT))
+        default = "run" if md.is_relative_to(_TUTORIAL_ROOT) else "skip"
         for idx, m in enumerate(_PY_FENCE_RE.finditer(text)):
             indent, body = m.group(1), m.group(2)
             body = _dedent_fence_body(indent, body)
-            mode = _py_marker_before(text, m.start())
+            mode = _py_marker_before(text, m.start(), default=default)
             if mode == "skip":
                 continue
             out.append((rel, idx, mode, body))

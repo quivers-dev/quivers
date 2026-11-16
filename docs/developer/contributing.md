@@ -411,8 +411,11 @@ exact integer literals, normalized count scores and gradients, and count
 representation limits. It also checks every bundled migration parser.
 
 `tests/test_doc_blocks.py` compiles every `qvr` block under `docs/` and in `README.md`, and runs
-every Python block under `docs/tutorials/`. An HTML comment on the line before a fence chooses the
-mode: `<!-- compile: false -->` and `<!-- python: skip -->` exclude a block,
+every Python block under `docs/tutorials/`. Outside tutorials, `<!-- python: run -->`
+opts a Python block into execution, including API pages, guides, and `README.md`.
+Blocks in the same file share an execution namespace in document order. An HTML
+comment on the line before a fence chooses the mode:
+`<!-- compile: false -->` and `<!-- python: skip -->` exclude a block,
 `<!-- compile: cumulative -->` joins it to the earlier cumulative blocks of the file, and
 `<!-- compile: qiec -->` lowers it through QIEC as well. A change to a documented behavior thus
 changes its documentation in the same commit.
