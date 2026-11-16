@@ -1,6 +1,6 @@
 """Compile, bind, and inspect QVR models through checked input metadata."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Protocol, Literal, cast
@@ -46,6 +46,8 @@ from quivers.qiec import (
 
 from quivers.diagnostics.posterior import PosteriorAnalysis
 from quivers.diagnostics.conditional import ConditionalEffects, PredictionGrid
+from quivers.diagnostics.cross_validation import FoldPrediction, FoldSplit
+from quivers.modeling.refit import RefitRecipe, SnapshotPolicy
 
 
 class ModelSchema(ValueModel):
@@ -208,6 +210,7 @@ class Model:
         sample_prior: PriorMode = "no",
         num_prior_samples: int = 100,
         prior_seed: int = 1,
+        snapshot_policy: SnapshotPolicy = "clone",
     ) -> Result:
         """Bind external data and apply an inference method in one call.
 
@@ -231,6 +234,9 @@ class Model:
             Positive independent draw budget for mode "yes".
         prior_seed : int
             Isolated prior stream, independent of the inference method.
+        snapshot_policy : {"clone", "reference"}
+            Refit-data ownership. Clone retains one independent training-data
+            copy; reference explicitly shares later caller mutations.
 
         Returns
         -------
@@ -242,6 +248,7 @@ class Model:
             sample_prior=sample_prior,
             num_prior_samples=num_prior_samples,
             prior_seed=prior_seed,
+            snapshot_policy=snapshot_policy,
         )
 
     def bind(
@@ -511,6 +518,7 @@ class BoundModel(ValueModel):
         sample_prior: PriorMode = "no",
         num_prior_samples: int = 100,
         prior_seed: int = 1,
+        snapshot_policy: SnapshotPolicy = "clone",
     ) -> Result:
         """Apply a method without imposing a posterior-draw result contract.
 
@@ -525,6 +533,8 @@ class BoundModel(ValueModel):
             Positive independent prior draw budget for mode "yes".
         prior_seed : int
             Isolated CPU stream for independent prior draws.
+        snapshot_policy : {"clone", "reference"}
+            Retained refit-data ownership for methods returning ModelFit.
 
         Returns
         -------
@@ -543,6 +553,8 @@ class BoundModel(ValueModel):
         from quivers.inference.prior import _ancestral_program, _prior_mode
 
         mode = _prior_mode(sample_prior)
+        if snapshot_policy not in {"clone", "reference"}:
+            raise ValueError("snapshot_policy must be 'clone' or 'reference'")
         if mode == "yes":
             from quivers.inference._posterior import sample_count
 
@@ -551,12 +563,25 @@ class BoundModel(ValueModel):
         with observation_scoring(mode != "only"):
             result = method.run(self)
         if isinstance(result, ModelFit):
+            from quivers.modeling._refit import source_recipe
+
             prior = (
                 self.prior_draws(num_samples=num_prior_samples, seed=prior_seed)
                 if mode == "yes"
                 else None
             )
-            return cast(Result, result.with_(sample_prior=mode, prior=prior))
+            recipe = source_recipe(
+                result.model,
+                cast(InferenceMethod[ModelFit], method),
+                snapshot_policy=snapshot_policy,
+                sample_prior=mode,
+                num_prior_samples=num_prior_samples,
+                prior_seed=prior_seed,
+            )
+            return cast(
+                Result,
+                result.with_(sample_prior=mode, prior=prior, refit_recipe=recipe),
+            )
         if mode == "yes":
             raise TypeError(
                 "sample_prior='yes' requires an inference method returning ModelFit"
@@ -711,6 +736,9 @@ class ModelFit(ValueModel):
         Retained independent priors or explicitly factor-conditioned chains.
     losses : tuple[float, ...]
         Optimization losses for a variational fit; empty for MCMC.
+    refit_recipe : RefitRecipe or None
+        Live fitting adapter and explicit training-data snapshot. Attached by
+        BoundModel.infer; manually constructed results may omit it.
     """
 
     model: BoundModel = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -723,6 +751,111 @@ class ModelFit(ValueModel):
     )
 
     losses: tuple[float, ...] = ()
+    refit_recipe: (
+        RefitRecipe[Mapping[str, object], InferenceMethod[ModelFit], ModelFit] | None
+    ) = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+    def update(
+        self,
+        data: Mapping[str, object] | None = None,
+        *,
+        method: InferenceMethod[ModelFit] | None = None,
+        seed: int | None = None,
+    ) -> ModelFit:
+        """Refit retained or replacement data without changing this posterior.
+
+        Parameters
+        ----------
+        data : Mapping[str, object] or None
+            Replacement training data, or the recipe's retained snapshot.
+        method : InferenceMethod[ModelFit] or None
+            Explicit inference override, otherwise the retained method and seed.
+        seed : int or None
+            Compilation seed override. Inference seeds belong to the method.
+
+        Returns
+        -------
+        ModelFit
+            Fresh fitting result with the same source, entry, static arguments,
+            domain input, and prior-scoring policy. New latent dimensions are
+            permitted in a refit; prediction rebind remains stricter.
+
+        Raises
+        ------
+        ValueError
+            If this manually constructed result has no retained recipe.
+        """
+        if self.refit_recipe is None:
+            raise ValueError(
+                "this fit has no retained refit recipe; fit through Model.fit or BoundModel.infer"
+            )
+        return self.refit_recipe.run(data, method=method, seed=seed)
+
+    def refit_callback(
+        self,
+        *,
+        method_factory: Callable[
+            [InferenceMethod[ModelFit], int], InferenceMethod[ModelFit]
+        ],
+        row_axis: str | None = None,
+        partition: Callable[
+            [Mapping[str, object], tuple[int, ...]], Mapping[str, object]
+        ]
+        | None = None,
+        num_samples: int | None = None,
+    ) -> Callable[[FoldSplit], FoldPrediction]:
+        """Build an adapter for the shared explicit cross-validation runner.
+
+        Parameters
+        ----------
+        method_factory : Callable[[InferenceMethod, int], InferenceMethod]
+            Explicit fold-specific inference configuration. The seed comes
+            from FoldSplit; return the method unchanged to retain its seed.
+        row_axis : str or None
+            Checked leading nominal axis to partition. Unrelated equal-size
+            inputs remain constants. Supply this or an explicit partitioner.
+        partition : Callable[[Mapping[str, object], tuple[int, ...]], Mapping[str, object]] or None
+            Custom row selection when a single leading axis is insufficient.
+        num_samples : int or None
+            Per-chain draw budget passed to existing raw held-out scoring.
+
+        Returns
+        -------
+        Callable[[FoldSplit], FoldPrediction]
+            Fresh fitting and raw held-out scoring, preserving actual results.
+
+        Raises
+        ------
+        ValueError
+            If the recipe or a unique partition policy is missing.
+        """
+        from quivers.modeling._refit import partition_rows
+        from quivers.modeling.refit import refit_callback
+
+        if self.refit_recipe is None:
+            raise ValueError("this fit has no retained refit recipe")
+        if (row_axis is None) == (partition is None):
+            raise ValueError("supply exactly one row_axis or explicit partition")
+        partitioner = partition
+        if partitioner is None:
+            assert row_axis is not None
+            axis = row_axis
+
+            def select_rows(
+                data: Mapping[str, object], rows: tuple[int, ...]
+            ) -> Mapping[str, object]:
+                return partition_rows(self.model, data, rows, axis)
+
+            partitioner = select_rows
+
+        return refit_callback(
+            self.refit_recipe,
+            partitioner,
+            lambda fitted, data, seed: fitted.log_likelihood(
+                data, num_samples=num_samples, seed=seed
+            ),
+            method_factory=method_factory,
+        )
 
     def posterior_epred(
         self,

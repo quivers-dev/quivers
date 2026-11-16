@@ -178,6 +178,7 @@ nav:
       - DSL Contractions: guides/dsl-contractions.md
       - Probabilistic Programs: guides/programs.md
       - Model Data and Fitting: guides/model-data-and-fitting.md
+      - Updating and Refitting: guides/model-refits.md
       - Hierarchical Programs: guides/programs-hierarchical.md
       - Continuous Spaces and Morphisms: guides/continuous-spaces.md
       - Continuous Distribution Families: guides/continuous-families.md

@@ -58,3 +58,12 @@ assert result.temperatures[0] == 0 and result.temperatures[-1] == 1
 ::: quivers.modeling.model
 
 ::: quivers.modeling.methods
+
+## Retained fitting recipes
+
+`ModelFit.update` runs a fresh fit through its retained `RefitRecipe`, with
+explicit data ownership and inference overrides. Its fold adapter delegates to
+the shared cross-validation runner. See [updating and refitting](../guides/model-refits.md)
+for nominal row axes, data snapshots, and method seeds.
+
+::: quivers.modeling.refit
