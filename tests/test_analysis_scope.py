@@ -118,9 +118,27 @@ def test_resolve_observe_site_inside_marginalize(lda):
 
 
 def test_resolve_typed_program_parameter(lda):
+    from quivers.dsl.ast_nodes import QiecValueParameter
+
     ref = resolve_scoped_path(lda._compiler, "lda::alpha")
     assert ref is not None
+    assert ref.kind == "data-input"
+    assert isinstance(ref.node, QiecValueParameter)
+
+
+def test_resolve_static_program_parameter_keeps_its_declaration():
+    from quivers.dsl.ast_nodes import QiecIndexBinder
+
+    session = ReplSession()
+    response = session.dispatch(
+        "object R:Real 1\nprogram p[n:Nat](x:Tensor[Real]([n])):R->R\n"
+        "    sample b <- Normal(loc=0.0,scale=1.0)\n    return b\nexport p\n"
+    )
+    assert response.ok, response.diagnostics
+    ref = resolve_scoped_path(session._compiler, "p::n")
+    assert ref is not None
     assert ref.kind == "param"
+    assert isinstance(ref.node, QiecIndexBinder)
 
 
 def test_resolve_return_step(lda):
