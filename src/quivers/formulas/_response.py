@@ -15,6 +15,70 @@ if TYPE_CHECKING:
     from quivers.formulas.family import Family
 
 
+def normalize_response_values(
+    values: np.ndarray,
+    *,
+    component_names: tuple[str, ...] = (),
+    category_levels: tuple[str, ...] = (),
+) -> np.ndarray:
+    """Decode an evaluated response under its retained event coordinates.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        Evaluated response before any integer or floating carrier conversion.
+    component_names : tuple[str, ...]
+        Explicit vector component labels, or empty for a scalar response.
+    category_levels : tuple[str, ...]
+        Fitted categorical level order, or empty for a numeric response.
+
+    Returns
+    -------
+    numpy.ndarray
+        Scalar category codes or numeric row/event values in Int64 or Float64.
+
+    Raises
+    ------
+    ValueError
+        If indicators, event dimensions, labels, or original integer values
+        cannot inhabit the declared response representation.
+    """
+    values = np.asarray(values)
+    if category_levels:
+        if (
+            values.ndim != 2
+            or values.shape[1] != len(category_levels)
+            or not np.all((values == 0) | (values == 1))
+            or not np.all(values.sum(-1) == 1)
+        ):
+            raise ValueError(
+                "categorical responses require one indicator per row in the declared level order"
+            )
+        values = values.argmax(-1).astype(np.int64)
+    if component_names:
+        if values.ndim != 2 or values.shape[1] != len(component_names):
+            raise ValueError(
+                "cbind response arguments must each produce one numeric column"
+            )
+        if len(component_names) < 2 or len(set(component_names)) != len(
+            component_names
+        ):
+            raise ValueError(
+                "cbind responses require at least two distinct component labels"
+            )
+    else:
+        if values.ndim == 2 and values.shape[1] == 1:
+            values = values[:, 0]
+        if values.ndim != 1:
+            raise ValueError("vector responses require explicit cbind component labels")
+    if values.dtype.kind not in "iuf":
+        raise ValueError("responses must have a real or integer numeric carrier")
+    integer = values.dtype.kind in "iu"
+    if integer and values.dtype.kind == "u" and np.any(values > np.iinfo(np.int64).max):
+        raise ValueError("integer responses exceed the Int64 carrier")
+    return values.astype(np.int64 if integer else np.float64)
+
+
 def response_dtype(formula: Formula, family: Family | None = None) -> torch.dtype:
     """Read the response's scalar carrier from the shared semantic catalog.
 

@@ -1067,16 +1067,6 @@ def _formula_and_design(
         if levels is None:
             raise ValueError("categorical responses require retained level labels")
         category_levels = tuple(str(level) for level in levels)
-        if (
-            response_values.ndim != 2
-            or response_values.shape[1] != len(category_levels)
-            or not np.all((response_values == 0) | (response_values == 1))
-            or not np.all(response_values.sum(-1) == 1)
-        ):
-            raise ValueError(
-                "categorical responses require one indicator per row in the declared level order"
-            )
-        response_values = response_values.argmax(-1).astype(np.int64)
         original = getattr(components[0], "_intermediate_data", None)
         ordered_response = bool(
             getattr(getattr(original, "dtype", None), "ordered", False)
@@ -1087,39 +1077,20 @@ def _formula_and_design(
         if arguments is None:
             raise ValueError("cbind responses require named numeric components")
         labels = tuple(str(argument) for argument in arguments)
-        if response_values.ndim != 2 or response_values.shape[1] != len(labels):
-            raise ValueError(
-                "cbind response arguments must each produce one numeric column"
-            )
-        if len(labels) < 2 or len(set(labels)) != len(labels):
-            raise ValueError(
-                "cbind responses require at least two distinct component labels"
-            )
     else:
         labels = ()
-        if response_values.ndim == 2 and response_values.shape[1] == 1:
-            response_values = response_values[:, 0]
-        if response_values.ndim != 1:
-            raise ValueError("vector responses require explicit cbind component labels")
-    if response_values.dtype.kind not in "iuf":
-        raise ValueError("responses must have a real or integer numeric carrier")
+    from quivers.formulas._response import normalize_response_values
+
+    response_values = normalize_response_values(
+        response_values, component_names=labels, category_levels=category_levels
+    )
     integer_carrier = response_values.dtype.kind in "iu"
-    if (
-        integer_carrier
-        and response_values.dtype.kind == "u"
-        and np.any(response_values > np.iinfo(np.int64).max)
-    ):
-        raise ValueError("integer responses exceed the Int64 carrier")
     response_layout = ResponseLayout(
         component_names=labels,
         carrier="integer" if integer_carrier else "real",
         category_levels=category_levels,
         ordered=ordered_response,
     )
-    response_values = response_values.astype(
-        np.int64 if integer_carrier else np.float64
-    )
-
     validate_event_response(
         response_values, response_modifiers.censoring, response_modifiers.truncation
     )
