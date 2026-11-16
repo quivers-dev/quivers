@@ -481,7 +481,7 @@ def test_large_count_central_scores_match_70_digit_gamma_oracles(
 ):
     # Constants were independently evaluated with70decimal-digit log-gamma arithmetic.
     from quivers.continuous._closed_probability import ClosedBinomial, ClosedPoisson
-    from quivers.continuous._zero_inflated_count import _CountBetaBinomial
+    from quivers.continuous._zero_inflated_count import BetaBinomial
 
     p = torch.tensor(0.5, dtype=torch.float64, requires_grad=True)
     law = ClosedBinomial(n, probs=p)
@@ -498,7 +498,7 @@ def test_large_count_central_scores_match_70_digit_gamma_oracles(
     assert torch.autograd.grad(logit_score, logits)[0].item() == pytest.approx(
         0 if n % 2 == 0 else -0.5, abs=6e-14
     )
-    bb = _CountBetaBinomial(
+    bb = BetaBinomial(
         n,
         torch.tensor(1.7, dtype=torch.float64),
         torch.tensor(2.3, dtype=torch.float64),

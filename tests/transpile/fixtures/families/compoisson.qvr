@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the COMPoisson family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program compoisson_fixture : Obs -> Obs
+    observe y : Obs <- COMPoisson(rate=2.0, dispersion=1.3)
+    return y
+export compoisson_fixture

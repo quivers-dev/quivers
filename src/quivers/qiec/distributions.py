@@ -21,6 +21,19 @@ import didactic.api as dx
 
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
+from quivers.qiec._multinomial import (
+    SAMPLERS as _COUNT_VECTOR_SAMPLERS,
+    DENSITIES as _COUNT_VECTOR_DENSITIES,
+)
+from quivers.qiec._sampling import (
+    _binomial_sample as _sample_binomial_count,
+    _dirichlet_weights,
+    _trial_count,
+)
+from quivers.qiec._com_poisson import (
+    density as _com_poisson_density,
+    sample as _com_poisson_sample,
+)
 from quivers.qiec._count_mixtures import (
     SAMPLERS as _COUNT_MIXTURE_SAMPLERS,
     _binomial_log_mass,
@@ -1062,9 +1075,9 @@ def _binomial_sample(a: Mapping[str, object], rng: random.Random) -> object:
     object
         The drawn value.
     """
-    trials = int(_real(a, "total_count", "Binomial"))
+    trials = _trial_count(a.get("total_count"))
     probability = _probabilities(a, "Binomial")
-    return sum(1 for _ in range(trials) if rng.random() < probability)
+    return _sample_binomial_count(trials, probability, rng)
 
 
 def _binomial_density(a: Mapping[str, object], value: object) -> float:
@@ -1082,8 +1095,11 @@ def _binomial_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density, ``-inf`` outside the support.
     """
-    count = int(_finite_value(value, "Binomial"))
-    trials = int(_real(a, "total_count", "Binomial"))
+    point = _finite_value(value, "Binomial")
+    if not point.is_integer():
+        return -math.inf
+    count = int(point)
+    trials = _trial_count(a.get("total_count"))
     log_success, log_failure = _log_probabilities(a, "Binomial")
     if not 0 <= count <= trials:
         return -math.inf
@@ -2061,9 +2077,7 @@ def _dirichlet_sample(a: Mapping[str, object], rng: random.Random) -> object:
         The drawn value.
     """
     concentration = _vector(a, "concentration", "Dirichlet")
-    draws = [rng.gammavariate(item, 1.0) for item in concentration]
-    total = sum(draws)
-    return tuple(item / total for item in draws)
+    return _dirichlet_weights(concentration, rng)
 
 
 def _dirichlet_density(a: Mapping[str, object], value: object) -> float:
@@ -2118,6 +2132,7 @@ _SAMPLERS: Mapping[str, Sampler] = MappingProxyType(
         "Binomial": _binomial_sample,
         "Geometric": _geometric_sample,
         "Laplace": _laplace_sample,
+        "COMPoisson": _com_poisson_sample,
         "DiscreteWeibull": _discrete_weibull_sample,
         "ZeroInflatedAsymmetricLaplace": _zero_inflated_asymmetric_laplace_sample,
         "AsymmetricLaplace": _asymmetric_laplace_sample,
@@ -2134,6 +2149,7 @@ _SAMPLERS: Mapping[str, Sampler] = MappingProxyType(
         "GeneralizedExtremeValue": _generalized_extreme_value_sample,
         "GeneralizedPareto": _generalized_pareto_sample,
         **_STRUCTURED_SAMPLERS,
+        **_COUNT_VECTOR_SAMPLERS,
         **_COUNT_MIXTURE_SAMPLERS,
     }
 )
@@ -2154,6 +2170,7 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
         "Binomial": _binomial_density,
         "Geometric": _geometric_density,
         "Laplace": _laplace_density,
+        "COMPoisson": _com_poisson_density,
         "DiscreteWeibull": _discrete_weibull_density,
         "ZeroInflatedAsymmetricLaplace": _zero_inflated_asymmetric_laplace_density,
         "AsymmetricLaplace": _asymmetric_laplace_density,
@@ -2170,6 +2187,7 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
         "GeneralizedExtremeValue": _generalized_extreme_value_density,
         "GeneralizedPareto": _generalized_pareto_density,
         **_STRUCTURED_DENSITIES,
+        **_COUNT_VECTOR_DENSITIES,
         **_COUNT_MIXTURE_DENSITIES,
     }
 )

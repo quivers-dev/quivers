@@ -215,10 +215,27 @@ def test_predictive_rejects_an_mcmc_result_for_another_model() -> None:
 # Arguments for an observe site of each discrete family, built from
 # `a ~ Normal`, `q = sigmoid(a)`, `r = exp(a)`, a 3-simplex `pc`, and the
 # observed cutpoint plate `cuts`; ``None`` marks a family with no literal form.
-_DISCRETE_ARGUMENTS: dict[str, tuple[str, str | None, list[float]]] = {
+_DISCRETE_ARGUMENTS: dict[
+    str, tuple[str, str | None, list[float] | list[list[int]]]
+] = {
     "Bernoulli": ("probs=q", "probs=0.3", [0, 1, 1, 0, 1, 1]),
     "Categorical": ("probs=pc", "probs=[0.2, 0.3, 0.5]", [0, 1, 2, 1, 0, 2]),
     "Poisson": ("rate=r", "rate=2.0", [0, 2, 1, 3, 0, 1]),
+    "COMPoisson": (
+        "log_rate=a, dispersion=r",
+        "rate=2.0, dispersion=1.3",
+        [0, 2, 1, 3, 0, 1],
+    ),
+    "Multinomial": (
+        "total_count=5, probs=pc",
+        "total_count=5, probs=[0.2, 0.3, 0.5]",
+        [[0, 0, 5], [1, 1, 3], [2, 0, 3], [0, 3, 2], [0, 1, 4], [1, 0, 4]],
+    ),
+    "DirichletMultinomial": (
+        "total_count=5, concentration=alpha",
+        "total_count=5, concentration=[1.0, 2.0, 3.0]",
+        [[0, 0, 5], [1, 1, 3], [2, 0, 3], [0, 3, 2], [0, 1, 4], [1, 0, 4]],
+    ),
     "Geometric": ("probs=q", "probs=0.3", [0, 2, 1, 3, 0, 1]),
     "Binomial": ("total_count=5.0, probs=q", None, [0, 2, 5, 3, 1, 4]),
     "NegativeBinomial": (
@@ -285,8 +302,11 @@ def _discrete_program(family: str, arguments: str):
         "    sample pc : Cat <- Dirichlet(concentration=1.0)\n"
         "    let q = sigmoid(a)\n"
         "    let r = exp(a)\n"
-        f"    observe y : Resp <- {family}({arguments})\n"
-        "    return a\n"
+        "    let alpha = pc * r\n"
+        f"    observe y : Resp <- {family}({arguments})"
+        + (" [over=Cat]" if family in {"Multinomial", "DirichletMultinomial"} else "")
+        + "\n"
+        + "    return a\n"
         "export p\n"
     ).morphism
 

@@ -186,15 +186,29 @@ def simplex(arguments: Mapping[str, object], family: str) -> tuple[float, ...]:
     Raises
     ------
     DistributionError
-        If neither parameterization is supplied.
+        If neither parameterization is supplied or weights are invalid.
     """
     if "probs" in arguments:
         probs = vector_parameter(arguments, "probs", family)
-        total = sum(probs)
-        return tuple(item / total for item in probs)
+        if not probs or any(not math.isfinite(item) or item < 0 for item in probs):
+            raise DistributionError(
+                f"{family} probs must be finite nonnegative weights"
+            )
+        largest = max(probs)
+        if largest <= 0:
+            raise DistributionError(f"{family} probs must have a positive total")
+        scaled = tuple(item / largest for item in probs)
+        total = sum(scaled)
+        return tuple(item / total for item in scaled)
     if "logits" in arguments:
         logits = vector_parameter(arguments, "logits", family)
+        if not logits or any(math.isnan(item) or item == math.inf for item in logits):
+            raise DistributionError(
+                f"{family} logits must be finite or negative infinity"
+            )
         peak = max(logits)
+        if peak == -math.inf:
+            raise DistributionError(f"{family} logits must include a finite category")
         weights = [math.exp(item - peak) for item in logits]
         total = sum(weights)
         return tuple(item / total for item in weights)

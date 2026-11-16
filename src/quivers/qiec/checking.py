@@ -1745,7 +1745,10 @@ def _checked_computation_type(
 
 
 def _parameter_expectation(
-    parameter: FamilyParameter, actual: TypeExpr, plate: PlateShape = PlateShape()
+    parameter: FamilyParameter,
+    actual: TypeExpr,
+    plate: PlateShape = PlateShape(),
+    event_rank: int = 0,
 ) -> str | None:
     """Explain why a value's type does not fit a family parameter.
 
@@ -1760,6 +1763,9 @@ def _parameter_expectation(
         The plate the family is constructed over. A parameter may carry
         leading dimensions following a suffix of the plate's axes and
         broadcast over the rest.
+    event_rank : int
+        Native distribution event rank. Its trailing plate event dimensions
+        belong to each variate, not to the parameter's leading batch axes.
 
     Returns
     -------
@@ -1799,8 +1805,10 @@ def _parameter_expectation(
         element = INT
     else:
         element = REAL
-    axes = tuple(axis.size for axis in (*plate.batch, *plate.event))
-    if actual == element and (parameter.rank == 0 or axes):
+    native = min(event_rank, len(plate.event))
+    event_batch = plate.event[:-native] if native else plate.event
+    axes = tuple(axis.size for axis in (*plate.batch, *event_batch))
+    if actual == element and (parameter.rank == 0 or plate.batch or plate.event):
         return None
     shape = tensor_shape(actual)
     if shape is not None and shape[0] == element:
@@ -2303,7 +2311,9 @@ def _infer_distribution(
                 "qiec-distribution",
             ) from error
         actual = infer_value(argument, registry, context)
-        expectation = _parameter_expectation(parameter, actual, value.plate)
+        expectation = _parameter_expectation(
+            parameter, actual, value.plate, family.event_rank
+        )
         if expectation is not None:
             raise KernelError(
                 f"parameter {name!r} of {value.name!r} has type {render_static(actual)}; it "

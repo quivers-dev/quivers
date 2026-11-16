@@ -38,6 +38,8 @@ from quivers.continuous._shape_families import (
 )
 from quivers.continuous._skew_normal import SkewNormal
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
+from quivers.continuous._com_poisson import COMPoisson
+from quivers.continuous._closed_probability import _ValidatedCategorical
 from quivers.continuous._discrete_weibull import DiscreteWeibull
 from quivers.continuous._zero_inflated_asymmetric_laplace import (
     ZeroInflatedAsymmetricLaplace,
@@ -47,6 +49,7 @@ from quivers.continuous._response_time import ExGaussian, InverseGaussian
 from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
 from quivers.continuous.measure import Normalize, PointMass, Restrict
 from quivers.continuous.families import (
+    ConditionalCOMPoisson,
     ConditionalDiscreteWeibull,
     ConditionalZeroInflatedAsymmetricLaplace,
     ConditionalAsymmetricLaplace,
@@ -63,6 +66,10 @@ from quivers.continuous.families import (
     ConditionalChi2,
     ConditionalContinuousBernoulli,
     ConditionalDirichlet,
+    Multinomial,
+    DirichletMultinomial,
+    ConditionalMultinomial,
+    ConditionalDirichletMultinomial,
     ConditionalExponential,
     ConditionalFisherSnedecor,
     ConditionalGamma,
@@ -119,6 +126,7 @@ from quivers.continuous._zip_hurdle import (
     ZeroOneInflatedBeta,
 )
 from quivers.continuous.log_space import LogGamma, LogitBeta
+from quivers.continuous._zero_inflated_count import BetaBinomial
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.ordered import (
     ConditionalOrderedLogistic,
@@ -176,80 +184,6 @@ class FamilyMeta(ValueModel):
 # runtime behaviour lives in the `quivers_class` `ContinuousMorphism`
 # subclass paired in FAMILY_META.
 # ---------------------------------------------------------------------------
-
-
-class BetaBinomial(Distribution):
-    """Beta-Binomial: `Binomial(n, p)` with `p ~ Beta(c1, c0)`.
-
-    The marginal pmf is
-
-        p(k; n, a, b) = C(n, k) * B(a + k, b + n - k) / B(a, b),
-
-    where `B(.,.)` is the beta function. `log_prob` evaluates this
-    in log space via `torch.lgamma`. `sample` draws p ~ Beta(a, b)
-    then k ~ Binomial(n, p), matching the generative definition.
-    """
-
-    arg_constraints: dict[str, c.Constraint] = {
-        "total_count": c.nonnegative_integer,
-        "concentration1": c.positive,
-        "concentration0": c.positive,
-    }
-    support: c.Constraint = c.nonnegative_integer
-    has_rsample: bool = False
-
-    def __init__(
-        self,
-        total_count: torch.Tensor,
-        concentration1: torch.Tensor,
-        concentration0: torch.Tensor,
-        validate_args: bool | None = None,
-    ) -> None:
-        self.total_count = total_count
-        self.concentration1 = concentration1
-        self.concentration0 = concentration0
-        super().__init__(validate_args=validate_args)
-
-    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
-        """``log p(value; n, a, b)`` via the closed-form Beta-Binomial pmf."""
-        n = self.total_count.to(value.dtype)
-        a = self.concentration1.to(value.dtype)
-        b = self.concentration0.to(value.dtype)
-        k = value.to(value.dtype)
-        log_comb = (
-            torch.lgamma(n + 1.0) - torch.lgamma(k + 1.0) - torch.lgamma(n - k + 1.0)
-        )
-        log_beta_post = (
-            torch.lgamma(a + k) + torch.lgamma(b + n - k) - torch.lgamma(a + b + n)
-        )
-        log_beta_prior = torch.lgamma(a) + torch.lgamma(b) - torch.lgamma(a + b)
-        return log_comb + log_beta_post - log_beta_prior
-
-    def sample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
-        """Two-stage draw: ``p ~ Beta(a, b)``; ``k ~ Binomial(n, p)``."""
-        p = torch.distributions.Beta(self.concentration1, self.concentration0).sample(
-            sample_shape
-        )
-        return torch.distributions.Binomial(
-            total_count=self.total_count, probs=p
-        ).sample()
-
-    @property
-    def mean(self) -> torch.Tensor:
-        """``E[K] = n * a / (a + b)``."""
-        return (
-            self.total_count
-            * self.concentration1
-            / (self.concentration1 + self.concentration0)
-        )
-
-    @property
-    def variance(self) -> torch.Tensor:
-        """Closed-form Beta-Binomial variance."""
-        n = self.total_count
-        a = self.concentration1
-        b = self.concentration0
-        return n * a * b * (a + b + n) / ((a + b) ** 2 * (a + b + 1.0))
 
 
 class OrderedLogistic(Distribution):
@@ -598,6 +532,20 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "jags": {"scale": "tau"},
         },
     ),
+    "Multinomial": FamilyMeta(
+        qvr_name="Multinomial",
+        event_rank=1,
+        distribution_class=Multinomial,
+        quivers_class=ConditionalMultinomial,
+        target_names={},
+    ),
+    "DirichletMultinomial": FamilyMeta(
+        qvr_name="DirichletMultinomial",
+        event_rank=1,
+        distribution_class=DirichletMultinomial,
+        quivers_class=ConditionalDirichletMultinomial,
+        target_names={},
+    ),
     "Dirichlet": FamilyMeta(
         qvr_name="Dirichlet",
         event_rank=1,
@@ -672,6 +620,12 @@ FAMILY_META: dict[str, FamilyMeta] = {
         qvr_name="InverseGaussian",
         distribution_class=InverseGaussian,
         quivers_class=ConditionalInverseGaussian,
+        target_names={},
+    ),
+    "COMPoisson": FamilyMeta(
+        qvr_name="COMPoisson",
+        distribution_class=COMPoisson,
+        quivers_class=ConditionalCOMPoisson,
         target_names={},
     ),
     "DiscreteWeibull": FamilyMeta(
@@ -1276,7 +1230,7 @@ FAMILY_META: dict[str, FamilyMeta] = {
     ),
     "Categorical": FamilyMeta(
         qvr_name="Categorical",
-        distribution_class=td.Categorical,
+        distribution_class=_ValidatedCategorical,
         quivers_class=ConditionalCategorical,
         target_names={
             "stan": "categorical",

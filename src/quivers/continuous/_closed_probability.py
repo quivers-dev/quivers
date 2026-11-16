@@ -36,10 +36,77 @@ https://doi.org/10.1002/0471715816
 from __future__ import annotations
 
 from typing import cast
+from collections.abc import Sequence
+from numbers import Real
 
 import torch
+from torch import Tensor
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
+from torch.distributions.utils import lazy_property
+
+
+class _ValidatedCategorical(D.Categorical):
+    """Validate raw category weights before torch normalizes their signs away.
+
+    Parameters
+    ----------
+    probs : torch.Tensor or None
+        Finite nonnegative category weights, with a positive total per row.
+    logits : torch.Tensor or None
+        Alternative unnormalized log weights. Supply only one representation.
+    validate_args : bool or None
+        Torch sample and normalized-parameter validation policy. Raw probability
+        validation is mandatory under either policy.
+    """
+
+    def __init__(self, probs=None, logits=None, validate_args=None):
+        if probs is not None:
+            probs = torch.as_tensor(probs)
+            if probs.ndim < 1 or probs.shape[-1] == 0:
+                raise ValueError("Categorical probs require a nonempty category axis")
+            if not bool((torch.isfinite(probs) & (probs >= 0)).all()):
+                raise ValueError("Categorical probs must be finite and nonnegative")
+            largest = probs.amax(-1, keepdim=True)
+            if not bool((largest > 0).all()):
+                raise ValueError(
+                    "Categorical probs must have a positive total in every row"
+                )
+            # Rescaling also keeps sums of valid finite weights from overflowing.
+            probs = probs / largest
+        super().__init__(probs=probs, logits=logits, validate_args=validate_args)
+
+    @lazy_property
+    def logits(self):
+        """Preserve exact zero category probabilities in log-space scoring.
+
+        Returns
+        -------
+        torch.Tensor
+            Normalized log weights, negative infinity for zero categories.
+        """
+        positive = self.probs > 0
+        return torch.where(
+            positive, torch.where(positive, self.probs, 1.0).log(), -torch.inf
+        )
+
+    def expand(self, batch_shape, _instance=None):
+        """Expand category weights using torch's view-preserving implementation.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size or Sequence[int]
+            Desired batch shape.
+        _instance : _ValidatedCategorical or None
+            Optional torch expansion instance.
+
+        Returns
+        -------
+        _ValidatedCategorical
+            Expanded categorical distribution.
+        """
+        new = self._get_checked_instance(_ValidatedCategorical, _instance)
+        return super().expand(batch_shape, new)
 
 
 _MAX_EXACT_TRIALS = 2**53
@@ -51,29 +118,40 @@ def _check_trial_count_source(total_count) -> None:
     Parameters
     ----------
     total_count : torch.Tensor or int or float
-        Source trial count, before a floating-point conversion.
+        Source trial count, sequence, or array before a floating-point conversion.
 
     Raises
     ------
     ValueError
-        If an integer trial count exceeds 2**53.
+        If any real trial count exceeds 2**53.
     TypeError
         If trials use unsigned64 instead of the canonical signed integer dtype.
     """
     message = (
         "native count trials must be <= 2**53 for exact float64 integer representation"
     )
-    if isinstance(total_count, int):
+    if isinstance(total_count, Real):
         if total_count > _MAX_EXACT_TRIALS:
             raise ValueError(message)
         return
-    if isinstance(total_count, torch.Tensor) and not total_count.is_floating_point():
+    if isinstance(total_count, torch.Tensor):
         if total_count.dtype == getattr(torch, "uint64", None):
             raise TypeError("native trial tensors use signed64 integer counts")
-        if total_count.dtype == torch.int64 and bool(
-            (total_count > _MAX_EXACT_TRIALS).any()
-        ):
+        if (
+            total_count.is_floating_point() or total_count.dtype == torch.int64
+        ) and bool((total_count > _MAX_EXACT_TRIALS).any()):
             raise ValueError(message)
+        return
+    if isinstance(total_count, Sequence) and not isinstance(total_count, str | bytes):
+        # Inspect every scalar before mixed Python sequences can infer a
+        # floating dtype and round an otherwise exact large integer.
+        for item in total_count:
+            _check_trial_count_source(item)
+        return
+    if hasattr(total_count, "dtype") and hasattr(total_count, "shape"):
+        # Array providers retain their existing storage dtype. No NumPy
+        # dependency or intermediate default-floating conversion is needed.
+        _check_trial_count_source(torch.as_tensor(total_count))
 
 
 def _require_sample_capacity(value: torch.Tensor) -> torch.Tensor:
@@ -288,6 +366,76 @@ def _log_gamma_increment(x: torch.Tensor, increment: torch.Tensor) -> torch.Tens
     return torch.where(large, asymptotic, direct)
 
 
+def _beta_binomial_log_mass(k: Tensor, n: Tensor, a: Tensor, b: Tensor) -> Tensor:
+    """Score beta-binomial factors without subtracting extensive gamma values.
+
+    Parameters
+    ----------
+    k, n : Tensor
+        Valid observed counts and trial totals.
+    a, b : Tensor
+        Positive beta concentrations.
+
+    Returns
+    -------
+    Tensor
+        Float64 log masses with stable count and concentration limits.
+    """
+    active = n > 0
+    a = torch.where(active, a, 1.0)
+    b = torch.where(active, b, 1.0)
+    interior = (k > 0) & (k < n)
+    x = torch.where(interior, k, 1.0)
+    y = torch.where(interior, n - k, 1.0)
+    count = x + y
+    prior = a + b
+    posterior = count + prior
+    xp, yp = x + a, y + b
+    log_p = torch.logaddexp(x.log(), a.log()) - posterior.log()
+    log_q = torch.logaddexp(y.log(), b.log()) - posterior.log()
+    result = (
+        _stirling_error(count)
+        - _stirling_error(x)
+        - _stirling_error(y)
+        + _stirling_error(xp)
+        + _stirling_error(yp)
+        - _stirling_error(posterior)
+        - _stirling_error(a)
+        - _stirling_error(b)
+        + _stirling_error(prior)
+        - _deviance(x, count.log() + log_p)
+        - _deviance(y, count.log() + log_q)
+        - _deviance(a, prior.log() + log_p)
+        - _deviance(b, prior.log() + log_q)
+        + 0.5
+        * (
+            count.log()
+            - x.log()
+            - y.log()
+            - xp.log()
+            - yp.log()
+            + posterior.log()
+            + a.log()
+            + b.log()
+            - prior.log()
+            - 1.83787706640934548356
+        )
+    )
+    zero = torch.where(
+        a < n,
+        _log_gamma_increment(b, a) - _log_gamma_increment(b + n, a),
+        _log_gamma_increment(b, n) - _log_gamma_increment(b + a, n),
+    )
+    full = torch.where(
+        b < n,
+        _log_gamma_increment(a, b) - _log_gamma_increment(a + n, b),
+        _log_gamma_increment(a, n) - _log_gamma_increment(a + b, n),
+    )
+    return torch.where(
+        n == 0, 0.0, torch.where(interior, result, torch.where(k == 0, zero, full))
+    )
+
+
 def _out_of_support(value: torch.Tensor, total: torch.Tensor) -> torch.Tensor:
     """Where a count lies outside ``0 .. total``.
 
@@ -466,6 +614,39 @@ class ClosedBinomial(D.Binomial):
             validate_args=validate_args,
         )
         self._closed_probs = probs
+
+    def sample(
+        self, sample_shape: torch.Size | Sequence[int] = torch.Size()
+    ) -> torch.Tensor:
+        """Draw finite-trial counts without rounding an out-of-range result.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            Sample dimensions prepended to the distribution batch.
+
+        Returns
+        -------
+        torch.Tensor
+            Exactly representable Float64 counts in the trial support.
+
+        Raises
+        ------
+        RuntimeError
+            If the underlying sampler returns an unrepresentable count or
+            a value above the supplied trials.
+        """
+        with torch.no_grad():
+            shape = self._extended_shape(sample_shape)
+            n = self.total_count.expand(shape)
+            value = _require_sample_capacity(
+                torch.binomial(n, self.probs.expand(shape))
+            )
+            if not bool(((value <= n) & (value == value.floor())).all()):
+                raise RuntimeError(
+                    "binomial sampler returned a noninteger count or a count above remaining trials"
+                )
+            return value
 
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         """The log mass at a count of successes.

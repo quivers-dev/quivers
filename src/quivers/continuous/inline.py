@@ -40,8 +40,12 @@ import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from quivers.core.objects import ProductSet, Unit
 from quivers.continuous._closed_probability import _check_trial_count_source
-from quivers.continuous._zero_inflated_count import _CountBetaBinomial as _BetaBinomial
-from quivers.continuous._closed_probability import ClosedBernoulli, ClosedPoisson
+from quivers.continuous._zero_inflated_count import BetaBinomial as _BetaBinomial
+from quivers.continuous._closed_probability import (
+    ClosedBernoulli,
+    ClosedPoisson,
+    _ValidatedCategorical,
+)
 from quivers.continuous._lkj import OnionLKJCholesky
 from quivers.continuous._truncated_normal import TruncatedNormal
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
@@ -590,7 +594,13 @@ class MixedInlineDistribution(ContinuousMorphism):
         for (kind, value), integer in zip(
             self._param_spec, self._param_integers, strict=True
         ):
-            dtype = torch.float64 if integer else x.dtype
+            dtype = (
+                torch.float64
+                if integer
+                else x.dtype
+                if x.is_floating_point()
+                else torch.get_default_dtype()
+            )
             if kind == "lit":
                 assert isinstance(value, int | float)
                 params.append(
@@ -600,7 +610,10 @@ class MixedInlineDistribution(ContinuousMorphism):
                 )
             elif kind == "const":
                 assert isinstance(value, torch.Tensor)
-                constant = value.to(device=x.device, dtype=dtype)
+                constant_dtype = (
+                    value.dtype if value.is_floating_point() and not integer else dtype
+                )
+                constant = value.to(device=x.device, dtype=constant_dtype)
                 params.append(constant.expand(x.shape[0], *constant.shape))
             else:
                 params.append(next(supplied))
@@ -1326,8 +1339,8 @@ def make_fixed_categorical(
     def builder(batch: int, device: torch.device) -> D.Distribution:
         parameter = torch.tensor(vector, device=device).expand(batch, cardinality)
         if parameterization == "logits":
-            return D.Categorical(logits=parameter)
-        return D.Categorical(probs=parameter)
+            return _ValidatedCategorical(logits=parameter)
+        return _ValidatedCategorical(probs=parameter)
 
     return FixedDistribution(
         codomain,
@@ -1893,7 +1906,7 @@ def _categorical_logits_builder(params: list[torch.Tensor]) -> D.Distribution:
         raise ValueError(
             f"inline Categorical(logits=...) expects one tensor; got {len(params)}"
         )
-    return D.Categorical(logits=params[0])
+    return _ValidatedCategorical(logits=params[0])
 
 
 _FAMILY_BUILDERS: dict[str, tuple[tuple[str, ...], Callable, bool]] = {

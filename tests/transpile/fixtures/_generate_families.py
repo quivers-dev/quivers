@@ -61,6 +61,7 @@ _INLINE_SAMPLE: dict[str, str] = {
 _INLINE_OBSERVE: dict[str, str] = {
     "BetaBinomial": "total_count=4.0, concentration1=2.0, concentration0=2.0",
     "Binomial": "total_count=4.0, probs=0.5",
+    "COMPoisson": "rate=2.0, dispersion=1.3",
     "Geometric": "probs=0.5",
     "HalfStudentT": "df=4.0, scale=1.0",
     "HurdlePoisson": "zero_prob=0.25, rate=2.0",
@@ -87,6 +88,20 @@ _INLINE_OBSERVE: dict[str, str] = {
 # Existing curated sources are literal snapshots: regeneration must not
 # rewrite a valid measured fixture just to change its presentation.
 _SPECIAL_SOURCES: dict[str, str] = {
+    "Multinomial": """object Row : FinSet 3
+object Category : FinSet 3
+program model : Row -> Row
+    observe y : Row <- Multinomial(total_count=5, probs=[0.2, 0.3, 0.5]) [over=Category]
+    return y
+export model
+""",
+    "DirichletMultinomial": """object Row : FinSet 3
+object Category : FinSet 3
+program model : Row -> Row
+    observe y : Row <- DirichletMultinomial(total_count=5, concentration=[1.0, 2.0, 3.0]) [over=Category]
+    return y
+export model
+""",
     "AsymmetricLaplace": """object X : Real 1
 program model : X -> X
     observe y <- AsymmetricLaplace(loc=0.0, scale=1.0, quantile=0.8)

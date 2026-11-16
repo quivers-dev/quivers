@@ -35,6 +35,13 @@ import torch.nn.functional as F
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 
+from quivers.continuous._com_poisson import COMPoisson
+from quivers.continuous._multinomial import (
+    Multinomial,
+    DirichletMultinomial,
+    _count_parameters,
+)
+from quivers.continuous._closed_probability import _ValidatedCategorical
 from quivers.continuous._discrete_weibull import DiscreteWeibull
 from quivers.continuous._zero_inflated_asymmetric_laplace import (
     ZeroInflatedAsymmetricLaplace,
@@ -52,7 +59,7 @@ from quivers.continuous._zero_inflated_count import (
     ZeroInflatedBinomial,
     ZeroInflatedBetaBinomial,
     HurdleNegativeBinomial,
-    _CountBetaBinomial,
+    BetaBinomial as _BetaBinomial,
 )
 from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
 
@@ -766,6 +773,175 @@ class ConditionalDirichlet(ContinuousMorphism):
         return dist.rsample(sample_shape)
 
 
+class _ConditionalCountVector(ContinuousMorphism):
+    """Shared fixed-trial vector kernel with learned category parameters."""
+
+    _distribution_class = Multinomial
+
+    def __init__(
+        self,
+        domain,
+        codomain,
+        total_count,
+        hidden_dim=None,
+        param_source=None,
+        param_source_option=None,
+    ):
+        _check_trial_count_source(total_count)
+        super().__init__(domain, codomain)
+        counts, _ = _count_parameters(total_count, [1.0] * codomain.dim)
+        self.register_buffer("total_count", counts.to(torch.int64))
+        self.param_source = _make_source(
+            domain,
+            codomain.dim,
+            hidden_dim,
+            param_source=param_source,
+            param_source_option=param_source_option,
+        )
+
+    @property
+    def support(self):
+        """Integer vector support, with the trial total enforced by scoring.
+
+        Returns
+        -------
+        torch.distributions.constraints.Constraint
+            One trailing vector of nonnegative counts.
+        """
+        return Multinomial.support
+
+    def _distribution(self, x):
+        """Construct the shared count law from one category parameter vector.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Parameter-source inputs.
+
+        Returns
+        -------
+        torch.distributions.Distribution
+            One count-vector event for each input batch row.
+        """
+        raw = self.param_source(x)
+        if self._distribution_class is Multinomial:
+            return Multinomial(self.total_count, logits=raw)
+        return DirichletMultinomial(self.total_count, F.softplus(raw) + EPS)
+
+    def log_prob(self, x, y):
+        """Score category vectors, reducing the event axis exactly once.
+
+        Parameters
+        ----------
+        x, y : torch.Tensor
+            Inputs and observed integer category vectors.
+
+        Returns
+        -------
+        torch.Tensor
+            One log mass per input row.
+        """
+        return self._distribution(x).log_prob(y)
+
+    def sample(self, x, sample_shape=torch.Size()):
+        """Draw fixed-total category vectors.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Parameter-source inputs.
+        sample_shape : torch.Size
+            Sample dimensions prepended to input batch dimensions.
+
+        Returns
+        -------
+        torch.Tensor
+            Int64 count vectors.
+        """
+        return self._distribution(x).sample(sample_shape)
+
+    def rsample(self, x, sample_shape=torch.Size()):
+        """Refuse pathwise reparameterization of discrete count events.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Parameter-source inputs.
+        sample_shape : torch.Size
+            Requested sample dimensions.
+
+        Raises
+        ------
+        NotImplementedError
+            Count-vector sampling is discrete.
+        """
+        raise NotImplementedError("count-vector sampling is discrete; use sample()")
+
+
+class ConditionalMultinomial(_ConditionalCountVector):
+    """Fixed-trial Multinomial with category logits learned from the input.
+
+    Parameters
+    ----------
+    domain, codomain : SetObject or ContinuousSpace
+        Input space and vector-valued output space.
+    total_count : int or torch.Tensor
+        Nonnegative exact trials broadcastable with input batch dimensions.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-network hidden dimensions.
+    param_source : ParamSource or None
+        Optional reusable category parameter source.
+    param_source_option : str or None
+        Parameter-source strategy.
+    """
+
+
+class ConditionalDirichletMultinomial(_ConditionalCountVector):
+    """Fixed-trial Dirichlet-multinomial with learned positive concentrations.
+
+    Parameters
+    ----------
+    domain, codomain : SetObject or ContinuousSpace
+        Input space and vector-valued output space.
+    total_count : int or torch.Tensor
+        Nonnegative exact trials broadcastable with input batch dimensions.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-network hidden dimensions.
+    param_source : ParamSource or None
+        Optional reusable category parameter source.
+    param_source_option : str or None
+        Parameter-source strategy.
+    """
+
+    _distribution_class = DirichletMultinomial
+
+
+for _name, _distribution, _conditional, _parameter, _transform in (
+    ("Multinomial", Multinomial, ConditionalMultinomial, "probs", "id"),
+    (
+        "DirichletMultinomial",
+        DirichletMultinomial,
+        ConditionalDirichletMultinomial,
+        "concentration",
+        "softplus_shifted",
+    ),
+):
+    _register_family(
+        FamilySpec(
+            name=_name,
+            dist_class=_distribution,
+            params=(
+                ParamSpec(name="total_count", transform="id", kind="integer"),
+                ParamSpec(name=_parameter, transform=_transform, kind="vector"),
+            ),
+            support=_distribution.support,
+            discrete=True,
+            output_kind="vector",
+            conditional_class_override=_conditional,
+        )
+    )
+
+
 # ============================================================================
 # factory-generated families (all remaining torch.distributions with rsample)
 # ============================================================================
@@ -787,6 +963,16 @@ ConditionalLaplace = _make_family(
     "Conditional Laplace(loc(x), scale(x)). Sharp peak, heavier tails than normal.",
 )
 """Conditional Laplace(loc(x), scale(x)). Sharp peak, heavier tails than normal."""
+
+ConditionalCOMPoisson = _make_family(
+    "ConditionalCOMPoisson",
+    COMPoisson,
+    [("rate", "softplus"), ("dispersion", "softplus")],
+    "Conditional Conway--Maxwell--Poisson rate and dispersion.",
+    discrete=True,
+    inline_bounds={"rate": (0.0, math.inf)},
+)
+"""Conditional COM-Poisson count law."""
 
 ConditionalDiscreteWeibull = _make_family(
     "ConditionalDiscreteWeibull",
@@ -3844,7 +4030,7 @@ _register_family(
 _register_family(
     FamilySpec(
         name="Categorical",
-        dist_class=D.Categorical,
+        dist_class=_ValidatedCategorical,
         params=(ParamSpec(name="probs", transform="id", kind="vector"),),
         support=_constraints.nonnegative_integer,
         discrete=True,
@@ -4055,7 +4241,7 @@ class ConditionalBetaBinomial(ContinuousMorphism):
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         alpha, beta = self._get_concentrations(x)
         return (
-            _CountBetaBinomial(
+            _BetaBinomial(
                 alpha.new_tensor(self._total_count, dtype=torch.float64), alpha, beta
             )
             .log_prob(y)
@@ -4080,10 +4266,7 @@ class ConditionalBetaBinomial(ContinuousMorphism):
     ) -> torch.Tensor:
         with torch.no_grad():
             alpha, beta = self._get_concentrations(x)
-            p = D.Beta(alpha, beta).sample(sample_shape)
-            return (
-                ClosedBinomial(total_count=self._total_count, probs=p).sample().long()
-            )
+            return _BetaBinomial(self._total_count, alpha, beta).sample(sample_shape)
 
 
 class ConditionalLogistic(ContinuousMorphism):
@@ -4574,8 +4757,14 @@ __all__ = [
     "ConditionalBeta",
     "ConditionalTruncatedNormal",
     "ConditionalDirichlet",
+    "Multinomial",
+    "DirichletMultinomial",
+    "ConditionalMultinomial",
+    "ConditionalDirichletMultinomial",
     "ConditionalCauchy",
     "ConditionalLaplace",
+    "COMPoisson",
+    "ConditionalCOMPoisson",
     "ConditionalDiscreteWeibull",
     "ConditionalZeroInflatedAsymmetricLaplace",
     "DiscreteWeibull",

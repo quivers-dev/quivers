@@ -14,10 +14,12 @@ from quivers.continuous._closed_probability import (
     ClosedNegativeBinomial,
     _count_log,
     _require_sample_capacity,
+    _beta_binomial_log_mass,
     _log_gamma_increment,
     _negative_binomial_log_mass,
     _check_trial_count_source,
 )
+from quivers.continuous._simplex_sampling import _dirichlet_weights
 from quivers.continuous._zero_truncated_poisson import (
     positive_poisson_mean,
     positive_poisson_sample,
@@ -161,7 +163,7 @@ def _zero_atom_log_mass(zero_prob: Tensor, base_log_mass: Tensor) -> Tensor:
     return _ZeroAtomLogMass.apply(zero_prob, base_log_mass)
 
 
-class _CountBetaBinomial(Distribution):
+class BetaBinomial(Distribution):
     """A broadcast beta-binomial component, including zero trials.
 
     Parameters
@@ -189,6 +191,18 @@ class _CountBetaBinomial(Distribution):
         self.total_count, self.concentration1, self.concentration0 = (
             _broadcast_count_parameters(total_count, concentration1, concentration0)
         )
+        if not bool(
+            (
+                torch.isfinite(self.concentration1)
+                & (self.concentration1 > 0)
+                & torch.isfinite(self.concentration0)
+                & (self.concentration0 > 0)
+                & torch.isfinite(self.concentration1 + self.concentration0)
+            ).all()
+        ):
+            raise ValueError(
+                "beta-binomial concentrations and their sum must be finite"
+            )
         super().__init__(self.total_count.shape, validate_args=validate_args)
 
     @property
@@ -200,11 +214,10 @@ class _CountBetaBinomial(Distribution):
         Tensor
             Trial count times the beta mean.
         """
-        return (
-            self.total_count
-            * self.concentration1
-            / (self.concentration1 + self.concentration0)
-        )
+        active = self.total_count > 0
+        a = torch.where(active, self.concentration1, 1.0)
+        b = torch.where(active, self.concentration0, 1.0)
+        return self.total_count * (a / (a + b))
 
     @property
     def variance(self) -> Tensor:
@@ -215,8 +228,12 @@ class _CountBetaBinomial(Distribution):
         Tensor
             Beta-binomial response variance.
         """
-        a, b, n = self.concentration1, self.concentration0, self.total_count
-        return n * a * b * (a + b + n) / ((a + b).square() * (a + b + 1))
+        n = self.total_count
+        a = torch.where(n > 0, self.concentration1, 1.0)
+        b = torch.where(n > 0, self.concentration0, 1.0)
+        phi = a + b
+        p = a / phi
+        return n * p * (b / phi) * ((phi + n) / (phi + 1))
 
     def log_prob(self, value: Tensor) -> Tensor:
         """Evaluate the finite count mass in the parameter dtype.
@@ -239,18 +256,8 @@ class _CountBetaBinomial(Distribution):
         )
         valid = constraints.nonnegative_integer.check(value) & (value <= n)
         k = torch.where(valid, value, 0.0)
-        result = (
-            -(n + 1).log()
-            + _log_gamma_increment(k + 1, a - 1)
-            + _log_gamma_increment(n - k + 1, b - 1)
-            - _log_gamma_increment(n + 2, a + b - 2)
-            - torch.lgamma(a)
-            - torch.lgamma(b)
-            + torch.lgamma(a + b)
-        )
-        return torch.where(
-            valid, torch.where(n == 0, torch.zeros_like(result), result), -torch.inf
-        )
+        result = _beta_binomial_log_mass(k, torch.where(valid, n, 0.0), a, b)
+        return torch.where(valid, result, -torch.inf)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         """Draw a beta probability followed by a binomial count.
@@ -265,12 +272,19 @@ class _CountBetaBinomial(Distribution):
         Tensor
             Nonnegative integer counts.
         """
-        probability = torch.distributions.Beta(
-            self.concentration1, self.concentration0
-        ).sample(sample_shape)
-        return torch.binomial(
-            self.total_count.expand(probability.shape), probability
-        ).long()
+        shape = sample_shape + self.batch_shape
+        n = self.total_count.expand(shape)
+        result = torch.zeros(shape, dtype=torch.int64, device=n.device)
+        active = n > 0
+        if bool(active.any()):
+            concentrations = torch.stack(
+                (self.concentration1, self.concentration0), -1
+            ).expand(shape + (2,))[active]
+            probability = _dirichlet_weights(concentrations)[..., 0]
+            result[active] = (
+                ClosedBinomial(n[active], probs=probability).sample().long()
+            )
+        return result
 
 
 class _InflatedCount(Distribution):
@@ -531,7 +545,7 @@ class ZeroInflatedBetaBinomial(ZeroInflatedBinomial):
         "concentration1": constraints.positive,
         "concentration0": constraints.positive,
     }
-    _count_class = _CountBetaBinomial
+    _count_class = BetaBinomial
 
     def __init__(
         self, zero_prob, total_count, concentration1, concentration0, validate_args=None

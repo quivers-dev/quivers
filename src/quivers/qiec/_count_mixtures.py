@@ -8,6 +8,7 @@ import math
 import random
 
 from quivers.qiec.reference_support import DistributionError, real_parameter
+from quivers.qiec._sampling import _binomial_sample, _dirichlet_weights
 
 NAMES = (
     "ZeroInflatedNegativeBinomial",
@@ -196,37 +197,101 @@ def _negative_binomial_log_mass(r: float, k: int, log_p: float, log_q: float) ->
     )
 
 
-def _beta_binomial_log_mass(n: float, k: int, a: float, b: float) -> float:
-    """Evaluate beta-binomial masses through gamma increments.
+def _validate_beta_concentrations(a: float, b: float) -> None:
+    """Validate scalar Beta count parameters before any degenerate shortcut.
 
     Parameters
     ----------
-    n : float
-        Nonnegative integer trial count.
-    k : int
-        Observation count.
-    a : float
-        Positive success concentration.
-    b : float
-        Positive failure concentration.
+    a, b : float
+        Success and failure concentrations.
+
+    Raises
+    ------
+    DistributionError
+        If concentrations or their sum are not positive and finite.
+    """
+    if not (
+        math.isfinite(a)
+        and math.isfinite(b)
+        and a > 0
+        and b > 0
+        and math.isfinite(a + b)
+    ):
+        raise DistributionError(
+            "beta-binomial concentrations and their sum must be finite and positive"
+        )
+
+
+def _beta_binomial_log_mass(n: float, k: int, a: float, b: float) -> float:
+    """Evaluate beta-binomial factors without extensive gamma subtraction.
+
+    Parameters
+    ----------
+    k, n : int
+        Counts and trials within support.
+    a, b : float
+        Positive beta concentrations.
 
     Returns
     -------
     float
-        Stable log mass, including the zero-trial point mass.
+        Stable normalized log mass.
+
+    Raises
+    ------
+    DistributionError
+        If concentrations or their sum exceed positive finite capacity.
     """
+    _validate_beta_concentrations(a, b)
     if not 0 <= k <= n:
         return -math.inf
     if n == 0:
         return 0.0
+    if k == 0:
+        return (
+            _log_gamma_increment(b, a) - _log_gamma_increment(b + n, a)
+            if a < n
+            else _log_gamma_increment(b, n) - _log_gamma_increment(b + a, n)
+        )
+    if k == n:
+        return (
+            _log_gamma_increment(a, b) - _log_gamma_increment(a + n, b)
+            if b < n
+            else _log_gamma_increment(a, n) - _log_gamma_increment(a + b, n)
+        )
+    x, y = float(k), float(n - k)
+    count = x + y
+    prior = a + b
+    posterior = count + prior
+    xp, yp = x + a, y + b
+    lp, lq = math.log(xp) - math.log(posterior), math.log(yp) - math.log(posterior)
     return (
-        -math.log(n + 1)
-        + _log_gamma_increment(k + 1, a - 1)
-        + _log_gamma_increment(n - k + 1, b - 1)
-        - _log_gamma_increment(n + 2, a + b - 2)
-        - math.lgamma(a)
-        - math.lgamma(b)
-        + math.lgamma(a + b)
+        _stirling_error(count)
+        - _stirling_error(x)
+        - _stirling_error(y)
+        + _stirling_error(xp)
+        + _stirling_error(yp)
+        - _stirling_error(posterior)
+        - _stirling_error(a)
+        - _stirling_error(b)
+        + _stirling_error(prior)
+        - _deviance(x, math.log(count) + lp)
+        - _deviance(y, math.log(count) + lq)
+        - _deviance(a, math.log(prior) + lp)
+        - _deviance(b, math.log(prior) + lq)
+        + 0.5
+        * (
+            math.log(count)
+            - math.log(x)
+            - math.log(y)
+            - math.log(xp)
+            - math.log(yp)
+            + math.log(posterior)
+            + math.log(a)
+            + math.log(b)
+            - math.log(prior)
+            - 1.83787706640934548356
+        )
     )
 
 
@@ -518,9 +583,9 @@ def count_mixture_sample(
     probability = (
         p["probs"]
         if family == "ZeroInflatedBinomial"
-        else rng.betavariate(p["concentration1"], p["concentration0"])
+        else _dirichlet_weights((p["concentration1"], p["concentration0"]), rng)[0]
     )
-    return rng.binomialvariate(int(n), probability)
+    return _binomial_sample(int(n), probability, rng)
 
 
 SAMPLERS = {name: partial(count_mixture_sample, family=name) for name in NAMES}

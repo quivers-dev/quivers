@@ -405,4 +405,4 @@ class TestFamilyMetaWiring:
             assert meta.quivers_class is not None
             assert meta.quivers_class.__name__ == f"Conditional{family}"
         assert "GP" in FAMILY_META
-        assert len(FAMILY_META) == 76
+        assert len(FAMILY_META) == 79

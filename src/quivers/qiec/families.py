@@ -356,6 +356,45 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
+        name="Multinomial",
+        parameters=(
+            FamilyParameter(
+                name="total_count", constraint="nonnegative_integer", rank=0
+            ),
+            FamilyParameter(
+                name="probs", constraint="simplex", rank=1, event_dims=(0,)
+            ),
+            FamilyParameter(name="logits", constraint="real", rank=1, event_dims=(0,)),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=1,
+        event_sources=("probs", "logits"),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="DirichletMultinomial",
+        parameters=(
+            FamilyParameter(
+                name="total_count", constraint="nonnegative_integer", rank=0
+            ),
+            FamilyParameter(
+                name="concentration", constraint="positive", rank=1, event_dims=(0,)
+            ),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=1,
+        event_sources=("concentration",),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="Dirichlet",
         parameters=(
             FamilyParameter(
@@ -470,6 +509,22 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         event_sources=(),
         discrete=False,
         reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="COMPoisson",
+        parameters=(
+            FamilyParameter(name="rate", constraint="nonnegative", rank=0),
+            FamilyParameter(name="dispersion", constraint="positive", rank=0),
+            FamilyParameter(name="log_rate", constraint="real", rank=0),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
         compositional=False,
         targets={},
     ),

@@ -14,8 +14,11 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
     "Beta": ("concentration1", "concentration0"),
     "TruncatedNormal": ("mu", "sigma", "low", "high"),
     "Dirichlet": ("concentration",),
+    "Multinomial": ("total_count", "probs"),
+    "DirichletMultinomial": ("total_count", "concentration"),
     "Cauchy": ("loc", "scale"),
     "Laplace": ("loc", "scale"),
+    "COMPoisson": ("rate", "dispersion"),
     "DiscreteWeibull": ("probs", "concentration"),
     "ZeroInflatedAsymmetricLaplace": ("zero_prob", "loc", "scale", "quantile"),
     "AsymmetricLaplace": ("loc", "scale", "quantile"),
@@ -95,7 +98,9 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
 
 
 _ALTERNATIVE_SCHEMAS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "COMPoisson": (("rate", "dispersion"), ("log_rate", "dispersion")),
     "Categorical": (("probs",), ("logits",)),
+    "Multinomial": (("total_count", "probs"), ("total_count", "logits")),
     "MultivariateNormal": (
         ("loc", "scale_tril"),
         ("loc", "covariance_matrix"),

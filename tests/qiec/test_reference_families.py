@@ -254,6 +254,15 @@ def _component(loc: Sequence[float], scale: Sequence[float]) -> RuntimeDistribut
 
 
 CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
+    "Multinomial": (
+        {"total_count": 7, "probs": (0.2, 0.3, 0.5)},
+        ((1, 4, 2), (0, 0, 7)),
+    ),
+    "DirichletMultinomial": (
+        {"total_count": 7, "concentration": (0.7, 1.3, 2.0)},
+        ((1, 4, 2), (0, 0, 7)),
+    ),
+    "COMPoisson": ({"rate": 2.0, "dispersion": 1.3}, (0.0, 1.0, 4.0)),
     "DiscreteWeibull": ({"probs": 0.4, "concentration": 1.3}, (0.0, 1.0, 4.0)),
     "ZeroInflatedAsymmetricLaplace": (
         {"zero_prob": 0.3, "loc": 0.1, "scale": 0.7, "quantile": 0.4},

@@ -6,7 +6,7 @@ from torch.distributions import constraints
 
 from quivers.continuous._closed_probability import ClosedBinomial
 from quivers.continuous._zero_inflated_count import (
-    _CountBetaBinomial,
+    BetaBinomial,
     ZeroInflatedBinomial,
     ZeroInflatedBetaBinomial,
 )
@@ -17,7 +17,7 @@ from quivers.qiec.families import family
     "cls,parameters",
     [
         (ClosedBinomial, {"probs": torch.tensor(0.4)}),
-        (_CountBetaBinomial, {"concentration1": 2.0, "concentration0": 3.0}),
+        (BetaBinomial, {"concentration1": 2.0, "concentration0": 3.0}),
         (ZeroInflatedBinomial, {"zero_prob": 0.2, "probs": 0.4}),
         (
             ZeroInflatedBetaBinomial,

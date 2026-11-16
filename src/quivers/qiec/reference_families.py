@@ -17,12 +17,19 @@ import math
 import random
 
 from quivers.qiec._onion import onion_cholesky_rows
+from quivers.qiec._sampling import (
+    _log_standard_gamma,
+    _dirichlet_weights,
+    _binomial_sample as _sample_binomial_count,
+    _trial_count,
+)
 from quivers.qiec._gamma_tails import _gamma_interval_log_mass
 from quivers.qiec._count_mixtures import (
     _negative_binomial_log_mass,
     _poisson as _sample_poisson_count,
     _require_sample_capacity as _require_count_sample_capacity,
     _beta_binomial_log_mass,
+    _validate_beta_concentrations,
 )
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.reference_support import (
@@ -1109,30 +1116,6 @@ def _positive_parameter(a: Mapping[str, object], name: str, family: str) -> floa
     return value
 
 
-def _log_standard_gamma(shape: float, rng: random.Random) -> float:
-    """Draw ``log(G)`` for ``G ~ Gamma(shape, 1)`` without forming ``G``.
-
-    The draw is ``log G' + log(U) / shape`` for independent ``G' ~
-    Gamma(shape + 1, 1)`` and ``U ~ Uniform(0, 1]``, the shape
-    augmentation of Marsaglia and Tsang, which stays finite for shapes
-    far below the point where a Gamma draw underflows.
-
-    Parameters
-    ----------
-    shape : float
-        The positive Gamma shape.
-    rng : random.Random
-        The generator to draw from.
-
-    Returns
-    -------
-    float
-        One log-Gamma draw.
-    """
-    boosted = rng.gammavariate(shape + 1.0, 1.0)
-    return math.log(boosted) + math.log(1.0 - rng.random()) / shape
-
-
 def _loggamma_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``LogGamma``, the log of a Gamma variable.
 
@@ -2058,12 +2041,16 @@ def _betabinomial_sample(a: Mapping[str, object], rng: random.Random) -> object:
     object
         The drawn count, from a binomial whose probability is a beta draw.
     """
-    total = int(real_parameter(a, "total_count", "BetaBinomial"))
-    success = rng.betavariate(
+    total = _trial_count(a.get("total_count"))
+    concentrations = (
         real_parameter(a, "concentration1", "BetaBinomial"),
         real_parameter(a, "concentration0", "BetaBinomial"),
     )
-    return sum(1 for _ in range(total) if rng.random() < success)
+    _validate_beta_concentrations(*concentrations)
+    if total == 0:
+        return 0
+    success = _dirichlet_weights(concentrations, rng)[0]
+    return _sample_binomial_count(total, success, rng)
 
 
 def _betabinomial_density(a: Mapping[str, object], value: object) -> float:
@@ -2081,8 +2068,11 @@ def _betabinomial_density(a: Mapping[str, object], value: object) -> float:
     float
         The log probability, ``-inf`` outside ``0..total_count``.
     """
-    count = int(finite_value(value, "BetaBinomial"))
-    total = real_parameter(a, "total_count", "BetaBinomial")
+    point = finite_value(value, "BetaBinomial")
+    if not point.is_integer():
+        return -math.inf
+    count = int(point)
+    total = _trial_count(a.get("total_count"))
     first = real_parameter(a, "concentration1", "BetaBinomial")
     second = real_parameter(a, "concentration0", "BetaBinomial")
     return _beta_binomial_log_mass(total, count, first, second)
