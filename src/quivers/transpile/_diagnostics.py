@@ -1221,6 +1221,13 @@ def _render_dim_kind(backend: str, tail: str, explained: bool) -> str:
     from, so the kind names the variant and the message names the two
     that work.
     """
+    if tail.startswith("model-local:"):
+        _, binding, consumer = tail.split(":", 2)
+        return (
+            f"{_cannot(backend, f'declare `{consumer}` with a size from model-local binding `{binding}`')}. "
+            "Stan requires data-only sizes for top-level declarations; "
+            "use a size available from the declared data interface."
+        )
     variant = tail.removeprefix("unknown:").partition(":")[0].strip() or tail
     if variant:
         headline = _cannot(backend, f"size {_dim_surface(variant)}")

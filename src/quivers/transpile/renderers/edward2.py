@@ -66,6 +66,7 @@ from quivers.transpile.renderers._python_helpers import (
 from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
 from quivers.transpile.ir import (
     CSBoolean,
+    CSInteger,
     CSIntegerInterval,
     CSInterval,
     CSNonnegativeInteger,
@@ -2186,6 +2187,7 @@ _SCALAR_CONSTRAINT_CLASSES: tuple[type, ...] = (
     CSUnitInterval,
     CSInterval,
     CSBoolean,
+    CSInteger,
     CSIntegerInterval,
     CSNonnegativeInteger,
     CSPositiveInteger,

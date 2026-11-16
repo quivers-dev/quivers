@@ -102,7 +102,6 @@ from quivers.dsl.qiec_lowering import (
 from quivers.qiec.canonical import sampled_element, tensor_shape
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import (
-    INT,
     IndexLiteral,
     IndexTerm,
     IndexVariable,
@@ -171,6 +170,7 @@ from quivers.transpile.lower import (
     _retarget_alphabet_arg,
     object_shapes,
     pick_program,
+    scalar_carrier_constraint,
 )
 from quivers.transpile.qiec_ir import IRQiecStatic, _convert, lower_qiec_ir
 from quivers.transpile._pure_calls import (
@@ -606,7 +606,7 @@ class _ProgramWalk:
         yield IRDeterministic(
             name=binder.name,
             expr=self._expr(value),
-            constraint=CSReal(),
+            constraint=scalar_carrier_constraint(binder.type),
             plate=plate,
         )
 
@@ -891,7 +891,10 @@ class _ProgramWalk:
             self.ctx.bound_kinds[binder.name] = "deterministic"
             nodes.append(
                 IRDeterministic(
-                    name=binder.name, expr=result, constraint=CSReal(), plate=plate
+                    name=binder.name,
+                    expr=result,
+                    constraint=scalar_carrier_constraint(binder.type),
+                    plate=plate,
                 )
             )
             yield from nodes
@@ -915,6 +918,7 @@ class _ProgramWalk:
             random_instance=str(self.entry.random_instance),
             score_instance=str(self.entry.score_instance),
             plate=plate,
+            constraint=scalar_carrier_constraint(binder.type),
         )
 
     def _inlined(
@@ -2203,8 +2207,11 @@ class _ProgramWalk:
                 plate=plate,
             )
         plate = Plate(event_dims=(), batch_dims=dims)
-        element = _element_type(parameter.type)
-        constraint = CSNonnegativeInteger() if element == INT else CSReal()
+        constraint = (
+            CSNonnegativeInteger()
+            if parameter.constraint == "nonnegative"
+            else scalar_carrier_constraint(parameter.type)
+        )
         return IRDataInput(name=name, constraint=constraint, plate=plate)
 
 

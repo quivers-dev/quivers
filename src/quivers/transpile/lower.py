@@ -77,6 +77,8 @@ from quivers.dsl.ast_nodes.objects import (
     ObjectProduct,
     TypeName,
 )
+from quivers.qiec.canonical import tensor_shape
+from quivers.qiec.types import BOOL, INT, TypeExpr
 from quivers.qiec.families import FAMILIES
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.dsl.draw_args import (
@@ -91,6 +93,8 @@ from quivers.transpile.family_meta import (
 )
 from quivers.transpile.ir import (
     CSInterval,
+    CSBoolean,
+    CSInteger,
     CSPositive,
     CSPositiveDefinite,
     CSReal,
@@ -1258,6 +1262,28 @@ def free_names_in_arg(arg: IRArg) -> list[str]:
 
     visit(arg)
     return out
+
+
+def scalar_carrier_constraint(type_: TypeExpr) -> ConstraintSpec:
+    """Retain a checked scalar carrier independently of its tensor axes.
+
+    Parameters
+    ----------
+    type_ : TypeExpr
+        The checked scalar or tensor type.
+
+    Returns
+    -------
+    ConstraintSpec
+        Its Boolean, unrestricted integer, or real scalar carrier.
+    """
+    shape = tensor_shape(type_)
+    element = shape[0] if shape is not None else type_
+    if element == BOOL:
+        return CSBoolean()
+    if element == INT:
+        return CSInteger()
+    return CSReal()
 
 
 _DATA_CONSTRAINT_FACTORY: dict[str, Callable[[], ConstraintSpec]] = {

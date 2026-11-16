@@ -85,6 +85,7 @@ if TYPE_CHECKING:
     from quivers.transpile.ir import (
         CSBoolean,
         CSCorrCholesky,
+        CSInteger,
         CSIntegerInterval,
         CSInterval,
         CSLowerCholesky,
@@ -297,6 +298,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "BackendRenderer": "quivers.transpile.renderer_registry",
     "CSBoolean": "quivers.transpile.ir",
     "CSCorrCholesky": "quivers.transpile.ir",
+    "CSInteger": "quivers.transpile.ir",
     "CSIntegerInterval": "quivers.transpile.ir",
     "CSInterval": "quivers.transpile.ir",
     "CSLowerCholesky": "quivers.transpile.ir",
@@ -559,6 +561,7 @@ __all__ = [
     "CHURCH_LIKE",
     "CSBoolean",
     "CSCorrCholesky",
+    "CSInteger",
     "CSIntegerInterval",
     "CSInterval",
     "CSLowerCholesky",

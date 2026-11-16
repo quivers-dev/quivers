@@ -27,6 +27,7 @@ from quivers.transpile.renderers._let_expr_traversal import AFFINE_EXPRESSION
 from quivers.transpile.family_meta import FAMILY_META, marginalize_support
 from quivers.transpile.ir import (
     ConstraintSpec,
+    CSInteger,
     CSIntegerInterval,
     CSNonnegativeInteger,
     DimStatic,
@@ -1057,15 +1058,15 @@ def ir_uses_family(body: tuple[IRNode, ...], family: str) -> bool:
 
 def host_integer_input_names(ir: IRProgram) -> frozenset[str]:
     """Return the names of every :class:`IRDataInput` whose constraint
-    is integer-typed (:class:`CSNonnegativeInteger` or
-    :class:`CSIntegerInterval`).
+    is integer-typed (:class:`CSInteger`, :class:`CSNonnegativeInteger`,
+    or :class:`CSIntegerInterval`).
 
     These are the exogenous covariates a program subscripts a plate
     with (``item_idx``, ``cat_idx``, ``out_idx``). Renderers consult
     the set once per render to discriminate index covariates from
     ordinary integer observations.
     """
-    integer_kinds = (CSNonnegativeInteger, CSIntegerInterval)
+    integer_kinds = (CSInteger, CSNonnegativeInteger, CSIntegerInterval)
     return frozenset(
         inp.name for inp in ir.inputs if isinstance(inp.constraint, integer_kinds)
     )
