@@ -42,6 +42,7 @@ from quivers.transpile._api import (
     STRUCTURAL_QIEC,
 )
 from tests.transpile.fixtures import _load
+from tests.transpile.fixtures._capabilities import PARAMETERIZATION_REFUSALS
 
 
 _BACKENDS = sorted(available_targets())
@@ -611,6 +612,13 @@ for _backend in _BACKENDS:
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "statements", _fixture)] = (
             "qiec:capability:neural-attachment"
         )
+
+
+# Numerical and structural matrices assert the same independently listed cells.
+_EXPECTED_ORTHOGONAL_RAISES.update(
+    ((target, *fixture.split("/", 1)), kind)
+    for (fixture, target), kind in PARAMETERIZATION_REFUSALS.items()
+)
 
 
 def _construct_fixtures() -> list[_load.Fixture]:
