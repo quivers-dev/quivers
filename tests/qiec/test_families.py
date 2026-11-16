@@ -25,6 +25,13 @@ from quivers.qiec.identifiers import DistributionId
 from quivers.transpile.family_meta import FAMILY_META
 
 _MANUAL_PARAMETERS = {
+    "MultivariateStudentT": (
+        "df",
+        "loc",
+        "covariance_matrix",
+        "precision_matrix",
+        "scale_tril",
+    ),
     "Uniform": ("low", "high"),
     "Wiener": ("boundary", "ndt", "bias", "drift"),
     "Wishart": ("df", "covariance_matrix", "precision_matrix", "scale_tril"),

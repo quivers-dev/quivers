@@ -39,6 +39,8 @@ class MultivariateStudentT(Distribution):
     has_rsample = True
     _atomless = True
     _batch_parameter_ranks = {"df": 0, "loc": 1, "scale_tril": 2}
+    #: The real-vector observation carrier: one final unconstrained event axis.
+    support = constraints.real_vector
 
     @property
     def arg_constraints(self) -> dict[str, constraints.Constraint]:
@@ -54,17 +56,6 @@ class MultivariateStudentT(Distribution):
             "loc": constraints.real_vector,
             "scale_tril": constraints.lower_cholesky,
         }
-
-    @property
-    def support(self) -> constraints.Constraint:
-        """Return the real-vector observation carrier.
-
-        Returns
-        -------
-        Constraint
-            One final unconstrained real event axis.
-        """
-        return constraints.real_vector
 
     def __init__(
         self,
