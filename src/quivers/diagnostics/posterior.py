@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import math
 import json
 from itertools import product
@@ -14,6 +14,7 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.diagnostics._numeric import empirical_summary, probabilities, real_samples
+from quivers.diagnostics.cross_validation import FoldSplit, FoldPrediction
 from quivers.diagnostics.contrast import ContrastExpression
 from quivers.diagnostics.hypothesis import HypothesisSummary
 from quivers.diagnostics.density import PointNullSpec
@@ -802,6 +803,57 @@ class PosteriorAnalysis(ValueModel):
         with xr.open_datatree(path, engine="netcdf4") as tree:
             return cls.from_datatree(tree)
 
+    def reloo(
+        self,
+        refit: Callable[[FoldSplit], FoldPrediction],
+        *,
+        var_name: str | None = None,
+        k_threshold: float | None = None,
+        seed: int = 0,
+        pointwise: bool = True,
+    ) -> object:
+        """Replace problematic PSIS terms with raw held-out refit predictions.
+
+        Parameters
+        ----------
+        refit : Callable[[FoldSplit], FoldPrediction]
+            Existing source, formula, or user refit adapter. Each requested
+            split excludes one original observation and scores that row alone.
+        var_name : str or None
+            Selected response; required when several responses are retained.
+        k_threshold : float or None
+            Refit Pareto shapes above this value. None uses ArviZ's threshold
+            based on retained sample count. Negative infinity refits all rows.
+            Undefined tail fits are refitted unless the threshold is infinity.
+        seed : int
+            Nonnegative base seed for independent, order-invariant row refits.
+        pointwise : bool
+            Retain individual ELPD values and Pareto diagnostics in the result.
+
+        Returns
+        -------
+        arviz.ELPDData
+            ArviZ's updated criterion, on the natural-log scale. Refit terms
+            retain the supplied fitter's approximation and Monte Carlo error.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If options, raw held-out scores, or observation axes are invalid.
+        ImportError
+            If the optional diagnostics dependencies are unavailable.
+        """
+        from quivers.diagnostics._reloo import reloo
+
+        return reloo(
+            self,
+            refit,
+            var_name=var_name,
+            k_threshold=k_threshold,
+            seed=seed,
+            pointwise=pointwise,
+        )
+
     def loo(self, *, var_name: str | None = None, pointwise: bool = True) -> object:
         """Run optional ArviZ PSIS-LOO without recomputing model likelihoods.
 
@@ -841,7 +893,9 @@ class PosteriorAnalysis(ValueModel):
                 var_name=name,
                 pointwise=pointwise,
                 reff=1.0,
-                log_weights=xr.full_like(likelihood, -math.log(count)),
+                log_weights=xr.full_like(
+                    likelihood.transpose(..., "chain", "draw"), -math.log(count)
+                ),
                 pareto_k=xr.full_like(
                     likelihood.isel(chain=0, draw=0, drop=True), math.nan
                 ),

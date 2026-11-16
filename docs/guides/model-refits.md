@@ -99,6 +99,33 @@ It delegates uncertainty and joint predictive scoring to the existing runner.
 is explicit. Refit accuracy still depends on the chosen inference method and
 its budget.
 
+## Refitting influential observations
+
+`PosteriorAnalysis.reloo` connects the same callback to ArviZ's exact-refit
+interface. It first computes PSIS-LOO from retained raw likelihoods, then refits
+observations whose Pareto shape exceeds `k_threshold`, including undefined
+tail fits. With the default
+`None`, ArviZ chooses a threshold from the retained sample count. Explicit
+`-float("inf")` requests a refit for every row. This removes the importance
+sampling approximation for those rows; the inference method and its finite
+draw budget still determine refit accuracy.
+
+<!-- python: run -->
+```python
+analysis = fitted.analysis(num_samples=32, seed=23)
+criterion = analysis.reloo(callback, k_threshold=-float("inf"), seed=11)
+assert criterion.elpd_i.shape == (4,)
+assert (criterion.pareto_k == 0).all()
+```
+
+Each split excludes exactly one original included row. Named observation
+coordinates stay attached to the ArviZ result, while the callback receives
+positional row identities. A response event must already be reduced to one
+score per row; with multiple responses, select one explicitly using `var_name`.
+Whole-group omission or joint response scoring uses `cross_validate` with an
+explicit fold plan, since it changes the prediction question. Neither adapter
+multiplies held-out densities by training likelihood weights.
+
 ## Formula models
 
 `BayesianFit.update` accepts replacement raw data and overrides of the existing

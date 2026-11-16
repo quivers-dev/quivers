@@ -137,6 +137,27 @@ class FoldPlan(ValueModel):
 
 
 def _labels(values: Sequence[FoldLabel], size: int, name: str) -> tuple[FoldLabel, ...]:
+    """Retain exact row labels after validating their carrier and length.
+
+    Parameters
+    ----------
+    values : Sequence[FoldLabel]
+        Authored group or stratum identities.
+    size : int
+        Required original row count.
+    name : str
+        Role included in a failed validation message.
+
+    Returns
+    -------
+    tuple[FoldLabel, ...]
+        Labels in original row order.
+
+    Raises
+    ------
+    ValueError
+        If there is not exactly one string or integer label per row.
+    """
     result = tuple(values)
     if len(result) != size or any(type(value) not in {str, int} for value in result):
         raise ValueError(f"{name} require one string or integer label per original row")
@@ -388,6 +409,72 @@ class CrossValidationResult(ValueModel):
         return normalized.std(correction=1) * math.sqrt(scores.numel()) * scale
 
 
+def _prediction_scores(
+    prediction: FoldPrediction,
+    split: FoldSplit,
+    selected: tuple[str, ...] | None,
+    device: torch.device | None = None,
+) -> tuple[torch.Tensor, tuple[str, ...]]:
+    """Validate and align raw held-out draws for CV and ArviZ exact refits.
+
+    Parameters
+    ----------
+    prediction : FoldPrediction
+        Raw response scores from one actual partition refit.
+    split : FoldSplit
+        Required original held-out row order.
+    selected : tuple[str, ...] or None
+        Joint response selection, inferred only for a single scored response.
+    device : torch.device or None
+        Previously retained device, when a runner combines several folds.
+
+    Returns
+    -------
+    tuple[torch.Tensor, tuple[str, ...]]
+        Detached Float64 scores summed over selected responses within draws,
+        together with the resolved response selection.
+
+    Raises
+    ------
+    ValueError, TypeError
+        If response selection, sample/row axes, carrier or scores are invalid.
+    """
+    if not isinstance(prediction, FoldPrediction):
+        raise TypeError("refit must return FoldPrediction with raw held-out scores")
+    if selected is None:
+        if len(prediction.log_likelihood) != 1:
+            raise ValueError(
+                "select responses explicitly when a refit scores multiple names"
+            )
+        selected = tuple(prediction.log_likelihood)
+    score: torch.Tensor | None = None
+    for name in selected:
+        if name not in prediction.log_likelihood:
+            raise ValueError(f"refit lacks selected response {name!r}")
+        raw = prediction.log_likelihood[name]
+        if not isinstance(raw, torch.Tensor) or not raw.is_floating_point():
+            raise TypeError(
+                "held-out log likelihoods must be real floating-point tensors"
+            )
+        if raw.ndim != 3 or min(raw.shape[:2]) < 1 or raw.shape[2] != len(split.test):
+            raise ValueError(
+                "held-out scores require nonempty chain/draw axes and exactly the designated test rows"
+            )
+        value = raw.detach().to(dtype=torch.float64)
+        if bool((torch.isnan(value) | torch.isposinf(value)).any()):
+            raise ValueError("held-out scores cannot contain NaN or positive infinity")
+        if device is not None and value.device != device:
+            raise ValueError("all refit scores must use the same device")
+        device = value.device
+        if score is not None and score.shape != value.shape:
+            raise ValueError(
+                "joint responses must share aligned chain, draw, and row axes"
+            )
+        score = value if score is None else score + value
+    assert score is not None
+    return score, selected
+
+
 def cross_validate(
     plan: FoldPlan,
     refit: Callable[[FoldSplit], FoldPrediction],
@@ -464,45 +551,8 @@ def cross_validate(
         split = plan.split(fold)
         with seeded_rng(split.seed):
             prediction = refit(split)
-        if not isinstance(prediction, FoldPrediction):
-            raise TypeError("refit must return FoldPrediction with raw held-out scores")
-        if selected is None:
-            if len(prediction.log_likelihood) != 1:
-                raise ValueError(
-                    "select responses explicitly when a refit scores multiple names"
-                )
-            selected = tuple(prediction.log_likelihood)
-        score: torch.Tensor | None = None
-        for name in selected:
-            if name not in prediction.log_likelihood:
-                raise ValueError(f"refit lacks selected response {name!r}")
-            raw = prediction.log_likelihood[name]
-            if not isinstance(raw, torch.Tensor) or not raw.is_floating_point():
-                raise TypeError(
-                    "held-out log likelihoods must be real floating-point tensors"
-                )
-            if (
-                raw.ndim != 3
-                or min(raw.shape[:2]) < 1
-                or raw.shape[2] != len(split.test)
-            ):
-                raise ValueError(
-                    "held-out scores require nonempty chain/draw axes and exactly the designated test rows"
-                )
-            value = raw.detach().to(dtype=torch.float64)
-            if bool((torch.isnan(value) | torch.isposinf(value)).any()):
-                raise ValueError(
-                    "held-out scores cannot contain NaN or positive infinity"
-                )
-            if device is not None and value.device != device:
-                raise ValueError("all refit scores must use the same device")
-            device = value.device
-            if score is not None and score.shape != value.shape:
-                raise ValueError(
-                    "joint responses must share aligned chain, draw, and row axes"
-                )
-            score = value if score is None else score + value
-        assert score is not None
+        score, selected = _prediction_scores(prediction, split, selected, device)
+        device = score.device
         positions: list[list[int]]
         if joint == "observation":
             positions = [[i] for i in range(len(split.test))]
