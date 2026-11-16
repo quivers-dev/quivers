@@ -37,6 +37,30 @@ LAYER_NORM_EPS = 1e-5
 RMS_NORM_EPS = 1e-6
 
 
+def _tensor_matmul(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
+    """Multiply checked Real tensors using their common floating precision.
+
+    Parameters
+    ----------
+    left, right : torch.Tensor
+        Matrix operands with the existing Torch batch and event geometry.
+
+    Returns
+    -------
+    torch.Tensor
+        Matrix product. Floating operands use Torch's promoted dtype;
+        device, layout and integral-input errors retain ordinary Torch semantics.
+    """
+    if (
+        left.is_floating_point()
+        and right.is_floating_point()
+        and left.dtype != right.dtype
+    ):
+        dtype = torch.promote_types(left.dtype, right.dtype)
+        left, right = left.to(dtype=dtype), right.to(dtype=dtype)
+    return torch.matmul(left, right)
+
+
 def _eager_observation_weight(value: torch.Tensor | float) -> torch.Tensor | float:
     """Check the same finite, nonnegative carrier as the reference primitive.
 
@@ -428,7 +452,7 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     "rms_norm": lambda a, eps=RMS_NORM_EPS: (
         a * torch.rsqrt(a.pow(2).mean(dim=-1, keepdim=True) + float(eps))
     ),
-    "matmul": lambda a, b: torch.matmul(a, b),
+    "matmul": _tensor_matmul,
     "real": lambda a: (
         a.to(dtype=torch.get_default_dtype())
         if isinstance(a, torch.Tensor)

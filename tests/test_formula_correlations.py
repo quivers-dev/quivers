@@ -11,6 +11,7 @@ from quivers.dsl import Compiler, loads
 from quivers.dsl.emit import module_to_source
 from quivers.formulas import (
     FormulaToQVRModule,
+    GroupCovariance,
     families,
     fit,
     formula_from_data,
@@ -264,19 +265,25 @@ def test_correlated_categorical_models_fit_with_all_frontend_samplers(method):
 
 
 @pytest.mark.parametrize("parameterization", ["centered", "noncentered"])
+@pytest.mark.parametrize("known_covariance", [False, True])
 def test_shared_location_scale_covariance_matches_joint_gaussian(
-    data, parameterization
+    data, parameterization, known_covariance
 ):
     formula = formula_from_data("y ~ 1 + (1 | joint | g)", data)
     scale_formula = formula_from_data("y ~ 1 + (1 | joint | g)", data)
+    dtype = torch.float64 if known_covariance else torch.float32
+    covariance = torch.tensor([[1.4, 0.2], [0.2, 0.8]], dtype=dtype)
     lens = FormulaToQVRModule(
         families["gaussian"],
         distributional={"sigma": scale_formula},
         reparameterize=parameterization,
+        group_covariances={"g": GroupCovariance(levels=("a", "b"), matrix=covariance)}
+        if known_covariance
+        else None,
     )
     module, _ = lens.forward(formula)
     program = Compiler(module).compile().morphism
-    rho = torch.tensor(-0.4, requires_grad=True)
+    rho = torch.tensor(-0.4, dtype=dtype, requires_grad=True)
     zero = rho * 0
     factor = torch.stack(
         (
@@ -284,9 +291,13 @@ def test_shared_location_scale_covariance_matches_joint_gaussian(
             torch.stack((rho, torch.sqrt(1 - rho.square()))),
         )
     )
-    scales = torch.tensor([0.3, 0.6], requires_grad=True)
-    z = torch.tensor([[0.3, -0.4], [-0.2, 0.7]])
-    coefficients = z @ factor.T * scales
+    scales = torch.tensor([0.3, 0.6], dtype=dtype, requires_grad=True)
+    z = torch.tensor([[0.3, -0.4], [-0.2, 0.7]], dtype=dtype)
+    coefficients = (
+        (torch.linalg.cholesky(covariance) @ z if known_covariance else z)
+        @ factor.T
+        * scales
+    )
     group = torch.tensor([0, 0, 1, 1])
     response = torch.tensor(data.y.to_numpy(), dtype=torch.float32)
     values = {
@@ -310,6 +321,23 @@ def test_shared_location_scale_covariance_matches_joint_gaussian(
     else:
         values |= {"z_g_Intercept": z[:, 0], "dpar_sigma_z_g_Intercept": z[:, 1]}
         group_density = torch.distributions.Normal(0.0, 1.0).log_prob(z).sum()
+    if known_covariance:
+        values.pop("group_coefficients_shared_joint", None)
+        values.pop("z_g_Intercept", None)
+        values.pop("dpar_sigma_z_g_Intercept", None)
+        values.update(lens.fixed_column_observations(formula))
+        values["group_covariance_shared_joint"] = (
+            coefficients if parameterization == "centered" else z
+        )
+        if parameterization == "centered":
+            coefficient_covariance = scales[:, None] * factor
+            coefficient_covariance = coefficient_covariance @ coefficient_covariance.T
+            group_density = torch.distributions.MultivariateNormal(
+                torch.zeros(4, dtype=dtype),
+                covariance_matrix=torch.kron(
+                    covariance, coefficient_covariance.contiguous()
+                ),
+            ).log_prob(coefficients.reshape(-1))
     recorded = trace(program, torch.zeros(1, 1, dtype=torch.long), values)
     expected_likelihood = (
         torch.distributions.Normal(

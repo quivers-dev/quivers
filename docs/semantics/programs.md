@@ -573,6 +573,29 @@ $\log p_B(B)+G\log|DL|=\log p_Z(Z)$, conditional on the same scales
 and correlation. Posterior replay uses the retained block layout in either
 coordinate system.
 
+A supplied labeled level covariance $A$ changes this iid row law to
+$B\sim\operatorname{MatrixNormal}(M,A,\Sigma)$, with
+$\Sigma=DLL^\mathsf{T}D$. For declared PSD support, write
+$A=QCQ^\mathsf{T}$ with $Q^\mathsf{T}Q=I_r$ and $C$ positive definite.
+Centered coordinates sample $U\sim\operatorname{MatrixNormal}(0,C,\Sigma)$
+and set $B=M+QU$; noncentered coordinates sample a standard $r\times d$
+Normal matrix $Z$ and set $B=M+Q\operatorname{chol}(C)ZL^\mathsf{T}D$.
+The mean $M$ need not lie in the deviation subspace. The isometric $Q$
+identifies the centered density with conditional Hausdorff measure on that
+affine support; rank zero is the deterministic law $B=M$. The noncentered
+change of variables on support coordinates contributes
+$\frac d2\log|C|+r\log|DL|$.
+
+For fitted and fresh level partitions $f,n$, covariance-aware Gaussian
+prediction uses deviation mean $A_{nf}A_{ff}^{+}(B_f-M_f)$ and row covariance
+$A_{nn}-A_{nf}A_{ff}^{+}A_{fn}$, with the same column covariance $\Sigma$.
+The pseudoinverse is restricted to the declared positive support. Label order,
+coefficient axes and support coordinates are explicit metadata, never inferred
+from equal cardinalities. Empirical donor policies instead resample joint
+standardized fitted support-coordinate vectors before applying this conditional
+mean and Schur factor; they do not discard the supplied covariance. Fitted
+principal submatrices must remain unchanged in a covariance extension.
+
 For a constrained category-specific new-group profile, the explicit
 `feasible_uncertainty` and `feasible_gaussian` policies condition the
 joint donor or Gaussian proposal on ordered effective cutpoints for the

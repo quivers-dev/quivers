@@ -10,7 +10,17 @@ import formulae as fo
 import pandas as pd
 import torch
 
-from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers.formulas._group_covariance import (
+    GroupCovariance,
+    GroupCovarianceBasis,
+    _tolerance,
+)
+from quivers.formulas._group_layout import (
+    GroupBlockLayout,
+    _covariance_coefficients,
+    _encode_covariance_coefficients,
+)
 from quivers.dsl.ast_nodes import (
     LetExprFactor,
     LetExprLiteral,
@@ -59,6 +69,16 @@ class GroupRemap(ValueModel):
         Raw latent names and the number of values per fitted level.
     standard_normal_sites : frozenset[str]
         Sites admitting direct standard-Normal new-group draws.
+    levels : tuple[str, ...]
+        Compact labels; supplied covariance retains authored identities.
+    covariance : GroupCovariance or None
+        Complete labeled covariance, including requested future identities.
+    covariance_layouts : tuple[GroupBlockLayout, ...]
+        Fitted Gaussian support and coefficient slices.
+    covariance_target, covariance_conditional : GroupCovarianceBasis or None
+        Once-per-request compact and Schur-conditional support factors.
+    covariance_mean_map : tuple[tuple[float, ...], ...]
+        Once-per-request conditional mean map from all fitted levels.
     """
 
     group: str
@@ -67,6 +87,22 @@ class GroupRemap(ValueModel):
     row_indices: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     sites: dict[str, int]
     standard_normal_sites: frozenset[str] = frozenset()
+    levels: tuple[str, ...] = ()
+    covariance: GroupCovariance | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    covariance_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    covariance_target: GroupCovarianceBasis | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    covariance_conditional: GroupCovarianceBasis | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    covariance_mean_map: tuple[tuple[float, ...], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def selected_effects(
@@ -214,7 +250,10 @@ def compact_groups(
                 continue
             sites.update(layout.raw_sites)
             planned.update((member.prefix, member.slope) for member in layout.members)
-            if layout.parameterization == "noncentered":
+            if (
+                layout.parameterization == "noncentered"
+                and layout.level_covariance is None
+            ):
                 standard_normal_sites.update(layout.raw_sites)
         for parameter, formula in predictors.items():
             prefix = prefixes[parameter]
@@ -245,6 +284,42 @@ def compact_groups(
             if count % len(levels):
                 raise TypeError("unsupported grouped baseline layout")
             sites["sbhaz"] = count // len(levels)
+        covariance = fit.group_covariances.get(group)
+        covariance_layouts = tuple(
+            layout
+            for layout in layouts
+            if layout.group == group and layout.level_covariance is not None
+        )
+        if covariance is not None:
+            if any(key is None for key in keys):
+                raise ValueError(
+                    f"supplied covariance requires explicit labeled identities for group {group!r}"
+                )
+            covariance.subset(tuple(key for key in keys if key is not None))
+            for layout in covariance_layouts:
+                basis = layout.level_covariance
+                assert basis is not None
+                fitted_covariance = covariance.subset(basis.levels).tensor()
+                factor = basis.tensors()[2]
+                if not torch.allclose(
+                    fitted_covariance,
+                    factor @ factor.T,
+                    rtol=256 * torch.finfo(torch.float64).eps,
+                    atol=8 * _tolerance(fitted_covariance),
+                ):
+                    raise ValueError(
+                        f"prediction covariance for group {group!r} changes the fitted principal submatrix"
+                    )
+        target_basis, conditional_basis, mean_map = None, None, ()
+        if covariance is not None:
+            requested = tuple(key for key in keys if key is not None)
+            target_basis = covariance.basis(requested)
+            new_labels = tuple(label for label in requested if label not in positions)
+            if new_labels:
+                mean_tensor, conditional_basis = covariance.conditional(
+                    levels, new_labels
+                )
+                mean_map = tuple(tuple(row) for row in mean_tensor.tolist())
         result[group] = GroupRemap(
             group=group,
             fitted_size=len(levels),
@@ -254,6 +329,17 @@ def compact_groups(
             row_indices=torch.tensor(row_codes, dtype=torch.long),
             sites=sites,
             standard_normal_sites=frozenset(standard_normal_sites),
+            levels=tuple(
+                key
+                if covariance is not None and key is not None
+                else f"prediction_{index}"
+                for index, key in enumerate(keys)
+            ),
+            covariance=covariance,
+            covariance_layouts=covariance_layouts,
+            covariance_target=target_basis,
+            covariance_conditional=conditional_basis,
+            covariance_mean_map=mean_map,
         )
     return result
 
@@ -274,13 +360,7 @@ def specialized_formula(formula: Formula, groups: Mapping[str, GroupRemap]) -> F
         Metadata using synthetic labels for the compact group axes.
     """
     return formula.with_(
-        group_levels={
-            group: tuple(
-                f"prediction_{index}"
-                for index in range(len(groups[group].fitted_indices))
-            )
-            for group in formula.group_levels
-        }
+        group_levels={group: groups[group].levels for group in formula.group_levels}
     )
 
 
@@ -404,7 +484,8 @@ def remap_draw(
     group_names = {name for group in context.groups.values() for name in group.sites}
     policy = context.new_level_policy.removeprefix("feasible_")
     need_gaussian = policy == "gaussian" and any(
-        -1 in group.fitted_indices for group in context.groups.values()
+        -1 in group.fitted_indices and group.covariance is None
+        for group in context.groups.values()
     )
     direct_gaussian = need_gaussian and all(
         set(group.sites) <= group.standard_normal_sites
@@ -432,6 +513,16 @@ def remap_draw(
                 },
             )
         for group_name, group in context.groups.items():
+            if group.covariance is not None:
+                result.update(
+                    _remap_covariance_group(
+                        group, latents, shapes, policy, fixed_donors
+                    )
+                )
+                for name in group.sites:
+                    if name not in shapes:
+                        result.pop(name, None)
+                continue
             indices = torch.tensor(group.fitted_indices, dtype=torch.long)
             new = indices < 0
             count = int(new.sum())
@@ -460,3 +551,118 @@ def remap_draw(
                 result[name] = value.reshape(shapes[name])
         generator.set_state(torch.random.get_rng_state())
     return result
+
+
+def _remap_covariance_group(
+    group: GroupRemap,
+    latents: dict[str, torch.Tensor],
+    shapes: Mapping[str, tuple[int, ...]],
+    policy: str,
+    fixed_donors: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """Condition physical coefficients, then encode the compact support once.
+
+    Parameters
+    ----------
+    group : GroupRemap
+        Labeled covariance and fitted support layouts.
+    latents : dict[str, torch.Tensor]
+        One posterior draw in original support coordinates.
+    shapes : Mapping[str, tuple[int, ...]]
+        Specialized native site geometry.
+    policy : str
+        Gaussian innovations or empirical retained support-coordinate donors.
+    fixed_donors : dict[str, torch.Tensor]
+        Request-owned indices for the old_levels innovation policy.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        Compact raw bindings preserving all known physical coefficients.
+
+    Raises
+    ------
+    ValueError
+        If an empirical policy has no stochastic fitted support to resample.
+    """
+    covariance = group.covariance
+    assert covariance is not None
+    indices = torch.tensor(group.fitted_indices, dtype=torch.long)
+    new = indices < 0
+    new_labels = tuple(
+        label for label, fresh in zip(group.levels, new.tolist(), strict=True) if fresh
+    )
+    target_basis = group.covariance_target
+    assert target_basis is not None
+    conditional = group.covariance_conditional
+    empirical_donors = None
+    if (
+        new_labels
+        and conditional is not None
+        and conditional.rank
+        and policy != "gaussian"
+    ):
+        fitted_basis = group.covariance_layouts[0].level_covariance
+        assert fitted_basis is not None
+        fitted_rank = fitted_basis.rank
+        if not fitted_rank:
+            raise ValueError(
+                "empirical new-group prediction has no fitted support innovations; use sample_new_levels='gaussian'"
+            )
+        key = f"{group.group}:support"
+        if policy == "old_levels":
+            if key not in fixed_donors:
+                fixed_donors[key] = torch.randint(fitted_rank, (conditional.rank,))
+            empirical_donors = fixed_donors[key]
+        else:
+            empirical_donors = torch.randint(fitted_rank, (conditional.rank,))
+    output = {}
+    for layout in group.covariance_layouts:
+        basis = layout.level_covariance
+        assert basis is not None
+        fitted = _covariance_coefficients(latents, layout, sample_ndims=0)
+        compact = fitted[indices.clamp_min(0)].clone()
+        if new_labels:
+            assert conditional is not None
+            mean_map = torch.tensor(
+                group.covariance_mean_map, dtype=fitted.dtype, device=fitted.device
+            )
+            scales, means = [], []
+            for member in layout.members:
+                assert member.scale_site is not None
+                scale = latents[member.scale_site].reshape(member.width)
+                scales.append(scale)
+                means.append(
+                    latents[member.mean_site].reshape(member.width)
+                    if member.mean_site is not None
+                    else torch.zeros_like(scale)
+                )
+            scale, mean = torch.cat(scales), torch.cat(means)
+            expectation = mean + mean_map.to(fitted) @ (fitted - mean)
+            if conditional.rank:
+                _, _, factor = conditional.tensors(like=fitted)
+                if policy == "gaussian":
+                    noise = torch.randn(
+                        (conditional.rank, layout.width),
+                        dtype=fitted.dtype,
+                        device=fitted.device,
+                    )
+                else:
+                    assert empirical_donors is not None
+                    donors = empirical_donors
+                    innovations = _encode_covariance_coefficients(
+                        fitted, latents, layout, parameterization="noncentered"
+                    )
+                    noise = innovations[donors.to(innovations.device)]
+                if layout.correlation_site is not None:
+                    noise = noise @ latents[layout.correlation_site].to(noise).T
+                expectation = expectation + (factor @ noise) * scale
+            compact[new.to(compact.device)] = expectation
+        target = layout.with_(level_covariance=target_basis)
+        encoded = _encode_covariance_coefficients(compact, latents, target)
+        site = layout.members[0].raw_site
+        # A zero-rank fitting block can gain supported future dimensions.
+        if target_basis.rank:
+            site = site or f"group_covariance_{_qvr_name(layout.identity)}"
+            output[site] = encoded.reshape(shapes[site])
+    return output

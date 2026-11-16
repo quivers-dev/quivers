@@ -719,7 +719,7 @@ def prepare_prediction(
             name: specialized_formula(formula, groups)
             for name, formula in formulas.items()
         }
-        module, _ = fit._formula_lens(
+        specialized_lens = fit._formula_lens(
             distributional={
                 name: formula
                 for name, formula in specialized.items()
@@ -731,7 +731,17 @@ def prepare_prediction(
                 if fit.predictor_graph is not None
                 and name in fit.predictor_graph.leaves
             },
-        ).forward(specialized["mu"])
+        )
+        module, _ = specialized_lens.forward(specialized["mu"])
+        observations.update(
+            {
+                name: value
+                for name, value in specialized_lens.fixed_column_observations(
+                    specialized["mu"]
+                ).items()
+                if name.startswith("__formula_level_")
+            }
+        )
         module = select_contributions(module, formulas, selected, prefixes=prefixes)
     statements = []
     for statement in module.statements:
@@ -753,9 +763,19 @@ def prepare_prediction(
         for group in groups.values()
         for name, width in group.sites.items()
     }
-    if original.names != specialized_registry.names:
+    covariance_sites = {
+        f"group_covariance_{_qvr_name(layout.identity)}"
+        for group in groups.values()
+        for layout in group.covariance_layouts
+    }
+    if (
+        set(original.names) - covariance_sites
+        != set(specialized_registry.names) - covariance_sites
+    ):
         raise TypeError("new_data specialization changed the fitted latent names")
     for name in original.names:
+        if name in covariance_sites:
+            continue
         original_shape = original[name].constrained_shape
         fresh_shape = specialized_registry[name].constrained_shape
         if name not in group_sites:
@@ -772,6 +792,7 @@ def prepare_prediction(
     prior_program = None
     if sample_new_levels.removeprefix("feasible_") == "gaussian" and any(
         -1 in group.fitted_indices
+        and group.covariance is None
         and not set(group.sites) <= group.standard_normal_sites
         for group in groups.values()
     ):

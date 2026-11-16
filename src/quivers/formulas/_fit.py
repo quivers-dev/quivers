@@ -50,6 +50,7 @@ from quivers.formulas._predictor_graph import (
 )
 
 from quivers.formulas._prediction import FormulaPredictionPlan
+from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._response import count_totals, response_tensor
 from quivers.formulas._priors import PriorInput, PriorSet, normalize_priors
 from quivers.formulas._response_modifiers import (
@@ -108,6 +109,9 @@ class BayesianFit(ValueModel):
     observations : Mapping[str, torch.Tensor]
         Inference-time observations dict (response + per-column
         covariates + per-group plate indices).
+    group_covariances : dict[str, GroupCovariance]
+        Known labeled covariance between grouping levels, including any
+        explicitly supplied future labels. Coefficient correlations remain separate.
     fixed_parameters : dict[str, float]
         Auxiliary parameters bound to constants rather than sampled or regressed.
     distributional : Mapping[str, Formula]
@@ -147,6 +151,9 @@ class BayesianFit(ValueModel):
     fixed_prior: str = "Normal(0.0, 5.0)"
     random_scale_prior: str = "HalfNormal(1.0)"
     correlation_prior: str = "LKJCholesky(1.0)"
+    group_covariances: dict[str, GroupCovariance] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     priors: PriorSet = dx.field(
         default_factory=PriorSet, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -372,6 +379,7 @@ class BayesianFit(ValueModel):
             fixed_prior=self.fixed_prior,
             random_scale_prior=self.random_scale_prior,
             correlation_prior=self.correlation_prior,
+            group_covariances=self.group_covariances,
             user_priors=self.priors,
             reparameterize=self.reparameterize,
             binomial_trials=self.binomial_trials,
@@ -1707,6 +1715,7 @@ def fit(
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     correlation_prior: str = "LKJCholesky(1.0)",
+    group_covariances: Mapping[str, GroupCovariance] | None = None,
     priors: PriorInput | None = None,
     guide: type | None = None,
     initial_values: Mapping[str, torch.Tensor | float] | None = None,
@@ -1783,6 +1792,9 @@ def fit(
     correlation_prior : str
         Default prior for correlated group blocks, in LKJ Cholesky form.
         Explicit shared IDs join coefficients across distributional formulas.
+    group_covariances : Mapping[str, GroupCovariance] or None
+        Known covariance between labeled levels, keyed by grouping factor.
+        The same declaration serves compilation, inspection, and prediction.
     priors : PriorInput or None
         Named overrides or typed selectors, including sampled shrinkage
         hierarchies. Unknown, unused, or ambiguous rules raise ValueError.
@@ -1874,6 +1886,7 @@ def fit(
             fixed_prior=fixed_prior,
             random_scale_prior=random_scale_prior,
             correlation_prior=correlation_prior,
+            group_covariances=group_covariances,
             priors=priors,
             reparameterize=reparameterize,
             binomial_trials=binomial_trials,
@@ -2062,6 +2075,7 @@ def fit(
             fixed_prior=fixed_prior,
             random_scale_prior=random_scale_prior,
             correlation_prior=correlation_prior,
+            group_covariances=dict(group_covariances or {}),
             priors=normalize_priors(priors),
             predictor=predictor,
             predictor_data=predictor_data,
@@ -2091,6 +2105,7 @@ def formula_to_qvr(
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     correlation_prior: str = "LKJCholesky(1.0)",
+    group_covariances: Mapping[str, GroupCovariance] | None = None,
     priors: PriorInput | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     binomial_trials: int | str | None = None,
@@ -2127,6 +2142,7 @@ def formula_to_qvr(
         fixed_prior=fixed_prior,
         random_scale_prior=random_scale_prior,
         correlation_prior=correlation_prior,
+        group_covariances=group_covariances,
         priors=priors,
         reparameterize=reparameterize,
         binomial_trials=binomial_trials,
@@ -2154,6 +2170,7 @@ def get_prior(
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     correlation_prior: str = "LKJCholesky(1.0)",
+    group_covariances: Mapping[str, GroupCovariance] | None = None,
     priors: PriorInput | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     binomial_trials: int | str | None = None,
@@ -2189,6 +2206,9 @@ def get_prior(
         Auxiliary parameters held constant; these have no prior entries.
     fixed_prior, random_scale_prior, correlation_prior : str
         Default coefficient, group-scale, and LKJ Cholesky priors.
+    group_covariances : Mapping[str, GroupCovariance] or None
+        Known covariance between labeled levels, keyed by grouping factor.
+        The same declaration serves compilation, inspection, and prediction.
     priors : PriorInput or None
         Named overrides or typed selectors, including sampled shrinkage
         hierarchies. Unknown, unused, or ambiguous rules raise ValueError.
@@ -2225,6 +2245,7 @@ def get_prior(
         fixed_prior=fixed_prior,
         random_scale_prior=random_scale_prior,
         correlation_prior=correlation_prior,
+        group_covariances=group_covariances,
         priors=priors,
         reparameterize=reparameterize,
         binomial_trials=binomial_trials,
@@ -2262,6 +2283,7 @@ def _formula_lens(
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     correlation_prior: str = "LKJCholesky(1.0)",
+    group_covariances: Mapping[str, GroupCovariance] | None = None,
     priors: PriorInput | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     binomial_trials: int | str | None = None,
@@ -2282,6 +2304,7 @@ def _formula_lens(
         fixed_prior=fixed_prior,
         random_scale_prior=random_scale_prior,
         correlation_prior=correlation_prior,
+        group_covariances=group_covariances,
         priors=priors,
         reparameterize=reparameterize,
         binomial_trials=binomial_trials,
@@ -2305,6 +2328,7 @@ def _prepare_formula(
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     correlation_prior: str = "LKJCholesky(1.0)",
+    group_covariances: Mapping[str, GroupCovariance] | None = None,
     priors: PriorInput | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     binomial_trials: int | str | None = None,
@@ -2369,6 +2393,7 @@ def _prepare_formula(
         fixed_prior=fixed_prior,
         random_scale_prior=random_scale_prior,
         correlation_prior=correlation_prior,
+        group_covariances=group_covariances,
         user_priors=priors,
         reparameterize=reparameterize,
         binomial_trials=binomial_trials,

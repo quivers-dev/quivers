@@ -457,7 +457,9 @@ def build_prior_targets(
                 **scopes[prefix],
             )
     for layout in layouts:
-        site = "cor_" + _qvr_name(layout.identity)
+        site = layout.correlation_site
+        if site is None:
+            continue
         common = {tuple(scopes[member.prefix].items()) for member in layout.members}
         scope = dict(next(iter(common))) if len(common) == 1 else {}
         add(site, "cor", group=layout.group, **scope)

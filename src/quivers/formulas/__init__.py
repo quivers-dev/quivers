@@ -55,6 +55,7 @@ from quivers.formulas.compile import (
     FormulaToQVRModule,
 )
 from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
+from quivers.formulas._group_covariance import GroupCovariance, GroupCovarianceBasis
 from quivers.formulas._predictor_graph import (
     NonlinearExpression,
     ComponentExpression,
@@ -113,6 +114,8 @@ __all__ = [
     # compile
     "FormulaToQVRModule",
     "GroupBlockLayout",
+    "GroupCovariance",
+    "GroupCovarianceBasis",
     "GroupMemberLayout",
     "NonlinearExpression",
     "ComponentExpression",

@@ -418,6 +418,88 @@ evaluated design columns, including when the corresponding fixed slope is absent
 The generated runtime telescope declares each group index array as
 `Tensor[Int]([Resp])`.
 
+### Supplied covariance between grouping levels
+
+`group_covariances` specifies dependence between named grouping levels. This
+covariance is separate from the learned intercept/slope or response-component
+correlations within each level. A `GroupCovariance` retains its labels, copies
+its fixed matrix, and checks every fitted level against those labels. Its
+matrix scale is preserved; normalization to a correlation matrix is optional.
+
+```python:run
+import pandas as pd
+from quivers.formulas import GroupCovariance, fit
+
+covariance = GroupCovariance(
+    levels=("a", "b", "future"),
+    matrix=((1.0, 0.3, 0.5), (0.3, 1.4, 0.2), (0.5, 0.2, 1.2)),
+)
+data = pd.DataFrame({"y": [0.1, 0.7, -0.2, 0.3], "group": ["a", "b", "a", "b"]})
+result = fit(
+    "y ~ 1 + (1 | group)", data=data,
+    group_covariances={"group": covariance},
+    fixed_parameters={"sigma": 1.0}, method="svi", num_steps=2, seed=7,
+)
+predictions = result.posterior_linpred(
+    new_data=pd.DataFrame({"group": ["b", "future", "future"]}),
+    allow_new_levels=True, sample_new_levels="gaussian", num_samples=3, seed=8,
+)
+assert predictions.shape == (1, 3, 3)
+assert predictions[..., 1].equal(predictions[..., 2])
+```
+
+For a coefficient matrix $B$, the emitted law is
+$B\sim\operatorname{MatrixNormal}(0,A,\Sigma)$, where $A$ is the supplied
+level covariance and $\Sigma$ retains the ordinary scale/LKJ coefficient
+hierarchy. The same construction covers independent terms, shared IDs,
+distributional and nonlinear leaves, and category or response-component
+coordinates. One supplied covariance applies consistently to every Gaussian
+block using that grouping factor. `formula_to_qvr` and `get_prior` accept the
+same mapping; fixed factors appear as typed matrix inputs rather than expanded
+per-level source expressions.
+
+The default requires positive definiteness. Explicit `rank=r` declares a
+positive-semidefinite law of rank $r$, including zero. The compiler keeps only
+its stochastic support coordinates. `reparameterize="centered"` samples the
+Gaussian support deviations; `"noncentered"` samples standardized innovations.
+A nonzero hierarchical mean remains outside the supported deviation subspace.
+No artificial noise or extra latent dimension repairs a singular covariance.
+Declared zero eigenvalues are checked using a relative Float64 numerical
+tolerance; unresolved or inconsistent ranks raise an error. Known matrix
+precision is retained through floating matrix operations and gradients return
+to the original learned-head dtypes.
+
+Preparation caches the support basis and its factors, and prediction prepares
+the Schur factors once per request. The current MatrixNormal covariance
+constructor still factors its row and column covariances during evaluation;
+factor-valued constructor alternatives are needed to remove that repeated work.
+
+Fresh labeled levels use the covariance's conditional mean and Schur covariance
+given **all** fitted levels, including fitted groups absent from the request.
+Known levels retain their fitted coefficients. The `gaussian` policy samples the
+conditional Gaussian innovations. `uncertainty` resamples standardized fitted
+**support-coordinate vectors**, jointly across a group's coefficient blocks,
+per draw; `old_levels` fixes those donor indices for the entire request. The
+conditional mean and Schur factor still act on those innovations. These two
+policies are empirical donor procedures rather than Gaussian draws. A
+rank-zero fitted support supplies no empirical innovations; fresh stochastic
+levels then require `gaussian`. Missing identities cannot name covariance
+rows and are refused. Repeated fresh identities share their sampled effect.
+
+Include future labels in the retained matrix, as above. An extended immutable
+mapping may be supplied by `result.with_(group_covariances=...)`; prediction
+checks that its fitted principal submatrix is unchanged before using any new
+cross-covariances. Unknown labels or a changed fitted submatrix fail before
+sampling. The model cannot infer absent cross-covariances from a group label.
+
+Grouped ordinal threshold log-spacing profiles reuse the same mean-aware
+Gaussian construction under flexible, equidistant, and sum-to-zero policies.
+For cumulative category-specific effects, covariance transformations precede
+the existing training-domain bounds and proper conditional log-slack priors.
+Prediction retains fitted cutpoints and uses the existing explicit
+`feasible_gaussian` or `feasible_uncertainty` policy for fresh profiles that
+affect order. Supplying covariance does not replace those support checks.
+
 ### Inspecting priors
 
 `get_prior` evaluates the design matrices and returns the actual overrideable

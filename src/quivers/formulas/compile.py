@@ -91,6 +91,7 @@ from quivers.dsl.ast_nodes import (
     ObserveStep,
     OptionEntry,
     OptionName,
+    OptionList,
     ProgramDecl,
     ProgramStep,
     SampleStep,
@@ -110,6 +111,7 @@ from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.family_schemas import family_parameter_names
 from quivers.formulas.family import Family
 from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
+from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._ast import (
     _let,
     _var,
@@ -786,6 +788,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Default prior for random-effect scale parameters.
     correlation_prior : str
         Default LKJ Cholesky prior for correlated coefficient blocks.
+    group_covariances : Mapping[str, GroupCovariance] or None
+        Known covariance between labeled levels of each grouping factor.
+        Coefficient correlations retain their existing LKJ hierarchy.
     user_priors : PriorInput or None
         Exact-name overrides or typed role selectors. More specific selectors
         refine broader rules; ambiguous and unused rules raise an error.
@@ -844,9 +849,18 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         distributional: Mapping[str, Formula] | None = None,
         predictor_graph: PredictorGraph | None = None,
         correlation_prior: str = "LKJCholesky(1.0)",
+        group_covariances: Mapping[str, GroupCovariance] | None = None,
         fixed_parameters: Mapping[str, float] | None = None,
     ) -> None:
         self._family = family
+        self._group_covariances = dict(group_covariances or {})
+        if any(
+            not isinstance(value, GroupCovariance)
+            for value in self._group_covariances.values()
+        ):
+            raise TypeError(
+                "group_covariances values must be GroupCovariance declarations"
+            )
         if (
             family.name == "frechet"
             and next(aux for aux in family.aux_params if aux.name == "nu").link.name
@@ -1065,6 +1079,20 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     auxiliary.name: auxiliary.prior
                 }
         self._group_layouts = []
+        known_groups = {
+            group
+            for _, _, predictor in self._predictor_items(formula)
+            for group in predictor.group_levels
+        }
+        unknown_covariances = self._group_covariances.keys() - known_groups
+        if unknown_covariances:
+            raise ValueError(
+                f"group_covariances names unknown grouping factors {sorted(unknown_covariances)!r}"
+            )
+        for _, _, predictor in self._predictor_items(formula):
+            for group, covariance in self._group_covariances.items():
+                if group in predictor.group_levels:
+                    covariance.subset(predictor.group_levels[group])
         if (
             self._family.response is not None
             and self._family.response.kind != "categorical"
@@ -1329,12 +1357,18 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         for _, prefix, predictor in self._predictor_items(formula):
             for term in predictor.random_terms:
                 if term.correlation_id is None:
-                    continue
-                identity = (
-                    f"shared_{term.correlation_id}"
-                    if term.shared
-                    else prefix + term.correlation_id
-                )
+                    if term.group not in self._group_covariances:
+                        continue
+                    identity = (
+                        prefix
+                        + f"independent_{_qvr_name(term.group)}_{_qvr_name(term.slope)}"
+                    )
+                else:
+                    identity = (
+                        f"shared_{term.correlation_id}"
+                        if term.shared
+                        else prefix + term.correlation_id
+                    )
                 name = f"cor_{_qvr_name(identity)}"
                 block = (term.group, identity)
                 if correlation_names.setdefault(name, block) != block:
@@ -1697,6 +1731,22 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             ``float64`` precision under the ``formula_weights`` key.
         """
         obs: dict[str, torch.Tensor] = {}
+        for layout in self.group_layouts:
+            basis = layout.level_covariance
+            if basis is None or not basis.rank:
+                continue
+            stem = f"__formula_level_basis_{_qvr_name(layout.group)}"
+            if any(name.startswith(stem + "_") for name in obs):
+                continue
+            projection, covariance, factor = basis.tensors()
+            if layout.parameterization == "centered":
+                obs[stem + "_projection"] = projection
+                obs[stem + "_row_covariance"] = covariance
+            else:
+                obs[stem + "_factor"] = factor
+                obs[stem + "_row_covariance"] = torch.eye(
+                    basis.rank, dtype=torch.float64
+                )
         if (
             formula.response_layout.event_shape
             and self._family.trials_parameter is not None
@@ -2116,79 +2166,107 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             ),
             _var("spacing"),
         )
-        threshold_raw = (
-            "cutpoint_log_spacing_value"
-            if self._reparameterize == "centered"
-            else "cutpoint_log_spacing_noise"
-        )
-        if self._reparameterize == "centered":
-            for suffix in ("mean", "scale"):
-                program_steps.append(
-                    _let(
-                        f"cutpoint_log_spacing_cell_{suffix}",
-                        _factor(
-                            (("threshold_cell", cell_index),),
-                            body=_index(
-                                f"cutpoint_log_spacing_{suffix}",
-                                LetExprBinOp(
-                                    op="%",
-                                    left=_var("threshold_cell"),
-                                    right=LetExprLiteral(value=n_shape, integral=True),
+        if group in self._group_covariances:
+            member = GroupMemberLayout(
+                prefix="thresholds_",
+                slope="log_spacing",
+                axis=shape_index,
+                width=n_shape,
+                offset=0,
+                coefficient="cutpoint_log_spacing_matrix",
+                raw_site=None,
+                scale_site="cutpoint_log_spacing_scale",
+                mean_site="cutpoint_log_spacing_mean",
+            )
+            physical, _ = self._append_covariance_matrix(
+                formula,
+                group,
+                f"thresholds_{_qvr_name(group)}",
+                (member,),
+                shape_index,
+                statements,
+                program_steps,
+            )
+            program_steps.append(_let("cutpoint_log_spacing_matrix", _var(physical)))
+        else:
+            threshold_raw = (
+                "cutpoint_log_spacing_value"
+                if self._reparameterize == "centered"
+                else "cutpoint_log_spacing_noise"
+            )
+            if self._reparameterize == "centered":
+                for suffix in ("mean", "scale"):
+                    program_steps.append(
+                        _let(
+                            f"cutpoint_log_spacing_cell_{suffix}",
+                            _factor(
+                                (("threshold_cell", cell_index),),
+                                body=_index(
+                                    f"cutpoint_log_spacing_{suffix}",
+                                    LetExprBinOp(
+                                        op="%",
+                                        left=_var("threshold_cell"),
+                                        right=LetExprLiteral(
+                                            value=n_shape, integral=True
+                                        ),
+                                    ),
                                 ),
                             ),
+                        )
+                    )
+                program_steps.append(
+                    _draw(
+                        threshold_raw,
+                        "Normal",
+                        (
+                            "cutpoint_log_spacing_cell_mean",
+                            "cutpoint_log_spacing_cell_scale",
                         ),
+                        index=TypeName(name=cell_index),
+                    )
+                )
+            else:
+                program_steps.append(
+                    _draw(
+                        threshold_raw,
+                        "Normal",
+                        (0.0, 1.0),
+                        index=TypeName(name=cell_index),
                     )
                 )
             program_steps.append(
-                _draw(
-                    threshold_raw,
-                    "Normal",
-                    (
-                        "cutpoint_log_spacing_cell_mean",
-                        "cutpoint_log_spacing_cell_scale",
-                    ),
-                    index=TypeName(name=cell_index),
-                )
-            )
-        else:
-            program_steps.append(
-                _draw(
-                    threshold_raw, "Normal", (0.0, 1.0), index=TypeName(name=cell_index)
-                )
-            )
-        program_steps.append(
-            _let(
-                "cutpoint_noise_matrix",
-                _factor(
-                    (("threshold_group", qgroup), ("spacing", shape_index)),
-                    body=_index(threshold_raw, flat_index),
-                ),
-            )
-        )
-        log_spacing = _add(
-            _index("cutpoint_log_spacing_mean", _var("spacing")),
-            _mul(
-                _index("cutpoint_log_spacing_scale", _var("spacing")),
-                _index(
+                _let(
                     "cutpoint_noise_matrix",
-                    _var("threshold_group"),
-                    _var("spacing"),
-                ),
-            ),
-        )
-        if self._reparameterize == "centered":
-            log_spacing = _index(
-                "cutpoint_noise_matrix", _var("threshold_group"), _var("spacing")
+                    _factor(
+                        (("threshold_group", qgroup), ("spacing", shape_index)),
+                        body=_index(threshold_raw, flat_index),
+                    ),
+                )
             )
-        program_steps.append(
-            _let(
-                "cutpoint_log_spacing_matrix",
-                _factor(
-                    (("threshold_group", qgroup), ("spacing", shape_index)),
-                    body=log_spacing,
+            log_spacing = _add(
+                _index("cutpoint_log_spacing_mean", _var("spacing")),
+                _mul(
+                    _index("cutpoint_log_spacing_scale", _var("spacing")),
+                    _index(
+                        "cutpoint_noise_matrix",
+                        _var("threshold_group"),
+                        _var("spacing"),
+                    ),
                 ),
             )
-        )
+            if self._reparameterize == "centered":
+                log_spacing = _index(
+                    "cutpoint_noise_matrix", _var("threshold_group"), _var("spacing")
+                )
+            program_steps.append(
+                _let(
+                    "cutpoint_log_spacing_matrix",
+                    _factor(
+                        (("threshold_group", qgroup), ("spacing", shape_index)),
+                        body=log_spacing,
+                    ),
+                )
+            )
         spacing_matrix: LetExprNode = _call("exp", _var("cutpoint_log_spacing_matrix"))
         if spec.thresholds == "equidistant":
             # The one gap must dominate all adjacent CS contrasts. A proper
@@ -3101,11 +3179,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         blocks: dict[tuple[str, str], list[tuple[str, RandomTerm]]] = {}
         for term in formula.random_terms:
             if (
-                term.correlation_id is not None
-                and (prefix, term.group, term.slope) not in correlated
-            ):
+                term.correlation_id is not None or term.group in self._group_covariances
+            ) and (prefix, term.group, term.slope) not in correlated:
                 identity = (
-                    f"shared_{term.correlation_id}"
+                    f"independent_{_qvr_name(term.group)}_{_qvr_name(term.slope)}"
+                    if term.correlation_id is None
+                    else f"shared_{term.correlation_id}"
                     if term.shared
                     else term.correlation_id
                 )
@@ -3121,6 +3200,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     program_steps,
                     coordinate_axis=logit_index,
                     coordinate_count=n_logits,
+                    correlate=any(
+                        term.correlation_id is not None for _, term in members
+                    ),
                 )
             )
 
@@ -3482,6 +3564,321 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         return "mixture_weights", "mixture_locations", "mixture_scale"
 
+    def _append_covariance_matrix(
+        self,
+        formula: Formula,
+        group: str,
+        identity: str,
+        members: tuple[GroupMemberLayout, ...],
+        dimension: str,
+        statements: list[Statement],
+        steps: list[ProgramStep],
+        *,
+        correlation: str | None = None,
+    ) -> tuple[str, GroupBlockLayout]:
+        """Emit one Gaussian law in explicit level-support coordinates.
+
+        Parameters
+        ----------
+        formula : Formula
+            Retained physical level labels.
+        group, identity, dimension : str
+            Group name, unique block identity and coefficient coordinate axis.
+        members : tuple[GroupMemberLayout, ...]
+            Scale, optional affine mean, and coefficient slices.
+        statements : list[Statement]
+            Module object declarations.
+        steps : list[ProgramStep]
+            Canonical Gaussian draw and deterministic matrix transformations.
+        correlation : str or None
+            Existing learned coefficient Cholesky factor.
+
+        Returns
+        -------
+        tuple[str, GroupBlockLayout]
+            Physical coefficient matrix binding and retained raw-coordinate map.
+        """
+        basis = next(
+            (
+                layout.level_covariance
+                for layout in self._group_layouts
+                if layout.group == group and layout.level_covariance is not None
+            ),
+            None,
+        )
+        if basis is None:
+            basis = self._group_covariances[group].basis(formula.group_levels[group])
+        token = _qvr_name(identity)
+        stem = f"__formula_level_{token}"
+        support = f"FormulaGroupSupport_{_qvr_name(group)}"
+        basis_stem = f"__formula_level_basis_{_qvr_name(group)}"
+        raw = f"group_covariance_{token}" if basis.rank else None
+        members = tuple(member.with_(raw_site=raw) for member in members)
+        layout = GroupBlockLayout(
+            group=group,
+            identity=identity,
+            coordinate_axis=dimension,
+            parameterization=self._reparameterize,
+            members=members,
+            correlation_site=correlation,
+            level_covariance=basis,
+        )
+        self._group_layouts.append(layout)
+        qgroup = _qvr_name(group)
+        scale_cases, mean_cases = [], []
+        for member in members:
+            for component in range(member.width):
+                index = LetExprLiteral(value=component, integral=True)
+                assert member.scale_site is not None
+                scale = (
+                    _index(member.scale_site, index)
+                    if member.axis is not None
+                    else _var(member.scale_site)
+                )
+                mean = (
+                    (
+                        _index(member.mean_site, index)
+                        if member.axis is not None
+                        else _var(member.mean_site)
+                    )
+                    if member.mean_site is not None
+                    else LetExprLiteral(value=0.0)
+                )
+                scale_cases.append((member.offset + component, scale))
+                mean_cases.append((member.offset + component, mean))
+        scale_vector, mean_vector = stem + "_scales", stem + "_means"
+        steps.extend(
+            (
+                _let(
+                    scale_vector,
+                    _factor((("coefficient", dimension),), cases=tuple(scale_cases)),
+                ),
+                _let(
+                    mean_vector,
+                    _factor((("coefficient", dimension),), cases=tuple(mean_cases)),
+                ),
+            )
+        )
+        physical = stem + "_coefficients"
+        if not basis.rank:
+            steps.append(
+                _let(
+                    physical,
+                    _factor(
+                        (("level", qgroup), ("coefficient", dimension)),
+                        body=_index(mean_vector, _var("coefficient")),
+                    ),
+                )
+            )
+            return physical, layout
+        self._append_finite_object(statements, support, basis.rank)
+        identity_value = _call(
+            "select",
+            LetExprBinOp(op="==", left=_var("matrix_row"), right=_var("matrix_column")),
+            LetExprLiteral(value=1.0),
+            LetExprLiteral(value=0.0),
+        )
+        zero, column_factor = stem + "_zero", stem + "_column_factor"
+        column_covariance = stem + "_column_covariance"
+        steps.append(
+            _let(
+                zero,
+                _factor(
+                    (("support", support), ("coefficient", dimension)),
+                    body=LetExprLiteral(value=0.0),
+                ),
+            )
+        )
+        steps.append(
+            _let(
+                column_factor,
+                _factor(
+                    (("matrix_row", dimension), ("matrix_column", dimension)),
+                    body=_mul(
+                        _index(scale_vector, _var("matrix_row")),
+                        _index(correlation, _var("matrix_row"), _var("matrix_column"))
+                        if correlation is not None
+                        else identity_value,
+                    ),
+                ),
+            )
+        )
+        if self._reparameterize == "centered":
+            transpose = _factor(
+                (("matrix_row", dimension), ("matrix_column", dimension)),
+                body=_index(column_factor, _var("matrix_column"), _var("matrix_row")),
+            )
+            steps.append(
+                _let(column_covariance, _call("matmul", _var(column_factor), transpose))
+            )
+            row_covariance = basis_stem + "_row_covariance"
+            mapping = basis_stem + "_projection"
+        else:
+            row_covariance = basis_stem + "_row_covariance"
+            steps.append(
+                _let(
+                    column_covariance,
+                    _factor(
+                        (("matrix_row", dimension), ("matrix_column", dimension)),
+                        body=identity_value,
+                    ),
+                )
+            )
+            mapping = basis_stem + "_factor"
+        assert raw is not None
+        draw = _draw(raw, "MatrixNormal", (zero, row_covariance, column_covariance))
+        steps.append(
+            draw.with_(
+                axes=AxisSpec(over=(support, dimension)),
+                options=(
+                    OptionEntry(
+                        key="over",
+                        value=OptionList(
+                            items=(
+                                OptionName(value=support),
+                                OptionName(value=dimension),
+                            )
+                        ),
+                    ),
+                ),
+            )
+        )
+        mapped = stem + "_mapped"
+        steps.append(_let(mapped, _call("matmul", _var(mapping), _var(raw))))
+        if self._reparameterize == "noncentered":
+            transpose = _factor(
+                (("matrix_row", dimension), ("matrix_column", dimension)),
+                body=_index(column_factor, _var("matrix_column"), _var("matrix_row")),
+            )
+            transformed = stem + "_transformed"
+            steps.append(_let(transformed, _call("matmul", _var(mapped), transpose)))
+            mapped = transformed
+        steps.append(
+            _let(
+                physical,
+                _factor(
+                    (("level", qgroup), ("coefficient", dimension)),
+                    body=_add(
+                        _index(mapped, _var("level"), _var("coefficient")),
+                        _index(mean_vector, _var("coefficient")),
+                    ),
+                ),
+            )
+        )
+        return physical, layout
+
+    def _append_covariance_coefficients(
+        self,
+        formula: Formula,
+        group: str,
+        identity: str,
+        members: list[tuple[str, RandomTerm]],
+        axes: list[tuple[str, int] | None],
+        statements: list[Statement],
+        steps: list[ProgramStep],
+        *,
+        correlate: bool,
+    ) -> dict[tuple[str, str, str], LetExprNode]:
+        """Reuse one covariance-aware Gaussian block for scalar and vector effects.
+
+        Parameters
+        ----------
+        formula : Formula
+            Predictor carrying physical grouping levels.
+        group, identity : str
+            Authored group and unique block identity.
+        members, axes : list
+            Ordered predictor terms and explicit component coordinates.
+        statements, steps : list
+            Existing module and program construction buffers.
+        correlate : bool
+            Whether coefficient coordinates share the existing LKJ hierarchy.
+
+        Returns
+        -------
+        dict
+            Retained row-wise contributions in the ordinary predictor contract.
+        """
+        token, qgroup = _qvr_name(identity), _qvr_name(group)
+        dimension = f"FormulaCorrelation_{token}"
+        widths = [axis[1] if axis is not None else 1 for axis in axes]
+        self._append_finite_object(statements, dimension, sum(widths))
+        correlation = f"cor_{token}" if correlate else None
+        if correlation is not None:
+            prior = self._prior_draw(
+                correlation, self._correlation_prior, index=TypeName(name=dimension)
+            )
+            if prior.morphism != "LKJCholesky":
+                raise ValueError("correlation priors must use LKJCholesky")
+            steps.append(prior)
+        layouts, offset = [], 0
+        for (prefix, term), width, axis in zip(members, widths, axes, strict=True):
+            sigma = f"{prefix}sigma_{qgroup}_{_qvr_name(term.slope)}"
+            steps.append(
+                self._prior_draw(
+                    sigma,
+                    self._random_scale_prior,
+                    index=TypeName(name=axis[0]) if axis is not None else None,
+                )
+            )
+            latent = prefix + (
+                f"alpha_{qgroup}"
+                if term.slope == "Intercept"
+                else f"beta_{qgroup}_{_qvr_name(term.slope)}"
+            )
+            layouts.append(
+                GroupMemberLayout(
+                    prefix=prefix,
+                    slope=term.slope,
+                    axis=axis[0] if axis is not None else None,
+                    width=width,
+                    offset=offset,
+                    coefficient=latent,
+                    raw_site=None,
+                    scale_site=sigma,
+                )
+            )
+            offset += width
+        matrix, layout = self._append_covariance_matrix(
+            formula,
+            group,
+            identity,
+            tuple(layouts),
+            dimension,
+            statements,
+            steps,
+            correlation=correlation,
+        )
+        result = {}
+        for member in layout.members:
+            component = (
+                _add(
+                    LetExprLiteral(value=member.offset, integral=True),
+                    _var("category_logit"),
+                )
+                if member.axis is not None
+                else LetExprLiteral(value=member.offset, integral=True)
+            )
+            binders = (("random_group", qgroup),)
+            if member.axis is not None:
+                binders = (("category_logit", member.axis), *binders)
+            steps.append(
+                _let(
+                    member.coefficient,
+                    _factor(
+                        binders, body=_index(matrix, _var("random_group"), component)
+                    ),
+                )
+            )
+            result[(member.prefix, group, member.slope)] = (
+                _index(
+                    member.coefficient, _var("category_logit"), _var(f"{qgroup}_idx")
+                )
+                if member.axis is not None
+                else _index(member.coefficient, _var(f"{qgroup}_idx"))
+            )
+        return result
+
     def _append_indexed_correlations(
         self,
         formula: Formula,
@@ -3494,6 +3891,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         coordinate_axis: str | None = None,
         coordinate_count: int | None = None,
         coordinate_axes: Mapping[str, tuple[str, int]] | None = None,
+        correlate: bool = True,
     ) -> dict[tuple[str, str, str], LetExprNode]:
         """Correlate scalar and indexed coefficients in one block.
 
@@ -3511,6 +3909,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Explicit extent of the shared component axis.
         coordinate_axes : Mapping[str, tuple[str, int]] or None
             Predictor-prefix axes and extents for mixed scalar/vector blocks.
+        correlate : bool
+            Whether coefficient coordinates share the LKJ correlation law.
         members : list[tuple[str, RandomTerm]]
             Prefix and term pairs in fitted block order.
         statements : list[Statement]
@@ -3560,8 +3960,19 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         ]
         widths = [axis[1] if axis is not None else 1 for axis in axes]
         dimension_size = sum(widths)
-        if dimension_size < 2:
+        if dimension_size < 2 and group not in self._group_covariances:
             return {}
+        if group in self._group_covariances:
+            return self._append_covariance_coefficients(
+                formula,
+                group,
+                identity,
+                members,
+                axes,
+                statements,
+                steps,
+                correlate=correlate and dimension_size > 1,
+            )
         qgroup = _qvr_name(group)
         correlation = f"cor_{_qvr_name(identity)}"
         dimension = f"FormulaCorrelation_{_qvr_name(identity)}"
@@ -3833,6 +4244,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     statements,
                     steps,
                     coordinate_axes=coordinate_axes,
+                    correlate=any(
+                        term.correlation_id is not None for _, term in members
+                    ),
                 )
             )
         return result
@@ -4117,6 +4531,56 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                             static_arguments=(QiecTypeName(name=carrier),)
                         ),
                     ),
+                )
+        covariance_groups = set()
+        for layout in self.group_layouts:
+            basis = layout.level_covariance
+            if basis is None or not basis.rank or layout.group in covariance_groups:
+                continue
+            covariance_groups.add(layout.group)
+            stem = f"__formula_level_basis_{_qvr_name(layout.group)}"
+            support = f"FormulaGroupSupport_{_qvr_name(layout.group)}"
+
+            def matrix_input(name: str, row: str, column: str) -> QiecValueParameter:
+                """Declare one fixed matrix using its actual nominal axes.
+
+                Parameters
+                ----------
+                name, row, column : str
+                    Runtime binding and ordered finite matrix axes.
+
+                Returns
+                -------
+                QiecValueParameter
+                    Checked Real matrix input.
+                """
+                return QiecValueParameter(
+                    name=name,
+                    type_expr=QiecTypeApplication(
+                        constructor="Tensor",
+                        static_arguments=(QiecTypeName(name="Real"),),
+                        indices=(
+                            QiecShapeIndex(
+                                dimensions=(
+                                    QiecIndexName(name=row),
+                                    QiecIndexName(name=column),
+                                )
+                            ),
+                        ),
+                    ),
+                )
+
+            if layout.parameterization == "centered":
+                parameters += (
+                    matrix_input(
+                        stem + "_projection", _qvr_name(layout.group), support
+                    ),
+                    matrix_input(stem + "_row_covariance", support, support),
+                )
+            else:
+                parameters += (
+                    matrix_input(stem + "_factor", _qvr_name(layout.group), support),
+                    matrix_input(stem + "_row_covariance", support, support),
                 )
         existing = {parameter.name for parameter in parameters}
         for role, column in formula.modifiers.columns():

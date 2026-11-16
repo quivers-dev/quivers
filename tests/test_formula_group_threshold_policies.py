@@ -8,7 +8,7 @@ import torch
 from quivers.dsl import loads
 from quivers.dsl.emit import module_to_source
 from quivers.dsl.parser import parse
-from quivers.formulas import families, fit, formula_from_data
+from quivers.formulas import GroupCovariance, families, fit, formula_from_data
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.inference.trace import trace
 
@@ -30,8 +30,9 @@ def _host(value):
 @pytest.mark.parametrize("family", ["cumulative", "hurdle_cumulative"])
 @pytest.mark.parametrize("policy", ["flexible", "sum_to_zero", "equidistant"])
 @pytest.mark.parametrize("coordinates", ["centered", "noncentered"])
+@pytest.mark.parametrize("known_covariance", [False, True])
 def test_group_profile_cs_joint_density_all_gradients_and_reference(
-    family, policy, coordinates
+    family, policy, coordinates, known_covariance
 ):
     response = [0, 1, 2, 3, 1, 2] if family == "cumulative" else [0, 1, 2, 3, 4, 2]
     frame = pd.DataFrame(
@@ -43,10 +44,14 @@ def test_group_profile_cs_joint_density_all_gradients_and_reference(
         }
     )
     formula = formula_from_data("y~x+cs(z)+(1|g)", frame)
+    covariance = torch.tensor([[1.7, 0.3], [0.3, 0.8]])
     lens = FormulaToQVRModule(
         families[family].with_thresholds(policy),
         thresholds_by="g",
         reparameterize=coordinates,
+        group_covariances={"g": GroupCovariance(levels=("a", "b"), matrix=covariance)}
+        if known_covariance
+        else None,
         fixed_parameters={
             "disc": 1.25,
             **({"hu": 0.25} if family == "hurdle_cumulative" else {}),
@@ -68,15 +73,33 @@ def test_group_profile_cs_joint_density_all_gradients_and_reference(
     centered = coordinates == "centered"
     ell = raw.reshape(2, width) if centered else mean + scale * raw.reshape(2, width)
     location = location_raw if centered else location_scale * location_raw
+    profile_raw_name = (
+        "cutpoint_log_spacing_value" if centered else "cutpoint_log_spacing_noise"
+    )
+    location_raw_name = "alpha_g" if centered else "z_g_Intercept"
+    if known_covariance:
+        factor = torch.linalg.cholesky(covariance)
+        ell = mean + (
+            raw.reshape(2, width)
+            if centered
+            else (factor @ raw.reshape(2, width)) * scale
+        )
+        location = (
+            location_raw if centered else location_scale * (factor @ location_raw)
+        )
+        profile_raw_name = "group_covariance_thresholds_g"
+        location_raw_name = "group_covariance_g"
     values = {
         "intercept": intercept,
         "beta_x": beta,
         "beta_cs_z": cs,
         "sigma_g_Intercept": location_scale,
-        "alpha_g" if centered else "z_g_Intercept": location_raw,
+        location_raw_name: location_raw.reshape(2, 1)
+        if known_covariance
+        else location_raw,
         "cutpoint_log_spacing_mean": mean,
         "cutpoint_log_spacing_scale": scale,
-        "cutpoint_log_spacing_value" if centered else "cutpoint_log_spacing_noise": raw,
+        profile_raw_name: raw.reshape(2, width) if known_covariance else raw,
     }
     inputs = lens.fixed_column_observations(formula)
     codes = torch.tensor(formula.group_indices["g"])
@@ -118,15 +141,23 @@ def test_group_profile_cs_joint_density_all_gradients_and_reference(
         probabilities = torch.cat(
             (torch.full((len(frame), 1), 0.25), 0.75 * probabilities), -1
         )
-    raw_name = (
-        "cutpoint_log_spacing_value" if centered else "cutpoint_log_spacing_noise"
-    )
+    raw_name = profile_raw_name
     expected = probabilities.log().gather(1, torch.tensor(response)[:, None]).sum()
     expected += (
         torch.distributions.Normal(mean, scale).log_prob(raw.reshape(2, width)).sum()
         if centered
         else torch.distributions.Normal(0.0, 1.0).log_prob(raw).sum()
     )
+    if known_covariance and centered:
+        expected -= (
+            torch.distributions.Normal(mean, scale)
+            .log_prob(raw.reshape(2, width))
+            .sum()
+        )
+        expected += torch.distributions.MultivariateNormal(
+            torch.zeros(2 * width),
+            covariance_matrix=torch.kron(covariance, torch.diag(scale.square())),
+        ).log_prob(raw)
     # Include all three hierarchical priors to exercise every head gradient.
     expected += torch.distributions.Normal(0.0, 1.0).log_prob(mean).sum()
     expected += torch.distributions.HalfNormal(0.5).log_prob(scale).sum()
@@ -135,6 +166,13 @@ def test_group_profile_cs_joint_density_all_gradients_and_reference(
         if centered
         else torch.distributions.Normal(0.0, 1.0).log_prob(location_raw).sum()
     )
+    if known_covariance and centered:
+        expected -= (
+            torch.distributions.Normal(0.0, location_scale).log_prob(location_raw).sum()
+        )
+        expected += torch.distributions.MultivariateNormal(
+            torch.zeros(2), covariance_matrix=covariance * location_scale.square()
+        ).log_prob(location_raw)
     actual = sum(
         recorded.sites[name].log_prob.sum()
         for name in (
@@ -142,7 +180,7 @@ def test_group_profile_cs_joint_density_all_gradients_and_reference(
             raw_name,
             "cutpoint_log_spacing_mean",
             "cutpoint_log_spacing_scale",
-            "alpha_g" if centered else "z_g_Intercept",
+            location_raw_name,
         )
     )
     torch.testing.assert_close(actual, expected, atol=2e-10, rtol=2e-10)

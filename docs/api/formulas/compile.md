@@ -58,6 +58,17 @@ regression; nonlinear compilation does not introduce a second group emitter.
 
 ::: quivers.formulas.GroupBlockLayout
 
+`group_covariances` retains labeled known level covariance independently of
+coefficient correlations. Gaussian blocks use the existing MatrixNormal law
+on explicit support coordinates; positive-semidefinite rank declarations keep
+only genuine stochastic dimensions. Prediction shares the same layout and
+conditions new levels through the retained covariance. See the
+[supplied-covariance workflow](../../guides/analysis-data-and-formulas.md#supplied-covariance-between-grouping-levels).
+
+::: quivers.formulas.GroupCovariance
+
+::: quivers.formulas.GroupCovarianceBasis
+
 ## Typed prior plans
 
 `user_priors` accepts an exact-name mapping, `PriorSpec`, `PriorSet`, or a
