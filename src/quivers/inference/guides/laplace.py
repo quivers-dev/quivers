@@ -159,7 +159,7 @@ class AutoLaplaceApproximation(Guide):
                 log_det_sum = log_det_sum + (
                     site.bijector.log_abs_det_jacobian(z_site, v).sum()
                 )
-                if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
+                if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
                     v = v.squeeze(-1)
                 constrained[site.name] = v
             log_p = model.log_joint(x, {**constrained, **observations})
@@ -200,7 +200,7 @@ class AutoLaplaceApproximation(Guide):
             if not site.is_plate:
                 z_site = z_site.unsqueeze(0).expand(batch, *site.unconstrained_shape)
             v = site.bijector(z_site)
-            if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
+            if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
                 v = v.squeeze(-1)
             result[site.name] = v
         return result
@@ -232,7 +232,7 @@ class AutoLaplaceApproximation(Guide):
                     f"{type(self).__name__}.log_prob: missing site {site.name!r}"
                 )
             v = sites[site.name]
-            if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 1):
+            if site.is_scalar and v.dim() == (1 if site.is_plate else 1):
                 v_e = v.unsqueeze(-1)
             else:
                 v_e = v

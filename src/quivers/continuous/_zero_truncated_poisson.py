@@ -69,3 +69,26 @@ def positive_poisson_sample(rate: Tensor) -> Tensor:
 
 
 __all__: list[str] = []
+
+
+def positive_poisson_log_mean(rate: Tensor) -> Tensor:
+    """Retain log(rate/P(Poisson(rate)>0)) before a near-one ratio rounds.
+
+    Parameters
+    ----------
+    rate : Tensor
+        Nonnegative Poisson rates, including zero.
+
+    Returns
+    -------
+    Tensor
+        Smooth logarithmic conditional mean. The small-rate Bernoulli series
+        preserves perturbations smaller than the spacing around one.
+    """
+    small = rate < 0.01
+    x = torch.where(small, rate, 0.0)
+    square = x.square()
+    series = x / 2 + square * (-1 / 24 + square * (1 / 2880 - square / 181440))
+    regular = torch.where(small, 1.0, rate)
+    value = regular.log() - (-torch.expm1(-regular)).log()
+    return torch.where(small, series, value)

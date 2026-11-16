@@ -3871,17 +3871,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 event=distribution.plate.event,
             )
         )
-        origin = _origin_at(
-            self,
-            ("programs", state.declaration.name, "sites", name),
-            "log-density",
-            step,
-        )
-        density: Value = LogDensity(
-            sampleable=distribution,
-            value=Var(local=observed),
-            origin=origin,
-            batch=distribution.plate.batch,
+        from quivers.dsl._observation_lowering import recorded_density
+
+        density: Value = recorded_density(
+            self, distribution, Var(local=observed), step, scope, state
         )
         density = self._weighted_observation(
             density, distribution.plate, step, scope, state

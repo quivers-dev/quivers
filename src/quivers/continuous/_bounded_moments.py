@@ -74,7 +74,9 @@ def _positive_unit_moments(
             )
             good = error <= budget
             if bool(torch.isnan(error).any()):
-                raise RuntimeError("bounded moment derivative error could not be represented")
+                raise RuntimeError(
+                    "bounded moment derivative error could not be represented"
+                )
         if bool(good.any()):
             accepted_indices.append(indices[good])
             mass = log_mass[good].exp()
@@ -84,13 +86,22 @@ def _positive_unit_moments(
         pending = ~good
         if not bool(pending.any()):
             break
-        indices, lo, hi, mid = indices[pending], left[pending], right[pending], midpoint[pending]
+        indices, lo, hi, mid = (
+            indices[pending],
+            left[pending],
+            right[pending],
+            midpoint[pending],
+        )
         with torch.no_grad():
             panels.scatter_add_(0, indices, torch.ones_like(indices))
             if bool((panels > max_panels).any()):
-                raise RuntimeError("bounded moment quadrature could not certify its panel budget")
+                raise RuntimeError(
+                    "bounded moment quadrature could not certify its panel budget"
+                )
             if bool(((mid == lo) | (mid == hi)).any()):
-                raise RuntimeError("bounded moment quadrature exhausted Float64 interval resolution")
+                raise RuntimeError(
+                    "bounded moment quadrature exhausted Float64 interval resolution"
+                )
         indices = torch.cat((indices, indices))
         left, right = torch.cat((lo, mid)), torch.cat((mid, hi))
     at = torch.cat(accepted_indices)

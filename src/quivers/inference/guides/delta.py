@@ -86,7 +86,7 @@ class AutoDeltaGuide(Guide):
         else:
             z_b = z.unsqueeze(0).expand(batch, *site.unconstrained_shape)
             v = site.bijector(z_b)
-        if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
+        if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
             v = v.squeeze(-1)
         return v
 

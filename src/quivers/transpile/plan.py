@@ -319,6 +319,16 @@ class _ProgramWalk:
         self.ctx = ctx
         self.site_steps: dict[str, SampleStep | ObserveStep | MarginalizeStep] = {}
         _collect_site_steps(program.draws, self.site_steps)
+        from quivers._observation import EVENT_OPTIONS
+
+        for step in self.site_steps.values():
+            if isinstance(step, ObserveStep) and any(
+                option.key in EVENT_OPTIONS for option in step.options
+            ):
+                raise UnsupportedConstruct(
+                    f"qvr-{planner.target}",
+                    [f"qiec:recorded-event-observe:{program.name}"],
+                )
         self.factor_axes: dict[str, tuple[str, ...]] = {}
         _collect_factor_axes(program.draws, self.factor_axes)
         self.observed: dict[str, IRObserve] = {}

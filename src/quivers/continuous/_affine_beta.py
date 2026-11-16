@@ -37,7 +37,7 @@ class _IntervalExtension(AffineTransform):
         Tensor
             Affine response.
         """
-        return x + (self.left+self.right)*(x-.5) + .5*(self.right-self.left)
+        return x + (self.left + self.right) * (x - 0.5) + 0.5 * (self.right - self.left)
 
     def _inverse(self, y: Tensor) -> Tensor:
         """Invert the affine map with a centered path for large extensions.
@@ -53,7 +53,7 @@ class _IntervalExtension(AffineTransform):
             Unit-interval coordinate.
         """
         ordinary = (y + self.left) / self.width
-        centered = .5 + (y - .5 + .5 * (self.left-self.right)) / self.width
+        centered = 0.5 + (y - 0.5 + 0.5 * (self.left - self.right)) / self.width
         return torch.where((self.left <= 1) & (self.right <= 1), ordinary, centered)
 
 
@@ -74,9 +74,21 @@ class _AffineBeta(TransformedDistribution):
     a rounded transformed value from one.
     """
 
+    _batch_parameter_ranks = {
+        "concentration1": 0,
+        "concentration0": 0,
+        "left": 0,
+        "right": 0,
+    }
+
     def __init__(self, concentration1, concentration0, left, right):
-        self.concentration1, self.concentration0, self.left, self.right = torch.broadcast_tensors(
-            concentration1, concentration0, left, right,
+        self.concentration1, self.concentration0, self.left, self.right = (
+            torch.broadcast_tensors(
+                concentration1,
+                concentration0,
+                left,
+                right,
+            )
         )
         self.extension = _IntervalExtension(self.left, self.right)
         super().__init__(Beta(self.concentration1, self.concentration0), self.extension)
@@ -96,9 +108,17 @@ class _AffineBeta(TransformedDistribution):
         _AffineBeta
             Expanded affine law.
         """
-        return type(self)(*(p.expand(batch_shape) for p in (
-            self.concentration1, self.concentration0, self.left, self.right,
-        )))
+        return type(self)(
+            *(
+                p.expand(batch_shape)
+                for p in (
+                    self.concentration1,
+                    self.concentration0,
+                    self.left,
+                    self.right,
+                )
+            )
+        )
 
     def _coordinates(self, value):
         """Return the smaller unit coordinate and correspondingly ordered shapes.
@@ -114,11 +134,19 @@ class _AffineBeta(TransformedDistribution):
             Small coordinate, its ordered shapes, and the reversal mask.
         """
         value = torch.as_tensor(value, dtype=self.left.dtype, device=self.left.device)
-        lower = (value+self.left) / self.extension.width
-        upper = (1-value+self.right) / self.extension.width
+        lower = (value + self.left) / self.extension.width
+        upper = (1 - value + self.right) / self.extension.width
         large = (self.left > 1) | (self.right > 1)
-        lower = torch.where(large, .5+(value-.5+.5*(self.left-self.right))/self.extension.width, lower)
-        upper = torch.where(large, .5+(.5-value+.5*(self.right-self.left))/self.extension.width, upper)
+        lower = torch.where(
+            large,
+            0.5 + (value - 0.5 + 0.5 * (self.left - self.right)) / self.extension.width,
+            lower,
+        )
+        upper = torch.where(
+            large,
+            0.5 + (0.5 - value + 0.5 * (self.right - self.left)) / self.extension.width,
+            upper,
+        )
         reverse = upper < lower
         point = torch.where(reverse, upper, lower)
         a = torch.where(reverse, self.concentration0, self.concentration1)
@@ -140,11 +168,21 @@ class _AffineBeta(TransformedDistribution):
         """
         point, a, b, _ = self._coordinates(value)
         interior = (point > 0) & (point < 1)
-        safe = torch.where(interior, point, .5)
-        density = _log_front(a, b, safe) - safe.log() - torch.log1p(-safe) - self.extension.width.log()
+        safe = torch.where(interior, point, 0.5)
+        density = (
+            _log_front(a, b, safe)
+            - safe.log()
+            - torch.log1p(-safe)
+            - self.extension.width.log()
+        )
         # Endpoint values follow the ordinary Beta density convention.
-        endpoint = torch.where(a == 1, b.log(), torch.where(a < 1, torch.inf, -torch.inf)) - self.extension.width.log()
-        return torch.where(interior, density, torch.where(point == 0, endpoint, -torch.inf))
+        endpoint = (
+            torch.where(a == 1, b.log(), torch.where(a < 1, torch.inf, -torch.inf))
+            - self.extension.width.log()
+        )
+        return torch.where(
+            interior, density, torch.where(point == 0, endpoint, -torch.inf)
+        )
 
     def _tails(self, value):
         """Evaluate complementary tails from the same smaller coordinate.
@@ -225,7 +263,7 @@ class _AffineBeta(TransformedDistribution):
         """
         concentration = torch.stack((self.concentration1, self.concentration0), -1)
         return _dirichlet_log_weights(
-            concentration.expand(torch.Size(sample_shape)+concentration.shape),
+            concentration.expand(torch.Size(sample_shape) + concentration.shape),
             reparameterized=reparameterized,
         )
 
@@ -243,8 +281,12 @@ class _AffineBeta(TransformedDistribution):
             Distribution result on the requested sample and batch axes.
         """
         x, q = weights[..., 0].exp(), weights[..., 1].exp()
-        lower = x+(self.left+self.right)*(x-.5)+.5*(self.right-self.left)
-        upper = 1 - (q+(self.left+self.right)*(q-.5)+.5*(self.left-self.right))
+        lower = (
+            x + (self.left + self.right) * (x - 0.5) + 0.5 * (self.right - self.left)
+        )
+        upper = 1 - (
+            q + (self.left + self.right) * (q - 0.5) + 0.5 * (self.left - self.right)
+        )
         return torch.where(weights[..., 0] <= weights[..., 1], lower, upper)
 
     def rsample(self, sample_shape=torch.Size()):
@@ -262,7 +304,9 @@ class _AffineBeta(TransformedDistribution):
         """
         return self._from_log_draw(self._log_draw(sample_shape, reparameterized=True))
 
-    def sample(self, sample_shape: torch.Size | tuple[int, ...] | list[int] = torch.Size()):
+    def sample(
+        self, sample_shape: torch.Size | tuple[int, ...] | list[int] = torch.Size()
+    ):
         """Draw an affine Beta sample through the shared log-Gamma sampler.
 
         Parameters
@@ -281,7 +325,9 @@ class _AffineBeta(TransformedDistribution):
             If the evaluation or sample exceeds the documented numerical capacity.
         """
         with torch.no_grad():
-            return self._from_log_draw(self._log_draw(sample_shape, reparameterized=False))
+            return self._from_log_draw(
+                self._log_draw(sample_shape, reparameterized=False)
+            )
 
     def _sample_unit_censored(self, sample_shape, *, reparameterized):
         """Classify censoring atoms before rounding either Beta coordinate.
@@ -304,13 +350,17 @@ class _AffineBeta(TransformedDistribution):
             If the evaluation or sample exceeds the documented numerical capacity.
         """
         weights = self._log_draw(sample_shape, reparameterized=reparameterized)
-        lower = weights[..., 0] <= (self.left/self.extension.width).log()
-        upper = weights[..., 1] <= (self.right/self.extension.width).log()
+        lower = weights[..., 0] <= (self.left / self.extension.width).log()
+        upper = weights[..., 1] <= (self.right / self.extension.width).log()
         value = self._from_log_draw(weights)
         interior = ~(lower | upper)
-        if bool((interior & ((value <= 0) | (value >= 1) | ~torch.isfinite(value))).any()):
-            raise RuntimeError("affine Beta interior sample exceeds Float64 endpoint resolution")
-        return torch.where(lower, 0., torch.where(upper, 1., value))
+        if bool(
+            (interior & ((value <= 0) | (value >= 1) | ~torch.isfinite(value))).any()
+        ):
+            raise RuntimeError(
+                "affine Beta interior sample exceeds Float64 endpoint resolution"
+            )
+        return torch.where(lower, 0.0, torch.where(upper, 1.0, value))
 
 
 __all__: list[str] = []

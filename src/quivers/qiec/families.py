@@ -194,6 +194,15 @@ class DistributionFamily(ValueModel):
     shape_signature: FamilyShapeSignature | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    atom_locations: tuple[float, ...] | None = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    """Fixed scalar atom carrier; None means a constructor-dependent carrier.
+
+    Empty locations declare an atomless non-discrete, noncompositional law.
+    Integer laws use the global integer counting reference, including cells
+    with zero mass. Compositions derive carriers from their components.
+    """
 
     @dx.model_validator()
     def _validate_family(self) -> None:
@@ -208,6 +217,13 @@ class DistributionFamily(ValueModel):
             parameter or has a rank below the event rank, or a
             parameter ties a dimension to one the sample does not have.
         """
+        if self.atom_locations is not None and (
+            not isinstance(self.atom_locations, tuple)
+            or any(not isinstance(value, int | float) for value in self.atom_locations)
+        ):
+            raise TypeError(
+                "atom_locations must be a tuple of real coordinates or None"
+            )
         validate_shape(self.parameters, tuple[FamilyParameter, ...], path="parameters")
         validate_shape(self.element, TypeExpr, path="element")
         validate_shape(self.event_offsets, tuple[int, ...], path="event_offsets")
@@ -257,6 +273,25 @@ class DistributionFamily(ValueModel):
                     raise ValueError(
                         "family parameter rank disagrees with its shape signature"
                     )
+
+    @property
+    def effective_atomicity(self) -> str:
+        """Classify the family's reference measure from its semantic contract.
+
+        Returns
+        -------
+        str
+            Discrete, composite, mixed, or atomless reference category.
+        """
+        if self.compositional:
+            return "composite"
+        if self.discrete:
+            return "discrete"
+        return (
+            "mixed"
+            if self.atom_locations is None or self.atom_locations
+            else "atomless"
+        )
 
     @property
     def effective_shape_signature(self) -> FamilyShapeSignature:
@@ -543,6 +578,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     ),
     DistributionFamily(
         name="HurdleGamma",
+        atom_locations=(0.0,),
         parameters=(
             FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
             FamilyParameter(name="concentration", constraint="positive", rank=0),
@@ -559,6 +595,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     ),
     DistributionFamily(
         name="HurdleLogNormal",
+        atom_locations=(0.0,),
         parameters=(
             FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
             FamilyParameter(name="loc", constraint="real", rank=0),
@@ -694,6 +731,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     ),
     DistributionFamily(
         name="ZeroInflatedAsymmetricLaplace",
+        atom_locations=(0.0,),
         parameters=(
             FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
             FamilyParameter(name="loc", constraint="real", rank=0),
@@ -1593,7 +1631,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     DistributionFamily(
         name="Geometric",
         parameters=(
-            FamilyParameter(name="probs", constraint="unit_interval", rank=0),
+            FamilyParameter(name="probs", constraint="unit_interval_open_left", rank=0),
             FamilyParameter(name="logits", constraint="real", rank=0),
         ),
         support="nonnegative_integer",
@@ -1973,6 +2011,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     ),
     DistributionFamily(
         name="ZeroOneInflatedBeta",
+        atom_locations=(0.0, 1.0),
         parameters=(
             FamilyParameter(name="mu", constraint="unit_interval_open", rank=0),
             FamilyParameter(name="phi", constraint="positive", rank=0),
@@ -1990,6 +2029,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     ),
     DistributionFamily(
         name="ExtendedBeta",
+        atom_locations=(0.0, 1.0),
         parameters=(
             FamilyParameter(name="mu", constraint="unit_interval_open", rank=0),
             FamilyParameter(name="phi", constraint="positive", rank=0),
@@ -2036,6 +2076,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     ),
     DistributionFamily(
         name="PointMass",
+        atom_locations=None,
         parameters=(FamilyParameter(name="value", constraint="numeric", rank=0),),
         support="dependent",
         element=REAL,

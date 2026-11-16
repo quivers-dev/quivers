@@ -45,8 +45,10 @@ import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from torch.distributions.utils import lazy_property
 
+from quivers.continuous._count_cdf import _CountCDF
 
-class _ValidatedCategorical(D.Categorical):
+
+class _ValidatedCategorical(_CountCDF, D.Categorical):
     """Validate raw category weights before torch normalizes their signs away.
 
     Parameters
@@ -59,6 +61,25 @@ class _ValidatedCategorical(D.Categorical):
         Torch sample and normalized-parameter validation policy. Raw probability
         validation is mandatory under either policy.
     """
+
+    def _count_log_tails(self, value):
+        """Evaluate the shared paired scalar count-tail kernel.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive log CDF and strict log survival.
+        """
+        from quivers.continuous._count_tails import categorical_log_tails
+
+        return categorical_log_tails(
+            self._param, value, logits=self._param is not self.__dict__.get("probs")
+        )
 
     def __init__(self, probs=None, logits=None, validate_args=None):
         if probs is not None:
@@ -527,7 +548,7 @@ def _require_counts(value: torch.Tensor) -> None:
         )
 
 
-class ClosedBernoulli(D.Bernoulli):
+class ClosedBernoulli(_CountCDF, D.Bernoulli):
     """A Bernoulli that scores ``probs`` of zero and one where they stand.
 
     Parameters
@@ -540,6 +561,24 @@ class ClosedBernoulli(D.Bernoulli):
         Whether to validate arguments and samples.
     """
 
+    def _count_log_tails(self, value):
+        """Evaluate the shared paired scalar count-tail kernel.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive log CDF and strict log survival.
+        """
+        from quivers.continuous._count_tails import bernoulli_log_tails
+
+        parameter = self.logits if self._closed_probs is None else self.probs
+        return bernoulli_log_tails(parameter, value, logits=self._closed_probs is None)
+
     def __init__(
         self,
         probs: torch.Tensor | None = None,
@@ -547,7 +586,7 @@ class ClosedBernoulli(D.Bernoulli):
         validate_args: bool | None = None,
     ) -> None:
         super().__init__(probs=probs, logits=logits, validate_args=validate_args)
-        self._closed_probs = probs
+        self._closed_probs = self.probs if probs is not None else None
 
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         """The log mass at an outcome.
@@ -572,7 +611,7 @@ class ClosedBernoulli(D.Bernoulli):
         return _count_log(value, probs) + _count_log_complement(1.0 - value, probs)
 
 
-class ClosedBinomial(D.Binomial):
+class ClosedBinomial(_CountCDF, D.Binomial):
     """A binomial that scores ``probs`` of zero and one, and zero trials.
 
     Parameters
@@ -590,6 +629,26 @@ class ClosedBinomial(D.Binomial):
     arg_constraints = dict(D.Binomial.arg_constraints) | {
         "total_count": _constraints.nonnegative_integer
     }
+
+    def _count_log_tails(self, value):
+        """Evaluate the shared paired scalar count-tail kernel.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive log CDF and strict log survival.
+        """
+        from quivers.continuous._count_tails import binomial_log_tails
+
+        parameter = self.logits if self._closed_probs is None else self.probs
+        return binomial_log_tails(
+            self.total_count, value, parameter, logits=self._closed_probs is None
+        )
 
     def __init__(
         self,
@@ -687,32 +746,8 @@ class ClosedBinomial(D.Binomial):
             result = torch.where(interior_p, stable, endpoint)
         return torch.where(outside, torch.full_like(result, -torch.inf), result)
 
-    def expand(self, batch_shape, _instance=None):
-        """Retain probability-endpoint state through batch expansion.
 
-        Parameters
-        ----------
-        batch_shape : torch.Size or Sequence[int]
-            Requested broadcast batch shape.
-        _instance : ClosedBinomial or None
-            Optional PyTorch instance.
-
-        Returns
-        -------
-        ClosedBinomial
-            Expanded distribution with float64 count arithmetic.
-        """
-        new = self._get_checked_instance(type(self), _instance)
-        super().expand(batch_shape, new)
-        new._closed_probs = (
-            None
-            if self._closed_probs is None
-            else self._closed_probs.expand(batch_shape)
-        )
-        return new
-
-
-class ClosedNegativeBinomial(D.NegativeBinomial):
+class ClosedNegativeBinomial(_CountCDF, D.NegativeBinomial):
     """A negative binomial that scores ``probs = 0`` and ``r = 0``.
 
     Follows torch's convention: the count is of successes, each with
@@ -732,6 +767,26 @@ class ClosedNegativeBinomial(D.NegativeBinomial):
     validate_args : bool, optional
         Whether to validate arguments and samples.
     """
+
+    def _count_log_tails(self, value):
+        """Evaluate the shared paired scalar count-tail kernel.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive log CDF and strict log survival.
+        """
+        from quivers.continuous._count_tails import negative_binomial_log_tails
+
+        parameter = self.logits if self._closed_probs is None else self.probs
+        return negative_binomial_log_tails(
+            self.total_count, value, parameter, logits=self._closed_probs is None
+        )
 
     def __init__(
         self,
@@ -822,30 +877,6 @@ class ClosedNegativeBinomial(D.NegativeBinomial):
             return super().variance
         return self.mean / (1 - self._closed_probs)
 
-    def expand(self, batch_shape, _instance=None):
-        """Retain exact probability endpoints through expansion.
-
-        Parameters
-        ----------
-        batch_shape : torch.Size or Sequence[int]
-            Requested broadcast batch shape.
-        _instance : ClosedNegativeBinomial or None
-            Optional PyTorch instance.
-
-        Returns
-        -------
-        ClosedNegativeBinomial
-            Expanded distribution retaining its closed probability parameter.
-        """
-        new = self._get_checked_instance(type(self), _instance)
-        super().expand(batch_shape, new)
-        new._closed_probs = (
-            None
-            if self._closed_probs is None
-            else self._closed_probs.expand(batch_shape)
-        )
-        return new
-
     def sample(self, sample_shape=torch.Size()):
         """Draw gamma-Poisson counts using true closed probabilities.
 
@@ -879,7 +910,143 @@ class ClosedNegativeBinomial(D.NegativeBinomial):
             return _sample_poisson_exact(intensity)
 
 
-class ClosedPoisson(D.Poisson):
+class _PositiveUnitInterval(_constraints._Interval):
+    """Probability interval open at zero and closed at one."""
+
+    def __init__(self):
+        super().__init__(0.0, 1.0)
+
+    def check(self, value):
+        """Validate finite proper success probabilities.
+
+        Parameters
+        ----------
+        value : Tensor
+            Candidate probability parameters.
+
+        Returns
+        -------
+        Tensor
+            Boolean membership in (0,1].
+        """
+        return (value > 0) & (value <= 1)
+
+
+class ClosedGeometric(_CountCDF, D.Geometric):
+    """Failures before success, preserving closed endpoints and finite logits.
+
+    Parameters
+    ----------
+    probs : Tensor or float or None
+        Proper success probabilities in (0,1].
+    logits : Tensor or float or None
+        Alternative log odds; finite negative values remain proper even when
+        their probability underflows. Positive infinity denotes success one.
+    validate_args : bool or None
+        Native sample validation policy.
+    """
+
+    arg_constraints = {"probs": _PositiveUnitInterval(), "logits": _constraints.real}
+
+    def __init__(self, probs=None, logits=None, validate_args=None):
+        if (probs is None) == (logits is None):
+            raise ValueError("Geometric requires exactly one of probs and logits")
+        if probs is not None:
+            probs = torch.as_tensor(probs).double()
+            if not bool(((probs > 0) & (probs <= 1) & torch.isfinite(probs)).all()):
+                raise ValueError(
+                    "Geometric requires proper success probabilities in (0,1]"
+                )
+        else:
+            logits = torch.as_tensor(logits).double()
+            if bool((torch.isnan(logits) | torch.isneginf(logits)).any()):
+                raise ValueError(
+                    "Geometric logits cannot denote zero success probability"
+                )
+        super().__init__(probs=probs, logits=logits, validate_args=False)
+        self._closed_probs = self.probs if probs is not None else None
+        self._validate_args = bool(validate_args)
+
+    def _count_log_tails(self, value):
+        """Evaluate proper geometric tails from original parameter coordinates.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive log CDF and strict log survival.
+        """
+        from quivers.continuous._count_tails import geometric_log_tails
+
+        return geometric_log_tails(
+            self.logits if self._closed_probs is None else self.probs,
+            value,
+            logits=self._closed_probs is None,
+        )
+
+    def log_prob(self, value):
+        """Score counts without rounding a finite logit's failure probability.
+
+        Parameters
+        ----------
+        value : Tensor
+            Nonnegative integer counts.
+
+        Returns
+        -------
+        Tensor
+            Log probabilities, negative infinity outside the counting support.
+        """
+        if self._validate_args:
+            self._validate_sample(value)
+        value = torch.as_tensor(value, device=self.probs.device).double()
+        valid = self.support.check(value)
+        count = torch.where(valid, value, 0.0)
+        if self._closed_probs is None:
+            success = torch.nn.functional.logsigmoid(self.logits)
+            failure = torch.nn.functional.logsigmoid(-self.logits)
+        else:
+            success = self.probs.log()
+            score = success + _count_log(count, 1 - self.probs)
+            return torch.where(valid, score, -torch.inf)
+        score = success + count * torch.where(count == 0, 0.0, failure)
+        return torch.where(valid, score, -torch.inf)
+
+    def sample(self, sample_shape=torch.Size()):
+        """Draw counts in constant work with explicit integer-capacity refusal.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+
+        Returns
+        -------
+        Tensor
+            Float64 integer-valued draws.
+
+        Raises
+        ------
+        RuntimeError
+            If a draw exceeds exact Float64 integer capacity.
+        """
+        with torch.no_grad():
+            failure = (
+                torch.nn.functional.logsigmoid(-self.logits)
+                if self._closed_probs is None
+                else torch.log1p(-self.probs)
+            )
+            shape = self._extended_shape(sample_shape)
+            uniform = torch.rand(shape, dtype=failure.dtype, device=failure.device)
+            quotient = torch.log1p(-uniform) / failure.expand(shape)
+            return _require_sample_capacity(quotient.floor())
+
+
+class ClosedPoisson(_CountCDF, D.Poisson):
     """A Poisson that scores a rate of zero as the point mass at zero.
 
     ``log p(k) = k log(rate) - rate - log k!``, with the count's
@@ -894,6 +1061,23 @@ class ClosedPoisson(D.Poisson):
     validate_args : bool, optional
         Whether to validate arguments and samples.
     """
+
+    def _count_log_tails(self, value):
+        """Evaluate the shared paired scalar count-tail kernel.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive log CDF and strict log survival.
+        """
+        from quivers.continuous._count_tails import poisson_log_tails
+
+        return poisson_log_tails(self.rate, value)
 
     def __init__(
         self, rate: torch.Tensor | float, validate_args: bool | None = None
@@ -958,4 +1142,5 @@ __all__ = [
     "ClosedBinomial",
     "ClosedNegativeBinomial",
     "ClosedPoisson",
+    "ClosedGeometric",
 ]

@@ -41,6 +41,7 @@ from quivers.dsl.qiec_tooling import (
     qiec_binding_map,
 )
 from quivers.transpile import available_targets
+from quivers._observation import EVENT_OPTIONS
 
 
 class Completion(dx.Model):
@@ -57,7 +58,7 @@ class Completion(dx.Model):
     """
 
     text: str
-    kind: str  # "env", "keyword", "type", "function", "namespace", "command", "path"
+    kind: str  # Environment, syntax, option, command, or path category.
     detail: str = ""
 
 
@@ -111,14 +112,21 @@ def all_completions(session: ReplSession, prefix: str) -> list[Completion]:
     Returns
     -------
     list[Completion]
-        Meta-command, transpile-target, environment, keyword, and path
-        candidates, in that order.
+        Meta-command, transpile-target, environment, keyword, observation-option,
+        and path candidates, in that order.
     """
     out: list[Completion] = []
     out.extend(_meta_completions(prefix))
     out.extend(_transpile_target_completions(prefix))
     out.extend(_env_completions(session, prefix))
     out.extend(_keyword_completions(prefix))
+    out.extend(
+        Completion(
+            text=name + "=", kind="option", detail=f"observation {field}: {carrier}"
+        )
+        for name, (field, carrier) in EVENT_OPTIONS.items()
+        if prefix and name.startswith(prefix)
+    )
     out.extend(_path_completions(prefix))
     return out
 

@@ -7,6 +7,7 @@ version with pytest --noconftest when a backend does not support QVR's Python.
 from __future__ import annotations
 
 from collections.abc import Callable
+import importlib.util
 from pathlib import Path
 from typing import cast
 
@@ -19,7 +20,12 @@ ROOT = Path(__file__).parents[2] / "src/quivers/transpile"
 def _bridge(target: str, **bindings: object) -> Callable:
     namespace = dict(bindings)
     exec((ROOT / "runtime_qiec.py").read_text(), namespace)
-    exec((ROOT / f"runtime_qiec_{target}.py").read_text(), namespace)
+    spec = importlib.util.spec_from_file_location(
+        "qvr_runtime_sources", ROOT / "_runtime_sources.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    exec(module.python_runtime_source(ROOT / f"runtime_qiec_{target}.py"), namespace)
     return cast(Callable, namespace["_qvr_qiec_primitive"])
 
 

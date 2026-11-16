@@ -152,7 +152,7 @@ class AutoNormalGuide(Guide):
             scale_b = scale.unsqueeze(0).expand(batch, *site.unconstrained_shape)
             z = D.Normal(loc_b, scale_b).rsample()
         v = site.bijector(z)
-        if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
+        if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
             v = v.squeeze(-1)
         return z, v
 
@@ -193,7 +193,7 @@ class AutoNormalGuide(Guide):
             if site.name not in sites:
                 continue
             v = sites[site.name]
-            if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 1):
+            if site.is_scalar and v.dim() == (1 if site.is_plate else 1):
                 v = v.unsqueeze(-1)
             z = site.bijector.inv(v)
             loc = self._loc(site.name)

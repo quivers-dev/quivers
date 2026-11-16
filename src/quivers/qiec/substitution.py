@@ -31,6 +31,7 @@ from quivers.qiec.terms import (
     Local,
     LogDensity,
     LogMass,
+    ConditionalValue,
     NewInstance,
     Perform,
     PrimitiveApplication,
@@ -662,6 +663,13 @@ def substitute_value(value: Value, substitution: StaticSubstitution) -> Value:
                 for binding in value.bindings
             ),
             body=substitute_value(value.body, substitution),
+            result_type=substitute_type(value.result_type, substitution),
+        )
+    if isinstance(value, ConditionalValue):
+        return ConditionalValue(
+            condition=substitute_value(value.condition, substitution),
+            then=substitute_value(value.then, substitution),
+            otherwise=substitute_value(value.otherwise, substitution),
             result_type=substitute_type(value.result_type, substitution),
         )
     if isinstance(value, LogMass):

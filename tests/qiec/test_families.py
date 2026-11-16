@@ -19,6 +19,7 @@ import torch.distributions.constraints as c
 
 from quivers.qiec import BOOL, INT, REAL
 from quivers.continuous._zip_hurdle import _OpenUnitInterval
+from quivers.continuous._closed_probability import _PositiveUnitInterval
 from quivers.qiec.families import FAMILIES, DistributionFamily, family
 from quivers.qiec.identifiers import DistributionId
 from quivers.transpile.family_meta import FAMILY_META
@@ -93,6 +94,8 @@ def _symbolic(constraint: object) -> tuple[str, int]:
         return "unit_interval_half_open", rank
     if isinstance(constraint, _OpenUnitInterval):
         return "unit_interval_open", rank
+    if isinstance(constraint, _PositiveUnitInterval):
+        return "unit_interval_open_left", rank
     if isinstance(constraint, c._Interval):
         return "unit_interval", rank
     return "dependent", rank

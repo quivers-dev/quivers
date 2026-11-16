@@ -156,20 +156,9 @@ def test_mixture_mass_and_density_broadcast_components_with_different_batch_shap
         weights,
         [Normal(torch.tensor([0.0, 1.0], dtype=torch.float64), 1.0), PointMass(0.0)],
     )
-    expected = torch.stack(
-        [
-            torch.logsumexp(
-                torch.stack(
-                    [
-                        weights[0].log() + Normal(loc, 1.0).log_prob(torch.tensor(0.0)),
-                        weights[1].log(),
-                    ]
-                ),
-                0,
-            )
-            for loc in torch.tensor([0.0, 1.0], dtype=torch.float64)
-        ]
-    )
+    # The common reference includes the Dirac carrier. At its atom the Normal
+    # contributes zero singleton mass, irrespective of its density there.
+    expected = weights[1].log().expand(2)
     torch.testing.assert_close(mixture.log_prob(torch.tensor(0.0)), expected)
     torch.testing.assert_close(
         mixture.log_normalizer(), torch.zeros(2, dtype=torch.float64)
@@ -390,3 +379,30 @@ def test_uniform_interval_keeps_tail_precision_and_parameter_derivatives():
     assert torch.autograd.gradgradcheck(function, (parameters,))
     mass = log_interval_mass(torch.distributions.Uniform(0.0, 1.0), 1 - 1e-12, None)
     assert mass.item() == pytest.approx(math.log(1 - (1 - 1e-12)))
+
+
+def test_restricted_bijection_handles_each_finite_and_infinite_bound_combination():
+    low = torch.tensor([-math.inf, 0.0, -math.inf, 0.0], dtype=torch.float64)
+    high = torch.tensor([math.inf, math.inf, 2.0, 2.0], dtype=torch.float64)
+    restricted = Restrict(Normal(torch.zeros(4, dtype=torch.float64), 1.0), low, high)
+    transform = torch.distributions.biject_to(restricted.support)
+    x = torch.tensor([0.2, -0.3, 0.4, -0.5], dtype=torch.float64, requires_grad=True)
+    y = transform(x)
+    expected = torch.stack([x[0], x[1].exp(), 2 - x[2].exp(), 2 * x[3].sigmoid()])
+    torch.testing.assert_close(y, expected)
+    torch.testing.assert_close(transform.inv(y), x)
+    assert bool(restricted.support.check(y).all())
+    jacobian = torch.autograd.functional.jacobian(transform, x).diagonal().abs().log()
+    torch.testing.assert_close(transform.log_abs_det_jacobian(x, y), jacobian)
+    assert torch.autograd.gradcheck(transform, (x,))
+    assert torch.autograd.gradgradcheck(transform, (x,))
+
+
+def test_explicit_infinities_use_the_same_restricted_guide_map_as_omitted_bounds():
+    x = torch.tensor([-3.0, 0.0, 2.0], dtype=torch.float64)
+    explicit = Restrict(Normal(0.0, 1.0), -math.inf, 2.0)
+    omitted = Restrict(Normal(0.0, 1.0), high=2.0)
+    torch.testing.assert_close(
+        torch.distributions.biject_to(explicit.support)(x),
+        torch.distributions.biject_to(omitted.support)(x),
+    )

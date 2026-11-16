@@ -25,8 +25,12 @@ def _dirichlet_log_weights(concentration: Tensor, *, reparameterized=False) -> T
         If the augmented Gamma sampler returns invalid values or pathwise
         shape-gradient denominators exceed floating capacity.
     """
-    if reparameterized and bool((concentration < torch.finfo(concentration.dtype).tiny**.5).any()):
-        raise RuntimeError("pathwise Dirichlet sampling exceeded Float64 shape-gradient capacity")
+    if reparameterized and bool(
+        (concentration < torch.finfo(concentration.dtype).tiny ** 0.5).any()
+    ):
+        raise RuntimeError(
+            "pathwise Dirichlet sampling exceeded Float64 shape-gradient capacity"
+        )
     small = concentration < 1
     augmented = torch.where(small, concentration + 1, concentration)
     distribution = torch.distributions.Gamma(augmented, torch.ones_like(augmented))
@@ -38,7 +42,9 @@ def _dirichlet_log_weights(concentration: Tensor, *, reparameterized=False) -> T
     logs = log_gamma - torch.where(small, exponential / concentration, 0.0)
     missing = ~torch.isfinite(logs).any(-1, keepdim=True)
     if reparameterized and bool(missing.any()):
-        raise RuntimeError("pathwise Dirichlet sampling exceeded finite log-Gamma capacity")
+        raise RuntimeError(
+            "pathwise Dirichlet sampling exceeded finite log-Gamma capacity"
+        )
     # If every log gamma overflowed negatively, all shapes are subnormal.
     # Compare their finite scaled logs first; ordinary rows retain full
     # precision even when they also contain a tiny concentration.
@@ -46,9 +52,9 @@ def _dirichlet_log_weights(concentration: Tensor, *, reparameterized=False) -> T
     scaled = scale * log_gamma - torch.where(
         small, exponential * (scale / concentration), 0.0
     )
-    safe_scale = torch.where(missing, scale, 1.)
-    difference = torch.where(missing, scaled-scaled.amax(-1,keepdim=True), 0.)
-    centered = difference/safe_scale
+    safe_scale = torch.where(missing, scale, 1.0)
+    difference = torch.where(missing, scaled - scaled.amax(-1, keepdim=True), 0.0)
+    centered = difference / safe_scale
     safe_logs = torch.where(missing, centered, logs)
     return torch.log_softmax(safe_logs, -1)
 

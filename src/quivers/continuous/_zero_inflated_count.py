@@ -7,6 +7,8 @@ from collections.abc import Mapping
 
 import torch
 from torch import Tensor
+
+from quivers.continuous._count_cdf import _CountCDF
 from torch.distributions import Distribution, constraints
 
 from quivers.continuous._closed_probability import (
@@ -21,7 +23,7 @@ from quivers.continuous._closed_probability import (
 )
 from quivers.continuous._simplex_sampling import _dirichlet_weights
 from quivers.continuous._zero_truncated_poisson import (
-    positive_poisson_mean,
+    positive_poisson_log_mean,
     positive_poisson_sample,
 )
 
@@ -163,7 +165,7 @@ def _zero_atom_log_mass(zero_prob: Tensor, base_log_mass: Tensor) -> Tensor:
     return _ZeroAtomLogMass.apply(zero_prob, base_log_mass)
 
 
-class BetaBinomial(Distribution):
+class BetaBinomial(_CountCDF, Distribution):
     """A broadcast beta-binomial component, including zero trials.
 
     Parameters
@@ -185,6 +187,25 @@ class BetaBinomial(Distribution):
     }
     support = constraints.nonnegative_integer
     has_rsample = False
+
+    def _count_log_tails(self, value):
+        """Evaluate exact finite beta-binomial tails within the shared budget.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive log CDF and strict log survival.
+        """
+        from quivers.continuous._count_tails import beta_binomial_log_tails
+
+        return beta_binomial_log_tails(
+            self.total_count, value, self.concentration1, self.concentration0
+        )
 
     def __init__(self, total_count, concentration1, concentration0, validate_args=None):
         _check_trial_count_source(total_count)
@@ -287,7 +308,7 @@ class BetaBinomial(Distribution):
         return result
 
 
-class _InflatedCount(Distribution):
+class _InflatedCount(_CountCDF, Distribution):
     """Shared zero-inflation scoring, moments, expansion, and discrete sampling."""
 
     support = constraints.nonnegative_integer
@@ -295,6 +316,61 @@ class _InflatedCount(Distribution):
     zero_prob: Tensor
     _count_class: type[Distribution]
     _zero_count_parameters: tuple[str, ...] = ("total_count", "probs")
+
+    def _all_count_tails(self, value):
+        """Reuse the shared structural-zero atom algebra for count events.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor, Tensor, Tensor]
+            Paired logarithmic and ordinary tail probabilities.
+        """
+        from quivers.continuous._count_tails import inflated_count_tails
+
+        base = self._component()
+        return inflated_count_tails(
+            self.zero_prob,
+            value,
+            base.log_cdf(value),
+            base.log_survival_function(value),
+        )
+
+    def _count_log_tails(self, value):
+        """Select log tails from the common count-mixture event kernel.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive log CDF and strict log survival.
+        """
+        result = self._all_count_tails(value)
+        return result[0], result[1]
+
+    def _count_probability_tails(self, value):
+        """Retain finite atom-probability derivatives at mixture endpoints.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive cumulative and strict survival probabilities.
+        """
+        result = self._all_count_tails(value)
+        return result[2], result[3]
 
     def _component(
         self, parameters: Mapping[str, Tensor] | None = None
@@ -664,6 +740,51 @@ class HurdleNegativeBinomial(ZeroInflatedNegativeBinomial):
     def __init__(self, zero_prob, total_count, probs, validate_args=None):
         super().__init__(zero_prob, total_count, probs, validate_args=validate_args)
 
+    def _all_count_tails(self, value):
+        """Reuse positive conditioning before structural-zero event mixing.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor, Tensor, Tensor]
+            Paired log and ordinary tail probabilities.
+        """
+        from quivers.continuous._count_tails import (
+            positive_count_log_tails,
+            inflated_count_tails,
+        )
+
+        base = self._component()
+        log_zero = self.total_count * torch.log1p(-self.probs)
+        first = log_zero + self._positive_log_ratio()
+        second = first + torch.log1p((self.total_count + 1) * self.probs / 2)
+        lc, ls = positive_count_log_tails(
+            value,
+            base.log_cdf(value),
+            base.log_survival_function(value),
+            log_zero,
+            first,
+            second,
+        )
+        return inflated_count_tails(self.zero_prob, value, lc, ls)
+
+    def _positive_log_ratio(self) -> Tensor:
+        """Retain tiny perturbations in the positive-NB normalization ratio.
+
+        Returns
+        -------
+        Tensor
+            Logarithm of r*p/P(NB>0), including its zero-probability limit.
+        """
+        t = -torch.log1p(-self.probs)
+        return positive_poisson_log_mean(
+            self.total_count * t
+        ) - positive_poisson_log_mean(t)
+
     def _positive_ratio(self) -> Tensor:
         """Evaluate r*p/P(NB>0) including its smooth p=0 limit.
 
@@ -672,8 +793,7 @@ class HurdleNegativeBinomial(ZeroInflatedNegativeBinomial):
         Tensor
             A stable ratio equal to one at p=0.
         """
-        t = -torch.log1p(-self.probs)
-        return positive_poisson_mean(self.total_count * t) / positive_poisson_mean(t)
+        return self._positive_log_ratio().exp()
 
     @property
     def mean(self) -> Tensor:
@@ -720,7 +840,7 @@ class HurdleNegativeBinomial(ZeroInflatedNegativeBinomial):
             - torch.lgamma(point + 1)
             + _count_log(point - 1, self.probs)
             + self.total_count * torch.log1p(-self.probs)
-            + self._positive_ratio().log()
+            + self._positive_log_ratio()
         )
         rate = -self.total_count * torch.log1p(-self.probs)
         ordinary = rate > 1e-4

@@ -29,8 +29,9 @@ fitted transforms, contrasts, and known group levels. Ordinary categorical
 predictor levels remain strict; `allow_new_levels=True` admits new or
 missing grouping identities. `sample_new_levels` selects per-draw donors
 (`"uncertainty"`), one donor index across draws (`"old_levels"`), or
-the fitted Normal/LKJ group law (`"gaussian"`). Donors are joint across
-slopes and auxiliary predictors. For constrained cumulative category-specific
+the fitted Normal/LKJ group law (`"gaussian"`). A grouped Cox baseline
+replays its Dirichlet profile law under this policy. Donors are joint across
+slopes, auxiliary predictors, and baseline profiles. For constrained cumulative category-specific
 new-group profiles or effects, explicit `"feasible_uncertainty"` and
 `"feasible_gaussian"` condition the joint proposal on requested-row
 ordering. They retain all posterior draws and refuse after 1,024 failed
@@ -41,7 +42,9 @@ effects, `"~0"` sets them to zero, and a one-sided group formula selects
 fitted terms. Unsupported selectors fail explicitly. Response and
 likelihood-weight columns are unnecessary, but retained covariates,
 offsets, exposures, auxiliary predictors, and per-row trials must be
-supplied. Neural fits require explicit new `predictor_data`.
+supplied, together with retained measurement-error and truncation columns
+when those sampling-law roles use data columns. Censoring and training
+subset columns are unnecessary. Neural fits require explicit new `predictor_data`.
 Training predictions reuse the compiled program; new rows specialize one
 program per request. Both fill one preallocated output tensor across draws.
 The [posterior workflow](../../guides/analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
@@ -78,8 +81,10 @@ choice probabilities; it does not estimate them by repeated response sampling.
 ## Likelihoods and analysis
 
 `BayesianFit.log_likelihood(num_samples=100, seed=7)` returns raw response log
-densities on training rows, with chain and draw axes followed by the observation
-axis. These scores exclude fitting weights and priors. `analysis` retains the
+densities or recorded-event log probabilities on training rows, with chain
+and draw axes followed by the observation axis. Truncation normalizes the
+response law before the event is scored. These scores exclude fitting
+weights and priors. `analysis` retains the
 same posterior draws and scores for summaries, empirical WAIC, DataTree
 conversion, and PSIS-LOO. It samples a variational guide once per request and
 never treats its pseudo-chain as recorded MCMC output.

@@ -1736,9 +1736,11 @@ def _load_runtime_pymc_helpers() -> tuple[panproto.Schema, tuple[str, ...]]:
     helper module's own imports stay behind, matching the emitted
     program's convention of resolving `pymc` / `np` / `pt` as free
     names in the run namespace."""
+    from quivers.transpile._runtime_sources import python_runtime_source
+
     schema = parser_registry().parse_with_protocol(
         "python",
-        _RUNTIME_PYMC_PATH.read_bytes(),
+        python_runtime_source(_RUNTIME_PYMC_PATH),
         str(_RUNTIME_PYMC_PATH),
     )
     module_id = next((v.id for v in schema.vertices if v.kind == "module"), None)
@@ -1858,6 +1860,8 @@ def _graft_runtime_pymc_helpers(py: PyCtx, *, probability_only: bool = False) ->
                         "_qvr_log",
                         "_qvr_probability_check",
                         "_qvr_positive_parameter",
+                        "_qvr_observation_status",
+                        "_qvr_interval_upper",
                         "_qvr_select",
                     )
                 )

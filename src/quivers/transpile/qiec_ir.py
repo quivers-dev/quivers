@@ -1033,6 +1033,28 @@ class IRQiecDistributionValue(IRQiecValue):
     kind: Literal["distribution"] = "distribution"
 
 
+class IRQiecConditionalValue(IRQiecValue):
+    """One lazily selected pure value with a shared checked result type.
+
+    Parameters
+    ----------
+    condition
+        Scalar Boolean selecting the active branch.
+    then, otherwise
+        Equally typed branches; only the selected branch is evaluated.
+    result_type
+        Common branch type.
+    kind
+        Discriminator, always ``conditional_value``.
+    """
+
+    condition: IRQiecValue
+    then: IRQiecValue
+    otherwise: IRQiecValue
+    result_type: IRQiecStatic
+    kind: Literal["conditional_value"] = "conditional_value"
+
+
 class IRQiecLogMass(IRQiecValue):
     """Total measure mass, retaining independent batch axes.
 
@@ -2315,6 +2337,13 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
             origin=cast(IRQiecSourceOrigin, _convert(value.origin)),
             plate=cast(IRQiecPlateShape, _convert(value.plate)),
         )
+    if isinstance(value, tm.ConditionalValue):
+        return IRQiecConditionalValue(
+            condition=cast(IRQiecValue, _convert(value.condition)),
+            then=cast(IRQiecValue, _convert(value.then)),
+            otherwise=cast(IRQiecValue, _convert(value.otherwise)),
+            result_type=cast(IRQiecStatic, _convert(value.result_type)),
+        )
     if isinstance(value, tm.LogMass):
         return IRQiecLogMass(
             sampleable=cast(IRQiecValue, _convert(value.sampleable)),
@@ -2968,6 +2997,11 @@ def _body_features(node: IRQiecComputation) -> set[QiecFeature]:
                 required.add("plate")
             for argument in item.arguments:
                 value(argument.value)
+        elif isinstance(item, IRQiecConditionalValue):
+            required.add("if")
+            value(item.condition)
+            value(item.then)
+            value(item.otherwise)
         elif isinstance(item, IRQiecLogMass):
             required.add("log-mass")
             if item.batch:
@@ -3587,6 +3621,7 @@ __all__ = [
     "IRQiecDistributionValue",
     "IRQiecLogDensity",
     "IRQiecLogMass",
+    "IRQiecConditionalValue",
     "IRQiecGather",
     "IRQiecWeightSum",
     "IRQiecSegmentSum",

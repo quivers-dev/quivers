@@ -136,7 +136,7 @@ def _push_through_bijector(
     else:
         z_batched = z_shaped.unsqueeze(0).expand(batch, *site.unconstrained_shape)
         v = site.bijector(z_batched)
-    if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
+    if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
         v = v.squeeze(-1)
     return v
 
@@ -400,7 +400,7 @@ class AutoStructured(Guide):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Invert the bijector and return `(z_shaped, log|det J^{-1}|)`
         at the natural site shape."""
-        if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 1):
+        if site.is_scalar and v.dim() == (1 if site.is_plate else 1):
             v_e = v.unsqueeze(-1)
         else:
             v_e = v

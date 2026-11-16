@@ -229,56 +229,8 @@ _qvr_qiec_host_math.update(
 )
 
 
-def _qvr_probability_check(value, valid, name):
-    if not value.dtype.is_floating:
-        raise ValueError(name + " requires real values")
-    checked = tf.debugging.assert_equal(
-        tf.reduce_all(valid),
-        True,
-        message=name + " received a value outside its domain",
-    )
-    with tf.control_dependencies([] if checked is None else [checked]):
-        return tf.identity(value)
-
-
-def _qvr_log_probability(value):
-    value = tf.convert_to_tensor(value)
-    value = _qvr_probability_check(
-        value, tf.math.is_finite(value) & (value >= 0) & (value <= 1), "log_probability"
-    )
-    safe = tf.where(value > 0, value, tf.ones_like(value))
-    return tf.where(value > 0, tf.math.log(safe), tf.cast(-float("inf"), value.dtype))
-
-
-def _qvr_log1mexp(value):
-    value = tf.convert_to_tensor(value)
-    value = _qvr_probability_check(
-        value, ~tf.math.is_nan(value) & (value <= 0), "log1mexp"
-    )
-    safe = tf.where(tf.math.is_finite(value) & (value < 0), value, -tf.ones_like(value))
-    near = safe > -0.6931471805599453
-    a = tf.where(near, safe, -tf.ones_like(value))
-    b = tf.where(near, -tf.ones_like(value), safe)
-    result = tf.where(near, tf.math.log(-tf.math.expm1(a)), tf.math.log1p(-tf.exp(b)))
-    return tf.where(
-        value == 0,
-        tf.cast(-float("inf"), value.dtype),
-        tf.where(tf.math.is_inf(value), tf.zeros_like(value), result),
-    )
-
-
-def _qvr_log_ndtr(value):
-    value = tf.convert_to_tensor(value)
-    value = _qvr_probability_check(value, ~tf.math.is_nan(value), "log_ndtr")
-    safe = tf.where(tf.math.is_finite(value), value, tf.zeros_like(value))
-    result = tfp.distributions.Normal(
-        tf.zeros_like(value), tf.ones_like(value)
-    ).log_cdf(safe)
-    return tf.where(
-        tf.math.is_inf(value),
-        tf.where(value < 0, tf.cast(-float("inf"), value.dtype), tf.zeros_like(value)),
-        result,
-    )
+# qvr-shared-probability:edward2:start
+# qvr-shared-probability:edward2:end
 
 
 _qvr_qiec_host_math.update(
@@ -290,11 +242,12 @@ _qvr_qiec_host_math.update(
 )
 
 
-def _qvr_positive_parameter(value):
-    value = tf.convert_to_tensor(value)
-    return _qvr_probability_check(
-        value, tf.math.is_finite(value) & (value > 0), "positive_parameter"
-    )
-
-
 _qvr_qiec_host_math["positive_parameter"] = _qvr_positive_parameter
+
+
+_qvr_qiec_host_math.update(
+    {
+        "observation_status": _qvr_observation_status,
+        "interval_upper": _qvr_interval_upper,
+    }
+)

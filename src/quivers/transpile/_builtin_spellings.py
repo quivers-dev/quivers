@@ -612,6 +612,8 @@ def _julia(root: str) -> dict[str, BuiltinSpelling]:
                 "log1mexp",
                 "log_ndtr",
                 "positive_parameter",
+                "observation_status",
+                "interval_upper",
             )
         },
         **_same_name(
@@ -672,6 +674,8 @@ WEBPPL_RUNTIME_BUILTINS: frozenset[str] = frozenset(
         "log1mexp",
         "log_ndtr",
         "positive_parameter",
+        "observation_status",
+        "interval_upper",
         "acos",
         "acosh",
         "asin",
@@ -721,6 +725,8 @@ CHURCH_RUNTIME_BUILTINS: frozenset[str] = frozenset(
         "log1mexp",
         "log_ndtr",
         "positive_parameter",
+        "observation_status",
+        "interval_upper",
         "abs",
         "acos",
         "acosh",
@@ -856,7 +862,14 @@ _BUGS: dict[str, BuiltinSpelling] = {
 
 
 _PROBABILITY_BUILTINS = frozenset(
-    {"log_probability", "log1mexp", "log_ndtr", "positive_parameter"}
+    {
+        "log_probability",
+        "log1mexp",
+        "log_ndtr",
+        "positive_parameter",
+        "observation_status",
+        "interval_upper",
+    }
 )
 for _table in (_PYRO, _NUMPYRO, _PYMC, _EDWARD2):
     _table.update({name: _native("_qvr_" + name) for name in _PROBABILITY_BUILTINS})

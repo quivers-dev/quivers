@@ -173,7 +173,12 @@ def bridge_source(target: str) -> str:
     """
     language = DYNAMIC_TARGET_LANGUAGES[target]
     extension = {"python": "py", "julia": "jl", "javascript": "js", "scheme": "scm"}
-    return (_HERE / f"runtime_qiec_{target}.{extension[language]}").read_text()
+    path = _HERE / f"runtime_qiec_{target}.{extension[language]}"
+    if language == "python":
+        from quivers.transpile._runtime_sources import python_runtime_source
+
+        return python_runtime_source(path).decode()
+    return path.read_text()
 
 
 def can_spell(target: str, family: str) -> bool:

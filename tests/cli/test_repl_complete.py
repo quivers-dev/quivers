@@ -43,6 +43,17 @@ def test_meta_commands_prefix() -> None:
     assert ":load" in labels
 
 
+def test_observation_options_follow_the_executor_role_registry() -> None:
+    from quivers._observation import EVENT_OPTIONS
+
+    session = _session()
+    for name, (_, carrier) in EVENT_OPTIONS.items():
+        candidates = [c for c in all_completions(session, name) if c.text == name + "="]
+        assert len(candidates) == 1
+        assert candidates[0].kind == "option"
+        assert carrier in candidates[0].detail
+
+
 def test_meta_commands_full_list_for_colon() -> None:
     cs = all_completions(_session(), ":")
     labels = [c.text for c in cs]

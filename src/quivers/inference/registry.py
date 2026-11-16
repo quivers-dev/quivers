@@ -84,7 +84,7 @@ def _unconstrained_event_dim(
     thereof).
     """
     if support is _constraints.simplex:
-        return max(1, constrained_dim - 1)
+        return constrained_dim - 1
     if support is _constraints.corr_cholesky:
         return max(1, constrained_dim * (constrained_dim - 1) // 2)
     if support is _constraints.positive_definite:
@@ -252,10 +252,22 @@ class LatentSite(ValueModel):
             raise TypeError("latent bijector must be a torch distribution transform")
 
     @property
+    def is_scalar(self) -> bool:
+        """Whether one constrained event is a scalar, rather than a singleton tensor.
+
+        Returns
+        -------
+        bool
+            True only for a one-coordinate support without intrinsic event
+            axes. Singleton simplices and matrices retain their event axes.
+        """
+        return self.constrained_dim == 1 and self.support.event_dim == 0
+
+    @property
     def constrained_shape(self) -> tuple[int, ...]:
         """The shape of one draw of this site on its constrained
-        support (after the bijector, with a length-one event axis
-        squeezed off).
+        support after the bijector. Scalar supports omit an event
+        axis; singleton simplex and matrix supports retain theirs.
 
         Plate sites have shape ``(*plate_shape,)`` or
         ``(*plate_shape, d)``, ``(|A|,)`` or ``(|A|, d)`` for a plate
@@ -283,7 +295,7 @@ class LatentSite(ValueModel):
         event: tuple[int, ...]
         if self.support in (_constraints.corr_cholesky, _constraints.positive_definite):
             event = (self.constrained_dim, self.constrained_dim)
-        elif self.constrained_dim == 1:
+        elif self.is_scalar:
             event = ()
         else:
             event = (self.constrained_dim,)
@@ -800,7 +812,7 @@ class LatentRegistry:
             z = unconstrained[site.name]
             v = _apply_transform(site.bijector, z)
             log_abs_dets[site.name] = site.bijector.log_abs_det_jacobian(z, v)
-            if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
+            if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
                 v = v.squeeze(-1)
             constrained[site.name] = v
         return constrained, log_abs_dets
@@ -817,7 +829,7 @@ class LatentRegistry:
                     f"LatentRegistry.to_unconstrained: missing site {site.name!r}"
                 )
             v = constrained[site.name]
-            if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 0):
+            if site.is_scalar and v.dim() == (1 if site.is_plate else 0):
                 v = v.unsqueeze(-1)
             z = _apply_transform(site.bijector.inv, v)
             log_abs_dets[site.name] = site.bijector.inv.log_abs_det_jacobian(v, z)

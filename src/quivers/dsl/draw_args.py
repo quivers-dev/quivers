@@ -23,6 +23,7 @@ index regex consumes, via `encode_index`.
 
 from __future__ import annotations
 
+from quivers._family_schemas import _select_parameterization
 from quivers.dsl.ast_nodes import (
     DrawArg,
     DrawArgDist,
@@ -79,12 +80,7 @@ def bind_family_arguments(
                 f"family {family!r} is given parameter {argument.parameter!r} twice"
             )
         bound[argument.parameter] = argument.value
-    selected = next((schema for schema in schemas if set(schema) == set(bound)), None)
-    if selected is None:
-        raise TypeError(
-            f"family {family!r} requires exactly one complete parameter schema "
-            f"{rendered}; got ({', '.join(bound)})"
-        )
+    selected = _select_parameterization(family, tuple(bound), schemas)
     return tuple((name, bound[name]) for name in selected)
 
 

@@ -96,6 +96,63 @@ def _observation_weight(value: float) -> float:
     return value
 
 
+def _observation_status(value: int) -> int:
+    """Validate one recorded-outcome event code.
+
+    Parameters
+    ----------
+    value : int
+        Code minus one left, zero exact, one right, or two interval.
+
+    Returns
+    -------
+    int
+        The validated code unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the value is not a nonboolean integer in the code set.
+    """
+    if type(value) is not int or value not in {-1, 0, 1, 2}:
+        raise ValueError("observation_status requires integer codes -1, 0, 1, or 2")
+    return value
+
+
+def _interval_upper(lower: float, upper: float) -> float:
+    """Validate an active interval's finite, strictly larger upper endpoint.
+
+    Parameters
+    ----------
+    lower, upper : float
+        Real endpoints; the lower endpoint may be infinite.
+
+    Returns
+    -------
+    float
+        The upper endpoint unchanged.
+
+    Raises
+    ------
+    ValueError
+        If an endpoint is boolean or nonreal, lower is NaN, or upper is
+        nonfinite or does not exceed lower.
+    """
+    if (
+        any(
+            isinstance(value, bool) or not isinstance(value, int | float)
+            for value in (lower, upper)
+        )
+        or math.isnan(lower)
+        or not math.isfinite(upper)
+        or upper <= lower
+    ):
+        raise ValueError(
+            "interval_upper requires a finite upper endpoint greater than its lower endpoint"
+        )
+    return upper
+
+
 def _positive_parameter(value: float) -> float:
     """Validate a finite, strictly positive scalar parameter.
 
@@ -498,6 +555,8 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Callable[..., object]], ...] = (
     _signature("log", (REAL,), REAL, "math", math.log),
     _signature("log_probability", (REAL,), REAL, "probability", _log_probability),
     _signature("positive_parameter", (REAL,), REAL, "probability", _positive_parameter),
+    _signature("observation_status", (INT,), INT, "probability", _observation_status),
+    _signature("interval_upper", (REAL, REAL), REAL, "probability", _interval_upper),
     _signature("log1mexp", (REAL,), REAL, "probability", _log1mexp),
     _signature("log_ndtr", (REAL,), REAL, "probability", _log_ndtr),
     _signature("sqrt", (REAL,), REAL, "math", math.sqrt),

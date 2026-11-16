@@ -139,6 +139,14 @@ def test_do_complete_meta_prefix() -> None:
     assert out["cursor_end"] == 3
 
 
+def test_do_complete_recording_options_uses_the_shared_role_catalog() -> None:
+    kernel = _kernel()
+    code = "observe y <- Normal(loc=0.0, scale=1.0) [cens"
+    reply = kernel.do_complete(code, len(code))
+    assert {"cens=", "cens_upper="} <= set(reply["matches"])
+    assert reply["cursor_start"] == len(code) - 4
+
+
 def test_do_complete_env_after_load() -> None:
     k = _kernel()
     k.do_execute(SOURCE, silent=True)

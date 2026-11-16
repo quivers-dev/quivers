@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from quivers.qiec._beta_tails import log_beta_interval_mass
-from quivers.qiec._gamma_tails import _gamma_interval_log_mass, _regularized_gamma_logs
+from quivers.qiec._gamma_tails import _gamma_interval_log_mass
 from quivers._quadrature_constants import _NODES_8, _WEIGHTS_8
 from quivers.qiec.primitives import _log1mexp, _log_ndtr
 from quivers.qiec.reference_support import DistributionError
@@ -214,35 +214,29 @@ def log_interval_mass(base, low, high, *, lower_closed=True, upper_closed=True):
             if a > 0
             else _difference(_log_ndtr(b), _log_ndtr(a))
         )
-    if family == "Poisson":
-        rate = rf.real_parameter(arguments, "rate", family)
-        if rate < 0 or not math.isfinite(rate):
-            raise DistributionError("Poisson rate must be finite and nonnegative")
+    from quivers.qiec._count_tails import COUNT_TAIL_FAMILIES, log_count_tails
+
+    if family in COUNT_TAIL_FAMILIES:
 
         def tails(value, closed):
-            """Read a Poisson half-line with stable regularized-Gamma tails.
+            """Select an inclusive integer tail at the requested endpoint limit.
 
             Parameters
             ----------
             value : float
-                Cutoff in extended real coordinates.
+                Extended-real event endpoint.
             closed : bool
-                Whether the lower half-line includes the cutoff.
+                Whether the lower half-line includes its endpoint.
 
             Returns
             -------
             tuple[float, float]
-                Lower and upper log tail masses.
+                Log inclusive cumulative and strict upper-tail masses.
             """
-            if value == math.inf:
-                return 0.0, -math.inf
-            if value == -math.inf:
-                return -math.inf, 0.0
-            count = math.floor(value) if closed else math.ceil(value) - 1
-            if count < 0:
-                return -math.inf, 0.0
-            sf, cdf = _regularized_gamma_logs(count + 1, rate)
-            return cdf, sf
+            cutoff = (
+                math.ceil(value) - 1 if math.isfinite(value) and not closed else value
+            )
+            return log_count_tails(family, arguments, cutoff)
 
         low_cdf, low_sf = tails(lower, not lower_closed)
         high_cdf, high_sf = tails(upper, upper_closed)

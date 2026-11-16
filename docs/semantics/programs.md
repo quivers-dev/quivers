@@ -268,7 +268,26 @@ source family; it introduces no separate likelihood implementation.
 The intercept remains an unrestricted log-rate coordinate rather than
 an additional baseline-scale parameter.
 
-A positive constant tail establishes finite first and second moments.
+For group-specific baselines, retain one common basis and introduce a simplex
+$w_g$ per grouping identity. Observation row $i$ uses
+$h_{0,g_i}(t)=\sum_j w_{g_i,j}M_j(t)$ and its corresponding cumulative hazard.
+Each profile integrates to one on the retained interval; a varying rate term
+may thus be estimated independently without adding an unidentified baseline
+multiplier. The source translation contracts basis coefficients once per
+group and pulls them back along the explicit row-to-group map. Group, basis,
+and observation axes remain separate even when their cardinalities coincide.
+
+Prediction retains the actual training basis. Donor policies select one fitted
+group identity jointly across baseline and coefficient sites; conditional-law
+sampling draws a new simplex from its Dirichlet law alongside the existing
+Normal/LKJ group effects. Excluding varying predictor effects does not exclude
+a structural baseline profile. Knot selection uses exact-event quantiles and
+the full included follow-up span, including active interval upper endpoints;
+it does not estimate new knots from fresh predictor rows.
+
+A positive constant tail establishes finite first and second moments at each
+fixed parameter draw. This statement does not assert that averaging those
+moments over an arbitrary parameter prior yields finite posterior moments.
 The native law records this fact through its immutable
 `finite_moment_orders` certificate, independently of whether a closed
 moment formula is implemented. An explicit Monte Carlo expectation may
@@ -518,6 +537,35 @@ so an atom at the lower endpoint remains included. Both the numerator
 and normalizer depend on the family parameters. Censoring has a
 different denotation: an interval-censored observation contributes
 $K_\theta(I)$ without conditioning the whole response law on $I$.
+
+More generally, define the raw lower-tail masses
+$F_\mu(t)=\mu((-\infty,t])$ and
+$F_\mu^-(t)=\mu((-\infty,t))$. The upper endpoint contributes
+$F_\mu(b)$ when closed and $F_\mu^-(b)$ when open; the subtracted
+lower term is $F_\mu^-(a)$ when closed and $F_\mu(a)$ when open.
+This endpoint convention applies to raw restricted and mixture measures as
+well as probability laws. At $a=b$, only a doubly closed interval retains
+the atom. Normalization divides the resulting event mass by $\mu(\mathbb R)$;
+it does not replace the retained measure before the event is formed.
+
+For a scalar mixed law, densities are interpreted against a common reference
+containing Lebesgue measure and the retained atom carrier. At a carrier point,
+only atomic component masses contribute. Adding an atomless component's
+Lebesgue density there would change the point mass and thus the law.
+Integer-valued scalar components instead share counting measure on all
+integers. Coupled mixed vector components require their joint stratum
+reference; a scalar carrier calculation cannot supply that information.
+
+For a recorded response $y_i$, censoring selects an event
+$E_i$: $(-\infty,y_i]$ for a left observation,
+$(y_i,\infty)$ for a right observation, and $(y_i,u_i]$ for an
+interval observation. If the sampling law is truncated to $T_i$, its
+recorded event contributes
+$\log K_\theta(E_i\cap T_i)-\log K_\theta(T_i)$.
+An exact observation instead contributes its density under that same
+conditional law. Likelihood weights multiply this observation contribution
+after its event and normalizer are formed; raw pointwise extraction omits
+the weight. Censoring metadata introduces no sampling effect of its own.
 
 For independent scalar coordinates truncated to a rectangle,
 $Z_\theta=\prod_j Z_{\theta,j}$, so log normalizers add over the

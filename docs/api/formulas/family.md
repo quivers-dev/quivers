@@ -66,10 +66,19 @@ The specification stores typed knot tuples and dimensions and preserves
 its value through link selection and serialization. The generated program
 retains the actual coefficient table for prediction on fresh rows.
 
+`with_baseline(..., by="site")` retains separate normalized simplex profiles
+for a grouping column on the same basis. Fitting retains its level coding
+without inserting a varying intercept. Direct lens users supply the column
+through `formula_from_data(..., groups=("site",))`. New-data group policies
+share donor identities across baseline and coefficient sites; `gaussian`
+draws a new baseline from the actual Dirichlet law. Baseline conditioning
+remains active under `re_formula="~0"`.
+
 The location parameter is a hazard multiplier, with default log link;
 it is not response mean. Baseline weights have a unit-sum simplex prior
 `sbhaz ~ Dirichlet(1)`, separating shape from rate. A finite positive
-constant tail makes response moments finite, but no closed mean is exposed.
+constant tail makes response moments finite at each fixed parameter draw,
+but no closed mean is exposed.
 Use an explicit `posterior_epred(mc_samples=...)` budget. The
 [regression example](../../guides/analysis-data-and-formulas.md#spline-proportional-hazards)
 distinguishes rate, event draws, and expected time.

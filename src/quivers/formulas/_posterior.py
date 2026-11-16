@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 import torch
 from torch.distributions import Distribution
 
-from quivers.continuous.plate import VectorisedObserve
 from quivers.inference._posterior import constrained_draws
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import Trace, trace
@@ -298,14 +297,12 @@ def response_distribution(recorded: Trace, response: str) -> Distribution:
     if sampleable is None:
         raise TypeError("the response has no native conditional distribution")
     morphism = getattr(sampleable, "raw_morphism", sampleable.morphism)
-    if isinstance(morphism, VectorisedObserve):
-        morphism = morphism._family
-    builder = getattr(morphism, "_get_dist", None)
-    if builder is None:
+    sampling = getattr(morphism, "sampling_distribution", None)
+    if sampling is None:
         raise TypeError(
             "the response family does not expose native distribution expectations"
         )
-    return builder(sampleable.input)
+    return sampling(sampleable.input)
 
 
 @contextmanager
@@ -405,7 +402,11 @@ def response_mean(
         next_scale = part_scale if scale is None else torch.maximum(scale, part_scale)
         divisor = torch.where(next_scale > 0, next_scale, torch.ones_like(next_scale))
         part = (values / divisor).sum(0)
-        total = part if total is None else total * (scale / divisor) + part
+        if total is None:
+            total = part
+        else:
+            assert scale is not None
+            total = total * (scale / divisor) + part
         scale = next_scale
     assert total is not None and scale is not None
     result = (total / mc_samples) * scale

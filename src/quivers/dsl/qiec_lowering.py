@@ -25,6 +25,10 @@ from didactic.gadt import (
 )
 from panproto import GatError
 
+from quivers._family_schemas import (
+    _select_parameterization,
+    _semantic_parameterizations,
+)
 from quivers._values import HeldValue, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 from quivers.dsl import ast_nodes as surface
@@ -4170,6 +4174,14 @@ class _Elaborator(
                 f"parameters ({', '.join(record.parameter_names)})",
                 code="qiec-distribution",
             )
+        try:
+            _select_parameterization(
+                record.name,
+                record.parameter_names[: len(authored.args)],
+                _semantic_parameterizations(record.name, record.parameter_names),
+            )
+        except TypeError as error:
+            self._fail(authored, str(error), code="qiec-distribution")
         arguments: list[tuple[str, Value]] = []
         for position, (parameter, argument) in enumerate(
             zip(record.parameters, authored.args, strict=False)

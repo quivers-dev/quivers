@@ -78,6 +78,50 @@ def _normal(value: torch.Tensor) -> torch.Tensor:
 #: Each case: its family and parameterization, the program, its data, its
 #: site values, and the oracle.
 _CASES: dict[str, tuple[str, str, str, dict[str, Host], dict[str, Host], Oracle]] = {
+    "relaxed-bernoulli-logits": (
+        "RelaxedBernoulli",
+        "logits",
+        "program p : One -> D\n"
+        "    observe y : Row <- RelaxedBernoulli(temperature=0.7,logits=0.4)\n"
+        "    return y\n",
+        {"y": [0.1, 0.3, 0.6, 0.8]},
+        {},
+        lambda s: D.RelaxedBernoulli(_t(0.7), logits=_t(0.4)).log_prob(s["y"]).sum(),
+    ),
+    "relaxed-onehot-logits": (
+        "RelaxedOneHotCategorical",
+        "logits",
+        "program p : One -> D\n"
+        "    observe y : Row <- RelaxedOneHotCategorical(temperature=0.7,logits=[0.4,-0.2]) [over=Two]\n"
+        "    return y\n",
+        {"y": [[0.1, 0.9], [0.3, 0.7], [0.6, 0.4], [0.8, 0.2]]},
+        {},
+        lambda s: (
+            D.RelaxedOneHotCategorical(_t(0.7), logits=_t([0.4, -0.2]))
+            .log_prob(s["y"])
+            .sum()
+        ),
+    ),
+    "onehot-logits": (
+        "OneHotCategorical",
+        "logits",
+        "program p : One -> D\n"
+        "    observe y : Row <- OneHotCategorical(logits=[0.4,-0.2]) [over=Two]\n"
+        "    return y\n",
+        {"y": [[1, 0], [0, 1], [0, 1], [1, 0]]},
+        {},
+        lambda s: D.OneHotCategorical(logits=_t([0.4, -0.2])).log_prob(s["y"]).sum(),
+    ),
+    "bernstein-hazard-log-rate": (
+        "BernsteinHazard",
+        "log_rate",
+        "program p : One -> D\n"
+        "    observe y : Row <- BernsteinHazard(breaks=[0.0,1.0],controls=[[1.0]],log_rate=0.7)\n"
+        "    return y\n",
+        {"y": [0.0, 0.2, 1.3, 2.1]},
+        {},
+        lambda s: D.Exponential(_t(math.exp(0.7))).log_prob(s["y"]).sum(),
+    ),
     "alr-reference": (
         "AdditiveLogRatioNormal",
         "reference",

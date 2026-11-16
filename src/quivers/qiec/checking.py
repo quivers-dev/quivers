@@ -7,6 +7,10 @@ from collections.abc import Mapping
 
 import didactic.api as dx
 
+from quivers._family_schemas import (
+    _select_parameterization,
+    _semantic_parameterizations,
+)
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 
@@ -87,6 +91,7 @@ from quivers.qiec.terms import (
     Local,
     LogDensity,
     LogMass,
+    ConditionalValue,
     Perform,
     PrimitiveApplication,
     Projection,
@@ -2370,6 +2375,14 @@ def _infer_distribution(
             f"family {value.name!r} is constructed with no parameters",
             "qiec-distribution",
         )
+    try:
+        _select_parameterization(
+            family.name,
+            tuple(name for name, _ in value.arguments),
+            _semantic_parameterizations(family.name, family.parameter_names),
+        )
+    except TypeError as error:
+        raise KernelError(str(error), "qiec-distribution") from error
     expected = _plated_sample_type(value, family, argument_types)
     if value.result_type != expected:
         raise KernelError(
@@ -2499,6 +2512,20 @@ def infer_value(
                 "qiec-primitive",
             )
         return expected_result
+    if isinstance(value, ConditionalValue):
+        condition = infer_value(value.condition, registry, context)
+        if condition != BOOL:
+            raise KernelError(
+                "conditional value requires a scalar Bool condition", "qiec-primitive"
+            )
+        then = infer_value(value.then, registry, context)
+        otherwise = infer_value(value.otherwise, registry, context)
+        if then != otherwise or then != value.result_type:
+            raise KernelError(
+                "conditional value branches must agree with its result type",
+                "qiec-primitive",
+            )
+        return then
     if isinstance(value, DistributionValue):
         return _infer_distribution(value, registry, context)
     if isinstance(value, SiteValue):

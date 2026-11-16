@@ -575,7 +575,9 @@ def _rename_step_options(
                     )
                 )
             entry = entry.with_(value=option)
-        if entry.key == "weights" and isinstance(option, OptionName):
+        from quivers._observation import EVENT_OPTIONS
+
+        if entry.key in {"weights", *EVENT_OPTIONS} and isinstance(option, OptionName):
             actual = values.get(option.value)
             if actual is None:
                 option = option.with_(value=rename.get(option.value, option.value))
@@ -585,7 +587,7 @@ def _rename_step_options(
                 option = OptionNumber(value=actual.value)
             else:
                 raise TemplateError(
-                    "observation weights require a named value or number"
+                    f"observation {entry.key} requires a named value or number"
                 )
             entry = entry.with_(value=option)
         result.append(entry)

@@ -2134,9 +2134,11 @@ def _load_runtime_numpyro_helpers() -> tuple[
     of the emitted module. The emit is a real Python class definition,
     with no string literal, no `exec`, and no runtime self-injection.
     """
+    from quivers.transpile._runtime_sources import python_runtime_source
+
     schema = parser_registry().parse_with_protocol(
         "python",
-        _RUNTIME_NUMPYRO_PATH.read_bytes(),
+        python_runtime_source(_RUNTIME_NUMPYRO_PATH),
         str(_RUNTIME_NUMPYRO_PATH),
     )
     roots: dict[str, str] = {}

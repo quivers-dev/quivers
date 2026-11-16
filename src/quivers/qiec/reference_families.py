@@ -3487,9 +3487,25 @@ def _mixture_density(a: Mapping[str, object], value: object) -> float:
     components = _components(a, "Mixture")
     if len(components) != len(weights):
         raise DistributionError("Mixture weights and components differ in number")
+    from quivers.qiec._atoms import atom_reference, atomicity, log_atom_mass
+
+    if isinstance(value, tuple):
+        kinds = {atomicity(c) for c in components}
+        if len(kinds) != 1 or "mixed" in kinds:
+            raise DistributionError(
+                "mixed vector mixtures require a common stratified reference measure"
+            )
+        atomic = False
+    else:
+        atomic = any(atom_reference(c, value) for c in components)
     return _logsumexp(
         [
-            math.log(weight) + float(component.log_prob(value))  # type: ignore[attr-defined]
+            math.log(weight)
+            + (
+                log_atom_mass(component, value)
+                if atomic
+                else float(component.log_prob(value))
+            )
             for weight, component in zip(weights, components, strict=True)
             if weight > 0.0
         ]
@@ -3761,6 +3777,10 @@ def _transformed_density(a: Mapping[str, object], value: object) -> float:
             current = forward(current)
     except ValueError, OverflowError, ZeroDivisionError:
         return -math.inf
+    from quivers.qiec._atoms import atom_reference, log_atom_mass
+
+    if atom_reference(base, point):
+        return log_atom_mass(base, point)
     return float(base.log_prob(point)) - log_derivative  # type: ignore[attr-defined]
 
 

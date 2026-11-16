@@ -67,6 +67,8 @@ class Censored(Distribution):
         If the base has a coupled event, a bound is NaN, or bounds are unordered.
     """
 
+    _atomicity = "mixed"
+
     @property
     def arg_constraints(self):
         """Delegate parameter validation to the underlying distribution.
@@ -135,6 +137,112 @@ class Censored(Distribution):
             self.low.expand(batch_shape),
             self.high.expand(batch_shape),
         )
+
+    def select_batch(self, active, *, output_shape=None):
+        """Select only active base rows and censoring bounds before sampling.
+
+        Parameters
+        ----------
+        active : Tensor
+            Boolean mask over the native batch axes.
+        output_shape : torch.Size or None
+            Optional selected batch layout, including nested event batch axes.
+
+        Returns
+        -------
+        Distribution
+            Selected law, preserving registered subclasses and their policies.
+        """
+        from quivers.continuous._atoms import _family_metadata
+        from quivers.continuous._batch_selection import (
+            _reconstruct,
+            select_batch,
+            select_parameter,
+        )
+
+        if _family_metadata(self) is not None:
+
+            def select(value, rank):
+                """Select one subclass constructor parameter under its rank.
+
+                Parameters
+                ----------
+                value : Tensor
+                    Parameter tensor.
+                rank : int
+                    Intrinsic parameter rank.
+
+                Returns
+                -------
+                Tensor
+                    Selected tensor parameter.
+                """
+                return select_parameter(
+                    value, self.batch_shape, rank, active, output_shape=output_shape
+                )
+
+            return _reconstruct(self, select)
+        base = select_batch(self.base, active, output_shape=output_shape)
+        low = select_parameter(
+            self.low, self.batch_shape, 0, active, output_shape=output_shape
+        )
+        high = select_parameter(
+            self.high, self.batch_shape, 0, active, output_shape=output_shape
+        )
+        return Censored(base, low, high)
+
+    def atom_reference(self, value):
+        """Retain finite censoring boundaries and the base's interior atoms.
+
+        Parameters
+        ----------
+        value : Tensor or float
+            Scalar query points.
+
+        Returns
+        -------
+        Tensor
+            Potential atomic carrier, independent of current atom masses.
+        """
+        from quivers.continuous._atoms import atom_reference, _point
+
+        value = _point(self, value)
+        interior = (value > self.low) & (value < self.high)
+        boundary = ((value == self.low) | (value == self.high)) & torch.isfinite(value)
+        safe = _interior_point(self.base, self.low)
+        return boundary | (
+            interior & atom_reference(self.base, torch.where(interior, value, safe))
+        )
+
+    def log_atom_mass(self, value):
+        """Score censoring endpoint masses and retained interior base atoms.
+
+        Parameters
+        ----------
+        value : Tensor or float
+            Scalar query points.
+
+        Returns
+        -------
+        Tensor
+            Log singleton probability mass, with no continuous contribution.
+        """
+        from quivers.continuous._atoms import log_atom_mass, _point
+
+        value = _point(self, value)
+        interior = (value > self.low) & (value < self.high)
+        safe = _interior_point(self.base, self.low)
+        lower = _log_tails(
+            self.base, torch.where(torch.isfinite(self.low), self.low, safe)
+        )[0]
+        upper = _log_tails_left(
+            self.base, torch.where(torch.isfinite(self.high), self.high, safe)
+        )[1]
+        middle = log_atom_mass(self.base, torch.where(interior, value, safe))
+        result = torch.where(
+            value == self.low, lower, torch.where(value == self.high, upper, middle)
+        )
+        return torch.where(self.atom_reference(value), result, -torch.inf)
 
     def log_prob(self, value):
         """Score boundary probability masses and interior base densities.

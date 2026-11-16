@@ -14,6 +14,8 @@ from typing import Literal
 import didactic.api as dx
 import torch
 import torch.distributions as td
+
+from quivers.continuous._closed_probability import ClosedGeometric
 import torch.distributions.constraints as c
 from torch.distributions.distribution import Distribution
 
@@ -1315,7 +1317,7 @@ FAMILY_META: dict[str, FamilyMeta] = {
     ),
     "Geometric": FamilyMeta(
         qvr_name="Geometric",
-        distribution_class=td.Geometric,
+        distribution_class=ClosedGeometric,
         quivers_class=ConditionalGeometric,
         target_names={
             "numpyro": "Geometric",

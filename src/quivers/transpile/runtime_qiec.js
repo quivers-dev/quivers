@@ -241,6 +241,8 @@ var _qvr_qiec_primitives = {
   select_real: function(c, a, b) { return c ? a : b; },
   select_int: function(c, a, b) { return c ? a : b; },
   positive_parameter: function(a) { return _qvr_positive_parameter_scalar(a); },
+  observation_status: function(a) { return _qvr_observation_status_scalar(a); },
+  interval_upper: function(a, b) { return _qvr_interval_upper_scalar(a, b); },
   log_probability: function(a) { return _qvr_log_probability_scalar(a); },
   log1mexp: function(a) { return _qvr_log1mexp_scalar(a); },
   log_ndtr: function(a) { return _qvr_log_ndtr_scalar(a); },

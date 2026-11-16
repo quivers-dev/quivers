@@ -304,8 +304,10 @@ class Edward2Renderer(RendererBase):
         ):
             self._emit_tfp_import(py)
         if factors or probability:
+            from quivers.transpile._runtime_sources import python_runtime_source
+
             graft_python_statements(
-                sb, _FACTOR_HELPER.read_text(), "mod", "qiec_factor"
+                sb, python_runtime_source(_FACTOR_HELPER).decode(), "mod", "qiec_factor"
             )
         body_vid = py.v(py.fresh("body"), "block")
         if not ir.body:

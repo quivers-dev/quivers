@@ -217,53 +217,8 @@ _qvr_qiec_host_math.update(
 )
 
 
-def _qvr_probability_check(value, valid, name):
-    from pytensor.raise_op import Assert
-
-    if not value.dtype.startswith("float"):
-        raise ValueError(name + " requires real values")
-    return Assert(name + " received a value outside its domain")(value, valid.all())
-
-
-def _qvr_log_probability(value):
-    pt = pymc.pytensorf.pt
-    value = pt.as_tensor_variable(value)
-    value = _qvr_probability_check(
-        value,
-        ~pt.isnan(value) & ~pt.isinf(value) & (value >= 0) & (value <= 1),
-        "log_probability",
-    )
-    safe = pt.switch(value > 0, value, pt.ones_like(value))
-    return pt.switch(value > 0, pt.log(safe), -float("inf"))
-
-
-def _qvr_log1mexp(value):
-    pt = pymc.pytensorf.pt
-    value = pt.as_tensor_variable(value)
-    value = _qvr_probability_check(value, ~pt.isnan(value) & (value <= 0), "log1mexp")
-    safe = pt.switch(~pt.isinf(value) & (value < 0), value, -pt.ones_like(value))
-    near = safe > -0.6931471805599453
-    a = pt.switch(near, safe, -pt.ones_like(value))
-    b = pt.switch(near, -pt.ones_like(value), safe)
-    result = pt.switch(near, pt.log(-pt.expm1(a)), pt.log1p(-pt.exp(b)))
-    return pt.switch(
-        pt.eq(value, 0), -float("inf"), pt.switch(pt.isinf(value), 0.0, result)
-    )
-
-
-def _qvr_log_ndtr(value):
-    pt = pymc.pytensorf.pt
-    value = pt.as_tensor_variable(value)
-    value = _qvr_probability_check(value, ~pt.isnan(value), "log_ndtr")
-    safe = pt.switch(pt.isinf(value), pt.zeros_like(value), value)
-    sqrt_two = pt.constant(1.4142135623730951, dtype=value.dtype)
-    log_two = pt.constant(0.6931471805599453, dtype=value.dtype)
-    negative = pt.switch(safe < 0, -safe, pt.zeros_like(safe))
-    positive = pt.switch(safe < 0, pt.zeros_like(safe), safe)
-    lower = pt.log(pt.erfcx(negative / sqrt_two)) - 0.5 * negative * negative - log_two
-    upper = pt.log1p(-0.5 * pt.erfc(positive / sqrt_two))
-    result = pt.switch(safe < 0, lower, upper)
-    return pt.switch(pt.isinf(value), pt.switch(value < 0, -float("inf"), 0.0), result)
+# qvr-shared-probability:pymc:start
+# qvr-shared-probability:pymc:end
 
 
 _qvr_qiec_host_math.update(
@@ -285,12 +240,12 @@ def _qvr_select(condition, then, otherwise):
 _qvr_qiec_host_math.update({"select_real": _qvr_select, "select_int": _qvr_select})
 
 
-def _qvr_positive_parameter(value):
-    pt = pymc.pytensorf.pt
-    value = pt.as_tensor_variable(value)
-    return _qvr_probability_check(
-        value, ~pt.isnan(value) & ~pt.isinf(value) & (value > 0), "positive_parameter"
-    )
-
-
 _qvr_qiec_host_math["positive_parameter"] = _qvr_positive_parameter
+
+
+_qvr_qiec_host_math.update(
+    {
+        "observation_status": _qvr_observation_status,
+        "interval_upper": _qvr_interval_upper,
+    }
+)

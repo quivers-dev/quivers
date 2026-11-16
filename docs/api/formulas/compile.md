@@ -19,4 +19,11 @@ its data without coefficient or prior sites and preserves the column through
 the generated program visibly combines it with the raw response before scoring
 the joint law. Modifier declarations describe inputs and do not add effects.
 
+Censoring and truncation become typed row inputs and explicit observation
+event metadata. Censoring selects the recorded event; truncation normalizes
+the sampling law before that event is scored. Standard-error roles modify
+the family scale, and `sigma=False` removes the residual-scale site.
+The same role record supplies retained columns for fresh prediction; the
+compiler does not create a second response-data schema.
+
 ::: quivers.formulas.compile

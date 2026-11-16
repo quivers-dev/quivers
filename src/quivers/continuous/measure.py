@@ -19,6 +19,7 @@ import torch
 from torch import Tensor
 from torch.distributions import constraints as _constraints, biject_to, transform_to
 from torch.distributions.distribution import Distribution
+from torch.distributions.transforms import Transform, SigmoidTransform
 
 from quivers.continuous.bijectors import Bijector
 from quivers.continuous._truncated_normal import TruncatedNormal
@@ -58,6 +59,72 @@ class Measure(Distribution, ABC):
         measures, zero. For sub-measures, the symbolic normaliser
         the lazy algebra carries through composition.
         """
+
+    def select_batch(self, active: Tensor, *, output_shape=None) -> Distribution:
+        """Reconstruct selected rows of the compositional measure algebra.
+
+        Parameters
+        ----------
+        active : Tensor
+            Boolean selection over the measure's broadcast batch.
+        output_shape : torch.Size or None
+            Optional selected batch layout, retaining reinterpreted event axes.
+
+        Returns
+        -------
+        Distribution
+            The same measure construction on the selected parameter rows.
+
+        Raises
+        ------
+        NotImplementedError
+            If a custom measure supplies no batch reconstruction rule.
+        """
+        from quivers.continuous._batch_selection import select_batch, select_parameter
+
+        def parameter(value, rank=0):
+            """Select parameter batch axes while retaining intrinsic axes."""
+            if not isinstance(value, Tensor):
+                return value
+            return select_parameter(
+                value, self.batch_shape, rank, active, output_shape=output_shape
+            )
+
+        def base(distribution):
+            """Broadcast a component before selecting the common batch rows."""
+            expanded = distribution.expand(self.batch_shape)
+            return select_batch(expanded, active, output_shape=output_shape)
+
+        if isinstance(self, PointMass):
+            return PointMass(parameter(self.value))
+        if isinstance(self, Restrict):
+            return Restrict(
+                base(self.base),
+                parameter(self.low),
+                parameter(self.high),
+                lower_closed=parameter(self.lower_closed),
+                upper_closed=parameter(self.upper_closed),
+            )
+        if isinstance(self, Normalize):
+            return Normalize(base(self.base))
+        if isinstance(self, Pushforward):
+            transform = self.bijector.select_batch(
+                self.batch_shape,
+                active,
+                event_shape=self.base.event_shape,
+                output_shape=output_shape,
+            )
+            return Pushforward(base(self.base), transform)
+        if isinstance(self, Mixture):
+            return Mixture(
+                parameter(self.weights, 1), [base(c) for c in self.components]
+            )
+        if isinstance(self, Independent):
+            selected = select_batch(self._inner, active, output_shape=output_shape)
+            return Independent(selected.base_dist, self.reinterpreted_batch_ndims)
+        raise NotImplementedError(
+            f"{type(self).__name__} has no batch reconstruction rule"
+        )
 
     def log_prob_normalized(self, value: Tensor) -> Tensor:
         """Log-density of the renormalised probability measure.
@@ -194,6 +261,42 @@ class PointMass(Measure):
 
     arg_constraints: dict = {}
     has_rsample = False
+
+    _atomicity = "discrete"
+
+    def atom_reference(self, value: Tensor) -> Tensor:
+        """Identify the retained Dirac carrier independently of scalar dtype.
+
+        Parameters
+        ----------
+        value : Tensor
+            Query points.
+
+        Returns
+        -------
+        Tensor
+            Whether each query equals the retained atom.
+        """
+        point = torch.as_tensor(value, dtype=torch.float64, device=self.value.device)
+        return point == self.value.double()
+
+    def log_atom_mass(self, value: Tensor) -> Tensor:
+        """Read singleton mass under the same Dirac carrier.
+
+        Parameters
+        ----------
+        value : Tensor
+            Query points.
+
+        Returns
+        -------
+        Tensor
+            Zero at the atom and negative infinity elsewhere.
+        """
+        carrier = self.atom_reference(value)
+        return torch.where(
+            carrier, torch.zeros_like(carrier, dtype=_reference(self).dtype), -torch.inf
+        )
 
     def __init__(
         self,
@@ -468,6 +571,8 @@ class _RestrictedSupport(_constraints.Constraint):
                     upper, torch.as_tensor(base_upper, device=upper.device)
                 )
             )
+        self.lower_bound = -math.inf if lower is None else lower
+        self.upper_bound = math.inf if upper is None else upper
         self.bounds = (
             _constraints.interval(lower, upper)
             if lower is not None and upper is not None
@@ -497,9 +602,131 @@ class _RestrictedSupport(_constraints.Constraint):
         return self.base.check(value) & inside
 
 
+class _ExtendedIntervalTransform(Transform):
+    """Use the ordinary real, half-line, or interval map independently per row.
+
+    Parameters
+    ----------
+    support : _RestrictedSupport
+        Scalar support whose bounds may be finite or infinite in different rows.
+    """
+
+    domain = _constraints.real
+    bijective = True
+
+    def __init__(self, support):
+        super().__init__()
+        self.codomain = support
+        self.low = support.lower_bound
+        self.high = support.upper_bound
+
+    def _parts(self, value):
+        """Select finite bounds before any inactive interval arithmetic.
+
+        Parameters
+        ----------
+        value : Tensor
+            Input carrying the transform device and floating dtype.
+
+        Returns
+        -------
+        tuple[Tensor, ...]
+            Safe lower bound, upper bound, width, and finite-side masks.
+        """
+        low = torch.as_tensor(self.low, device=value.device)
+        high = torch.as_tensor(self.high, device=value.device)
+        left, right = torch.isfinite(low), torch.isfinite(high)
+        a, b = torch.where(left, low, 0.0), torch.where(right, high, 1.0)
+        width = torch.where(left & right, b - a, 1.0)
+        return a, b, width, left, right
+
+    @property
+    def sign(self):
+        """Retain the decreasing orientation of upper-only half-lines.
+
+        Returns
+        -------
+        Tensor
+            Per-row orientation, negative only for an upper-only bound.
+        """
+        low, high = torch.as_tensor(self.low), torch.as_tensor(self.high)
+        return torch.where(~torch.isfinite(low) & torch.isfinite(high), -1, 1)
+
+    def _call(self, value):
+        """Map real coordinates into each row's open support interior.
+
+        Parameters
+        ----------
+        value : Tensor
+            Unconstrained coordinates.
+
+        Returns
+        -------
+        Tensor
+            Constrained coordinates under the row's ordinary interval map.
+        """
+        a, b, width, left, right = self._parts(value)
+        bounded = a + width * SigmoidTransform()(value)
+        exponential = torch.exp(torch.where(left ^ right, value, 0.0))
+        return torch.where(
+            left & right,
+            bounded,
+            torch.where(
+                left, a + exponential, torch.where(right, b - exponential, value)
+            ),
+        )
+
+    def _inverse(self, value):
+        """Invert each ordinary map without evaluating inactive logarithms.
+
+        Parameters
+        ----------
+        value : Tensor
+            Constrained coordinates.
+
+        Returns
+        -------
+        Tensor
+            Corresponding unconstrained coordinates.
+        """
+        a, b, width, left, right = self._parts(value)
+        fraction = torch.where(left & right, (value - a) / width, 0.5)
+        bounded = SigmoidTransform().inv(fraction)
+        lower = torch.where(left & ~right, value - a, 1.0).log()
+        upper = torch.where(right & ~left, b - value, 1.0).log()
+        return torch.where(
+            left & right,
+            bounded,
+            torch.where(left, lower, torch.where(right, upper, value)),
+        )
+
+    def log_abs_det_jacobian(self, x, y):
+        """Read the same interval and exponential Jacobians used by Torch.
+
+        Parameters
+        ----------
+        x : Tensor
+            Unconstrained coordinates.
+        y : Tensor
+            Corresponding constrained coordinates.
+
+        Returns
+        -------
+        Tensor
+            Log absolute derivative for each scalar coordinate.
+        """
+        _, _, width, left, right = self._parts(x)
+        bounded = (
+            width.log()
+            - torch.nn.functional.softplus(-x)
+            - torch.nn.functional.softplus(x)
+        )
+        return torch.where(left & right, bounded, torch.where(left | right, x, 0.0))
+
+
 @biject_to.register(_RestrictedSupport)
 def _biject_restricted(support):
-    """Reuse the existing scalar interval transform for a restricted support.
+    """Choose the ordinary interval map independently for each support row.
 
     Parameters
     ----------
@@ -509,7 +736,7 @@ def _biject_restricted(support):
     Returns
     -------
     Transform
-        The existing Torch interval bijection.
+        Identity, exponential, reflected exponential, or logistic interval map.
 
     Raises
     ------
@@ -520,7 +747,7 @@ def _biject_restricted(support):
         raise NotImplementedError(
             "restricted support has no continuous scalar interval bijection"
         )
-    return biject_to(support.bounds)
+    return _ExtendedIntervalTransform(support)
 
 
 @transform_to.register(_RestrictedSupport)
@@ -727,6 +954,55 @@ class Restrict(Measure):
             self.high,
             lower_closed=self.lower_closed,
             upper_closed=self.upper_closed,
+        )
+
+    @property
+    def _atomicity(self) -> str:
+        """Retain the base law's atomicity proof.
+
+        Returns
+        -------
+        str
+            Atomless, discrete, or mixed classification inherited from the component measures.
+        """
+        from quivers.continuous._atoms import atomicity
+
+        return atomicity(self.base)
+
+    def atom_reference(self, value: Tensor) -> Tensor:
+        """Preserve the base carrier even when restriction removes its mass.
+
+        Parameters
+        ----------
+        value : Tensor
+            Query points.
+
+        Returns
+        -------
+        Tensor
+            Membership in the fixed base atomic carrier.
+        """
+        from quivers.continuous._atoms import atom_reference
+
+        return atom_reference(self.base, value)
+
+    def log_atom_mass(self, value: Tensor) -> Tensor:
+        """Restrict base singleton masses using the retained endpoint policy.
+
+        Parameters
+        ----------
+        value : Tensor
+            Query points.
+
+        Returns
+        -------
+        Tensor
+            Raw singleton log mass inside the restriction.
+        """
+        from quivers.continuous._atoms import log_atom_mass
+
+        return torch.where(
+            self._inside(value), log_atom_mass(self.base, value), -torch.inf
         )
 
     def log_prob(self, value: Tensor) -> Tensor:
@@ -998,7 +1274,7 @@ class Pushforward(Measure):
         self.bijector = bijector
         super().__init__(
             batch_shape=base.batch_shape,
-            event_shape=base.event_shape,
+            event_shape=bijector.forward_shape(base.event_shape),
             validate_args=validate_args,
         )
 
@@ -1056,6 +1332,53 @@ class Pushforward(Measure):
             self.base, low, high, lower_closed=lower_closed, upper_closed=upper_closed
         )
 
+    @property
+    def _atomicity(self) -> str:
+        """Retain the base law's atomicity proof.
+
+        Returns
+        -------
+        str
+            Atomless, discrete, or mixed classification inherited from the component measures.
+        """
+        from quivers.continuous._atoms import atomicity
+
+        return atomicity(self.base)
+
+    def atom_reference(self, value: Tensor) -> Tensor:
+        """Pull the atomic carrier back through the retained bijection.
+
+        Parameters
+        ----------
+        value : Tensor
+            Query points in the image space.
+
+        Returns
+        -------
+        Tensor
+            Membership in the image of the base carrier.
+        """
+        from quivers.continuous._atoms import atom_reference
+
+        return atom_reference(self.base, self.bijector.inverse(value))
+
+    def log_atom_mass(self, value: Tensor) -> Tensor:
+        """Transport singleton masses without a density Jacobian.
+
+        Parameters
+        ----------
+        value : Tensor
+            Query points in the image space.
+
+        Returns
+        -------
+        Tensor
+            Raw singleton log mass in the image space.
+        """
+        from quivers.continuous._atoms import log_atom_mass
+
+        return log_atom_mass(self.base, self.bijector.inverse(value))
+
     def log_prob(self, value: Tensor) -> Tensor:
         """Raw log density or mass at the evaluation points.
 
@@ -1067,11 +1390,36 @@ class Pushforward(Measure):
         Returns
         -------
         Tensor
-            Raw log density or mass at the evaluation points."""
+            Raw log density or mass at the evaluation points.
+
+        Raises
+        ------
+        NotImplementedError
+            If a mixed vector law requires an undeclared stratified reference.
+        """
+        from quivers.continuous._atoms import (
+            atom_reference,
+            log_atom_mass,
+            safe_log_prob,
+        )
+
         x = self.bijector.inverse(value)
-        base_lp = self.base.log_prob(x)
+        if self.event_shape:
+            if self._atomicity == "discrete":
+                return self.base.log_prob(x)
+            if self._atomicity == "mixed":
+                raise NotImplementedError(
+                    "mixed vector transport requires a stratified reference measure"
+                )
+            determinant = self.bijector.inverse_log_det_jacobian(value)
+            dims = len(self.base.event_shape) - self.bijector.jacobian_event_dim
+            if dims:
+                determinant = determinant.sum(tuple(range(-dims, 0)))
+            return self.base.log_prob(x) + determinant
+        atomic = atom_reference(self.base, x)
+        base_lp = safe_log_prob(self.base, x, active=~atomic)
         log_det = self.bijector.inverse_log_det_jacobian(value)
-        return base_lp + log_det
+        return torch.where(atomic, log_atom_mass(self.base, x), base_lp + log_det)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         """Draws from the normalized law with leading sample dimensions.
@@ -1216,14 +1564,39 @@ class Mixture(Measure):
         ]
         return torch.stack(torch.broadcast_tensors(*terms), dim=-1)
 
-    def log_normalizer(self) -> Tensor:
-        """Log of the raw total mass, one value per batch entry.
+    def _weighted_score(self, scores: list[Tensor]) -> Tensor:
+        """Sum component scores while retaining zero-weight boundary derivatives.
+
+        Parameters
+        ----------
+        scores : list[Tensor]
+            Raw component log scores with broadcastable batch shapes.
 
         Returns
         -------
         Tensor
-            Log of the raw total mass, one value per batch entry."""
-        return torch.logsumexp(self._component_logits(), dim=-1)
+            Logarithm of the raw weighted sum.
+        """
+        from quivers.continuous._weighted_logsumexp import weighted_logsumexp
+
+        return weighted_logsumexp(
+            self.weights, torch.stack(torch.broadcast_tensors(*scores), -1)
+        )
+
+    def log_normalizer(self) -> Tensor:
+        """Read raw total mass using the common weighted measure sum.
+
+        Returns
+        -------
+        Tensor
+            Log mass on each mixture batch entry.
+        """
+        return self._weighted_score(
+            [
+                _native_log_mass(component, batch_axes=len(component.batch_shape))
+                for component in self.components
+            ]
+        )
 
     def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
         """Add raw component event masses, including any point atoms.
@@ -1243,21 +1616,17 @@ class Mixture(Measure):
         -------
         object
             Raw log mass on the requested interval, retaining independent batch axes."""
-        terms = [
-            weight
-            + log_interval_mass(
-                component,
-                low,
-                high,
-                lower_closed=lower_closed,
-                upper_closed=upper_closed,
-            )
-            for weight, component in zip(
-                self._log_weights().unbind(-1), self.components, strict=True
-            )
-        ]
-        return torch.logsumexp(
-            torch.stack(torch.broadcast_tensors(*terms), dim=-1), dim=-1
+        return self._weighted_score(
+            [
+                log_interval_mass(
+                    component,
+                    low,
+                    high,
+                    lower_closed=lower_closed,
+                    upper_closed=upper_closed,
+                )
+                for component in self.components
+            ]
         )
 
     def expand(self, batch_shape, _instance=None):
@@ -1279,6 +1648,57 @@ class Mixture(Measure):
             [component.expand(batch_shape) for component in self.components],
         )
 
+    @property
+    def _atomicity(self) -> str:
+        """Prove homogeneous component carriers or retain a mixed law.
+
+        Returns
+        -------
+        str
+            Atomless, discrete, or mixed classification inherited from the component measures.
+        """
+        from quivers.continuous._atoms import atomicity
+
+        kinds = {atomicity(component) for component in self.components}
+        return kinds.pop() if len(kinds) == 1 else "mixed"
+
+    def atom_reference(self, value: Tensor) -> Tensor:
+        """Take the union of component carriers, including zero-weight components.
+
+        Parameters
+        ----------
+        value : Tensor
+            Query points.
+
+        Returns
+        -------
+        Tensor
+            Membership in at least one component atomic carrier.
+        """
+        from quivers.continuous._atoms import atom_reference
+
+        carriers = torch.broadcast_tensors(
+            *(atom_reference(c, value) for c in self.components)
+        )
+        return torch.stack(carriers, -1).any(-1)
+
+    def log_atom_mass(self, value: Tensor) -> Tensor:
+        """Add weighted singleton masses under the common atomic carrier.
+
+        Parameters
+        ----------
+        value : Tensor
+            Query points.
+
+        Returns
+        -------
+        Tensor
+            Weighted raw singleton log mass.
+        """
+        from quivers.continuous._atoms import log_atom_mass
+
+        return self._weighted_score([log_atom_mass(c, value) for c in self.components])
+
     def log_prob(self, value: Tensor) -> Tensor:
         """Raw log density or mass at the evaluation points.
 
@@ -1290,16 +1710,35 @@ class Mixture(Measure):
         Returns
         -------
         Tensor
-            Raw log density or mass at the evaluation points."""
-        terms = [
-            weight + component.log_prob(value)
-            for weight, component in zip(
-                self._log_weights().unbind(-1), self.components, strict=True
-            )
-        ]
-        return torch.logsumexp(
-            torch.stack(torch.broadcast_tensors(*terms), dim=-1), dim=-1
-        )
+            Raw log density or mass at the evaluation points.
+
+        Raises
+        ------
+        NotImplementedError
+            If mixed vector components lack a common stratified reference measure.
+        """
+        from quivers.continuous._atoms import safe_log_prob
+
+        value = torch.as_tensor(value, device=self.weights.device)
+        atomic = atom_score = None
+        if self.event_shape:
+            if self._atomicity == "mixed":
+                raise NotImplementedError(
+                    "mixed vector mixtures require a common stratified reference measure"
+                )
+            scores = [component.log_prob(value) for component in self.components]
+        else:
+            atomic = self.atom_reference(value)
+            atom_score = self.log_atom_mass(value)
+            scores = [
+                safe_log_prob(component, value, active=~atomic)
+                for component in self.components
+            ]
+        density = self._weighted_score(scores)
+        if atomic is None:
+            return density
+        assert atom_score is not None
+        return torch.where(atomic, atom_score, density)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         """Draws from the normalized law with leading sample dimensions.
@@ -1588,6 +2027,57 @@ class Independent(Measure):
             tuple(range(mass.ndim - self.reinterpreted_batch_ndims, mass.ndim))
         )
 
+    @property
+    def _atomicity(self) -> str:
+        """Retain the base law's atomicity proof.
+
+        Returns
+        -------
+        str
+            Atomless, discrete, or mixed classification inherited from the component measures.
+        """
+        from quivers.continuous._atoms import atomicity
+
+        return atomicity(self.base)
+
+    def atom_reference(self, value: Tensor) -> Tensor:
+        """Identify singleton atoms jointly across reinterpreted event axes.
+
+        Parameters
+        ----------
+        value : Tensor
+            Queries with intrinsic event axes.
+
+        Returns
+        -------
+        Tensor
+            Whether every coordinate belongs to its base atomic carrier.
+        """
+        from quivers.continuous._atoms import atom_reference
+
+        carrier = atom_reference(self.base, value)
+        dims = self.reinterpreted_batch_ndims
+        return carrier.all(tuple(range(-dims, 0))) if dims else carrier
+
+    def log_atom_mass(self, value: Tensor) -> Tensor:
+        """Multiply coordinate singleton masses across declared event axes.
+
+        Parameters
+        ----------
+        value : Tensor
+            Queries with intrinsic event axes.
+
+        Returns
+        -------
+        Tensor
+            Joint singleton log mass.
+        """
+        from quivers.continuous._atoms import log_atom_mass
+
+        score = log_atom_mass(self.base, value)
+        dims = self.reinterpreted_batch_ndims
+        return score.sum(tuple(range(-dims, 0))) if dims else score
+
     def log_prob(self, value: Tensor) -> Tensor:
         """Raw log density or mass at the evaluation points.
 
@@ -1723,6 +2213,53 @@ class Normalize(Measure):
             Distribution with the requested batch shape and retained construction."""
         return Normalize(self.base.expand(batch_shape))
 
+    @property
+    def _atomicity(self) -> str:
+        """Retain the base law's atomicity proof.
+
+        Returns
+        -------
+        str
+            Atomless, discrete, or mixed classification inherited from the component measures.
+        """
+        from quivers.continuous._atoms import atomicity
+
+        return atomicity(self.base)
+
+    def atom_reference(self, value: Tensor) -> Tensor:
+        """Preserve the base atomic carrier under normalization.
+
+        Parameters
+        ----------
+        value : Tensor
+            Query points.
+
+        Returns
+        -------
+        Tensor
+            Membership in the base carrier.
+        """
+        from quivers.continuous._atoms import atom_reference
+
+        return atom_reference(self.base, value)
+
+    def log_atom_mass(self, value: Tensor) -> Tensor:
+        """Normalize raw base singleton masses exactly once.
+
+        Parameters
+        ----------
+        value : Tensor
+            Query points.
+
+        Returns
+        -------
+        Tensor
+            Normalized singleton log mass.
+        """
+        from quivers.continuous._atoms import log_atom_mass
+
+        return log_atom_mass(self.base, value) - self._base_log_normalizer
+
     def log_prob(self, value: Tensor) -> Tensor:
         """Raw log density or mass at the evaluation points.
 
@@ -1758,8 +2295,8 @@ def _sample_active(
     """Propagate active batch entries through measure compositions.
 
     Unselected mixture entries need no draw and may legitimately have
-    zero mass. Ordinary probability distributions can sample their full
-    batch; restrictions and mixtures propagate the retained entry mask.
+    zero mass. Native constructor parameters are selected before sampling;
+    restrictions and mixtures propagate the same retained entry mask.
 
     Parameters
     ----------
@@ -1776,13 +2313,26 @@ def _sample_active(
         Normalized draws; unselected batch entries carry unused placeholders."""
     if isinstance(distribution, Normalize):
         return _sample_active(distribution.base, sample_shape, active)
+    if isinstance(distribution, PointMass):
+        return distribution.sample(sample_shape)
     if isinstance(distribution, (Restrict, Mixture)):
         return distribution._sample_active(sample_shape, active)
     if isinstance(distribution, Pushforward):
         return distribution.bijector.forward(
             _sample_active(distribution.base, sample_shape, active)
         )
-    return distribution.sample(sample_shape)
+    if isinstance(distribution, Independent):
+        distribution = distribution._inner
+    if isinstance(distribution, torch.distributions.Independent):
+        base = distribution.base_dist
+        inner = base.batch_shape[len(distribution.batch_shape) :]
+        mask = active.reshape(active.shape + (1,) * len(inner)).expand(base.batch_shape)
+        return _sample_active(base, sample_shape, mask)
+    if bool(active.all()):
+        return distribution.sample(sample_shape)
+    from quivers.continuous._batch_selection import sample_active
+
+    return sample_active(distribution, sample_shape, active)
 
 
 def _symmetric_fold_log_normalizer(

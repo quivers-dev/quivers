@@ -131,6 +131,8 @@ const _qvr_qiec_primitives = Dict{String, Any}(
     "select_real" => (c, a, b) -> ifelse(c, a, b),
     "select_int" => (c, a, b) -> ifelse(c, a, b),
     "positive_parameter" => a -> _qvr_positive_parameter(a),
+    "observation_status" => a -> _qvr_observation_status(a),
+    "interval_upper" => (a, b) -> _qvr_interval_upper(a, b),
     "log_probability" => a -> _qvr_log_probability(a),
     "log1mexp" => a -> _qvr_log1mexp(a),
     "log_ndtr" => a -> _qvr_log_ndtr(a),
@@ -711,4 +713,15 @@ end
 function _qvr_positive_parameter(x)
     x isa Real && !(x isa Bool) && isfinite(x) && x > 0 || error("positive_parameter requires a finite strictly positive real")
     return x
+end
+
+
+function _qvr_observation_status(x)
+    x isa Integer && !(x isa Bool) && -1 <= x <= 2 || error("observation_status requires integer codes -1, 0, 1, or 2")
+    return x
+end
+
+function _qvr_interval_upper(lower, upper)
+    lower isa Real && !(lower isa Bool) && upper isa Real && !(upper isa Bool) && !isnan(lower) && isfinite(upper) && upper > lower || error("interval_upper requires a finite upper endpoint greater than its lower endpoint")
+    return upper
 end

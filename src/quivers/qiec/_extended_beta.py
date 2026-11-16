@@ -7,7 +7,11 @@ from dataclasses import dataclass
 
 from quivers.qiec._beta_tails import log_beta_front, log_beta_tails
 from quivers.qiec._sampling import _dirichlet_log_weights
-from quivers.qiec.reference_support import DistributionError, real_parameter, finite_value
+from quivers.qiec.reference_support import (
+    DistributionError,
+    real_parameter,
+    finite_value,
+)
 
 
 @dataclass(frozen=True)
@@ -48,17 +52,17 @@ class _ExtendedBeta:
         if math.isnan(y):
             raise DistributionError("ExtendedBeta CDF point must not be NaN")
         if y < 0:
-            return -math.inf, 0.
+            return -math.inf, 0.0
         if y >= 1:
-            return 0., -math.inf
-        scale = 1+2*self.kappa
-        lower, upper = (y+self.kappa)/scale, (1-y+self.kappa)/scale
+            return 0.0, -math.inf
+        scale = 1 + 2 * self.kappa
+        lower, upper = (y + self.kappa) / scale, (1 - y + self.kappa) / scale
         if self.kappa > 1:
-            lower, upper = .5+(y-.5)/scale, .5+(.5-y)/scale
+            lower, upper = 0.5 + (y - 0.5) / scale, 0.5 + (0.5 - y) / scale
         if upper < lower:
-            cdf, sf = log_beta_tails(self.b,self.a,upper)
-            return sf,cdf
-        return log_beta_tails(self.a,self.b,lower)
+            cdf, sf = log_beta_tails(self.b, self.a, upper)
+            return sf, cdf
+        return log_beta_tails(self.a, self.b, lower)
 
     def log_cdf(self, value):
         """Evaluate the inclusive CDF, retaining the lower censoring atom.
@@ -106,7 +110,7 @@ class _ExtendedBeta:
         if value <= 0:
             return -math.inf
         if value == 1:
-            return log_beta_tails(self.b,self.a,self.kappa/(1+2*self.kappa))[1]
+            return log_beta_tails(self.b, self.a, self.kappa / (1 + 2 * self.kappa))[1]
         return self.log_cdf(value)
 
     def log_survival_function_left(self, value):
@@ -123,9 +127,9 @@ class _ExtendedBeta:
             Scalar distribution result.
         """
         if value <= 0:
-            return 0.
+            return 0.0
         if value == 1:
-            return log_beta_tails(self.b,self.a,self.kappa/(1+2*self.kappa))[0]
+            return log_beta_tails(self.b, self.a, self.kappa / (1 + 2 * self.kappa))[0]
         return self.log_survival_function(value)
 
     def log_prob(self, value):
@@ -141,21 +145,26 @@ class _ExtendedBeta:
         float
             Scalar distribution result.
         """
-        y = finite_value(value,"ExtendedBeta")
+        y = finite_value(value, "ExtendedBeta")
         if not 0 <= y <= 1:
             return -math.inf
-        scale = 1+2*self.kappa
+        scale = 1 + 2 * self.kappa
         if y == 0:
-            return log_beta_tails(self.a,self.b,self.kappa/scale)[0]
+            return log_beta_tails(self.a, self.b, self.kappa / scale)[0]
         if y == 1:
-            return log_beta_tails(self.b,self.a,self.kappa/scale)[0]
-        lower, upper = (y+self.kappa)/scale, (1-y+self.kappa)/scale
+            return log_beta_tails(self.b, self.a, self.kappa / scale)[0]
+        lower, upper = (y + self.kappa) / scale, (1 - y + self.kappa) / scale
         if self.kappa > 1:
-            lower, upper = .5+(y-.5)/scale, .5+(.5-y)/scale
-        a,b=self.a,self.b
+            lower, upper = 0.5 + (y - 0.5) / scale, 0.5 + (0.5 - y) / scale
+        a, b = self.a, self.b
         if upper < lower:
-            lower,a,b=upper,b,a
-        return log_beta_front(a,b,lower)-math.log(lower)-math.log1p(-lower)-math.log(scale)
+            lower, a, b = upper, b, a
+        return (
+            log_beta_front(a, b, lower)
+            - math.log(lower)
+            - math.log1p(-lower)
+            - math.log(scale)
+        )
 
     def sample(self, rng):
         """Classify censoring atoms before rounding either Beta coordinate.
@@ -175,20 +184,26 @@ class _ExtendedBeta:
         DistributionError
             If the evaluation or sample exceeds the documented numerical capacity.
         """
-        log_x,log_q=_dirichlet_log_weights((self.a,self.b),rng)
-        threshold=math.log(self.kappa)-math.log1p(2*self.kappa) if self.kappa else -math.inf
+        log_x, log_q = _dirichlet_log_weights((self.a, self.b), rng)
+        threshold = (
+            math.log(self.kappa) - math.log1p(2 * self.kappa)
+            if self.kappa
+            else -math.inf
+        )
         if log_x <= threshold:
-            return 0.
+            return 0.0
         if log_q <= threshold:
-            return 1.
+            return 1.0
         if log_x <= log_q:
-            x=math.exp(log_x)
-            result=x+2*self.kappa*(x-.5)
+            x = math.exp(log_x)
+            result = x + 2 * self.kappa * (x - 0.5)
         else:
-            q=math.exp(log_q)
-            result=1-(q+2*self.kappa*(q-.5))
+            q = math.exp(log_q)
+            result = 1 - (q + 2 * self.kappa * (q - 0.5))
         if not 0 < result < 1:
-            raise DistributionError("ExtendedBeta interior sample exceeds Float64 endpoint resolution")
+            raise DistributionError(
+                "ExtendedBeta interior sample exceeds Float64 endpoint resolution"
+            )
         return result
 
 
@@ -210,16 +225,23 @@ def distribution(arguments: Mapping[str, object]) -> _ExtendedBeta:
     DistributionError
         If arguments violate the law or Float64 interval capacity.
     """
-    mu,phi,kappa=(real_parameter(arguments,name,"ExtendedBeta") for name in ("mu","phi","kappa"))
-    if not 0 < mu < 1 or phi <= 0 or kappa < 0 or not math.isfinite(mu+phi+kappa):
+    mu, phi, kappa = (
+        real_parameter(arguments, name, "ExtendedBeta")
+        for name in ("mu", "phi", "kappa")
+    )
+    if not 0 < mu < 1 or phi <= 0 or kappa < 0 or not math.isfinite(mu + phi + kappa):
         raise DistributionError("ExtendedBeta requires mu in(0,1), phi>0 and kappa>=0")
-    scale=1+2*kappa
-    if not math.isfinite(scale) or not kappa/scale < .5 < .5+.5/scale:
-        raise DistributionError("ExtendedBeta extension exceeds Float64 interval resolution")
-    a,b=mu*phi,(1-mu)*phi
-    if min(a,b) <= 0:
-        raise DistributionError("ExtendedBeta concentrations exceed positive Float64 capacity")
-    return _ExtendedBeta(a,b,kappa)
+    scale = 1 + 2 * kappa
+    if not math.isfinite(scale) or not kappa / scale < 0.5 < 0.5 + 0.5 / scale:
+        raise DistributionError(
+            "ExtendedBeta extension exceeds Float64 interval resolution"
+        )
+    a, b = mu * phi, (1 - mu) * phi
+    if min(a, b) <= 0:
+        raise DistributionError(
+            "ExtendedBeta concentrations exceed positive Float64 capacity"
+        )
+    return _ExtendedBeta(a, b, kappa)
 
 
 def density(arguments: Mapping[str, object], value: object) -> float:
@@ -258,4 +280,4 @@ def sample(arguments: Mapping[str, object], rng: random.Random) -> float:
     return distribution(arguments).sample(rng)
 
 
-__all__: list[str]=[]
+__all__: list[str] = []

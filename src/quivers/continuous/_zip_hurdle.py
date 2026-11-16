@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor
+from quivers.continuous._count_cdf import _CountCDF
 from torch.distributions import constraints as _constraints
 from torch.distributions.distribution import Distribution
 
@@ -16,6 +17,7 @@ from quivers.continuous._closed_probability import ClosedPoisson, _count_log
 from quivers.continuous._zero_inflated_count import _InflatedCount
 from quivers.continuous._zero_truncated_poisson import (
     positive_poisson_mean,
+    positive_poisson_log_mean,
     positive_poisson_sample,
 )
 from quivers.continuous.measure import Mixture
@@ -56,7 +58,7 @@ class ZeroInflatedPoisson(_InflatedCount):
         )
 
 
-class HurdlePoisson(Distribution):
+class HurdlePoisson(_CountCDF, Distribution):
     """A point mass at zero mixed with a normalized positive Poisson.
 
     A Bernoulli with probability ``1 - zero_prob`` selects the positive
@@ -85,6 +87,70 @@ class HurdlePoisson(Distribution):
             batch_shape=self.rate.shape,
             validate_args=validate_args,
         )
+
+    def _all_count_tails(self, value):
+        """Condition shared Poisson tails before structural-zero mixing.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor, Tensor, Tensor]
+            Paired log and ordinary tail probabilities.
+        """
+        from quivers.continuous._count_tails import (
+            positive_count_log_tails,
+            inflated_count_tails,
+        )
+
+        rate = self.rate.double()
+        base = ClosedPoisson(rate, validate_args=False)
+        first = -rate + positive_poisson_log_mean(rate)
+        second = first + torch.log1p(rate / 2)
+        lc, ls = positive_count_log_tails(
+            value,
+            base.log_cdf(value),
+            base.log_survival_function(value),
+            -rate,
+            first,
+            second,
+        )
+        return inflated_count_tails(self.zero_prob.double(), value, lc, ls)
+
+    def _count_log_tails(self, value):
+        """Read the paired log tails from the shared hurdle event kernel.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive log CDF and strict log survival.
+        """
+        result = self._all_count_tails(value)
+        return result[0], result[1]
+
+    def _count_probability_tails(self, value):
+        """Retain finite probability derivatives at the hurdle boundary.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive cumulative and strict survival probabilities.
+        """
+        result = self._all_count_tails(value)
+        return result[2], result[3]
 
     @property
     def mean(self) -> Tensor:
@@ -124,7 +190,7 @@ class HurdlePoisson(Distribution):
         )
         component = torch.where(
             safe_value == 1,
-            -rate + positive_poisson_mean(rate).log(),
+            -rate + positive_poisson_log_mean(rate),
             torch.where(rate > 0, conditioned, -torch.inf),
         )
         one = torch.ones_like(rate)
@@ -261,6 +327,8 @@ class ZeroOneInflatedBeta(Distribution):
     convention follows the [brms family
     documentation](https://paulbuerkner.com/brms/articles/brms_families.html).
     """
+
+    _semantic_family = "ZeroOneInflatedBeta"
 
     arg_constraints = {
         "mu": _OpenUnitInterval(),

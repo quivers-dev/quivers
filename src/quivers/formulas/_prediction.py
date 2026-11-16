@@ -633,8 +633,21 @@ def prepare_prediction(
         observations["formula_weights"] = torch.ones(rows, dtype=torch.float64)
     if fit.formula.modifiers.decision is not None:
         observations["formula_decision"] = torch.ones(rows, dtype=torch.bool)
+    from quivers.formulas._response_roles import prediction_role_bindings
+
+    observations.update(prediction_role_bindings(fit.formula.modifiers, frame))
     if fit.family.trials_parameter is not None:
-        specification = trials if trials is not None else fit.binomial_trials
+        retained_source = dict(fit.formula.modifiers.sources).get("trials")
+        specification = (
+            trials
+            if trials is not None
+            else (
+                retained_source
+                if isinstance(retained_source, (str, int))
+                and not isinstance(retained_source, bool)
+                else fit.binomial_trials
+            )
+        )
         if specification is None:
             if require_trials:
                 raise ValueError(

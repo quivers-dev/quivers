@@ -1011,3 +1011,8 @@ var _qvr_log_probability = function(x) { return Array.isArray(x) ? map(_qvr_log_
 var _qvr_log1mexp = function(x) { return Array.isArray(x) ? map(_qvr_log1mexp, x) : _qvr_log1mexp_scalar(x); };
 var _qvr_log_ndtr = function(x) { return Array.isArray(x) ? map(_qvr_log_ndtr, x) : _qvr_log_ndtr_scalar(x); };
 var _qvr_positive_parameter = function(x) { return Array.isArray(x) ? map(_qvr_positive_parameter, x) : _qvr_positive_parameter_scalar(x); };
+
+var _qvr_observation_status = function(x) { return Array.isArray(x) ? map(_qvr_observation_status, x) : _qvr_observation_status_scalar(x); };
+var _qvr_interval_upper = function(lower, upper) {
+  return Array.isArray(lower) ? mapIndexed(function(i, x) { return _qvr_interval_upper(x, Array.isArray(upper) ? upper[i] : upper); }, lower) : (Array.isArray(upper) ? map(function(x) { return _qvr_interval_upper(lower, x); }, upper) : _qvr_interval_upper_scalar(lower, upper));
+};

@@ -1966,9 +1966,11 @@ def _load_runtime_pyro_helpers() -> tuple[
     class definition, with no string literal, no `exec`, and no
     runtime self-injection.
     """
+    from quivers.transpile._runtime_sources import python_runtime_source
+
     schema = parser_registry().parse_with_protocol(
         "python",
-        _RUNTIME_PYRO_PATH.read_bytes(),
+        python_runtime_source(_RUNTIME_PYRO_PATH),
         str(_RUNTIME_PYRO_PATH),
     )
     roots: dict[str, str] = {}

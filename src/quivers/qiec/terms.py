@@ -523,6 +523,28 @@ class Comprehension(QiecModel):
     tag: Literal["comprehension"] = "comprehension"
 
 
+class ConditionalValue(QiecModel):
+    """Evaluate exactly one pure branch selected by a scalar Boolean.
+
+    Parameters
+    ----------
+    condition
+        Scalar Boolean deciding which branch is evaluated.
+    then, otherwise
+        Equally typed branches; the inactive branch is not evaluated.
+    result_type
+        The common branch type, including its tensor or sampleable indices.
+    tag
+        Serialization discriminator, always ``conditional_value``.
+    """
+
+    condition: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    then: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    otherwise: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["conditional_value"] = "conditional_value"
+
+
 class LetBinding(QiecModel):
     """One binding of a :class:`LetValue`.
 
@@ -746,6 +768,7 @@ type Value = (
     | Reduction
     | Rowwise
     | Comprehension
+    | ConditionalValue
     | LetValue
 )
 """A value term: every pure, effect-free term a computation may mention."""

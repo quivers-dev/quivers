@@ -157,7 +157,7 @@ class AutoNormalizingFlow(Guide):
             if not site.is_plate:
                 z_site = z_site.unsqueeze(0).expand(batch, *site.unconstrained_shape)
             v = site.bijector(z_site)
-            if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
+            if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
                 v = v.squeeze(-1)
             result[site.name] = v
         return result
@@ -177,7 +177,7 @@ class AutoNormalizingFlow(Guide):
                     f"{type(self).__name__}.log_prob: missing site {site.name!r}"
                 )
             v = sites[site.name]
-            if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 1):
+            if site.is_scalar and v.dim() == (1 if site.is_plate else 1):
                 v_e = v.unsqueeze(-1)
             else:
                 v_e = v

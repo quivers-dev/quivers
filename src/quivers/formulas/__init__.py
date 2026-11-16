@@ -35,6 +35,10 @@ from quivers.formulas.formula import (
     FormulaData,
     ResponseLayout,
     ResponseModifiers,
+    CensoringSpec,
+    TruncationSpec,
+    StandardErrorSpec,
+    RowSelection,
     formula_from_data,
 )
 from quivers.formulas.family import (
@@ -65,6 +69,10 @@ __all__ = [
     "FormulaData",
     "ResponseLayout",
     "ResponseModifiers",
+    "CensoringSpec",
+    "TruncationSpec",
+    "StandardErrorSpec",
+    "RowSelection",
     "ResponseDraws",
     "PredictionOptions",
     "ExpectationOptions",

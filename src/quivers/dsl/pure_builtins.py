@@ -68,6 +68,80 @@ def _eager_observation_weight(value: torch.Tensor | float) -> torch.Tensor | flo
     return value
 
 
+def _eager_observation_status(value: torch.Tensor | int) -> torch.Tensor | int:
+    """Validate event codes while preserving their scalar or tensor carrier.
+
+    Parameters
+    ----------
+    value : torch.Tensor or int
+        Integer codes from minus one through two, excluding Boolean carriers.
+
+    Returns
+    -------
+    torch.Tensor or int
+        Unchanged validated input.
+
+    Raises
+    ------
+    ValueError
+        If the carrier or any event code is invalid.
+    """
+    if not isinstance(value, torch.Tensor):
+        from quivers.qiec.primitives import _observation_status
+
+        return _observation_status(value)
+    if (
+        value.dtype == torch.bool
+        or value.is_floating_point()
+        or value.is_complex()
+        or not bool(((value >= -1) & (value <= 2)).all())
+    ):
+        raise ValueError("observation_status requires integer codes -1, 0, 1, or 2")
+    return value
+
+
+def _eager_interval_upper(
+    lower: torch.Tensor | float, upper: torch.Tensor | float
+) -> torch.Tensor | float:
+    """Validate active real interval endpoints without changing their gradients.
+
+    Parameters
+    ----------
+    lower, upper : torch.Tensor or float
+        Lower endpoint, possibly infinite, and a finite strictly larger upper.
+
+    Returns
+    -------
+    torch.Tensor or float
+        Validated upper endpoint with its original gradient connection.
+
+    Raises
+    ------
+    ValueError
+        If either carrier is not real or endpoints violate the active interval.
+    """
+    if not isinstance(lower, torch.Tensor) and not isinstance(upper, torch.Tensor):
+        from quivers.qiec.primitives import _interval_upper
+
+        return _interval_upper(lower, upper)
+    reference = lower if isinstance(lower, torch.Tensor) else upper
+    assert isinstance(reference, torch.Tensor)
+    endpoints = tuple(
+        torch.as_tensor(value, device=reference.device) for value in (lower, upper)
+    )
+    if any(
+        value.dtype == torch.bool or not value.is_floating_point()
+        for value in endpoints
+    ):
+        raise ValueError("interval_upper requires real endpoints")
+    low, high = endpoints
+    if not bool((~low.isnan() & high.isfinite() & (high > low)).all()):
+        raise ValueError(
+            "interval_upper requires a finite upper endpoint greater than its lower endpoint"
+        )
+    return high
+
+
 def _eager_positive_parameter(value: torch.Tensor | float) -> torch.Tensor | float:
     """Validate a positive real parameter without changing its value or gradient.
 
@@ -281,6 +355,8 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     "log": lambda a: torch.log(a),
     "log_probability": _eager_log_probability,
     "positive_parameter": _eager_positive_parameter,
+    "observation_status": _eager_observation_status,
+    "interval_upper": _eager_interval_upper,
     "log1mexp": _eager_log1mexp,
     "log_ndtr": _eager_log_ndtr,
     "log1p": lambda a: torch.log1p(a),
@@ -395,6 +471,8 @@ _BUILTIN_PRIMITIVES: Mapping[str, Mapping[tuple[TypeExpr, ...], str]] = {
     "log": {(REAL,): "log"},
     "log_probability": {(REAL,): "log_probability"},
     "positive_parameter": {(REAL,): "positive_parameter"},
+    "observation_status": {(INT,): "observation_status"},
+    "interval_upper": {(REAL, REAL): "interval_upper"},
     "log1mexp": {(REAL,): "log1mexp"},
     "log_ndtr": {(REAL,): "log_ndtr"},
     "sqrt": {(REAL,): "sqrt"},
@@ -619,7 +697,9 @@ def _shape_rule(name: str, form: QiecBuiltinForm) -> str:
     return "eager-native"
 
 
-_BUILTIN_NAMES = frozenset((*EAGER_BUILTINS, *_COLLECTION_BUILTINS, "log_mass", "log_prob"))
+_BUILTIN_NAMES = frozenset(
+    (*EAGER_BUILTINS, *_COLLECTION_BUILTINS, "log_mass", "log_prob")
+)
 
 #: The one capability registry consulted by eager execution, checked lowering,
 #: editor completion, and transpiler validation.

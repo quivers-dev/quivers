@@ -29,6 +29,7 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetExprFactor,
     LetExprIndex,
     LetExprList,
+    LetExprLambda,
     LetExprLiteral,
     LetExprNode,
     LetExprString,
@@ -58,6 +59,7 @@ from quivers.qiec.terms import (
     Local,
     LogDensity,
     LogMass,
+    ConditionalValue,
     NewInstance,
     Perform,
     PrimitiveApplication,
@@ -72,8 +74,6 @@ from quivers.qiec.terms import (
     WeightSum,
 )
 from quivers.qiec.types import (
-    INT,
-    REAL,
     IndexLiteral,
     IndexSum,
     IndexTerm,
@@ -169,6 +169,8 @@ def replace_locals(value: Value, replacements: Mapping[Local, Value]) -> Value:
 LOG_PROB_CALL = "$log_prob"
 LOG_MASS_CALL = "$log_mass"
 DISTRIBUTION_CALL = "$distribution"
+CONDITIONAL_CALL = "$conditional"
+APPLY_CALL = "$apply"
 
 
 #: Primitives that are conversions the target's arithmetic performs on
@@ -358,6 +360,17 @@ class _LetFloater:
                 scope[binding.binder] = Var(local=local)
             inner, body = self.value(value.body, scope)
             return (*hoisted, *inner), body
+        if isinstance(value, ConditionalValue):
+            condition_bindings, condition = self.value(value.condition, renamed)
+            branches = {}
+            for field in ("then", "otherwise"):
+                inner, branch = self.value(getattr(value, field), renamed)
+                branches[field] = (
+                    LetValue(bindings=inner, body=branch, result_type=value.result_type)
+                    if inner
+                    else branch
+                )
+            return condition_bindings, value.with_(condition=condition, **branches)
         if isinstance(value, Comprehension):
             inner, body = self.value(value.body, renamed)
             if not inner:
@@ -770,6 +783,29 @@ def _expression(
                 )
             )
         return LetExprCall(func=DISTRIBUTION_CALL, args=tuple(arguments))
+    if isinstance(value, LetValue):
+        if target != RUNTIME_TARGET:
+            return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
+        result = _expression(value.body, cards, target, program)
+        for binding in reversed(value.bindings):
+            result = LetExprCall(
+                func=APPLY_CALL,
+                args=(
+                    LetExprLambda(param=binding.binder.name, body=result),
+                    _expression(binding.value, cards, target, program),
+                ),
+            )
+        return result
+    if isinstance(value, ConditionalValue):
+        if target == RUNTIME_TARGET:
+            return LetExprCall(
+                func=CONDITIONAL_CALL,
+                args=tuple(
+                    _expression(item, cards, target, program)
+                    for item in (value.condition, value.then, value.otherwise)
+                ),
+            )
+        return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
     if isinstance(value, LogMass) and target == RUNTIME_TARGET:
         call = LetExprCall(
             func=LOG_MASS_CALL,
@@ -922,34 +958,6 @@ def _bound_names(term: Computation | Value) -> set[str]:
     return found
 
 
-def _contains_checked_probability(value: Value) -> bool:
-    """Whether eager evaluation could reach a partial probability operation.
-
-    Parameters
-    ----------
-    value : Value
-        A branch result, including any local pure bindings.
-
-    Returns
-    -------
-    bool
-        Whether the branch must keep its control-flow boundary.
-    """
-    pending: list[Hashable] = [value]
-    while pending:
-        item = pending.pop()
-        if (
-            isinstance(item, PrimitiveApplication)
-            and primitive(item.name).capability == "probability"
-        ):
-            return True
-        if isinstance(item, tuple):
-            pending.extend(item)
-        elif isinstance(item, QiecModel):
-            pending.extend(getattr(item, name) for name in type(item).__field_specs__)
-    return False
-
-
 def _select(
     condition: Value,
     then: Value,
@@ -958,7 +966,7 @@ def _select(
     owner: str,
     term: If,
 ) -> Value:
-    """A conditional between two pure values, as ``select``.
+    """Retain scalar control flow when both computation branches are pure.
 
     Parameters
     ----------
@@ -978,63 +986,10 @@ def _select(
     Returns
     -------
     Value
-        ``select(condition, then, otherwise)``, entrywise over a tensor.
-
-    Raises
-    ------
-    CallNotLowered
-        If the branches return neither real nor integer values.
+        A lazy conditional value at the common checked result type.
     """
-    if _contains_checked_probability(then) or _contains_checked_probability(otherwise):
-        raise CallNotLowered(
-            f"runs a conditional checked probability operation in `{owner}`"
-            f"{origin_line(term)}, which requires lazy QIEC control flow "
-            "rather than eagerly evaluating both select arguments"
-        )
-    split = tensor_shape(result_type)
-    element = result_type if split is None else split[0]
-    if element == REAL:
-        name = "select_real"
-    elif element == INT:
-        name = "select_int"
-    else:
-        raise CallNotLowered(
-            f"runs an `if` in `{owner}`{origin_line(term)} whose branches return "
-            f"{render_static(result_type)}, which `select` cannot choose "
-            f"between: it chooses between real or integer values"
-        )
-    signature = primitive(name)
-    return PrimitiveApplication(
-        primitive=signature.id,
-        name=name,
-        arguments=(condition, then, otherwise),
-        result_type=result_type,
-        origin=_origin_of(condition),
-    )
-
-
-def _origin_of(value: Value) -> SourceOrigin:
-    """The origin a lowered conditional records: its condition's.
-
-    Parameters
-    ----------
-    value : Value
-        The condition.
-
-    Returns
-    -------
-    SourceOrigin
-        The condition's own origin when it records one, else an origin
-        naming the lowering.
-    """
-    found = _first_origin(value)
-    if found is not None:
-        return found
-    return SourceOrigin(
-        module="lowered",
-        structural_path=("if",),
-        role="primitive",
-        source_protocol="qiec-lowering",
+    return ConditionalValue(
+        condition=condition, then=then, otherwise=otherwise, result_type=result_type
     )
 
 
@@ -1153,7 +1108,7 @@ def computation_value(
     CallNotLowered
         If the term makes a request (``effects`` set), reenters a
         computation, handles an effect, branches with ``case``, or
-        chooses between values ``select`` cannot.
+        chooses between computations with unsupported effects.
     """
     bindings: list[LetBinding] = []
     node = term
@@ -1326,8 +1281,8 @@ def pure_call_bindings(
     The analysis both the planner and the runtime compiler inline a
     pure call with: the callee's body at the arguments, with every pure
     computation it calls inlined in turn and every ``if`` between pure
-    branches read as ``select`` (`inline_call`), its bindings hoisted to
-    fresh names by ``floater``.
+    branches read as lazy conditional values (`inline_call`). Bindings are
+    hoisted to fresh names within their original evaluation scope by ``floater``.
 
     Parameters
     ----------

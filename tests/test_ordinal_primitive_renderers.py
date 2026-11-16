@@ -21,7 +21,10 @@ from quivers.qiec.primitives import IMPLEMENTATIONS
 from quivers.transpile import available_targets, transpile, UnsupportedConstruct
 from quivers.transpile._builtin_spellings import BUILTIN_SPELLINGS, Refusal
 from quivers.transpile.qiec_ir import capabilities_for_target
-from quivers.transpile._runtime_sources import javascript_runtime_source
+from quivers.transpile._runtime_sources import (
+    javascript_runtime_source,
+    python_runtime_source,
+)
 from tests.transpile._tools import require_tool, require_scheme
 from tests.transpile._webppl import run_webppl
 
@@ -69,7 +72,7 @@ def _expected(name, value):
 
 def _functions(file):
     """Evaluate only standalone probability helpers, without backend imports."""
-    tree = ast.parse((RUNTIME / file).read_text())
+    tree = ast.parse(python_runtime_source(RUNTIME / file).decode())
     definitions = [
         node
         for node in tree.body
@@ -475,7 +478,7 @@ def test_emitted_church_probability_density_uses_checked_helpers(
 
 
 @pytest.mark.parametrize("target", ["pyro", "numpyro", "pymc", "edward2"])
-def test_probability_helpers_match_between_ordinary_and_canonical_runtime_copies(
+def test_probability_helpers_share_one_ordinary_and_canonical_runtime_fragment(
     target,
 ):
     ordinary = (
@@ -487,13 +490,14 @@ def test_probability_helpers_match_between_ordinary_and_canonical_runtime_copies
     def definitions(file):
         return {
             node.name: ast.dump(node, include_attributes=False)
-            for node in ast.parse((RUNTIME / file).read_text()).body
+            for node in ast.parse(python_runtime_source(RUNTIME / file).decode()).body
             if isinstance(node, ast.FunctionDef)
             and node.name.startswith(
                 ("_qvr_log", "_qvr_probability_check", "_qvr_positive_parameter")
             )
         }
 
+    assert definitions(ordinary)
     assert definitions(ordinary) == definitions("runtime_qiec_" + target + ".py")
 
 

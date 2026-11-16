@@ -144,6 +144,14 @@ finite-set object. The
 [index reference](../reference/qvr/types-and-indexed-families.md#natural-number-extent-addition)
 distinguishes this arithmetic from user-defined index constructors.
 
+A distribution construction first selects one complete parameter schema.
+Its supplied parameter names must equal one declared alternative, with no
+repeated names. This check rules out missing parameters and simultaneous
+exclusive alternatives before the constructor's result is accepted. Named
+source draws and positional computation calls resolve to these same semantic
+parameter identities; a runtime library's optional defaults do not extend the
+checked constructor contract.
+
 Distribution shape signatures use the same dependent context. Their local
 Nat telescope quantifies parameter and sample-event dimensions; each
 application freshens those binders before collecting exact shape equations.

@@ -199,6 +199,62 @@ def _qvr_qiec_positive_parameter(value):
     return value
 
 
+def _qvr_qiec_observation_status(value):
+    """Validate a scalar integer recorded-event code.
+
+    Parameters
+    ----------
+    value
+        Runtime integer carrier.
+
+    Returns
+    -------
+    int
+        Code minus one through two, unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the carrier is not integer or the code is invalid.
+    """
+    if type(value) is not int or value not in (-1, 0, 1, 2):
+        raise ValueError("observation_status requires integer codes -1, 0, 1, or 2")
+    return value
+
+
+def _qvr_qiec_interval_upper(lower, upper):
+    """Check the finite upper endpoint of an active interval.
+
+    Parameters
+    ----------
+    lower, upper
+        Real endpoints; lower may be infinite.
+
+    Returns
+    -------
+    float
+        Upper endpoint unchanged.
+
+    Raises
+    ------
+    ValueError
+        If either carrier or the active interval is invalid.
+    """
+    if (
+        any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in (lower, upper)
+        )
+        or _qvr_qiec_math.isnan(lower)
+        or not _qvr_qiec_math.isfinite(upper)
+        or upper <= lower
+    ):
+        raise ValueError(
+            "interval_upper requires a finite upper endpoint greater than its lower endpoint"
+        )
+    return upper
+
+
 _qvr_qiec_host_math = {}
 
 
@@ -216,6 +272,8 @@ def _qvr_qiec_mod_int(a, b):
 # host, which is why they are spelled out rather than borrowed.
 _qvr_qiec_primitives = {
     "positive_parameter": _qvr_qiec_positive_parameter,
+    "observation_status": _qvr_qiec_observation_status,
+    "interval_upper": _qvr_qiec_interval_upper,
     "log_probability": _qvr_qiec_log_probability,
     "log1mexp": _qvr_qiec_log1mexp,
     "log_ndtr": _qvr_qiec_log_ndtr,

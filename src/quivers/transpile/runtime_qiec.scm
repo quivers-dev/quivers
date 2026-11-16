@@ -129,6 +129,8 @@
     (cons "select_real" (lambda (c a b) (if c a b)))
     (cons "select_int" (lambda (c a b) (if c a b)))
     (cons "positive_parameter" (lambda (a) (_qvr-positive-parameter-scalar a)))
+    (cons "observation_status" (lambda (a) (_qvr-observation-status-scalar a)))
+    (cons "interval_upper" (lambda (a b) (_qvr-interval-upper-scalar a b)))
     (cons "log_probability" (lambda (a) (_qvr-log-probability-scalar a)))
     (cons "log1mexp" (lambda (a) (_qvr-log1mexp-scalar a)))
     (cons "log_ndtr" (lambda (a) (_qvr-log-ndtr-scalar a)))
@@ -933,3 +935,12 @@
 (define (_qvr-positive-parameter-scalar x)
   (if (and (real? x) (= x x) (> x 0) (not (= x +inf.0))) x
       (error 'positive_parameter "requires a finite strictly positive real")))
+
+
+(define (_qvr-observation-status-scalar x)
+  (if (and (integer? x) (exact? x) (<= -1 x) (<= x 2)) x
+      (error 'observation_status "requires integer codes -1, 0, 1, or 2")))
+(define (_qvr-interval-upper-scalar lower upper)
+  (if (and (real? lower) (real? upper) (= lower lower) (= upper upper)
+           (not (= upper +inf.0)) (not (= upper -inf.0)) (> upper lower)) upper
+      (error 'interval_upper "requires a finite upper endpoint greater than its lower endpoint")))

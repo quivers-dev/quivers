@@ -224,7 +224,12 @@ class Family(dx.Model):
     baseline: BaselineSpec | None = None
 
     def with_baseline(
-        self, basis: MSplineBasis | None = None, *, df: int = 5, degree: int = 3
+        self,
+        basis: MSplineBasis | None = None,
+        *,
+        df: int = 5,
+        degree: int = 3,
+        by: str | None = None,
     ) -> Family:
         """Configure a retained normalized baseline for proportional hazards.
 
@@ -236,6 +241,9 @@ class Family(dx.Model):
             Number of basis components for automatic selection.
         degree : int
             Polynomial degree for automatic selection.
+        by : str or None
+            Grouping factor with a separate normalized baseline simplex per level.
+            Every group retains the same knot structure and endpoint tail policy.
 
         Returns
         -------
@@ -257,12 +265,15 @@ class Family(dx.Model):
             raise ValueError("baseline degree must be a nonnegative integer")
         if isinstance(df, bool) or not isinstance(df, int) or df < degree + 1:
             raise ValueError("baseline df must be an integer at least degree + 1")
+        if by is not None and (not isinstance(by, str) or not by):
+            raise ValueError("baseline by must be a nonempty grouping column name")
         return self.with_(
             baseline=BaselineSpec(
                 df=basis.size if basis is not None else df,
                 degree=basis.degree if basis is not None else degree,
                 boundary_knots=basis.boundary_knots if basis is not None else None,
                 interior_knots=basis.interior_knots if basis is not None else (),
+                by=by,
             )
         )
 

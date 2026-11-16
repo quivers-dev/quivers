@@ -730,3 +730,15 @@
   (if (and (real? x) (= x x) (> x 0) (not (= x +inf.0))) x
       (error 'positive_parameter "requires a finite strictly positive real")))
 (define (qvr-positive_parameter x) (broadcast1 _qvr-positive-parameter-scalar x))
+
+
+(define (_qvr-observation-status-scalar x)
+  (if (and (integer? x) (exact? x) (<= -1 x) (<= x 2)) x
+      (error 'observation_status "requires integer codes -1, 0, 1, or 2")))
+(define (_qvr-interval-upper-scalar lower upper)
+  (if (and (real? lower) (real? upper) (= lower lower) (= upper upper)
+           (not (= upper +inf.0)) (not (= upper -inf.0)) (> upper lower)) upper
+      (error 'interval_upper "requires a finite upper endpoint greater than its lower endpoint")))
+
+(define (qvr-observation_status x) (broadcast1 _qvr-observation-status-scalar x))
+(define (qvr-interval_upper lower upper) (broadcast2 _qvr-interval-upper-scalar lower upper))

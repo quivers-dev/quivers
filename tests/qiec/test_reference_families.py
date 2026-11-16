@@ -43,13 +43,16 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
     """The host's log density, from torch or the torch runtime's definition."""
     if family == "ExtendedBeta":
         from scipy import stats
-        mu,phi,kappa=(float(arguments[name]) for name in ("mu","phi","kappa"))
-        a,b,scale=mu*phi,(1-mu)*phi,1+2*kappa
+
+        mu, phi, kappa = (float(arguments[name]) for name in ("mu", "phi", "kappa"))
+        a, b, scale = mu * phi, (1 - mu) * phi, 1 + 2 * kappa
         if point == 0:
-            return float(stats.beta.logcdf(kappa/scale,a,b))
+            return float(stats.beta.logcdf(kappa / scale, a, b))
         if point == 1:
-            return float(stats.beta.logcdf(kappa/scale,b,a))
-        return float(stats.beta.logpdf((float(point)+kappa)/scale,a,b)-math.log(scale))
+            return float(stats.beta.logcdf(kappa / scale, b, a))
+        return float(
+            stats.beta.logpdf((float(point) + kappa) / scale, a, b) - math.log(scale)
+        )
     if family == "Wiener":
         # Independent killed-Brownian eigenfunction expansion, deliberately
         # unfactored and over-resolved at these moderate interior test points.
@@ -292,7 +295,7 @@ def _component(loc: Sequence[float], scale: Sequence[float]) -> RuntimeDistribut
 
 
 CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
-    "ExtendedBeta": ({"mu": .3, "phi": 4., "kappa": .2}, (0., .3, .7, 1.)),
+    "ExtendedBeta": ({"mu": 0.3, "phi": 4.0, "kappa": 0.2}, (0.0, 0.3, 0.7, 1.0)),
     "BernsteinHazard": (
         {"breaks": (0.0, 1.0), "controls": ((1.0,),), "rate": 1.4},
         (0.0, 0.3, 1.0, 2.4),

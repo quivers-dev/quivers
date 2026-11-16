@@ -1,4 +1,13 @@
 functions {
+  int qvr_observation_status(int x) {
+    if (x < -1 || x > 2) reject("observation_status requires integer codes -1, 0, 1, or 2");
+    return x;
+  }
+  real qvr_interval_upper(real lower_endpoint, real upper_endpoint) {
+    if (is_nan(lower_endpoint) || is_nan(upper_endpoint) || is_inf(upper_endpoint) || upper_endpoint <= lower_endpoint) reject("interval_upper requires a finite upper endpoint greater than its lower endpoint");
+    return upper_endpoint;
+  }
+
   real qvr_positive_parameter(real x) {
     if (is_nan(x) || is_inf(x) || x <= 0) reject("positive_parameter requires a finite strictly positive real");
     return x;

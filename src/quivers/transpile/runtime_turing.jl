@@ -110,3 +110,14 @@ function _qvr_positive_parameter(x)
     x isa Real && !(x isa Bool) && isfinite(x) && x > 0 || error("positive_parameter requires a finite strictly positive real")
     return x
 end
+
+
+function _qvr_observation_status(x)
+    x isa Integer && !(x isa Bool) && -1 <= x <= 2 || error("observation_status requires integer codes -1, 0, 1, or 2")
+    return x
+end
+
+function _qvr_interval_upper(lower, upper)
+    lower isa Real && !(lower isa Bool) && upper isa Real && !(upper isa Bool) && !isnan(lower) && isfinite(upper) && upper > lower || error("interval_upper requires a finite upper endpoint greater than its lower endpoint")
+    return upper
+end

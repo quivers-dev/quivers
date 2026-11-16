@@ -43,6 +43,7 @@ from quivers.continuous._closed_probability import _check_trial_count_source
 from quivers.continuous._zero_inflated_count import BetaBinomial as _BetaBinomial
 from quivers.continuous._closed_probability import (
     ClosedBernoulli,
+    ClosedGeometric,
     ClosedPoisson,
     _ValidatedCategorical,
 )
@@ -1262,8 +1263,8 @@ def make_fixed_dirichlet(
         the (d-1)-simplex embedded in ``R^d``.
     """
     d = getattr(codomain, "dim", 1)
-    if d < 2:
-        raise ValueError(f"Dirichlet codomain must have dim >= 2, got dim={d}")
+    if d < 1:
+        raise ValueError(f"Dirichlet codomain must have positive dim, got dim={d}")
     if isinstance(concentration, (list, tuple)):
         if len(concentration) == 1:
             # Single-element sequence is treated as a scalar
@@ -2915,47 +2916,9 @@ def _make_fixed_selected_parameters(
     )
 
 
-class _LogitGeometric(D.Geometric):
-    """A geometric distribution scored from its logits in log space.
-
-    `torch.distributions.Geometric` scores through its probability,
-    whose complement rounds to zero once the logit passes about 17 in
-    single precision. With ``log p = -softplus(-l)`` and
-    ``log (1 - p) = -softplus(l)`` the count of failures ``k`` scores
-    ``k log (1 - p) + log p`` at every finite logit.
-
-    Parameters
-    ----------
-    logits : torch.Tensor
-        The log-odds of a success.
-    """
-
-    def __init__(self, logits: torch.Tensor) -> None:
-        super().__init__(logits=logits)
-
-    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
-        """The log mass at a count of failures.
-
-        Parameters
-        ----------
-        value : torch.Tensor
-            The counts.
-
-        Returns
-        -------
-        torch.Tensor
-            The log masses.
-        """
-        if self._validate_args:
-            self._validate_sample(value)
-        value, logits = torch.broadcast_tensors(value, self.logits)
-        failures = value * -torch.nn.functional.softplus(logits)
-        return failures - torch.nn.functional.softplus(-logits)
-
-
 def _logit_geometric_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build a geometric distribution from ``[logits]``."""
-    return _LogitGeometric(params[0])
+    return ClosedGeometric(logits=params[0])
 
 
 #: Builders for an alternative parameterization whose `torch.distributions`

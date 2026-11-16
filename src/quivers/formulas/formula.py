@@ -299,16 +299,95 @@ class RandomTerm(ValueModel):
     )
 
 
+class CensoringSpec(ValueModel):
+    """Retain recorded event codes and interval endpoints on response rows.
+
+    Parameters
+    ----------
+    status : FixedColumn
+        Codes minus one left, zero exact, one right, and two interval.
+    upper : FixedColumn or None
+        Interval upper endpoints with safe placeholders on inactive rows.
+    """
+
+    status: FixedColumn = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    upper: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+
+class TruncationSpec(ValueModel):
+    """Retain inclusive sampling bounds without changing predictor columns.
+
+    Parameters
+    ----------
+    lower, upper : FixedColumn or None
+        Constant or rowwise inclusive bounds; None leaves that side unbounded.
+    """
+
+    lower: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    upper: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+
+class StandardErrorSpec(ValueModel):
+    """Retain known measurement errors and the residual-scale policy.
+
+    Parameters
+    ----------
+    column : FixedColumn
+        Finite nonnegative standard errors in response units.
+    sigma : bool
+        Whether to include the estimated residual scale in quadrature.
+    """
+
+    column: FixedColumn = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    sigma: bool = True
+
+
+class RowSelection(ValueModel):
+    """Map included response rows to their original dataframe positions.
+
+    Parameters
+    ----------
+    size : int
+        Original row count before selection.
+    positions : tuple[int, ...]
+        Included positions in original order.
+    """
+
+    size: int
+    positions: tuple[int, ...]
+
+
 class ResponseModifiers(ValueModel):
     """Retain typed response-row inputs independently of predictor coefficients.
 
     Attributes
     ----------
     weights : FixedColumn or None
-        Finite nonnegative observation weights, without normalization.
+        Finite nonnegative observation weights, optionally scaled after selection.
     decision : FixedColumn or None
         Binary boundary decisions, zero for lower and one for upper. Numeric
         0/1 and lower/upper labels normalize to the same integer carrier.
+    censoring : CensoringSpec or None
+        Recorded exact or censored outcome events.
+    truncation : TruncationSpec or None
+        Inclusive bounds on the response sampling law.
+    standard_error : StandardErrorSpec or None
+        Known measurement errors and optional residual scale.
+    subset : RowSelection or None
+        Structural row selection performed before evaluating the design.
+    trials : FixedColumn or None
+        Exact finite trial counts supplied by a response modifier.
+    weights_scale : bool
+        Whether weights were normalized to the number of included rows.
+    sources : tuple[tuple[str, str or int or float or bool], ...]
+        Authored column references and scalar literals used to bind fresh
+        sampling-law inputs without requiring recorded outcomes.
     """
 
     weights: FixedColumn | None = dx.field(
@@ -316,6 +395,25 @@ class ResponseModifiers(ValueModel):
     )
     decision: FixedColumn | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    censoring: CensoringSpec | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    truncation: TruncationSpec | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    standard_error: StandardErrorSpec | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    subset: RowSelection | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    trials: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    weights_scale: bool = False
+    sources: tuple[tuple[str, str | int | float | bool], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
     def columns(self) -> tuple[tuple[str, FixedColumn], ...]:
@@ -326,11 +424,25 @@ class ResponseModifiers(ValueModel):
         tuple of role and FixedColumn
             Checked modifier inputs with no fitted coefficient.
         """
-        return tuple(
-            (role, column)
-            for role, column in (("weights", self.weights), ("decision", self.decision))
-            if column is not None
-        )
+        columns = [("weights", self.weights), ("decision", self.decision)]
+        if self.censoring is not None:
+            columns.extend(
+                (
+                    ("censoring", self.censoring.status),
+                    ("censoring_upper", self.censoring.upper),
+                )
+            )
+        if self.truncation is not None:
+            columns.extend(
+                (
+                    ("trunc_lower", self.truncation.lower),
+                    ("trunc_upper", self.truncation.upper),
+                )
+            )
+        if self.standard_error is not None:
+            columns.append(("standard_error", self.standard_error.column))
+        columns.append(("trials", self.trials))
+        return tuple((role, column) for role, column in columns if column is not None)
 
 
 class ResponseLayout(ValueModel):
@@ -658,12 +770,47 @@ def _random_blocks(
     return formula, metadata
 
 
+def _group_coding(
+    frame: nw.DataFrame, group: str
+) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    """Encode a grouping factor identically for effects and structural parameters.
+
+    Parameters
+    ----------
+    frame : narwhals.DataFrame
+        Included training rows after response-row selection.
+    group : str
+        Grouping column name.
+
+    Returns
+    -------
+    tuple of tuple of str and tuple of int
+        Sorted fitted labels and one zero-based code per included row.
+
+    Raises
+    ------
+    ValueError
+        If the grouping column is absent, empty, or has missing identities.
+    """
+    if group not in frame.columns:
+        raise ValueError(f"grouping factor {group!r} names no data column")
+    column = frame[group]
+    if len(column.drop_nulls()) != len(column):
+        raise ValueError(f"grouping factor {group!r} has missing training identities")
+    levels = tuple(str(value) for value in column.unique().sort().to_list())
+    if not levels or len(set(levels)) != len(levels):
+        raise ValueError(f"grouping factor {group!r} has empty or ambiguous labels")
+    positions = {value: index for index, value in enumerate(levels)}
+    return levels, tuple(positions[str(value)] for value in column.to_list())
+
+
 def formula_from_data(
     formula: str,
     data: IntoDataFrame,
     *,
     weights: str | None = None,
     decision: str | None = None,
+    groups: tuple[str, ...] = (),
     extra_namespace: Mapping[str, object] | None = None,
 ) -> Formula:
     """Build a typed `Formula` IR by lifting
@@ -704,6 +851,9 @@ def formula_from_data(
     decision : str or None
         Binary decision column, numeric 0/1 or lower/upper labels. Equivalent
         to ``response | dec(column)``; repeated declarations must agree.
+    groups : tuple[str, ...]
+        Additional grouping columns retained for structural parameters without
+        adding varying coefficients to the predictor.
     extra_namespace : Mapping[str, object], optional
         Additional names visible inside the formula's expression
         evaluation, merged on top of the R-style transforms.
@@ -728,6 +878,7 @@ def formula_from_data(
         data,
         weights=weights,
         decision=decision,
+        groups=groups,
         extra_namespace=extra_namespace,
     )[0]
 
@@ -738,6 +889,7 @@ def _formula_and_design(
     *,
     weights: str | None = None,
     decision: str | None = None,
+    groups: tuple[str, ...] = (),
     extra_namespace: Mapping[str, object] | None = None,
 ) -> tuple[Formula, DesignMatrices]:
     """Evaluate a formula once and retain its fitted transformation state.
@@ -752,6 +904,8 @@ def _formula_and_design(
         Optional likelihood-weight column.
     decision : str or None
         Optional lower/upper decision column.
+    groups : tuple[str, ...]
+        Additional structural grouping columns, using the same fitted coding.
     extra_namespace : Mapping[str, object] or None
         Additional expression bindings.
 
@@ -767,12 +921,18 @@ def _formula_and_design(
     """
     nw_df = nw.from_native(data, eager_only=True)
     pandas_df = nw_df.to_pandas()
-    from quivers.formulas._response_modifiers import modifier_columns, modifier_names
+    from quivers.formulas._response_roles import (
+        bind_roles,
+        parse_roles,
+        validate_event_response,
+    )
 
-    normalized_formula, names = modifier_names(
+    normalized_formula, names = parse_roles(
         formula, {"weights": weights, "decision": decision}
     )
-    response_modifiers = modifier_columns(pandas_df, names)
+    pandas_df, bound_roles = bind_roles(pandas_df, names)
+    response_modifiers = ResponseModifiers(**bound_roles)
+    nw_df = nw.from_native(pandas_df, eager_only=True)
     namespace: dict[str, object] = dict(_R_TRANSFORMS)
     if extra_namespace:
         if {"offset", "exposure", "cs", "cbind"} & extra_namespace.keys():
@@ -871,13 +1031,14 @@ def _formula_and_design(
                     )
                 )
             if group not in group_levels:
-                levels = tuple(
-                    str(v) for v in nw_df[group].drop_nulls().unique().sort().to_list()
-                )
-                group_levels[group] = levels
-                level_index = {v: i for i, v in enumerate(levels)}
-                codes = tuple(level_index[str(v)] for v in nw_df[group].to_list())
-                group_indices[group] = codes
+                group_levels[group], group_indices[group] = _group_coding(nw_df, group)
+    if not isinstance(groups, tuple) or any(
+        not isinstance(group, str) or not group for group in groups
+    ):
+        raise ValueError("groups must be a tuple of nonempty grouping column names")
+    for group in groups:
+        if group not in group_levels:
+            group_levels[group], group_indices[group] = _group_coding(nw_df, group)
 
     response_values = np.asarray(dm.response.design_matrix)
     components = dm.response.term.term.components
@@ -945,6 +1106,7 @@ def _formula_and_design(
         np.int64 if vector_response and integer_carrier else np.float64
     )
 
+    validate_event_response(response_values, response_modifiers.censoring)
     if any(
         column.data.shape != response_values.shape[:1]
         for _, column in response_modifiers.columns()
@@ -973,6 +1135,10 @@ __all__ = [
     "Formula",
     "ResponseLayout",
     "ResponseModifiers",
+    "CensoringSpec",
+    "TruncationSpec",
+    "StandardErrorSpec",
+    "RowSelection",
     "FormulaData",
     "formula_from_data",
 ]

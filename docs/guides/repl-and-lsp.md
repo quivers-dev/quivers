@@ -849,7 +849,10 @@ otherwise a TextArea action.
 2. Inserts the first candidate, replacing the prefix under the cursor.
 3. Subsequent `Tab` presses cycle through the remaining candidates without rebuilding the list.
 
-The LSP and the Jupyter kernel call the same completer.
+The LSP and the Jupyter kernel call the same completer. Recording options
+`cens=`, `cens_upper=`, `trunc_lower=`, and `trunc_upper=` come from the
+executor's typed role table and include their `Int` or `Real` carrier in
+completion details. The language server displays these candidates as properties.
 
 ### Command palette
 

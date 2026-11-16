@@ -24,3 +24,13 @@ var _qvr_positive_parameter_scalar = function(x) {
   if (typeof x !== "number" || x !== x || x === Infinity || x <= 0) { error("positive_parameter requires a finite strictly positive real"); }
   return x;
 };
+
+
+var _qvr_observation_status_scalar = function(x) {
+  if (typeof x !== "number" || !(x === -1 || x === 0 || x === 1 || x === 2)) { error("observation_status requires integer codes -1, 0, 1, or 2"); }
+  return x;
+};
+var _qvr_interval_upper_scalar = function(lower, upper) {
+  if (typeof lower !== "number" || typeof upper !== "number" || lower !== lower || upper !== upper || upper === Infinity || upper === -Infinity || !(upper > lower)) { error("interval_upper requires a finite upper endpoint greater than its lower endpoint"); }
+  return upper;
+};

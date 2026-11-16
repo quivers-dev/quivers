@@ -39,6 +39,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers._observation import ObservationEvent
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.core.morphisms import Morphism
 
@@ -202,6 +203,8 @@ class Observe(Step):
         A nonnegative finite power-likelihood weight, or a binding with one
         weight per observation row. It changes scoring and leaves sampling
         and the underlying response density unchanged.
+    event : ObservationEvent or None
+        Recording and truncation roles, resolved from the same environment as arguments.
     kind : Literal["observe"]
         The variant tag.
     """
@@ -216,6 +219,7 @@ class Observe(Step):
     weights: float | StepArgument | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    event: ObservationEvent | None = None
     kind: Literal["observe"] = "observe"
 
 

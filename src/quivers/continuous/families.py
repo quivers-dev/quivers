@@ -72,6 +72,7 @@ from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
 
 from quivers.continuous._closed_probability import (
     ClosedBernoulli,
+    ClosedGeometric,
     ClosedBinomial,
     ClosedNegativeBinomial,
     _check_trial_count_source,
@@ -1686,11 +1687,11 @@ for _count_name, _count_class, _conditional_count, _extra_heads in (
 
 ConditionalGeometric = _make_family(
     "ConditionalGeometric",
-    D.Geometric,
+    ClosedGeometric,
     [("probs", "sigmoid")],
     "Conditional Geometric(probs(x)). Number of failures before first success.",
-    # A success probability of one is the point mass at zero failures;
-    # one of zero puts no mass on any count.
+    # A success probability of one is the point mass at zero failures.
+    # Zero is refused by the proper native law.
     inline_bounds={"probs": (0.0, 1.0)},
 )
 """Conditional Geometric(probs(x)). Number of failures before first success."""

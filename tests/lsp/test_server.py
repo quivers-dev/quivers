@@ -163,6 +163,12 @@ def test_build_server_advertises_features() -> None:
     assert "." in completion_options.trigger_characters
 
 
+def test_recording_option_candidates_have_property_kind() -> None:
+    from quivers.lsp.server import _completion_kind
+
+    assert _completion_kind("option") == lsp.CompletionItemKind.Property
+
+
 def test_document_find_decl() -> None:
     doc = _doc()
     decl = doc.find_decl("f")

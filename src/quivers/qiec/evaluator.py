@@ -52,6 +52,7 @@ from quivers.qiec.terms import (
     Local,
     LogDensity,
     LogMass,
+    ConditionalValue,
     NewInstance,
     Perform,
     PrimitiveApplication,
@@ -2257,6 +2258,13 @@ class Evaluator:
             # The kernel has already checked the evidence.  Transport is erased
             # dynamically but remains explicit in serialized QIEC.
             return self._value(value.value, environment)
+        if isinstance(value, ConditionalValue):
+            condition = self._value(value.condition, environment)
+            if type(condition) is not bool:
+                raise EvaluationError("conditional value requires a scalar Boolean")
+            return self._value(
+                value.then if condition else value.otherwise, environment
+            )
         if isinstance(value, PrimitiveApplication):
             implementation = IMPLEMENTATIONS.get(value.name)
             if implementation is None:

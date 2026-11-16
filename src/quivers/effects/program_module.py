@@ -1215,6 +1215,8 @@ class _Builder:
             )
         if isinstance(spec, Observe) and isinstance(spec.weights, str | Indexed):
             reads = tuple(dict.fromkeys((*reads, *_arg_reads((spec.weights,)))))
+        if isinstance(spec, Observe) and spec.event is not None:
+            reads = tuple(dict.fromkeys((*reads, *spec.event.names())))
         categorical = extract_morphism(morphism)
         if categorical is not None and not isinstance(morphism, ContinuousMorphism):
             # A categorical morphism is deterministic: its tensor is

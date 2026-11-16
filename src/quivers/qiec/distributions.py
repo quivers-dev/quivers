@@ -1189,12 +1189,22 @@ def _geometric_sample(a: Mapping[str, object], rng: random.Random) -> object:
     -------
     object
         The drawn value.
+
+    Raises
+    ------
+    DistributionError
+        If probabilities are improper or a draw exceeds exact count capacity.
     """
-    probability = _probabilities(a, "Geometric")
-    failures = 0
-    while rng.random() >= probability:
-        failures += 1
-    return failures
+    from quivers.qiec._count_tails import geometric_coordinates
+    from quivers.qiec._count_mixtures import _require_sample_capacity
+
+    _, log_failure = geometric_coordinates(a)
+    if log_failure == 0:
+        raise DistributionError(
+            "Geometric sampling exceeds exact Float64 count capacity"
+        )
+    value = math.log1p(-rng.random()) / log_failure
+    return int(math.floor(_require_sample_capacity(value)))
 
 
 def _geometric_density(a: Mapping[str, object], value: object) -> float:
@@ -1213,7 +1223,9 @@ def _geometric_density(a: Mapping[str, object], value: object) -> float:
         The log density, ``-inf`` outside the support.
     """
     failures = _integer_observation(value, "Geometric")
-    log_success, log_failure = _log_probabilities(a, "Geometric")
+    from quivers.qiec._count_tails import geometric_coordinates
+
+    log_success, log_failure = geometric_coordinates(a)
     if failures is None or failures < 0:
         return -math.inf
     return _times(failures, log_failure) + log_success

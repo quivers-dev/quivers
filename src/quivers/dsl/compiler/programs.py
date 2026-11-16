@@ -13,6 +13,7 @@ from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 from itertools import product as _cartesian_product
 from numbers import Integral, Real as RealNumber
 from typing import Literal, cast
+from quivers._observation import EVENT_OPTIONS, ObservationEvent
 import didactic.api as dx
 import torch
 from torch.distributions.distribution import Distribution as TorchDistribution
@@ -160,6 +161,8 @@ from quivers.transpile._pure_calls import (
     LOG_PROB_CALL,
     LOG_MASS_CALL,
     DISTRIBUTION_CALL,
+    CONDITIONAL_CALL,
+    APPLY_CALL,
 )
 from quivers.dsl.compiler.sugar import desugar_step
 from quivers.dsl.composite_lets import (
@@ -1126,6 +1129,8 @@ _LET_SPECIAL_CALLS: frozenset[str] = frozenset(
         LOG_PROB_CALL,
         LOG_MASS_CALL,
         DISTRIBUTION_CALL,
+        CONDITIONAL_CALL,
+        APPLY_CALL,
     }
 )
 
@@ -1637,8 +1642,49 @@ _MULTIVARIATE_REAL_FAMILIES: frozenset[str] = frozenset(
 
 _SAMPLE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "iid_over"})
 _OBSERVE_STEP_OPTION_KEYS: frozenset[str] = frozenset(
-    {"via", "over", "iid_over", "weights"}
+    {"via", "over", "iid_over", "weights", *EVENT_OPTIONS}
 )
+
+
+def _observation_event(options, line: int, col: int) -> ObservationEvent | None:
+    """Read checked scalar references for one recorded observation event."""
+    fields = {}
+    for key, (field, carrier) in EVENT_OPTIONS.items():
+        option = find_option(options, key)
+        if option is None:
+            continue
+        if isinstance(option.value, OptionName) and option.value.value not in {
+            "true",
+            "false",
+        }:
+            fields[field] = option.value.value
+        elif isinstance(option.value, OptionNumber):
+            value = option.value.value
+            if carrier == "Int":
+                if value not in {-1, 0, 1, 2}:
+                    raise CompileError("cens requires codes -1, 0, 1, or 2", line, col)
+                value = int(value)
+            elif math.isnan(value):
+                raise CompileError(f"{key} requires a non-NaN endpoint", line, col)
+            fields[field] = value
+        else:
+            raise CompileError(f"{key} requires a value name or number", line, col)
+    if "upper" in fields and "status" not in fields:
+        raise CompileError("cens_upper requires a cens status", line, col)
+    return ObservationEvent(**fields) if fields else None
+
+
+def _rename_observation_event(event, value_subst, rename):
+    """Preserve event references through existing template substitutions."""
+    if event is None:
+        return None
+    return event.with_(
+        **{
+            field: value_subst.get(value, rename.get(value, value))
+            for field in ("status", "upper", "lower_bound", "upper_bound")
+            if isinstance(value := getattr(event, field), str)
+        }
+    )
 
 
 def _observation_weights(options, line: int, col: int) -> str | float | None:
@@ -1938,6 +1984,7 @@ class _ProgramsMixin:
                 index=step.index,
                 mode="score",
                 weights=_observation_weights(step.options, step.line, step.col),
+                event=_observation_event(step.options, step.line, step.col),
                 axes=axes,
                 via=step.via,
                 via_axes=step.via_axes,
@@ -2054,6 +2101,7 @@ class _ProgramsMixin:
                             args=step.args,
                             is_observed=True,
                             weights=step.weights,
+                            event=step.event,
                             line=step.line,
                             col=step.col,
                         )
@@ -2073,6 +2121,7 @@ class _ProgramsMixin:
                             args=step.args,
                             response_var=step.vars[0],
                             weights=step.weights,
+                            event=step.event,
                             index_map_var=step.via,
                             index_map_axes=step.via_axes,
                             axes=step.axes,
@@ -2301,6 +2350,7 @@ class _ProgramsMixin:
                                 index_map_axes=scoped_step.index_map_axes,
                                 ll_slot=ll_slot,
                                 weights=scoped_step.weights,
+                                event=scoped_step.event,
                                 line=scoped_step.line,
                                 col=scoped_step.col,
                             )
@@ -3121,6 +3171,7 @@ class _ProgramsMixin:
                 args=self._rename_args(step.args, value_subst, rename),
                 is_observed=step.is_observed,
                 weights=_rename_observation_weights(step.weights, value_subst, rename),
+                event=_rename_observation_event(step.event, value_subst, rename),
                 axes=step.axes,
                 line=step.line,
                 col=step.col,
@@ -3176,6 +3227,7 @@ class _ProgramsMixin:
                 args=self._rename_args(step.args, value_subst, rename),
                 response_var=rename.get(step.response_var, step.response_var),
                 weights=_rename_observation_weights(step.weights, value_subst, rename),
+                event=_rename_observation_event(step.event, value_subst, rename),
                 index_map_var=rename.get(step.index_map_var, step.index_map_var)
                 if step.index_map_var is not None
                 else None,
@@ -3251,6 +3303,7 @@ class _ProgramsMixin:
                 index_map_axes=step.index_map_axes,
                 ll_slot=step.ll_slot,
                 weights=_rename_observation_weights(step.weights, value_subst, rename),
+                event=_rename_observation_event(step.event, value_subst, rename),
                 line=step.line,
                 col=step.col,
             )
@@ -4537,6 +4590,7 @@ class _ProgramsMixin:
                     _argument_classes=argument_classes,
                     _variable_ranks=variable_ranks,
                     _weights=step.weights,
+                    _event=step.event,
                     _group_arguments=group_arguments,
                     _group_rank=len(group_shapes[step.latent_name]),
                     _via=step.index_map_var,
@@ -4654,6 +4708,43 @@ class _ProgramsMixin:
                             ]
                             _N = int(active_rows.numel())
 
+                    payload = None
+                    if _event is not None:
+                        from quivers.effects._observation_events import resolve_event
+
+                        payload = resolve_event(_event, env)
+                        if active_rows is not None:
+                            payload = {
+                                name: value.index_select(
+                                    0, active_rows.to(value.device)
+                                )
+                                if isinstance(value, torch.Tensor)
+                                and value.ndim
+                                and value.shape[0] == original_rows
+                                else value
+                                for name, value in payload.items()
+                            }
+
+                    def score_distribution(distribution, target):
+                        """Score one class-expanded law with retained event roles."""
+                        if payload is None:
+                            return distribution.log_prob(target)
+                        from quivers.continuous._observation_events import (
+                            event_log_prob,
+                        )
+
+                        roles = {}
+                        for name, value in payload.items():
+                            if (
+                                isinstance(value, torch.Tensor)
+                                and value.ndim
+                                and value.shape[0] == _N
+                            ):
+                                while value.ndim < len(distribution.batch_shape):
+                                    value = value.unsqueeze(1)
+                            roles[name] = value
+                        return event_log_prob(distribution, target, **roles)
+
                     # Detect whether any parameter carries the class
                     # axis. If so, broadcast each part to leading
                     # (N, K) plus any trailing event dims and call
@@ -4728,9 +4819,7 @@ class _ProgramsMixin:
                             dist.event_shape
                         ):
                             resp_broadcast = resp_broadcast.unsqueeze(1)
-                        if _family._discrete:
-                            resp_broadcast = resp_broadcast.float()
-                        ll = dist.log_prob(resp_broadcast)
+                        ll = score_distribution(dist, resp_broadcast)
                     elif getattr(_family, "_param_spec", None) is not None:
                         # Row-only arguments retain their rows even when
                         # an intermediate let has no checked plate width.
@@ -4750,9 +4839,7 @@ class _ProgramsMixin:
                             dist.event_shape
                         ):
                             target = target.unsqueeze(-1)
-                        if _family._discrete:
-                            target = target.float()
-                        ll = dist.log_prob(target)
+                        ll = score_distribution(dist, target)
                         if ll.dim() > 1:
                             ll = ll.reshape(_N, -1).sum(-1)
                     else:
@@ -4764,7 +4851,11 @@ class _ProgramsMixin:
                             theta = torch.stack(expanded, dim=-1)
                         else:
                             theta = parts[0]
-                        ll = _family.log_prob(theta, response)
+                        ll = (
+                            _family.log_prob(theta, response)
+                            if payload is None
+                            else _family.log_prob_event(theta, response, payload)
+                        )
                     # Each lexical class axis is retained until its own
                     # grouped reduction; independent coordinate events sum here.
                     if needs_cross:
@@ -4801,6 +4892,7 @@ class _ProgramsMixin:
                                     else ()
                                 ),
                                 *(step.index_map_axes or ()),
+                                *(step.event.names() if step.event is not None else ()),
                                 *(
                                     (step.weights,)
                                     if isinstance(step.weights, str)
@@ -4886,6 +4978,7 @@ class _ProgramsMixin:
                         morphism=vec_obs,
                         args=step_args,
                         weights=step.weights,
+                        event=step.event,
                     )
                 )
                 continue
@@ -5553,6 +5646,7 @@ class _ProgramsMixin:
                     morphism=morph,
                     args=step_args,
                     weights=draw.weights,
+                    event=draw.event,
                 )
                 if draw.is_observed
                 else Draw(names=draw.vars, morphism=morph, args=step_args)
@@ -6524,6 +6618,7 @@ class _ProgramsMixin:
             _reduction: str = reduction,
             _shared_vector: bool = shared_vector_theta,
             _weights: str | float | None = observation_weights,
+            _event=observe_step.event if observe_step is not None else None,
             _plated: bool = isinstance(observe_step, VectorisedObserveStep),
             _array_shape: tuple[int, ...] = observed_array_shape,
         ) -> torch.Tensor:
@@ -6555,27 +6650,43 @@ class _ProgramsMixin:
                     for name, fn in _lets:
                         local[name] = fn(local)
                     theta = _observation_parameter(local, _obs_args, _shared_vector)
-                    if _weights is None:
+                    if _weights is None and _event is None:
                         ll_cols.append(_obs_family.log_prob(theta, response))
                     else:
                         from quivers.effects._observation_weights import (
                             WeightedObservation,
                         )
+                        from quivers.effects._observation_events import (
+                            RecordedObservation,
+                            resolve_event,
+                        )
 
-                        family = (
+                        declared = (
                             VectorisedObserve(
                                 _obs_family, response, array_shape=_array_shape
                             )
                             if _plated
                             else _obs_family
                         )
-                        weights = (
-                            local[_weights] if isinstance(_weights, str) else _weights
-                        )
+                        family = declared
+                        if _event is not None:
+                            family = RecordedObservation(
+                                family, declared, resolve_event(_event, local)
+                            )
+                        if _weights is not None:
+                            weights = (
+                                local[_weights]
+                                if isinstance(_weights, str)
+                                else _weights
+                            )
+                            family = WeightedObservation(
+                                family, declared, weights, theta
+                            )
+                        pointwise = getattr(family, "log_prob_pointwise", None)
                         ll_cols.append(
-                            WeightedObservation(
-                                family, family, weights, theta
-                            ).log_prob_pointwise(theta, response)
+                            pointwise(theta, response)
+                            if callable(pointwise)
+                            else family.log_prob(theta, response)
                         )
                 per_class = torch.stack(ll_cols, dim=-1)
                 if log_prior.dim() < per_class.dim():
@@ -6634,6 +6745,8 @@ class _ProgramsMixin:
         marginal_reads: set[str] = {*_arg_names((prior_arg,)), "_x_input"}
         if isinstance(observation_weights, str):
             marginal_reads.add(observation_weights)
+        if observe_step is not None and observe_step.event is not None:
+            marginal_reads.update(observe_step.event.names())
         for name, fn in body_lets:
             bound_vars[name] = None
             steps.append(Let(name=name, value=fn))
@@ -6647,6 +6760,7 @@ class _ProgramsMixin:
                     names=(response_var,),
                     morphism=MarginalizedFactor(obs_family),
                     args=obs_args,
+                    event=observe_step.event if observe_step is not None else None,
                 )
             )
             marginal_reads.add(response_var)
@@ -7602,7 +7716,7 @@ class _ProgramsMixin:
             # * ``Dirichlet(alpha)`` with a single scalar literal →
             #   simplex dimension comes from the program's declared
             #   codomain (``dim`` for a ContinuousSpace,
-            #   ``cardinality`` for a SetObject) of at least two; a
+            #   ``cardinality`` for a SetObject) of at least one; a
             #   draw that fixes none is refused.
             sim_dim: int | None = None
             n_literals = sum(
@@ -7626,7 +7740,7 @@ class _ProgramsMixin:
                 # A discrete codomain of cardinality `k` indexes a
                 # k-simplex of class probabilities.
                 sim_dim = getattr(program_codomain, "cardinality", None)
-            if sim_dim is None or sim_dim < 2:
+            if sim_dim is None or sim_dim < 1:
                 raise CompileError(
                     f"Dirichlet draw of {var_names[0]!r} fixes no simplex "
                     f"dimension: give the concentration as a list, annotate "
@@ -8173,6 +8287,19 @@ class _ProgramsMixin:
                 # Higher-order combinators come first; they consume
                 # raw closure args without eager evaluation of the
                 # lambda body.
+                if func_name == APPLY_CALL:
+                    return arg_fns[0](env)(arg_fns[1](env))
+                if func_name == CONDITIONAL_CALL:
+                    condition = arg_fns[0](env)
+                    if isinstance(condition, torch.Tensor):
+                        if condition.dtype != torch.bool or condition.numel() != 1:
+                            raise ValueError(
+                                "a lazy conditional requires a scalar Boolean; use factor for rowwise branches"
+                            )
+                        condition = bool(condition)
+                    if type(condition) is not bool:
+                        raise ValueError("a lazy conditional requires a scalar Boolean")
+                    return arg_fns[1 if condition else 2](env)
                 if func_name == DISTRIBUTION_CALL:
                     from quivers.continuous.inline import _raw_distribution_value
 

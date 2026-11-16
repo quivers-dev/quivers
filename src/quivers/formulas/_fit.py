@@ -39,7 +39,7 @@ from quivers.formulas.formula import (
     formula_from_data,
 )
 from quivers.formulas._prediction import FormulaPredictionPlan
-from quivers.formulas._response import count_totals, response_tensor, resolve_trials
+from quivers.formulas._response import count_totals, response_tensor
 from quivers.formulas._response_modifiers import (
     ResponseDraws,
     ExpectationOptions,
@@ -1360,15 +1360,29 @@ def fit(
             family_obj = families[family]
         else:
             family_obj = family
-        binomial_trials = resolve_trials(family_obj, binomial_trials)
-
         parsed, design = _threshold_formula_and_design(
             formula,
             data,
             thresholds_by=thresholds_by,
             weights=weights,
             decision=decision,
+            groups=(family_obj.baseline.by,)
+            if family_obj.baseline is not None and family_obj.baseline.by is not None
+            else (),
         )
+        from quivers.formulas._response_roles import included_data, retained_trials
+
+        data = included_data(parsed, data)
+        selection = parsed.modifiers.subset
+        if selection is not None and predictor_data is not None:
+            if predictor_data.shape[0] != selection.size:
+                raise ValueError(
+                    "predictor_data must align with the original subset dataframe rows"
+                )
+            predictor_data = predictor_data.index_select(
+                0, torch.tensor(selection.positions, device=predictor_data.device)
+            )
+        binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
         parameter_designs: dict[str, DesignMatrices] = {}
         parameter_formulas = _parse_distributional(
             distributional, data, parsed.response_name, designs=parameter_designs
@@ -1723,10 +1737,20 @@ def _formula_lens(
         family_obj = families[family]
     else:
         family_obj = family
-    binomial_trials = resolve_trials(family_obj, binomial_trials)
     parsed, _ = _threshold_formula_and_design(
-        formula, data, thresholds_by=thresholds_by, weights=weights, decision=decision
+        formula,
+        data,
+        thresholds_by=thresholds_by,
+        weights=weights,
+        decision=decision,
+        groups=(family_obj.baseline.by,)
+        if family_obj.baseline is not None and family_obj.baseline.by is not None
+        else (),
     )
+    from quivers.formulas._response_roles import included_data, retained_trials
+
+    data = included_data(parsed, data)
+    binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
     parameter_formulas = _parse_distributional(
         distributional, data, parsed.response_name
     )
@@ -1756,6 +1780,7 @@ def _threshold_formula_and_design(
     thresholds_by: str | None,
     weights: str | None,
     decision: str | None = None,
+    groups: tuple[str, ...] = (),
 ) -> tuple[Formula, DesignMatrices]:
     """Evaluate a full threshold profile with one shared group location.
 
@@ -1771,6 +1796,8 @@ def _threshold_formula_and_design(
         Optional response-weight column.
     decision : str or None
         Optional lower/upper decision column.
+    groups : tuple[str, ...]
+        Additional structural groups without implied varying coefficients.
 
     Returns
     -------
@@ -1779,7 +1806,7 @@ def _threshold_formula_and_design(
         varying intercept for the threshold group.
     """
     parsed, design = _formula_and_design(
-        formula, data, weights=weights, decision=decision
+        formula, data, weights=weights, decision=decision, groups=groups
     )
     if thresholds_by is None or any(
         term.group == thresholds_by and term.slope == "Intercept"
@@ -1788,7 +1815,7 @@ def _threshold_formula_and_design(
         return parsed, design
     expanded = f"{formula} + (1 | {thresholds_by})"
     parsed, design = _formula_and_design(
-        expanded, data, weights=weights, decision=decision
+        expanded, data, weights=weights, decision=decision, groups=groups
     )
     return parsed.with_(formula=formula), design
 
@@ -1997,20 +2024,34 @@ def _response_trials(
     ValueError
         If explicit trials disagree with a vector event's component sum.
     """
+    retained = formula.modifiers.trials
+    supplied = (
+        torch.as_tensor(retained.data.copy(), dtype=torch.long)
+        if retained is not None and specification == "formula_trials"
+        else None
+    )
     if formula.response_layout.event_shape:
         totals = count_totals(formula)
         if specification is None:
             return totals
-        trials = _binomial_trial_tensor(data, specification, n_obs=len(totals))
+        trials = (
+            supplied
+            if supplied is not None
+            else _binomial_trial_tensor(data, specification, n_obs=len(totals))
+        )
         if not torch.equal(totals, trials):
             raise ValueError(
                 f"{caller}: vector response row totals disagree with supplied trials"
             )
         return trials
-    trials = _binomial_trial_tensor(
-        data,
-        1 if specification is None else specification,
-        n_obs=formula.response_values.shape[0],
+    trials = (
+        supplied
+        if supplied is not None
+        else _binomial_trial_tensor(
+            data,
+            1 if specification is None else specification,
+            n_obs=formula.response_values.shape[0],
+        )
     )
     _validate_binomial_response(response_tensor(formula), trials, caller=caller)
     return trials

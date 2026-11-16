@@ -174,7 +174,12 @@ def compact_groups(
             fitted[group] = levels
     result = {}
     for group, levels in fitted.items():
-        active = group == fit.thresholds_by or any(g == group for g, _ in selected)
+        baseline_group = (
+            fit.family.baseline.by if fit.family.baseline is not None else None
+        )
+        active = group in (fit.thresholds_by, baseline_group) or any(
+            g == group for g, _ in selected
+        )
         positions = {label: index for index, label in enumerate(levels)}
         keys: list[str | None] = []
         row_codes = []
@@ -232,6 +237,11 @@ def compact_groups(
                 raise TypeError("unsupported grouped threshold-noise layout")
             sites[name] = count // len(levels)
             standard_normal_sites.add(name)
+        if group == baseline_group:
+            count = math.prod(registry["sbhaz"].constrained_shape)
+            if count % len(levels):
+                raise TypeError("unsupported grouped baseline layout")
+            sites["sbhaz"] = count // len(levels)
         result[group] = GroupRemap(
             group=group,
             fitted_size=len(levels),
@@ -293,7 +303,7 @@ def select_contributions(
         A module retaining the fitted latent prior but excluding selected-out
         effects from its response predictor.
     """
-    from quivers.formulas.compile import _factor
+    from quivers.formulas._ast import _factor
 
     excluded = set()
     for parameter, formula in formulas.items():

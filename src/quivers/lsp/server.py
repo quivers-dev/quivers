@@ -1480,6 +1480,7 @@ def _completion_kind(kind: str) -> lsp.CompletionItemKind:
         "keyword": lsp.CompletionItemKind.Keyword,
         "type": lsp.CompletionItemKind.Class,
         "function": lsp.CompletionItemKind.Function,
+        "option": lsp.CompletionItemKind.Property,
         "namespace": lsp.CompletionItemKind.Module,
         "path": lsp.CompletionItemKind.File,
     }.get(kind, lsp.CompletionItemKind.Text)

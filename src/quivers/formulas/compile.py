@@ -1069,6 +1069,54 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError(
                     "zero_inflated_beta requires finite response values in [0, 1)"
                 )
+        if formula.modifiers.standard_error is not None:
+            error = formula.modifiers.standard_error
+            if self._family.name not in {"gaussian", "student_t", "skew_normal"}:
+                raise ValueError(
+                    "se requires gaussian, student_t, or skew_normal responses"
+                )
+            if not error.sigma and (
+                "sigma" in self._distributional
+                or "sigma" in self._fixed_parameters
+                or "sigma" in self._user_priors
+            ):
+                raise ValueError(
+                    "se(sigma=False) excludes a separate residual sigma; remove its formula, fixed value, or prior"
+                )
+        if (
+            formula.modifiers.censoring is not None
+            or formula.modifiers.truncation is not None
+        ) and (
+            self._family.ordinal is not None
+            or self._family.response is not None
+            or self._family.name == "wiener"
+        ):
+            raise ValueError(
+                "censoring/truncation requires an ordinary scalar response family"
+            )
+        if (
+            formula.modifiers.trials is not None
+            and self._family.trials_parameter is None
+        ):
+            raise ValueError(
+                "trials requires a response family with finite trial counts"
+            )
+        role_aliases = {
+            column.qvr_name
+            for role, column in formula.modifiers.columns()
+            if role not in {"weights", "decision"}
+        }
+        if formula.modifiers.standard_error is not None:
+            role_aliases.update({"formula_sigma", "formula_error_reference"})
+        collisions = role_aliases & {
+            _qvr_name(formula.response_name),
+            self._predictor_name,
+            *(column.qvr_name for column in formula.fixed_columns),
+        }
+        if collisions:
+            raise ValueError(
+                f"{sorted(collisions)} are reserved response input aliases"
+            )
         if formula.modifiers.weights is not None:
             weights = formula.modifiers.weights.data
             if weights.shape != formula.response_values.shape[:1]:
@@ -1423,6 +1471,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             obs["formula_decision"] = torch.as_tensor(
                 formula.modifiers.decision.data.copy(), dtype=torch.bool
             )
+        for role, column in formula.modifiers.columns():
+            if role not in {"weights", "decision"}:
+                obs[column.qvr_name] = torch.as_tensor(column.data.copy())
         for col in formula.fixed_columns:
             if col.is_intercept:
                 continue
@@ -3604,6 +3655,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             parameters += (
                 QiecValueParameter(name="formula_weights", type_expr=weight_type),
             )
+        existing = {parameter.name for parameter in parameters}
+        for role, column in formula.modifiers.columns():
+            if column.qvr_name in existing:
+                continue
+            carrier = "Int" if role in {"censoring", "trials"} else "Real"
+            role_type = index_type.with_(static_arguments=(QiecTypeName(name=carrier),))
+            parameters += (
+                QiecValueParameter(name=column.qvr_name, type_expr=role_type),
+            )
+            existing.add(column.qvr_name)
         return parameters
 
     def _append_vector_observation(
@@ -3758,6 +3819,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Shared correlated group contributions.
         """
         for aux in self._family.aux_params:
+            if (
+                aux.name == "sigma"
+                and formula.modifiers.standard_error is not None
+                and not formula.modifiers.standard_error.sigma
+            ):
+                continue
             vector_sigma = (
                 self._family.response is not None
                 and self._family.response.kind == "logistic_normal"
@@ -3833,6 +3900,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 ),
             )
         )
+        if self._family.baseline is not None and self._family.baseline.by is not None:
+            group = self._family.baseline.by
+            if group not in formula.group_levels:
+                raise ValueError(
+                    f"baseline group {group!r} requires retained group coding; "
+                    "supply formula_from_data(..., groups=(group,))"
+                )
         group_sizes = {
             _qvr_name(group): len(levels)
             for predictor in (formula, *self._distributional.values())
@@ -3850,6 +3924,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 basis,
                 prior=_auxiliary_draw("sbhaz", self._user_priors["sbhaz"])
                 if "sbhaz" in self._user_priors
+                else None,
+                group=_qvr_name(self._family.baseline.by)
+                if self._family.baseline.by is not None
                 else None,
             )
             statements.extend(baseline_objects)
@@ -4291,6 +4368,62 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     ),
                 )
             )
+        if formula.modifiers.standard_error is not None:
+            error = formula.modifiers.standard_error
+            if not error.sigma:
+                program_steps.append(
+                    _let("formula_sigma", _var("formula_standard_error"))
+                )
+            else:
+                row = _var("response")
+                se = _index("formula_standard_error", row)
+                sigma = (
+                    _index("sigma", row)
+                    if "sigma" in self._distributional
+                    else _var("sigma")
+                )
+                program_steps.append(
+                    _let(
+                        "formula_error_reference",
+                        _factor((("response", "Resp"),), body=_call("max", se, sigma)),
+                    )
+                )
+                scale = _index("formula_error_reference", row)
+                combined = _mul(
+                    scale,
+                    _call(
+                        "sqrt",
+                        _add(
+                            _call("pow", _div(se, scale), LetExprLiteral(value=2.0)),
+                            _call("pow", _div(sigma, scale), LetExprLiteral(value=2.0)),
+                        ),
+                    ),
+                )
+                program_steps.append(
+                    _let(
+                        "formula_sigma", _factor((("response", "Resp"),), body=combined)
+                    )
+                )
+            observation = observation.with_(
+                args=tuple(
+                    argument.with_(value=_to_draw_arg("formula_sigma"))
+                    if isinstance(argument, DrawArgNamed)
+                    and argument.parameter == "scale"
+                    else argument
+                    for argument in observation.args or ()
+                )
+            )
+        from quivers.formulas._response_roles import event_option_columns
+
+        observation = observation.with_(
+            options=(
+                *observation.options,
+                *(
+                    OptionEntry(key=key, value=OptionName(value=column.qvr_name))
+                    for key, column in event_option_columns(formula.modifiers)
+                ),
+            )
+        )
         program_steps.append(observation)
 
         program_decl = ProgramDecl(

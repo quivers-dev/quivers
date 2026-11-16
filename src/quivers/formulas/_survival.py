@@ -25,6 +25,9 @@ from quivers.dsl.ast_nodes import (
     SampleStep,
     TypeFromExpr,
     TypeName,
+    AxisSpec,
+    OptionEntry,
+    OptionName,
 )
 
 from quivers.formulas.formula import Formula
@@ -44,12 +47,15 @@ class BaselineSpec(dx.Model):
         once from training events and follow-up times.
     interior_knots : tuple[float, ...]
         Explicit interior knots when boundary_knots is supplied.
+    by : str or None
+        Grouping factor for separate normalized profiles on this common basis.
     """
 
     df: int = 5
     degree: int = 3
     boundary_knots: tuple[float, ...] | None = None
     interior_knots: tuple[float, ...] = ()
+    by: str | None = None
 
     def resolve(self, formula: Formula) -> MSplineBasis:
         """Resolve the baseline once from retained training responses.
@@ -87,12 +93,21 @@ class BaselineSpec(dx.Model):
             )
         if self.interior_knots:
             raise ValueError("explicit interior knots require boundary knots")
+        censoring = formula.modifiers.censoring
+        events = values if censoring is None else values[censoring.status.data == 0]
+        followup = values
+        if censoring is not None and censoring.upper is not None:
+            followup = np.concatenate(
+                (followup, censoring.upper.data[censoring.status.data == 2])
+            )
         return cox_spline_basis(
-            values.tolist(), values.tolist(), df=self.df, degree=self.degree
+            events.tolist(), followup.tolist(), df=self.df, degree=self.degree
         )
 
 
-def baseline_steps(basis: MSplineBasis, *, prior: SampleStep | None = None):
+def baseline_steps(
+    basis: MSplineBasis, *, prior: SampleStep | None = None, group: str | None = None
+):
     """Emit one small retained table and a simplex contraction, without row copies.
 
     Parameters
@@ -102,6 +117,9 @@ def baseline_steps(basis: MSplineBasis, *, prior: SampleStep | None = None):
     prior : SampleStep or None
         Parsed prior, using the existing auxiliary-prior lowering. A scalar
         Dirichlet concentration expands over basis coordinates; the default is uniform.
+    group : str or None
+        QVR grouping object. Profiles are normalized separately at each level;
+        contraction is shared by rows through the existing group index input.
 
     Returns
     -------
@@ -150,7 +168,11 @@ def baseline_steps(basis: MSplineBasis, *, prior: SampleStep | None = None):
     ]
 
     weighted = _mul(
-        _index("sbhaz", _var("baseline_component")),
+        _index(
+            "sbhaz",
+            *((_var("baseline_group"),) if group is not None else ()),
+            _var("baseline_component"),
+        ),
         _index(
             "baseline_coefficients",
             _var("baseline_segment"),
@@ -159,7 +181,11 @@ def baseline_steps(basis: MSplineBasis, *, prior: SampleStep | None = None):
         ),
     )
     contraction = _factor(
-        (("baseline_segment", names[0]), ("baseline_control", names[2])),
+        (
+            *(((("baseline_group", group),)) if group is not None else ()),
+            ("baseline_segment", names[0]),
+            ("baseline_control", names[2]),
+        ),
         body=_call("sum", _factor((("baseline_component", names[1]),), body=weighted)),
     )
     steps = [
@@ -168,9 +194,31 @@ def baseline_steps(basis: MSplineBasis, *, prior: SampleStep | None = None):
             name="baseline_coefficients",
             value=_real_tensor_literal(basis.m_coefficients),
         ),
-        prior.with_(index=TypeName(name=names[1])),
-        LetStep(name="baseline_controls", value=contraction),
+        prior.with_(
+            index=TypeName(name=names[1] if group is None else group),
+            axes=prior.axes
+            if group is None
+            else AxisSpec(over=(names[1],), iid_over=(group,)),
+            options=prior.options
+            if group is None
+            else (
+                *prior.options,
+                OptionEntry(key="over", value=OptionName(value=names[1])),
+                OptionEntry(key="iid_over", value=OptionName(value=group)),
+            ),
+        ),
+        LetStep(
+            name="baseline_controls" if group is None else "baseline_profiles",
+            value=contraction,
+        ),
     ]
+    if group is not None:
+        steps.append(
+            LetStep(
+                name="baseline_controls",
+                value=_index("baseline_profiles", _var(f"{group}_idx")),
+            )
+        )
     return objects, steps
 
 

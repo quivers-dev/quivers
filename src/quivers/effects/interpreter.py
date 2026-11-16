@@ -316,6 +316,122 @@ class _ParameterizedMorphism(ContinuousMorphism):
         """Read selected raw row densities under the supplied parameters."""
         return self._call("log_prob_pointwise_rows", x, y, *rows)
 
+    def log_prob_event(self, x, y, event):
+        """Score recorded events under the current parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._call("log_prob_event", x, y, event)
+
+    def log_prob_pointwise_event(self, x, y, event):
+        """Read event scores per row under parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._call("log_prob_pointwise_event", x, y, event)
+
+    def log_prob_pointwise_rows_event(self, x, y, event, *rows):
+        """Read selected event scores under parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+        *rows : tuple[Tensor, ...]
+            Selected plate indices, outermost observation axis first.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._call("log_prob_pointwise_rows_event", x, y, event, *rows)
+
+    def log_prob_rows_event(self, x, y, event, *rows):
+        """Sum selected event scores under parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+        *rows : tuple[Tensor, ...]
+            Selected plate indices, outermost observation axis first.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._call("log_prob_rows_event", x, y, event, *rows)
+
+    def rsample_event(self, x, sample_shape, event):
+        """Draw the truncated sampling law under parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Response draws with retained sample, observation, array, and event axes.
+        """
+        return self._call("rsample_event", x, sample_shape, event)
+
+    def sampling_distribution(self, x, event=None):
+        """Construct the response law under parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Distribution
+            Underlying response sampling law, normalized on any truncation interval.
+        """
+        return self._call("sampling_distribution", x, event)
+
     def __getattr__(self, name: str) -> torch.Tensor | torch.nn.Module:
         """Read a submodule, or any other attribute from the inner morphism.
 
@@ -1286,6 +1402,15 @@ class _HostSteps:
         drawing: ContinuousMorphism = (
             _ParameterizedMorphism(morphism, values) if values else morphism
         )
+        if isinstance(spec, Observe) and spec.event is not None:
+            from quivers.effects._observation_events import (
+                RecordedObservation,
+                resolve_event,
+            )
+
+            stripped, _ = self._one_run(step, env)
+            payload = resolve_event(spec.event, stripped)
+            drawing = RecordedObservation(drawing, morphism, payload)
         raw_morphism = drawing
         if isinstance(spec, Observe) and spec.weights is not None:
             from quivers.effects._observation_weights import WeightedObservation

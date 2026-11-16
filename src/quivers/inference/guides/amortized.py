@@ -459,7 +459,7 @@ class AmortizedGuide(Guide):
             if site.support is _constraints.corr_cholesky:
                 d = site.constrained_dim
                 value = value.reshape(*value.shape[:-1], d, d)
-        if site.constrained_dim == 1 and value.dim() >= 1 and value.shape[-1] == 1:
+        if site.is_scalar and value.dim() >= 1 and value.shape[-1] == 1:
             value = value.squeeze(-1)
         return value
 

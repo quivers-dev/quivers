@@ -13,7 +13,6 @@ from torch.distributions import (
     Exponential,
     Gamma,
     Normal,
-    Poisson,
     TransformedDistribution,
     Uniform,
 )
@@ -21,62 +20,6 @@ from torch.distributions import (
 from quivers.continuous._ordered import _log1mexp
 from quivers.continuous._truncated_normal import TruncatedNormal
 from quivers._quadrature_constants import _NODES_8, _WEIGHTS_8
-
-
-class _PoissonTails(torch.autograd.Function):
-    """Regularized-gamma tails with the finite Poisson boundary derivative."""
-
-    @staticmethod
-    def forward(ctx, rate: Tensor, count: Tensor) -> tuple[Tensor, Tensor]:
-        """Poisson CDF and strict survival probabilities.
-
-        Parameters
-        ----------
-        ctx : object
-            Autograd context retaining inputs for differentiation.
-        rate : Tensor
-            Nonnegative Poisson rate.
-        count : Tensor
-            Nonnegative integer cutoff.
-
-        Returns
-        -------
-        tuple[Tensor, Tensor]
-            Poisson CDF and strict survival probabilities."""
-        ctx.save_for_backward(rate, count)
-        return (
-            torch.special.gammaincc(count + 1, rate),
-            torch.special.gammainc(count + 1, rate),
-        )
-
-    @staticmethod
-    def backward(ctx, *grad_outputs: Tensor):
-        """Rate cotangent and no count cotangent.
-
-        Parameters
-        ----------
-        ctx : object
-            Autograd context retaining inputs for differentiation.
-        grad_outputs : object
-            Cotangents of the CDF and survival outputs.
-
-        Returns
-        -------
-        object
-            Rate cotangent and no count cotangent."""
-        cdf_gradient, sf_gradient = grad_outputs
-        rate, count = ctx.saved_tensors
-        positive = rate > 0
-        safe_rate = torch.where(positive, rate, 1.0)
-        ordinary = torch.exp(
-            count * safe_rate.log() - safe_rate - torch.lgamma(count + 1)
-        )
-        zero_rate = torch.where(positive, 0.0, rate)
-        boundary = zero_rate.pow(count) * torch.exp(
-            -zero_rate - torch.lgamma(count + 1)
-        )
-        mass = torch.where(positive, ordinary, boundary)
-        return ((sf_gradient - cdf_gradient) * mass).sum_to_size(rate.shape), None
 
 
 def _log_probability(probability: Tensor) -> Tensor:
@@ -202,26 +145,11 @@ def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
         return log_gamma_tails(
             base.concentration, base.rate.double() * value.double().clamp_min(0)
         )
-    if isinstance(base, Poisson):
-        nonnegative = (value >= 0) & torch.isfinite(value)
-        count = torch.where(nonnegative, value.floor(), 0.0)
-        cdf, sf = _PoissonTails.apply(base.rate, count)
-        # Out-of-support arguments must not introduce log(0) derivatives
-        # in inactive branches of a parameter-dependent interval mass.
-        cdf = torch.where(nonnegative, cdf, 1.0)
-        sf = torch.where(nonnegative, sf, 1.0)
-        return (
-            torch.where(
-                value == torch.inf,
-                0.0,
-                torch.where(nonnegative, _log_probability(cdf), -torch.inf),
-            ),
-            torch.where(
-                value == torch.inf,
-                -torch.inf,
-                torch.where(nonnegative, _log_probability(sf), 0.0),
-            ),
-        )
+    from quivers.continuous._count_tails import distribution_count_log_tails
+
+    count_tails = distribution_count_log_tails(base, value)
+    if count_tails is not None:
+        return count_tails
     probability = base.cdf(value)
     return _log_probability(probability), _log_probability(1 - probability)
 

@@ -192,6 +192,75 @@ standalone additive terms; interactions, wrappers around these modifiers, and
 random coefficients on them raise errors. The modifiers' names are reserved in
 the formula evaluation namespace.
 
+### Response modifiers and recorded events
+
+Response modifiers bind observation roles separately from predictor terms.
+Their arguments are bare dataframe column names or scalar numeric/Boolean
+literals; quoted column names and evaluated expressions are refused.
+For instance, this fit combines recorded censoring events, a truncated
+response law, known measurement errors, row selection, and likelihood weights:
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+records = pd.DataFrame({
+    "y": [0.2, 0.6, 0.4, 9.0], "x": [-1.0, 0.0, 1.0, 2.0],
+    "status": [0, 1, 2, 0], "upper": [None, None, 0.8, None],
+    "error": [0.1, 0.1, 0.2, 0.1], "keep": [True, True, True, False],
+    "w": [1.0, 2.0, 1.0, 1.0],
+})
+event_fit = fit(
+    "y | cens(status, upper) + trunc(lb=0, ub=3) + se(error) "
+    "+ subset(keep) + weights(w, scale=True) ~ x",
+    data=records, family="gaussian", method="svi", num_steps=2, seed=19,
+)
+assert event_fit.log_likelihood(num_samples=2)["y"].shape == (1, 2, 3)
+fresh = pd.DataFrame({"x": [-0.5, 0.5], "error": [0.1, 0.2]})
+responses = event_fit.posterior_predict(new_data=fresh, num_samples=2, seed=7)
+assert responses.shape == (1, 2, 2)
+assert ((responses >= 0) & (responses <= 3)).all()
+```
+
+`subset(keep)` runs first, before validating response roles or constructing
+primary, auxiliary, neural, and group designs. The immutable `RowSelection`
+retains the original row positions. Fresh prediction rows are not filtered
+by the training subset again.
+
+`cens(status, upper)` uses codes $-1$ for a left event $Y\leq y$,
+$0$ for an exact observation, $1$ for a right event $Y>y$, and $2$ for
+an interval $y<Y\leq\text{upper}$. The formula binder also accepts
+matching status labels and Boolean false/true for exact/right. An active
+interval requires a finite upper endpoint greater than its response;
+missing upper values on other rows are permitted.
+
+`trunc(lb=low, ub=high)` conditions the response law on inclusive bounds.
+Bounds may be infinite, and equal bounds are valid only when they retain
+positive mass. Predictions sample this conditional law; censoring instead
+changes the recorded likelihood event. Thus raw `log_likelihood` reports
+unweighted event log probabilities under the truncated law, including exact
+response densities where status is zero.
+
+`se(error)` supports Gaussian, Student-t, and skew-normal responses.
+By default, known errors combine with residual `sigma` through
+$\sqrt{\text{error}^2+\sigma^2}$; `se(error, sigma=False)` uses strictly
+positive known errors alone and omits the residual-scale latent and prior.
+`trials(n)` shares the finite-trial family's checked $0\ldots2^{53}$
+integer contract and must agree with any `binomial_trials` keyword.
+`weights(w, scale=True)` normalizes retained weights to the included row
+count after subsetting and refuses zero total weight.
+
+The single `Formula.modifiers` record retains these typed roles and their
+column-or-constant sources. Fresh rows need predictors and the sampling-law
+roles they use, such as measurement error, truncation bounds, and trials.
+Response, censoring, likelihood-weight, and training-subset columns are
+unnecessary. Constant roles are reused without new columns.
+
+Native execution and the checked reference support recorded-event options.
+The direct QVR form uses `observe` options `cens`, `cens_upper`,
+`trunc_lower`, and `trunc_upper`; all 11 external targets currently refuse
+these options explicitly.
+
 ### Likelihood weights
 
 Pass `weights="column"` to multiply each response log density by its row's
@@ -954,7 +1023,10 @@ assert rates.shape == times.shape == mean_times.shape == (1, 2, 2)
 ```
 
 Automatic knots use training event quantiles and the full training follow-up
-span; fresh predictor rows cannot rebuild them. An explicit immutable
+span; exact events determine interior quantiles, while censored follow-up
+and active interval upper endpoints determine the boundary span. Subsets are
+selected before this calculation. Fresh predictor rows cannot rebuild knots.
+An explicit immutable
 `MSplineBasis` can instead be passed to `with_baseline(basis)`. The generated
 QVR retains one coefficient table and contracts it with `sbhaz`, independently
 of the number of observation rows. `priors={"sbhaz": "Dirichlet(2.0)"}`
@@ -963,7 +1035,8 @@ changes every concentration; a vector prior supplies separate concentrations.
 
 The baseline's finite-interval integral is one. Beyond the final knot,
 the positive endpoint hazard continues constantly, yielding a normalized
-response law with finite moments and events beyond the training interval.
+response law with finite moments at each fixed parameter draw and events
+beyond the training interval.
 This tail policy is part of the model, rather than a fitted-data boundary
 restriction. The [hazard guide](continuous-families.md#positive-time-spline-hazards)
 gives the structural source types and knot policy.
@@ -972,8 +1045,46 @@ Response sampling uses the retained inverse cumulative hazard. No closed
 response mean is provided, so `posterior_epred` requires an explicit
 `mc_samples` budget and reports a simulation average. The shared collector
 uses chunks of at most 64 and restores the caller's random state. These
-examples contain exact event times and one shared baseline; censoring and
-group-specific baseline policies are separate response-model choices.
+examples contain exact event times. Recorded censoring events use the common
+`cens(status, upper)` response modifier and the same survival law.
+
+A grouping factor can select a separate normalized baseline profile without
+adding a varying coefficient to the rate predictor:
+
+```python
+import pandas as pd
+from quivers.continuous import MSplineBasis
+from quivers.formulas import families, fit
+
+followup = pd.DataFrame({
+    "y": [0.2, 0.5, 1.0, 1.5], "x": [-1.0, 0.0, 1.0, 0.5],
+    "site": ["a", "b", "a", "b"],
+})
+site_fit = fit(
+    "y ~ x", data=followup,
+    family=families["cox"].with_baseline(
+        MSplineBasis((0.0, 2.0), (), degree=1), by="site",
+    ),
+    method="svi", num_steps=1, seed=7,
+)
+fresh_sites = pd.DataFrame({"x": [0.0, 0.5], "site": ["a", "new"]})
+site_times = site_fit.posterior_predict(
+    new_data=fresh_sites, num_samples=2, seed=13,
+    allow_new_levels=True, sample_new_levels="gaussian", re_formula="~0",
+)
+assert site_times.shape == (1, 2, 2) and (site_times > 0).all()
+```
+
+Every site shares the retained basis and has its own `sbhaz` simplex. The
+compiler contracts its profile once per group, then gathers profiles through
+the checked row-to-group map. `re_formula="~0"` removes varying rate effects
+but retains baseline conditioning. The `uncertainty` and `old_levels` policies
+use the same donor identity for baseline profiles and ordinary group effects.
+For `gaussian`, a new profile follows its Dirichlet prior, while supported
+Normal/LKJ rate effects follow their fitted conditional laws; the policy does
+not approximate a simplex with a Gaussian. Repeated new identities share one
+profile. Direct lens users can retain a structural group with
+`formula_from_data(..., groups=("site",))` without introducing a random term.
 
 ### Censored extended Beta regression
 

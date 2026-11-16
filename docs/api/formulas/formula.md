@@ -37,6 +37,14 @@ in the lens complement. The
 [likelihood-weight guide](../../guides/analysis-data-and-formulas.md#likelihood-weights)
 explains the objective, row alignment, and prediction contract.
 
+`ResponseModifiers` additionally retains `CensoringSpec`, `TruncationSpec`,
+`StandardErrorSpec`, and `RowSelection`, together with trials, weight-scaling
+policy, and the original column-or-constant role sources. Subsetting precedes
+all design and role validation, and retained positions align auxiliary and
+neural inputs. The [response-modifier guide](../../guides/analysis-data-and-formulas.md#response-modifiers-and-recorded-events)
+states event endpoints, scale combination, supported families, and fresh-data
+requirements. These records compare by value and retain read-only column data.
+
 `cs(expr)` marks a transition-specific fixed or group column through
 `FixedColumn.category_specific`. The formula lens retains those flags and
 the authored fixed-column order in `FormulaData.category_specific_columns`
