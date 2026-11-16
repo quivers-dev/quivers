@@ -52,9 +52,11 @@ def _values(centered=False):
         "cor_g": torch.eye(2),
     }
     values.update(
-        {
-            "alpha_g" if centered else "z_g_Intercept": torch.tensor([1.0, 3.0]),
-            "beta_g_x" if centered else "z_g_x": torch.tensor([10.0, 30.0]),
+        {"group_coefficients_g": torch.tensor([[1.0, 10.0], [3.0, 30.0]])}
+        if centered
+        else {
+            "z_g_Intercept": torch.tensor([1.0, 3.0]),
+            "z_g_x": torch.tensor([10.0, 30.0]),
         }
     )
     return values

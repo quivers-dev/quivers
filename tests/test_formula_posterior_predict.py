@@ -359,7 +359,7 @@ def test_correlated_groups_offsets_and_distributional_scale_match_response_law(
     values |= (
         {"z_g_Intercept": standardized[:, 0], "z_g_x": standardized[:, 1]}
         if parameterization == "noncentered"
-        else {"alpha_g": coefficients[:, 0], "beta_g_x": coefficients[:, 1]}
+        else {"group_coefficients_g": coefficients}
     )
     result = _posterior(result, values, draws=150)
     x, z = (torch.tensor(frame[name].to_numpy()).float() for name in ("x", "z"))

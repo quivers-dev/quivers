@@ -19,13 +19,16 @@ if TYPE_CHECKING:
     from xarray import DataTree as _DataTree
     from quivers.inference.guides.base import Guide
     from quivers.inference.mcmc.driver import MCMCResult
+    from quivers.inference.prior import PriorDraws
 else:
     # Keep core posterior summaries importable without the diagnostics extra;
     # static tooling still sees the concrete optional return type.
     _DataTree = object
 
 
-def _sample_stats(posterior: MCMCResult | Guide, count: int) -> dict[str, torch.Tensor]:
+def _sample_stats(
+    posterior: MCMCResult | PriorDraws | Guide, count: int
+) -> dict[str, torch.Tensor]:
     """Retain recorded sampler statistics on the selected draw window."""
     from quivers.inference.mcmc.driver import MCMCResult
 
@@ -171,9 +174,9 @@ class PosteriorAnalysis(ValueModel):
         Responses corresponding to the score units.
     sample_stats : Mapping[str, torch.Tensor]
         Recorded per-draw sampler statistics, empty for variational draws.
-    kind : "mcmc" or "variational"
-        Provenance of the draws. Variational pseudo-chains never supply
-        MCMC convergence diagnostics.
+    kind : "mcmc" or "variational" or "prior"
+        Provenance of the draws. Variational and independent prior layout
+        axes never supply MCMC convergence diagnostics.
 
     Methods consume these retained tensors without replaying the model.
     Tensor mappings are held by identity; callers own their storage.
@@ -191,7 +194,7 @@ class PosteriorAnalysis(ValueModel):
     sample_stats: Mapping[str, torch.Tensor] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    kind: Literal["mcmc", "variational"] = "mcmc"
+    kind: Literal["mcmc", "variational", "prior"] = "mcmc"
 
     def _validate_axes(self) -> None:
         """Check that posterior and likelihood groups share chain/draw axes."""
@@ -199,7 +202,7 @@ class PosteriorAnalysis(ValueModel):
         for values in self.samples.values():
             if (
                 values.ndim < 2
-                or not values.is_floating_point()
+                or (not values.is_floating_point() and self.kind != "prior")
                 or not all(values.shape)
             ):
                 raise ValueError(
@@ -211,8 +214,10 @@ class PosteriorAnalysis(ValueModel):
                 raise ValueError("posterior sites have incompatible chain/draw axes")
         if shape is None:
             raise ValueError("posterior analysis requires latent draws")
-        if self.kind == "variational" and shape[0] != 1:
-            raise ValueError("variational draws must have one pseudo-chain")
+        if self.kind != "mcmc" and shape[0] != 1:
+            raise ValueError(
+                "variational draws must have one pseudo-chain; independent prior draws require one layout axis"
+            )
         for values in self.log_likelihood.values():
             if (
                 values.ndim < 3
@@ -225,8 +230,10 @@ class PosteriorAnalysis(ValueModel):
         for values in self.sample_stats.values():
             if values.ndim != 2 or values.shape != shape:
                 raise ValueError("sampler statistics must match chain/draw axes")
-        if self.kind == "variational" and self.sample_stats:
-            raise ValueError("variational draws have no recorded sampler statistics")
+        if self.kind != "mcmc" and self.sample_stats:
+            raise ValueError(
+                "variational and independent prior draws have no sampler statistics"
+            )
 
     def summary(
         self, *, probs: Sequence[float] = (0.05, 0.5, 0.95)
@@ -260,7 +267,7 @@ class PosteriorAnalysis(ValueModel):
         for name, values in self.samples.items():
             if (
                 values.ndim < 2
-                or not values.is_floating_point()
+                or (not values.is_floating_point() and self.kind != "prior")
                 or not all(values.shape)
             ):
                 raise ValueError(
@@ -375,7 +382,7 @@ class PosteriorAnalysis(ValueModel):
             self.to_datatree(),
             var_name=name,
             pointwise=pointwise,
-            reff=1.0 if self.kind == "variational" else None,
+            reff=1.0 if self.kind != "mcmc" else None,
         )
 
 

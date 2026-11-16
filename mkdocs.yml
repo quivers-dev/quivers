@@ -405,6 +405,7 @@ nav:
       - MCMC (HMC / NUTS): api/inference/mcmc.md
       - Bayesian Lifts: api/inference/lifts.md
       - Predictive: api/inference/predictive.md
+      - Prior sampling: api/inference/prior.md
     - Data:
       - Overview: api/data/index.md
       - Dataset Schema: api/data/schema.md
@@ -442,6 +443,7 @@ nav:
       - Sampleables: api/effects/sites.md
       - Traces: api/effects/trace.md
       - Trace types: api/effects/trace_types.md
+      - Observation scoring: api/effects/observation_scoring.md
       - Handlers: api/effects/handlers.md
       - Collapse: api/effects/collapse.md
       - Conjugate marginals: api/effects/conjugate.md

@@ -22,6 +22,7 @@ objectives : Variational objectives (ELBO, IWAEBound, RenyiBound,
     VRIWAEBound, ChiVI, RWS, DReGsBound).
 svi : Stochastic variational inference training loop.
 predictive : Posterior predictive sampling.
+prior : Independent conditional prior draws and prior-only inference.
 transforms : Learnable bijections that normalizing-flow guides stack.
 dais : Differentiable annealed importance sampling guide.
 warmup : Variational warmup before HMC.
@@ -31,6 +32,7 @@ lifts : Bayesian lifts of non-Bayesian models.
 from __future__ import annotations
 
 from quivers.inference.trace import Trace, SampleSite, trace
+from quivers.inference.prior import PriorDraws, PriorMode, prior_draws
 from quivers.inference.conditioning import Conditioned, condition
 from quivers.inference.registry import LatentRegistry, LatentSite
 from quivers.inference.guides import (
@@ -123,6 +125,9 @@ from quivers.inference.lifts import (
 )
 
 __all__ = [
+    "PriorDraws",
+    "PriorMode",
+    "prior_draws",
     "Trace",
     "SampleSite",
     "trace",

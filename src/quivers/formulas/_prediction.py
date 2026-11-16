@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import (
@@ -26,6 +26,7 @@ from quivers.dsl.ast_nodes import (
     TypeFromExpr,
 )
 from quivers.formulas.formula import FixedColumn, Formula, _CS_ONES, _qvr_name
+from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.inference.registry import LatentRegistry
 from quivers.formulas._group_prediction import (
     GroupRemap,
@@ -49,6 +50,8 @@ class FormulaPredictionPlan(ValueModel):
         Training program, including its priors and latent dimensions.
     designs : Mapping[str, DesignMatrices]
         Evaluated location and auxiliary formulas, retaining transform state.
+    group_layouts : tuple[GroupBlockLayout, ...]
+        Emitted raw group sites and coefficient-coordinate slices.
     version : str
         Runtime-plan schema identifier. This plan contains formulae objects
         and is deliberately not a portable serialized model representation.
@@ -57,6 +60,9 @@ class FormulaPredictionPlan(ValueModel):
     module: Module = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     designs: Mapping[str, DesignMatrices] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    group_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     version: Literal["qvr-formula-prediction/v1"] = "qvr-formula-prediction/v1"
 
@@ -92,6 +98,9 @@ class PredictionContext(ValueModel):
         Number of prediction rows.
     groups : dict[str, GroupRemap]
         Compact grouping axes and fitted raw-site mappings.
+    prior_program : MonadicProgram or None
+        One dependency projection for conditional new-group draws, prepared
+        once per request rather than rebuilt for every posterior draw.
     new_level_policy : NewLevelPolicy
         Joint donor or conditional Gaussian policy for new identities.
     seed : int
@@ -110,6 +119,9 @@ class PredictionContext(ValueModel):
     rows: int
     groups: dict[str, GroupRemap] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    prior_program: MonadicProgram | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     new_level_policy: NewLevelPolicy = "uncertainty"
     seed: int = 0
@@ -426,7 +438,13 @@ def _set_trial_rows(
             raise ValueError(
                 "constant scalar trial overrides require fitting with a trial column"
             )
-        observations[response] = torch.zeros(len(counts), device=counts.device)
+        from quivers.formulas._response import response_dtype
+
+        observations[response] = torch.zeros(
+            len(counts),
+            device=counts.device,
+            dtype=response_dtype(fit.formula, fit.family),
+        )
 
 
 @torch.random.fork_rng(devices=[])
@@ -486,7 +504,8 @@ def prepare_prediction(
             "sample_new_levels must be uncertainty, old_levels, gaussian, "
             "feasible_uncertainty, or feasible_gaussian"
         )
-    formulas = {"mu": fit.formula, **fit.distributional}
+    formulas = {name: formula for name, _, formula in fit._predictor_items()}
+    prefixes = {name: prefix for name, prefix, _ in fit._predictor_items()}
     constrained_cs = (
         fit.family.ordinal is not None
         and fit.family.ordinal.kind in {"cumulative", "hurdle_cumulative"}
@@ -536,7 +555,9 @@ def prepare_prediction(
             raise ValueError("predictor_data requires new_data")
         if plan is None:
             raise ValueError("this fit has no retained formula prediction plan")
-        module = select_contributions(plan.module, formulas, selected)
+        module = select_contributions(
+            plan.module, formulas, selected, prefixes=prefixes
+        )
         program = Compiler(module).compile().morphism
         if not isinstance(program, MonadicProgram):
             raise TypeError("prediction requires a native monadic program")
@@ -597,12 +618,12 @@ def prepare_prediction(
             "policy, conditioned on ordered thresholds for the requested rows"
         )
     observations: dict[str, torch.Tensor] = {}
-    for parameter, formula in (("mu", fit.formula), *fit.distributional.items()):
+    for parameter, prefix, formula in fit._predictor_items():
         bindings = _predictor_bindings(
             formula,
             plan.designs[parameter],
             frame,
-            "" if parameter == "mu" else f"dpar_{parameter}_",
+            prefix,
             groups,
             selected,
         )
@@ -611,19 +632,19 @@ def prepare_prediction(
                 raise ValueError(f"new_data has inconsistent shared input {name!r}")
             observations[name] = value
 
+    if fit.predictor_graph is not None:
+        from quivers.formulas._predictor_graph import graph_input_bindings
+
+        observations.update(graph_input_bindings(fit.predictor_graph, frame))
+
     from quivers.formulas._fit import _binomial_trial_tensor, _predictor_output
 
     rows = len(frame)
     # Responses are internal replay placeholders, never read from new_data.
     # Reusing a fitted support point avoids family-specific prediction algebra.
-    point = torch.as_tensor(
-        fit.formula.response_values[0].copy()
-        if fit.formula.response_layout.event_shape
-        else float(fit.formula.response_values[0]),
-        dtype=torch.float64
-        if fit.formula.response_layout.event_shape
-        else torch.float32,
-    )
+    from quivers.formulas._response import response_point
+
+    point = response_point(fit.formula, fit.family)
     from quivers.formulas._response_modifiers import response_input_name
 
     observations[response_input_name(fit.formula)] = point.expand(
@@ -694,10 +715,18 @@ def prepare_prediction(
         }
         module, _ = fit._formula_lens(
             distributional={
-                name: formula for name, formula in specialized.items() if name != "mu"
-            }
+                name: formula
+                for name, formula in specialized.items()
+                if name in fit.distributional
+            },
+            nonlinear_leaves={
+                name: formula
+                for name, formula in specialized.items()
+                if fit.predictor_graph is not None
+                and name in fit.predictor_graph.leaves
+            },
         ).forward(specialized["mu"])
-        module = select_contributions(module, formulas, selected)
+        module = select_contributions(module, formulas, selected, prefixes=prefixes)
     statements = []
     for statement in module.statements:
         if isinstance(statement, ObjectDecl) and statement.names == ("Resp",):
@@ -734,11 +763,21 @@ def prepare_prediction(
                 raise TypeError(
                     f"new_data specialization changed group layout at {name!r}"
                 )
+    prior_program = None
+    if sample_new_levels.removeprefix("feasible_") == "gaussian" and any(
+        -1 in group.fitted_indices
+        and not set(group.sites) <= group.standard_normal_sites
+        for group in groups.values()
+    ):
+        from quivers.inference._prior_projection import project_prior_sites
+
+        prior_program = project_prior_sites(program, group_sites)
     return PredictionContext(
         program=program,
         observations=observations,
         rows=rows,
         groups=groups,
+        prior_program=prior_program,
         new_level_policy=sample_new_levels,
         seed=seed,
         retain_ordinal_cutpoints=constrained_cs,

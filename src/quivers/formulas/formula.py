@@ -43,6 +43,7 @@ import numpy as np
 from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
+from quivers.formulas._group_layout import GroupBlockLayout
 
 
 #: R-style transforms wired into formulae's evaluation namespace.
@@ -582,6 +583,9 @@ class FormulaData(ValueModel):
         the linear-predictor scale. These columns receive no coefficients.
     group_indices : dict[str, tuple[int, ...]]
         Per-row integer codes for each group.
+    group_layouts : tuple[GroupBlockLayout, ...]
+        Immutable coordinate layouts from this forward pass, independent of
+        subsequent uses of the configured lens.
     random_terms : tuple[RandomTerm, ...]
         Original slope-column data and correlation identities, matched to
         the group/slope structure decoded from the emitted module.
@@ -608,6 +612,9 @@ class FormulaData(ValueModel):
     group_original_names: dict[str, str] = dx.field(default_factory=dict)
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
+    group_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     offsets: tuple[FixedColumn, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -1103,7 +1110,7 @@ def _formula_and_design(
         ordered=ordered_response,
     )
     response_values = response_values.astype(
-        np.int64 if vector_response and integer_carrier else np.float64
+        np.int64 if integer_carrier else np.float64
     )
 
     validate_event_response(

@@ -6,6 +6,14 @@ Posterior draws carry the uncertainty in the coefficients, and predictive draws 
 of the response given those coefficients. `formula_to_qvr` emits the QVR source of a formula. `get_prior` returns the
 effective named priors, including autoscaled defaults, without running inference.
 Unknown or unused prior overrides raise `ValueError` before fitting.
+`sample_prior="yes"` retains an independent prior stream without changing the
+fitted posterior; `sample_prior="only"` disables observation likelihoods during
+the selected inference method and retains priors and explicit score potentials.
+`prior_draws` and `prior_view` reuse the retained conditional laws, data-dependent
+priors, encodings, and existing prediction/likelihood methods. Independent
+samples have no MCMC convergence statistics. See
+[prior-only fitting](../../guides/analysis-fitting-and-diagnostics.md#prior-only-fitting-and-independent-prior-draws)
+for seed and factor-conditioned sampling semantics.
 `fixed_parameters={"quantile": 0.9}` performs asymmetric Laplace quantile regression
 at a specified quantile, and other auxiliary parameters can likewise be held fixed.
 All three entry points accept
@@ -56,6 +64,34 @@ gives an executable example and the retained evaluator's serialization boundary.
 observation-only likelihood weights. The column is retained on the parsed
 formula; posterior predictors use the unweighted response law at each draw.
 See [likelihood weights](../../guides/analysis-data-and-formulas.md#likelihood-weights).
+
+Both `reparameterize="centered"` and `"noncentered"` support correlated
+blocks with mixed scalar, transition, and response-component widths.
+Coefficient labels and inspection methods retain their meanings across
+coordinates. Correlated centered blocks have a joint
+`group_coefficients_<block>` site; centered grouped threshold log slacks
+use `cutpoint_log_spacing_value`. These are natural-scale site names for
+`initial_values`; the corresponding noncentered sites contain innovations.
+Gaussian prediction prepares the requested group sites' upstream prior
+program once per request and replays their conditional law at each draw,
+without executing unrelated downstream response computations.
+
+## Nonlinear predictors
+
+`nonlinear` maps parameter names to one-sided additive formulas or
+`NonlinearExpression` values. With the argument present, the main right
+side is a deterministic QVR expression; `distributional` expressions supply
+other family outputs on their link scales. The graph is dependency-checked,
+retains each additive leaf's fitted design, and applies each output's
+inverse link once. Component mappings use explicit free-coordinate labels.
+The [nonlinear workflow](../../guides/analysis-data-and-formulas.md#nonlinear-parameter-predictors)
+gives an executable fit and explains coefficient names and default priors.
+
+::: quivers.formulas.NonlinearExpression
+
+::: quivers.formulas.ComponentExpression
+
+::: quivers.formulas.PredictorGraph
 
 ## Decoded response draws
 

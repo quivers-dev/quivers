@@ -16,6 +16,7 @@ from quivers.continuous.programs import MonadicProgram
 from quivers.inference._posterior import sample_count
 from quivers.inference.guides import Guide
 from quivers.inference.mcmc.driver import MCMCResult
+from quivers.inference.prior import PriorDraws
 from quivers.inference.trace import trace
 
 
@@ -23,7 +24,8 @@ class Predictive:
     """Posterior predictive sampler.
 
     Accepts either a trained `Guide` (variational
-    posterior) or an `MCMCResult` (Monte Carlo posterior).
+    posterior), an `MCMCResult` (Monte Carlo posterior), or independent
+    `PriorDraws` from the retained prior law.
     Variational case: draws ``num_samples`` fresh guide samples.
     MCMC case: iterates over the recorded posterior draws (one
     forward trace per draw, up to ``num_samples`` if specified).
@@ -38,7 +40,7 @@ class Predictive:
     ----------
     model : MonadicProgram
         Generative model.
-    posterior : Guide or MCMCResult
+    posterior : Guide or MCMCResult or PriorDraws
         Trained posterior representation.
     num_samples : int, optional
         Number of predictive draws. Defaults to ``100`` for guides
@@ -50,7 +52,7 @@ class Predictive:
     Raises
     ------
     TypeError
-        If ``posterior`` is neither a `Guide` nor an `MCMCResult`.
+        If ``posterior`` is not a supported guide or recorded draw container.
     ValueError
         If ``num_samples`` is not a positive integer, or the posterior
         has no retained draws.
@@ -59,12 +61,12 @@ class Predictive:
     def __init__(
         self,
         model: MonadicProgram,
-        posterior: Guide | MCMCResult,
+        posterior: Guide | MCMCResult | PriorDraws,
         num_samples: int | None = None,
     ) -> None:
-        if not isinstance(posterior, (Guide, MCMCResult)):
+        if not isinstance(posterior, (Guide, MCMCResult, PriorDraws)):
             raise TypeError(
-                f"Predictive: posterior must be Guide or MCMCResult; "
+                f"Predictive: draws must be Guide or MCMCResult or PriorDraws; "
                 f"got {type(posterior).__name__}"
             )
         self.model = model
@@ -73,12 +75,12 @@ class Predictive:
             num_samples,
             available=(
                 posterior.num_chains * posterior.num_samples
-                if isinstance(posterior, MCMCResult)
+                if isinstance(posterior, (MCMCResult, PriorDraws))
                 else None
             ),
         )
 
-    def _iter_mcmc_latents(self) -> Iterator[dict[str, torch.Tensor]]:
+    def _iter_recorded_latents(self) -> Iterator[dict[str, torch.Tensor]]:
         """Return ``num_samples`` recorded posterior draws, one dict each,
         flattening the chain and sample axes.
 
@@ -89,7 +91,7 @@ class Predictive:
             `LatentSite.constrained_shape`: one value every run of the
             predictive call shares.
         """
-        assert isinstance(self.posterior, MCMCResult)
+        assert isinstance(self.posterior, (MCMCResult, PriorDraws))
         samples = self.posterior.samples
         chain_samples = self.posterior.num_chains * self.posterior.num_samples
         # Random selection without replacement (when num_samples
@@ -134,7 +136,7 @@ class Predictive:
         if isinstance(self.posterior, Guide):
             latents_iter = (self.posterior.rsample(x) for _ in range(self.num_samples))
         else:
-            latents_iter = self._iter_mcmc_latents()
+            latents_iter = self._iter_recorded_latents()
 
         from quivers.inference._posterior import collect_site_draws
 

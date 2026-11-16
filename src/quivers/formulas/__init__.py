@@ -54,6 +54,12 @@ from quivers.formulas.family import (
 from quivers.formulas.compile import (
     FormulaToQVRModule,
 )
+from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
+from quivers.formulas._predictor_graph import (
+    NonlinearExpression,
+    ComponentExpression,
+    PredictorGraph,
+)
 from quivers.formulas._fit import BayesianFit, fit, formula_to_qvr, get_prior
 from quivers.formulas._response_modifiers import (
     ResponseDraws,
@@ -88,6 +94,11 @@ __all__ = [
     "families",
     # compile
     "FormulaToQVRModule",
+    "GroupBlockLayout",
+    "GroupMemberLayout",
+    "NonlinearExpression",
+    "ComponentExpression",
+    "PredictorGraph",
     # _fit
     "BayesianFit",
     "fit",

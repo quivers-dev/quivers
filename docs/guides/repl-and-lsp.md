@@ -1003,7 +1003,8 @@ Cell semantics:
 - Leading-`:` lines are dispatched as meta-commands.
 - Other lines are appended to the live module and compiled.
 - Blank lines before a new top-level declaration separate chunks. Blank lines
-  inside indented declarations remain part of the declaration. A top-level
+  inside declarations, including hanging static or runtime parameter lists,
+  remain part of the declaration. Chunk boundaries use the QVR parser. A top-level
   meta-command starts its own chunk, with or without a preceding blank line.
 - A failed chunk stops the cell and returns structured error details. Silent
   execution suppresses output messages but retains the error status.

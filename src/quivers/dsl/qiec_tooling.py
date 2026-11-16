@@ -239,6 +239,7 @@ def analyze_module(
     *,
     module_name: str,
     file_path: str | None = None,
+    compile_categorical: bool = True,
 ) -> ToolingAnalysis:
     """Run the QIEC lowerer and existing compiler without conflating them.
 
@@ -256,6 +257,10 @@ def analyze_module(
         what the rest of the pipeline uses.
     file_path : str or None
         Path recorded on diagnostics, or None when the source has no file.
+    compile_categorical : bool
+        Also compile ordinary declarations. A caller with an independently
+        established family-shape error may disable this pass while retaining
+        QIEC diagnostics from the shared analyzer.
 
     Returns
     -------
@@ -291,7 +296,13 @@ def analyze_module(
         compiler = Compiler(non_qiec_module, lower_qiec=False)
     compile_error: CompileError | None = None
     try:
-        env = compiler.compile_env(defer_unresolved=has_inferred_objects(module))
+        env = (
+            compiler.compile_env(defer_unresolved=has_inferred_objects(module))
+            if compile_categorical
+            else {}
+        )
+        if compile_categorical:
+            compiler._compile_exports()
     except CompileError as error:
         compile_error = error
         env = {}

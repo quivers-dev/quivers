@@ -300,12 +300,16 @@ class DocumentState:
         visible: list[QiecLocalDecl] = []
 
         if isinstance(owner, ProgramDecl):
+            from quivers.dsl.program_templates import (
+                static_program_parameters,
+                runtime_program_parameters,
+            )
+
             visible.extend(
                 local
                 for local in (
-                    *(owner.type_params or ()),
-                    *owner.binders,
-                    *owner.value_parameters,
+                    *static_program_parameters(owner),
+                    *runtime_program_parameters(owner),
                 )
                 if _binder_has_entered_scope(local, source_line, source_col)
             )

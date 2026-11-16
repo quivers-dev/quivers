@@ -1429,6 +1429,11 @@ class _HostSteps:
             annotations["subsample_scale"] = factor
             annotations["subsample_rows"] = rows
             drawing = _SubsampledMorphism(drawing, rows, factor)
+        if isinstance(spec, Observe):
+            from quivers.effects.observation_scoring import _enabled, _UnscoredObservation
+
+            if not _enabled(self.run):
+                drawing = _UnscoredObservation(drawing)
         if drawing is morphism:
             return TorchSampleable(morphism=morphism, input=inp)
         return TorchSampleable(
@@ -1604,6 +1609,11 @@ class _HostSteps:
         """
         spec = step.spec
         assert isinstance(spec, Score)
+        from quivers.effects.observation_scoring import _enabled
+
+        if spec.role == "likelihood" and not _enabled(self.run):
+            self.axis.record(step.program, spec.name, True)
+            return torch.zeros(self.x.shape[0], device=self.x.device)
         stripped, carried = self._one_run(step, _environment(step, argument))
         value = spec.score(stripped)
         if carried:

@@ -318,10 +318,11 @@ def test_cs_refusals_are_explicit_and_reserved_column_cannot_be_overridden():
         formula_to_qvr(
             "y ~ x", data=data, family="acat", distributional={"disc": "~cs(x)"}
         )
-    with pytest.raises(ValueError, match="noncentered"):
-        formula_to_qvr(
-            "y ~ x + (0+cs(x)|g)", data=data, family="acat", reparameterize="centered"
-        )
+    centered = formula_to_qvr(
+        "y ~ x + (0+cs(x)|g)", data=data, family="acat", reparameterize="centered"
+    )
+    assert "MultivariateNormal" in centered
+    loads(centered)
     with pytest.raises(ValueError, match="reserved"):
         formula_from_data("y~cs(1)", data.assign(qvrCSInterceptOnes=2.0))
 

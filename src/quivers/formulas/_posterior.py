@@ -65,6 +65,7 @@ def replay(
     shape: tuple[int, int],
     *,
     context: PredictionContext | None = None,
+    score_observations: bool = False,
 ) -> Iterator[Trace]:
     """Replay the retained native program once per draw, without recompilation.
 
@@ -78,6 +79,9 @@ def replay(
         The chain count and draw count.
     context : PredictionContext or None
         Prepared fresh-row program and bindings, or None for training rows.
+    score_observations : bool
+        Evaluate observed densities for raw likelihood analysis. Prediction
+        defaults omit scoring placeholder responses while retaining priors.
 
     Yields
     ------
@@ -90,7 +94,9 @@ def replay(
         If fresh rows cross retained thresholds, or a conditional new-group
         policy exhausts its proposal budget. Posterior draws remain unchanged.
     """
-    with torch.no_grad():
+    from quivers.effects.observation_scoring import observation_scoring
+
+    with torch.no_grad(), observation_scoring(score_observations):
         observations = dict(
             fit.observations if context is None else context.observations
         )

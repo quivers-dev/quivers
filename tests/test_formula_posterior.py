@@ -84,7 +84,7 @@ def test_correlated_native_group_bindings_reconstruct_coefficients(
     values |= (
         {"z_g_Intercept": z[:, 0], "z_g_x": z[:, 1]}
         if parameterization == "noncentered"
-        else {"alpha_g": coefficients[:, 0], "beta_g_x": coefficients[:, 1]}
+        else {"group_coefficients_g": coefficients}
     )
     result = _recorded(result, values)
     groups = result.random_effects()["g"]

@@ -22,7 +22,9 @@ vector components, and scalar factor levels with their declared order.
 `cbind(a, b, c)` contributes one vector event per row, whereas a factor
 response contributes one integer code per row. `FormulaData` retains this
 layout through the lens complement; neither serialization nor prediction
-flattens the event into observation rows.
+flattens the event into observation rows. `FormulaData.group_layouts` also
+retains the matching immutable Gaussian coefficient layout. An interleaved
+forward pass on another formula cannot change that complement's reconstruction.
 
 `Formula.offsets` retains coefficient-free `offset(expr)` and `exposure(expr)`
 columns as read-only `FixedColumn` values. Exposure contributes the logarithm of

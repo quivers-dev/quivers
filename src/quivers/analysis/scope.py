@@ -59,6 +59,7 @@ from quivers.dsl.ast_nodes import (
     ObserveStep,
     ObjectDecl,
     ProgramDecl,
+    QiecValueParameter,
     ReturnStep,
     SampleStep,
     TypeFromExpr,
@@ -314,8 +315,14 @@ def _scope_for_program(ref: ScopedRef) -> Mapping[str, ScopedRef]:
     """
     decl = ref.node
     out: dict[str, ScopedRef] = {}
-    # Type parameters: alpha : Real, beta : Real, etc.
-    for p in getattr(decl, "type_params", None) or ():
+    from quivers.dsl.program_templates import (
+        static_program_parameters,
+        runtime_program_parameters,
+    )
+
+    static = static_program_parameters(decl) if isinstance(decl, ProgramDecl) else ()
+    runtime = runtime_program_parameters(decl) if isinstance(decl, ProgramDecl) else ()
+    for p in static:
         pname = getattr(p, "name", None)
         if isinstance(pname, str) and pname:
             out[pname] = ScopedRef(
@@ -325,20 +332,10 @@ def _scope_for_program(ref: ScopedRef) -> Mapping[str, ScopedRef]:
                 parent_kind=ref.kind,
                 node=p,
             )
-    for binder in getattr(decl, "binders", ()):
-        out[binder.name] = ScopedRef(
-            name=binder.name,
-            kind="param",
-            path=f"{ref.path}::{binder.name}",
-            parent_kind=ref.kind,
-            node=binder,
-        )
-    for parameter in getattr(decl, "value_parameters", ()):
-        if parameter.name in out:
-            continue
+    for parameter in runtime:
         out[parameter.name] = ScopedRef(
             name=parameter.name,
-            kind="data-input",
+            kind="data-input" if isinstance(parameter, QiecValueParameter) else "param",
             path=f"{ref.path}::{parameter.name}",
             parent_kind=ref.kind,
             node=parameter,

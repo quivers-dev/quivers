@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Literal, cast
 
 import didactic.api as dx
 import torch
@@ -15,15 +15,13 @@ from quivers.dsl.ast_nodes import (
     ExportDecl,
     ExprIdent,
     ProgramDecl,
-    ScalarParam,
-    QiecTypeBinder,
-    QiecIndexBinder,
-    QiecEffectBinder,
 )
 from quivers.effects import CheckedProgram
 from quivers.effects.interpreter import check_host_data
 from quivers.effects.program_module import once_sites, scanned_sites
 from quivers.inference import (
+    PriorDraws,
+    PriorMode,
     Guide,
     LatentRegistry,
     MCMC,
@@ -203,6 +201,9 @@ class Model:
         parameters: Mapping[str, object] | None = None,
         input: torch.Tensor | None = None,
         seed: int = 0,
+        sample_prior: PriorMode = "no",
+        num_prior_samples: int = 100,
+        prior_seed: int = 1,
     ) -> Result:
         """Bind external data and apply an inference method in one call.
 
@@ -218,6 +219,14 @@ class Model:
             One-run domain input, if the program reads one.
         seed : int
             Compilation seed, independent of the method's inference seed.
+        sample_prior : {"no", "yes", "only"}
+            Ordinary fitting, ordinary fitting plus independent prior draws,
+            or inference with observation likelihoods disabled. Explicit score
+            potentials remain active in prior-only inference.
+        num_prior_samples : int
+            Positive independent draw budget for mode "yes".
+        prior_seed : int
+            Isolated prior stream, independent of the inference method.
 
         Returns
         -------
@@ -225,7 +234,10 @@ class Model:
             The method's result with its own type and semantics.
         """
         return self.bind(data, parameters=parameters, input=input, seed=seed).infer(
-            method
+            method,
+            sample_prior=sample_prior,
+            num_prior_samples=num_prior_samples,
+            prior_seed=prior_seed,
         )
 
     def bind(
@@ -288,16 +300,13 @@ class Model:
             for statement in self.syntax.statements
             if isinstance(statement, ProgramDecl) and statement.name == self.entry
         )
+        from quivers.dsl.program_templates import static_program_parameters
+
         static_names = {
-            binder.name
-            for binder in declaration.binders
-            if isinstance(binder, QiecTypeBinder | QiecIndexBinder | QiecEffectBinder)
+            name
+            for parameter in static_program_parameters(declaration)
+            if isinstance(name := getattr(parameter, "name", None), str)
         }
-        static_names.update(
-            parameter.name
-            for parameter in declaration.type_params or ()
-            if not isinstance(parameter, ScalarParam)
-        )
         if extra := set(arguments) - static_names:
             raise ValueError(
                 f"unknown static parameters: {sorted(extra)}; supply runtime values in data"
@@ -323,8 +332,6 @@ class Model:
             if self.entry in compiler.morphisms:
                 program = compiler.morphisms[self.entry]
             else:
-                from quivers.dsl.program_templates import static_program_parameters
-
                 invoker = compiler._make_template_invoker(self.entry)
                 template = compiler._program_templates[self.entry]
                 application = {
@@ -492,20 +499,98 @@ class BoundModel(ValueModel):
             )
         return rebound
 
-    def infer[Result](self, method: InferenceMethod[Result]) -> Result:
+    def infer[Result](
+        self,
+        method: InferenceMethod[Result],
+        *,
+        sample_prior: PriorMode = "no",
+        num_prior_samples: int = 100,
+        prior_seed: int = 1,
+    ) -> Result:
         """Apply a method without imposing a posterior-draw result contract.
 
         Parameters
         ----------
         method : InferenceMethod[Result]
             Solver responsible for its capability checks and result metadata.
+        sample_prior : {"no", "yes", "only"}
+            Fit the posterior, additionally retain independent priors, or
+            disable declared observation and marginalized likelihood scores.
+        num_prior_samples : int
+            Positive independent prior draw budget for mode "yes".
+        prior_seed : int
+            Isolated CPU stream for independent prior draws.
 
         Returns
         -------
         Result
             The solver's result without conversion.
+
+        Raises
+        ------
+        ValueError
+            If the policy is invalid or global score potentials prevent
+            independent prior sampling.
+        TypeError
+            If mode "yes" is requested from a solver not returning ModelFit.
         """
-        return method.run(self)
+        from quivers.effects.observation_scoring import observation_scoring
+        from quivers.inference.prior import _ancestral_program, _prior_mode
+
+        mode = _prior_mode(sample_prior)
+        if mode == "yes":
+            from quivers.inference._posterior import sample_count
+
+            sample_count(num_prior_samples)
+            _ancestral_program(self.require_tensor_program())
+        with observation_scoring(mode != "only"):
+            result = method.run(self)
+        if isinstance(result, ModelFit):
+            prior = (
+                self.prior_draws(num_samples=num_prior_samples, seed=prior_seed)
+                if mode == "yes"
+                else None
+            )
+            return cast(Result, result.with_(sample_prior=mode, prior=prior))
+        if mode == "yes":
+            raise TypeError(
+                "sample_prior='yes' requires an inference method returning ModelFit"
+            )
+        return result
+
+    def prior_draws(
+        self,
+        *,
+        num_samples: int = 100,
+        seed: int = 0,
+        method: Literal["ancestral"] | MCMC = "ancestral",
+    ) -> PriorDraws | MCMCResult:
+        """Draw retained conditional priors, or use explicit factor-conditioned MCMC.
+
+        Parameters
+        ----------
+        num_samples : int
+            Positive independent ancestral draw count.
+        seed : int
+            Isolated CPU random stream.
+        method : {"ancestral"} or MCMC
+            Independent sampling, or a configured driver for global potentials.
+
+        Returns
+        -------
+        PriorDraws or MCMCResult
+            Independent constrained draws or genuine factor-conditioned chains.
+        """
+        from quivers.inference.prior import prior_draws
+
+        return prior_draws(
+            self.require_tensor_program(),
+            self.input,
+            self.tensor_data(),
+            num_samples=num_samples,
+            seed=seed,
+            method=method,
+        )
 
     def sample(self, sampler: MCMC) -> ModelFit:
         """Fit using a configured MCMC driver, including its budgets and hooks.
@@ -612,14 +697,25 @@ class ModelFit(ValueModel):
     ----------
     model : BoundModel
         Data, checked schema, and compiled model used by this fit.
-    posterior : MCMCResult or Guide
-        MCMC draws and diagnostics, or a variational guide, held by identity.
+    posterior : MCMCResult or PriorDraws or Guide
+        Genuine MCMC chains, independent prior draws, or a variational guide.
+        Live posterior objects are held by identity.
+    sample_prior : {"no", "yes", "only"}
+        Observation-scoring and retained-prior policy used for this fit.
+    prior : PriorDraws or MCMCResult or None
+        Retained independent priors or explicitly factor-conditioned chains.
     losses : tuple[float, ...]
         Optimization losses for a variational fit; empty for MCMC.
     """
 
     model: BoundModel = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    posterior: MCMCResult | Guide = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    posterior: MCMCResult | PriorDraws | Guide = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    sample_prior: PriorMode = "no"
+    prior: PriorDraws | MCMCResult | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     losses: tuple[float, ...] = ()
 
@@ -639,7 +735,7 @@ class ModelFit(ValueModel):
         """
         if not isinstance(self.posterior, MCMCResult):
             raise TypeError(
-                "a variational posterior has no recorded chains; use draws(num_samples=...)"
+                "this fit has no recorded MCMC chains; use draws(num_samples=...)"
             )
         return self.posterior.samples
 
@@ -675,6 +771,39 @@ class ModelFit(ValueModel):
             num_samples=num_samples,
             seed=seed,
         )
+
+    def prior_view(
+        self,
+        *,
+        num_samples: int | None = None,
+        seed: int = 0,
+        method: Literal["ancestral"] | MCMC = "ancestral",
+    ) -> ModelFit:
+        """Reuse prediction and analysis with retained or newly sampled prior draws.
+
+        Parameters
+        ----------
+        num_samples : int or None
+            Fresh independent count, or None to reuse retained priors. Without
+            retained draws, None generates 100 independent draws.
+        seed : int
+            Isolated CPU stream for fresh ancestral samples.
+        method : {"ancestral"} or MCMC
+            Conditional sampling or explicit factor-conditioned inference.
+
+        Returns
+        -------
+        ModelFit
+            A view sharing the bound model and its original priors.
+        """
+        prior = self.prior
+        if prior is None or num_samples is not None or method != "ancestral":
+            prior = self.model.prior_draws(
+                num_samples=100 if num_samples is None else num_samples,
+                seed=seed,
+                method=method,
+            )
+        return self.with_(posterior=prior, sample_prior="only", prior=prior, losses=())
 
     def predict(
         self,
@@ -879,7 +1008,11 @@ class ModelFit(ValueModel):
             log_likelihood=likelihood,
             observed_data={name: values[name] for name in observations},
             sample_stats=_sample_stats(self.posterior, shape[1]),
-            kind="mcmc" if isinstance(self.posterior, MCMCResult) else "variational",
+            kind="mcmc"
+            if isinstance(self.posterior, MCMCResult)
+            else "prior"
+            if isinstance(self.posterior, PriorDraws)
+            else "variational",
         )
 
     def summary(self) -> dict[str, ConvergenceSummary]:

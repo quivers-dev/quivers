@@ -5374,6 +5374,7 @@ class _ProgramsMixin:
                         (
                             Score(
                                 name=marg_name,
+                                role="likelihood",
                                 score=reading(
                                     _marginalize_grouped_callable, marginal_reads
                                 ),
@@ -6292,7 +6293,11 @@ class _ProgramsMixin:
             return total.reshape(1)
 
         bound_vars[step.name] = None
-        return Score(name=step.name, score=reading(_chain_marginal, chain_reads))
+        return Score(
+            name=step.name,
+            role="likelihood",
+            score=reading(_chain_marginal, chain_reads),
+        )
 
     def _compile_call(
         self, step: CallStep, bound_vars: dict[str, AnySpace | None]
@@ -6769,7 +6774,11 @@ class _ProgramsMixin:
         marg_name = f"_marg_{latent_name}"
         bound_vars[marg_name] = None
         steps.append(
-            Score(name=marg_name, score=reading(_ungrouped_marginal, marginal_reads))
+            Score(
+                name=marg_name,
+                role="likelihood",
+                score=reading(_ungrouped_marginal, marginal_reads),
+            )
         )
 
     def _resolve_draw_morphism(

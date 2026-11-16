@@ -89,7 +89,7 @@ def test_correlated_group_density_and_gradient_match_gaussian_oracle(
         values |= {"z_g_Intercept": innovations[:, 0], "z_g_x": innovations[:, 1]}
         group_density = torch.distributions.Normal(0.0, 1.0).log_prob(innovations).sum()
     else:
-        values |= {"alpha_g": coefficients[:, 0], "beta_g_x": coefficients[:, 1]}
+        values |= {"group_coefficients_g": coefficients}
         group_density = (
             torch.distributions.MultivariateNormal(
                 torch.zeros(2), scale_tril=scales[:, None] * factor
@@ -299,10 +299,7 @@ def test_shared_location_scale_covariance_matches_joint_gaussian(
         "y": response,
     }
     if parameterization == "centered":
-        values |= {
-            "alpha_g": coefficients[:, 0],
-            "dpar_sigma_alpha_g": coefficients[:, 1],
-        }
+        values |= {"group_coefficients_shared_joint": coefficients}
         group_density = (
             torch.distributions.MultivariateNormal(
                 torch.zeros(2), scale_tril=scales[:, None] * factor

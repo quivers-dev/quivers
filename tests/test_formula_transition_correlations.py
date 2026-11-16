@@ -43,8 +43,9 @@ def _reference(value):
 
 @pytest.mark.parametrize("family", ["acat", "sratio", "cratio"])
 @pytest.mark.parametrize("shared_auxiliary", [False, True])
+@pytest.mark.parametrize("parameterization", ["centered", "noncentered"])
 def test_mixed_width_correlations_match_independent_joint_transform_and_every_gradient(
-    family, shared_auxiliary
+    family, shared_auxiliary, parameterization
 ):
     data = pd.DataFrame(
         {"y": [0, 1, 2, 1], "x": [0.1, -0.2, 0.3, -0.1], "g": ["a", "b", "a", "b"]}
@@ -60,7 +61,9 @@ def test_mixed_width_correlations_match_independent_joint_transform_and_every_gr
         if shared_auxiliary
         else {}
     )
-    lens = FormulaToQVRModule(families[family], distributional=distributional)
+    lens = FormulaToQVRModule(
+        families[family], distributional=distributional, reparameterize=parameterization
+    )
     module, complement = lens.forward(formula)
     assert lens.backward(module, complement) == formula
     compiled = loads(module_to_source(module))
@@ -102,6 +105,13 @@ def test_mixed_width_correlations_match_independent_joint_transform_and_every_gr
         innovations = torch.cat((scalar_z[:, None], cs_z), -1)
         scales = torch.cat((scalar_sigma[None], cs_sigma))
     coefficients = (innovations @ correlation.T) * scales
+    if parameterization == "centered":
+        sites = {name: value for name, value in sites.items() if "z_g_" not in name}
+        sites[
+            "group_coefficients_shared_joint"
+            if shared_auxiliary
+            else "group_coefficients_g"
+        ] = coefficients
     inputs = lens.fixed_column_observations(formula)
     inputs["g_idx"] = torch.tensor(formula.group_indices["g"])
     inputs["y"] = torch.tensor(data.y.to_numpy())

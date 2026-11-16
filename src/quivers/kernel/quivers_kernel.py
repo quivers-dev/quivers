@@ -19,6 +19,7 @@ from ipykernel.kernelbase import Kernel
 from quivers import __version__
 from quivers.cli.repl_complete import _completion_prefix, all_completions
 from quivers.cli.repl_session import ReplSession
+from quivers.dsl import parse, ParseError
 
 
 class QuiversKernel(Kernel):
@@ -192,21 +193,81 @@ def _split_cell(code: str) -> list[str]:
     block: list[str] = []
     for line in code.splitlines():
         if line.startswith(":"):
-            if block and any(part.strip() for part in block):
-                out.append("\n".join(block))
+            out.extend(_source_chunks(block))
             block = []
             out.append(line)
-        elif not line.strip():
-            # Keep blank lines inside indented QVR declarations intact.
-            block.append(line)
         else:
-            if block and not block[-1].strip() and not line[0].isspace():
+            block.append(line)
+    out.extend(_source_chunks(block))
+    return out
+
+
+def _source_chunks(lines: list[str]) -> list[str]:
+    """Split blank-separated declarations only at canonical parser boundaries.
+
+    Parameters
+    ----------
+    lines : list[str]
+        A contiguous source region between notebook meta-commands.
+
+    Returns
+    -------
+    list[str]
+        Complete source chunks, retaining blank lines within hanging headers.
+    """
+    if not any(line.strip() for line in lines):
+        return []
+    try:
+        module = parse("\n".join(lines), file_path="<notebook>")
+        boundaries = {
+            line
+            for statement in module.statements
+            if isinstance(line := getattr(statement, "line", None), int)
+        }
+    except ParseError:
+        # Mixed statement/expression cells need the same statement-first,
+        # expression-second probes as ReplSession. Valid declaration cells
+        # take the single full-parse path above, irrespective of blank count.
+        boundaries = None
+    out: list[str] = []
+    block: list[str] = []
+    for index, line in enumerate(lines, 1):
+        if block and not block[-1].strip() and line and not line[0].isspace():
+            complete = (
+                index in boundaries
+                if boundaries is not None
+                else _complete_source(block)
+            )
+            if complete:
                 out.append("\n".join(block).rstrip())
                 block = []
-            block.append(line)
-    if block and any(part.strip() for part in block):
-        out.append("\n".join(block))
+        block.append(line)
+    if any(line.strip() for line in block):
+        out.append("\n".join(block).rstrip())
     return out
+
+
+def _complete_source(lines: list[str]) -> bool:
+    """Use the session's canonical statement and expression syntax probes.
+
+    Parameters
+    ----------
+    lines : list[str]
+        A proposed complete source chunk.
+
+    Returns
+    -------
+    bool
+        Whether the chunk parses as declarations or as a value expression.
+    """
+    source = "\n".join(lines)
+    for candidate in (source, f"export {source}"):
+        try:
+            parse(candidate, file_path="<notebook>")
+        except ParseError:
+            continue
+        return True
+    return False
 
 
 def _prefix_at(code: str, cursor_pos: int) -> str:

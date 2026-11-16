@@ -26,4 +26,34 @@ the family scale, and `sigma=False` removes the residual-scale site.
 The same role record supplies retained columns for fresh prediction; the
 compiler does not create a second response-data schema.
 
+`reparameterize` selects coordinates for all Gaussian group blocks,
+including scalar, category-specific, and component-valued members of one
+shared correlation. A correlated centered block emits one
+`MultivariateNormal` draw; independent coefficients use their scalar or
+indexed Normal laws. Noncentered blocks retain their standard Normal
+innovation sites.
+The lens's immutable `group_layouts` records the coefficient slices used
+by posterior replay. `FormulaData.group_layouts` retains the matching tuple
+for formula reconstruction, so reusing the lens for a second forward pass
+does not alter an earlier module's complement.
+
+Grouped cumulative thresholds use the same hierarchical log-slack law
+under both choices. Flexible and sum-to-zero policies have one shape
+coordinate per gap; equidistant profiles have one shared gap per group.
+The one varying group location is reused or added once, including for
+binary responses. The existing named prior catalog accepts
+`cutpoint_log_spacing_mean` and `cutpoint_log_spacing_scale` overrides;
+scale priors are conditioned on nonnegative values. See the [identified construction](../../semantics/programs.md#ordinal-probability-constructions).
+
+The optional `predictor_graph` retains named nonlinear additive designs,
+deterministic intermediates, and family-output expressions. The compiler
+emits their dependency order through the existing QVR value AST and applies
+the family link at each output once. Shared group blocks collect members
+across these leaves through the same layout as ordinary distributional
+regression; nonlinear compilation does not introduce a second group emitter.
+
 ::: quivers.formulas.compile
+
+::: quivers.formulas.GroupMemberLayout
+
+::: quivers.formulas.GroupBlockLayout

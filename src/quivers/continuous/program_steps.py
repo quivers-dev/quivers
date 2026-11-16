@@ -262,12 +262,17 @@ class Score(Step):
         The name bound.
     score : StepFunction
         The contribution, of shape ``(batch,)``.
+    role : {"potential", "likelihood"}
+        Explicit potentials are retained under prior-only inference. A
+        compiler-generated marginalized response likelihood is classified
+        separately so the common observation policy can omit it.
     kind : Literal["score"]
         The variant tag.
     """
 
     name: str
     score: StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    role: Literal["potential", "likelihood"] = "potential"
     kind: Literal["score"] = "score"
 
 

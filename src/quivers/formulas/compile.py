@@ -67,6 +67,7 @@ import numpy as np
 import torch
 
 from quivers.dsl.ast_nodes import (
+    AxisSpec,
     ExportDecl,
     ExprIdent,
     LetExprBinOp,
@@ -103,6 +104,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.family_schemas import family_parameter_names
 from quivers.formulas.family import Family
+from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
 from quivers.formulas._ast import (
     _let,
     _var,
@@ -114,6 +116,13 @@ from quivers.formulas._ast import (
     _index,
     _factor,
 )
+from quivers.formulas._predictor_graph import (
+    PredictorGraph,
+    ComponentExpression,
+    predictor_items,
+)
+from quivers.dsl.let_expr_traversal import substitute_let_expr
+
 from quivers.formulas.formula import (
     FixedColumn,
     Formula,
@@ -500,7 +509,7 @@ def _append_link(
         steps.append(_let(name, _apply_link(eta, link_name)))
 
 
-def _decode_module(module: Module) -> dict:
+def _decode_module(module: Module, layouts: tuple[GroupBlockLayout, ...] = ()) -> dict:
     """Recover the structural part of a `Formula` from the
     emitted `Module`.
 
@@ -664,6 +673,23 @@ def _decode_module(module: Module) -> dict:
                     else:
                         random_terms_qvr.append((qgroup, slope_qvr))
 
+    raw_names = {
+        step.vars[0]
+        for step in program.draws
+        if isinstance(step, SampleStep) and len(step.vars) == 1
+    }
+    for layout in layouts:
+        if not set(layout.raw_sites) <= raw_names:
+            continue
+        for member in layout.members:
+            term = (_qvr_name(layout.group), _qvr_name(member.slope))
+            if (
+                not member.prefix
+                and member.coefficient in seen_letnames
+                and term not in random_terms_qvr
+            ):
+                random_terms_qvr.append(term)
+
     return {
         "n_obs": n_obs,
         "group_cardinalities": group_cardinalities,
@@ -704,8 +730,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Per-name prior overrides keyed by the latent's variable
         name in the emitted module.
     reparameterize : {"centered", "noncentered"}
-        Random-effect parameterization. Categorical random effects use the
-        non-centered form.
+        Conditional Gaussian coordinates for scalar, category-specific and
+        component-valued group effects, and grouped threshold log slacks.
     binomial_trials : int or str
         Nonnegative common trial count or a per-row trial-count column.
     thresholds_by : str or None
@@ -731,7 +757,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         If an option is out of range or does not apply to ``family``:
         ``thresholds_by`` outside the cumulative family,
         ``binomial_trials`` for a family without trials or outside the
-        nonnegative signed 64-bit range,
+        exact finite-trial range from zero through ``2**53``,
         ``mixture_components`` below two or outside the mixture
         family, or an unknown ``reparameterize`` value.
 
@@ -756,6 +782,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         mixture_components: int = 2,
         predictor_name: str | None = None,
         distributional: Mapping[str, Formula] | None = None,
+        predictor_graph: PredictorGraph | None = None,
         correlation_prior: str = "LKJCholesky(1.0)",
         fixed_parameters: Mapping[str, float] | None = None,
     ) -> None:
@@ -771,7 +798,23 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._fixed_parameters = dict(fixed_parameters or {})
         self._correlation_prior = correlation_prior
         self._distributional = dict(distributional or {})
+        self._predictor_graph = predictor_graph
         auxiliary_names = {aux.name for aux in family.aux_params}
+        expression_roots = (
+            set(predictor_graph.roots) - {"mu"}
+            if predictor_graph is not None
+            else set()
+        )
+        if expression_roots - auxiliary_names:
+            raise ValueError(
+                f"unknown distributional graph roots {sorted(expression_roots - auxiliary_names)}"
+            )
+        if expression_roots & (
+            self._distributional.keys() | self._fixed_parameters.keys()
+        ):
+            raise ValueError(
+                "a family parameter cannot have multiple predictor definitions"
+            )
         unknown_fixed = self._fixed_parameters.keys() - auxiliary_names
         if unknown_fixed:
             raise ValueError(
@@ -818,7 +861,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._fixed_prior = fixed_prior
         self._random_scale_prior = random_scale_prior
         self._user_priors: Mapping[str, str] = dict(user_priors or {})
-        conflicting = self._distributional.keys() & self._user_priors.keys()
+        self._group_layouts: list[GroupBlockLayout] = []
+        conflicting = (
+            self._distributional.keys() | expression_roots
+        ) & self._user_priors.keys()
         if conflicting:
             raise ValueError(
                 f"priors on distributionally regressed parameters {sorted(conflicting)} must name their coefficients, such as 'dpar_sigma_intercept'"
@@ -868,12 +914,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 "mixture family"
             )
         self._binomial_trials = binomial_trials
-        if (
-            thresholds_by is not None
-            and family.ordinal is not None
-            and family.ordinal.thresholds != "flexible"
-        ):
-            raise ValueError("thresholds_by currently requires flexible thresholds")
         self._thresholds_by = thresholds_by
         self._mixture_components = mixture_components
         self._predictor_name = (
@@ -884,7 +924,18 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 f"FormulaToQVRModule: reparameterize must be 'centered' "
                 f"or 'noncentered', got {reparameterize!r}"
             )
-        self._reparameterize = reparameterize
+        self._reparameterize: Literal["centered", "noncentered"] = reparameterize
+
+    @property
+    def group_layouts(self) -> tuple[GroupBlockLayout, ...]:
+        """Read the raw-coordinate layouts emitted by the latest forward pass.
+
+        Returns
+        -------
+        tuple[GroupBlockLayout, ...]
+            Immutable group blocks shared with retained prediction plans.
+        """
+        return tuple(self._group_layouts)
 
     def forward(self, formula: Formula, /) -> tuple[Module, FormulaData]:
         """Compile a formula to a QVR module and its complement.
@@ -908,6 +959,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for a categorical or cumulative family), or a prior does
             not parse as ``"Family(arg, ...)"``.
         """
+        self._group_layouts = []
         if (
             self._family.response is not None
             and self._family.response.kind != "categorical"
@@ -1139,7 +1191,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     "formula_weights is reserved for response likelihood weights"
                 )
         group_codings: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {}
-        for name, predictor in (("mu", formula), *self._distributional.items()):
+        for name, _, predictor in self._predictor_items(formula):
             if predictor.response_values.shape != formula.response_values.shape:
                 raise ValueError(
                     f"distributional parameter {name!r} has a different row count"
@@ -1169,13 +1221,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 "the 'dpar_' prefix is reserved for distributional coefficients and inputs"
             )
         correlation_names: dict[str, tuple[str, str]] = {}
-        for prefix, predictor in (
-            ("", formula),
-            *(
-                (f"dpar_{name}_", predictor)
-                for name, predictor in self._distributional.items()
-            ),
-        ):
+        for _, prefix, predictor in self._predictor_items(formula):
             for term in predictor.random_terms:
                 if term.correlation_id is None:
                     continue
@@ -1191,6 +1237,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                         f"correlation name {name!r} is ambiguous across groups or blocks; use distinct shared IDs"
                     )
         module = self._build_module(formula)
+        if self._predictor_graph is not None:
+            from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
+
+            lower_qvr_to_qiec(module)
         if self._user_priors:
             available = self._prior_calls(formula, module)
             unused = self._user_priors.keys() - available.keys()
@@ -1214,6 +1264,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             group_original_names={_qvr_name(g): g for g in formula.group_levels.keys()},
             group_levels=dict(formula.group_levels),
             group_indices=dict(formula.group_indices),
+            group_layouts=self.group_layouts,
             random_terms=formula.random_terms,
             fixed_column_order=tuple(col.qvr_name for col in formula.fixed_columns),
             category_specific_columns=tuple(
@@ -1268,6 +1319,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             aux.name
             for aux in self._family.aux_params
             if aux.name not in self._distributional
+            and (
+                self._predictor_graph is None
+                or aux.name not in self._predictor_graph.roots
+            )
             and aux.name not in self._fixed_parameters
         }
         if self._family.ordinal is not None:
@@ -1277,6 +1332,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     "cutpoint_spacing",
                     "cutpoint_offset",
                     "cutpoints_raw",
+                    "cutpoint_log_spacing_mean",
+                    "cutpoint_log_spacing_scale",
                 }
             )
         if self._family.baseline is not None:
@@ -1289,10 +1346,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             and len(formula.response_layout.component_names) > 2
         ):
             names.add("rescor")
-        for prefix, predictor in (
-            ("", formula),
-            *((f"dpar_{name}_", item) for name, item in self._distributional.items()),
-        ):
+        for _, prefix, predictor in self._predictor_items(formula):
             for col in predictor.fixed_columns:
                 names.add(
                     prefix
@@ -1335,7 +1389,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Formula
             The reconstructed formula.
         """
-        decoded = _decode_module(target)
+        decoded = _decode_module(target, complement.group_layouts)
         fixed_column_names = complement.fixed_column_names
         fixed_column_data = complement.fixed_column_data
 
@@ -1474,23 +1528,25 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         for role, column in formula.modifiers.columns():
             if role not in {"weights", "decision"}:
                 obs[column.qvr_name] = torch.as_tensor(column.data.copy())
-        for col in formula.fixed_columns:
-            if col.is_intercept:
-                continue
-            obs[col.qvr_name] = torch.as_tensor(col.data.copy(), dtype=torch.float32)
-        for name, predictor in self._distributional.items():
+        for _, prefix, predictor in self._predictor_items(formula):
             for col in predictor.fixed_columns:
                 if not col.is_intercept:
-                    obs[f"dpar_{name}_{col.qvr_name}"] = torch.as_tensor(
+                    obs[prefix + col.qvr_name] = torch.as_tensor(
                         col.data.copy(), dtype=torch.float32
                     )
-        for prefix, predictor in (
-            ("", formula),
-            *(
-                (f"dpar_{name}_", predictor)
-                for name, predictor in self._distributional.items()
-            ),
-        ):
+        if self._predictor_graph is not None:
+            from quivers.formulas._predictor_graph import graph_input_bindings
+
+            obs.update(
+                graph_input_bindings(
+                    self._predictor_graph,
+                    {
+                        name: column.data
+                        for name, column in self._predictor_graph.inputs.items()
+                    },
+                )
+            )
+        for _, prefix, predictor in self._predictor_items(formula):
             for index, column in enumerate(predictor.offsets):
                 obs[f"{prefix}formula_offset_{index}"] = torch.as_tensor(
                     column.data.copy(), dtype=torch.float32
@@ -1701,7 +1757,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
             return "cutpoints"
 
-        if spec.thresholds == "equidistant":
+        if spec.thresholds == "equidistant" and self._thresholds_by is None:
             family_name, args = _parse_prior_call(
                 self._user_priors.get(
                     "cutpoint_spacing",
@@ -1855,44 +1911,83 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
         qgroup = _qvr_name(group)
         n_groups = len(formula.group_levels[group])
+        # Free shape coordinates can be narrower than the physical gap axis.
+        n_shape = 1 if spec.thresholds == "equidistant" else n_spacings
+        shape_index = spacing_index
+        if n_shape != n_spacings:
+            shape_index = "FormulaThresholdShape"
+            self._append_finite_object(statements, shape_index, n_shape)
         cell_index = "FormulaThresholdCell"
-        self._append_finite_object(statements, cell_index, n_groups * n_spacings)
+        self._append_finite_object(statements, cell_index, n_groups * n_shape)
 
+        mean_prior = _auxiliary_draw(
+            "cutpoint_log_spacing_mean",
+            self._user_priors.get("cutpoint_log_spacing_mean", "Normal(0.0, 1.0)"),
+        )
+        scale_prior = _auxiliary_draw(
+            "cutpoint_log_spacing_scale",
+            self._user_priors.get("cutpoint_log_spacing_scale", "HalfNormal(0.5)"),
+            lower=0.0 if "cutpoint_log_spacing_scale" in self._user_priors else None,
+        )
         program_steps.extend(
-            [
-                _draw(
-                    "cutpoint_log_spacing_mean",
-                    "Normal",
-                    (0.0, 1.0),
-                    index=TypeName(name=spacing_index),
-                ),
-                _draw(
-                    "cutpoint_log_spacing_scale",
-                    "HalfNormal",
-                    (0.5,),
-                    index=TypeName(name=spacing_index),
-                ),
-                _draw(
-                    "cutpoint_log_spacing_noise",
-                    "Normal",
-                    (0.0, 1.0),
-                    index=TypeName(name=cell_index),
-                ),
-            ]
+            (
+                mean_prior.with_(index=TypeName(name=shape_index)),
+                scale_prior.with_(index=TypeName(name=shape_index)),
+            )
         )
         flat_index = _add(
             _mul(
                 _var("threshold_group"),
-                LetExprLiteral(value=float(n_spacings), integral=True),
+                LetExprLiteral(value=float(n_shape), integral=True),
             ),
             _var("spacing"),
         )
+        threshold_raw = (
+            "cutpoint_log_spacing_value"
+            if self._reparameterize == "centered"
+            else "cutpoint_log_spacing_noise"
+        )
+        if self._reparameterize == "centered":
+            for suffix in ("mean", "scale"):
+                program_steps.append(
+                    _let(
+                        f"cutpoint_log_spacing_cell_{suffix}",
+                        _factor(
+                            (("threshold_cell", cell_index),),
+                            body=_index(
+                                f"cutpoint_log_spacing_{suffix}",
+                                LetExprBinOp(
+                                    op="%",
+                                    left=_var("threshold_cell"),
+                                    right=LetExprLiteral(value=n_shape, integral=True),
+                                ),
+                            ),
+                        ),
+                    )
+                )
+            program_steps.append(
+                _draw(
+                    threshold_raw,
+                    "Normal",
+                    (
+                        "cutpoint_log_spacing_cell_mean",
+                        "cutpoint_log_spacing_cell_scale",
+                    ),
+                    index=TypeName(name=cell_index),
+                )
+            )
+        else:
+            program_steps.append(
+                _draw(
+                    threshold_raw, "Normal", (0.0, 1.0), index=TypeName(name=cell_index)
+                )
+            )
         program_steps.append(
             _let(
                 "cutpoint_noise_matrix",
                 _factor(
-                    (("threshold_group", qgroup), ("spacing", spacing_index)),
-                    body=_index("cutpoint_log_spacing_noise", flat_index),
+                    (("threshold_group", qgroup), ("spacing", shape_index)),
+                    body=_index(threshold_raw, flat_index),
                 ),
             )
         )
@@ -1907,17 +2002,58 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 ),
             ),
         )
+        if self._reparameterize == "centered":
+            log_spacing = _index(
+                "cutpoint_noise_matrix", _var("threshold_group"), _var("spacing")
+            )
         program_steps.append(
             _let(
                 "cutpoint_log_spacing_matrix",
                 _factor(
-                    (("threshold_group", qgroup), ("spacing", spacing_index)),
+                    (("threshold_group", qgroup), ("spacing", shape_index)),
                     body=log_spacing,
                 ),
             )
         )
         spacing_matrix: LetExprNode = _call("exp", _var("cutpoint_log_spacing_matrix"))
-        if constrained_cs:
+        if spec.thresholds == "equidistant":
+            # The one gap must dominate all adjacent CS contrasts. A proper
+            # hierarchical log-slack prior remains on its positive excess.
+            gap: LetExprNode = _call(
+                "exp",
+                _index(
+                    "cutpoint_log_spacing_matrix",
+                    _var("threshold_group"),
+                    LetExprLiteral(value=0, integral=True),
+                ),
+            )
+            if constrained_cs:
+                self._append_ordinal_spacing_bounds(
+                    formula, statements, program_steps, n_spacings
+                )
+                program_steps.append(
+                    _let(
+                        "ordinal_group_spacing_bound",
+                        _factor(
+                            (("threshold_group", qgroup),),
+                            body=_call(
+                                "max",
+                                _index(
+                                    "ordinal_spacing_bound", _var("threshold_group")
+                                ),
+                            ),
+                        ),
+                    )
+                )
+                gap = _add(
+                    _index("ordinal_group_spacing_bound", _var("threshold_group")),
+                    gap,
+                )
+            spacing_matrix = _factor(
+                (("threshold_group", qgroup), ("spacing", spacing_index)),
+                body=gap,
+            )
+        elif constrained_cs:
             self._append_ordinal_spacing_bounds(
                 formula, statements, program_steps, n_spacings
             )
@@ -2653,7 +2789,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Raises
         ------
         ValueError
-            If a centered indexed group parameterization is requested.
+            If the response categories or retained component axis are invalid.
         """
         n_categories = component_count or self._category_count(
             formula, family=self._family.name
@@ -2728,12 +2864,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
             cell_terms.append(_index(self._predictor_name, predictor_index))
 
-        if self._reparameterize == "centered" and formula.random_terms:
-            raise ValueError(
-                "categorical random effects currently require "
-                "reparameterize='noncentered'"
-            )
-
         correlated = dict(correlated or {})
         blocks: dict[tuple[str, str], list[tuple[str, RandomTerm]]] = {}
         for term in formula.random_terms:
@@ -2777,12 +2907,65 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             n_groups = len(formula.group_levels[term.group])
             cell_index = f"{prefix}FormulaRandomCell_{qgroup}_{qslope}"
             self._append_finite_object(statements, cell_index, n_groups * n_logits)
-            program_steps.append(
-                _draw(
-                    f"{prefix}z_{qgroup}_{qslope}",
-                    "Normal",
-                    (0.0, 1.0),
-                    index=TypeName(name=cell_index),
+            latent = prefix + (
+                f"alpha_{qgroup}"
+                if term.slope == "Intercept"
+                else f"beta_{qgroup}_{qslope}"
+            )
+            raw_site = (
+                f"centered_{latent}"
+                if self._reparameterize == "centered"
+                else f"{prefix}z_{qgroup}_{qslope}"
+            )
+            if self._reparameterize == "centered":
+                scale_rows = f"{raw_site}_scale"
+                program_steps.append(
+                    _let(
+                        scale_rows,
+                        _factor(
+                            (("random_cell", cell_index),),
+                            body=_index(
+                                sigma_var,
+                                LetExprBinOp(
+                                    op="%",
+                                    left=_var("random_cell"),
+                                    right=LetExprLiteral(value=n_logits, integral=True),
+                                ),
+                            ),
+                        ),
+                    )
+                )
+                program_steps.append(
+                    _draw(
+                        raw_site,
+                        "Normal",
+                        (0.0, scale_rows),
+                        index=TypeName(name=cell_index),
+                    )
+                )
+            else:
+                program_steps.append(
+                    _draw(
+                        raw_site, "Normal", (0.0, 1.0), index=TypeName(name=cell_index)
+                    )
+                )
+            self._group_layouts.append(
+                GroupBlockLayout(
+                    group=term.group,
+                    identity=f"independent_{prefix}{qgroup}_{qslope}",
+                    coordinate_axis=logit_index,
+                    parameterization=self._reparameterize,
+                    members=(
+                        GroupMemberLayout(
+                            prefix=prefix,
+                            slope=term.slope,
+                            axis=logit_index,
+                            width=n_logits,
+                            offset=0,
+                            coefficient=latent,
+                            raw_site=raw_site,
+                        ),
+                    ),
                 )
             )
 
@@ -2821,7 +3004,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 if term.column is not None
                 else prefix + qslope
             )
-            z_matrix = f"{z_var}_matrix"
+            raw_site = (
+                f"centered_{latent}" if self._reparameterize == "centered" else z_var
+            )
+            z_matrix = f"{raw_site}_matrix"
             flat_index = _add(
                 _mul(
                     _var("random_group"),
@@ -2834,14 +3020,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     z_matrix,
                     _factor(
                         (("category_logit", logit_index), ("random_group", qgroup)),
-                        body=_index(z_var, flat_index),
+                        body=_index(raw_site, flat_index),
                     ),
                 )
             )
-            contribution = _mul(
-                _index(sigma_var, logit_var),
-                _index(z_matrix, logit_var, _var("random_group")),
-            )
+            contribution = _index(z_matrix, logit_var, _var("random_group"))
+            if self._reparameterize == "noncentered":
+                contribution = _mul(_index(sigma_var, logit_var), contribution)
             value = _factor(
                 (("category_logit", logit_index), ("random_group", qgroup)),
                 body=contribution,
@@ -2869,6 +3054,41 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         if ordinal_transitions:
             return
+        self._append_component_response(
+            program_steps,
+            parameter=parameter,
+            prefix=prefix,
+            reference=reference,
+            coordinates=coordinates,
+            category_index=category_index,
+        )
+
+    def _append_component_response(
+        self,
+        program_steps,
+        *,
+        parameter,
+        prefix,
+        reference,
+        coordinates,
+        category_index,
+    ):
+        """Complete shared labelled predictors with the retained reference and family link.
+
+        Parameters
+        ----------
+        program_steps : list
+            Steps already binding the free coordinate predictor matrix.
+        parameter, prefix : str
+            Family output and its established namespace.
+        reference : int or None
+            Identified reference index, or all-coordinate parameterization.
+        coordinates : tuple[int, ...]
+            Free response coordinates in retained order.
+        category_index : str
+            Full response component axis.
+        """
+        response_var = _var("response")
         if (
             self._family.response is not None
             and self._family.response.kind == "logistic_normal"
@@ -3080,13 +3300,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Raises
         ------
         ValueError
-            If centered transition effects or a non-LKJ correlation prior
-            are requested.
+            If the correlation prior is not an LKJ Cholesky distribution.
         """
-        if self._reparameterize != "noncentered":
-            raise ValueError(
-                "indexed random effects require reparameterize='noncentered'"
-            )
         transitions = (
             coordinate_count
             if coordinate_count is not None
@@ -3133,6 +3348,37 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         steps.append(
             _draw(correlation, family, arguments, index=TypeName(name=dimension))
         )
+        joint_raw = f"group_coefficients_{_qvr_name(identity)}"
+        member_layouts = []
+        offset = 0
+        for (prefix, term), width, axis in zip(members, widths, axes, strict=True):
+            coefficient = prefix + (
+                f"alpha_{qgroup}"
+                if term.slope == "Intercept"
+                else f"beta_{qgroup}_{_qvr_name(term.slope)}"
+            )
+            member_layouts.append(
+                GroupMemberLayout(
+                    prefix=prefix,
+                    slope=term.slope,
+                    axis=axis[0] if axis is not None else None,
+                    width=width,
+                    offset=offset,
+                    coefficient=coefficient,
+                    raw_site=joint_raw
+                    if self._reparameterize == "centered"
+                    else f"{prefix}z_{qgroup}_{_qvr_name(term.slope)}",
+                )
+            )
+            offset += width
+        layout = GroupBlockLayout(
+            group=group,
+            identity=identity,
+            coordinate_axis=dimension,
+            parameterization=self._reparameterize,
+            members=tuple(member_layouts),
+        )
+        self._group_layouts.append(layout)
         scales: list[str] = []
         innovation_cases: list[tuple[int, LetExprNode]] = []
         coordinate = 0
@@ -3152,17 +3398,24 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     index=TypeName(name=axis[0]) if axis is not None else None,
                 )
             )
+            if self._reparameterize == "centered":
+                scales.append(sigma)
+                continue
             plate_index = qgroup
             if is_transition:
                 plate_index = f"{prefix}FormulaRandomCell_{qgroup}_{qslope}"
                 self._append_finite_object(
                     statements, plate_index, len(formula.group_levels[group]) * width
                 )
-            steps.append(
-                _draw(
-                    innovation, "Normal", (0.0, 1.0), index=TypeName(name=plate_index)
+            if self._reparameterize == "noncentered":
+                steps.append(
+                    _draw(
+                        innovation,
+                        "Normal",
+                        (0.0, 1.0),
+                        index=TypeName(name=plate_index),
+                    )
                 )
-            )
             for component in range(width):
                 coordinate_index: LetExprNode = _var("random_group")
                 if is_transition:
@@ -3188,20 +3441,83 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         # it does not duplicate a triangular sum for every coefficient.
         innovation_matrix = f"__formula_group_{_qvr_name(identity)}_innovations"
         transformed_matrix = f"__formula_group_{_qvr_name(identity)}_transformed"
-        steps.append(
-            _let(
-                innovation_matrix,
-                _factor(
-                    (("group_coordinate", dimension),), cases=tuple(innovation_cases)
-                ),
+        if self._reparameterize == "centered":
+            scale_cases = []
+            for member, sigma in zip(layout.members, scales, strict=True):
+                for component in range(member.width):
+                    scale_cases.append(
+                        (
+                            member.offset + component,
+                            _index(
+                                sigma, LetExprLiteral(value=component, integral=True)
+                            )
+                            if member.axis is not None
+                            else _var(sigma),
+                        )
+                    )
+            scale_vector = f"__formula_group_{_qvr_name(identity)}_scales"
+            factor = f"__formula_group_{_qvr_name(identity)}_factor"
+            zero = f"__formula_group_{_qvr_name(identity)}_zero"
+            steps.extend(
+                (
+                    _let(
+                        scale_vector,
+                        _factor(
+                            (("group_coordinate", dimension),), cases=tuple(scale_cases)
+                        ),
+                    ),
+                    _let(
+                        zero,
+                        _factor(
+                            (("group_coordinate", dimension),),
+                            body=LetExprLiteral(value=0.0),
+                        ),
+                    ),
+                    _let(
+                        factor,
+                        _factor(
+                            (("group_row", dimension), ("group_column", dimension)),
+                            body=_mul(
+                                _index(scale_vector, _var("group_row")),
+                                _index(
+                                    correlation, _var("group_row"), _var("group_column")
+                                ),
+                            ),
+                        ),
+                    ),
+                )
             )
-        )
-        steps.append(
-            _let(
-                transformed_matrix,
-                _call("matmul", _var(correlation), _var(innovation_matrix)),
+            draw = _draw(
+                joint_raw,
+                "MultivariateNormal",
+                (zero, factor),
+                index=TypeName(name=qgroup),
             )
-        )
+            steps.append(
+                draw.with_(
+                    axes=AxisSpec(over=(dimension,), iid_over=(qgroup,)),
+                    options=(
+                        OptionEntry(key="over", value=OptionName(value=dimension)),
+                        OptionEntry(key="iid_over", value=OptionName(value=qgroup)),
+                    ),
+                )
+            )
+        else:
+            steps.append(
+                _let(
+                    innovation_matrix,
+                    _factor(
+                        (("group_coordinate", dimension),),
+                        cases=tuple(innovation_cases),
+                    ),
+                )
+            )
+            steps.append(
+                _let(
+                    transformed_matrix,
+                    _call("matmul", _var(correlation), _var(innovation_matrix)),
+                )
+            )
         result = {}
         offset = 0
         for position, ((prefix, term), width, axis) in enumerate(
@@ -3224,13 +3540,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     ("category_logit", axis[0]),
                     *binders,
                 )
-            value = _factor(
-                binders,
-                body=_mul(
+            coefficient_value = (
+                _index(joint_raw, _var("random_group"), member_coordinate)
+                if self._reparameterize == "centered"
+                else _mul(
                     scale,
                     _index(transformed_matrix, member_coordinate, _var("random_group")),
-                ),
+                )
             )
+            value = _factor(binders, body=coefficient_value)
             steps.append(_let(latent, value))
             result[(prefix, group, term.slope)] = (
                 _index(latent, _var("category_logit"), _var(f"{qgroup}_idx"))
@@ -3272,13 +3590,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             If a correlation prior uses a different distribution family.
         """
         blocks: dict[tuple[str, str], list[tuple[str, RandomTerm]]] = {}
-        for prefix, predictor in (
-            ("", formula),
-            *(
-                (f"dpar_{name}_", predictor)
-                for name, predictor in self._distributional.items()
-            ),
-        ):
+        for _, prefix, predictor in self._predictor_items(formula):
             for term in predictor.random_terms:
                 if term.correlation_id is None:
                     continue
@@ -3290,112 +3602,17 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 blocks.setdefault((term.group, identity), []).append((prefix, term))
         result: dict[tuple[str, str, str], LetExprNode] = {}
         for (group, identity), members in blocks.items():
-            if (
-                coordinate_axes is not None
-                or self._reparameterize == "noncentered"
-                or any(
-                    term.column is not None and term.column.category_specific
-                    for _, term in members
+            result.update(
+                self._append_indexed_correlations(
+                    formula,
+                    group,
+                    identity,
+                    members,
+                    statements,
+                    steps,
+                    coordinate_axes=coordinate_axes,
                 )
-            ):
-                result.update(
-                    self._append_indexed_correlations(
-                        formula,
-                        group,
-                        identity,
-                        members,
-                        statements,
-                        steps,
-                        coordinate_axes=coordinate_axes,
-                    )
-                )
-                continue
-            if len(members) < 2:
-                continue
-            qgroup = _qvr_name(group)
-            correlation = f"cor_{_qvr_name(identity)}"
-            dimension = f"FormulaCorrelation_{_qvr_name(identity)}"
-            self._append_finite_object(statements, dimension, len(members))
-            family, arguments = _parse_prior_call(
-                self._user_priors.get(correlation, self._correlation_prior)
             )
-            if family != "LKJCholesky":
-                raise ValueError("correlation priors must use LKJCholesky")
-            steps.append(
-                _draw(correlation, family, arguments, index=TypeName(name=dimension))
-            )
-            scales: list[str] = []
-            innovations: list[str] = []
-            for prefix, term in members:
-                qslope = _qvr_name(term.slope)
-                sigma = f"{prefix}sigma_{qgroup}_{qslope}"
-                prior_family, prior_args = _parse_prior_call(
-                    self._user_priors.get(sigma, self._random_scale_prior)
-                )
-                steps.append(_draw(sigma, prior_family, prior_args))
-                scales.append(sigma)
-                innovations.append(f"{prefix}z_{qgroup}_{qslope}")
-            for row, (prefix, term) in enumerate(members):
-
-                def combination(
-                    index: LetExprNode | None, *, row: int = row
-                ) -> LetExprNode:
-                    parts = [
-                        _mul(
-                            _index(
-                                correlation,
-                                LetExprLiteral(value=float(row), integral=True),
-                                LetExprLiteral(value=float(column), integral=True),
-                            ),
-                            _index(innovations[column], index)
-                            if index is not None
-                            else _var(innovations[column]),
-                        )
-                        for column in range(row)
-                    ]
-                    return _add(*parts) if parts else LetExprLiteral(value=0.0)
-
-                innovation = innovations[row]
-                latent = (
-                    f"{prefix}alpha_{qgroup}"
-                    if term.slope == "Intercept"
-                    else f"{prefix}beta_{qgroup}_{_qvr_name(term.slope)}"
-                )
-                location = f"{latent}_conditional_location"
-                scale = f"{latent}_conditional_scale"
-                diagonal = _index(
-                    correlation,
-                    LetExprLiteral(value=float(row), integral=True),
-                    LetExprLiteral(value=float(row), integral=True),
-                )
-                steps.append(
-                    _let(
-                        location,
-                        _mul(_var(scales[row]), combination(None)),
-                    )
-                )
-                steps.append(_let(scale, _mul(_var(scales[row]), diagonal)))
-                steps.append(
-                    _draw(
-                        latent,
-                        "Normal",
-                        (location, scale),
-                        index=TypeName(name=qgroup),
-                    )
-                )
-                standardized = _sub(
-                    _div(_var(latent), _var(scales[row])),
-                    combination(None),
-                )
-                steps.append(
-                    _let(
-                        innovation,
-                        _div(standardized, diagonal),
-                    )
-                )
-                result[(prefix, group, term.slope)] = _index(
-                    latent, _var(f"{qgroup}_idx")
-                )
         return result
 
     def _append_predictor(
@@ -3473,18 +3690,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         #
         # Reparameterisation:
         # * Centered ("centered"): ``alpha_g : g <- Normal(0, sigma_g)``
-        #   directly. Easy to read; suffers Neal's funnel under HMC /
-        #   NUTS and under-shrinks variance components under VI.
+        #   directly. Its posterior geometry can couple group coefficients
+        #   strongly to their scales.
         # * Non-centered ("noncentered", default): emit
         #     z_g_<slope> : g <- Normal(0, 1)
         #     let alpha_g = sigma_g * z_g_<slope>
         #   The per-level draws sit in unit space; ``sigma_g`` scales
         #   the (deterministic) ``alpha_g`` afterwards. Mathematically
-        #   identical to centered, but eliminates the funnel and lets
-        #   HMC / NUTS sample variance components reliably.  Standard
-        #   practice in Stan / brms when divergences appear; we make
-        #   it the default so the formula path matches expert advice
-        #   out of the box.
+        #   identical conditional Gaussian law, with different inference
+        #   coordinates. The default remains noncentered.
         for term in formula.random_terms:
             group = term.group
             qgroup = _qvr_name(group)
@@ -3551,6 +3765,27 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     _let(latent_var, _mul(_var(sigma_var), _var(z_var)))
                 )
                 per_level_expr = _index(latent_var, _var(idx_name))
+            self._group_layouts.append(
+                GroupBlockLayout(
+                    group=group,
+                    identity=f"independent_{prefix}{qgroup}_{qslope}",
+                    coordinate_axis=None,
+                    parameterization=self._reparameterize,
+                    members=(
+                        GroupMemberLayout(
+                            prefix=prefix,
+                            slope=slope,
+                            axis=None,
+                            width=1,
+                            offset=0,
+                            coefficient=latent_var,
+                            raw_site=latent_var
+                            if self._reparameterize == "centered"
+                            else f"{prefix}z_{qgroup}_{qslope}",
+                        ),
+                    ),
+                )
+            )
             if slope == "Intercept":
                 program_steps.append(_let(contrib_name, per_level_expr))
             else:
@@ -3589,7 +3824,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         groups = dict.fromkeys(
             group
-            for predictor in (formula, *self._distributional.values())
+            for _, _, predictor in self._predictor_items(formula)
             for group in predictor.group_indices
         )
         index_type = QiecTypeApplication(
@@ -3655,6 +3890,23 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             parameters += (
                 QiecValueParameter(name="formula_weights", type_expr=weight_type),
             )
+        if self._predictor_graph is not None:
+            for column in self._predictor_graph.inputs.values():
+                carrier = (
+                    "Bool"
+                    if column.data.dtype.kind == "b"
+                    else "Int"
+                    if column.data.dtype.kind in "iu"
+                    else "Real"
+                )
+                parameters += (
+                    QiecValueParameter(
+                        name=column.qvr_name,
+                        type_expr=index_type.with_(
+                            static_arguments=(QiecTypeName(name=carrier),)
+                        ),
+                    ),
+                )
         existing = {parameter.name for parameter in parameters}
         for role, column in formula.modifiers.columns():
             if column.qvr_name in existing:
@@ -3697,6 +3949,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             phi = (
                 _index("phi", _var("response"))
                 if "phi" in self._distributional
+                or self._predictor_graph is not None
+                and "phi" in self._predictor_graph.roots
                 else _var("phi")
             )
             concentration = _factor(
@@ -3746,6 +4000,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             sigma = (
                 _index("sigma", _var("response"), _var("i"))
                 if "sigma" in self._distributional
+                or self._predictor_graph is not None
+                and isinstance(
+                    self._predictor_graph.roots.get("sigma"), ComponentExpression
+                )
+                else _index("sigma", _var("response"))
+                if self._predictor_graph is not None
+                and "sigma" in self._predictor_graph.roots
                 else _var("sigma")
                 if "sigma" in self._fixed_parameters
                 else _index("sigma", _var("i"))
@@ -3798,6 +4059,185 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         program_steps.append(observation)
 
+    def _predictor_items(self, formula: Formula):
+        """Enumerate additive designs once across ordinary and nonlinear parameters.
+
+        Parameters
+        ----------
+        formula : Formula
+            Primary response and ordinary location metadata.
+
+        Returns
+        -------
+        tuple
+            Parameter labels, stable prefixes, and evaluated formulas.
+        """
+        return predictor_items(formula, self._distributional, self._predictor_graph)
+
+    def _graph_expression_at(self, expression, row, component=None):
+        """Project nominal graph inputs to one row and explicitly labelled coordinate.
+
+        Parameters
+        ----------
+        expression : LetExprNode
+            Canonical scalar expression at one result coordinate.
+        row : LetExprNode
+            Observation-row index.
+        component : str or None
+            Requested coordinate label, required for vector dependencies.
+
+        Returns
+        -------
+        LetExprNode
+            Capture-safe row expression over existing QVR bindings.
+
+        Raises
+        ------
+        ValueError
+            If a vector dependency has no compatible labelled coordinate.
+        """
+        graph = self._predictor_graph
+        assert graph is not None
+        substitution = {
+            column.qvr_name: _index(column.qvr_name, row)
+            for column in graph.inputs.values()
+        }
+        for name in (*graph.leaves, *graph.expressions):
+            value = graph.expressions.get(name)
+            if isinstance(value, ComponentExpression):
+                if component is None:
+                    # Only reject an actually used vector, not unrelated nodes.
+                    from quivers.dsl.let_expr_traversal import free_let_names
+
+                    if f"nlpar_{name}" in free_let_names(expression):
+                        raise ValueError(
+                            f"nonlinear vector {name!r} requires explicit component expressions"
+                        )
+                    continue
+                if component not in value.components:
+                    from quivers.dsl.let_expr_traversal import free_let_names
+
+                    if f"nlpar_{name}" in free_let_names(expression):
+                        raise ValueError(
+                            f"nonlinear vector {name!r} has no component {component!r}"
+                        )
+                    continue
+                substitution[f"nlpar_{name}"] = _index(
+                    f"nlpar_{name}",
+                    row,
+                    LetExprLiteral(
+                        value=value.components.index(component), integral=True
+                    ),
+                )
+            else:
+                substitution[f"nlpar_{name}"] = _index(f"nlpar_{name}", row)
+        return substitute_let_expr(expression, substitution)
+
+    def _append_graph_value(
+        self, name, value, statements, steps, *, axis=None, components=None
+    ):
+        """Materialize a graph node with explicit row and optional nominal component axes.
+
+        Parameters
+        ----------
+        name : str
+            Existing QVR binding name.
+        value : LetExprNode or ComponentExpression
+            Scalar-row or explicitly labelled expression.
+        statements, steps : list
+            Module axes and deterministic program statements.
+        axis : str or None
+            Shared coordinate axis for a family root, otherwise node-local.
+        components : tuple[str, ...] or None
+            Required family coordinate labels in canonical retained order.
+
+        Raises
+        ------
+        ValueError
+            If result labels or scalar/vector carriers do not match the root.
+        """
+        row = _var("graph_row")
+        if not isinstance(value, ComponentExpression):
+            if components is not None:
+                raise ValueError(
+                    f"nonlinear {name!r} requires explicit component expressions for {components}"
+                )
+            steps.append(
+                _let(
+                    name,
+                    _factor(
+                        (("graph_row", "Resp"),),
+                        body=self._graph_expression_at(value, row),
+                    ),
+                )
+            )
+            return
+        labels = value.components if components is None else components
+        if set(labels) != set(value.components):
+            raise ValueError(
+                f"nonlinear {name!r} component labels {value.components} do not match expected {labels}"
+            )
+        axis = axis or f"FormulaGraphCoordinate_{name}"
+        self._append_finite_object(statements, axis, len(labels))
+        by_coordinate = f"{name}_by_coordinate"
+        cases = tuple(
+            (
+                index,
+                _factor(
+                    (("graph_row", "Resp"),),
+                    body=self._graph_expression_at(
+                        value.values[value.components.index(label)], row, label
+                    ),
+                ),
+            )
+            for index, label in enumerate(labels)
+        )
+        steps.append(
+            _let(by_coordinate, _factor((("graph_coordinate", axis),), cases=cases))
+        )
+        steps.append(
+            _let(
+                name,
+                _factor(
+                    (("graph_row", "Resp"), ("graph_coordinate", axis)),
+                    body=_index(by_coordinate, _var("graph_coordinate"), row),
+                ),
+            )
+        )
+
+    def _append_graph_parameters(self, formula, statements, steps, correlated):
+        """Emit nonlinear leaves through existing coefficient and correlation paths.
+
+        Parameters
+        ----------
+        formula : Formula
+            Primary response metadata.
+        statements, steps : list
+            Existing axes and program statements.
+        correlated : Mapping
+            Shared group coefficients across all additive parameter leaves.
+        """
+        graph = self._predictor_graph
+        if graph is None:
+            return
+        for name, leaf in graph.leaves.items():
+            value = self._append_predictor(
+                leaf, steps, prefix=f"nlpar_{name}_", correlated=correlated
+            )
+            raw = f"nlpar_{name}_raw"
+            steps.append(_let(raw, value))
+            steps.append(
+                _let(
+                    f"nlpar_{name}",
+                    _factor(
+                        (("graph_row", "Resp"),),
+                        body=self._row_predictor(leaf, raw, _var("graph_row")),
+                    ),
+                )
+            )
+        for name, expression in graph.expressions.items():
+            self._append_graph_value(f"nlpar_{name}", expression, statements, steps)
+
     def _append_auxiliaries(
         self,
         formula: Formula,
@@ -3837,6 +4277,35 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                         LetExprLiteral(value=float(self._fixed_parameters[aux.name])),
                     )
                 )
+                continue
+            if (
+                self._predictor_graph is not None
+                and aux.name in self._predictor_graph.roots
+            ):
+                eta_name = f"dpar_{aux.name}_eta"
+                value = self._predictor_graph.roots[aux.name]
+                labels = None
+                if isinstance(value, ComponentExpression):
+                    if not vector_sigma:
+                        raise ValueError(
+                            f"family parameter {aux.name!r} requires a scalar nonlinear root"
+                        )
+                    assert self._family.response is not None
+                    labels = tuple(
+                        self._component_labels(formula)[index]
+                        for index in self._family.response.coordinate_indices(
+                            self._component_labels(formula)
+                        )
+                    )
+                self._append_graph_value(
+                    eta_name,
+                    value,
+                    statements,
+                    program_steps,
+                    axis=f"dpar_{aux.name}_FormulaCategoryLogit",
+                    components=labels,
+                )
+                _append_link(program_steps, aux.name, _var(eta_name), aux.link.name)
                 continue
             predictor = self._distributional.get(aux.name)
             if vector_sigma and predictor is not None:
@@ -3909,7 +4378,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
         group_sizes = {
             _qvr_name(group): len(levels)
-            for predictor in (formula, *self._distributional.values())
+            for _, _, predictor in self._predictor_items(formula)
             for group, levels in predictor.group_levels.items()
         }
         for qgroup, size in group_sizes.items():
@@ -3952,9 +4421,38 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             correlated = self._append_correlations(
                 formula, statements, program_steps, coordinate_axes=axes
             )
-            self._append_categorical_predictor(
-                formula, statements, program_steps, correlated=correlated
+            self._append_graph_parameters(
+                formula, statements, program_steps, correlated
             )
+            if (
+                self._predictor_graph is not None
+                and "mu" in self._predictor_graph.roots
+            ):
+                labels = self._component_labels(formula)
+                response = self._family.response
+                assert response is not None
+                coordinates = response.coordinate_indices(labels)
+                expected = tuple(labels[index] for index in coordinates)
+                self._append_graph_value(
+                    "eta_nonbaseline",
+                    self._predictor_graph.roots["mu"],
+                    statements,
+                    program_steps,
+                    axis="FormulaCategoryLogit",
+                    components=expected,
+                )
+                self._append_component_response(
+                    program_steps,
+                    parameter="mu",
+                    prefix="",
+                    reference=response.reference_index(labels),
+                    coordinates=coordinates,
+                    category_index="FormulaCategory",
+                )
+            else:
+                self._append_categorical_predictor(
+                    formula, statements, program_steps, correlated=correlated
+                )
             if self._family.response.kind != "categorical":
                 self._append_auxiliaries(formula, statements, program_steps, correlated)
                 self._append_vector_observation(formula, statements, program_steps)
@@ -3996,6 +4494,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             ),
         )
         correlated = self._append_correlations(formula, statements, program_steps)
+        self._append_graph_parameters(formula, statements, program_steps, correlated)
         eta_expr = self._append_predictor(
             proportional,
             program_steps,
@@ -4003,6 +4502,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             correlated=correlated,
         )
 
+        if self._predictor_graph is not None and "mu" in self._predictor_graph.roots:
+            root = self._predictor_graph.roots["mu"]
+            if isinstance(root, ComponentExpression):
+                raise ValueError(
+                    "a scalar response requires a scalar nonlinear mu expression"
+                )
+            self._append_graph_value("graph_mu_eta", root, statements, program_steps)
+            eta_expr = _var("graph_mu_eta")
+            if self._predictor_name is not None:
+                eta_expr = _add(eta_expr, _var(self._predictor_name))
         self._append_auxiliaries(formula, statements, program_steps, correlated)
 
         cutpoints_name: str | None = None

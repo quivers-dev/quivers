@@ -2780,17 +2780,19 @@ def make_inline_distribution(
                 for kind, value in param_spec
                 if kind == "var"
             )
-    if total_var_dim == 0:
-        domain = Euclidean(name="_inline_domain", dim=1)
-    elif len(var_name_order) == 1 and variable_types:
-        vtype = _argument_type(var_name_order[0], variable_types)
-        domain = (
-            vtype
-            if vtype is not None
-            else Euclidean(name="_inline_domain", dim=total_var_dim)
+    domain = (
+        _infer_domain(
+            var_name_order,
+            variable_types,
+            tuple(
+                int(width) if width is not None else None
+                for kind, width in param_spec
+                if kind == "var"
+            ),
         )
-    else:
-        domain = _infer_domain(var_name_order, variable_types)
+        if total_var_dim
+        else Euclidean(name="_inline_domain", dim=1)
+    )
     fam_support: _constraints.Constraint = _FAMILY_SUPPORTS.get(
         family, _constraints.real
     )
@@ -3003,7 +3005,9 @@ def _argument_type(
 
 
 def _infer_domain(
-    var_names: list[StepArgument], variable_types: dict[str, AnySpace] | None
+    var_names: list[StepArgument],
+    variable_types: dict[str, AnySpace] | None,
+    widths: tuple[int | None, ...] | None = None,
 ) -> AnySpace:
     """Infer a domain space from variable types.
 
@@ -3013,32 +3017,32 @@ def _infer_domain(
         The bound arguments used as input.
     variable_types : dict or None
         Known variable types.
+    widths : tuple[int or None, ...] or None
+        Checked per-argument feature widths; known widths take precedence
+        over conservative native spaces inferred for computed values.
 
     Returns
     -------
     AnySpace
         The inferred domain.
     """
-    if variable_types is None or not var_names:
-        return Euclidean(name="_inline_domain", dim=len(var_names))
-    if len(var_names) == 1:
-        vtype = _argument_type(var_names[0], variable_types)
-        if vtype is not None:
-            return vtype
-        return Euclidean(name="_inline_domain", dim=1)
     components = []
-    for vn in var_names:
+    for position, vn in enumerate(var_names):
         vtype = _argument_type(vn, variable_types)
-        if isinstance(vtype, Euclidean) and vtype.plate_rows is not None:
-            # A plate-row parameter contributes one row of its plate to
-            # each row of the stacked input, not the whole plate.
-            label = vn.name if isinstance(vn, Indexed) else vn
+        width = widths[position] if widths is not None else None
+        label = vn.name if isinstance(vn, Indexed) else vn
+        if width is not None and (vtype is None or _param_row_width(vtype, 0) != width):
+            components.append(Euclidean(name=f"_inline_{label}", dim=width))
+        elif isinstance(vtype, Euclidean) and vtype.plate_rows is not None:
             components.append(Euclidean(name=f"_inline_{label}", dim=vtype.row_width))
         elif vtype is not None:
             components.append(vtype)
         else:
-            label = vn.name if isinstance(vn, Indexed) else vn
             components.append(Euclidean(name=f"_inline_{label}", dim=1))
+    if not components:
+        return Euclidean(name="_inline_domain", dim=1)
+    if len(components) == 1:
+        return components[0]
     if any((isinstance(c, ContinuousSpace) for c in components)):
         return ProductSpace(components=tuple(components))
     return ProductSet(components=tuple(components))

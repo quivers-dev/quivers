@@ -45,7 +45,7 @@ type NewLevelPolicy = Literal[
 class GroupRemap(ValueModel):
     """One compact prediction axis and its positions in the fitted axis.
 
-    Attributes
+    Parameters
     ----------
     group : str
         Original grouping-factor name.
@@ -57,6 +57,8 @@ class GroupRemap(ValueModel):
         Compact group code for each prediction row.
     sites : Mapping[str, int]
         Raw latent names and the number of values per fitted level.
+    standard_normal_sites : frozenset[str]
+        Sites admitting direct standard-Normal new-group draws.
     """
 
     group: str
@@ -162,7 +164,8 @@ def compact_groups(
     TypeError
         If an inferred raw group site has an unsupported layout.
     """
-    predictors = {"mu": fit.formula, **fit.distributional}
+    predictors = {name: formula for name, _, formula in fit._predictor_items()}
+    prefixes = {name: prefix for name, prefix, _ in fit._predictor_items()}
     fitted: dict[str, tuple[str, ...]] = {}
     for formula in predictors.values():
         for group, levels in formula.group_levels.items():
@@ -202,41 +205,41 @@ def compact_groups(
             row_codes.append(key_codes[key])
         sites = {}
         standard_normal_sites: set[str] = set()
+        layouts = (
+            fit.prediction_plan.group_layouts if fit.prediction_plan is not None else ()
+        )
+        planned = set()
+        for layout in layouts:
+            if layout.group != group:
+                continue
+            sites.update(layout.raw_sites)
+            planned.update((member.prefix, member.slope) for member in layout.members)
+            if layout.parameterization == "noncentered":
+                standard_normal_sites.update(layout.raw_sites)
         for parameter, formula in predictors.items():
-            prefix = "" if parameter == "mu" else f"dpar_{parameter}_"
+            prefix = prefixes[parameter]
             for term in formula.random_terms:
-                if term.group != group:
+                if term.group != group or (prefix, term.slope) in planned:
                     continue
-                qgroup, qslope = _qvr_name(group), _qvr_name(term.slope)
-                candidates = (
-                    f"{prefix}z_{qgroup}_{qslope}",
-                    f"{prefix}alpha_{qgroup}"
-                    if term.slope == "Intercept"
-                    else f"{prefix}beta_{qgroup}_{qslope}",
+                raise TypeError(
+                    f"fitted group term {term.slope!r} for {group!r} has no "
+                    "compiled coordinate layout"
                 )
-                name = next(
-                    (name for name in candidates if name in registry.names), None
-                )
-                if name is None:
-                    raise TypeError(f"cannot identify fitted group site for {term!r}")
-                count = 1
-                for dimension in registry[name].constrained_shape:
-                    count *= dimension
-                if count % len(levels):
-                    raise TypeError(f"unsupported group layout at {name!r}")
-                sites[name] = count // len(levels)
-                if name == candidates[0]:
-                    standard_normal_sites.add(name)
-        if (
-            group == fit.thresholds_by
-            and "cutpoint_log_spacing_noise" in registry.names
-        ):
-            name = "cutpoint_log_spacing_noise"
-            count = math.prod(registry[name].constrained_shape)
+        threshold_raw = next(
+            (
+                name
+                for name in ("cutpoint_log_spacing_noise", "cutpoint_log_spacing_value")
+                if name in registry.names
+            ),
+            None,
+        )
+        if group == fit.thresholds_by and threshold_raw is not None:
+            count = math.prod(registry[threshold_raw].constrained_shape)
             if count % len(levels):
-                raise TypeError("unsupported grouped threshold-noise layout")
-            sites[name] = count // len(levels)
-            standard_normal_sites.add(name)
+                raise TypeError("unsupported grouped threshold layout")
+            sites[threshold_raw] = count // len(levels)
+            if threshold_raw == "cutpoint_log_spacing_noise":
+                standard_normal_sites.add(threshold_raw)
         if group == baseline_group:
             count = math.prod(registry["sbhaz"].constrained_shape)
             if count % len(levels):
@@ -285,6 +288,8 @@ def select_contributions(
     module: Module,
     formulas: Mapping[str, Formula],
     selected: frozenset[tuple[str, str]],
+    *,
+    prefixes: Mapping[str, str] | None = None,
 ) -> Module:
     """Zero excluded row contributions without changing correlation blocks.
 
@@ -296,6 +301,8 @@ def select_contributions(
         Fitted predictors.
     selected : frozenset[tuple[str, str]]
         Active group and slope pairs.
+    prefixes : Mapping[str, str] or None
+        Retained coefficient namespaces for every additive graph leaf.
 
     Returns
     -------
@@ -307,7 +314,13 @@ def select_contributions(
 
     excluded = set()
     for parameter, formula in formulas.items():
-        prefix = "" if parameter == "mu" else f"dpar_{parameter}_"
+        prefix = (
+            prefixes[parameter]
+            if prefixes is not None
+            else ""
+            if parameter == "mu"
+            else f"dpar_{parameter}_"
+        )
         for term in formula.random_terms:
             if (term.group, term.slope) in selected:
                 continue
@@ -404,8 +417,12 @@ def remap_draw(
         torch.random.set_rng_state(generator.get_state())
         sampled = None
         if need_gaussian and not direct_gaussian:
+            from quivers.inference._prior_projection import project_prior_sites
+
             sampled = trace(
-                context.program,
+                context.prior_program
+                if context.prior_program is not None
+                else project_prior_sites(context.program, group_names),
                 torch.zeros(1, 1, dtype=torch.long),
                 dict(context.observations)
                 | {

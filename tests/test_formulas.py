@@ -1309,14 +1309,18 @@ class TestFamilyLinkDefaults:
         with pytest.raises(ValueError, match="contiguous category labels"):
             formula_to_qvr("y ~ x", data=df, family="categorical")
 
-    def test_categorical_centered_random_effects_are_rejected(self, categorical_df):
-        with pytest.raises(ValueError, match="require reparameterize='noncentered'"):
-            formula_to_qvr(
-                "y ~ x + (1 | g)",
-                data=categorical_df,
-                family="categorical",
-                reparameterize="centered",
-            )
+    def test_categorical_centered_random_effects_use_direct_coefficients(
+        self, categorical_df
+    ):
+        source = formula_to_qvr(
+            "y ~ x + (1 | g)",
+            data=categorical_df,
+            family="categorical",
+            reparameterize="centered",
+        )
+        assert "sample group_coefficients_g" in source
+        assert "sample z_g_Intercept" not in source
+        loads(source)
 
     def test_mixture_builds_configurable_component_model(self, mixture_df):
         src = formula_to_qvr(

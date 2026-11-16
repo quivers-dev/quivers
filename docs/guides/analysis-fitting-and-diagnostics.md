@@ -64,6 +64,47 @@ result = fit(
 A prior's key is the latent's name in the generated QVR source, which `formula_to_qvr`
 shows before fitting.
 
+### Prior-only fitting and independent prior draws
+
+Both formula `fit` and source `Model.fit` accept `sample_prior="no"`, `"yes"`,
+or `"only"`. The default fits the posterior. `"yes"` fits the same posterior
+and retains an independent prior stream; `"only"` runs the selected inference
+method with observation likelihoods disabled. Data-dependent priors, support
+constraints, and authored score potentials remain active. Compiler-generated
+marginal likelihood factors follow the observation policy as well.
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+training = pd.DataFrame({"x": [-1.0, 0.0, 1.0], "y": [0.2, -0.1, 0.8]})
+result = fit(
+    "y ~ x", data=training, method="svi", num_steps=2, seed=23,
+    sample_prior="yes", num_prior_samples=4, prior_seed=19,
+)
+prior = result.prior_view()
+expected = prior.posterior_epred()
+replicated = prior.posterior_predict(seed=18)
+assert expected.shape == replicated.shape == (1, 4, 3)
+```
+
+`prior_view()` reuses retained samples; `prior_view(num_samples=100, seed=7)`
+draws a fresh independent stream. Source fits expose the same view, and a bound
+source model or formula fit also offers `prior_draws`. Priors are drawn through
+the original conditional laws, rather than by reinitializing a fitted guide.
+Separate prior seeds preserve posterior draws, optimization losses, and the
+caller's CPU random state. Independent prior samples carry no MCMC diagnostics.
+
+An authored score potential can couple otherwise ancestral draws. Independent
+sampling refuses that case instead of treating weighted draws as independent
+samples from a normalized law. Use `prior_draws(method=MCMC(...))` or
+`prior_view(method=MCMC(...))` with an explicitly configured driver for
+factor-conditioned prior-only inference. Raw recorded-event likelihoods remain
+available through `log_likelihood`, including from prior views; weights and the
+fitting score policy do not change their definition. See
+[prior sampling](../api/inference/prior.md) and the
+[observation scoring policy](../api/effects/observation_scoring.md).
+
 ## Diagnostics: `quivers.diagnostics`
 
 Chain diagnostics such as $\hat R$ and the effective sample size assess how well

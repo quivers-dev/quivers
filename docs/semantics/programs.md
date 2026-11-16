@@ -381,15 +381,30 @@ exist where the maximum has tied arguments.
 
 For $K$ cumulative categories, a flexible group profile consists of
 $K-2$ centered shape coordinates and one varying location. Equidistant
-profiles constrain the shape to a common spacing. The compiler
-reuses or supplies exactly one ordinary group intercept; binary profiles
-have only the location coordinate. A duplicate same-group
+profiles constrain the shape to a common spacing; flexible and sum-to-zero
+profiles use the same centered positive-gap representation. For a grouped
+equidistant profile, $\delta_g=\max_j B_{gj}+\exp(s_g)$ is shared
+across all adjacent gaps. The compiler reuses or supplies exactly one
+ordinary group intercept; binary profiles have only the location coordinate. A duplicate same-group
 category-specific intercept is refused. Likewise, a fixed transition
 intercept with freely estimated cumulative thresholds and a proportional
 intercept repeats free coordinates; that combination is refused even
 when the coefficient has an explicit prior. The hurdle construction applies
 this representation to its positive categories; a single positive
 category has no cutpoint profile.
+
+Profile centering and centered inference coordinates are distinct.
+The default hierarchical log-slack law is
+$s_{gj}\mid m_j,\tau_j\sim\operatorname{Normal}(m_j,\tau_j)$,
+with $m_j\sim\operatorname{Normal}(0,1)$ and
+$\tau_j\sim\operatorname{HalfNormal}(0.5)$. Centered inference samples
+$s$ directly; noncentered inference samples $z_{gj}\sim\operatorname{Normal}(0,1)$
+and sets $s_{gj}=m_j+\tau_j z_{gj}$. The exponential and profile centering
+are deterministic maps in both programs. A density relative to the sampled
+log-slack coordinates thus introduces no additional exponential Jacobian.
+An equidistant group has one such shape coordinate, rather than one per
+gap. Together with its one varying location, these are all free coordinates
+of that constrained profile; a binary profile has only location.
 
 At prediction, the actual fitted cutpoints are retained per posterior
 draw. New covariates and effect selections do not reconstruct the
@@ -447,6 +462,21 @@ Normal/LKJ conditional law at draw $s$. Repeated rows with the same
 identity share that vector, including one shared new identity for
 repeated missing group values within a factor. This is prediction under
 a stated group law; it adds no fitted levels or changes to the posterior.
+
+The same coordinate choice applies to every Gaussian group block.
+Let $D=\operatorname{diag}(\sigma)$ and $L$ be its correlation Cholesky
+factor. A centered program samples
+$b_g\sim\operatorname{Normal}(0,DLL^\mathsf{T}D)$; a noncentered program
+samples $z_g\sim\operatorname{Normal}(0,I)$ and sets $b_g=DLz_g$.
+The block may concatenate scalar, transition, and response-component
+coordinates of different widths. Each named coefficient is a fixed slice
+of this single block, so sharing a correlation ID does not introduce a
+second coefficient or covariance construction. For $G$ groups, the density
+change of variables is
+$\log p_B(B)+G\log|DL|=\log p_Z(Z)$, conditional on the same scales
+and correlation. Posterior replay uses the retained block layout in either
+coordinate system.
+
 For a constrained category-specific new-group profile, the explicit
 `feasible_uncertainty` and `feasible_gaussian` policies condition the
 joint donor or Gaussian proposal on ordered effective cutpoints for the
@@ -457,6 +487,25 @@ execution refusal, without dropping draws or rebuilding thresholds.
 Ordinary categorical predictor contrasts remain fixed to their training
 levels. The [prediction guide](../guides/analysis-data-and-formulas.md#selecting-effects-and-predicting-for-new-groups)
 states the API and the supported policy boundary.
+
+#### Nonlinear predictor dependencies
+
+A nonlinear formula denotes a finite acyclic graph of deterministic
+predictors. Its additive leaves are ordinary formula predictors with their
+existing coefficient priors and group effects. In a topological ordering,
+let $u_j=f_j(u_{<j},x)$ be an intermediate expression and
+$\eta_a=f_a(u,x)$ a family-output expression. The runtime family parameter
+is $\theta_a=g_a^{-1}(\eta_a)$ for its declared link $g_a$; intermediate
+nodes have the identity link. Thus an explicitly exponentiated intermediate
+and the final output's inverse link are separate authored maps.
+
+These expressions add no random draws or scores. The model's joint measure
+consists of the existing coefficient priors and the response law evaluated
+at $\theta$. Component-valued expressions retain nominal coordinate labels,
+including the reference-coordinate constraint. Static graph configuration
+elaborates to the same runtime telescope and pure `let` constructs as other
+formula programs. Cyclic dependencies, unknown inputs, and family-output
+backreferences have no accepted elaboration.
 
 #### Scalar response kernels and regression parameters
 
@@ -729,6 +778,15 @@ kernels use stable deviance, Stirling, and gamma-increment forms where
 applicable, rather than relying on subtraction of large log-gamma terms.
 This arithmetic policy does not imply a uniform approximation bound for
 every count and parameter regime.
+
+Arithmetic-count kernels validate original finite observations before
+floating conversion. Observations outside $[-2^{53},2^{53}]$ cause an
+explicit native `ValueError` or reference `DistributionError`, preserving
+the original integer rather than scoring a rounded value. With argument
+validation disabled, fractional or negative observations within that range,
+and nonfinite observations, have log mass $-\infty$.
+Categorical and ordinal laws instead compare exact original category indices with their finite support; they do not
+impose this arithmetic-count ceiling on an out-of-range index.
 
 Poisson, negative-binomial, and their inflated or hurdle samplers have a
 separate operational ceiling: a generated intensity or count must be
@@ -1683,3 +1741,29 @@ A leading execution axis supplies one runtime-context valuation per run. The ten
 executor applies the same checked kernel to each valuation, separating runs
 before a grouped marginal is evaluated. Observation plates stay inside each
 execution.
+
+## Prior-only execution
+
+The observation scoring policy is an execution parameter shared by source and
+formula fitting. With scoring enabled, an `observe` contributes its ordinary
+recorded-event log density, including any declared likelihood weight. With
+scoring disabled, that contribution is zero and the response density is not
+evaluated. Latent `sample` scores and authored `score` potentials retain their
+ordinary meanings. A compiler-generated factor that integrates a response's
+latent assignment is classified as a likelihood factor and follows the same
+policy; an authored factor defaults to a potential.
+
+This distinction preserves the same prior-only target before and after exact
+response marginalization. It also preserves observation clamping and sampling:
+the raw pointwise recorded-event likelihood remains the unweighted event score,
+and the generative view retains its original response law, including a declared
+truncation. Prediction-law replay omits placeholder response scores, whereas raw
+likelihood analysis explicitly enables observation scoring.
+
+Independent prior draws use the dependency closure of the original draw sites,
+including upstream deterministic bindings and conditional prior parameters.
+They preserve dynamic scan addresses and constrained plate/event axes. A global
+potential prevents an ancestral interpretation, so the independent API refuses
+it; explicitly selected inference-based prior-only sampling retains that
+potential. The `PriorDraws` record distinguishes independent samples from MCMC
+chains without introducing a second prediction or likelihood calculus.

@@ -9,6 +9,7 @@ import torch
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
+from quivers.inference.prior import PriorDraws
 
 
 def sample_count(num_samples: int | None, *, available: int | None = None) -> int:
@@ -27,10 +28,10 @@ def sample_count(num_samples: int | None, *, available: int | None = None) -> in
 
 
 def draw_count(
-    posterior: MCMCResult | Guide, num_samples: int | None
+    posterior: MCMCResult | PriorDraws | Guide, num_samples: int | None
 ) -> tuple[int, int]:
     """Resolve chain and draw counts, retaining recorded chain boundaries."""
-    if isinstance(posterior, MCMCResult):
+    if isinstance(posterior, (MCMCResult, PriorDraws)):
         return posterior.num_chains, sample_count(
             num_samples, available=posterior.num_samples
         )
@@ -38,7 +39,7 @@ def draw_count(
 
 
 def constrained_draws(
-    posterior: MCMCResult | Guide,
+    posterior: MCMCResult | PriorDraws | Guide,
     input: torch.Tensor,
     *,
     num_samples: int | None = None,
@@ -49,8 +50,8 @@ def constrained_draws(
 
     Parameters
     ----------
-    posterior : MCMCResult or Guide
-        Recorded chains or a fitted guide.
+    posterior : MCMCResult or PriorDraws or Guide
+        Recorded chains, independent prior draws, or a fitted guide.
     input : torch.Tensor
         One model execution input for guide sampling.
     num_samples : int or None
@@ -73,7 +74,7 @@ def constrained_draws(
         If draw counts, site names, or constrained shapes are inconsistent.
     """
     chains, count = draw_count(posterior, num_samples)
-    if isinstance(posterior, MCMCResult):
+    if isinstance(posterior, (MCMCResult, PriorDraws)):
         result = {name: value[:, :count] for name, value in posterior.samples.items()}
     else:
         registry = posterior.registry if registry is None else registry

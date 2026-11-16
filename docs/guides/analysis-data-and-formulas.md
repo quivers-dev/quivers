@@ -145,6 +145,63 @@ gives a `Module` that compiles to the same program.
 - **Interactions** `x:z` (elementwise product, one coefficient) and
   `x*z` (expands to `x + z + x:z`, three coefficients).
 
+### Nonlinear parameter predictors
+
+The `nonlinear` mapping assigns additive formulas or deterministic
+expressions to named parameters. With this argument present, the main
+formula's right side is a QVR value expression. Additive leaves use the
+same design matrices, group blocks, priors, and retained new-data encodings
+as ordinary regression; `NonlinearExpression` combines their values without
+introducing additional coefficient sites.
+
+```python
+import pandas as pd
+from quivers.formulas import NonlinearExpression, fit
+
+curve_data = pd.DataFrame({
+    "y": [0.2, 0.4, 0.7, 0.8], "x": [0.1, 0.5, 1.0, 1.5],
+})
+curve = fit(
+    "y ~ amplitude * (1 - exp(-rate * x))", data=curve_data,
+    nonlinear={
+        "amplitude": "~1",
+        "log_rate": "~1",
+        "rate": NonlinearExpression(expression="exp(log_rate)"),
+    },
+    fixed_parameters={"sigma": 0.3},
+    priors={
+        "nlpar_amplitude_intercept": "Normal(1.0, 0.5)",
+        "nlpar_log_rate_intercept": "Normal(0.0, 0.5)",
+    },
+    method="svi", num_steps=2, seed=7,
+)
+curve_mean = curve.posterior_epred(
+    new_data=pd.DataFrame({"x": [0.25, 0.75]}), num_samples=3, seed=7,
+)
+assert curve_mean.shape == (1, 3, 2)
+```
+
+Intermediate parameters use the identity link. Each final family output
+is evaluated on its link scale and receives its inverse link once.
+For instance, `distributional={"sigma": NonlinearExpression(expression="s0+s1*x")}`
+uses the sigma inverse link after that expression; define `s0` and `s1`
+in `nonlinear`. Coefficients have the `nlpar_<parameter>_` namespace, and
+`get_prior` and `formula_to_qvr` accept the same graph arguments.
+QVR retains its proper default coefficient priors when no override is
+provided; brms's [nonlinear workflow](https://paulbuerkner.com/brms/articles/brms_nonlinear.html)
+instead requires explicit priors for nonlinear population coefficients.
+
+An explicit component mapping supplies a vector-valued output. For
+`family=families["multinomial"].with_reference("A")` and response
+`cbind(A,B,C)`, use the main formula `cbind(A,B,C) ~ 0` and
+`distributional={"mu": NonlinearExpression(expression={"B": "a*x", "C": "b*x"})}`,
+with additive leaves `a` and `b`. Keys must match the retained free
+coordinate labels exactly; extent equality cannot establish that mapping.
+Intermediate component expressions retain the same labels. Unknown names,
+dependency cycles, and references to another family output are refused
+before inference. The generated QVR uses existing typed inputs and `let`
+expressions; nonlinear formulas add no new language construct.
+
 ### Offsets and observation exposure
 
 An offset is a known contribution to a linear predictor with coefficient one.
@@ -324,10 +381,12 @@ coefficient scales `sigma_group_Intercept` and `sigma_group_x`. Its covariance i
 The default `correlation_prior="LKJCholesky(1.0)"` is uniform over correlation
 matrices. `priors={"cor_group": "LKJCholesky(2.0)"}` changes one block's prior;
 `correlation_prior` changes the default for every block. Both `fit` and
-`formula_to_qvr` accept it. Centered scalar-response models draw the group
-coefficients through Gaussian conditional distributions. Noncentered models draw
-standard Normal innovations and multiply by the same Cholesky factor. These give
-the same covariance model, with different inference coordinates.
+`formula_to_qvr` accept it. With `reparameterize="centered"`, each group
+receives one multivariate Normal coefficient draw for the entire block.
+The default `"noncentered"` draws standard Normal innovations and multiplies
+by the same Cholesky factor and scales. Both coordinates define the same
+conditional Gaussian law, including blocks that combine scalar,
+category-specific, and response-component coefficients.
 
 Separate blocks remain independent. For instance, `(1 | group) + (0 + x | group)`
 has no intercept–slope correlation, while `(1 + x || group)` explicitly requests
@@ -353,8 +412,8 @@ block names and repeated coefficients across blocks fail before fitting.
 Categorical models expand each block over all non-reference logits, so a
 three-category `(1 + x | group)` model has a four-dimensional correlation
 matrix. This includes correlations between slopes and between response-category
-coefficients. Categorical group effects currently use the noncentered
-parameterization. Numeric transforms and categorical slope contrasts retain their
+coefficients. Both parameterizations retain this full covariance.
+Numeric transforms and categorical slope contrasts retain their
 evaluated design columns, including when the corresponding fixed slope is absent.
 The generated runtime telescope declares each group index array as
 `Tensor[Int]([Resp])`.
@@ -1280,7 +1339,12 @@ remain float32: promotion retains their autograd connections, and gradients
 return in the heads' original dtype. Supply large trial counts as integer
 arrays or integer source literals so their original values reach validation;
 promoting an already-rounded float32 count preserves its rounded value.
-Scores still use floating-point arithmetic.
+Scores still use floating-point arithmetic. Native arithmetic-count kernels
+and their checked reference adapters reject original finite observations
+outside `[-2**53, 2**53]` before conversion. This is distinct from a support
+violation within that numerical range, which has zero mass when distribution
+argument validation is disabled. Categorical and ordinal responses retain
+exact category-index comparisons instead of applying this arithmetic ceiling.
 
 The emitted binomial likelihood is `Binomial(trials, sigmoid(eta))`. The negative-binomial family
 uses the NB2 form [@cameron1986econometric], with mean $\mu$ and variance
@@ -1329,10 +1393,12 @@ choice_fit = fit(
 ```
 
 Categorical responses must contain every label between zero and `K - 1`.
-Random effects for each class use the
+Random effects for each class default to the
 [non-centered parameterization](https://mc-stan.org/docs/stan-users-guide/efficiency-tuning.html),
-which writes a group effect as its scale times a standard normal draw, and
-`reparameterize="centered"` is rejected when a categorical formula has random effects.
+which transforms standard Normal innovations into coefficients.
+`reparameterize="centered"` instead draws the coefficients directly under
+the same Gaussian covariance model. The retained category labels and
+coefficient views agree across these choices.
 
 An external categorical predictor may return either the `K - 1`
 non-reference logits with shape `(N, K - 1)` or a full `(N, K)` logit
@@ -1430,7 +1496,7 @@ do not establish the same induced prior: in particular, its default
 equidistant spacing prior is flat, and centering a sampled threshold
 vector differs from sampling a minimal contrast representation.
 
-`cs(expr)` gives a fixed or noncentered group coefficient one value per
+`cs(expr)` gives a fixed or group coefficient one value per
 transition, including cumulative and hurdle-cumulative models. In
 noncumulative models, `cs(1)` supplies a transition intercept;
 `cs(x)` supplies transition-specific slopes. Shared correlation
@@ -1463,8 +1529,8 @@ need not be differentiable at a tie. A fixed `cs(1)` together with freely
 estimated cumulative or hurdle thresholds and a proportional intercept
 has redundant coordinates and is refused, including when its coefficient
 has an explicit prior. Use the ordinary intercept and thresholds for that
-profile, or a row-varying term such as `cs(x)`. Centered category-specific
-group effects remain unsupported.
+profile, or a row-varying term such as `cs(x)`. Both centered and
+noncentered category-specific group effects use the same support construction.
 
 ```python
 constrained = fit(
@@ -1517,12 +1583,52 @@ Every participant's effective cutpoints remain ordered on the training
 rows. Their centered shape controls spacing, while the one participant
 intercept controls location. Flexible and sum-to-zero profiles span all
 cutpoint coordinates; equidistant profiles retain their common-spacing
-constraint. Their log-spacing or log-slack coordinates have a hierarchical prior:
-Normal `(0, 1)` means, HalfNormal `0.5` scales, and standard Normal
-group noise. Noncentered category-specific slopes may coexist with these profiles;
-a same-factor category-specific intercept would duplicate the complete
-profile and is refused. `posterior_thresholds` exposes the resulting
-row profiles directly.
+constraint. Flexible and sum-to-zero profiles have one log-slack coordinate
+per adjacent gap; equidistant profiles have one per group, with a common
+gap above that group's largest category-specific feasibility bound.
+Their hierarchical prior uses Normal `(0, 1)` means and HalfNormal `0.5`
+scales. Noncentered coordinates transform standard Normal group noise;
+centered coordinates draw the log slacks directly from the corresponding
+Normal distributions. Both choices retain the centered profile shape and
+the same prior on it. Profile centering identifies location; it does not
+select inference coordinates. Override the shared hyperpriors through
+`priors={"cutpoint_log_spacing_mean": "Normal(0, 0.5)",
+"cutpoint_log_spacing_scale": "Gamma(2, 3)"}`. A supplied scale prior is
+conditioned on nonnegative values through the existing `Restrict` measure;
+`get_prior` reports that normalized call. Conditional log-slack draws and
+standard Normal innovations remain part of the parameterization.
+
+Category-specific group slopes may coexist with these profiles in either
+parameterization. A same-factor category-specific intercept would duplicate
+the complete profile and is refused. `posterior_thresholds` exposes the
+resulting row profiles directly. For instance, this centered equidistant
+model estimates one spacing and one location per participant:
+
+```python
+import pandas as pd
+from quivers.formulas import families, fit
+
+profile_data = pd.DataFrame({
+    "rating": [0, 1, 2, 3, 0, 1, 2, 3],
+    "x": [-0.6, -0.2, 0.2, 0.6, -0.5, -0.1, 0.3, 0.5],
+    "participant": ["a"] * 4 + ["b"] * 4,
+})
+profile_fit = fit(
+    "rating ~ x + (1 | participant)", data=profile_data,
+    family=families["cumulative"].with_thresholds("equidistant"),
+    thresholds_by="participant", reparameterize="centered",
+    method="svi", num_steps=2, seed=7,
+)
+profiles = profile_fit.posterior_thresholds(num_samples=3, seed=7)
+assert profiles.shape == (1, 3, 8, 3)
+assert (profiles[..., 1:] > profiles[..., :-1]).all()
+```
+
+The generated centered threshold site is `cutpoint_log_spacing_value`;
+its noncentered counterpart is `cutpoint_log_spacing_noise`. Correlated
+centered group blocks use `group_coefficients_<block>`, while coefficient
+inspection retains the same term and component labels. These generated
+names can also be used for natural-scale initial values.
 
 A differentiable PyTorch module can add to the linear predictor directly. It is passed
 with its input tensor, apart from the dataframe:

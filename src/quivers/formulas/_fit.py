@@ -38,6 +38,14 @@ from quivers.formulas.formula import (
     _qvr_name,
     formula_from_data,
 )
+from quivers.formulas._predictor_graph import (
+    NonlinearExpression,
+    PredictorGraph,
+    build_predictor_graph,
+    nonlinear_response_source,
+    predictor_items,
+)
+
 from quivers.formulas._prediction import FormulaPredictionPlan
 from quivers.formulas._response import count_totals, response_tensor
 from quivers.formulas._response_modifiers import (
@@ -52,6 +60,8 @@ from quivers.inference import (
     NUTSKernel,
     SVI,
     AutoNormalGuide,
+    PriorDraws,
+    PriorMode,
 )
 from quivers.inference._posterior import draw_count
 from quivers.inference.guides.base import Guide
@@ -74,9 +84,15 @@ class BayesianFit(ValueModel):
         Response family used at compile time.
     program : MonadicProgram
         The compiled program.
-    posterior : MCMCResult or Guide
+    posterior : MCMCResult or PriorDraws or Guide
         [`quivers.inference.MCMCResult`][quivers.inference.MCMCResult] from NUTS / HMC, or
         a [`quivers.inference.guides.base.Guide`][quivers.inference.guides.base.Guide] from SVI.
+        A prior view instead retains independently generated PriorDraws.
+    sample_prior : {"no", "yes", "only"}
+        Ordinary fitting, additionally retained independent priors, or
+        observation-free inference with explicit score potentials retained.
+    prior : PriorDraws or MCMCResult or None
+        Independent prior samples, or explicitly factor-conditioned chains.
     losses : tuple[float, ...]
         Finite optimization losses for SVI; empty for recorded MCMC chains.
     observations : Mapping[str, torch.Tensor]
@@ -87,6 +103,8 @@ class BayesianFit(ValueModel):
     distributional : Mapping[str, Formula]
         Evaluated auxiliary-parameter design matrices, retained so source
         inspection emits the fitted model without re-evaluating transforms.
+    predictor_graph : PredictorGraph or None
+        Named nonlinear designs, typed expressions, and numeric input contracts.
     prediction_plan : FormulaPredictionPlan or None
         Live fitted evaluators for new-data prediction. The versioned runtime
         plan is held by identity and explicitly refuses durable serialization.
@@ -101,7 +119,13 @@ class BayesianFit(ValueModel):
     formula: Formula = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     family: Family
     program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    posterior: MCMCResult | Guide = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    posterior: MCMCResult | PriorDraws | Guide = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    sample_prior: PriorMode = "no"
+    prior: PriorDraws | MCMCResult | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     losses: tuple[float, ...] = ()
     observations: Mapping[str, torch.Tensor] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -125,12 +149,88 @@ class BayesianFit(ValueModel):
     distributional: Mapping[str, Formula] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    predictor_graph: PredictorGraph | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     prediction_plan: FormulaPredictionPlan | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
+    def prior_draws(
+        self,
+        *,
+        num_samples: int = 100,
+        seed: int = 0,
+        method: Literal["ancestral"] | MCMC = "ancestral",
+    ) -> PriorDraws | MCMCResult:
+        """Draw conditional priors using retained designs and data-dependent priors.
+
+        Parameters
+        ----------
+        num_samples : int
+            Positive number of independent ancestral draws.
+        seed : int
+            Isolated CPU seed; the caller's stream is restored.
+        method : {"ancestral"} or MCMC
+            Independent conditional sampling, or an explicit configured driver
+            for global score potentials. Its own budgets control MCMC.
+
+        Returns
+        -------
+        PriorDraws or MCMCResult
+            Constrained samples with independent provenance or genuine chains.
+        """
+        from quivers.inference.prior import prior_draws
+
+        return prior_draws(
+            self.program,
+            torch.zeros(1, 1),
+            self.observations,
+            num_samples=num_samples,
+            seed=seed,
+            method=method,
+        )
+
+    def prior_view(
+        self,
+        *,
+        num_samples: int | None = None,
+        seed: int = 0,
+        method: Literal["ancestral"] | MCMC = "ancestral",
+    ) -> BayesianFit:
+        """Reuse prediction, likelihood, and analysis methods with prior draws.
+
+        Parameters
+        ----------
+        num_samples : int or None
+            Fresh independent draw count. None reuses retained prior samples,
+            or draws 100 if none were retained.
+        seed : int
+            Isolated CPU seed for fresh ancestral draws.
+        method : {"ancestral"} or MCMC
+            Conditional sampling or explicitly factor-conditioned inference.
+
+        Returns
+        -------
+        BayesianFit
+            A new view sharing the fitted model, encodings, and data.
+        """
+        prior = (
+            self.prior
+            if self.prior is not None and num_samples is None and method == "ancestral"
+            else self.prior_draws(
+                num_samples=100 if num_samples is None else num_samples,
+                seed=seed,
+                method=method,
+            )
+        )
+        return self.with_(posterior=prior, prior=prior, sample_prior="only", losses=())
+
     def _formula_lens(
-        self, *, distributional: Mapping[str, Formula] | None = None
+        self,
+        *,
+        distributional: Mapping[str, Formula] | None = None,
+        nonlinear_leaves: Mapping[str, Formula] | None = None,
     ) -> FormulaToQVRModule:
         """Reuse fitted compiler settings with optional specialized predictors.
 
@@ -138,6 +238,8 @@ class BayesianFit(ValueModel):
         ----------
         distributional : Mapping[str, Formula] or None
             Specialized auxiliary metadata, or the fitted metadata.
+        nonlinear_leaves : Mapping[str, Formula] or None
+            Group-specialized designs for the same nonlinear graph.
 
         Returns
         -------
@@ -159,6 +261,9 @@ class BayesianFit(ValueModel):
             if distributional is None
             else distributional,
             fixed_parameters=self.fixed_parameters,
+            predictor_graph=self.predictor_graph
+            if nonlinear_leaves is None or self.predictor_graph is None
+            else self.predictor_graph.with_(leaves=dict(nonlinear_leaves)),
         )
 
     @property
@@ -231,7 +336,7 @@ class BayesianFit(ValueModel):
         """
         return {
             group: levels
-            for predictor in (self.formula, *self.distributional.values())
+            for _, _, predictor in self._predictor_items()
             for group, levels in predictor.group_levels.items()
         }
 
@@ -551,7 +656,12 @@ class BayesianFit(ValueModel):
         )
         from quivers.formulas._prediction import prepare_prediction
 
-        self._formula_predictor(parameter)
+        graph = self.predictor_graph
+        graph_parameter = graph is not None and parameter in (
+            graph.leaves.keys() | graph.expressions.keys() | graph.roots.keys()
+        )
+        if not graph_parameter:
+            self._formula_predictor(parameter)
         ordinal = self.family.ordinal is not None
         if transform and parameter == "mu" and ordinal:
             raise ValueError(
@@ -567,6 +677,10 @@ class BayesianFit(ValueModel):
             if parameter == "mu"
             else (parameter if transform else f"dpar_{parameter}_eta")
         )
+        if graph is not None and parameter in (
+            graph.leaves.keys() | graph.expressions.keys()
+        ):
+            binding = f"nlpar_{parameter}"
         context = prepare_prediction(
             self,
             new_data,
@@ -860,14 +974,18 @@ class BayesianFit(ValueModel):
         response = _qvr_name(self.formula.response_name)
         with torch.no_grad():
             likelihood = collect_log_likelihood(
-                replay(self, draws, shape), {response}, shape
+                replay(self, draws, shape, score_observations=True), {response}, shape
             )
         return PosteriorAnalysis(
             samples=draws,
             log_likelihood=likelihood,
             observed_data={response: response_tensor(self.formula, self.family)},
             sample_stats=_sample_stats(self.posterior, shape[1]),
-            kind="mcmc" if isinstance(self.posterior, MCMCResult) else "variational",
+            kind="mcmc"
+            if isinstance(self.posterior, MCMCResult)
+            else "prior"
+            if isinstance(self.posterior, PriorDraws)
+            else "variational",
         )
 
     def log_likelihood(
@@ -900,7 +1018,9 @@ class BayesianFit(ValueModel):
         draws = self.draws(num_samples=num_samples, seed=seed)
         response = _qvr_name(self.formula.response_name)
         with torch.no_grad():
-            return collect_log_likelihood(replay(self, draws, shape), {response}, shape)
+            return collect_log_likelihood(
+                replay(self, draws, shape, score_observations=True), {response}, shape
+            )
 
     def posterior_predict(
         self,
@@ -1022,6 +1142,68 @@ class BayesianFit(ValueModel):
         ):
             return collect_draws(values(), shape)
 
+    def predictor_labels(self, parameter: str = "mu") -> tuple[int | str, ...]:
+        """Label the last axis returned by posterior_linpred for one graph output.
+
+        Parameters
+        ----------
+        parameter : str
+            Family parameter or named nonlinear intermediate.
+
+        Returns
+        -------
+        tuple[int or str, ...]
+            Output coordinate order; empty for scalar-row values. Family
+            coordinates use fitted response order, with the ALR reference
+            omitted. Intermediate vectors retain authored label order.
+
+        Raises
+        ------
+        ValueError
+            If the parameter has no retained predictor or graph binding.
+        """
+        from quivers.formulas._predictor_graph import ComponentExpression
+
+        graph = self.predictor_graph
+        if graph is not None and parameter in graph.expressions:
+            value = graph.expressions[parameter]
+            return value.components if isinstance(value, ComponentExpression) else ()
+        if graph is not None and parameter in graph.leaves:
+            return ()
+        response = self.family.response
+        if parameter == "mu":
+            if response is None:
+                return ()
+            labels = self.category_labels
+            if response.kind == "logistic_normal":
+                return tuple(
+                    labels[index]
+                    for index in response.coordinate_indices(
+                        tuple(str(label) for label in labels)
+                    )
+                )
+            return labels
+        if graph is not None and parameter in graph.roots:
+            value = graph.roots[parameter]
+            if not isinstance(value, ComponentExpression):
+                return ()
+            assert response is not None
+            labels = self.category_labels
+            return tuple(
+                labels[index]
+                for index in response.coordinate_indices(
+                    tuple(str(label) for label in labels)
+                )
+            )
+        self._formula_predictor(parameter)
+        return (
+            self.coefficient_labels
+            if response is not None
+            and response.kind == "logistic_normal"
+            and parameter == "sigma"
+            else ()
+        )
+
     def _predictor_width(self, parameter: str) -> int:
         """Read the declared coordinate width of a fitted predictor.
 
@@ -1035,6 +1217,22 @@ class BayesianFit(ValueModel):
         int
             Component width, or zero for a scalar predictor.
         """
+        if self.predictor_graph is not None:
+            from quivers.formulas._predictor_graph import ComponentExpression
+
+            value = self.predictor_graph.expressions.get(parameter)
+            if value is None:
+                value = self.predictor_graph.roots.get(parameter)
+            if parameter != "mu" and parameter in (
+                self.predictor_graph.leaves.keys()
+                | self.predictor_graph.expressions.keys()
+                | self.predictor_graph.roots.keys()
+            ):
+                return (
+                    len(value.components)
+                    if isinstance(value, ComponentExpression)
+                    else 0
+                )
         response = self.family.response
         if response is None:
             return 0
@@ -1064,6 +1262,16 @@ class BayesianFit(ValueModel):
             for index in response.coordinate_indices(tuple(str(v) for v in labels))
         )
 
+    def _predictor_items(self):
+        """Enumerate retained additive designs and their native coefficient prefixes.
+
+        Returns
+        -------
+        tuple
+            Public parameter labels, stable namespaces, and fitted designs.
+        """
+        return predictor_items(self.formula, self.distributional, self.predictor_graph)
+
     def _formula_predictor(self, parameter: str) -> tuple[Formula, str]:
         """Read retained predictor metadata without re-evaluating its formula.
 
@@ -1082,6 +1290,11 @@ class BayesianFit(ValueModel):
         ValueError
             If the parameter has no retained distributional formula.
         """
+        if (
+            self.predictor_graph is not None
+            and parameter in self.predictor_graph.leaves
+        ):
+            return self.predictor_graph.leaves[parameter], f"nlpar_{parameter}_"
         if parameter == "mu":
             return self.formula, ""
         if parameter not in self.distributional:
@@ -1205,7 +1418,8 @@ def fit(
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
-    distributional: Mapping[str, str] | None = None,
+    distributional: Mapping[str, str | NonlinearExpression] | None = None,
+    nonlinear: Mapping[str, str | NonlinearExpression] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     method: Literal["nuts", "hmc", "svi"] = "nuts",
     num_warmup: int | None = None,
@@ -1226,6 +1440,9 @@ def fit(
     predictor: nn.Module | None = None,
     predictor_data: torch.Tensor | None = None,
     seed: int = 0,
+    sample_prior: PriorMode = "no",
+    num_prior_samples: int = 100,
+    prior_seed: int | None = None,
 ) -> BayesianFit:
     """Compile a brms-style formula, fit it, and return the result.
 
@@ -1255,7 +1472,12 @@ def fit(
     decision : str or None
         Wiener boundary-choice column: numeric zero/lower or one/upper, or
         the labels lower and upper. Equivalent to response-side dec(column).
-    distributional : Mapping[str, str] or None
+    nonlinear : Mapping[str, str or NonlinearExpression] or None
+        Named additive parameter designs or deterministic QVR expressions.
+        Supplying this mapping interprets the response RHS as a value
+        expression. Defaults retain the same proper coefficient priors as
+        ordinary QVR formulas; get_prior reports their exact site names.
+    distributional : Mapping[str, str or NonlinearExpression] or None
         Auxiliary-parameter formulas, for instance
         ``{"sigma": "~ z + (1 | g)"}``. The optional left-hand side must
         match the parameter name. Coefficient prior overrides use names
@@ -1314,6 +1536,15 @@ def fit(
     seed : int
         Seed for compilation and inference. The caller's CPU random state
         is restored on return or failure.
+    sample_prior : {"no", "yes", "only"}
+        Fit the posterior, additionally retain independent prior draws, or
+        disable observation likelihoods during inference. Priors, their data
+        dependencies, support constraints, and explicit potentials remain.
+    num_prior_samples : int
+        Positive independent draw budget for mode "yes".
+    prior_seed : int or None
+        Isolated prior stream. None uses seed + 1 modulo 2**64. Retaining
+        prior draws does not change fitted posterior draws or losses.
 
     Returns
     -------
@@ -1361,7 +1592,7 @@ def fit(
         else:
             family_obj = family
         parsed, design = _threshold_formula_and_design(
-            formula,
+            nonlinear_response_source(formula, nonlinear),
             data,
             thresholds_by=thresholds_by,
             weights=weights,
@@ -1384,8 +1615,27 @@ def fit(
             )
         binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
         parameter_designs: dict[str, DesignMatrices] = {}
+        parsed = parsed.with_(formula=formula)
+        graph = build_predictor_graph(
+            formula,
+            nonlinear,
+            distributional,
+            data,
+            parsed.response_name,
+            family_parameters=frozenset(
+                {"mu", *(aux.name for aux in family_obj.aux_params)}
+            ),
+            designs=parameter_designs,
+        )
         parameter_formulas = _parse_distributional(
-            distributional, data, parsed.response_name, designs=parameter_designs
+            {
+                name: value
+                for name, value in (distributional or {}).items()
+                if isinstance(value, str)
+            },
+            data,
+            parsed.response_name,
+            designs=parameter_designs,
         )
         predictor_name = "neural_eta" if predictor is not None else None
         if predictor is not None and predictor_data is None:
@@ -1415,9 +1665,10 @@ def fit(
             mixture_components=mixture_components,
             predictor_name=predictor_name,
             distributional=parameter_formulas,
+            predictor_graph=graph,
             fixed_parameters=dict(fixed_parameters or {}),
         )
-        module, _ = lens.forward(parsed)
+        module, complement = lens.forward(parsed)
         compiler = Compiler(module)
         program_runtime = compiler.compile()
         morphism = program_runtime.morphism
@@ -1433,7 +1684,7 @@ def fit(
         from quivers.formulas._response_modifiers import response_input_name
 
         observations[response_input_name(parsed)] = response_tensor(parsed, family_obj)
-        for predictor_formula in (parsed, *parameter_formulas.values()):
+        for _, _, predictor_formula in lens._predictor_items(parsed):
             for group, codes in predictor_formula.group_indices.items():
                 observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
                     list(codes), dtype=torch.long
@@ -1503,38 +1754,62 @@ def fit(
         ):
             starts["ndt"] = float(np.min(parsed.response_values)) / 4
         starts.update(initial_values or {})
+        from quivers.effects.observation_scoring import observation_scoring
+        from quivers.inference.prior import _ancestral_program, _prior_mode, prior_draws
+
+        mode = _prior_mode(sample_prior)
+        if mode == "yes":
+            from quivers.inference._posterior import sample_count
+
+            sample_count(num_prior_samples)
+            _ancestral_program(program)
         losses: tuple[float, ...] = ()
-        if method == "svi":
-            posterior, losses = _fit_svi(
+        with observation_scoring(mode != "only"):
+            if method == "svi":
+                posterior, losses = _fit_svi(
+                    program,
+                    observations,
+                    1000 if num_steps is None else num_steps,
+                    learning_rate=learning_rate,
+                    guide_cls=guide,
+                    predictor=predictor,
+                    predictor_data=predictor_data,
+                    predictor_name=predictor_name,
+                    predictor_categories=predictor_categories,
+                    predictor_reference=predictor_reference,
+                    initial_values=starts,
+                )
+            else:
+                posterior = _fit_mcmc(
+                    program,
+                    observations,
+                    sampler=method,
+                    num_warmup=500 if num_warmup is None else num_warmup,
+                    num_samples=1000 if num_samples is None else num_samples,
+                    num_chains=4 if num_chains is None else num_chains,
+                    seed=seed,
+                    initial_values=starts,
+                )
+
+        retained_prior = (
+            prior_draws(
                 program,
+                torch.zeros(1, 1),
                 observations,
-                1000 if num_steps is None else num_steps,
-                learning_rate=learning_rate,
-                guide_cls=guide,
-                predictor=predictor,
-                predictor_data=predictor_data,
-                predictor_name=predictor_name,
-                predictor_categories=predictor_categories,
-                predictor_reference=predictor_reference,
-                initial_values=starts,
+                num_samples=num_prior_samples,
+                seed=(seed + 1) % (2**64) if prior_seed is None else prior_seed,
             )
-        else:
-            posterior = _fit_mcmc(
-                program,
-                observations,
-                sampler=method,
-                num_warmup=500 if num_warmup is None else num_warmup,
-                num_samples=1000 if num_samples is None else num_samples,
-                num_chains=4 if num_chains is None else num_chains,
-                seed=seed,
-                initial_values=starts,
-            )
+            if mode == "yes"
+            else None
+        )
 
         return BayesianFit(
             formula=parsed,
             family=family_obj,
             program=program,
             posterior=posterior,
+            sample_prior=mode,
+            prior=retained_prior,
             losses=losses,
             observations=observations,
             reparameterize=reparameterize,
@@ -1549,9 +1824,12 @@ def fit(
             predictor_data=predictor_data,
             predictor_name=predictor_name,
             distributional=parameter_formulas,
+            predictor_graph=graph,
             fixed_parameters=dict(fixed_parameters or {}),
             prediction_plan=FormulaPredictionPlan(
-                module=module, designs={"mu": design, **parameter_designs}
+                module=module,
+                designs={"mu": design, **parameter_designs},
+                group_layouts=complement.group_layouts,
             ),
         )
 
@@ -1563,7 +1841,8 @@ def formula_to_qvr(
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
-    distributional: Mapping[str, str] | None = None,
+    distributional: Mapping[str, str | NonlinearExpression] | None = None,
+    nonlinear: Mapping[str, str | NonlinearExpression] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
@@ -1599,6 +1878,7 @@ def formula_to_qvr(
         weights=weights,
         decision=decision,
         distributional=distributional,
+        nonlinear=nonlinear,
         fixed_parameters=fixed_parameters,
         fixed_prior=fixed_prior,
         random_scale_prior=random_scale_prior,
@@ -1624,7 +1904,8 @@ def get_prior(
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
-    distributional: Mapping[str, str] | None = None,
+    distributional: Mapping[str, str | NonlinearExpression] | None = None,
+    nonlinear: Mapping[str, str | NonlinearExpression] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
@@ -1694,6 +1975,7 @@ def get_prior(
         weights=weights,
         decision=decision,
         distributional=distributional,
+        nonlinear=nonlinear,
         fixed_parameters=fixed_parameters,
         fixed_prior=fixed_prior,
         random_scale_prior=random_scale_prior,
@@ -1715,7 +1997,8 @@ def _formula_lens(
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
-    distributional: Mapping[str, str] | None = None,
+    distributional: Mapping[str, str | NonlinearExpression] | None = None,
+    nonlinear: Mapping[str, str | NonlinearExpression] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
@@ -1738,7 +2021,7 @@ def _formula_lens(
     else:
         family_obj = family
     parsed, _ = _threshold_formula_and_design(
-        formula,
+        nonlinear_response_source(formula, nonlinear),
         data,
         thresholds_by=thresholds_by,
         weights=weights,
@@ -1751,8 +2034,25 @@ def _formula_lens(
 
     data = included_data(parsed, data)
     binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
+    parsed = parsed.with_(formula=formula)
+    graph = build_predictor_graph(
+        formula,
+        nonlinear,
+        distributional,
+        data,
+        parsed.response_name,
+        family_parameters=frozenset(
+            {"mu", *(aux.name for aux in family_obj.aux_params)}
+        ),
+    )
     parameter_formulas = _parse_distributional(
-        distributional, data, parsed.response_name
+        {
+            name: value
+            for name, value in (distributional or {}).items()
+            if isinstance(value, str)
+        },
+        data,
+        parsed.response_name,
     )
     if family_obj.trials_parameter is not None:
         _response_trials(parsed, data, binomial_trials, caller="formula_to_qvr")
@@ -1768,6 +2068,7 @@ def _formula_lens(
         mixture_components=mixture_components,
         predictor_name=predictor_name,
         distributional=parameter_formulas,
+        predictor_graph=graph,
         fixed_parameters=fixed_parameters,
     )
     return lens, parsed

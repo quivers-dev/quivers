@@ -425,32 +425,7 @@ class Compiler(
         for stmt in self._module.statements:
             self._compile_statement(stmt)
         qiec_module = self.qiec_module
-        if self._output_expr is None:
-            # A module may declare only structural artifacts
-            # (signatures, encoders, decoders, losses) with no
-            # exported morphism; the returned Program is a container
-            # carrying those artifacts.
-            program = Program(None)
-        elif isinstance(
-            self._output_expr, ExprIdent
-        ) and self._output_expr.name in getattr(self, "_program_templates", {}):
-            # A scalar value interface also has a runtime root. Static
-            # interfaces remain families until their arguments are known;
-            # both expose named partial application beside the runtime root.
-            tmpl_name = self._output_expr.name
-            program = Program(self._morphisms.get(tmpl_name))
-            invoker = self._make_template_invoker(tmpl_name)
-            program.templates = {tmpl_name: invoker}
-            # Convenience: ``program.<name>(...)`` works directly.
-            object.__setattr__(program, tmpl_name, invoker)
-        else:
-            root_morphism = self._compile_expr(self._output_expr)
-            program = Program(root_morphism)
-        # Exports after the first become named accessors on the compiled
-        # Program: ``export a`` then ``export b`` makes ``a`` the primary
-        # morphism (``program.morphism`` / ``program(...)``) and
-        # ``program.b`` the compiled form of the second.
-        self._attach_secondary_exports(program)
+        program = self._compile_exports()
         # Attach the compiler's deduction and posterior registries to
         # the Program so downstream callers can reach them after
         # `quivers.dsl.load(...)`.
@@ -483,6 +458,51 @@ class Compiler(
         if program.losses is not None:
             for name, system in program.deductions.items():
                 system.losses[name] = program.losses
+        return program
+
+    def _compile_exports(self) -> Program:
+        """Resolve retained exports without recompiling their declarations.
+
+        Called after ordinary compilation or symbolic environment analysis.
+        Deferred statements have not entered the export registry, so their
+        generic expressions remain available for later specialization.
+
+        Returns
+        -------
+        Program
+            A container for the retained primary and secondary exports.
+
+        Raises
+        ------
+        CompileError
+            If a retained export names an unknown value or has an invalid type.
+        """
+        if self._output_expr is None:
+            # A module may declare only structural artifacts
+            # (signatures, encoders, decoders, losses) with no
+            # exported morphism; the returned Program is a container
+            # carrying those artifacts.
+            program = Program(None)
+        elif isinstance(
+            self._output_expr, ExprIdent
+        ) and self._output_expr.name in getattr(self, "_program_templates", {}):
+            # A scalar value interface also has a runtime root. Static
+            # interfaces remain families until their arguments are known;
+            # both expose named partial application beside the runtime root.
+            tmpl_name = self._output_expr.name
+            program = Program(self._morphisms.get(tmpl_name))
+            invoker = self._make_template_invoker(tmpl_name)
+            program.templates = {tmpl_name: invoker}
+            # Convenience: ``program.<name>(...)`` works directly.
+            object.__setattr__(program, tmpl_name, invoker)
+        else:
+            root_morphism = self._compile_expr(self._output_expr)
+            program = Program(root_morphism)
+        # Exports after the first become named accessors on the compiled
+        # Program: ``export a`` then ``export b`` makes ``a`` the primary
+        # morphism (``program.morphism`` / ``program(...)``) and
+        # ``program.b`` the compiled form of the second.
+        self._attach_secondary_exports(program)
         return program
 
     def _specialize_data_objects(self) -> None:

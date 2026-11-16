@@ -817,11 +817,14 @@ class MonadicProgram(ContinuousMorphism):
                 for part, arg, width in zip(parts, spec.args, widths, strict=True)
             ]
             carries = None
-        event_ranks = getattr(morph, "_param_event_ranks", None)
-        param_spec = getattr(morph, "_param_spec", None)
+        parameter_family = morph.family if isinstance(morph, PlateDraw) else morph
+        event_ranks = getattr(parameter_family, "_param_event_ranks", None)
+        param_spec = getattr(parameter_family, "_param_spec", None)
         if event_ranks is not None and param_spec is not None:
             integer_parameters = getattr(
-                getattr(morph, "_family", morph), "_param_integers", ()
+                getattr(parameter_family, "_family", parameter_family),
+                "_param_integers",
+                (),
             )
             if integer_parameters:
                 variables = iter(parts)

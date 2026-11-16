@@ -476,11 +476,11 @@ def _specialize_program_parameters(
                     iid_over=tuple(objects.get(name, name) for name in value.iid_over),
                 )
             if isinstance(value, ContinuousConstructor | DiscreteConstructor):
-                return value.with_(
-                    args=tuple(
-                        str(sizes[name]) if name in sizes else name
-                        for name in value.args
-                    )
+                from quivers.dsl.program_templates import substitute_program_object
+
+                return substitute_program_object(
+                    value,
+                    {name: TypeName(name=str(size)) for name, size in sizes.items()},
                 )
             if isinstance(value, tuple):
                 return tuple(substitute(item) for item in value)

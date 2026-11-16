@@ -292,16 +292,11 @@ class LatentSite(ValueModel):
         matrix, so its event shape is ``(d, d)`` rather
         than ``(d,)``.
         """
-        event: tuple[int, ...]
-        if self.support in (_constraints.corr_cholesky, _constraints.positive_definite):
-            event = (self.constrained_dim, self.constrained_dim)
-        elif self.is_scalar:
-            event = ()
-        else:
-            event = (self.constrained_dim,)
-        if self.is_plate:
-            return (*(self.plate_shape or (self.plate_index_size,)), *event)
-        return event
+        return _constrained_shape(
+            self.support,
+            self.constrained_dim,
+            self.plate_shape or ((self.plate_index_size,) if self.is_plate else ()),
+        )
 
     @property
     def unconstrained_shape(self) -> tuple[int, ...]:
@@ -310,6 +305,126 @@ class LatentSite(ValueModel):
         if self.is_plate:
             return (self.plate_index_size, self.unconstrained_dim)
         return (self.unconstrained_dim,)
+
+
+def _constrained_shape(
+    support: _constraints.Constraint, dimension: int, plate_shape: tuple[int, ...]
+) -> tuple[int, ...]:
+    """Retain declared scalar, intrinsic-event, and plate axes without a bijector.
+
+    Parameters
+    ----------
+    support : torch.distributions.constraints.Constraint
+        Declared scalar or intrinsic-event support.
+    dimension : int
+        Event width, or matrix order for matrix-valued support.
+    plate_shape : tuple[int, ...]
+        Declared independent plate extents.
+
+    Returns
+    -------
+    tuple[int, ...]
+        One constrained draw's plate and event axes.
+    """
+    if support in (_constraints.corr_cholesky, _constraints.positive_definite):
+        event = (dimension, dimension)
+    elif dimension == 1 and support.event_dim == 0:
+        event = ()
+    else:
+        event = (dimension,)
+    return (*plate_shape, *event)
+
+
+def _site_geometry(
+    morphism: ContinuousMorphism, names: int
+) -> tuple[_constraints.Constraint, int, int, tuple[int, ...]]:
+    """Read declared event geometry independently of continuous support transforms.
+
+    Parameters
+    ----------
+    morphism : ContinuousMorphism
+        Native drawing law, optionally plated.
+    names : int
+        Number of evenly destructured variable bindings.
+
+    Returns
+    -------
+    tuple
+        Support, constrained event width, flattened plate size, and plate axes.
+    """
+    if isinstance(morphism, PlateDraw):
+        inner_cod = morphism.family.codomain
+        dimension = (
+            max(1, math.prod(inner_cod.event_shape))
+            if isinstance(inner_cod, ContinuousSpace)
+            else 1
+        )
+        return (
+            morphism.family.support,
+            dimension,
+            morphism.index_size,
+            morphism.index_shape,
+        )
+    codomain = morphism.codomain
+    dimension = (
+        max(1, math.prod(codomain.event_shape) // max(1, names))
+        if isinstance(codomain, ContinuousSpace)
+        else 1
+    )
+    return morphism.support, dimension, 0, ()
+
+
+def _trace_latent_values(
+    recorded: Trace,
+    *,
+    include_observed: bool = False,
+    selected: frozenset[str] | None = None,
+) -> dict[str, torch.Tensor]:
+    """Extract one constrained draw, including discrete and dynamically scanned sites.
+
+    The same declared geometry used by continuous inference determines event
+    axes; discrete priors require no artificial continuous bijector.
+
+    Parameters
+    ----------
+    recorded : Trace
+        One program execution, including dynamic scan addresses.
+    include_observed : bool
+        Include conditioned or intervened values for explicitly selected
+        registry sites; independent ancestral extraction omits these sites.
+    selected : frozenset[str] or None
+        Restrict extraction to named sites, or retain every latent site.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        Detached values at their declared constrained shape.
+    """
+    values: dict[str, torch.Tensor] = {}
+    for label, record in recorded.sites.items():
+        if (
+            record.morphism is None
+            or record.is_deterministic
+            and not (include_observed and selected is not None)
+            or record.is_observed
+            and not include_observed
+        ):
+            continue
+        names = label.split(",")
+        if selected is not None and not selected.intersection(names):
+            continue
+        support, dimension, size, plate = _site_geometry(record.morphism, len(names))
+        shape = _constrained_shape(
+            support, dimension, plate or ((size,) if size else ())
+        )
+        parts = (
+            record.value.chunk(len(names), dim=-1)
+            if len(names) > 1
+            else (record.value,)
+        )
+        for name, value in zip(names, parts, strict=True):
+            values[name] = value.detach().reshape(shape)
+    return values
 
 
 def _latent_site(
@@ -342,27 +457,9 @@ def _latent_site(
         The site.
     """
     is_plate = isinstance(morphism, PlateDraw)
-    if is_plate:
-        plate = cast(PlateDraw, morphism)
-        inner = plate.family
-        inner_cod = inner.codomain
-        if isinstance(inner_cod, ContinuousSpace):
-            constrained_dim = max(1, math.prod(inner_cod.event_shape))
-        else:
-            constrained_dim = 1
-        support = inner.support
-        plate_index_size = plate.index_size
-        plate_shape = plate.index_shape
-    else:
-        cod = morphism.codomain
-        if isinstance(cod, ContinuousSpace):
-            total_dim = math.prod(cod.event_shape)
-            constrained_dim = max(1, total_dim // max(1, names))
-        else:
-            constrained_dim = 1
-        support = morphism.support
-        plate_index_size = 0
-        plate_shape = ()
+    support, constrained_dim, plate_index_size, plate_shape = _site_geometry(
+        morphism, names
+    )
     unconstrained_dim = _unconstrained_event_dim(support, constrained_dim)
     flat_length = (
         plate_index_size * unconstrained_dim if is_plate else unconstrained_dim
@@ -916,20 +1013,12 @@ class LatentRegistry:
         ValueError
             If the run did not reach a latent site.
         """
+        reached = _trace_latent_values(
+            run, include_observed=True, selected=frozenset(self._sites)
+        )
         out: dict[str, torch.Tensor] = {}
         for name, site in self._sites.items():
-            record = run.sites.get(name)
-            value: torch.Tensor | None = None
-            if record is not None:
-                value = record.value.detach()
-            else:
-                for label, candidate in run.sites.items():
-                    names = label.split(",")
-                    if name in names:
-                        value = candidate.value.detach().chunk(len(names), dim=-1)[
-                            names.index(name)
-                        ]
-                        break
+            value = reached.get(name)
             if value is None:
                 raise ValueError(
                     f"LatentRegistry.trace_draw: the run did not reach the latent "

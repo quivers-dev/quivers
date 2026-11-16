@@ -89,6 +89,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecHandlerDecl,
     QiecBinder,
     QiecValueParameter,
+    QiecTypeName,
 )
 from quivers.dsl.constraints import Violation, check_constraints
 from quivers.dsl.emit import (
@@ -1114,7 +1115,13 @@ class ReplSession:
                 return f"param {ref.name} : {universe}"
             return f"param {ref.name}"
         if kind == "data-input" and isinstance(node, QiecValueParameter):
-            return f"{ref.name} : {_emit_qiec_type(node.type_expr)}"
+            prefix = (
+                "param "
+                if isinstance(node.type_expr, QiecTypeName)
+                and node.type_expr.name in {"Real", "Nat"}
+                else ""
+            )
+            return f"{prefix}{ref.name} : {_emit_qiec_type(node.type_expr)}"
         if kind == "sample-site":
             return _render_sample_line(node)
         if kind == "observe-site":
