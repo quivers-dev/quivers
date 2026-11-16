@@ -771,10 +771,10 @@ families: Mapping[str, Family] = {
         name="hurdle_poisson",
         location_link=_LOG,
         observe_family="HurdlePoisson",
-        extra_observe_args=("zi",),
+        extra_observe_args=("hu",),
         aux_params=(
             AuxParam(
-                name="zi",
+                name="hu",
                 prior="Beta(2.0, 2.0)",
                 link=_LOGIT,
             ),

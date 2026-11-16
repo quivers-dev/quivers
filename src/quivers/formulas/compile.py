@@ -4917,9 +4917,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             "zero_inflated_poisson",
             "hurdle_poisson",
         }:
-            # Both QVR count-mixture constructors take the structural-zero
-            # probability first and the Poisson rate second.
-            obs_args = ("zi", "mu")
+            # Both native constructors take the zero probability before
+            # the Poisson rate; metadata retains its distinct formula role.
+            obs_args = (*self._family.extra_observe_args, "mu")
         elif self._family.trials_parameter is not None:
             trials: str | float
             if isinstance(self._binomial_trials, str):

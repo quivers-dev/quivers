@@ -1243,7 +1243,8 @@ class TestFamilyLinkDefaults:
         self, count_df, family, constructor
     ):
         src = formula_to_qvr("y ~ x", data=count_df, family=family)
-        assert f"{constructor}(zero_prob=zi, rate=mu)" in src
+        probability = "hu" if family == "hurdle_poisson" else "zi"
+        assert f"{constructor}(zero_prob={probability}, rate=mu)" in src
         loads(src)
 
     def test_binomial_uses_scalar_or_per_row_trials(self, binary_df):

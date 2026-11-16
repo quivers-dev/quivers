@@ -484,7 +484,7 @@ value. The built-in families:
 | `zero_inflated_negbinomial` | log for the component mean | `shape ~ Gamma(2.0, 2.0)`, `zi ~ Beta(2.0, 2.0)` |
 | `zero_inflated_binomial` | logit for the component success probability | known trial count, `zi ~ Beta(2.0, 2.0)` |
 | `zero_inflated_beta_binomial` | logit for the component success probability | known trial count, `phi ~ HalfCauchy(2.0)`, `zi ~ Beta(2.0, 2.0)` |
-| `hurdle_poisson` | log (exp) | `zi ~ Beta(2.0, 2.0)` |
+| `hurdle_poisson` | log (exp) | `hu ~ Beta(2.0, 2.0)` |
 | `hurdle_negbinomial` | log for the untruncated component mean | `shape ~ Gamma(2.0, 2.0)`, `hu ~ Beta(2.0, 2.0)` |
 | `hurdle_gamma` | log | `shape`, `hu` (zero probability) |
 | `hurdle_lognormal` | identity | `sigma` (log-scale), `hu` (zero probability) |
@@ -790,9 +790,9 @@ A zero-inflated count model adds a structural zero to a count distribution
 that can already produce zero. Its `zi` parameter is the probability of the
 structural zero, so the total zero probability also includes the component's
 zero mass. A hurdle model instead uses `hu` for the entire zero probability
-and conditions its count component to be positive. The existing
-`hurdle_poisson` interface currently calls this auxiliary `zi`; the
-negative-binomial hurdle interface uses `hu`.
+and conditions its count component to be positive. Poisson and
+negative-binomial hurdle models use this same `hu` role, including
+fixed parameters, prior selection, and distributional predictors.
 
 For `zero_inflated_negbinomial` and `hurdle_negbinomial`, the location
 predictor gives the untruncated negative-binomial mean $\mu$. The positive
@@ -2046,7 +2046,8 @@ assert effective["beta_x"] == "Normal(loc=0.2, scale=0.3)"
 assert effective["sigma_g_Intercept"] == "HalfNormal(scale=0.5)"
 
 shrinkage = PriorSpec(
-    distribution=RegularizedHorseshoe(par_ratio=0.5), block="slopes"
+    distribution=RegularizedHorseshoe(par_ratio=0.5), block="slopes",
+    lower=-0.5, upper=0.8,
 )
 shrunken = fit(
     "y ~ x + z", data=prior_data, priors=shrinkage,
@@ -2063,8 +2064,11 @@ A strict refinement wins over a broader selector. An exact `site` selector
 wins over selectors without a site; legacy dictionaries use this same rule.
 Incomparable selectors that overlap, selectors matching no target, and rules
 that are entirely shadowed raise an error before fitting. `lower` and `upper`
-intersect an ordinary prior with the target domain and emit a normalized
-restriction. Explicit priors retain their supplied scales; only default
+intersect a prior with the target domain and emit a normalized
+restriction. For a sampled hierarchy, this normalizes each conditional
+coefficient law at its current scale, preserving the authored hyperprior
+marginals. Conditioning the entire joint hierarchy on the bounds would
+produce a different prior. Explicit priors retain their supplied scales; only default
 population priors receive design-column autoscaling.
 
 `RegularizedHorseshoe` samples global, local, and slab variables. `R2D2`
