@@ -60,6 +60,9 @@ configurations and callbacks remain live objects held by identity. A recipe is
 not a durable fitted artifact: serializing its live fitting operation is
 refused. Existing MCMC checkpoints retain their separate exact-resume contract.
 
+To restore a fitted source or formula evaluator in another process, use the
+[durable fitted artifact interface](../api/modeling.md#durable-fitted-artifacts).
+
 ## Explicit refit partitions
 
 `refit_callback` adapts a retained recipe to the existing

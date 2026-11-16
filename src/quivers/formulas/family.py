@@ -21,6 +21,8 @@ import didactic.api as dx
 
 from quivers._splines import MSplineBasis
 from quivers.formulas._survival import BaselineSpec
+from quivers.formulas._custom_types import CustomFamilySpec
+from quivers._values import OPAQUE_BY_VALUE, ValueModel
 
 
 class Link(dx.Model):
@@ -168,7 +170,7 @@ class ResponseSpec(dx.Model):
         return tuple(index for index in range(len(labels)) if index != reference)
 
 
-class Family(dx.Model):
+class Family(ValueModel):
     """Response family: observation kernel plus its link and any
     auxiliary parameters.
 
@@ -211,6 +213,8 @@ class Family(dx.Model):
         Joint component coordinate system and reference selection.
     baseline : BaselineSpec or None
         Retained normalized spline structure for proportional hazards.
+    custom : CustomFamilySpec or None
+        Checked custom constructor bindings and compilation-local native law.
     """
 
     name: str
@@ -222,6 +226,9 @@ class Family(dx.Model):
     ordinal: OrdinalSpec | None = None
     response: ResponseSpec | None = None
     baseline: BaselineSpec | None = None
+    custom: CustomFamilySpec | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     def with_baseline(
         self,

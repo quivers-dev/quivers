@@ -31,11 +31,10 @@ hurdle-cumulative effects use training-domain spacing bounds plus positive
 slack to keep effective row cutpoints ordered. Their proper conditional
 slack priors differ from independent brms threshold priors.
 `thresholds_by` combines centered group shape with exactly one reused or
-automatic varying location; noncentered category-specific slopes may
+automatic varying location; centered and noncentered category-specific slopes may
 coexist with it. A fixed `cs(1)` with free cumulative/hurdle thresholds
 and a proportional intercept is redundant and fails explicitly, as do
-centered category-specific groups and duplicate same-factor
-category-specific intercept/profile coordinates. The
+duplicate same-factor category-specific intercept/profile coordinates. The
 [ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)
 gives links, threshold support, generated priors, and prediction shapes.
 

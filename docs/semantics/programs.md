@@ -225,6 +225,46 @@ it introduces neither a static index nor a likelihood factor.
 Numerical evaluation must separately respect cancellation and overflow
 in these mathematical expressions.
 
+#### Compilation-local distribution contracts
+
+A **distribution catalog** $\mathcal C$ extends the checking environment with
+family contracts. Each contract specifies (i) a typed parameter space $\Theta_F$
+and dependent event dimensions; (ii) an outcome space $Y_F$ and reference measure;
+and (iii) a normalized kernel $K_F:\Theta_F\rightsquigarrow Y_F$ supplied by its
+native implementation. The constructor judgment uses the same argument and
+shape rules as a built-in family:
+
+$$
+\frac{F\in\mathcal C\qquad
+      \mathcal C;\Gamma\vdash\theta:\Theta_F}
+     {\mathcal C;\Gamma\vdash F(\theta):\operatorname{Distribution}(Y_F)}.
+$$
+
+Its denotation is $\llbracket F(\theta)\rrbracket=K_F(\theta)$, with
+$K_F(\theta,Y_F)=1$. Sampling and observing use this kernel in the ordinary
+step rules. Its density is taken against the declared reference measure, so
+integer or mixed laws retain their atomicity rather than acquiring a continuous
+interpretation from a host tensor's floating dtype. Recorded-event scoring uses
+the same interval and atom operations as built-in laws.
+
+`FamilyCatalog` supplies these contracts explicitly to a compilation; native
+factories are held by identity. A catalog extension does not mutate another
+compilation's environment. Checked wire metadata records the contract, while
+executing it additionally requires the corresponding implementation. A native
+factory alone supplies no implementation in another target language. Checking
+parameter names, carriers, and dimensions cannot prove that user-written density,
+sampling, and moment operations describe the declared kernel; that agreement
+remains an obligation of the custom implementation.
+
+The formula adapter is a substitution into this constructor. A mapping
+$\rho$ assigns each native parameter either a linked predictor $g^{-1}(\eta)$
+or a typed deterministic data value. Thus its response kernel is
+$K_F(\rho(\eta,x))$, with no additional latent variable for a data parameter.
+Named auxiliary predictors, varying effects, and nonlinear dependencies retain
+their existing priors and graph semantics. The
+[custom-family API](../api/formulas/custom.md) gives an executable instance;
+the same catalog is retained for new-data replay and refitting.
+
 #### Vector count events
 
 For trial count $n\in\mathbb N$ and a probability vector $p$ on $C$
@@ -1715,8 +1755,13 @@ the chosen observation units.
 
 PSIS-LOO reweights retained posterior draws and reports importance-weight
 diagnostics [@vehtari2017loo]. For variational draws, relative efficiency one
-does not repair approximation error. Exact leave-one-out refits, K-fold
-validation, and alternative marginalization policies remain separate workflows.
+does not repair approximation error. Exact leave-one-out refits and K-fold validation instead evaluate
+$\log\int p(y_i\mid\theta,x_i)\,p(d\theta\mid y_{-i})$ or its
+explicit fold analogue. The shared [refit interface](../guides/model-refits.md)
+retains these original row identities and sums joint response-event scores
+within each posterior draw before averaging densities. ArviZ supplies PSIS
+and its selected-row refit replacement. Alternative marginalization policies
+remain distinct prediction questions.
 Multiple response variables require explicit selection before comparison.
 
 ### 6.2 Joint reaction-time and decision responses

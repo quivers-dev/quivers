@@ -61,6 +61,8 @@ GetPut holds for every `Formula` ``f``: ``backward(*forward(f)) == f``.
 
 from __future__ import annotations
 
+from quivers.family_catalog import FamilyCatalog
+
 from quivers._count_capacity import _MAX_EXACT_COUNT
 
 import math
@@ -302,6 +304,7 @@ def _draw(
     mode: Literal["sample", "score", "marginal"] = "sample",
     weights: str | None = None,
     parameterization: tuple[str, ...] | None = None,
+    family_catalog: FamilyCatalog | None = None,
 ) -> SampleStep | ObserveStep:
     """Build a surface program step for a draw of ``var`` from ``family``.
 
@@ -314,7 +317,11 @@ def _draw(
     expects. An explicit ``parameterization`` selects another complete schema
     from the shared constructor catalogue without rebuilding the draw AST.
     """
-    parameters = parameterization or family_parameter_names(family)
+    parameters = parameterization or (
+        family_catalog.parameter_names(family)
+        if family_catalog is not None
+        else family_parameter_names(family)
+    )
     if (
         parameterization is not None
         and parameterization not in family_parameterizations(family, ())
@@ -1483,7 +1490,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         if self._predictor_graph is not None or self._prior_set.rules:
             from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 
-            lower_qvr_to_qiec(module)
+            lower_qvr_to_qiec(
+                module,
+                families=self._family.custom.catalog
+                if self._family.custom is not None
+                else None,
+            )
         complement = FormulaData(
             formula=formula.formula,
             response_name=formula.response_name,
@@ -5510,12 +5522,17 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 if retained_log_rate
                 else ("mu",) + tuple(self._family.extra_observe_args)
             )
+        if self._family.custom is not None:
+            obs_args = tuple(binding for _, binding in self._family.custom.bindings)
         observation = _draw(
             _qvr_name(formula.response_name),
             self._family.observe_family,
             obs_args,
             index=TypeName(name="Resp"),
             mode="score",
+            family_catalog=self._family.custom.catalog
+            if self._family.custom is not None
+            else None,
             weights="formula_weights"
             if formula.modifiers.weights is not None
             else None,

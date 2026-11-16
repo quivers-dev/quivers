@@ -432,6 +432,7 @@ nav:
       - Parsed Formula IR: api/formulas/formula.md
       - Formula → Module Lens: api/formulas/compile.md
       - Families & Links: api/formulas/family.md
+      - Custom Response Families: api/formulas/custom.md
       - Fit Entry Point: api/formulas/fit.md
     - Analysis:
       - Overview: api/analysis/index.md

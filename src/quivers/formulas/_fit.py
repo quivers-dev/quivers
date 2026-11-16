@@ -137,7 +137,7 @@ class BayesianFit(ValueModel):
     """
 
     formula: Formula = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    family: Family
+    family: Family = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     posterior: MCMCResult | PriorDraws | Guide = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -2021,7 +2021,11 @@ def fit(
                 "freeze its parameters before using NUTS or HMC"
             )
         module, complement = lens.forward(parsed)
-        compiler = Compiler(module)
+        compiler = (
+            Compiler(module, families=family_obj.custom.catalog)
+            if family_obj.custom is not None
+            else Compiler(module)
+        )
         program_runtime = compiler.compile()
         morphism = program_runtime.morphism
         if not isinstance(morphism, MonadicProgram):
@@ -2444,6 +2448,11 @@ def _prepare_formula(
         family_obj = families[family]
     else:
         family_obj = family
+    from quivers.formulas._custom_family import custom_distributional
+
+    distributional = custom_distributional(
+        family_obj, distributional, fixed_parameters=fixed_parameters
+    )
     parsed, design = _threshold_formula_and_design(
         nonlinear_response_source(formula, nonlinear),
         data,

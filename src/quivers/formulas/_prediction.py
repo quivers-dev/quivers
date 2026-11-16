@@ -564,7 +564,16 @@ def prepare_prediction(
         module = select_contributions(
             plan.module, formulas, selected, prefixes=prefixes
         )
-        program = Compiler(module).compile().morphism
+        program = (
+            Compiler(
+                module,
+                families=fit.family.custom.catalog
+                if fit.family.custom is not None
+                else None,
+            )
+            .compile()
+            .morphism
+        )
         if not isinstance(program, MonadicProgram):
             raise TypeError("prediction requires a native monadic program")
         return PredictionContext(
@@ -752,7 +761,16 @@ def prepare_prediction(
                 )
             )
         statements.append(statement)
-    program = Compiler(module.with_(statements=tuple(statements))).compile().morphism
+    program = (
+        Compiler(
+            module.with_(statements=tuple(statements)),
+            families=fit.family.custom.catalog
+            if fit.family.custom is not None
+            else None,
+        )
+        .compile()
+        .morphism
+    )
     if not isinstance(program, MonadicProgram):
         raise TypeError("prediction requires a native monadic program")
     specialized_registry = LatentRegistry.from_model(

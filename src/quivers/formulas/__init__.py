@@ -71,6 +71,8 @@ from quivers.formulas._priors import (
     R2D2,
     normalize_priors,
 )
+from quivers.formulas._custom_family import custom_family
+from quivers.formulas._custom_types import CustomFamilySpec
 from quivers.formulas._fit import BayesianFit, fit, formula_to_qvr, get_prior
 from quivers.formulas._response_modifiers import (
     ResponseDraws,
@@ -101,6 +103,8 @@ __all__ = [
     "ResponseSpec",
     "BaselineSpec",
     "Family",
+    "CustomFamilySpec",
+    "custom_family",
     "links",
     "families",
     "PriorSpec",

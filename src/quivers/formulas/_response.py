@@ -98,7 +98,13 @@ def response_dtype(formula: Formula, family: Family | None = None) -> torch.dtyp
     from quivers.qiec.types import BOOL, INT
 
     element = (
-        semantic_family(family.observe_family).element if family is not None else None
+        (
+            family.custom.catalog[family.observe_family]
+            if family.custom is not None
+            else semantic_family(family.observe_family)
+        ).element
+        if family is not None
+        else None
     )
     if (
         element == INT
