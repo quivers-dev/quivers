@@ -16,27 +16,17 @@ import panproto
 from torch.distributions.constraints import Constraint, simplex
 
 from quivers.dsl.ast_nodes import Expr, MorphismDecl
+from quivers.dsl.let_expr_traversal import map_let_expr, substitute_let_expr
 from quivers.dsl.ast_nodes.let_expressions import (
-    LetExprBinOp,
     LetExprCall,
-    LetExprFactor,
-    LetExprIndex,
-    LetExprLambda,
-    LetExprList,
     LetExprLiteral,
-    LetExprMethodCall,
     LetExprNode,
-    LetExprString,
-    LetExprUnaryOp,
-    LetExprVar,
-    LetFactorCase,
 )
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.renderers._let_expr_traversal import AFFINE_EXPRESSION
 from quivers.transpile.family_meta import FAMILY_META, marginalize_support
 from quivers.transpile.ir import (
     ConstraintSpec,
-    LetAffineSource,
-    LetExprAffineMap,
     CSIntegerInterval,
     CSNonnegativeInteger,
     DimStatic,
@@ -1011,108 +1001,23 @@ def _substitute_latent_arg(arg: IRArg, latent: str, value: IRArgNumber) -> IRArg
 
 
 def _substitute_latent_expr(expr: IRExpr, latent: str, value: IRArgNumber) -> IRExpr:
-    if isinstance(expr, LetExprVar):
-        if expr.name == latent:
-            return LetExprLiteral(value=value.value)
-        return expr
-    if isinstance(expr, LetExprBinOp):
-        return LetExprBinOp(
-            op=expr.op,
-            left=_substitute_latent_expr(expr.left, latent, value),
-            right=_substitute_latent_expr(expr.right, latent, value),
-        )
-    if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(
-            operand=_substitute_latent_expr(expr.operand, latent, value)
-        )
-    if isinstance(expr, LetExprCall):
-        if (
-            expr.func == "select"
-            and len(expr.args) == 3
-            and isinstance(expr.args[0], LetExprVar)
-            and expr.args[0].name == latent
-        ):
-            # A choice conditioned on a Boolean latent (`real(z)` is
-            # `select(z, 1.0, 0.0)`) is decided at each atom: the atom 1
-            # is `true` and selects the first branch, the atom 0 is
-            # `false` and selects the second. Substituting the number
-            # into the condition would hand a target a numeric
-            # condition, which a vectorized `where` rejects or reads as
-            # truthy.
-            chosen = expr.args[1] if value.value != 0.0 else expr.args[2]
-            return _substitute_latent_expr(chosen, latent, value)
-        return LetExprCall(
-            func=expr.func,
-            args=_substitute_latent_exprs(expr.args, latent, value),
-        )
-    if isinstance(expr, LetExprIndex):
-        return LetExprIndex(
-            array=_substitute_latent_expr(expr.array, latent, value),
-            indices=_substitute_latent_exprs(expr.indices, latent, value),
-        )
-    if isinstance(expr, LetExprAffineMap):
-        return LetExprAffineMap(
-            weight=_substitute_latent_expr(expr.weight, latent, value),
-            bias=_substitute_latent_expr(expr.bias, latent, value),
-            sources=tuple(
-                LetAffineSource(
-                    value=_substitute_latent_expr(source.value, latent, value),
-                    width=source.width,
-                )
-                for source in expr.sources
-            ),
-            row_offset=expr.row_offset,
-            rows=expr.rows,
-            transform=expr.transform,
-        )
-    if isinstance(expr, LetExprList):
-        return LetExprList(items=_substitute_latent_exprs(expr.items, latent, value))
-    if isinstance(expr, LetExprMethodCall):
-        return LetExprMethodCall(
-            receiver=_substitute_latent_expr(expr.receiver, latent, value),
-            method=expr.method,
-            args=_substitute_latent_exprs(expr.args, latent, value),
-        )
-    if isinstance(expr, LetExprLambda):
-        if expr.param == latent:
-            return expr
-        return LetExprLambda(
-            param=expr.param,
-            body=_substitute_latent_expr(expr.body, latent, value),
-        )
-    if isinstance(expr, LetExprFactor):
-        if any(binder.var == latent for binder in expr.binders):
-            return expr
-        return LetExprFactor(
-            binders=expr.binders,
-            body=(
-                None
-                if expr.body is None
-                else _substitute_latent_expr(expr.body, latent, value)
-            ),
-            cases=tuple(
-                LetFactorCase(
-                    label=case.label,
-                    value=_substitute_latent_expr(case.value, latent, value),
-                    line=case.line,
-                    col=case.col,
-                )
-                for case in expr.cases
-            ),
-        )
-    if isinstance(expr, (LetExprLiteral, LetExprString)):
-        # Leaf constants: no name to rewrite.
-        return expr
-    raise UnsupportedConstruct(
-        "qvr-renderer",
-        [f"marginalize:expr:{type(expr).__name__}"],
+    """Specialize a marginal atom through the canonical expression traversal."""
+    replaced = substitute_let_expr(
+        expr, {latent: LetExprLiteral(value=value.value)}, extension=AFFINE_EXPRESSION
     )
 
+    def simplify(node: LetExprNode) -> LetExprNode:
+        """Resolve a Boolean atom's selection without a numeric host condition."""
+        if (
+            isinstance(node, LetExprCall)
+            and node.func == "select"
+            and len(node.args) == 3
+            and isinstance(node.args[0], LetExprLiteral)
+        ):
+            return node.args[1] if node.args[0].value != 0 else node.args[2]
+        return node
 
-def _substitute_latent_exprs(
-    exprs: tuple[LetExprNode, ...], latent: str, value: IRArgNumber
-) -> tuple[LetExprNode, ...]:
-    return tuple(_substitute_latent_expr(expr, latent, value) for expr in exprs)
+    return map_let_expr(replaced, simplify, extension=AFFINE_EXPRESSION)
 
 
 # ---------------------------------------------------------------------------

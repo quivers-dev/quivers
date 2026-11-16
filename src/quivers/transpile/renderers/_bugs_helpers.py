@@ -35,6 +35,12 @@ from typing import Literal, Protocol, runtime_checkable
 
 import didactic.api as dx
 
+from quivers.dsl.let_expr_traversal import (
+    free_let_names,
+    let_expr_children,
+    map_let_expr,
+    substitute_let_expr,
+)
 from quivers.dsl.ast_nodes import (
     LetExprBinOp,
     LetExprCall,
@@ -57,6 +63,7 @@ from quivers.dsl.ast_nodes.objects import (
     TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.renderers._let_expr_traversal import AFFINE_EXPRESSION
 from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.ir import (
     affine_column_offsets,
@@ -76,7 +83,6 @@ from quivers.transpile.ir import (
     IRProgram,
     IRArgNumber,
     IRSample,
-    LetAffineSource,
     LetExprAffineMap,
     Plate,
 )
@@ -856,6 +862,11 @@ def _emit_binop(ctx: _LetEnv, expr: LetExprBinOp) -> str:
 def _emit_unary(ctx: _LetEnv, expr: LetExprUnaryOp) -> str:
     """Emit a unary-minus `unary_expression` whose single child rides
     the `operand` field."""
+    if expr.op == "not":
+        return _render(
+            ctx,
+            LetExprCall(func="equals", args=(expr.operand, LetExprLiteral(value=0))),
+        )
     u = ctx.v(ctx.fresh("ue"), "unary_expression")
     ctx.constraint(u, "field:operator", "-")
     ctx.constraint(u, "chose-alt-fingerprint", "-")
@@ -1579,70 +1590,12 @@ def _enumerate_indices(
 
 
 def _substitute(expr: LetExprNode, env: dict[str, int]) -> LetExprNode:
-    """Substitute integer literals for every `LetExprVar` whose name
-    appears in `env`. Recurses through every `LetExprNode` shape."""
-    if isinstance(expr, LetExprVar):
-        v = env.get(expr.name)
-        if v is None:
-            return expr
-        return LetExprLiteral(value=float(v))
-    if isinstance(expr, LetExprLiteral):
-        return expr
-    if isinstance(expr, LetExprString):
-        return expr
-    if isinstance(expr, LetExprBinOp):
-        return LetExprBinOp(
-            op=expr.op,
-            left=_substitute(expr.left, env),
-            right=_substitute(expr.right, env),
-        )
-    if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(operand=_substitute(expr.operand, env))
-    if isinstance(expr, LetExprCall):
-        return LetExprCall(
-            func=expr.func,
-            args=tuple(_substitute(a, env) for a in expr.args),
-        )
-    if isinstance(expr, LetExprIndex):
-        return LetExprIndex(
-            array=_substitute(expr.array, env),
-            indices=tuple(_substitute(i, env) for i in expr.indices),
-        )
-    if isinstance(expr, LetExprList):
-        return LetExprList(
-            items=tuple(_substitute(i, env) for i in expr.items),
-        )
-    if isinstance(expr, LetExprLambda):
-        # Shadowing: drop the bound name from the substitution.
-        inner_env = {k: v for k, v in env.items() if k != expr.param}
-        return LetExprLambda(
-            param=expr.param,
-            body=_substitute(expr.body, inner_env),
-        )
-    if isinstance(expr, LetExprMethodCall):
-        return LetExprMethodCall(
-            receiver=_substitute(expr.receiver, env),
-            method=expr.method,
-            args=tuple(_substitute(a, env) for a in expr.args),
-        )
-    if isinstance(expr, LetExprFactor):
-        # Shadowing: drop any rebound names from the substitution.
-        bound = {b.var for b in expr.binders}
-        inner_env = {k: v for k, v in env.items() if k not in bound}
-        return LetExprFactor(
-            binders=expr.binders,
-            body=(_substitute(expr.body, inner_env) if expr.body is not None else None),
-            cases=tuple(
-                LetFactorCase(
-                    label=c.label,
-                    value=_substitute(c.value, inner_env),
-                    line=c.line,
-                    col=c.col,
-                )
-                for c in expr.cases
-            ),
-        )
-    return expr
+    """Substitute integer factor coordinates without losing binders or metadata."""
+    return substitute_let_expr(
+        expr,
+        {name: LetExprLiteral(value=value) for name, value in env.items()},
+        extension=AFFINE_EXPRESSION,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1867,51 +1820,18 @@ def _collect_bare_var_plates(
         if plate is not None and plate.batch_dims:
             out.append(plate)
         return
-    if isinstance(expr, LetExprBinOp):
-        _collect_bare_var_plates(expr.left, decl_plates, out)
-        _collect_bare_var_plates(expr.right, decl_plates, out)
-        return
-    if isinstance(expr, LetExprUnaryOp):
-        _collect_bare_var_plates(expr.operand, decl_plates, out)
-        return
-    if isinstance(expr, LetExprCall):
-        for arg in expr.args:
-            _collect_bare_var_plates(arg, decl_plates, out)
-        return
-    if isinstance(expr, LetExprIndex):
-        for index in expr.indices:
-            _collect_bare_var_plates(index, decl_plates, out)
-        return
+    children = (
+        expr.indices
+        if isinstance(expr, LetExprIndex)
+        else let_expr_children(expr, extension=AFFINE_EXPRESSION)
+    )
+    for child in children:
+        _collect_bare_var_plates(child, decl_plates, out)
 
 
 def collect_letexpr_vars(expr: LetExprNode) -> frozenset[str]:
-    """Collect every bare-variable name in a let-expression tree."""
-    if isinstance(expr, LetExprVar):
-        return frozenset({expr.name})
-    if isinstance(expr, LetExprLiteral):
-        return frozenset()
-    if isinstance(expr, LetExprBinOp):
-        return collect_letexpr_vars(expr.left) | collect_letexpr_vars(expr.right)
-    if isinstance(expr, LetExprUnaryOp):
-        return collect_letexpr_vars(expr.operand)
-    if isinstance(expr, LetExprCall):
-        out: frozenset[str] = frozenset()
-        for a in expr.args:
-            out = out | collect_letexpr_vars(a)
-        return out
-    if isinstance(expr, LetExprIndex):
-        out2: frozenset[str] = collect_letexpr_vars(expr.array)
-        for ix in expr.indices:
-            out2 = out2 | collect_letexpr_vars(ix)
-        return out2
-    if isinstance(expr, LetExprAffineMap):
-        out3: frozenset[str] = collect_letexpr_vars(expr.weight) | collect_letexpr_vars(
-            expr.bias
-        )
-        for source in expr.sources:
-            out3 = out3 | collect_letexpr_vars(source.value)
-        return out3
-    return frozenset()
+    """Collect free variable names through the canonical binder-aware traversal."""
+    return frozenset(free_let_names(expr, extension=AFFINE_EXPRESSION))
 
 
 def collect_irargref_names(args: tuple[IRArg, ...]) -> frozenset[str]:
@@ -2033,19 +1953,16 @@ def hoist_list_operands(
                 )
                 return LetExprVar(name=name)
             return expr
-        if isinstance(expr, LetExprBinOp):
-            return LetExprBinOp(
-                op=expr.op, left=bind(expr.left), right=bind(expr.right)
-            )
-        if isinstance(expr, LetExprUnaryOp):
-            return LetExprUnaryOp(op=expr.op, operand=bind(expr.operand))
-        if isinstance(expr, LetExprCall):
-            return LetExprCall(func=expr.func, args=tuple(bind(a) for a in expr.args))
         return expr
 
     if not node.plate.batch_dims or isinstance(node.expr, (LetExprList, LetExprFactor)):
         return (), node
-    rewritten = bind(node.expr)
+    rewritten = map_let_expr(
+        node.expr,
+        bind,
+        extension=AFFINE_EXPRESSION,
+        descend=lambda expr: not isinstance(expr, LetExprList),
+    )
     return tuple(hoisted), IRDeterministic(
         name=node.name,
         expr=rewritten,
@@ -2183,109 +2100,81 @@ def _index_letexpr_refs_inner(
     axis_to_loop: dict[str, str],
     free: list[tuple[str, Dim]] | None = None,
 ) -> LetExprNode:
-    if isinstance(expr, LetExprVar):
-        plate = decl_plates.get(expr.name)
-        if plate is None or not plate.batch_dims:
-            return expr
-        indices: list[LetExprNode] = []
-        for position, dim in enumerate(plate.batch_dims):
-            lname = axis_to_loop.get(dim.name)
-            if lname is None or any(
-                earlier.name == dim.name for earlier in plate.batch_dims[:position]
-            ):
-                # An axis the loop does not iterate, or a second axis over
-                # the same object (a factor's `A`-by-`A` table), has no
-                # loop variable of its own: the name stays whole.
+    """Index names using shared reconstruction and an explicit array-slot policy."""
+
+    def rewrite(expr: LetExprNode) -> LetExprNode:
+        """Read a leaf or an existing gather at the current loop position."""
+        if isinstance(expr, LetExprVar):
+            plate = decl_plates.get(expr.name)
+            if plate is None or not plate.batch_dims:
                 return expr
-            indices.append(LetExprVar(name=lname))
-        return LetExprIndex(
-            array=LetExprVar(name=expr.name),
-            indices=tuple(indices),
-        )
-    if isinstance(expr, LetExprLiteral):
-        return expr
-    if isinstance(expr, LetExprBinOp):
-        return LetExprBinOp(
-            op=expr.op,
-            left=_index_letexpr_refs_inner(expr.left, decl_plates, axis_to_loop, free),
-            right=_index_letexpr_refs_inner(
-                expr.right, decl_plates, axis_to_loop, free
-            ),
-        )
-    if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(
-            operand=_index_letexpr_refs_inner(
-                expr.operand, decl_plates, axis_to_loop, free
-            ),
-        )
-    if isinstance(expr, LetExprCall):
-        return LetExprCall(
-            func=expr.func,
-            args=tuple(
-                _index_letexpr_refs_inner(a, decl_plates, axis_to_loop, free)
-                for a in expr.args
-            ),
-        )
-    if isinstance(expr, LetExprIndex):
-        subscripts = tuple(
-            _index_letexpr_refs_inner(ix, decl_plates, axis_to_loop, free)
-            for ix in expr.indices
-        )
-        # The subscripts select the array's leading axes; an axis left
-        # after them that the surrounding loop iterates is read at the
-        # loop's row too, as a gathered table's class axis is in
-        # `row_table[n, k] <- table[group_idx[n], k]`.
-        trailing: tuple[LetExprNode, ...] = ()
-        events: tuple[LetExprNode, ...] = ()
-        if isinstance(expr.array, LetExprVar):
-            plate = decl_plates.get(expr.array.name)
-            if plate is not None:
-                trailing = tuple(
-                    LetExprVar(name=axis_to_loop[str(dim.name)])
-                    for dim in plate.batch_dims[len(subscripts) :]
-                    if str(dim.name) in axis_to_loop
-                )
-                # A gather that selects a whole event block reads it at
-                # the loop's free axes, one per event axis of the same
-                # extent.
-                if (
-                    free
-                    and plate.event_dims
-                    and len(subscripts) + len(trailing) == len(plate.batch_dims)
-                    and len(free) >= len(plate.event_dims)
-                    and all(
-                        _same_extent(dim, free_dim)
-                        for dim, (_, free_dim) in zip(
-                            plate.event_dims, free, strict=False
-                        )
-                    )
+            indices: list[LetExprNode] = []
+            for position, dim in enumerate(plate.batch_dims):
+                lname = axis_to_loop.get(dim.name)
+                if lname is None or any(
+                    earlier.name == dim.name for earlier in plate.batch_dims[:position]
                 ):
-                    events = tuple(
-                        LetExprVar(name=lname)
-                        for lname, _ in free[: len(plate.event_dims)]
+                    # An axis the loop does not iterate, or a second axis over
+                    # the same object (a factor's `A`-by-`A` table), has no
+                    # loop variable of its own: the name stays whole.
+                    return expr
+                indices.append(LetExprVar(name=lname))
+            return LetExprIndex(
+                array=expr,
+                indices=tuple(indices),
+            )
+        if isinstance(expr, LetExprIndex):
+            subscripts = tuple(
+                _index_letexpr_refs_inner(ix, decl_plates, axis_to_loop, free)
+                for ix in expr.indices
+            )
+            # The subscripts select the array's leading axes; an axis left
+            # after them that the surrounding loop iterates is read at the
+            # loop's row too, as a gathered table's class axis is in
+            # `row_table[n, k] <- table[group_idx[n], k]`.
+            trailing: tuple[LetExprNode, ...] = ()
+            events: tuple[LetExprNode, ...] = ()
+            if isinstance(expr.array, LetExprVar):
+                plate = decl_plates.get(expr.array.name)
+                if plate is not None:
+                    trailing = tuple(
+                        LetExprVar(name=axis_to_loop[str(dim.name)])
+                        for dim in plate.batch_dims[len(subscripts) :]
+                        if str(dim.name) in axis_to_loop
                     )
-                    del free[: len(plate.event_dims)]
-        return LetExprIndex(array=expr.array, indices=(*subscripts, *trailing, *events))
-    if isinstance(expr, LetExprAffineMap):
-        return LetExprAffineMap(
-            weight=_index_letexpr_refs_inner(
-                expr.weight, decl_plates, axis_to_loop, free
-            ),
-            bias=_index_letexpr_refs_inner(expr.bias, decl_plates, axis_to_loop, free),
-            sources=tuple(
-                LetAffineSource(
-                    value=_index_letexpr_refs_inner(
-                        source.value, decl_plates, axis_to_loop, free
-                    ),
-                    width=source.width,
-                )
-                for source in expr.sources
-            ),
-            row_offset=expr.row_offset,
-            rows=expr.rows,
-            transform=expr.transform,
-        )
-    return expr
+                    # A gather that selects a whole event block reads it at
+                    # the loop's free axes, one per event axis of the same
+                    # extent.
+                    if (
+                        free
+                        and plate.event_dims
+                        and len(subscripts) + len(trailing) == len(plate.batch_dims)
+                        and len(free) >= len(plate.event_dims)
+                        and all(
+                            _same_extent(dim, free_dim)
+                            for dim, (_, free_dim) in zip(
+                                plate.event_dims, free, strict=False
+                            )
+                        )
+                    ):
+                        events = tuple(
+                            LetExprVar(name=lname)
+                            for lname, _ in free[: len(plate.event_dims)]
+                        )
+                        del free[: len(plate.event_dims)]
+            return expr.with_(indices=(*subscripts, *trailing, *events))
+        return expr
+
+    return map_let_expr(
+        expr,
+        rewrite,
+        extension=AFFINE_EXPRESSION,
+        # Factors are unrolled by their renderer before their local indices
+        # are resolved; lambda expressions have no BUGS/JAGS expression form.
+        descend=lambda node: (
+            not isinstance(node, (LetExprIndex, LetExprFactor, LetExprLambda))
+        ),
+    )
 
 
 __all__ = [
@@ -2442,27 +2331,9 @@ def inline_letexpr(expr: LetExprNode, bindings: dict[str, LetExprNode]) -> LetEx
     their own copy of the scope's deterministic bindings under the
     same names. Inlining removes the need for a name at all.
     """
-    if isinstance(expr, LetExprVar):
-        return bindings.get(expr.name, expr)
-    if isinstance(expr, LetExprBinOp):
-        return LetExprBinOp(
-            op=expr.op,
-            left=inline_letexpr(expr.left, bindings),
-            right=inline_letexpr(expr.right, bindings),
-        )
-    if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(operand=inline_letexpr(expr.operand, bindings))
-    if isinstance(expr, LetExprCall):
-        return LetExprCall(
-            func=expr.func,
-            args=tuple(inline_letexpr(a, bindings) for a in expr.args),
-        )
-    if isinstance(expr, LetExprIndex):
-        return LetExprIndex(
-            array=expr.array,
-            indices=tuple(inline_letexpr(i, bindings) for i in expr.indices),
-        )
-    return expr
+    if not bindings:
+        return expr
+    return substitute_let_expr(expr, bindings, extension=AFFINE_EXPRESSION)
 
 
 def irarg_letexpr(

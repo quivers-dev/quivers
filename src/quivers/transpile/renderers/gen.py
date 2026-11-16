@@ -45,9 +45,10 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetExprNode,
     LetExprUnaryOp,
     LetExprVar,
-    LetFactorCase,
 )
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
+from quivers.dsl.let_expr_traversal import substitute_let_expr
+from quivers.transpile.renderers._let_expr_traversal import AFFINE_EXPRESSION
 from quivers.transpile._builtin_spellings import _probability_builtins_used
 
 from quivers.transpile._api import UnsupportedConstruct
@@ -2377,49 +2378,13 @@ def _rename_let_expr(expr: LetExprNode, renames: dict[str, str]) -> LetExprNode:
     LetExprNode
         The renamed expression.
     """
-    if isinstance(expr, LetExprVar):
-        return LetExprVar(name=renames.get(expr.name, expr.name))
-    if isinstance(expr, LetExprBinOp):
-        return LetExprBinOp(
-            op=expr.op,
-            left=_rename_let_expr(expr.left, renames),
-            right=_rename_let_expr(expr.right, renames),
-        )
-    if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(
-            op=expr.op, operand=_rename_let_expr(expr.operand, renames)
-        )
-    if isinstance(expr, LetExprCall):
-        return LetExprCall(
-            func=expr.func,
-            args=tuple(_rename_let_expr(argument, renames) for argument in expr.args),
-        )
-    if isinstance(expr, LetExprIndex):
-        return LetExprIndex(
-            array=_rename_let_expr(expr.array, renames),
-            indices=tuple(_rename_let_expr(index, renames) for index in expr.indices),
-        )
-    if isinstance(expr, LetExprList):
-        return LetExprList(
-            items=tuple(_rename_let_expr(item, renames) for item in expr.items)
-        )
-    if isinstance(expr, LetExprFactor):
-        shadowed = {
-            name: value
-            for name, value in renames.items()
-            if name not in {binder.var for binder in expr.binders}
-        }
-        return LetExprFactor(
-            binders=expr.binders,
-            body=None if expr.body is None else _rename_let_expr(expr.body, shadowed),
-            cases=tuple(
-                LetFactorCase(
-                    label=case.label, value=_rename_let_expr(case.value, shadowed)
-                )
-                for case in expr.cases
-            ),
-        )
-    return expr
+    if not renames:
+        return expr
+    return substitute_let_expr(
+        expr,
+        {name: LetExprVar(name=replacement) for name, replacement in renames.items()},
+        extension=AFFINE_EXPRESSION,
+    )
 
 
 class _GenMarginalizer(TuringRenderer):

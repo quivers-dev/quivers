@@ -151,6 +151,7 @@ def map_let_expr(
     transform: Callable[[surface.LetExprNode], surface.LetExprNode],
     *,
     extension: LetExprExtension | None = None,
+    descend: Callable[[surface.LetExprNode], bool] | None = None,
 ) -> surface.LetExprNode:
     """Rebuild ``expr`` bottom-up, applying ``transform`` at every node.
 
@@ -168,6 +169,10 @@ def map_let_expr(
         The rewrite applied to each rebuilt node.
     extension : LetExprExtension or None
         Child/rebuild adapter for binder-free downstream IR nodes.
+    descend : Callable[[LetExprNode], bool] or None
+        Whether to rewrite a node's children before applying ``transform``.
+        A false result leaves child traversal to the transform, for instance
+        when a target indexes subscripts but keeps an existing array opaque.
 
     Returns
     -------
@@ -193,6 +198,8 @@ def map_let_expr(
         surface.LetExprNode
             The rebuilt expression.
         """
+        if descend is not None and not descend(node):
+            return transform(node)
         if isinstance(
             node,
             surface.LetExprLiteral

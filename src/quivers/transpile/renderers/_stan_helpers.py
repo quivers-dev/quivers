@@ -53,6 +53,7 @@ from quivers.dsl.ast_nodes.let_expressions import LetFactorBinder
 from quivers.dsl.ast_nodes.objects import TypeName
 from quivers.dsl.let_expr_traversal import substitute_let_expr
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.renderers._let_expr_traversal import AFFINE_EXPRESSION
 from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.renderers._one_based import one_based_subscript
 from quivers.transpile.renderers._ranks import let_expr_rank
@@ -846,42 +847,13 @@ def _substitute_let_expr(
             index_substitution=None
             if index_value is scalar_value
             else {name: index_value},
-            extension=_AFFINE_EXPRESSION,
+            extension=AFFINE_EXPRESSION,
         )
     except TypeError as error:
         raise UnsupportedConstruct(
             "qvr-let-substitution",
             [f"let-expr:{type(expr).__name__}: substitution unhandled"],
         ) from error
-
-
-class _AffineExpressionExtension:
-    """Expose the binder-free affine IR node to canonical expression operations."""
-
-    def children(self, node: LetExprNode) -> tuple[LetExprNode, ...] | None:
-        """Return affine operands in their declared source order."""
-        if isinstance(node, LetExprAffineMap):
-            return (node.weight, node.bias, *(source.value for source in node.sources))
-        return None
-
-    def rebuild(
-        self, node: LetExprNode, children: tuple[LetExprNode, ...]
-    ) -> LetExprNode:
-        """Retain affine layout while replacing only its expression operands."""
-        if not isinstance(node, LetExprAffineMap):
-            raise TypeError(f"not an affine expression: {type(node).__name__}")
-        weight, bias, *sources = children
-        return node.with_(
-            weight=weight,
-            bias=bias,
-            sources=tuple(
-                source.with_(value=value)
-                for source, value in zip(node.sources, sources, strict=True)
-            ),
-        )
-
-
-_AFFINE_EXPRESSION = _AffineExpressionExtension()
 
 
 __all__ = ["render_let_expr_stan"]
