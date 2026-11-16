@@ -24,7 +24,7 @@ def test_vector_counts_preserve_exact_integer_events_and_row_weights():
     assert parsed.response_values.shape == (2, 2)
     assert parsed.response_values.dtype == np.int64
     assert parsed.response_values[0, 1] == 2**53 + 1
-    np.testing.assert_array_equal(parsed.response_weights.data, [0.2, 2.0])
+    np.testing.assert_array_equal(parsed.modifiers.weights.data, [0.2, 2.0])
     assert not parsed.response_values.flags.writeable
     with pytest.raises(ValueError, match="scalar response event"):
         FormulaToQVRModule(families["poisson"]).forward(parsed)

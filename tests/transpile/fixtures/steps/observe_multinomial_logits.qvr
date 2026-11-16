@@ -1,0 +1,6 @@
+object Row : FinSet 3
+object Category : FinSet 3
+program model : Row -> Row
+    observe y : Row <- Multinomial(total_count=5, logits=[0.2, -0.3, 0.7]) [over=Category]
+    return y
+export model

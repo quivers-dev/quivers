@@ -1,0 +1,5 @@
+object Row : FinSet 3
+program model : Row -> Row
+    observe y : Row <- COMPoisson(log_rate=0.7, dispersion=1.3)
+    return y
+export model

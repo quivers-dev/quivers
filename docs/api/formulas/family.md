@@ -4,7 +4,7 @@ A [response family](../../guides/analysis-data-and-formulas.md#family-registry) 
 the observations, and its [link function](https://en.wikipedia.org/wiki/Generalized_linear_model)
 connects the linear predictor to a parameter of that distribution [@nelder1972glm]. In
 [Bernoulli regression](../../tutorials/qvr/02-glms.md), the inverse logit maps an unconstrained
-predictor to a probability. The module gives `Family`, `Link`, `AuxParam`, and `OrdinalSpec`, and the `families`
+predictor to a probability. The module gives `Family`, `Link`, `AuxParam`, `OrdinalSpec`, and `ResponseSpec`, and the `families`
 and `links` registries. `Family.with_links(mu="probit")` selects a location link,
 while `Family.with_links(sigma="softplus")` changes a distributional scale link;
 [link selection](../../guides/analysis-data-and-formulas.md#distributional-regression-and-link-selection)
@@ -38,6 +38,24 @@ centered category-specific groups and duplicate same-factor
 category-specific intercept/profile coordinates. The
 [ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)
 gives links, threshold support, generated priors, and prediction shapes.
+
+## Joint response coordinates
+
+`Family.response` retains a `ResponseSpec` for scalar categorical responses
+and joint vector families. `with_reference(index_or_label)` selects a retained
+component and returns a configured family value. The default reference is the
+first component; `dirichlet2` instead estimates every concentration and permits
+only `None`. Additive log-ratio `logistic_normal` requires a reference and uses
+identity-linked Normal coordinates, with coordinate-specific scales and an
+LKJ response correlation. The native `AdditiveLogRatioNormal` constructor
+retains its own final-component default.
+
+`multinomial` and `dirichlet_multinomial` use count events; `dirichlet`,
+`dirichlet2`, and `logistic_normal` use open-simplex events. `ResponseLayout`
+retains the distinction between factor levels and named vector components.
+The [vector guide](../../guides/analysis-data-and-formulas.md#factor-and-vector-responses)
+gives component labels, inferred training totals, new-row trial counts,
+and explicit Monte Carlo expectations for additive log-ratio responses.
 
 ## COM-Poisson parameters
 

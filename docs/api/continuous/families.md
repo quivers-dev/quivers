@@ -67,9 +67,12 @@ is a separate capability from these native interfaces.
 
 ## Additive log-ratio Normal events
 
-`AdditiveLogRatioNormal(loc, scale_tril)` maps a correlated Normal vector
-of dimension `d` to a simplex of dimension `d + 1`. The final component
-is the reference: `log(y[:-1] / y[-1])` has that Normal distribution.
+`AdditiveLogRatioNormal(loc, scale_tril, reference=None)` maps a correlated
+Normal vector of dimension `d` to a simplex of dimension `d + 1`. By default,
+the final component is the reference: `log(y[:-1] / y[-1])` has that Normal
+distribution. An integer `reference` selects another component without
+reordering the response; Normal coordinates follow the remaining components
+in their original order. Batched reference indices may vary by observation.
 `scale_tril` is a lower-triangular Cholesky factor with a positive diagonal.
 Batch axes broadcast separately from the coordinate and matrix event axes.
 `ConditionalAdditiveLogRatioNormal` learns both Normal heads.

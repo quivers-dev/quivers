@@ -30,6 +30,7 @@ from quivers.qiec._sampling import (
     _dirichlet_weights,
     _trial_count,
 )
+from quivers.qiec._wiener import density as _wiener_density, sample as _wiener_sample
 from quivers.qiec._com_poisson import (
     density as _com_poisson_density,
     sample as _com_poisson_sample,
@@ -38,8 +39,7 @@ from quivers.qiec._count_mixtures import (
     SAMPLERS as _COUNT_MIXTURE_SAMPLERS,
     _binomial_log_mass,
     _poisson as _sample_poisson_count,
-    _deviance as _count_deviance,
-    _stirling_error as _count_stirling_error,
+    _poisson_log_mass,
     DENSITIES as _COUNT_MIXTURE_DENSITIES,
 )
 from quivers.qiec.reference_families import (
@@ -52,6 +52,7 @@ from quivers.qiec.reference_support import (
     DistributionError,
     Sampler,
     finite_value as _finite_value,
+    _integer_observation,
     normal_log_prob as _normal_log_prob,
     log_probabilities as _log_probabilities,
     probability as _probabilities,
@@ -650,7 +651,8 @@ def _bernoulli_density(a: Mapping[str, object], value: object) -> float:
         The log density, ``-inf`` outside the support.
     """
     log_success, log_failure = _log_probabilities(a, "Bernoulli")
-    return log_success if bool(_finite_value(value, "Bernoulli")) else log_failure
+    point = _integer_observation(value, "Bernoulli")
+    return log_success if point == 1 else log_failure if point == 0 else -math.inf
 
 
 def _categorical_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -694,8 +696,8 @@ def _categorical_density(a: Mapping[str, object], value: object) -> float:
         The log density, ``-inf`` outside the support.
     """
     probs = _simplex(a, "Categorical")
-    index = int(_finite_value(value, "Categorical"))
-    if not 0 <= index < len(probs) or probs[index] <= 0:
+    index = _integer_observation(value, "Categorical")
+    if index is None or not 0 <= index < len(probs) or probs[index] <= 0:
         return -math.inf
     return math.log(probs[index])
 
@@ -1045,19 +1047,11 @@ def _poisson_density(a: Mapping[str, object], value: object) -> float:
         The log density, ``-inf`` outside the support; at a zero rate
         the mass sits at zero alone.
     """
-    count = int(_finite_value(value, "Poisson"))
+    count = _integer_observation(value, "Poisson")
     rate = _real(a, "rate", "Poisson")
-    if count < 0:
+    if count is None:
         return -math.inf
-    if rate == 0.0:
-        return 0.0 if count == 0 else -math.inf
-    if count == 0:
-        return -rate
-    return (
-        -_count_stirling_error(float(count))
-        - 0.5 * (1.83787706640934548356 + math.log(count))
-        - _count_deviance(float(count), math.log(rate))
-    )
+    return _poisson_log_mass(count, rate)
 
 
 def _binomial_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -1095,10 +1089,9 @@ def _binomial_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density, ``-inf`` outside the support.
     """
-    point = _finite_value(value, "Binomial")
-    if not point.is_integer():
+    count = _integer_observation(value, "Binomial")
+    if count is None:
         return -math.inf
-    count = int(point)
     trials = _trial_count(a.get("total_count"))
     log_success, log_failure = _log_probabilities(a, "Binomial")
     if not 0 <= count <= trials:
@@ -1143,9 +1136,9 @@ def _geometric_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density, ``-inf`` outside the support.
     """
-    failures = int(_finite_value(value, "Geometric"))
+    failures = _integer_observation(value, "Geometric")
     log_success, log_failure = _log_probabilities(a, "Geometric")
-    if failures < 0:
+    if failures is None or failures < 0:
         return -math.inf
     return _times(failures, log_failure) + log_success
 
@@ -1488,8 +1481,8 @@ def _discrete_weibull_density(a: Mapping[str, object], value: object) -> float:
         Log mass, negative infinity outside the integer support.
     """
     q, power = _discrete_weibull_parameters(a)
-    point = _finite_value(value, "DiscreteWeibull")
-    if point < 0 or point != math.floor(point):
+    point = _integer_observation(value, "DiscreteWeibull")
+    if point is None or point < 0:
         return -math.inf
     if point == 0:
         return math.log1p(-q)
@@ -2133,6 +2126,7 @@ _SAMPLERS: Mapping[str, Sampler] = MappingProxyType(
         "Geometric": _geometric_sample,
         "Laplace": _laplace_sample,
         "COMPoisson": _com_poisson_sample,
+        "Wiener": _wiener_sample,
         "DiscreteWeibull": _discrete_weibull_sample,
         "ZeroInflatedAsymmetricLaplace": _zero_inflated_asymmetric_laplace_sample,
         "AsymmetricLaplace": _asymmetric_laplace_sample,
@@ -2171,6 +2165,7 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
         "Geometric": _geometric_density,
         "Laplace": _laplace_density,
         "COMPoisson": _com_poisson_density,
+        "Wiener": _wiener_density,
         "DiscreteWeibull": _discrete_weibull_density,
         "ZeroInflatedAsymmetricLaplace": _zero_inflated_asymmetric_laplace_density,
         "AsymmetricLaplace": _asymmetric_laplace_density,

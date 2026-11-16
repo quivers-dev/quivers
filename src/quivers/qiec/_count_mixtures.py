@@ -7,7 +7,11 @@ from functools import partial
 import math
 import random
 
-from quivers.qiec.reference_support import DistributionError, real_parameter
+from quivers.qiec.reference_support import (
+    DistributionError,
+    real_parameter,
+    _integer_observation,
+)
 from quivers.qiec._sampling import _binomial_sample, _dirichlet_weights
 
 NAMES = (
@@ -117,6 +121,41 @@ def _log_gamma_increment(x: float, shift: float) -> float:
             - _stirling_error(x)
         )
     return math.lgamma(x + shift) - math.lgamma(x)
+
+
+def _poisson_log_mass(count: int, rate: float) -> float:
+    """Score a Poisson count without cancellation in large factorials.
+
+    Parameters
+    ----------
+    count : int
+        Integer count candidate.
+    rate : float
+        Nonnegative finite Poisson intensity.
+
+    Returns
+    -------
+    float
+        Stable log mass, including zero-rate and outside-support cases.
+
+    Raises
+    ------
+    DistributionError
+        If the rate is negative or nonfinite.
+    """
+    if not math.isfinite(rate) or rate < 0:
+        raise DistributionError("Poisson rate must be finite and nonnegative")
+    if count < 0:
+        return -math.inf
+    if rate == 0:
+        return 0.0 if count == 0 else -math.inf
+    if count == 0:
+        return -rate
+    return (
+        -_stirling_error(float(count))
+        - 0.5 * (1.83787706640934548356 + math.log(count))
+        - _deviance(float(count), math.log(rate))
+    )
 
 
 def _binomial_log_mass(n: float, k: int, log_p: float, log_q: float) -> float:
@@ -400,15 +439,12 @@ def count_mixture_log_prob(
         Exact log probability, negative infinity outside the support.
     """
     p = _parameters(arguments, family)
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int | float)
-        or not math.isfinite(value)
-        or value < 0
-        or value != int(value)
-    ):
+    if isinstance(value, bool) or not isinstance(value, int | float):
         return -math.inf
-    count, zero = int(value), p["zero_prob"]
+    count = _integer_observation(value, family)
+    if count is None or count < 0:
+        return -math.inf
+    zero = p["zero_prob"]
     if family == "HurdleNegativeBinomial":
         if count == 0:
             return math.log(zero) if zero else -math.inf
@@ -492,15 +528,7 @@ def _poisson(rate: float, rng: random.Random) -> int:
             return count
         if count < 0 or (us < 0.013 and v > us):
             continue
-        log_mass = (
-            (
-                -_stirling_error(float(count))
-                - 0.5 * (1.83787706640934548356 + math.log(count))
-                - _deviance(float(count), math.log(rate))
-            )
-            if count
-            else -rate
-        )
+        log_mass = _poisson_log_mass(count, rate)
         if math.log(v * inverse_alpha / (a / (us * us) + b)) <= log_mass:
             _require_sample_capacity(count)
             return count

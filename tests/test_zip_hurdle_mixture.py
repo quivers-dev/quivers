@@ -53,7 +53,7 @@ def test_zero_inflated_poisson_mean() -> None:
     dist = ZeroInflatedPoisson(pi.clamp(1e-6, 1.0 - 1e-6), rate)
     torch.testing.assert_close(
         dist.mean,
-        torch.tensor([3.0, 1.5, 0.0]),
+        torch.tensor([3.0, 1.5, 0.0], dtype=torch.float64),
         atol=1e-5,
         rtol=1e-5,
     )
@@ -65,6 +65,7 @@ def test_hurdle_poisson_log_prob() -> None:
     dist = HurdlePoisson(pi, rate)
     y = torch.tensor([0, 2, 5])
     actual = dist.log_prob(y)
+    pi, rate = pi.double(), rate.double()
     poisson = torch.distributions.Poisson(rate)
     log_survival = (1.0 - (-rate).exp()).log()
     expected_zero = pi.log()

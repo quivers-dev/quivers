@@ -18,8 +18,9 @@ and `coefficients` expose population and group coefficients with retained labels
 `posterior_linpred`, `posterior_epred`, and `posterior_predict` replay native
 fitted bindings on the training rows or on a supplied `new_data` frame. The first two expose predictors and
 response expectations; `posterior_predict` independently samples responses
-conditional on each posterior draw. Its tensor has shape `(chain, draw, row)`;
-categorical and ordinal responses use integer codes in `category_labels` order.
+conditional on each posterior draw. Its tensor has shape `(chain, draw, row)`
+followed by any response event dimensions; categorical and ordinal responses
+use integer codes in `category_labels` order.
 `posterior_thresholds` additionally exposes effective ordinal cutpoints as
 `(chain, draw, row, threshold)`, labeled by adjacent category pairs in
 `threshold_labels`. It excludes the proportional population predictor
@@ -52,6 +53,27 @@ gives an executable example and the retained evaluator's serialization boundary.
 observation-only likelihood weights. The column is retained on the parsed
 formula; posterior predictors use the unweighted response law at each draw.
 See [likelihood weights](../../guides/analysis-data-and-formulas.md#likelihood-weights).
+
+## Decoded response draws
+
+`posterior_response` returns `ResponseDraws` after one posterior predictive
+replay. Its `value` tensor preserves the response's measurement coordinates;
+for a Wiener response, this is positive reaction time including nondecision
+delay, and `decision` records zero for the lower boundary and one for the
+upper boundary. `decision_labels` names those codes. `posterior_predict`
+retains the corresponding lossless signed response tensor.
+
+`PredictionOptions` defines the shared keyword contract for these two
+prediction methods. `ExpectationOptions` additionally includes `mc_samples`
+for explicitly requested Monte Carlo expectations. `posterior_choice_probs`
+uses the same expectation keywords and returns the joint model's lower/upper
+choice probabilities; it does not estimate them by repeated response sampling.
+
+::: quivers.formulas.ResponseDraws
+
+::: quivers.formulas.PredictionOptions
+
+::: quivers.formulas.ExpectationOptions
 
 ## Likelihoods and analysis
 

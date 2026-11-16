@@ -177,12 +177,49 @@ p(y)=\varphi_d\!\left(\left(\log\frac{y_j}{y_{d+1}}\right)_{j=1}^d;
 \mu,LL^\mathsf T\right)\prod_{j=1}^{d+1}y_j^{-1}.
 $$
 
+An optional reference index $r$ replaces the final component above.
+The Gaussian coordinates then follow the increasing component indices
+$j\ne r$, with $Z_j=\log(Y_j/Y_r)$. The density has the same product
+Jacobian over all components, and outputs keep their original component
+order. A reference may vary across batch rows without changing the event
+shape or identifying its component axis with a batch axis.
+
 The family signature relates the location and matrix dimensions to the
 response dimension by `nat_add(d, 1)`. This is a static equation, solved
 alongside the runtime tensors' shape evidence; it introduces no random
 variable or likelihood contribution. Row dimensions remain batch axes,
 and the simplex dimension is one coupled event. The existing
 `LogisticNormal` kernel retains its distinct stick-breaking semantics.
+
+#### Formula response layouts and coordinate maps
+
+A formula response layout separates a row index from a sample event.
+A factor response has scalar event shape and an ordered map from codes to
+retained labels. A `cbind` response instead has a component event axis in
+the authored column order. These layouts persist through the formula lens,
+typed runtime input declarations, and posterior output collection.
+
+For a reference component $r$, multinomial and Dirichlet mean predictors
+insert a zero at coordinate $r$ into the predictor vector and apply
+softmax. In the mean/precision Dirichlet parameterization,
+$\alpha_c=\phi p_c$. `dirichlet2` instead sets every
+$\alpha_c=\exp(\eta_c)$, without a reference coordinate. A
+`logistic_normal` formula supplies Gaussian log-ratio locations against
+$r$, coordinate-specific scales, and a correlation factor. References
+thus select predictor coordinates; they do not permute the observed event.
+
+For count events, the training row total $n_i=\sum_c y_{ic}$ is runtime
+data, not a static category extent or a fitted random variable. New-row
+counts require supplied totals independently of their predictors. The
+joint log density reduces the event axis once, before any observation
+weight or row reduction. Raw pointwise likelihoods retain one score per
+observation, so model comparison uses the same event units as fitting.
+
+Posterior expectations average the conditional response mean over posterior
+draws. For additive log-ratio responses, an explicitly requested Monte
+Carlo average approximates that inner mean; applying softmax to the Normal
+location does not compute it. The approximation adds simulation error and
+does not change the model's kernel, priors, or observation effects.
 
 #### COM-Poisson normalization
 
@@ -1293,6 +1330,73 @@ diagnostics [@vehtari2017loo]. For variational draws, relative efficiency one
 does not repair approximation error. Exact leave-one-out refits, K-fold
 validation, and alternative marginalization policies remain separate workflows.
 Multiple response variables require explicit selection before comparison.
+
+### 6.2 Joint reaction-time and decision responses
+
+`Wiener(boundary=a, ndt=t0, bias=z, drift=v)` denotes a joint first-passage
+law with $a>0$, $t_0\geq0$, $0<z<1$, and finite $v\in\mathbb R$.
+Let $X_u=az+vu+B_u$, where $B$ is standard Brownian motion, and let
+$\tau=\inf\{u>0:X_u\notin(0,a)\}$. The decision is $D=1$ at the upper
+boundary and $D=0$ at the lower boundary; the measured time is
+$T=t_0+\tau$. The law of $(T,D)$ has a joint density $f(t,d)$ with respect
+to Lebesgue measure on time and counting measure on decisions. Integrating
+over time gives each boundary's probability, rather than a density normalized
+separately for each boundary.
+
+The native scalar carrier is the signed time $S=(2D-1)T$. Its density is
+
+$$
+g(s)=f\bigl(|s|,\mathbf 1_{s>0}\bigr),\qquad |s|>t_0,
+$$
+
+and zero elsewhere. On each decision component, this change of coordinates
+has absolute Jacobian one. Thus observing a signed time preserves the joint
+choice probability. Observations derived by a preceding `let` follow the
+ordinary lexical observation rule; the encoded value need not be supplied as
+an additional external input.
+
+The formula response modifier `dec(choice)` retains $T$ and $D$ as separate
+checked data columns and emits the deterministic map to $S$ before `observe`.
+The shared `ResponseModifiers` value also holds likelihood weights. A weight
+$w_i$ contributes $w_i\log f(t_i,d_i)$ to the fitted objective, while raw
+pointwise likelihood extraction returns $\log f(t_i,d_i)$; no prior is
+weighted. This adapter changes the response representation, without
+introducing another sampling effect or conditioning on the choice alone.
+
+The upper-boundary probability and expected measured time are
+
+$$
+q=\Pr(D=1)=
+\begin{cases}
+\dfrac{1-e^{-2vaz}}{1-e^{-2va}}, & v\ne0,\\
+z, & v=0,
+\end{cases}
+\qquad
+\mathbb E[T]=
+\begin{cases}
+t_0+\dfrac{a(q-z)}{v}, & v\ne0,\\
+t_0+a^2z(1-z), & v=0.
+\end{cases}
+$$
+
+The native distribution's `mean` is $\mathbb E[S]$, whereas its
+`mean_response_time` and formula `posterior_epred` return $\mathbb E[T]$.
+`posterior_choice_probs` returns $(1-q,q)$ for each posterior draw and row.
+`posterior_predict` draws $S$; `posterior_response` decodes that same joint
+draw into positive time and decision, preserving chain, draw, and row axes.
+Prediction samples the replayed conditional response law directly, even when
+the observed training response was a deterministic lexical binding.
+
+The density implementation switches between image and spectral expansions.
+The sampler proposes a boundary and an exact one-sided hitting time, then
+accepts by an interval-certified ratio of two-boundary to one-boundary
+densities. Its acceptance probability is at least one half in exact
+arithmetic. Finite term, precision, and proposal budgets raise an error when
+a decision cannot be certified; no approximate trajectory simulation or
+unresolved comparison is substituted. The mathematical and numerical checks
+are in `tests/continuous/test_wiener.py`, with independent formula-level
+joint-density and coefficient-gradient checks in `tests/test_formula_wiener.py`.
+Current external targets report this family as unsupported.
 
 ## 7. Wrappers that place priors on parameters {#7-bayesian-lifts}
 

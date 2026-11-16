@@ -50,3 +50,62 @@ def test_conditioned_matrix_events_preserve_shapes_and_log_density(
         )
     else:
         torch.testing.assert_close(recorded.output, expected_factors)
+
+
+@pytest.mark.parametrize("dimension", [2, 3])
+@pytest.mark.parametrize("learned", [False, True])
+def test_observed_lkj_uses_intrinsic_square_axes_not_their_flattened_product(
+    dimension, learned
+):
+    rows = 4
+    argument = "alpha" if learned else "1.5"
+    header = "(alpha:Tensor[Real]([Obs]))" if learned else ""
+    source = f"""object Dim : FinSet {dimension}
+object Obs : FinSet {rows}
+program model{header} : Obs -> Obs
+    observe y : Obs <- LKJCholesky(concentration={argument}) [over=[Dim,Dim]]
+    return y
+export model
+"""
+    program = loads(source).morphism
+    y = torch.eye(dimension).expand(rows, dimension, dimension)
+    alpha = torch.linspace(0.7, 2.0, rows, requires_grad=True)
+    observations = {"y": y} | ({"alpha": alpha} if learned else {})
+    recorded = trace(program, torch.zeros(1, 1), observations)
+    expected = (
+        torch.distributions.LKJCholesky(dimension, alpha if learned else 1.5)
+        .log_prob(y)
+        .sum()
+    )
+    torch.testing.assert_close(recorded.log_joint.sum(), expected)
+    assert recorded.sites["y"].value.shape == (rows, dimension, dimension)
+    if learned:
+        torch.testing.assert_close(
+            torch.autograd.grad(recorded.log_joint.sum(), alpha, retain_graph=True)[0],
+            torch.autograd.grad(expected, alpha)[0],
+        )
+
+
+def test_rectangular_matrix_normal_retains_both_intrinsic_axes():
+    source = """object Obs : FinSet 5
+object Rows : FinSet 2
+object Cols : FinSet 3
+program model : Obs -> Obs
+    observe y : Obs <- MatrixNormal(loc=[[0.1,0.2,0.3],[-0.1,-0.2,-0.3]],row_covariance=[[0.64,0.16],[0.16,0.53]],col_covariance=[[0.81,0.09,-0.18],[0.09,0.65,0.06],[-0.18,0.06,0.54]]) [over=[Rows,Cols]]
+    return y
+export model
+"""
+    program = loads(source).morphism
+    y = torch.linspace(-0.5, 0.7, 30).reshape(5, 2, 3)
+    row = torch.tensor([[0.8, 0.0], [0.2, 0.7]])
+    column = torch.tensor([[0.9, 0.0, 0.0], [0.1, 0.8, 0.0], [-0.2, 0.1, 0.7]])
+    loc = torch.tensor([[0.1, 0.2, 0.3], [-0.1, -0.2, -0.3]])
+    expected = (
+        torch.distributions.MultivariateNormal(
+            loc.reshape(-1), scale_tril=torch.kron(row, column)
+        )
+        .log_prob(y.reshape(5, 6))
+        .sum()
+    )
+    recorded = trace(program, torch.zeros(1, 1), {"y": y})
+    torch.testing.assert_close(recorded.log_joint.sum(), expected)

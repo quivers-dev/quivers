@@ -20,6 +20,7 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
     "Laplace": ("loc", "scale"),
     "COMPoisson": ("rate", "dispersion"),
     "DiscreteWeibull": ("probs", "concentration"),
+    "Wiener": ("boundary", "ndt", "bias", "drift"),
     "ZeroInflatedAsymmetricLaplace": ("zero_prob", "loc", "scale", "quantile"),
     "AsymmetricLaplace": ("loc", "scale", "quantile"),
     "ExGaussian": ("loc", "scale", "rate"),
@@ -63,7 +64,7 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
     "Geometric": ("probs",),
     "Binomial": ("total_count", "probs"),
     "VonMises": ("loc", "concentration"),
-    "AdditiveLogRatioNormal": ("loc", "scale_tril"),
+    "AdditiveLogRatioNormal": ("loc", "scale_tril", "reference"),
     "LogisticNormal": ("loc", "scale"),
     "OneHotCategorical": ("probs",),
     "LKJCholesky": ("concentration",),
@@ -99,6 +100,10 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
 
 
 _ALTERNATIVE_SCHEMAS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "AdditiveLogRatioNormal": (
+        ("loc", "scale_tril"),
+        ("loc", "scale_tril", "reference"),
+    ),
     "COMPoisson": (("rate", "dispersion"), ("log_rate", "dispersion")),
     "Categorical": (("probs",), ("logits",)),
     "Multinomial": (("total_count", "probs"), ("total_count", "logits")),

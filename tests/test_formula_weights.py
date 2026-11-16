@@ -11,6 +11,7 @@ import torch
 from quivers.dsl import Compiler, loads
 from quivers.dsl.emit import module_to_source
 from quivers.formulas import (
+    ResponseModifiers,
     FixedColumn,
     FormulaToQVRModule,
     families,
@@ -37,7 +38,7 @@ def data():
 
 def test_weights_are_retained_immutable_data_without_coefficients_or_priors(data):
     formula = formula_from_data("y ~ x", data, weights="w")
-    weight = formula.response_weights
+    weight = formula.modifiers.weights
     assert weight is not None and weight.name == "w"
     np.testing.assert_array_equal(weight.data, data.w)
     assert not weight.data.flags.writeable
@@ -228,7 +229,9 @@ def test_missing_selector_dropped_rows_and_reserved_input_names_are_rejected(dat
 def test_manually_constructed_formula_weight_shape_is_checked(data):
     formula = formula_from_data("y ~ x", data)
     malformed = formula.with_(
-        response_weights=FixedColumn(term="w", name="w", qvr_name="w", data=np.ones(3))
+        modifiers=ResponseModifiers(
+            weights=FixedColumn(term="w", name="w", qvr_name="w", data=np.ones(3))
+        )
     )
     with pytest.raises(ValueError, match="align with every"):
         FormulaToQVRModule(families["gaussian"]).forward(malformed)

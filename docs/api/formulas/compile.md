@@ -12,8 +12,11 @@ auxiliary formulas are retained in the configured lens. Offset and exposure
 columns enter native predictor bindings without coefficient draws; their arrays
 are retained by `FormulaData.offsets` and returned by `fixed_column_observations`.
 
-A retained `response_weights` column becomes an explicitly typed row input and
-an observation-only `[weights=formula_weights]` option. The lens binds its data
-without coefficient or prior sites and preserves the column through `backward`.
+A retained `Formula.modifiers.weights` column becomes an explicitly typed row
+input and an observation-only `[weights=formula_weights]` option. The lens binds
+its data without coefficient or prior sites and preserves the column through
+`backward`. A decision modifier additionally supplies a typed binary row input;
+the generated program visibly combines it with the raw response before scoring
+the joint law. Modifier declarations describe inputs and do not add effects.
 
 ::: quivers.formulas.compile

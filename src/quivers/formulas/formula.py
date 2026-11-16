@@ -299,6 +299,40 @@ class RandomTerm(ValueModel):
     )
 
 
+class ResponseModifiers(ValueModel):
+    """Retain typed response-row inputs independently of predictor coefficients.
+
+    Attributes
+    ----------
+    weights : FixedColumn or None
+        Finite nonnegative observation weights, without normalization.
+    decision : FixedColumn or None
+        Binary boundary decisions, zero for lower and one for upper. Numeric
+        0/1 and lower/upper labels normalize to the same integer carrier.
+    """
+
+    weights: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    decision: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+    def columns(self) -> tuple[tuple[str, FixedColumn], ...]:
+        """Return supplied role-column pairs in canonical input order.
+
+        Returns
+        -------
+        tuple of role and FixedColumn
+            Checked modifier inputs with no fitted coefficient.
+        """
+        return tuple(
+            (role, column)
+            for role, column in (("weights", self.weights), ("decision", self.decision))
+            if column is not None
+        )
+
+
 class ResponseLayout(ValueModel):
     """Retain event coordinates independently of the observation-row axis.
 
@@ -308,14 +342,27 @@ class ResponseLayout(ValueModel):
         Ordered labels of a vector event; empty for a scalar response.
     carrier : Literal["real", "integer"]
         Numeric carrier of the evaluated response, before family validation.
+    category_levels : tuple[str, ...]
+        Scalar factor labels in their evaluated contrast order; distinct
+        from vector event component names.
+    ordered : bool
+        Whether the original factor declares an ordering.
     """
 
     component_names: tuple[str, ...] = ()
     carrier: Literal["real", "integer"] = "real"
+    category_levels: tuple[str, ...] = ()
+    ordered: bool = False
 
     @property
     def event_shape(self) -> tuple[int, ...]:
-        """Return event dimensions, excluding observation rows."""
+        """Return event dimensions, excluding observation rows.
+
+        Returns
+        -------
+        tuple[int, ...]
+            Empty for a scalar response, or one extent for vector components.
+        """
         return (len(self.component_names),) if self.component_names else ()
 
 
@@ -347,9 +394,9 @@ class Formula(ValueModel):
     group_levels : dict[str, tuple[str, ...]]
         Canonical level ordering per grouping factor, used to derive
         deterministic plate-index tensors.
-    response_weights : FixedColumn or None
-        Retained nonnegative finite likelihood weights, one per response row.
-        Weights multiply response log densities and receive no coefficient.
+    modifiers : ResponseModifiers
+        Checked response-row weights and decision columns, independent of
+        predictor coefficients.
     offsets : tuple[FixedColumn, ...]
         Evaluated ``offset(expr)`` and ``exposure(expr)`` contributions on
         the linear-predictor scale. These columns receive no coefficients.
@@ -376,8 +423,8 @@ class Formula(ValueModel):
     offsets: tuple[FixedColumn, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
-    response_weights: FixedColumn | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    modifiers: ResponseModifiers = dx.field(
+        default_factory=ResponseModifiers, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
 
@@ -415,9 +462,9 @@ class FormulaData(ValueModel):
         Original group names keyed by normalized group name.
     group_levels : dict[str, tuple[str, ...]]
         Canonical level order for each group.
-    response_weights : FixedColumn or None
-        Retained nonnegative finite likelihood weights, one per response row.
-        Weights multiply response log densities and receive no coefficient.
+    modifiers : ResponseModifiers
+        Checked response-row weights and decision columns, independent of
+        predictor coefficients.
     offsets : tuple[FixedColumn, ...]
         Evaluated ``offset(expr)`` and ``exposure(expr)`` contributions on
         the linear-predictor scale. These columns receive no coefficients.
@@ -452,8 +499,8 @@ class FormulaData(ValueModel):
     offsets: tuple[FixedColumn, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
-    response_weights: FixedColumn | None = dx.field(
-        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    modifiers: ResponseModifiers = dx.field(
+        default_factory=ResponseModifiers, opaque=True, extras=OPAQUE_BY_VALUE
     )
     random_terms: tuple[RandomTerm, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
@@ -616,6 +663,7 @@ def formula_from_data(
     data: IntoDataFrame,
     *,
     weights: str | None = None,
+    decision: str | None = None,
     extra_namespace: Mapping[str, object] | None = None,
 ) -> Formula:
     """Build a typed `Formula` IR by lifting
@@ -653,6 +701,9 @@ def formula_from_data(
         Name of a numeric, finite, nonnegative likelihood-weight column.
         Its values are retained without normalization and must align with
         every response row after formula evaluation.
+    decision : str or None
+        Binary decision column, numeric 0/1 or lower/upper labels. Equivalent
+        to ``response | dec(column)``; repeated declarations must agree.
     extra_namespace : Mapping[str, object], optional
         Additional names visible inside the formula's expression
         evaluation, merged on top of the R-style transforms.
@@ -673,7 +724,11 @@ def formula_from_data(
         or misaligned with the evaluated response rows.
     """
     return _formula_and_design(
-        formula, data, weights=weights, extra_namespace=extra_namespace
+        formula,
+        data,
+        weights=weights,
+        decision=decision,
+        extra_namespace=extra_namespace,
     )[0]
 
 
@@ -682,6 +737,7 @@ def _formula_and_design(
     data: IntoDataFrame,
     *,
     weights: str | None = None,
+    decision: str | None = None,
     extra_namespace: Mapping[str, object] | None = None,
 ) -> tuple[Formula, DesignMatrices]:
     """Evaluate a formula once and retain its fitted transformation state.
@@ -694,6 +750,8 @@ def _formula_and_design(
         Training rows.
     weights : str or None
         Optional likelihood-weight column.
+    decision : str or None
+        Optional lower/upper decision column.
     extra_namespace : Mapping[str, object] or None
         Additional expression bindings.
 
@@ -709,21 +767,12 @@ def _formula_and_design(
     """
     nw_df = nw.from_native(data, eager_only=True)
     pandas_df = nw_df.to_pandas()
-    response_weights = None
-    if weights is not None:
-        if not isinstance(weights, str) or weights not in pandas_df.columns:
-            raise ValueError("weights must name an existing dataframe column")
-        values = np.asarray(pandas_df[weights])
-        if values.ndim != 1 or values.dtype.kind not in "iuf":
-            raise ValueError("weights require a real numeric column")
-        if not np.isfinite(values).all() or np.any(values < 0):
-            raise ValueError("weights must be finite and nonnegative")
-        response_weights = FixedColumn(
-            term=weights,
-            name=weights,
-            qvr_name="formula_weights",
-            data=values.astype(np.float64),
-        )
+    from quivers.formulas._response_modifiers import modifier_columns, modifier_names
+
+    normalized_formula, names = modifier_names(
+        formula, {"weights": weights, "decision": decision}
+    )
+    response_modifiers = modifier_columns(pandas_df, names)
     namespace: dict[str, object] = dict(_R_TRANSFORMS)
     if extra_namespace:
         if {"offset", "exposure", "cs", "cbind"} & extra_namespace.keys():
@@ -733,10 +782,10 @@ def _formula_and_design(
         namespace.update(extra_namespace)
     namespace["exposure"] = _exposure
     namespace["cbind"] = lambda *columns: np.column_stack(columns)
-    cs_normalized = _normalize_cs_intercept(formula)
+    cs_normalized = _normalize_cs_intercept(normalized_formula)
     if _CS_ONES in pandas_df.columns:
         raise ValueError(f"{_CS_ONES!r} is reserved for category-specific intercepts")
-    if cs_normalized != formula:
+    if cs_normalized != normalized_formula:
         pandas_df = pandas_df.copy()
         pandas_df[_CS_ONES] = 1.0
     normalized, random_blocks = _random_blocks(cs_normalized)
@@ -836,9 +885,33 @@ def _formula_and_design(
         getattr(components[0], "call", None) if len(components) == 1 else None
     )
     vector_response = getattr(response_call, "callee", None) == "cbind"
+    category_levels: tuple[str, ...] = ()
+    ordered_response = False
+    if not vector_response and getattr(dm.response, "kind", None) == "categoric":
+        levels = dm.response.levels
+        if levels is None:
+            raise ValueError("categorical responses require retained level labels")
+        category_levels = tuple(str(level) for level in levels)
+        if (
+            response_values.ndim != 2
+            or response_values.shape[1] != len(category_levels)
+            or not np.all((response_values == 0) | (response_values == 1))
+            or not np.all(response_values.sum(-1) == 1)
+        ):
+            raise ValueError(
+                "categorical responses require one indicator per row in the declared level order"
+            )
+        response_values = response_values.argmax(-1).astype(np.int64)
+        original = getattr(components[0], "_intermediate_data", None)
+        ordered_response = bool(
+            getattr(getattr(original, "dtype", None), "ordered", False)
+        )
     if vector_response:
         assert response_call is not None
-        labels = tuple(str(argument) for argument in response_call.args)
+        arguments = response_call.args
+        if arguments is None:
+            raise ValueError("cbind responses require named numeric components")
+        labels = tuple(str(argument) for argument in arguments)
         if response_values.ndim != 2 or response_values.shape[1] != len(labels):
             raise ValueError(
                 "cbind response arguments must each produce one numeric column"
@@ -863,18 +936,21 @@ def _formula_and_design(
     ):
         raise ValueError("integer responses exceed the Int64 carrier")
     response_layout = ResponseLayout(
-        component_names=labels, carrier="integer" if integer_carrier else "real"
+        component_names=labels,
+        carrier="integer" if integer_carrier else "real",
+        category_levels=category_levels,
+        ordered=ordered_response,
     )
     response_values = response_values.astype(
         np.int64 if vector_response and integer_carrier else np.float64
     )
 
-    if (
-        response_weights is not None
-        and response_weights.data.shape != response_values.shape[:1]
+    if any(
+        column.data.shape != response_values.shape[:1]
+        for _, column in response_modifiers.columns()
     ):
         raise ValueError(
-            "weights must align with every evaluated response row; missing model values cannot drop weighted rows"
+            "response modifiers must align with every evaluated response row; missing model values cannot drop rows with weights or decisions"
         )
 
     return Formula(
@@ -882,7 +958,7 @@ def _formula_and_design(
         response_name=response_name,
         fixed_columns=tuple(fixed_columns),
         offsets=tuple(offsets),
-        response_weights=response_weights,
+        modifiers=response_modifiers,
         random_terms=tuple(random_terms),
         response_values=response_values,
         response_layout=response_layout,
@@ -896,6 +972,7 @@ __all__ = [
     "RandomTerm",
     "Formula",
     "ResponseLayout",
+    "ResponseModifiers",
     "FormulaData",
     "formula_from_data",
 ]

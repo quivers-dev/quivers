@@ -44,6 +44,7 @@ from quivers.continuous._multinomial import (
 )
 from quivers.continuous._closed_probability import _ValidatedCategorical
 from quivers.continuous._discrete_weibull import DiscreteWeibull
+from quivers.continuous._wiener import Wiener
 from quivers.continuous._zero_inflated_asymmetric_laplace import (
     ZeroInflatedAsymmetricLaplace,
 )
@@ -974,6 +975,21 @@ ConditionalCOMPoisson = _make_family(
     inline_bounds={"rate": (0.0, math.inf)},
 )
 """Conditional COM-Poisson count law."""
+
+ConditionalWiener = _make_family(
+    "ConditionalWiener",
+    Wiener,
+    [
+        ("boundary", "softplus"),
+        ("ndt", "softplus"),
+        ("bias", "sigmoid"),
+        ("drift", "id"),
+    ],
+    "Conditional joint signed Wiener reaction times and boundary decisions.",
+    discrete=False,
+    inline_bounds={"ndt": (0.0, math.inf)},
+)
+"""Conditional Wiener joint signed response-time law."""
 
 ConditionalDiscreteWeibull = _make_family(
     "ConditionalDiscreteWeibull",
@@ -4807,6 +4823,8 @@ __all__ = [
     "COMPoisson",
     "ConditionalCOMPoisson",
     "ConditionalDiscreteWeibull",
+    "ConditionalWiener",
+    "Wiener",
     "ConditionalZeroInflatedAsymmetricLaplace",
     "DiscreteWeibull",
     "ZeroInflatedAsymmetricLaplace",

@@ -239,7 +239,7 @@ A weight column must contain finite nonnegative real numbers. Boolean, string,
 and complex columns are rejected. The evaluated response and weight rows must
 remain aligned; missing model values that would drop weighted rows raise an
 error. Prepare a common set of rows before fitting. The read-only column is
-retained in `Formula.response_weights` and its lens complement. Emitted QVR
+retained in `Formula.modifiers.weights` and its lens complement. Emitted QVR
 declares a checked `Tensor[Real]([Resp])` input and attaches
 `[weights=formula_weights]` to the response observation, with no weight
 coefficient or prior.
@@ -333,6 +333,11 @@ value. The built-in families:
 | `binomial` | logit (sigmoid) | known trial count |
 | `beta_binomial` | logit (sigmoid) | known trial count, precision `phi ~ HalfCauchy(2.0)` |
 | `categorical` | reference-category multinomial logit | one coefficient and random effect per non-reference category |
+| `multinomial` | softmax category probabilities | known or observed-row trial total |
+| `dirichlet_multinomial` | softmax category probabilities | total concentration `phi ~ HalfCauchy(2.0)`, trial total |
+| `dirichlet` | softmax compositional mean | total concentration `phi ~ HalfCauchy(2.0)` |
+| `dirichlet2` | log for every concentration | no reference component |
+| `logistic_normal` | identity for additive log ratios | coordinate scales `sigma`, LKJ response correlation |
 | `poisson` | log (exp) | none |
 | `com_poisson` | log for the rate, not response mean | `shape ~ Gamma(0.01, 0.01)` |
 | `negative_binomial` | log (exp) | `disp ~ Gamma(2.0, 2.0)` |
@@ -374,6 +379,100 @@ value. The built-in families:
 A new family is a [`Family`](../api/formulas/family.md#quivers.formulas.family.Family)
 value with its own observation family and link. The table's priors on auxiliary
 parameters are the library's defaults.
+
+### Factor and vector responses
+
+A factor response remains one scalar code per row. `ResponseLayout` retains
+its category labels and declared order, including unobserved levels of a
+pandas categorical. `BayesianFit.category_labels` labels the response codes;
+`coefficient_labels` labels the fitted non-reference coordinates. Thus a
+three-level categorical response has scalar predictive draws and three
+category probabilities, rather than a three-component response event.
+
+`cbind(a, b, c)` instead declares one joint vector event in the authored
+component order. The `multinomial` and `dirichlet_multinomial` families model
+nonnegative integer count vectors. The `dirichlet`, `dirichlet2`, and
+`logistic_normal` families model strictly positive compositions whose rows
+sum to one. Component axes remain separate from observation axes, even
+when their cardinalities coincide.
+
+```python
+import pandas as pd
+import torch
+from quivers.formulas import families, fit
+
+counts = pd.DataFrame({
+    "a": [1, 2, 0, 3], "b": [2, 1, 0, 1], "c": [1, 0, 0, 2],
+    "x": [-1.0, 0.0, 1.0, 2.0],
+})
+result = fit(
+    "cbind(a, b, c) ~ x", data=counts,
+    family=families["multinomial"].with_reference("b"),
+    method="svi", num_steps=3, seed=7,
+)
+assert result.category_labels == ("a", "b", "c")
+assert result.coefficient_labels == ("a", "c")
+fresh = pd.DataFrame({"x": [0.2, 0.8], "trials": [5, 7]})
+expected = result.posterior_epred(
+    new_data=fresh, trials="trials", num_samples=2, seed=8,
+)
+predicted = result.posterior_predict(
+    new_data=fresh, trials="trials", num_samples=2, seed=8,
+)
+assert expected.shape == predicted.shape == (1, 2, 2, 3)
+torch.testing.assert_close(expected.sum(-1), torch.tensor([5., 7.]).to(expected).expand(1, 2, 2))
+assert torch.equal(predicted.sum(-1), torch.tensor([5, 7]).expand(1, 2, 2))
+```
+
+Training count totals are inferred from each observed row. An explicit
+`binomial_trials` value or column must agree with those totals. New-row
+expectations and draws require `trials=integer_or_column` when training used
+inferred totals; a fitted trial column can otherwise be reused.
+`posterior_linpred` needs no trial counts. Zero trials produce the all-zero
+event, and exact row totals must not exceed `2**53`.
+
+`Family.with_reference(index_or_label)` selects one zero predictor coordinate;
+the default is the first retained component. `dirichlet` uses a softmax mean
+and total precision `phi`, whereas `dirichlet2` estimates every concentration
+through an exponential predictor and has no reference. `logistic_normal`
+uses correlated Normal log ratios against its selected component, with one
+`sigma` per non-reference coordinate and an LKJ response correlation. It
+requires a reference; `with_reference(None)` fails explicitly. Distributional
+scale predictors and shared group effects retain these coordinate widths.
+
+The additive log-ratio Normal has no analytic simplex mean in this interface.
+Its `posterior_epred` thus requires explicit `mc_samples`; the method averages
+native response samples in bounded chunks, with an isolated random seed.
+The softmax of a Normal location is not generally the response expectation.
+
+```python
+import pandas as pd
+from quivers.formulas import families, fit
+
+compositions = pd.DataFrame({
+    "a": [0.2, 0.3, 0.15, 0.4], "b": [0.3, 0.2, 0.25, 0.3],
+    "c": [0.5, 0.5, 0.6, 0.3], "x": [-1.0, 0.0, 1.0, 2.0],
+})
+composition_fit = fit(
+    "cbind(a, b, c) ~ x", data=compositions,
+    family=families["logistic_normal"].with_reference("c"),
+    method="svi", num_steps=3, seed=9,
+)
+new_rows = pd.DataFrame({"x": [0.2, 0.8]})
+log_ratios = composition_fit.posterior_linpred(new_data=new_rows, num_samples=2)
+mean_composition = composition_fit.posterior_epred(
+    new_data=new_rows, num_samples=2, mc_samples=64, seed=10,
+)
+assert log_ratios.shape == (1, 2, 2, 2)
+assert mean_composition.shape == (1, 2, 2, 3)
+```
+
+Vector event scores reduce the component axis once, giving one raw likelihood
+value per row for posterior analysis. Likelihood weights multiply that joint
+score. References change the predictor coordinate system while predictive
+outputs retain the original component order. Native and checked-reference
+execution support these kernels; external renderer capability remains a
+separate family-specific check.
 
 ### COM-Poisson rate and response mean
 
@@ -649,6 +748,93 @@ Monte Carlo moments and moment gradients, and SVI/HMC/NUTS execution are covered
 in `tests/continuous/test_response_time_families.py` and
 `tests/test_formula_distributional.py`. External transpilation backends currently
 reject both families with explicit unsupported-family diagnostics.
+
+### Joint reaction times and decisions
+
+The `wiener` family models two measurements jointly: (i) a positive reaction
+time and (ii) the boundary reached by a diffusion process. Write
+`rt | dec(choice) ~ condition`, or pass `decision="choice"` alongside
+`"rt ~ condition"`. Numeric choices must be exactly `0` for the lower boundary
+or `1` for the upper boundary; the strings `"lower"` and `"upper"` are also
+accepted. Boolean, fractional, missing, and other choice values are rejected.
+
+The location predictor is drift `mu`. The auxiliary parameters are boundary
+separation `bs > 0`, nondecision delay `ndt >= 0`, and starting fraction
+`0 < bias < 1`; diffusion variance is fixed to one. Their default links are
+identity, log, log, and logit, respectively. Each auxiliary can be fixed or
+given a distributional formula through the existing formula interface.
+Observed times must be finite, positive, and greater than a fixed delay.
+
+This fit includes a decision column and a likelihood weight, then predicts
+fresh rows containing only the covariate:
+
+```python
+import pandas as pd
+import torch
+from quivers.formulas import fit
+
+rt_data = pd.DataFrame({
+    "rt": [0.3, 0.4, 0.5, 0.6],
+    "choice": ["lower", "upper", "lower", "upper"],
+    "condition": [-0.2, 0.0, 0.3, 0.8],
+    "importance": [0.0, 0.5, 1.0, 2.0],
+})
+rt_fit = fit(
+    "rt | dec(choice) + weights(importance) ~ condition",
+    data=rt_data,
+    family="wiener",
+    fixed_parameters={"bs": 1.2, "ndt": 0.1, "bias": 0.4},
+    method="svi",
+    num_steps=5,
+    seed=11,
+)
+new_trials = pd.DataFrame({"condition": [-0.3, 0.7]})
+signed = rt_fit.posterior_predict(new_data=new_trials, num_samples=3, seed=17)
+decoded = rt_fit.posterior_response(new_data=new_trials, num_samples=3, seed=17)
+assert signed.shape == decoded.value.shape == (1, 3, 2)
+assert decoded.decision_labels == ("lower", "upper")
+torch.testing.assert_close(signed, decoded.value * (2 * decoded.decision - 1))
+mean_rt = rt_fit.posterior_epred(new_data=new_trials, num_samples=3)
+choices = rt_fit.posterior_choice_probs(new_data=new_trials, num_samples=3)
+assert mean_rt.shape == (1, 3, 2)
+assert choices.shape == (1, 3, 2, 2)
+torch.testing.assert_close(choices.sum(-1), torch.ones_like(mean_rt))
+```
+
+`posterior_predict` preserves the native signed representation: positive times
+indicate the upper boundary and negative times indicate the lower boundary.
+`posterior_response` returns a `ResponseDraws` record with positive `value`
+times and matching integer `decision` codes from the same joint draw. It
+decodes one prediction call; it does not draw the time and choice separately.
+`posterior_epred` returns expected positive time, including delay, while
+`posterior_choice_probs` returns lower/upper probabilities. The latter is also
+available as `posterior_epred(component="decision")`.
+
+`Formula.modifiers` is one immutable `ResponseModifiers` record holding the
+checked `weights` and `decision` columns. Matching surface and keyword
+declarations agree; conflicting column names fail. The compiler retains
+positive times in the formula metadata and emits typed raw-time and Boolean
+choice inputs, followed by the visible adaptation
+`let rt = formula_response * (2.0 * real(formula_decision) - 1.0)`.
+Thus `log_likelihood()` evaluates the joint time-and-choice density, and
+`analysis().observed_data` retains the original positive times. Weights scale
+that joint likelihood during fitting; raw likelihoods and the conditional
+response sampling law remain unweighted.
+
+The default auxiliary priors are `Gamma(1.0, 1.0)` for `bs`,
+`LogNormal(-2.0, 0.5)` for `ndt`, and `Beta(1.0, 1.0)` for `bias`.
+These are QVR defaults. A learned scalar delay starts at one quarter of the
+minimum observed time; a regressed log delay with an intercept receives the
+corresponding coefficient center. Explicit `initial_values` override these
+centers without changing the prior or adding an offset.
+
+Native Torch execution and the checked reference implement the joint law.
+Sampling uses one-sided first-passage proposals with certified density-ratio
+comparisons, with explicit term, precision, and proposal budgets; exhaustion
+raises an error. There is no discretized diffusion fallback. External
+transpilation targets currently refuse Wiener explicitly. The signed kernel,
+choice probabilities, and moment conventions are specified in
+[Programs as kernels](../semantics/programs.md#62-joint-reaction-time-and-decision-responses).
 
 ### Positive hurdle regressions
 

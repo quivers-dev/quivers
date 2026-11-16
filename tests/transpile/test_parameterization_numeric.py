@@ -83,6 +83,62 @@ _SIGMAS: list[dict[str, Host]] = [
 _CASES: dict[
     str, tuple[str, str, str, dict[str, Host], list[dict[str, Host]], Oracle]
 ] = {
+    "multinomial-logits": (
+        "Multinomial",
+        "logits",
+        "steps/observe_multinomial_logits",
+        {"y": [[1, 2, 2], [0, 1, 4], [3, 2, 0]]},
+        [{}],
+        lambda v: (
+            D.Multinomial(5, logits=_t([0.2, -0.3, 0.7])).log_prob(_t(v["y"])).sum()
+        ),
+    ),
+    "dirichlet-multinomial": (
+        "DirichletMultinomial",
+        "concentration",
+        "steps/observe_dirichlet_multinomial",
+        {"y": [[1, 2, 2], [0, 1, 4], [3, 2, 0]]},
+        [{}],
+        lambda v: (
+            torch.lgamma(_t(6.0))
+            - torch.lgamma(_t(v["y"]) + 1).sum(-1)
+            + torch.lgamma(_t(4.0))
+            - torch.lgamma(_t(9.0))
+            + (
+                torch.lgamma(_t([0.7, 1.3, 2.0]) + _t(v["y"]))
+                - torch.lgamma(_t([0.7, 1.3, 2.0]))
+            ).sum(-1)
+        ).sum(),
+    ),
+    "com-poisson-log-rate": (
+        "COMPoisson",
+        "log_rate",
+        "steps/observe_com_poisson_log_rate",
+        {"y": [0, 2, 4]},
+        [{}],
+        lambda v: (
+            _t(v["y"]) * 0.7
+            - 1.3 * torch.lgamma(_t(v["y"]) + 1)
+            - torch.logsumexp(
+                torch.arange(100, dtype=torch.double) * 0.7
+                - 1.3 * torch.lgamma(torch.arange(100, dtype=torch.double) + 1),
+                0,
+            )
+        ).sum(),
+    ),
+    "alr-reference": (
+        "AdditiveLogRatioNormal",
+        "reference",
+        "steps/observe_alr_reference",
+        {"v": [[0.2, 0.3, 0.5], [0.6, 0.1, 0.3], [0.4, 0.4, 0.2]]},
+        [{}],
+        lambda v: (
+            D.MultivariateNormal(
+                _t([0.2, -0.1]), scale_tril=_t([[0.7, 0.0], [0.2, 0.9]])
+            ).log_prob(_t(v["v"])[:, 1:].log() - _t(v["v"])[:, :1].log())
+            - _t(v["v"]).log().sum(-1)
+        ).sum(),
+    ),
     "mvn-covariance": (
         "MultivariateNormal",
         "covariance_matrix",
@@ -279,6 +335,29 @@ _REFUSED: dict[tuple[str, str], str] = {
         ),
     ),
 }
+
+# All four laws have native and checked-reference fixtures above. These
+# external cells are actual measured capability refusals, not numeric claims.
+for _fixture, _family in (
+    ("steps/observe_multinomial_logits", "Multinomial"),
+    ("steps/observe_dirichlet_multinomial", "DirichletMultinomial"),
+    ("steps/observe_com_poisson_log_rate", "COMPoisson"),
+    ("steps/observe_alr_reference", "AdditiveLogRatioNormal"),
+):
+    for _target, _kind in (
+        ("bugs", f"family:{_family}:"),
+        ("church", f"family:{_family}:no-church-target"),
+        ("edward2", f"family:{_family}:no-edward2-target"),
+        ("gen", f"family:{_family}:no-gen-target"),
+        ("jags", f"family:no-target-name:{_family}"),
+        ("numpyro", f"family:no-target-name:{_family}"),
+        ("pymc", f"family:{_family}"),
+        ("pyro", f"family:{_family}"),
+        ("stan", f"family:no-stan-target:{_family}"),
+        ("turing", f"family:{_family}:"),
+        ("webppl", f"family:no-webppl-target:{_family}"),
+    ):
+        _REFUSED[(_fixture, _target)] = _kind
 
 _TARGETS: tuple[str, ...] = tuple(sorted(_BACKENDS_WITH_IMAGES))
 

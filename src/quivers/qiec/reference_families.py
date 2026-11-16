@@ -28,6 +28,7 @@ from quivers.qiec._beta_tails import log_beta_interval_mass
 from quivers.qiec._count_mixtures import (
     _negative_binomial_log_mass,
     _poisson as _sample_poisson_count,
+    _poisson_log_mass,
     _require_sample_capacity as _require_count_sample_capacity,
     _beta_binomial_log_mass,
     _validate_beta_concentrations,
@@ -38,6 +39,7 @@ from quivers.qiec.reference_support import (
     DistributionError,
     Sampler,
     finite_value,
+    _integer_observation,
     log_probabilities,
     normal_log_prob,
     probability,
@@ -2021,7 +2023,9 @@ def _negativebinomial_density(a: Mapping[str, object], value: object) -> float:
         count is waited on, as the torch convention has it. A
         ``total_count`` of zero is the point mass at zero.
     """
-    count = int(finite_value(value, "NegativeBinomial"))
+    count = _integer_observation(value, "NegativeBinomial")
+    if count is None:
+        return -math.inf
     total = real_parameter(a, "total_count", "NegativeBinomial")
     log_success, log_failure = log_probabilities(a, "NegativeBinomial")
     return _negative_binomial_log_mass(total, count, log_success, log_failure)
@@ -2069,10 +2073,9 @@ def _betabinomial_density(a: Mapping[str, object], value: object) -> float:
     float
         The log probability, ``-inf`` outside ``0..total_count``.
     """
-    point = finite_value(value, "BetaBinomial")
-    if not point.is_integer():
+    count = _integer_observation(value, "BetaBinomial")
+    if count is None:
         return -math.inf
-    count = int(point)
     total = _trial_count(a.get("total_count"))
     first = real_parameter(a, "concentration1", "BetaBinomial")
     second = real_parameter(a, "concentration0", "BetaBinomial")
@@ -2172,10 +2175,17 @@ def _ordered_density(
     -------
     float
         The log probability, ``-inf`` outside the categories.
+
+    Raises
+    ------
+    DistributionError
+        If the category is boolean or nonnumeric, or parameters are invalid.
     """
-    category = int(finite_value(value, family))
+    if isinstance(value, bool):
+        raise DistributionError(f"{family} response categories cannot be boolean")
+    category = _integer_observation(value, family)
     probabilities = _ordered_probabilities(a, family, link)
-    if not 0 <= category < len(probabilities):
+    if category is None or not 0 <= category < len(probabilities):
         return -math.inf
     mass = probabilities[category]
     return math.log(mass) if mass > 0.0 else -math.inf
@@ -2634,6 +2644,40 @@ def _alr_parameters(a: Mapping[str, object]) -> tuple[Vector, Matrix]:
     return loc, factor
 
 
+def _alr_reference(a: Mapping[str, object], width: int) -> int:
+    """Resolve an optional discrete reference component before indexing.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Native named parameters.
+    width : int
+        Complete simplex width.
+
+    Returns
+    -------
+    int
+        Reference component, final by default.
+
+    Raises
+    ------
+    DistributionError
+        If the selector is not an in-range integer.
+    """
+    reference = a.get("reference", width - 1)
+    if (
+        isinstance(reference, bool)
+        or not isinstance(reference, int | float)
+        or not math.isfinite(reference)
+        or reference != int(reference)
+        or not 0 <= reference < width
+    ):
+        raise DistributionError(
+            "AdditiveLogRatioNormal reference must be an integer component index"
+        )
+    return int(reference)
+
+
 def _alr_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw an interior simplex from correlated Gaussian log ratios.
 
@@ -2655,7 +2699,10 @@ def _alr_sample(a: Mapping[str, object], rng: random.Random) -> object:
         If floating point cannot represent the sampled interior point.
     """
     loc, factor = _alr_parameters(a)
-    ratios = (*_draw_mvn(loc, factor, rng), 0.0)
+    reference = _alr_reference(a, len(loc) + 1)
+    ratios_list = list(_draw_mvn(loc, factor, rng))
+    ratios_list.insert(reference, 0.0)
+    ratios = tuple(ratios_list)
     peak = max(ratios)
     weights = tuple(math.exp(v - peak) for v in ratios)
     total = math.fsum(weights)
@@ -2687,6 +2734,7 @@ def _alr_density(a: Mapping[str, object], value: object) -> float:
         If the event has the wrong number of components.
     """
     loc, factor = _alr_parameters(a)
+    reference = _alr_reference(a, len(loc) + 1)
     point = _as_vector(value, "AdditiveLogRatioNormal point")
     if len(point) != len(loc) + 1:
         raise DistributionError(
@@ -2698,7 +2746,11 @@ def _alr_density(a: Mapping[str, object], value: object) -> float:
         return -math.inf
     logs = tuple(math.log(v) for v in point)
     return _mvn_log_prob(
-        tuple(v - logs[-1] for v in logs[:-1]), loc, factor
+        tuple(
+            v - logs[reference] for index, v in enumerate(logs) if index != reference
+        ),
+        loc,
+        factor,
     ) - math.fsum(logs)
 
 
@@ -3858,27 +3910,6 @@ def _zip_sample(a: Mapping[str, object], rng: random.Random) -> object:
     return _sample_poisson_count(rate, rng)
 
 
-def _poisson_log_mass(count: int, rate: float) -> float:
-    """The Poisson log mass at a count.
-
-    Parameters
-    ----------
-    count : int
-        The count.
-    rate : float
-        The rate.
-
-    Returns
-    -------
-    float
-        ``count log rate - rate - lgamma(count + 1)``, with
-        ``0 log 0 = 0``: a rate of zero is the point mass at zero.
-    """
-    if rate == 0.0:
-        return 0.0 if count == 0 else -math.inf
-    return count * math.log(rate) - rate - math.lgamma(count + 1)
-
-
 def _log(value: float) -> float:
     """The natural logarithm, ``-inf`` at zero.
 
@@ -3911,13 +3942,13 @@ def _zip_density(a: Mapping[str, object], value: object) -> float:
         ``log(pi + (1 - pi) e^-rate)`` at zero, ``log(1 - pi)`` plus the
         Poisson log mass elsewhere, ``-inf`` below zero.
     """
-    count = int(finite_value(value, "ZeroInflatedPoisson"))
+    count = _integer_observation(value, "ZeroInflatedPoisson")
     zero_prob = real_parameter(a, "zero_prob", "ZeroInflatedPoisson")
     rate = real_parameter(a, "rate", "ZeroInflatedPoisson")
-    if count < 0:
+    if count is None or count < 0:
         return -math.inf
     if count == 0:
-        return math.log(zero_prob + (1.0 - zero_prob) * math.exp(-rate))
+        return _logsumexp((_log(zero_prob), _log(1.0 - zero_prob) - rate))
     return _log(1.0 - zero_prob) + _poisson_log_mass(count, rate)
 
 
@@ -3994,9 +4025,9 @@ def _hurdle_density(a: Mapping[str, object], value: object) -> float:
         ``log pi`` at zero, ``log(1 - pi)`` plus the zero-truncated
         Poisson log mass elsewhere, ``-inf`` below zero.
     """
-    count = int(finite_value(value, "HurdlePoisson"))
+    count = _integer_observation(value, "HurdlePoisson")
     zero_prob, rate = _hurdle_parameters(a)
-    if count < 0:
+    if count is None or count < 0:
         return -math.inf
     if count == 0:
         return _log(zero_prob)
@@ -4004,10 +4035,8 @@ def _hurdle_density(a: Mapping[str, object], value: object) -> float:
         return _log(1.0 - zero_prob) if count == 1 else -math.inf
     return (
         _log(1.0 - zero_prob)
-        + (count - 1) * math.log(rate)
-        - rate
-        - math.lgamma(count + 1)
-        + math.log(rate / -math.expm1(-rate))
+        + _poisson_log_mass(count, rate)
+        - math.log(-math.expm1(-rate))
     )
 
 

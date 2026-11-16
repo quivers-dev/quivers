@@ -42,6 +42,7 @@ from quivers.continuous._com_poisson import COMPoisson
 from quivers.continuous._additive_log_ratio import AdditiveLogRatioNormal
 from quivers.continuous._closed_probability import _ValidatedCategorical
 from quivers.continuous._discrete_weibull import DiscreteWeibull
+from quivers.continuous._wiener import Wiener
 from quivers.continuous._zero_inflated_asymmetric_laplace import (
     ZeroInflatedAsymmetricLaplace,
 )
@@ -53,6 +54,7 @@ from quivers.continuous.families import (
     ConditionalAdditiveLogRatioNormal,
     ConditionalCOMPoisson,
     ConditionalDiscreteWeibull,
+    ConditionalWiener,
     ConditionalZeroInflatedAsymmetricLaplace,
     ConditionalAsymmetricLaplace,
     ConditionalExGaussian,
@@ -628,6 +630,12 @@ FAMILY_META: dict[str, FamilyMeta] = {
         qvr_name="COMPoisson",
         distribution_class=COMPoisson,
         quivers_class=ConditionalCOMPoisson,
+        target_names={},
+    ),
+    "Wiener": FamilyMeta(
+        qvr_name="Wiener",
+        distribution_class=Wiener,
+        quivers_class=ConditionalWiener,
         target_names={},
     ),
     "DiscreteWeibull": FamilyMeta(

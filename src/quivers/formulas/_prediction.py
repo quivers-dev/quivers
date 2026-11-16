@@ -380,6 +380,55 @@ def _predictor_bindings(
     return result
 
 
+def _set_trial_rows(
+    fit: BayesianFit,
+    observations: dict[str, torch.Tensor],
+    counts: torch.Tensor,
+    *,
+    specification: int | str | None = None,
+) -> None:
+    """Bind checked row trials and a matching support point for native replay.
+
+    Parameters
+    ----------
+    fit : BayesianFit
+        Fitted response metadata.
+    observations : dict[str, torch.Tensor]
+        Request-local bindings to update.
+    counts : torch.Tensor
+        Exact integer trial counts per requested row.
+    specification : int or str or None
+        Authored constant or column override.
+
+    Raises
+    ------
+    ValueError
+        If a literal scalar trial count cannot be overridden at runtime.
+    """
+    response = _qvr_name(fit.formula.response_name)
+    event = fit.formula.response_layout.event_shape
+    if event:
+        observations["formula_trials"] = counts
+        point = torch.zeros(
+            (len(counts), *event), dtype=torch.long, device=counts.device
+        )
+        point[:, 0] = counts
+        observations[response] = point
+    else:
+        name = (
+            fit.binomial_trials
+            if isinstance(fit.binomial_trials, str)
+            else specification
+        )
+        if isinstance(name, str):
+            observations[_qvr_name(name)] = counts
+        elif specification is not None and specification != fit.binomial_trials:
+            raise ValueError(
+                "constant scalar trial overrides require fitting with a trial column"
+            )
+        observations[response] = torch.zeros(len(counts), device=counts.device)
+
+
 @torch.random.fork_rng(devices=[])
 def prepare_prediction(
     fit: BayesianFit,
@@ -390,6 +439,8 @@ def prepare_prediction(
     allow_new_levels: bool = False,
     sample_new_levels: NewLevelPolicy = "uncertainty",
     seed: int = 0,
+    trials: int | str | None = None,
+    require_trials: bool = True,
 ) -> PredictionContext:
     """Prepare and validate prediction rows before sampling posterior draws.
 
@@ -448,12 +499,35 @@ def prepare_prediction(
         )
     )
     selected = selected_effects(formulas, re_formula)
+    retained_observations = fit.observations
+    if trials is not None:
+        if fit.family.trials_parameter is None:
+            raise ValueError(
+                "trial overrides require a count family with a trial parameter"
+            )
+        if new_data is None:
+            from quivers.formulas._fit import _binomial_trial_tensor
+
+            source = (
+                fit.prediction_plan.designs["mu"].data
+                if fit.prediction_plan is not None
+                else None
+            )
+            if isinstance(trials, str) and source is None:
+                raise ValueError(
+                    "a trial column requires a retained training dataframe"
+                )
+            counts = _binomial_trial_tensor(
+                source, trials, n_obs=len(fit.formula.response_values)
+            )
+            retained_observations = dict(fit.observations)
+            _set_trial_rows(fit, retained_observations, counts, specification=trials)
     if new_data is None and re_formula is None:
         if predictor_data is not None:
             raise ValueError("predictor_data requires new_data")
         return PredictionContext(
             program=fit.program,
-            observations=fit.observations,
+            observations=retained_observations,
             rows=len(fit.formula.response_values),
         )
     plan = fit.prediction_plan
@@ -468,7 +542,7 @@ def prepare_prediction(
             raise TypeError("prediction requires a native monadic program")
         return PredictionContext(
             program=program,
-            observations=fit.observations,
+            observations=retained_observations,
             rows=len(fit.formula.response_values),
             seed=seed,
             retain_ordinal_cutpoints=constrained_cs,
@@ -540,30 +614,57 @@ def prepare_prediction(
     from quivers.formulas._fit import _binomial_trial_tensor, _predictor_output
 
     rows = len(frame)
-    response = _qvr_name(fit.formula.response_name)
     # Responses are internal replay placeholders, never read from new_data.
     # Reusing a fitted support point avoids family-specific prediction algebra.
-    observations[response] = torch.full(
-        (rows,), float(fit.formula.response_values[0]), dtype=torch.float32
+    point = torch.as_tensor(
+        fit.formula.response_values[0].copy()
+        if fit.formula.response_layout.event_shape
+        else float(fit.formula.response_values[0]),
+        dtype=torch.float64
+        if fit.formula.response_layout.event_shape
+        else torch.float32,
     )
-    if fit.formula.response_weights is not None:
+    from quivers.formulas._response_modifiers import response_input_name
+
+    observations[response_input_name(fit.formula)] = point.expand(
+        rows, *fit.formula.response_layout.event_shape
+    )
+    if fit.formula.modifiers.weights is not None:
         observations["formula_weights"] = torch.ones(rows, dtype=torch.float64)
+    if fit.formula.modifiers.decision is not None:
+        observations["formula_decision"] = torch.ones(rows, dtype=torch.bool)
     if fit.family.trials_parameter is not None:
-        trials = _binomial_trial_tensor(frame, fit.binomial_trials, n_obs=rows)
-        if isinstance(fit.binomial_trials, str):
-            observations[_qvr_name(fit.binomial_trials)] = trials
-        observations[response] = torch.zeros(rows)
+        specification = trials if trials is not None else fit.binomial_trials
+        if specification is None:
+            if require_trials:
+                raise ValueError(
+                    "new_data vector count predictions require trials=<constant or column name>"
+                )
+            specification = 0
+        counts = _binomial_trial_tensor(frame, specification, n_obs=rows)
+        _set_trial_rows(fit, observations, counts, specification=specification)
     if fit.predictor is not None:
         assert predictor_data is not None and fit.predictor_name is not None
         categories = (
-            len(fit.category_labels) if fit.family.name == "categorical" else None
+            len(fit.category_labels) if fit.family.response is not None else None
+        )
+        reference = (
+            fit.family.response.reference_index(
+                tuple(str(label) for label in fit.category_labels)
+            )
+            if fit.family.response is not None
+            else 0
         )
         modes = tuple((module, module.training) for module in fit.predictor.modules())
         try:
             fit.predictor.eval()
             with torch.no_grad():
                 neural = _predictor_output(
-                    fit.predictor, predictor_data, n_obs=rows, n_categories=categories
+                    fit.predictor,
+                    predictor_data,
+                    n_obs=rows,
+                    n_categories=categories,
+                    reference=reference,
                 ).detach()
         finally:
             for module, training in modes:

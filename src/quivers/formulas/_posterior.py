@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import math
+
+from collections.abc import Iterator, Iterable
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import torch
@@ -305,7 +308,100 @@ def response_distribution(recorded: Trace, response: str) -> Distribution:
     return builder(sampleable.input)
 
 
-def row_binding(value: torch.Tensor, rows: int, categories: int = 0) -> torch.Tensor:
+@contextmanager
+def response_rng(seed: int, tensors: Iterable[torch.Tensor]) -> Iterator[None]:
+    """Isolate response randomness on the CPU and all participating devices.
+
+    Parameters
+    ----------
+    seed : int
+        Independent response stream seed.
+    tensors : Iterable[torch.Tensor]
+        Native posterior/data tensors identifying active CUDA devices.
+
+    Yields
+    ------
+    None
+        Seeded context restoring each caller RNG on exit.
+    """
+    devices = sorted(
+        {tensor.device.index for tensor in tensors if tensor.device.type == "cuda"}
+    )
+    with torch.random.fork_rng(devices=devices):
+        torch.random.default_generator.manual_seed(seed % 2**64)
+        for device in devices:
+            torch.cuda.default_generators[device].manual_seed(seed % 2**64)
+        yield
+
+
+def response_mean(
+    distribution: Distribution, mc_samples: int | None = None
+) -> torch.Tensor:
+    """Read a native expectation or explicitly approximate a bounded mean.
+
+    Parameters
+    ----------
+    distribution : Distribution
+        Native response law after deterministic predictor replay.
+    mc_samples : int or None
+        Positive Monte Carlo budget for laws without an analytic mean.
+
+    Returns
+    -------
+    torch.Tensor
+        Analytic expectation or sample average, using chunks of at most64.
+
+    Raises
+    ------
+    ValueError
+        If an explicit Monte Carlo budget is not a positive integer.
+    TypeError
+        If no analytic expectation exists and bounded-mean approximation
+        was not requested or cannot establish a finite mean.
+    """
+    if mc_samples is not None and (
+        isinstance(mc_samples, bool)
+        or not isinstance(mc_samples, int)
+        or mc_samples <= 0
+    ):
+        raise ValueError("mc_samples must be a positive integer")
+    try:
+        result = distribution.mean
+    except NotImplementedError as error:
+        support = distribution.support
+        bounded = support is torch.distributions.constraints.simplex
+        if (
+            not bounded
+            and hasattr(support, "lower_bound")
+            and hasattr(support, "upper_bound")
+        ):
+            bounded = bool(
+                torch.isfinite(torch.as_tensor(support.lower_bound)).all()
+                and torch.isfinite(torch.as_tensor(support.upper_bound)).all()
+            )
+        if mc_samples is None or not bounded:
+            raise TypeError(
+                "no analytic response expectation; bounded response laws permit an explicit mc_samples budget"
+            ) from error
+    else:
+        if not torch.isfinite(result).all():
+            raise ValueError(
+                "response expectation is undefined or nonfinite at this posterior draw"
+            )
+        return result
+    total = None
+    for start in range(0, mc_samples, 64):
+        size = min(64, mc_samples - start)
+        values = distribution.sample((size,))
+        part = values.to(torch.float64).sum(0)
+        total = part if total is None else total + part
+    assert total is not None
+    return total / mc_samples
+
+
+def row_binding(
+    value: torch.Tensor, rows: int, categories: int | tuple[int, ...] = 0
+) -> torch.Tensor:
     """Canonicalize a scalar or class-valued binding on retained response rows.
 
     Parameters
@@ -314,19 +410,25 @@ def row_binding(value: torch.Tensor, rows: int, categories: int = 0) -> torch.Te
         A native binding, with or without a shared-row axis.
     rows : int
         Number of retained response rows.
-    categories : int
-        Number of response categories, or zero for a scalar value.
+    categories : int or tuple[int, ...]
+        Declared event shape, category width, or zero for a scalar value.
 
     Returns
     -------
     torch.Tensor
         The binding on row and optional category axes.
     """
-    shape = (rows, categories) if categories else (rows,)
-    if categories and value.numel() == categories:
-        return value.reshape(1, categories).expand(rows, categories)
-    if value.numel() == 1 and not categories:
-        return value.reshape(1).expand(rows)
+    event = (
+        categories
+        if isinstance(categories, tuple)
+        else (categories,)
+        if categories
+        else ()
+    )
+    shape = (rows, *event)
+    width = math.prod(event)
+    if value.numel() == width:
+        return value.reshape(1, *event).expand(shape)
     return value.reshape(shape)
 
 

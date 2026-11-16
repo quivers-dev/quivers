@@ -26,6 +26,7 @@ components weighs each by its mass.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from functools import lru_cache
 from types import MappingProxyType
 
 import didactic.api as dx
@@ -35,6 +36,12 @@ from quivers.qiec._models import validate_shape
 from quivers.qiec.identifiers import DistributionId
 from quivers.qiec.terms import LiteralData
 from quivers.qiec.types import BOOL, INT, REAL, TypeExpr
+from quivers.qiec.family_shapes import (
+    FamilyShapeSignature,
+    legacy_family_shape_signature,
+)
+from quivers.qiec.kinds import NAT, IndexBinder
+from quivers.qiec.types import IndexVariable, shift_index
 
 type ParameterConstraint = str
 """A symbolic constraint on a parameter value, such as ``"positive"``,
@@ -48,6 +55,31 @@ samples."""
 type SupportKind = str
 """A symbolic description of where samples live, in the same vocabulary as
 the parameter constraints."""
+
+
+@lru_cache(maxsize=512)
+def _legacy_shapes(parameters, event_rank, event_sources, event_offsets):
+    """Cache immutable registry shorthand without repeated model construction.
+
+    Parameters
+    ----------
+    parameters : tuple[tuple[str, int, tuple[int or None, ...]], ...]
+        Names, ranks, and event-axis correspondences.
+    event_rank : int
+        Native sample event rank.
+    event_sources : tuple[str, ...]
+        Parameter names supplying native event dimensions.
+    event_offsets : tuple[int, ...]
+        Nonnegative parameter-to-event dimension offsets.
+
+    Returns
+    -------
+    FamilyShapeSignature
+        The shared checked dependent contract for these immutable fields.
+    """
+    return legacy_family_shape_signature(
+        parameters, event_rank, event_sources, event_offsets
+    )
 
 
 class FamilyParameter(dx.Model):
@@ -68,12 +100,32 @@ class FamilyParameter(dx.Model):
         sample's shape does not fix it; empty when no dimension is tied
         to the sample. A multivariate normal's ``scale_tril`` is
         ``(0, 0)``: a square matrix over the sample's one axis.
+    scalar_broadcast
+        Whether a scalar may broadcast over a plated tensor parameter. False
+        for structural tables whose dimensions must be supplied explicitly.
     """
 
     name: str
     constraint: ParameterConstraint
     rank: int
     event_dims: tuple[int | None, ...] = ()
+    scalar_broadcast: bool = True
+
+    @dx.model_validator()
+    def _validate_parameter(self) -> None:
+        """Check intrinsic rank and scalar-broadcast policy.
+
+        Raises
+        ------
+        ValueError
+            If rank is not a nonnegative integer.
+        TypeError
+            If scalar_broadcast is not Boolean.
+        """
+        if type(self.rank) is not int or self.rank < 0:
+            raise ValueError("family parameter rank must be a nonnegative integer")
+        if type(self.scalar_broadcast) is not bool:
+            raise TypeError("scalar_broadcast must be Boolean")
 
 
 class DistributionFamily(ValueModel):
@@ -116,6 +168,9 @@ class DistributionFamily(ValueModel):
     finite_support
         The finite set of values a sample ranges over, when the family
         has one independent of its parameters.
+    shape_signature
+        Explicit dependent parameter/event shape contract. Legacy event-shape
+        fields are otherwise translated to the same representation.
     """
 
     name: str
@@ -136,6 +191,9 @@ class DistributionFamily(ValueModel):
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     event_offsets: tuple[int, ...] = ()
+    shape_signature: FamilyShapeSignature | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     @dx.model_validator()
     def _validate_family(self) -> None:
@@ -154,6 +212,9 @@ class DistributionFamily(ValueModel):
         validate_shape(self.element, TypeExpr, path="element")
         validate_shape(self.event_offsets, tuple[int, ...], path="event_offsets")
         validate_shape(
+            self.shape_signature, FamilyShapeSignature | None, path="shape_signature"
+        )
+        validate_shape(
             self.finite_support, tuple[LiteralData, ...] | None, path="finite_support"
         )
         if not isinstance(self.targets, Mapping) or any(
@@ -161,42 +222,58 @@ class DistributionFamily(ValueModel):
             for key, value in self.targets.items()
         ):
             raise TypeError("targets must map target names to family spellings")
-        if self.event_offsets and (
-            len(self.event_offsets) != self.event_rank
-            or any(
-                type(offset) is not int or offset < 0 for offset in self.event_offsets
-            )
-        ):
-            raise ValueError(
-                "event offsets must give one nonnegative integer per native event axis"
-            )
+        if type(self.event_rank) is not int or self.event_rank < 0:
+            raise ValueError("family event rank must be a nonnegative integer")
         names = [parameter.name for parameter in self.parameters]
         if len(set(names)) != len(names):
             raise ValueError(f"family {self.name!r} repeats a parameter name")
-        for source in self.event_sources:
-            if source not in names:
+        if any(source not in names for source in self.event_sources):
+            raise ValueError("family event source must name one of its parameters")
+        if self.shape_signature is None:
+            _legacy_shapes(
+                tuple((p.name, p.rank, p.event_dims) for p in self.parameters),
+                self.event_rank,
+                self.event_sources,
+                self.event_offsets,
+            )
+        if self.shape_signature is not None:
+            if self.event_offsets or any(p.event_dims for p in self.parameters):
                 raise ValueError(
-                    f"family {self.name!r} names event source "
-                    f"{source!r}, which is not a parameter"
+                    "explicit family shape signature cannot duplicate legacy event dimensions or offsets"
                 )
-            if self.parameters[names.index(source)].rank < self.event_rank:
-                raise ValueError(
-                    f"family {self.name!r} names event source {source!r}, of "
-                    f"rank below the family's event rank {self.event_rank}"
-                )
-        for parameter in self.parameters:
-            dims = parameter.event_dims
-            if dims and (
-                len(dims) != parameter.rank
-                or any(
-                    dim is not None and not 0 <= dim < self.event_rank for dim in dims
-                )
+            if {name for name, _ in self.shape_signature.parameter_shapes} != set(
+                names
             ):
                 raise ValueError(
-                    f"family {self.name!r} ties parameter {parameter.name!r} "
-                    f"to sample dimensions {dims!r}, which do not fit its rank "
-                    f"{parameter.rank} and the event rank {self.event_rank}"
+                    "family shape signature must describe exactly its parameters"
                 )
+            if len(self.shape_signature.event_shape) != self.event_rank:
+                raise ValueError("family event rank disagrees with its shape signature")
+            for parameter in self.parameters:
+                if (
+                    len(self.shape_signature.parameter_shape(parameter.name))
+                    != parameter.rank
+                ):
+                    raise ValueError(
+                        "family parameter rank disagrees with its shape signature"
+                    )
+
+    @property
+    def effective_shape_signature(self) -> FamilyShapeSignature:
+        """Return the dependent contract, translating legacy shorthand once.
+
+        Returns
+        -------
+        FamilyShapeSignature
+            Intrinsic parameter and native event dimensions under local Nat
+            binders. Every checking path consumes this contract.
+        """
+        return self.shape_signature or _legacy_shapes(
+            tuple((p.name, p.rank, p.event_dims) for p in self.parameters),
+            self.event_rank,
+            self.event_sources,
+            self.event_offsets,
+        )
 
     @property
     def id(self) -> DistributionId:
@@ -539,6 +616,23 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         event_rank=0,
         event_sources=(),
         discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="Wiener",
+        parameters=(
+            FamilyParameter(name="boundary", constraint="positive", rank=0),
+            FamilyParameter(name="ndt", constraint="nonnegative", rank=0),
+            FamilyParameter(name="bias", constraint="unit_interval_open", rank=0),
+            FamilyParameter(name="drift", constraint="real", rank=0),
+        ),
+        support="dependent",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
         reparameterizable=False,
         compositional=False,
         targets={},
@@ -1532,19 +1626,33 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     DistributionFamily(
         name="AdditiveLogRatioNormal",
         parameters=(
-            FamilyParameter(name="loc", constraint="real", rank=1, event_dims=(0,)),
+            FamilyParameter(name="loc", constraint="real", rank=1),
             FamilyParameter(
                 name="scale_tril",
                 constraint="lower_cholesky",
                 rank=2,
-                event_dims=(0, 0),
             ),
+            FamilyParameter(name="reference", constraint="nonnegative_integer", rank=0),
         ),
         support="simplex",
         element=REAL,
         event_rank=1,
         event_sources=("loc",),
-        event_offsets=(1,),
+        shape_signature=FamilyShapeSignature(
+            telescope=(IndexBinder(name="coordinate", sort=NAT),),
+            parameter_shapes=(
+                ("loc", (IndexVariable(name="coordinate", sort=NAT),)),
+                (
+                    "scale_tril",
+                    (
+                        IndexVariable(name="coordinate", sort=NAT),
+                        IndexVariable(name="coordinate", sort=NAT),
+                    ),
+                ),
+                ("reference", ()),
+            ),
+            event_shape=(shift_index(IndexVariable(name="coordinate", sort=NAT), 1),),
+        ),
         discrete=False,
         reparameterizable=True,
         compositional=False,

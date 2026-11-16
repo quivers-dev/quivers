@@ -114,6 +114,11 @@ from quivers.qiec.effects import (
     instantiate_effect,
 )
 from quivers.qiec.families import FAMILIES, DistributionFamily, FamilyParameter
+from quivers.qiec.family_shapes import (
+    family_shape_equations,
+    instantiate_family_shapes,
+    match_family_shapes,
+)
 from quivers.qiec.identifiers import (
     ComputationId,
     HandlerId,
@@ -179,7 +184,6 @@ from quivers.qiec.types import (
     IndexTerm,
     IndexVariable,
     IndexSum,
-    shift_index,
     ShapeIndex,
     StaticArgument,
     TypeApplication,
@@ -328,6 +332,12 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     "Laplace": (("loc", "identity"), ("scale", "softplus")),
     "COMPoisson": (("rate", "softplus"), ("dispersion", "softplus")),
     "DiscreteWeibull": (("probs", "sigmoid"), ("concentration", "softplus")),
+    "Wiener": (
+        ("boundary", "softplus"),
+        ("ndt", "softplus"),
+        ("bias", "sigmoid"),
+        ("drift", "identity"),
+    ),
     "ZeroInflatedAsymmetricLaplace": (
         ("zero_prob", "sigmoid"),
         ("loc", "identity"),
@@ -7238,53 +7248,20 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         tuple[list[tuple[str, Value]], PlateShape]
             The arguments and plate at every extent fixed so far.
         """
-        targets = (
+        patterns, event = self._family_shape_patterns(record, state)
+        actual = self._family_argument_shapes(record, arguments, scope, node)
+        declared = (
             tuple(axis.size for axis in plate.event[-record.event_rank :])
-            if record.event_rank
-            else ()
+            if record.event_rank and len(plate.event) >= record.event_rank
+            else None
         )
-        supplied = record.event_argument(arguments)
-        offsets = record.event_offsets or (0,) * record.event_rank
-        if len(targets) < record.event_rank and supplied is not None:
-            source_shape = tensor_shape(
-                self._value_type(supplied[1], scope.context(), node)
+        pairs = family_shape_equations(patterns, event, actual, declared)
+        if not self._unify_extents(pairs, scope, state):
+            self._fail(
+                node,
+                f"family {record.name!r} has incompatible parameter/event extents",
+                code="qiec-program",
             )
-            if source_shape is not None and len(source_shape[1]) >= record.event_rank:
-                targets = tuple(
-                    shift_index(size, offset)
-                    for size, offset in zip(
-                        source_shape[1][-record.event_rank :], offsets, strict=True
-                    )
-                )
-        if record.event_rank and len(targets) == record.event_rank:
-            pairs = []
-            for name, argument in arguments:
-                parameter = record.parameter(name)
-                shape = tensor_shape(self._value_type(argument, scope.context(), node))
-                if shape is None or len(shape[1]) < parameter.rank:
-                    continue
-                if parameter.event_dims:
-                    for size, event_dimension in zip(
-                        shape[1][-parameter.rank :], parameter.event_dims, strict=True
-                    ):
-                        if event_dimension is not None:
-                            pairs.append(
-                                (
-                                    shift_index(size, offsets[event_dimension]),
-                                    targets[event_dimension],
-                                )
-                            )
-                elif name in record.event_sources:
-                    pairs.extend(
-                        (shift_index(size, offset), target)
-                        for size, offset, target in zip(
-                            shape[1][-record.event_rank :],
-                            offsets,
-                            targets,
-                            strict=True,
-                        )
-                    )
-            self._unify_extents(pairs, scope, state)
         if not state.extent_solution:
             return arguments, plate
         substitution = self._extent_substitution(state)
@@ -7545,13 +7522,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             or (morphism is not None and _option_axes(morphism.options, "over"))
         ):
             return plate
-        supplied = record.event_argument(arguments)
-        if supplied is None:
+        actual = self._family_argument_shapes(record, arguments, scope, step)
+        try:
+            natural = match_family_shapes(record.effective_shape_signature, actual)
+        except ValueError:
             return plate
-        shape = tensor_shape(self._value_type(supplied[1], scope.context(), step))
-        if shape is None or len(shape[1]) < record.event_rank:
-            return plate
-        natural = tuple(shape[1][len(shape[1]) - record.event_rank :])
         if not all(isinstance(size, IndexLiteral) for size in natural):
             return plate
         if natural == tuple(axis.size for axis in plate.event):
@@ -7956,14 +7931,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
     ) -> list[tuple[str, Value]]:
         """Lower each argument against its parameter, sizing free names by the draw.
 
-        A free name filling a tensor parameter whose axes the family ties
-        to its sample's (a multivariate normal's mean and Cholesky
-        factor, a Wishart's scale) takes those axes' extents from the
-        draw: the plate's trailing event axes when it names enough, else
-        the arguments already typed. An axis nothing in the draw fixes is
-        one open extent, shared by every free name the family ties to it.
-        Free names are therefore lowered after the arguments that may fix
-        their extents.
+        The family's dependent shape signature relates intrinsic parameter
+        and sample-event dimensions. Typed arguments and explicit event axes
+        constrain fresh open extents before free tensor names are lowered.
+        Parameters sharing a signature index thus share one extent, including
+        structural parameter dimensions unrelated to the scalar sample.
 
         Parameters
         ----------
@@ -7989,14 +7961,36 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         list[tuple[str, Value]]
             The named arguments, in the order of ``pairs``.
         """
-        event: dict[int, IndexTerm] = {}
-        if (
-            record.event_rank
+        hints = {}
+        signature = record.effective_shape_signature
+        for parameter, argument in pairs:
+            name = self._tied_free_name(parameter, argument, plate, scope)
+            if name is None:
+                continue
+            for axis, term in enumerate(signature.parameter_shape(parameter.name)):
+                if isinstance(term, IndexVariable):
+                    hints.setdefault(
+                        term.name,
+                        f"{name}_extent"
+                        if parameter.rank == 1
+                        else f"{name}_extent{axis}",
+                    )
+        patterns, event_shape = self._family_shape_patterns(record, state, hints)
+        declared = (
+            tuple(axis.size for axis in plate.event[-record.event_rank :])
+            if record.event_rank
             and len(plate.event) >= record.event_rank
             and not self._provisional_event(record, step)
-        ):
-            trailing = plate.event[len(plate.event) - record.event_rank :]
-            event = {position: axis.size for position, axis in enumerate(trailing)}
+            else None
+        )
+        if declared is not None:
+            pairs_event = family_shape_equations(patterns, event_shape, {}, declared)
+            if not self._unify_extents(pairs_event, scope, state):
+                self._fail(
+                    step,
+                    f"family {record.name!r} has incompatible event extents",
+                    code="qiec-program",
+                )
         values: dict[int, Value] = {}
         tied: list[int] = []
         for position, (parameter, argument) in enumerate(pairs):
@@ -8005,59 +7999,40 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 continue
             value = self._draw_argument(argument, parameter, plate, scope, state, step)
             values[position] = value
-            if parameter.event_dims:
-                self._tie_event_extents(
-                    record, parameter, value, event, step, scope, state
+            actual = self._family_argument_shapes(
+                record, [(parameter.name, value)], scope, step
+            )
+            equations = family_shape_equations(patterns, event_shape, actual)
+            if not self._unify_extents(equations, scope, state):
+                self._fail(
+                    step,
+                    f"parameter {parameter.name!r} of family {record.name!r} has incompatible event extents",
+                    code="qiec-program",
                 )
         for position in tied:
             parameter, argument = pairs[position]
-            name = self._tied_free_name(parameter, argument, plate, scope)
-            assert name is not None
-            extents: list[IndexTerm] = []
-            for axis, dim in enumerate(parameter.event_dims):
-                offset = (
-                    (record.event_offsets or (0,) * record.event_rank)[dim]
-                    if dim is not None
-                    else 0
-                )
-                if dim is not None and dim in event:
-                    try:
-                        extents.append(shift_index(event[dim], -offset))
-                        continue
-                    except ValueError:
-                        # Nat subtraction needs a proved predecessor. Another
-                        # typed argument may instead supply affine evidence.
-                        pass
-                extent = self._open_extent(
-                    f"{name}_extent" if parameter.rank == 1 else f"{name}_extent{axis}",
-                    state,
-                )
-                if dim is not None:
-                    sample_extent = shift_index(extent, offset)
-                    if dim in event:
-                        if not self._unify_extents(
-                            [(sample_extent, event[dim])], scope, state
-                        ):
-                            self._fail(
-                                step,
-                                f"cannot infer {name!r}: declare its tensor extent to establish the affine event shape",
-                                code="qiec-program",
-                            )
-                    else:
-                        event[dim] = sample_extent
-                extents.append(extent)
-            values[position] = self._draw_argument(
-                argument,
-                parameter,
-                plate,
-                scope,
-                state,
-                step,
-                extents=tuple(extents),
+            extents = tuple(
+                self._resolved_extent(t, state) for t in patterns[parameter.name]
             )
+            value = self._draw_argument(
+                argument, parameter, plate, scope, state, step, extents=extents
+            )
+            values[position] = value
+            actual = self._family_argument_shapes(
+                record, [(parameter.name, value)], scope, step
+            )
+            if not self._unify_extents(
+                family_shape_equations(patterns, event_shape, actual), scope, state
+            ):
+                self._fail(
+                    step,
+                    f"parameter {parameter.name!r} of family {record.name!r} has incompatible event extents",
+                    code="qiec-program",
+                )
         if state.extent_solution:
             # A free name's typing may fix an extent an argument lowered
             # before it reads.
+            self._apply_extent_solution(scope, state)
             substitution = self._extent_substitution(state)
             values = {
                 position: substitute_value(value, substitution)
@@ -8107,71 +8082,41 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         morphism = self._program_morphisms.get(step.morphism)
         return morphism is None or not _option_axes(morphism.options, "over")
 
-    def _tie_event_extents(
+    def _family_shape_patterns(
         self: _Elaborator,
         record: DistributionFamily,
-        parameter: FamilyParameter,
-        value: Value,
-        event: dict[int, IndexTerm],
-        step: SampleStep | ObserveStep | MarginalizeStep,
-        scope: _Scope,
         state: _ProgramState,
-    ) -> None:
-        """Read a typed argument's tied axes against the draw's event extents.
+        hints: Mapping[str, str] | None = None,
+    ) -> tuple[dict[str, tuple[IndexTerm, ...]], tuple[IndexTerm, ...]]:
+        """Freshen one local shape telescope into the existing extent scope."""
+        indices = {}
+        for binder in record.effective_shape_signature.telescope:
+            name = (hints or {}).get(
+                binder.name, f"__family_shape_{len(state.extents)}_{binder.name}"
+            )
+            while name in state.extents:
+                name += "_"
+            indices[binder.name] = self._open_extent(name, state)
+        return instantiate_family_shapes(record.effective_shape_signature, indices)
 
-        Each axis the family ties to a sample axis either fixes that
-        axis's extent, when nothing has yet, or must equal it: an open
-        extent on either side is fixed to the other, and two different
-        fixed extents are refused.
-
-        Parameters
-        ----------
-        record : DistributionFamily
-            The family.
-        parameter : FamilyParameter
-            The parameter the argument fills.
-        value : Value
-            The lowered argument.
-        event : dict[int, IndexTerm]
-            The extents of the sample's axes fixed so far, extended in
-            place.
-        step : SampleStep | ObserveStep | MarginalizeStep
-            The step, where a mismatch is reported.
-        scope : _Scope
-            The scope.
-        state : _ProgramState
-            The program's accumulating state.
-
-        Raises
-        ------
-        QiecDiagnosticError
-            If an axis of the argument has a fixed extent other than the
-            sample axis's.
-        """
-        shape = tensor_shape(self._value_type(value, scope.context(), step))
-        if shape is None or len(shape[1]) < parameter.rank:
-            return
-        own = shape[1][len(shape[1]) - parameter.rank :]
-        for size, dim in zip(own, parameter.event_dims, strict=True):
-            if dim is None:
+    def _family_argument_shapes(
+        self: _Elaborator,
+        record: DistributionFamily,
+        arguments: Sequence[tuple[str, Value]],
+        scope: _Scope,
+        node: object,
+    ) -> dict[str, tuple[IndexTerm, ...]]:
+        """Read intrinsic parameter dimensions while excluding plate prefixes."""
+        result = {}
+        for name, value in arguments:
+            parameter = record.parameter(name)
+            if not parameter.rank:
+                result[name] = ()
                 continue
-            offset = (record.event_offsets or (0,) * record.event_rank)[dim]
-            sample_extent = shift_index(size, offset)
-            if dim not in event:
-                event[dim] = self._resolved_extent(sample_extent, state)
-                continue
-            if not self._unify_extents([(sample_extent, event[dim])], scope, state):
-                source = f"{value.local.name!r}, " if isinstance(value, Var) else ""
-                self._fail(
-                    step,
-                    f"family {record.name!r} reads its {parameter.name!r} from "
-                    f"{source}an axis of extent "
-                    f"{render_static(self._resolved_extent(size, state))}, but "
-                    f"the sample's axis it spans has extent "
-                    f"{render_static(self._resolved_extent(event[dim], state))}",
-                    code="qiec-program",
-                )
-            event[dim] = self._resolved_extent(event[dim], state)
+            shape = tensor_shape(self._value_type(value, scope.context(), node))
+            if shape is not None and len(shape[1]) >= parameter.rank:
+                result[name] = tuple(shape[1][-parameter.rank :])
+        return result
 
     def _tied_free_name(
         self: _Elaborator,
@@ -8196,14 +8141,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         Returns
         -------
         str | None
-            The name, when the argument is a name nothing binds, the
-            family ties the parameter's axes to its sample's, and the
-            draw reads the name as a tensor over those axes: with no
-            plate, one value per row of a plate with no event axes, or
-            beside event axes a matrix, which no scalar broadcast stands
-            in for. ``None`` otherwise.
+            The unbound name when the argument requires intrinsic tensor
+            dimensions. A scalar-broadcasting vector beside event axes keeps
+            the existing scalar interpretation; matrices and structural
+            tables require their signature dimensions. ``None`` otherwise.
         """
-        if not parameter.event_dims:
+        if not parameter.rank:
             return None
         if isinstance(argument, DrawArgNamed):
             argument = argument.value
@@ -8217,10 +8160,15 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             name = argument
         else:
             return None
-        if scope.lookup(name) is not None or name in self._program_morphisms:
+        if (
+            scope.lookup(name) is not None
+            or name in self._program_morphisms
+            or name in self._pinned_types
+        ):
             return None
         if (
-            plate.event
+            parameter.scalar_broadcast
+            and plate.event
             and parameter.constraint not in _MATRIX_CONSTRAINTS
             and parameter.rank < 2
         ):

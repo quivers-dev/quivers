@@ -22,7 +22,18 @@ from quivers.qiec.types import (
 
 
 def _coefficients(term: IndexTerm) -> tuple[Counter[IndexVariable], int]:
-    """Expose the canonical nonnegative affine coefficients of a Nat term."""
+    """Expose the canonical nonnegative affine coefficients of a Nat term.
+
+    Parameters
+    ----------
+    term : IndexTerm
+        Natural-number dimension expression.
+
+    Returns
+    -------
+    tuple[Counter[IndexVariable], int]
+        Nominal variable multiplicities and the constant part.
+    """
     canonical = add_indices(term)
     if isinstance(canonical, IndexLiteral):
         return Counter(), int(canonical.value)

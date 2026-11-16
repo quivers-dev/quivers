@@ -59,12 +59,26 @@ def _log_probability(probability: Tensor) -> Tensor:
 
 def _reference(base: Distribution) -> Tensor:
     """Find a parameter carrying the base's floating dtype and device."""
-    for value in vars(base).values():
-        if isinstance(value, Tensor) and value.is_floating_point():
-            return value
-    for value in vars(base).values():
-        if isinstance(value, Distribution):
-            return _reference(value)
+    pending = [base]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        values = tuple(vars(current).values())
+        for value in values:
+            if isinstance(value, Tensor) and value.is_floating_point():
+                return value
+        pending.extend(
+            value
+            for value in (
+                *values,
+                getattr(current, "base", None),
+                getattr(current, "base_dist", None),
+            )
+            if isinstance(value, Distribution)
+        )
     raise NotImplementedError(
         f"{type(base).__name__} does not expose a floating distribution parameter"
     )

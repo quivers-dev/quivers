@@ -144,6 +144,21 @@ finite-set object. The
 [index reference](../reference/qvr/types-and-indexed-families.md#natural-number-extent-addition)
 distinguishes this arithmetic from user-defined index constructors.
 
+Distribution shape signatures use the same dependent context. Their local
+Nat telescope quantifies parameter and sample-event dimensions; each
+application freshens those binders before collecting exact shape equations.
+For instance, an additive log-ratio normal with Gaussian coordinate extent
+$d$ takes a location tensor of shape $[d]$ and a Cholesky tensor of shape
+$[d,d]$, and returns an event of shape $[d+1]$. The optional reference
+component changes coordinate order without changing these extents.
+
+These are dimensions of one parameter value and one sample event, before
+leading plate batch axes. Parameter-to-parameter relations apply even when
+the sample is scalar. Source inference may solve its own open extents,
+while the kernel solves only fresh signature variables; neither operation
+binds a caller's rigid skolem by its display name. Existing event-axis
+metadata is shorthand for this contract, rather than a separate typing rule.
+
 A runtime `(count : Nat)` has a different judgment: it extends $\Gamma_v$
 with an integer-valued input subject to the restriction $count\geq 0$. Its
 lowered parameter uses the arithmetic carrier `Int` and carries the checked

@@ -169,7 +169,18 @@ class IndexConstructor(QiecModel):
 
 
 def _summand_key(term: IndexVariable) -> tuple[int, str]:
-    """Order Nat summands by declaration name or rigid nominal identity."""
+    """Order Nat summands by declaration name or rigid nominal identity.
+
+    Parameters
+    ----------
+    term : IndexVariable
+        Natural-number variable.
+
+    Returns
+    -------
+    tuple[int, str]
+        A deterministic key separating declared names and rigid identities.
+    """
     return (0, term.name) if term.identity is None else (1, term.identity.digest)
 
 
@@ -204,7 +215,15 @@ class IndexSum(QiecModel):
 
     @dx.model_validator()
     def _validate_record(self) -> None:
-        """Reject noncanonical records and non-Nat summands."""
+        """Reject noncanonical records and non-Nat summands.
+
+        Raises
+        ------
+        ValueError
+            If the constant, summand order, or noncollapsed shape is invalid.
+        TypeError
+            If any summand is not a Nat variable.
+        """
         if (
             isinstance(self.constant, bool)
             or not isinstance(self.constant, int)

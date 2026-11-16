@@ -34,12 +34,14 @@ from quivers.formulas.formula import (
     Formula,
     FormulaData,
     ResponseLayout,
+    ResponseModifiers,
     formula_from_data,
 )
 from quivers.formulas.family import (
     Link,
     AuxParam,
     OrdinalSpec,
+    ResponseSpec,
     Family,
     links,
     families,
@@ -48,6 +50,11 @@ from quivers.formulas.compile import (
     FormulaToQVRModule,
 )
 from quivers.formulas._fit import BayesianFit, fit, formula_to_qvr, get_prior
+from quivers.formulas._response_modifiers import (
+    ResponseDraws,
+    PredictionOptions,
+    ExpectationOptions,
+)
 
 __all__ = [
     # formula
@@ -56,11 +63,16 @@ __all__ = [
     "Formula",
     "FormulaData",
     "ResponseLayout",
+    "ResponseModifiers",
+    "ResponseDraws",
+    "PredictionOptions",
+    "ExpectationOptions",
     "formula_from_data",
     # family
     "Link",
     "AuxParam",
     "OrdinalSpec",
+    "ResponseSpec",
     "Family",
     "links",
     "families",

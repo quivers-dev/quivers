@@ -84,8 +84,10 @@ shape `(12, 3)` infers `n=12` and `d=2`. An inconsistent response width
 fails before execution. `nat_add` combines static natural indices; its
 parentheses are index application syntax, rather than a runtime pure call.
 
-The last component is the reference, so the Normal coordinates are
-`log(y[..., :-1] / y[..., -1:])`. The density includes their Jacobian,
+The default reference is the last component, so the Normal coordinates are
+`log(y[..., :-1] / y[..., -1:])`. An optional `reference` integer selects
+another component; the remaining coordinates keep their response order.
+A typed integer tensor can select a reference per row. The density includes their Jacobian,
 and each row contributes one joint score. This differs from the existing
 `LogisticNormal` stick-breaking transform. The
 [native API](../api/continuous/families.md#additive-log-ratio-normal-events)

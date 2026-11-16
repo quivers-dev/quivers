@@ -31,7 +31,7 @@ from the implementation and its tests. Full brms coverage is not established.
 | Capability | QVR evidence and remaining requirements |
 | --- | --- |
 | Data dimensions and external inputs | `Model.schema` retains checked types and roles; `Model.bind` specializes finite extents and validates supplied values. Tested in `tests/modeling/test_model.py`. |
-| Common regression families | `quivers.formulas.families` contains 42 entries, with 17 inverse links and mean/precision conversions for binomial, beta-binomial, gamma, Weibull, and other families. Asymmetric Laplace quantile regression supports a fixed or regressed quantile, with independent SciPy density/CDF/quantile and sampling tests. `tests/test_formula_distributional.py` checks independent likelihood and derivative oracles. ExGaussian uses the response mean and Gaussian/exponential components; inverse Gaussian uses response mean/shape with implicit sample gradients. These have independent density, CDF, derivative, and sampling oracles. Zero-inflated Beta regression reuses the native zero/one mixture with its one-atom probability fixed at zero; atom/interior densities, endpoint derivatives, sampling moments, and response means have independent oracles. Hurdle Gamma and LogNormal responses use a shared exact atom/positive-component implementation, with independent density, derivative, CDF, moment, and sampling oracles and SVI/HMC/NUTS formula checks. The larger native family registry remains a separate interface; the remaining brms families and their interactions need implementation and tests. |
+| Common regression families | `quivers.formulas.families` contains 48 entries, with 17 inverse links and mean/precision conversions for binomial, beta-binomial, gamma, Weibull, and other families. Asymmetric Laplace quantile regression supports a fixed or regressed quantile, with independent SciPy density/CDF/quantile and sampling tests. `tests/test_formula_distributional.py` checks independent likelihood and derivative oracles. ExGaussian uses the response mean and Gaussian/exponential components; inverse Gaussian uses response mean/shape with implicit sample gradients. These have independent density, CDF, derivative, and sampling oracles. Zero-inflated Beta regression reuses the native zero/one mixture with its one-atom probability fixed at zero; atom/interior densities, endpoint derivatives, sampling moments, and response means have independent oracles. Hurdle Gamma and LogNormal responses use a shared exact atom/positive-component implementation, with independent density, derivative, CDF, moment, and sampling oracles and SVI/HMC/NUTS formula checks. The larger native family registry remains a separate interface; the remaining brms families and their interactions need implementation and tests. |
 | Zero-inflated and hurdle counts | Native and formula interfaces add zero-inflated negative-binomial, binomial, and beta-binomial responses plus hurdle negative-binomial responses. `tests/test_formula_count_mixtures.py` checks component-to-regression conversions, likelihood and gradient oracles, fitting, and predictions. Shared `Family.trials_parameter` metadata validates trial counts in `0..2**53` at fitting and new-data prediction; zero trials give a zero response. Native Binomial/BetaBinomial/NB/Poisson and the new mixtures use float64 count parameters, scores, and moments while preserving gradients to original learned heads. The hurdle sampler uses compound-Poisson/logarithmic-count sampling rather than rejection from a vanishing positive event. Native/QIEC reference execution supports all four; all 11 external renderers explicitly refuse them, checked in 44 family/backend cells. The current `hurdle_poisson` auxiliary remains named `zi`; a brms-compatible `hu` naming change is separate work. |
 | Group effects | Single-bar blocks use native LKJ Cholesky correlations; double bars request independence. Shared IDs couple coefficients across location and auxiliary formulas. Scalar responses support centered and noncentered coordinates; categorical blocks couple all non-reference-category coefficients in noncentered coordinates. `tests/test_formula_correlations.py` checks Gaussian covariance densities, derivatives, and SVI/HMC/NUTS execution. Mixed scalar/transition widths and shared auxiliary blocks retain their joint noncentered covariance, checked against native/reference densities and every parameter gradient. New-group prediction supports joint donor and fitted Gaussian/LKJ policies. Supplied group covariance, multi-membership, repeated coefficients across blocks, and prediction with supplied covariance remain work. |
 | Distributional and nonlinear formulas | `distributional={"sigma": "~ z + (1 | g)"}` supplies evaluated auxiliary predictors and parameter-specific links in the formula interface. Design columns and group coding are retained, and shared correlation IDs can span predictors. A nonlinear parameter dependency graph remains work. |
@@ -56,18 +56,39 @@ model; matching a formula's printed text would not establish the same prior.
 The pinned [released family registry](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/family-lists.R)
 and [development family registry](https://github.com/paul-buerkner/brms/blob/f4f906dc0db56fd42b58cdd7d57e76b40f650331/R/family-lists.R)
 each contain 49 named entries plus `custom`; their definitions agree apart
-from trailing whitespace. QVR's 42 formula entries cover 41 of those names
+from trailing whitespace. QVR's 48 formula entries cover 47 of those names
 after normalizing `student`/`student_t`, `negbinomial`/`negative_binomial`,
 and `inverse.gaussian`/`inverse_gaussian`. Its remaining entry is generic
 mixture composition. This name comparison does not establish equivalent
 parameterizations, links, or fitting behavior.
 
-Eight source-registry entries still lack QVR formula frontends:
-`wiener`, `dirichlet`, `dirichlet2`, `logistic_normal`, `cox`,
-`multinomial`, `dirichlet_multinomial`, and `xbeta`. The native kernel
-registry is a separate capability: a native distribution does not imply
-a formula data-preparation or prediction workflow. `dirichlet2` is an
-alternate parameterization, rather than a new distribution law.
+Two source-registry entries still lack QVR formula frontends: `cox`
+and `xbeta`. The native kernel registry is a separate capability: a
+native distribution does not imply a formula data-preparation or
+prediction workflow. `dirichlet2` is an alternate parameterization,
+rather than a new distribution law.
+
+The vector frontends share the categorical compiler's component
+coordinates and the ordinary posterior replay machinery. Multinomial
+and Dirichlet-multinomial responses retain integer row totals;
+Dirichlet responses retain mean/precision or component-concentration
+parameterizations. Additive-log-ratio Normal responses retain an
+explicit reference component, covariance coordinates, and the simplex
+Jacobian. Their optional Monte Carlo response expectations require an
+explicit sample budget. Independent tests compare complete joints,
+every fitted coefficient gradient, mixed-width group correlations, and
+new-data predictions. These paths do not establish joint multivariate
+formula construction or residual-correlation support.
+
+Wiener formulas retain unsigned reaction times and decisions as separate
+typed inputs and encode their joint law inside QVR. The native and
+reference kernels share one certified rejection sampler. Density and
+moment tests use independent series and differential-equation oracles;
+formula tests cover SVI, HMC, NUTS, all distributional-parameter
+derivatives, and new-data predictions. Low-level predictive draws retain
+the signed joint encoding, while structured response draws decode
+reaction time and decision without repeating sampling. This does not
+establish support for every response modifier.
 
 COM-Poisson and all five ordinal constructions now have formula
 frontends. COM uses the pinned compiled rate law consistently for fitting

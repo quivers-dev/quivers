@@ -10,14 +10,60 @@ from scipy.stats import norm, poisson
 from torch.distributions import (
     AffineTransform,
     Beta,
+    Distribution,
     Exponential,
     Normal,
     Poisson,
     TransformedDistribution,
+    constraints,
 )
 
 from quivers.continuous._censored import Censored
 from quivers.continuous._interval import log_interval_mass
+
+
+def test_censoring_accepts_property_backed_base_without_revisiting_distribution_cycles():
+    source = Normal(
+        torch.tensor(0.2, dtype=torch.double), torch.tensor(0.8, dtype=torch.double)
+    )
+
+    class WrappedNormal(Distribution):
+        arg_constraints = {}
+        support = constraints.real
+
+        def __init__(self):
+            self.cycle = self
+            super().__init__()
+
+        @property
+        def base(self):
+            return source
+
+        @property
+        def base_dist(self):
+            return source
+
+        def expand(self, batch_shape, _instance=None):
+            assert not batch_shape
+            return self
+
+        def log_prob(self, value):
+            return source.log_prob(value)
+
+        def log_cdf(self, value):
+            return torch.special.log_ndtr((value - source.loc) / source.scale)
+
+        def log_survival_function(self, value):
+            return torch.special.log_ndtr((source.loc - value) / source.scale)
+
+    law = Censored(WrappedNormal(), -0.5, 0.7)
+    assert law.low.dtype == torch.double
+    assert law.log_prob(-0.5).item() == pytest.approx(
+        norm.logcdf(-0.5, 0.2, 0.8), abs=2e-14
+    )
+    assert law.log_prob(0.7).item() == pytest.approx(
+        norm.logsf(0.7, 0.2, 0.8), abs=2e-14
+    )
 
 
 @pytest.mark.parametrize(

@@ -87,6 +87,84 @@ class AuxParam(dx.Model):
     fixed_default: float | None = None
 
 
+class ResponseSpec(dx.Model):
+    """Retain the component coordinate system of a categorical or vector law.
+
+    Parameters
+    ----------
+    kind : str
+        Native response construction using the shared component predictor.
+    reference : int or str or None
+        Zero-predictor component by position or retained label. None gives
+        every component its own predictor under proper coefficient priors.
+    """
+
+    kind: Literal[
+        "categorical",
+        "multinomial",
+        "dirichlet_multinomial",
+        "dirichlet",
+        "dirichlet2",
+        "logistic_normal",
+    ]
+    reference: int | str | None = 0
+
+    def reference_index(self, labels: tuple[str, ...]) -> int | None:
+        """Resolve a reference against retained component or factor labels.
+
+        Parameters
+        ----------
+        labels : tuple[str, ...]
+            Complete component order.
+
+        Returns
+        -------
+        int or None
+            Reference position, or None for all-component predictors.
+
+        Raises
+        ------
+        ValueError
+            If the reference is missing, invalid, or incompatible with ALR.
+        """
+        reference = self.reference
+        if reference is None:
+            if self.kind == "logistic_normal":
+                raise ValueError(
+                    "logistic_normal requires an explicit reference component"
+                )
+            return None
+        if isinstance(reference, str):
+            if reference not in labels:
+                raise ValueError(
+                    f"unknown reference component {reference!r}; choices are {labels}"
+                )
+            return labels.index(reference)
+        if (
+            isinstance(reference, bool)
+            or not isinstance(reference, int)
+            or not 0 <= reference < len(labels)
+        ):
+            raise ValueError("reference component must identify a retained component")
+        return reference
+
+    def coordinate_indices(self, labels: tuple[str, ...]) -> tuple[int, ...]:
+        """Return coefficient coordinates in retained component order.
+
+        Parameters
+        ----------
+        labels : tuple[str, ...]
+            Complete component order.
+
+        Returns
+        -------
+        tuple[int, ...]
+            Component positions carrying free predictors.
+        """
+        reference = self.reference_index(labels)
+        return tuple(index for index in range(len(labels)) if index != reference)
+
+
 class Family(dx.Model):
     """Response family: observation kernel plus its link and any
     auxiliary parameters.
@@ -107,6 +185,27 @@ class Family(dx.Model):
     fitting and prediction use the same metadata to validate trial counts.
     ``ordinal`` retains static likelihood, inverse-link, and threshold choices;
     ordinary QVR expressions lower these choices to checked category logits.
+    ``response`` retains joint component predictors, reference coordinates,
+    and the distinction between scalar categorical and vector response events.
+
+    Parameters
+    ----------
+    name : str
+        Formula registry key.
+    location_link : Link
+        Location or mean inverse link.
+    observe_family : str
+        Checked native observation family.
+    extra_observe_args : tuple[str, ...]
+        Additional canonical constructor arguments.
+    aux_params : tuple[AuxParam, ...]
+        Auxiliary priors and distributional links.
+    trials_parameter : str or None
+        Native parameter receiving exact per-row trial counts.
+    ordinal : OrdinalSpec or None
+        Retained ordinal thresholds and transition construction.
+    response : ResponseSpec or None
+        Joint component coordinate system and reference selection.
     """
 
     name: str
@@ -116,6 +215,37 @@ class Family(dx.Model):
     aux_params: tuple[AuxParam, ...] = ()
     trials_parameter: str | None = None
     ordinal: OrdinalSpec | None = None
+    response: ResponseSpec | None = None
+
+    def with_reference(self, reference: int | str | None) -> Family:
+        """Select the reference component of a joint categorical predictor.
+
+        Parameters
+        ----------
+        reference : int or str or None
+            Component position or label; None estimates every component.
+
+        Returns
+        -------
+        Family
+            Independent family retaining the selected coordinate system.
+
+        Raises
+        ------
+        ValueError
+            If this family has no component predictor or forbids references.
+        """
+        if self.response is None:
+            raise ValueError(
+                "reference components require a categorical or vector family"
+            )
+        if self.response.kind == "dirichlet2" and reference is not None:
+            raise ValueError(
+                "dirichlet2 estimates every concentration and has no reference"
+            )
+        if self.response.kind == "logistic_normal" and reference is None:
+            raise ValueError("logistic_normal requires an explicit reference component")
+        return self.with_(response=self.response.with_(reference=reference))
 
     def with_thresholds(
         self, thresholds: Literal["flexible", "equidistant", "sum_to_zero"]
@@ -169,6 +299,26 @@ class Family(dx.Model):
             raise ValueError(
                 f"unknown family parameters {sorted(unknown)}; choices are {sorted(known)}"
             )
+        if self.response is not None and self.response.kind in {
+            "categorical",
+            "multinomial",
+            "dirichlet_multinomial",
+            "dirichlet",
+        }:
+            if parameters.get("mu") == "logit":
+                parameters["mu"] = "softmax"
+            if parameters.get("mu", "softmax") != "softmax":
+                raise ValueError(
+                    "compositional means require the softmax location link"
+                )
+        if (
+            self.response is not None
+            and self.response.kind == "logistic_normal"
+            and parameters.get("mu", "identity") != "identity"
+        ):
+            raise ValueError(
+                "logistic_normal log ratios require the identity location link"
+            )
         invalid = set(parameters.values()) - links.keys()
         if invalid:
             raise ValueError(
@@ -214,6 +364,7 @@ class Family(dx.Model):
             extra_observe_args=self.extra_observe_args,
             trials_parameter=self.trials_parameter,
             ordinal=ordinal,
+            response=self.response,
             aux_params=tuple(
                 AuxParam(
                     name=aux.name,
@@ -272,6 +423,16 @@ links: Mapping[str, Link] = {
 
 
 families: Mapping[str, Family] = {
+    "wiener": Family(
+        name="wiener",
+        location_link=_IDENTITY,
+        observe_family="Wiener",
+        aux_params=(
+            AuxParam(name="bs", prior="Gamma(1.0, 1.0)", link=_LOG),
+            AuxParam(name="ndt", prior="LogNormal(-2.0, 0.5)", link=_LOG),
+            AuxParam(name="bias", prior="Beta(1.0, 1.0)", link=_LOGIT),
+        ),
+    ),
     "com_poisson": Family(
         name="com_poisson",
         location_link=_LOG,
@@ -377,6 +538,42 @@ families: Mapping[str, Family] = {
         name="categorical",
         location_link=_SOFTMAX,
         observe_family="Categorical",
+        response=ResponseSpec(kind="categorical"),
+    ),
+    "multinomial": Family(
+        name="multinomial",
+        location_link=_SOFTMAX,
+        observe_family="Multinomial",
+        trials_parameter="total_count",
+        response=ResponseSpec(kind="multinomial"),
+    ),
+    "dirichlet_multinomial": Family(
+        name="dirichlet_multinomial",
+        location_link=_SOFTMAX,
+        observe_family="DirichletMultinomial",
+        trials_parameter="total_count",
+        aux_params=(AuxParam(name="phi", prior="Gamma(2.0, 0.1)", link=_LOG),),
+        response=ResponseSpec(kind="dirichlet_multinomial"),
+    ),
+    "dirichlet": Family(
+        name="dirichlet",
+        location_link=_SOFTMAX,
+        observe_family="Dirichlet",
+        aux_params=(AuxParam(name="phi", prior="Gamma(2.0, 0.1)", link=_LOG),),
+        response=ResponseSpec(kind="dirichlet"),
+    ),
+    "dirichlet2": Family(
+        name="dirichlet2",
+        location_link=_LOG,
+        observe_family="Dirichlet",
+        response=ResponseSpec(kind="dirichlet2", reference=None),
+    ),
+    "logistic_normal": Family(
+        name="logistic_normal",
+        location_link=_IDENTITY,
+        observe_family="AdditiveLogRatioNormal",
+        aux_params=(AuxParam(name="sigma", prior="HalfNormal(1.0)", link=_LOG),),
+        response=ResponseSpec(kind="logistic_normal"),
     ),
     "poisson": Family(
         name="poisson",
@@ -682,6 +879,7 @@ __all__ = [
     "Link",
     "AuxParam",
     "OrdinalSpec",
+    "ResponseSpec",
     "Family",
     "links",
     "families",

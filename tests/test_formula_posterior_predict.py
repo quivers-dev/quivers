@@ -226,16 +226,29 @@ def test_every_formula_family_has_native_training_row_predictions(family):
         )
     else:
         response = [0.1, 0.2, 0.7, 0.4]
+    vector = (
+        specification.response is not None
+        and specification.response.kind != "categorical"
+    )
+    frame = pd.DataFrame({"y": response, "choice": [0, 1, 0, 1]})
+    if vector:
+        events = (
+            [[0, 0, 0], [1, 2, 0], [2, 1, 4], [0, 3, 1]]
+            if specification.trials_parameter
+            else [[0.2, 0.3, 0.5], [0.3, 0.2, 0.5], [0.1, 0.3, 0.6], [0.4, 0.3, 0.3]]
+        )
+        frame = pd.DataFrame(events, columns=["a", "b", "c"])
     result = fit(
-        "y ~ 1",
-        data=pd.DataFrame({"y": response}),
+        "cbind(a,b,c) ~ 1" if vector else "y ~ 1",
+        data=frame,
         family=family,
+        decision="choice" if family == "wiener" else None,
         method="svi",
         num_steps=1,
         seed=13,
     )
     predicted = result.posterior_predict(num_samples=2, seed=19)
-    assert predicted.shape == (1, 2, 4)
+    assert predicted.shape == ((1, 2, 4, 3) if vector else (1, 2, 4))
     assert torch.isfinite(predicted).all()
 
 

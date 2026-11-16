@@ -1,0 +1,6 @@
+object Row : FinSet 3
+object Component : FinSet 3
+program model : Row -> Row
+    observe v : Row <- AdditiveLogRatioNormal(loc=[0.2, -0.1], scale_tril=[[0.7, 0.0], [0.2, 0.9]], reference=0) [over=Component]
+    return v
+export model

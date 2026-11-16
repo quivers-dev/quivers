@@ -294,6 +294,7 @@ class _InflatedCount(Distribution):
     has_rsample = False
     zero_prob: Tensor
     _count_class: type[Distribution]
+    _zero_count_parameters: tuple[str, ...] = ("total_count", "probs")
 
     def _component(
         self, parameters: Mapping[str, Tensor] | None = None
@@ -412,9 +413,10 @@ class _InflatedCount(Distribution):
             active = torch.rand(
                 shape, dtype=self.zero_prob.dtype, device=self.zero_prob.device
             ) >= self.zero_prob.expand(shape)
-            certain_zero = self.total_count == 0
-            if "probs" in self.arg_constraints:
-                certain_zero = certain_zero | (self.probs == 0)
+            certain_zero = torch.zeros_like(self.zero_prob, dtype=torch.bool)
+            for name in self._zero_count_parameters:
+                if name in self.arg_constraints:
+                    certain_zero = certain_zero | (getattr(self, name) == 0)
             active = active & ~certain_zero.expand(shape)
             result = torch.zeros(shape, dtype=torch.long, device=self.zero_prob.device)
             if active.any():

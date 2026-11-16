@@ -105,6 +105,7 @@ def test_checked_builtins_are_repl_completion_candidates(name: str) -> None:
         *SHAPE_FAMILIES,
         "DiscreteWeibull",
         "COMPoisson",
+        "Wiener",
         "Multinomial",
         "DirichletMultinomial",
         "AdditiveLogRatioNormal",

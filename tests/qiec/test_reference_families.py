@@ -41,6 +41,24 @@ def _torch_class(family: str, **arguments: object) -> td.Distribution:
 
 def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -> float:
     """The host's log density, from torch or the torch runtime's definition."""
+    if family == "Wiener":
+        # Independent killed-Brownian eigenfunction expansion, deliberately
+        # unfactored and over-resolved at these moderate interior test points.
+        boundary = float(arguments["boundary"])
+        elapsed = abs(float(point)) - float(arguments["ndt"])
+        bias, drift = float(arguments["bias"]), float(arguments["drift"])
+        upper = float(point) > 0
+        distance = 1 - bias if upper else bias
+        series = math.fsum(
+            k
+            * math.sin(k * math.pi * distance)
+            * math.exp(-0.5 * (k * math.pi / boundary) ** 2 * elapsed)
+            for k in range(1, 201)
+        )
+        tilt = drift * boundary * distance * (1 if upper else -1)
+        return (
+            math.log(math.pi * series / boundary**2) + tilt - 0.5 * drift**2 * elapsed
+        )
     if family == "Kumaraswamy":
         distribution: td.Distribution = td.Kumaraswamy(
             _tensor(arguments["concentration1"]), _tensor(arguments["concentration0"])
@@ -260,6 +278,10 @@ def _component(loc: Sequence[float], scale: Sequence[float]) -> RuntimeDistribut
 
 
 CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
+    "Wiener": (
+        {"boundary": 1.2, "ndt": 0.1, "bias": 0.4, "drift": 0.7},
+        (-0.4, 0.4, -1.3, 1.3),
+    ),
     "AdditiveLogRatioNormal": (
         {"loc": (0.1, -0.2), "scale_tril": ((1.0, 0.0), (0.2, 0.8))},
         ((0.2, 0.3, 0.5), (0.6, 0.1, 0.3)),

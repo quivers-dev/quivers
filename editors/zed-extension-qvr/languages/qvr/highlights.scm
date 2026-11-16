@@ -229,6 +229,7 @@
     "Uniform"
     "VonMises"
     "Weibull"
+    "Wiener"
     "Wishart"
     "ZeroInflatedAsymmetricLaplace"
     "ZeroInflatedBetaBinomial"

@@ -143,6 +143,10 @@ _EXPECTED_REFUSALS: dict[tuple[str, str], str] = {
         for backend in _BACKENDS
         for family in ("DiscreteWeibull", "ZeroInflatedAsymmetricLaplace")
     },
+    **{
+        (backend, "wiener"): "family:Wiener:support:_SignedSupport"
+        for backend in _BACKENDS
+    },
     # The checked canonical families retain distribution-valued arguments.
     # All current external plans reject those arguments explicitly; family
     # name metadata alone does not imply support for this composition.

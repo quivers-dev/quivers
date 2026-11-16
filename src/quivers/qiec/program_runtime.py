@@ -630,9 +630,13 @@ def static_arguments_for(
             continue
         for depth, dimension in enumerate(shape[1]):
             if isinstance(dimension, IndexSum | IndexVariable):
-                affine_equations.append(
-                    (dimension, _extent_of(data[parameter.name], depth))
-                )
+                try:
+                    observed = _extent_of(data[parameter.name], depth)
+                except KeyError as error:
+                    raise KeyError(
+                        f"cannot infer extent from input {parameter.name!r}: {error}"
+                    ) from error
+                affine_equations.append((dimension, observed))
     inferred: dict[str, int] = {}
     if affine_equations or given:
         from quivers.qiec.index_arithmetic import infer_index_extents

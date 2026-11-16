@@ -78,6 +78,26 @@ def _normal(value: torch.Tensor) -> torch.Tensor:
 #: Each case: its family and parameterization, the program, its data, its
 #: site values, and the oracle.
 _CASES: dict[str, tuple[str, str, str, dict[str, Host], dict[str, Host], Oracle]] = {
+    "alr-reference": (
+        "AdditiveLogRatioNormal",
+        "reference",
+        "object Component : FinSet 3\n"
+        "program p(m:Tensor[Real]([Two]),l:Tensor[Real]([Two,Two])) : One -> D\n"
+        "    observe v : Row <- AdditiveLogRatioNormal(loc=m,scale_tril=l,reference=0) [over=Component]\n"
+        "    return v\n",
+        {
+            "m": [0.2, -0.1],
+            "l": [[0.7, 0.0], [0.2, 0.9]],
+            "v": [[0.2, 0.3, 0.5], [0.6, 0.1, 0.3], [0.4, 0.4, 0.2], [0.1, 0.2, 0.7]],
+        },
+        {},
+        lambda v: (
+            D.MultivariateNormal(_t(v["m"]), scale_tril=_t(v["l"])).log_prob(
+                _t(v["v"])[:, 1:].log() - _t(v["v"])[:, :1].log()
+            )
+            - _t(v["v"]).log().sum(-1)
+        ).sum(),
+    ),
     "multinomial-logits": (
         "Multinomial",
         "logits",

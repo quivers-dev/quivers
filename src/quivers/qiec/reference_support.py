@@ -288,6 +288,33 @@ def finite_value(value: object, family: str) -> float:
     return float(value)
 
 
+def _integer_observation(value: object, family: str) -> int | None:
+    """Read an integral observation without truncating or rounding integers.
+
+    Parameters
+    ----------
+    value : object
+        Scalar response candidate, including Boolean zero/one values.
+    family : str
+        Native family name for nonnumeric-value diagnostics.
+
+    Returns
+    -------
+    int or None
+        The exact integer, or None for fractional or nonfinite observations.
+        The caller applies its support bounds and scores None at minus infinity.
+
+    Raises
+    ------
+    DistributionError
+        If the observation is not a supported numeric scalar.
+    """
+    if isinstance(value, int):
+        return int(value)
+    point = finite_value(value, family)
+    return int(point) if math.isfinite(point) and point.is_integer() else None
+
+
 __all__ = [
     "DistributionError",
 ]

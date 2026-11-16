@@ -1316,12 +1316,15 @@ class _ProgramWalk:
         args, arg_names = self._parameterization(
             family, args, arg_names, marginalized=marginalized
         )
-        constraint = _apply_declared_bounds(
-            from_constraint(_resolve_support(meta, args, self.ctx, arg_names)),
-            plate,
-            self.ctx,
-            site,
-        )
+        support = _resolve_support(meta, args, self.ctx, arg_names)
+        try:
+            symbolic_support = from_constraint(support)
+        except ValueError as error:
+            raise UnsupportedConstruct(
+                f"qvr-{self.planner.target}",
+                [f"family:{family}:support:{type(support).__name__}: {error}"],
+            ) from error
+        constraint = _apply_declared_bounds(symbolic_support, plate, self.ctx, site)
         args, constraint = self._class_index(
             morphism, meta, args, arg_names, constraint, site
         )

@@ -117,6 +117,7 @@ from quivers.qiec.canonical import (
     tensor_type,
 )
 from quivers.qiec.families import FAMILIES, DistributionFamily, FamilyParameter
+from quivers.qiec.family_shapes import match_family_shapes
 from quivers.qiec.primitives import PRIMITIVES
 from quivers.qiec.types import (
     IndexTerm,
@@ -143,7 +144,6 @@ from quivers.qiec.types import (
     index_sort,
     render_static,
     static_kind,
-    shift_index,
 )
 
 
@@ -1834,7 +1834,10 @@ def _parameter_expectation(
     native = min(event_rank, len(plate.event))
     event_batch = plate.event[:-native] if native else plate.event
     axes = tuple(axis.size for axis in (*plate.batch, *event_batch))
-    if actual == element and (parameter.rank == 0 or plate.batch or plate.event):
+    if actual == element and (
+        parameter.rank == 0
+        or (parameter.scalar_broadcast and (plate.batch or plate.event))
+    ):
         return None
     shape = tensor_shape(actual)
     if shape is not None and shape[0] == element:
@@ -1916,77 +1919,58 @@ def _plated_sample_type(
         else repr(element)
     )
     plate = value.plate
-    natural: tuple[IndexTerm, ...] | None = None
-    supplied = family.event_argument(argument_types.items())
-    source_name = supplied[0] if supplied is not None else None
-    if supplied is not None and family.event_rank > 0:
-        source_shape = tensor_shape(supplied[1])
-        if source_shape is not None and len(source_shape[1]) >= family.event_rank:
-            offsets = family.event_offsets or (0,) * family.event_rank
-            natural = tuple(
-                shift_index(size, offset)
-                for size, offset in zip(
-                    source_shape[1][-family.event_rank :], offsets, strict=True
-                )
-            )
+    actual_shapes: dict[str, tuple[IndexTerm, ...]] = {}
+    for parameter in family.parameters:
+        actual = argument_types.get(parameter.name)
+        shape = tensor_shape(actual) if actual is not None else None
+        if parameter.rank == 0:
+            if actual is not None:
+                actual_shapes[parameter.name] = ()
+        elif shape is not None and len(shape[1]) >= parameter.rank:
+            actual_shapes[parameter.name] = tuple(shape[1][-parameter.rank :])
     event_axes = tuple(axis.size for axis in plate.event)
-    if family.event_rank > 0:
-        if len(event_axes) >= family.event_rank:
-            trailing = event_axes[len(event_axes) - family.event_rank :]
-            if natural is not None and tuple(natural) != tuple(trailing):
-                raise KernelError(
-                    f"family {value.name!r} samples the trailing shape of "
-                    f"{source_name!r}, {natural!r}, but its plate's "
-                    f"event axes end in {trailing!r}",
-                    "qiec-distribution",
-                )
-            event: tuple[IndexTerm, ...] = event_axes
-        elif natural is not None and not event_axes:
-            event = natural
-        else:
+    if family.event_rank and event_axes and len(event_axes) < family.event_rank:
+        raise KernelError(
+            f"family {value.name!r} needs {family.event_rank} native event axes",
+            "qiec-distribution",
+        )
+    declared = (
+        event_axes[-family.event_rank :] if family.event_rank and event_axes else None
+    )
+    if family.event_rank == 0:
+        declared = ()
+    signature = family.effective_shape_signature
+    try:
+        try:
+            natural = match_family_shapes(signature, actual_shapes, declared)
+        except ValueError as error:
+            if (
+                "requires further extent evidence" not in str(error)
+                or family.event_sources
+                or declared is not None
+            ):
+                raise
             claimed = sampled_element(value.result_type)
             shape = tensor_shape(claimed) if claimed is not None else None
             if (
                 shape is None
                 or shape[0] != element
                 or len(shape[1]) != len(plate.batch) + family.event_rank
-                or family.event_sources
             ):
-                raise KernelError(
-                    f"family {value.name!r} samples a Tensor[{element_name}] of "
-                    f"rank {family.event_rank}, not {render_static(value.result_type)}",
-                    "qiec-distribution",
-                )
-            event = tuple(shape[1][len(plate.batch) :])
-    else:
-        event = event_axes
-    if family.event_rank:
-        native_event = event[-family.event_rank :]
-        offsets = family.event_offsets or (0,) * family.event_rank
-        for parameter in family.parameters:
-            actual = argument_types.get(parameter.name)
-            shape = tensor_shape(actual) if actual is not None else None
-            if (
-                not parameter.event_dims
-                or shape is None
-                or len(shape[1]) < parameter.rank
-            ):
-                continue
-            parameter_shape = shape[1][-parameter.rank :]
-            for dimension, event_dimension in zip(
-                parameter_shape, parameter.event_dims, strict=True
-            ):
-                if (
-                    event_dimension is not None
-                    and shift_index(dimension, offsets[event_dimension])
-                    != native_event[event_dimension]
-                ):
-                    raise KernelError(
-                        f"parameter {parameter.name!r} of {family.name!r} has event extent "
-                        f"{render_static(dimension)}, incompatible with sample extent "
-                        f"{render_static(native_event[event_dimension])} and offset {offsets[event_dimension]}",
-                        "qiec-distribution",
-                    )
+                raise ValueError(
+                    f"family event requires a Tensor[{element_name}] of rank {family.event_rank}"
+                ) from error
+            natural = match_family_shapes(
+                signature, actual_shapes, tuple(shape[1][len(plate.batch) :])
+            )
+    except (ValueError, TypeError) as error:
+        raise KernelError(
+            f"parameters {', '.join(argument_types)} of {family.name!r} have incompatible event extents: {error}",
+            "qiec-distribution",
+        ) from error
+    event: tuple[IndexTerm, ...] = (
+        event_axes if event_axes or not family.event_rank else natural
+    )
     batch = tuple(axis.size for axis in plate.batch)
     dimensions = (*batch, *event)
     if not dimensions:

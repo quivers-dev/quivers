@@ -4830,7 +4830,7 @@ class _ProgramsMixin:
                     morphism=step.morphism,
                     args=step.args,
                     is_observed=True,
-                    axes=None if array is None else array[1],
+                    axes=step.axes if array is None else array[1],
                     line=step.line,
                     col=step.col,
                 )
@@ -7307,6 +7307,36 @@ class _ProgramsMixin:
         )
 
     @staticmethod
+    def _axis_event_shape(space: object) -> tuple[int, ...] | None:
+        """Read intrinsic named event axes without flattening their product.
+
+        Parameters
+        ----------
+        space : object
+            Explicit finite or continuous axis, possibly a product.
+
+        Returns
+        -------
+        tuple[int, ...] or None
+            Ordered axis extents, or None for an unresolved space.
+        """
+        if isinstance(space, (ProductSet, ProductSpace)):
+            shapes = tuple(
+                _ProgramsMixin._axis_event_shape(component)
+                for component in space.components
+            )
+            if any(shape is None for shape in shapes):
+                return None
+            return tuple(
+                extent for shape in shapes if shape is not None for extent in shape
+            )
+        if isinstance(space, SetObject):
+            return (int(space.size),)
+        if isinstance(space, ContinuousSpace):
+            return (int(space.dim),)
+        return None
+
+    @staticmethod
     def _axis_event_size(space: object) -> int | None:
         """Cardinality of an explicit ``over=`` event axis, or None.
 
@@ -7323,19 +7353,8 @@ class _ProgramsMixin:
         set does not carry, or sum the component dims where the event
         width of a product axis is their product.
         """
-        if isinstance(space, (ProductSet, ProductSpace)):
-            total = 1
-            for comp in space.components:
-                sub = _ProgramsMixin._axis_event_size(comp)
-                if sub is None:
-                    return None
-                total *= sub
-            return total
-        if isinstance(space, SetObject):
-            return int(space.size)
-        if isinstance(space, ContinuousSpace):
-            return int(space.dim)
-        return None
+        shape = _ProgramsMixin._axis_event_shape(space)
+        return math.prod(shape) if shape is not None else None
 
     def _infer_inline_codomain(
         self,
@@ -7389,6 +7408,40 @@ class _ProgramsMixin:
             family, argument_by_name, var_names[0]
         )
         matrix_spec = self._matrix_family_spec(family)
+        matrix_shape: tuple[int, ...] | None = None
+        if matrix_spec is not None or family == "InverseWishart":
+            matrix_shape = (
+                self._axis_event_shape(event_axis)
+                if event_axis is not None
+                else checked_event
+                if checked_event is not None
+                else self._axis_event_shape(program_codomain)
+            )
+            square_support = family == "InverseWishart" or (
+                matrix_spec is not None
+                and matrix_spec.support
+                in (
+                    _constraints.corr_cholesky,
+                    _constraints.positive_definite,
+                    _constraints.positive_semidefinite,
+                    _constraints.lower_cholesky,
+                )
+            )
+            if (
+                square_support
+                and matrix_shape is not None
+                and (
+                    len(matrix_shape) not in (1, 2)
+                    or len(matrix_shape) == 2
+                    and matrix_shape[0] != matrix_shape[1]
+                )
+            ):
+                raise CompileError(
+                    f"matrix-valued family {family!r} requires a square event, "
+                    f"but {var_names[0]!r} names axes of shape {matrix_shape}",
+                    line,
+                    col,
+                )
         if matrix_spec is not None:
             # A matrix-valued family takes its ``K x K`` shape from the
             # width in scope: the ``[over=...]`` axis when one is
@@ -7397,13 +7450,7 @@ class _ProgramsMixin:
             # None is optional, since the underlying distribution needs
             # ``K`` at construction and a scalar codomain would build it
             # at ``K = 1``.
-            matrix_dim = (
-                event_size
-                if event_size is not None
-                else checked_event[-1]
-                if checked_event is not None
-                else self._axis_event_size(program_codomain)
-            )
+            matrix_dim = matrix_shape[-1] if matrix_shape else None
             if matrix_dim is None or matrix_dim < 2:
                 raise CompileError(
                     f"matrix-valued family {family!r} needs a matrix "
@@ -7421,13 +7468,7 @@ class _ProgramsMixin:
             # An inverse Wishart draws a K x K positive-definite matrix:
             # K is the ``[over=...]`` axis's size, else the extent the
             # checked program gives the draw, else the codomain's width.
-            matrix_dim = (
-                event_size
-                if event_size is not None
-                else checked_event[-1]
-                if checked_event is not None
-                else self._axis_event_size(program_codomain)
-            )
+            matrix_dim = matrix_shape[-1] if matrix_shape else None
             if matrix_dim is None or matrix_dim < 2:
                 raise CompileError(
                     f"InverseWishart draw of {var_names[0]!r} needs a matrix "

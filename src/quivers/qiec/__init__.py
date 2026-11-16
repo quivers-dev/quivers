@@ -216,6 +216,14 @@ from quivers.qiec.families import (
     SupportKind,
     family,
 )
+from quivers.qiec.family_shapes import (
+    FamilyShapeSignature,
+    family_shape_equations,
+    instantiate_family_shapes,
+    legacy_family_shape_signature,
+    match_family_shapes,
+    validate_family_shape_dimensions,
+)
 from quivers.qiec.identifiers import (
     AddressRelation,
     AttachmentId,
@@ -501,6 +509,12 @@ __all__ = [
     "FamilyDecl",
     "FamilyId",
     "FamilyParameter",
+    "FamilyShapeSignature",
+    "family_shape_equations",
+    "instantiate_family_shapes",
+    "legacy_family_shape_signature",
+    "match_family_shapes",
+    "validate_family_shape_dimensions",
     "FieldDef",
     "Forward",
     "FuelExhaustedError",

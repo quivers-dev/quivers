@@ -13,27 +13,15 @@ from torch.distributions import constraints as _constraints
 from torch.distributions.distribution import Distribution
 
 from quivers.continuous._closed_probability import ClosedPoisson, _count_log
+from quivers.continuous._zero_inflated_count import _InflatedCount
 from quivers.continuous._zero_truncated_poisson import (
     positive_poisson_mean,
     positive_poisson_sample,
 )
-from quivers.continuous.measure import Mixture, PointMass
+from quivers.continuous.measure import Mixture
 
 
-def _two_component_inflation(
-    zero_prob: Tensor,
-    base: Distribution,
-) -> Mixture:
-    """Build the two-component `Mixture([pi, 1-pi], [PointMass(0), base])`
-    used by inflation / hurdle constructions. Stacks the weights
-    along the last axis so per-row `pi` broadcasts against the base's
-    batch shape.
-    """
-    weights = torch.stack([zero_prob, 1.0 - zero_prob], dim=-1)
-    return Mixture(weights, [PointMass(0.0), base])
-
-
-class ZeroInflatedPoisson(Distribution):
+class ZeroInflatedPoisson(_InflatedCount):
     """`Mixture([pi, 1-pi], [PointMass(0), Poisson(rate)])`.
 
     Total zero mass `pi + (1-pi) * exp(-rate)` per Lambert 1992;
@@ -52,6 +40,8 @@ class ZeroInflatedPoisson(Distribution):
     }
     support = _constraints.nonnegative_integer
     has_rsample = False
+    _count_class = ClosedPoisson
+    _zero_count_parameters = ("rate",)
 
     def __init__(
         self,
@@ -59,37 +49,11 @@ class ZeroInflatedPoisson(Distribution):
         rate: Tensor,
         validate_args: bool | None = None,
     ) -> None:
-        self.zero_prob = zero_prob
-        self.rate = rate
-        base = ClosedPoisson(rate)
-        self._mixture = _two_component_inflation(zero_prob, base)
+        self.zero_prob, self.rate = torch.broadcast_tensors(zero_prob, rate)
         super().__init__(
-            batch_shape=self._mixture.batch_shape,
-            event_shape=self._mixture.event_shape,
+            batch_shape=self.zero_prob.shape,
             validate_args=validate_args,
         )
-
-    @property
-    def mean(self) -> Tensor:
-        return (1.0 - self.zero_prob) * self.rate
-
-    def log_prob(self, value: Tensor) -> Tensor:
-        return self._mixture.log_prob(value)
-
-    def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
-        with torch.no_grad():
-            shape = self._extended_shape(sample_shape)
-            probability = self.zero_prob.expand(shape)
-            active = (
-                torch.rand(shape, dtype=probability.dtype, device=probability.device)
-                >= probability
-            )
-            result = torch.zeros(shape, dtype=torch.long, device=probability.device)
-            if active.any():
-                result[active] = (
-                    ClosedPoisson(self.rate.expand(shape)[active]).sample().long()
-                )
-            return result
 
 
 class HurdlePoisson(Distribution):
@@ -147,19 +111,26 @@ class HurdlePoisson(Distribution):
         """
         if self._validate_args:
             self._validate_sample(value)
-        safe_value = torch.where(value > 0, value, torch.ones_like(value))
-        one = torch.ones_like(self.rate)
-        positive = (
-            _count_log(one, 1 - self.zero_prob)
-            + _count_log(safe_value - 1, self.rate)
-            - self.rate
-            + positive_poisson_mean(self.rate).log()
-            - torch.lgamma(safe_value + 1)
+        valid = _constraints.nonnegative_integer.check(value)
+        value = value.to(torch.float64)
+        rate, zero = self.rate.to(torch.float64), self.zero_prob.to(torch.float64)
+        safe_value = torch.where(valid & (value > 0), value, 1.0)
+        # Reuse the stable unrestricted count kernel. The one-count identity
+        # retains the finite first/second rate derivatives at the zero limit.
+        safe_rate = torch.where(rate > 0, rate, 1.0)
+        conditioned = (
+            ClosedPoisson(safe_rate, validate_args=False).log_prob(safe_value)
+            - (-torch.expm1(-safe_rate)).log()
         )
-        result = torch.where(value == 0, _count_log(one, self.zero_prob), positive)
-        return torch.where(
-            _constraints.nonnegative_integer.check(value), result, -torch.inf
+        component = torch.where(
+            safe_value == 1,
+            -rate + positive_poisson_mean(rate).log(),
+            torch.where(rate > 0, conditioned, -torch.inf),
         )
+        one = torch.ones_like(rate)
+        positive = _count_log(one, 1 - zero) + component
+        result = torch.where(value == 0, _count_log(one, zero), positive)
+        return torch.where(valid, result, -torch.inf)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         """Draw counts using a conditioned first arrival for the positive branch.

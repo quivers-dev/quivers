@@ -579,9 +579,7 @@ class MixedInlineDistribution(ContinuousMorphism):
                 variables.append(block.reshape(*block.shape[:-1], *shape))
             else:
                 variables.append(x[..., var_offset : var_offset + dim])
-            batch_ranks.append(
-                variables[-1].dim() - (event_rank if event_rank >= 2 else 0)
-            )
+            batch_ranks.append(variables[-1].dim() - event_rank)
             var_offset += dim
         # A literal broadcasts against the widest variable parameter: a
         # per-row value, with a unit axis for each further axis a scalar

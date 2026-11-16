@@ -196,3 +196,106 @@ def test_float32_simplex_roundoff_has_same_native_and_reference_support():
         {"loc": (0.0, 0.0), "scale_tril": ((1.0, 0.0), (0.0, 1.0))}, tuple(y.tolist())
     )
     assert reference == pytest.approx(native.item(), abs=1e-6)
+
+
+@pytest.mark.parametrize("reference", [0, 1, 2])
+def test_explicit_reference_density_and_first_second_head_gradients(reference):
+    loc = torch.tensor([0.2, -0.3], dtype=torch.double, requires_grad=True)
+    factor = torch.tensor(
+        [[0.8, 0.0], [0.2, 0.7]], dtype=torch.double, requires_grad=True
+    )
+    y = torch.tensor([0.2, 0.3, 0.5], dtype=torch.double)
+    indices = [index for index in range(3) if index != reference]
+    expected = (
+        multivariate_normal.logpdf(
+            np.log(y[indices].numpy() / y[reference].item()),
+            mean=loc.detach().numpy(),
+            cov=(factor @ factor.T).detach().numpy(),
+        )
+        - np.log(y.numpy()).sum()
+    )
+
+    def score(m, l):
+        return AdditiveLogRatioNormal(
+            m, l, reference=reference, validate_args=False
+        ).log_prob(y)
+
+    assert score(loc, factor).item() == pytest.approx(expected, abs=1e-12)
+    assert torch.autograd.gradcheck(score, (loc, factor))
+    assert torch.autograd.gradgradcheck(score, (loc, factor))
+    assert DENSITIES["AdditiveLogRatioNormal"](
+        {
+            "loc": (0.2, -0.3),
+            "scale_tril": ((0.8, 0.0), (0.2, 0.7)),
+            "reference": reference,
+        },
+        (0.2, 0.3, 0.5),
+    ) == pytest.approx(expected, abs=1e-12)
+
+
+def test_reference_batch_axis_is_separate_from_gaussian_event_and_sampling_order():
+    loc = torch.tensor([0.3, -0.4], dtype=torch.double)
+    factor = torch.tensor([[0.8, 0.0], [0.2, 0.7]], dtype=torch.double)
+    reference = torch.tensor([0, 2, 1])
+    dist = AdditiveLogRatioNormal(loc, factor, reference)
+    assert dist.batch_shape == (3,)
+    with torch.random.fork_rng():
+        torch.manual_seed(307)
+        samples = dist.sample((25000,))
+    for row, r in enumerate(reference.tolist()):
+        indices = [index for index in range(3) if index != r]
+        ratios = (samples[:, row, indices] / samples[:, row, r : r + 1]).log()
+        torch.testing.assert_close(ratios.mean(0), loc, atol=0.015, rtol=0)
+        torch.testing.assert_close(
+            torch.cov(ratios.T), factor @ factor.T, atol=0.02, rtol=0
+        )
+    assert dist.log_prob(torch.tensor([0.2, 0.3, 0.5], dtype=torch.double)).shape == (
+        3,
+    )
+    assert dist.expand((2, 3)).sample((4,)).shape == (4, 2, 3, 3)
+
+
+@pytest.mark.parametrize("reference", [-1, 3, 0.5, float("nan"), True])
+def test_invalid_reference_is_rejected_before_indexing(reference):
+    with pytest.raises(ValueError, match="reference"):
+        AdditiveLogRatioNormal([0.1, 0.2], [[1.0, 0.0], [0.0, 1.0]], reference)
+    with pytest.raises(ValueError, match="reference"):
+        DENSITIES["AdditiveLogRatioNormal"](
+            {
+                "loc": (0.1, 0.2),
+                "scale_tril": ((1.0, 0.0), (0.0, 1.0)),
+                "reference": reference,
+            },
+            (0.0, 0.5, 0.5),
+        )
+
+
+@pytest.mark.parametrize("reference", [0, 1, 2])
+def test_checked_source_explicit_reference_preserves_response_component_order(
+    reference,
+):
+    source = _source(2, 2).replace(
+        "scale_tril=factor)", "scale_tril=factor,reference=" + str(reference) + ")"
+    )
+    loc = torch.tensor([[0.2, -0.4], [-0.3, 0.1]], dtype=torch.double)
+    factor = torch.eye(2, dtype=torch.double).expand(2, 2, 2)
+    y = torch.tensor([[0.2, 0.3, 0.5], [0.1, 0.6, 0.3]], dtype=torch.double)
+    expected = AdditiveLogRatioNormal(loc, factor, reference).log_prob(y).sum()
+    torch.testing.assert_close(
+        Model(source)
+        .bind({"loc": loc, "factor": factor, "y": y})
+        .trace({})
+        .log_joint.sum(),
+        expected,
+    )
+    checked = lower_qvr_to_qiec(parse(source))
+    actual = run_program(
+        checked,
+        "model",
+        data={
+            k: _host(v.tolist())
+            for k, v in {"loc": loc, "factor": factor, "y": y}.items()
+        },
+        sites={},
+    )
+    assert actual.log_joint == pytest.approx(expected.item(), abs=1e-10)

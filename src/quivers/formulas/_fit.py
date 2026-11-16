@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 import numpy as np
 from pathlib import Path
-from typing import Literal, Mapping
+from typing import Literal, Mapping, Unpack
 
 import didactic.api as dx
 from formulae.matrices import DesignMatrices
@@ -39,6 +39,12 @@ from quivers.formulas.formula import (
     formula_from_data,
 )
 from quivers.formulas._prediction import FormulaPredictionPlan
+from quivers.formulas._response import count_totals, response_tensor, resolve_trials
+from quivers.formulas._response_modifiers import (
+    ResponseDraws,
+    ExpectationOptions,
+    PredictionOptions,
+)
 from quivers.inference import (
     ELBO,
     HMCKernel,
@@ -101,7 +107,7 @@ class BayesianFit(ValueModel):
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     reparameterize: Literal["centered", "noncentered"] = "noncentered"
-    binomial_trials: int | str = 1
+    binomial_trials: int | str | None = None
     thresholds_by: str | None = None
     mixture_components: int = 2
     fixed_prior: str = "Normal(0.0, 5.0)"
@@ -170,7 +176,7 @@ class BayesianFit(ValueModel):
         return out
 
     @property
-    def category_labels(self) -> tuple[int, ...]:
+    def category_labels(self) -> tuple[int | str, ...]:
         """Response-category labels in posterior probability-array order.
 
         Returns
@@ -179,6 +185,10 @@ class BayesianFit(ValueModel):
             Codes ``0..K-1`` for categorical and ordinal responses; empty
             for other families. Categorical coefficient arrays omit code zero.
         """
+        if self.formula.response_layout.component_names:
+            return self.formula.response_layout.component_names
+        if self.formula.response_layout.category_levels:
+            return self.formula.response_layout.category_levels
         if self.family.observe_family not in {
             "Categorical",
             "OrderedLogistic",
@@ -194,7 +204,7 @@ class BayesianFit(ValueModel):
         )
 
     @property
-    def threshold_labels(self) -> tuple[tuple[int, int], ...]:
+    def threshold_labels(self) -> tuple[tuple[int | str, int | str], ...]:
         """Adjacent category pairs identifying the ordinal transition axis.
 
         Returns
@@ -463,6 +473,7 @@ class BayesianFit(ValueModel):
         transform: bool = False,
         new_data: IntoDataFrame | None = None,
         predictor_data: torch.Tensor | None = None,
+        trials: int | str | None = None,
         re_formula: str | None = None,
         allow_new_levels: bool = False,
         sample_new_levels: Literal[
@@ -492,6 +503,11 @@ class BayesianFit(ValueModel):
         predictor_data : torch.Tensor or None
             Explicit input for a neural predictor on new rows. Required for
             neural fits with new_data; otherwise must be None.
+        trials : int or str or None
+            Response trial count or column for prediction rows. Vector count
+            fits infer training totals; fresh rows require explicit totals
+            unless a retained trial column supplies them. Linear predictors
+            do not require totals.
         re_formula : str or None
             None includes all fitted varying effects; ``"~0"`` excludes
             them; a one-sided group formula selects fitted slopes. This
@@ -559,6 +575,8 @@ class BayesianFit(ValueModel):
             allow_new_levels=allow_new_levels,
             sample_new_levels=sample_new_levels,
             seed=seed,
+            trials=trials,
+            require_trials=False,
         )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
@@ -570,9 +588,7 @@ class BayesianFit(ValueModel):
                 for term in self.formula.random_terms
             )
         )
-        categories = (
-            len(self.category_labels) if self.family.name == "categorical" else 0
-        )
+        categories = self._predictor_width(parameter)
         if category_specific:
             categories = (
                 len(self.category_labels)
@@ -603,6 +619,7 @@ class BayesianFit(ValueModel):
         *,
         new_data: IntoDataFrame | None = None,
         predictor_data: torch.Tensor | None = None,
+        trials: int | str | None = None,
         re_formula: str | None = None,
         allow_new_levels: bool = False,
         sample_new_levels: Literal[
@@ -613,6 +630,8 @@ class BayesianFit(ValueModel):
             "feasible_gaussian",
         ] = "uncertainty",
         num_samples: int | None = None,
+        mc_samples: int | None = None,
+        component: Literal["response", "decision"] = "response",
         seed: int = 0,
     ) -> torch.Tensor:
         """Evaluate native expected responses on training or fresh rows.
@@ -624,6 +643,11 @@ class BayesianFit(ValueModel):
             or None for training rows. No response or weight column is needed.
         predictor_data : torch.Tensor or None
             Explicit neural input for new_data, required for neural fits.
+        trials : int or str or None
+            Response trial count or column for prediction rows. Vector count
+            fits infer training totals; fresh rows require explicit totals
+            unless a retained trial column supplies them. Linear predictors
+            do not require totals.
         re_formula : str or None
             None includes all fitted varying effects; ``"~0"`` excludes
             them; a one-sided group formula selects fitted slopes. This
@@ -645,6 +669,13 @@ class BayesianFit(ValueModel):
             Fitted draws and cutpoints are retained.
         num_samples : int or None
             Draw count under the convention of `draws`.
+        mc_samples : int or None
+            Explicit Monte Carlo budget for bounded response laws without a
+            closed mean. Sampling uses chunks of at most 64; None requires an
+            analytic expectation. Logistic normal responses require a budget.
+        component : {"response", "decision"}
+            Wiener response means are positive reaction times, including delay.
+            Decision returns lower/upper probabilities for a decision response.
         seed : int
             Seed for variational draws, restored on exit.
 
@@ -656,6 +687,7 @@ class BayesianFit(ValueModel):
             asymmetric Laplace results are means, not modeled quantiles.
             Ordinal and categorical responses instead return probabilities,
             ``(chain, draw, row, category)``, in `category_labels` order.
+            Decision probabilities use a final axis ordered lower, upper.
 
         Raises
         ------
@@ -669,10 +701,18 @@ class BayesianFit(ValueModel):
             collect_draws,
             replay,
             response_distribution,
+            response_mean,
+            response_rng,
             row_binding,
         )
         from quivers.formulas._prediction import prepare_prediction
 
+        if component not in {"response", "decision"}:
+            raise ValueError("expected response component must be response or decision")
+        if component == "decision" and self.formula.modifiers.decision is None:
+            raise ValueError(
+                "decision probabilities require a decision response modifier"
+            )
         if self.family.observe_family == "VonMises":
             raise TypeError(
                 "a circular response expectation requires an angular convention"
@@ -685,23 +725,44 @@ class BayesianFit(ValueModel):
             allow_new_levels=allow_new_levels,
             sample_new_levels=sample_new_levels,
             seed=seed,
+            trials=trials,
         )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         rows = context.rows
         response = _qvr_name(self.formula.response_name)
-        categories = len(self.category_labels)
+        categories = (
+            len(self.category_labels)
+            if self.family.observe_family == "Categorical"
+            or self.family.ordinal is not None
+            else 0
+        )
+        if component == "decision":
+            categories = 2
 
         def values():
             for recorded in replay(self, draws, shape, context=context):
                 distribution = response_distribution(recorded, response)
-                if self.family.observe_family == "Categorical":
+                if component == "decision":
+                    from quivers.continuous._wiener import Wiener
+
+                    if not isinstance(distribution, Wiener):
+                        raise TypeError(
+                            "the response has no binary decision probabilities"
+                        )
+                    value = distribution.choice_probs
+                elif self.family.name == "wiener":
+                    from quivers.continuous._wiener import Wiener
+
+                    assert isinstance(distribution, Wiener)
+                    value = distribution.mean_response_time
+                elif self.family.observe_family == "Categorical":
                     if not isinstance(distribution, torch.distributions.Categorical):
                         raise TypeError(
                             "the categorical response has no native class probabilities"
                         )
                     value = distribution.probs
-                elif categories:
+                elif self.family.ordinal is not None:
                     from quivers.continuous._ordinal import OrdinalDistribution
 
                     if isinstance(distribution, OrdinalDistribution):
@@ -722,19 +783,54 @@ class BayesianFit(ValueModel):
                         .movedim(0, -1)
                     )
                 else:
-                    try:
-                        value = distribution.mean
-                    except NotImplementedError as error:
-                        raise TypeError(
-                            f"{self.family.observe_family} exposes no native response expectation"
-                        ) from error
+                    value = response_mean(distribution, mc_samples)
                 if not torch.isfinite(value).all():
                     raise ValueError(
                         f"{self.family.observe_family} has an undefined or nonfinite response mean at a posterior draw"
                     )
-                yield row_binding(value, rows, categories)
+                yield row_binding(
+                    value, rows, self.formula.response_layout.event_shape or categories
+                )
 
-        return collect_draws(values(), shape)
+        with response_rng(seed + 2, (*draws.values(), *context.observations.values())):
+            return collect_draws(values(), shape)
+
+    def posterior_choice_probs(
+        self, **options: Unpack[ExpectationOptions]
+    ) -> torch.Tensor:
+        """Return joint-model lower/upper decision probabilities.
+
+        Parameters
+        ----------
+        **options
+            Shared posterior expectation options, including new_data, varying
+            effect selection, draw count, and seed.
+
+        Returns
+        -------
+        torch.Tensor
+            Probabilities shaped chain x draw x row x (lower, upper).
+        """
+        return self.posterior_epred(component="decision", **options)
+
+    def posterior_response(self, **options: Unpack[PredictionOptions]) -> ResponseDraws:
+        """Draw responses in original measurement coordinates in one replay.
+
+        Parameters
+        ----------
+        **options
+            Shared posterior_predict options, including new_data, varying
+            effect selection, draw count, and seed.
+
+        Returns
+        -------
+        ResponseDraws
+            Positive reaction time and its joint binary decision for Wiener;
+            ordinary response values with no decision for other families.
+        """
+        from quivers.formulas._response_modifiers import decode_response_draws
+
+        return decode_response_draws(self.formula, self.posterior_predict(**options))
 
     def analysis(
         self, *, num_samples: int | None = None, seed: int = 0
@@ -768,7 +864,7 @@ class BayesianFit(ValueModel):
         return PosteriorAnalysis(
             samples=draws,
             log_likelihood=likelihood,
-            observed_data={response: self.observations[response]},
+            observed_data={response: response_tensor(self.formula, self.family)},
             sample_stats=_sample_stats(self.posterior, shape[1]),
             kind="mcmc" if isinstance(self.posterior, MCMCResult) else "variational",
         )
@@ -810,6 +906,7 @@ class BayesianFit(ValueModel):
         *,
         new_data: IntoDataFrame | None = None,
         predictor_data: torch.Tensor | None = None,
+        trials: int | str | None = None,
         re_formula: str | None = None,
         allow_new_levels: bool = False,
         sample_new_levels: Literal[
@@ -831,6 +928,11 @@ class BayesianFit(ValueModel):
             or None for training rows. No response or weight column is needed.
         predictor_data : torch.Tensor or None
             Explicit neural input for new_data, required for neural fits.
+        trials : int or str or None
+            Response trial count or column for prediction rows. Vector count
+            fits infer training totals; fresh rows require explicit totals
+            unless a retained trial column supplies them. Linear predictors
+            do not require totals.
         re_formula : str or None
             None includes all fitted varying effects; ``"~0"`` excludes
             them; a one-sided group formula selects fitted slopes. This
@@ -860,10 +962,13 @@ class BayesianFit(ValueModel):
         Returns
         -------
         torch.Tensor
-            Predictive responses, shape ``(chain, draw, row)``. Categorical
+            Predictive responses, shape ``(chain, draw, row, *event)``. Categorical
             and ordinal responses contain integer codes in `category_labels`;
             binomial responses contain counts. Likelihood weights do not
             alter the response sampling law at a fixed posterior draw.
+            Wiener draws retain their joint signed representation: positive
+            upper-boundary and negative lower-boundary reaction times. Use
+            `posterior_response` for positive times and their joint decisions.
 
         Raises
         ------
@@ -876,6 +981,7 @@ class BayesianFit(ValueModel):
             collect_draws,
             replay,
             row_binding,
+            response_rng,
         )
         from quivers.formulas._prediction import prepare_prediction
 
@@ -887,6 +993,7 @@ class BayesianFit(ValueModel):
             allow_new_levels=allow_new_levels,
             sample_new_levels=sample_new_levels,
             seed=seed,
+            trials=trials,
         )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
@@ -901,14 +1008,60 @@ class BayesianFit(ValueModel):
                 # The native observation expands shared parameters before
                 # sampling, so different rows receive independent draws.
                 yield row_binding(
-                    sampleable.raw_morphism.rsample(sampleable.input), rows
+                    sampleable.raw_morphism.rsample(sampleable.input),
+                    rows,
+                    self.formula.response_layout.event_shape,
                 )
 
         # Guide sampling uses its own seed and restores the caller's RNG.
         # A distinct stream avoids coupling response noise to guide noise.
-        with torch.random.fork_rng(devices=[]), torch.no_grad():
-            torch.random.default_generator.manual_seed((seed + 1) % 2**64)
+        with (
+            response_rng(seed + 1, (*draws.values(), *context.observations.values())),
+            torch.no_grad(),
+        ):
             return collect_draws(values(), shape)
+
+    def _predictor_width(self, parameter: str) -> int:
+        """Read the declared coordinate width of a fitted predictor.
+
+        Parameters
+        ----------
+        parameter : str
+            Location or auxiliary parameter name.
+
+        Returns
+        -------
+        int
+            Component width, or zero for a scalar predictor.
+        """
+        response = self.family.response
+        if response is None:
+            return 0
+        if parameter == "mu":
+            return len(self.category_labels) - int(response.kind == "logistic_normal")
+        return (
+            len(self.category_labels) - 1
+            if response.kind == "logistic_normal" and parameter == "sigma"
+            else 0
+        )
+
+    @property
+    def coefficient_labels(self) -> tuple[int | str, ...]:
+        """Label free component coefficients in their retained coordinate order.
+
+        Returns
+        -------
+        tuple[int | str, ...]
+            Nonreference component labels, or all labels without a reference.
+        """
+        response = self.family.response
+        if response is None:
+            return ()
+        labels = self.category_labels
+        return tuple(
+            labels[index]
+            for index in response.coordinate_indices(tuple(str(v) for v in labels))
+        )
 
     def _formula_predictor(self, parameter: str) -> tuple[Formula, str]:
         """Read retained predictor metadata without re-evaluating its formula.
@@ -994,8 +1147,17 @@ class BayesianFit(ValueModel):
         collected: dict[tuple[str, str], list[torch.Tensor]] = {
             (term.group, term.slope): [] for term in predictor.random_terms
         }
-        categorical = self.family.name == "categorical"
-        categories = len(self.category_labels) - 1
+        response = self.family.response
+        categorical = response is not None and (
+            not prefix or response.kind == "logistic_normal" and prefix == "dpar_sigma_"
+        )
+        if categorical:
+            assert response is not None
+            categories = len(
+                response.coordinate_indices(tuple(str(v) for v in self.category_labels))
+            )
+        else:
+            categories = len(self.category_labels) - 1
         if (
             self.family.ordinal is not None
             and self.family.ordinal.kind == "hurdle_cumulative"
@@ -1041,6 +1203,7 @@ def fit(
     data: IntoDataFrame,
     family: str | Family = "gaussian",
     weights: str | None = None,
+    decision: str | None = None,
     distributional: Mapping[str, str] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     method: Literal["nuts", "hmc", "svi"] = "nuts",
@@ -1056,7 +1219,7 @@ def fit(
     guide: type | None = None,
     initial_values: Mapping[str, torch.Tensor | float] | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
-    binomial_trials: int | str = 1,
+    binomial_trials: int | str | None = None,
     thresholds_by: str | None = None,
     mixture_components: int = 2,
     predictor: nn.Module | None = None,
@@ -1088,6 +1251,9 @@ def fit(
         Numeric column of finite nonnegative likelihood weights. Values
         multiply each response's log density, retain their original scale,
         and do not weight priors or posterior predictions.
+    decision : str or None
+        Wiener boundary-choice column: numeric zero/lower or one/upper, or
+        the labels lower and upper. Equivalent to response-side dec(column).
     distributional : Mapping[str, str] or None
         Auxiliary-parameter formulas, for instance
         ``{"sigma": "~ z + (1 | g)"}``. The optional left-hand side must
@@ -1127,9 +1293,11 @@ def fit(
         Values must lie strictly inside the prior support. MCMC applies
         these after its seeded initial strategy; SVI passes them to the
         guide constructor. A custom guide must accept this keyword when
-        values are supplied. For a regressed shifted-lognormal ``ndt``
+        values are supplied. For a regressed shifted-lognormal or Wiener ``ndt``
         with the log link and an intercept, default coefficient centers put the shift below
         the minimum observed response; explicit values override those centers.
+        An unregressed learned Wiener delay starts at one quarter of the
+        minimum reaction time, before explicit overrides.
     reparameterize : {"centered", "noncentered"}
         Parameterization of the random effects.
     binomial_trials : int or str
@@ -1191,9 +1359,14 @@ def fit(
             family_obj = families[family]
         else:
             family_obj = family
+        binomial_trials = resolve_trials(family_obj, binomial_trials)
 
         parsed, design = _threshold_formula_and_design(
-            formula, data, thresholds_by=thresholds_by, weights=weights
+            formula,
+            data,
+            thresholds_by=thresholds_by,
+            weights=weights,
+            decision=decision,
         )
         parameter_designs: dict[str, DesignMatrices] = {}
         parameter_formulas = _parse_distributional(
@@ -1242,43 +1415,52 @@ def fit(
 
         observations: dict[str, torch.Tensor] = {}
         observations.update(lens.fixed_column_observations(parsed))
-        response_name = parsed.response_name
-        observations[response_name] = torch.as_tensor(
-            parsed.response_values.copy(), dtype=torch.float32
-        ).reshape(-1)
+        from quivers.formulas._response_modifiers import response_input_name
+
+        observations[response_input_name(parsed)] = response_tensor(parsed, family_obj)
         for predictor_formula in (parsed, *parameter_formulas.values()):
             for group, codes in predictor_formula.group_indices.items():
                 observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
                     list(codes), dtype=torch.long
                 )
         if family_obj.trials_parameter is not None:
-            trials = _binomial_trial_tensor(
-                data, binomial_trials, n_obs=parsed.response_values.shape[0]
-            )
-            response = observations[response_name]
-            _validate_binomial_response(response, trials, caller="fit")
-            if isinstance(binomial_trials, str):
+            trials = _response_trials(parsed, data, binomial_trials, caller="fit")
+            if parsed.response_layout.event_shape:
+                observations["formula_trials"] = trials
+            if (
+                isinstance(binomial_trials, str)
+                and not parsed.response_layout.event_shape
+            ):
                 observations[_qvr_name(binomial_trials)] = trials
         if predictor is not None:
             assert predictor_data is not None
             assert predictor_name is not None
             predictor_categories = (
-                FormulaToQVRModule._category_count(parsed, family="categorical")
-                if family_obj.name == "categorical"
+                len(FormulaToQVRModule._component_labels(parsed))
+                if family_obj.response is not None
                 else None
+            )
+            predictor_reference = (
+                family_obj.response.reference_index(
+                    FormulaToQVRModule._component_labels(parsed)
+                )
+                if family_obj.response is not None
+                else 0
             )
             observations[predictor_name] = _predictor_output(
                 predictor,
                 predictor_data,
                 n_obs=parsed.response_values.shape[0],
                 n_categories=predictor_categories,
+                reference=predictor_reference,
             ).detach()
         else:
             predictor_categories = None
+            predictor_reference = 0
 
         starts: dict[str, torch.Tensor | float] = {}
         if (
-            family_obj.name == "shifted_lognormal"
+            family_obj.name in {"shifted_lognormal", "wiener"}
             and "ndt" in parameter_formulas
             and next(
                 aux for aux in family_obj.aux_params if aux.name == "ndt"
@@ -1299,6 +1481,12 @@ def fit(
                         if column.is_intercept
                         else 0.0
                     )
+        if (
+            family_obj.name == "wiener"
+            and "ndt" not in parameter_formulas
+            and "ndt" not in (fixed_parameters or {})
+        ):
+            starts["ndt"] = float(np.min(parsed.response_values)) / 4
         starts.update(initial_values or {})
         losses: tuple[float, ...] = ()
         if method == "svi":
@@ -1312,6 +1500,7 @@ def fit(
                 predictor_data=predictor_data,
                 predictor_name=predictor_name,
                 predictor_categories=predictor_categories,
+                predictor_reference=predictor_reference,
                 initial_values=starts,
             )
         else:
@@ -1358,6 +1547,7 @@ def formula_to_qvr(
     data: IntoDataFrame,
     family: str | Family = "gaussian",
     weights: str | None = None,
+    decision: str | None = None,
     distributional: Mapping[str, str] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     fixed_prior: str = "Normal(0.0, 5.0)",
@@ -1365,7 +1555,7 @@ def formula_to_qvr(
     correlation_prior: str = "LKJCholesky(1.0)",
     priors: Mapping[str, str] | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
-    binomial_trials: int | str = 1,
+    binomial_trials: int | str | None = None,
     thresholds_by: str | None = None,
     mixture_components: int = 2,
     predictor_name: str | None = None,
@@ -1383,12 +1573,16 @@ def formula_to_qvr(
     instead binds auxiliary parameters to constants on their natural scale.
     ``weights="column"`` retains nonnegative likelihood weights and emits
     them only on the response observation; priors and predictions are unweighted.
+    ``decision="column"`` or ``rt | dec(column) ~ predictors`` retains a Wiener
+    boundary choice alongside positive reaction times. Emitted source visibly
+    adapts raw times and Boolean choices to a lossless signed response.
     """
     lens, parsed = _formula_lens(
         formula,
         data=data,
         family=family,
         weights=weights,
+        decision=decision,
         distributional=distributional,
         fixed_parameters=fixed_parameters,
         fixed_prior=fixed_prior,
@@ -1414,6 +1608,7 @@ def get_prior(
     data: IntoDataFrame,
     family: str | Family = "gaussian",
     weights: str | None = None,
+    decision: str | None = None,
     distributional: Mapping[str, str] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     fixed_prior: str = "Normal(0.0, 5.0)",
@@ -1421,7 +1616,7 @@ def get_prior(
     correlation_prior: str = "LKJCholesky(1.0)",
     priors: Mapping[str, str] | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
-    binomial_trials: int | str = 1,
+    binomial_trials: int | str | None = None,
     thresholds_by: str | None = None,
     mixture_components: int = 2,
     predictor_name: str | None = None,
@@ -1445,6 +1640,9 @@ def get_prior(
         Numeric column of finite nonnegative likelihood weights. Values
         multiply each response's log density, retain their original scale,
         and do not weight priors or posterior predictions.
+    decision : str or None
+        Wiener boundary-choice column, equivalent to response-side dec(column).
+        Numeric codes must be exactly zero/lower or one/upper.
     distributional : Mapping[str, str] or None
         Separate formulas for auxiliary parameters.
     fixed_parameters : Mapping[str, float] or None
@@ -1479,6 +1677,7 @@ def get_prior(
         data=data,
         family=family,
         weights=weights,
+        decision=decision,
         distributional=distributional,
         fixed_parameters=fixed_parameters,
         fixed_prior=fixed_prior,
@@ -1500,6 +1699,7 @@ def _formula_lens(
     data: IntoDataFrame,
     family: str | Family = "gaussian",
     weights: str | None = None,
+    decision: str | None = None,
     distributional: Mapping[str, str] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
     fixed_prior: str = "Normal(0.0, 5.0)",
@@ -1507,7 +1707,7 @@ def _formula_lens(
     correlation_prior: str = "LKJCholesky(1.0)",
     priors: Mapping[str, str] | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
-    binomial_trials: int | str = 1,
+    binomial_trials: int | str | None = None,
     thresholds_by: str | None = None,
     mixture_components: int = 2,
     predictor_name: str | None = None,
@@ -1522,18 +1722,15 @@ def _formula_lens(
         family_obj = families[family]
     else:
         family_obj = family
+    binomial_trials = resolve_trials(family_obj, binomial_trials)
     parsed, _ = _threshold_formula_and_design(
-        formula, data, thresholds_by=thresholds_by, weights=weights
+        formula, data, thresholds_by=thresholds_by, weights=weights, decision=decision
     )
     parameter_formulas = _parse_distributional(
         distributional, data, parsed.response_name
     )
     if family_obj.trials_parameter is not None:
-        trials = _binomial_trial_tensor(
-            data, binomial_trials, n_obs=parsed.response_values.shape[0]
-        )
-        response = torch.as_tensor(parsed.response_values.copy())
-        _validate_binomial_response(response, trials, caller="formula_to_qvr")
+        _response_trials(parsed, data, binomial_trials, caller="formula_to_qvr")
     lens = FormulaToQVRModule(
         family_obj,
         fixed_prior=fixed_prior,
@@ -1557,6 +1754,7 @@ def _threshold_formula_and_design(
     *,
     thresholds_by: str | None,
     weights: str | None,
+    decision: str | None = None,
 ) -> tuple[Formula, DesignMatrices]:
     """Evaluate a full threshold profile with one shared group location.
 
@@ -1570,6 +1768,8 @@ def _threshold_formula_and_design(
         Group whose centered threshold shape also needs a location effect.
     weights : str or None
         Optional response-weight column.
+    decision : str or None
+        Optional lower/upper decision column.
 
     Returns
     -------
@@ -1577,14 +1777,18 @@ def _threshold_formula_and_design(
         Evaluated metadata and retained transforms, with exactly one ordinary
         varying intercept for the threshold group.
     """
-    parsed, design = _formula_and_design(formula, data, weights=weights)
+    parsed, design = _formula_and_design(
+        formula, data, weights=weights, decision=decision
+    )
     if thresholds_by is None or any(
         term.group == thresholds_by and term.slope == "Intercept"
         for term in parsed.random_terms
     ):
         return parsed, design
     expanded = f"{formula} + (1 | {thresholds_by})"
-    parsed, design = _formula_and_design(expanded, data, weights=weights)
+    parsed, design = _formula_and_design(
+        expanded, data, weights=weights, decision=decision
+    )
     return parsed.with_(formula=formula), design
 
 
@@ -1699,6 +1903,7 @@ def _fit_svi(
     predictor_data: torch.Tensor | None = None,
     predictor_name: str | None = None,
     predictor_categories: int | None = None,
+    predictor_reference: int | None = 0,
     initial_values: Mapping[str, torch.Tensor | float] | None = None,
 ):
     """Run an SVI fit + ELBO.
@@ -1744,6 +1949,7 @@ def _fit_svi(
                 predictor_data,
                 n_obs=n_obs,
                 n_categories=predictor_categories,
+                reference=predictor_reference,
             )
         return step_observations
 
@@ -1755,12 +1961,62 @@ def _fit_svi(
             predictor_data,
             n_obs=n_obs,
             n_categories=predictor_categories,
+            reference=predictor_reference,
         ).detach()
     return guide, losses
 
 
-def _binomial_trial_tensor(
+def _response_trials(
+    formula: Formula,
     data: IntoDataFrame,
+    specification: int | str | None,
+    *,
+    caller: str,
+) -> torch.Tensor:
+    """Validate shared trial inputs against scalar or vector response events.
+
+    Parameters
+    ----------
+    formula : Formula
+        Evaluated response with explicit row/event metadata.
+    data : IntoDataFrame
+        Source rows containing any specified trial column.
+    specification : int or str or None
+        Constant or trial column; None infers vector row totals.
+    caller : str
+        User-facing workflow name for diagnostics.
+
+    Returns
+    -------
+    torch.Tensor
+        Exact validated Int64 row totals.
+
+    Raises
+    ------
+    ValueError
+        If explicit trials disagree with a vector event's component sum.
+    """
+    if formula.response_layout.event_shape:
+        totals = count_totals(formula)
+        if specification is None:
+            return totals
+        trials = _binomial_trial_tensor(data, specification, n_obs=len(totals))
+        if not torch.equal(totals, trials):
+            raise ValueError(
+                f"{caller}: vector response row totals disagree with supplied trials"
+            )
+        return trials
+    trials = _binomial_trial_tensor(
+        data,
+        1 if specification is None else specification,
+        n_obs=formula.response_values.shape[0],
+    )
+    _validate_binomial_response(response_tensor(formula), trials, caller=caller)
+    return trials
+
+
+def _binomial_trial_tensor(
+    data: IntoDataFrame | None,
     trials: int | str,
     *,
     n_obs: int,
@@ -1769,8 +2025,8 @@ def _binomial_trial_tensor(
 
     Parameters
     ----------
-    data : IntoDataFrame
-        Rows containing an optional trial-count column.
+    data : IntoDataFrame or None
+        Rows containing a trial-count column, required for named trials.
     trials : int or str
         Shared nonnegative count or trial-count column name.
     n_obs : int
@@ -1798,6 +2054,8 @@ def _binomial_trial_tensor(
                 "binomial_trials must be a nonnegative integer at most 2**53"
             )
         return torch.full((n_obs,), trials, dtype=torch.long)
+    if data is None:
+        raise ValueError("a trial column requires a retained dataframe")
     frame = nw.from_native(data, eager_only=True)
     if trials not in frame.columns:
         raise ValueError(f"binomial_trials column {trials!r} is not in the data")
@@ -1835,22 +2093,52 @@ def _predictor_output(
     *,
     n_obs: int,
     n_categories: int | None = None,
+    reference: int | None = 0,
 ) -> torch.Tensor:
+    """Validate neural predictors and identify their component coordinates.
+
+    Parameters
+    ----------
+    predictor : nn.Module
+        Trainable neural predictor on the linear-predictor scale.
+    data : torch.Tensor
+        Input rows supplied by the caller.
+    n_obs : int
+        Retained observation row count.
+    n_categories : int or None
+        Total component extent, or None for a scalar predictor.
+    reference : int or None
+        Identified zero component, or None for all-component predictors.
+
+    Returns
+    -------
+    torch.Tensor
+        Scalar row values or flattened ordered free component values.
+
+    Raises
+    ------
+    TypeError
+        If the predictor does not return a tensor.
+    ValueError
+        If row or component axes do not match the retained design.
+    """
     value = predictor(data)
     if not isinstance(value, torch.Tensor):
         raise TypeError(
             "fit: predictor must return a torch.Tensor on the linear-predictor scale"
         )
     if n_categories is not None:
-        if value.shape == (n_obs,) and n_categories == 2:
+        width = n_categories - int(reference is not None)
+        if value.shape == (n_obs,) and width == 1:
             return value
-        if value.shape == (n_obs, n_categories - 1):
+        if value.shape == (n_obs, width):
             return value.reshape(-1)
-        if value.shape == (n_obs, n_categories):
-            return (value[:, 1:] - value[:, :1]).reshape(-1)
+        if reference is not None and value.shape == (n_obs, n_categories):
+            coordinates = [index for index in range(n_categories) if index != reference]
+            return (value[:, coordinates] - value[:, reference, None]).reshape(-1)
         raise ValueError(
             "fit: categorical predictor returned shape "
-            f"{tuple(value.shape)}, expected ({n_obs}, {n_categories - 1}) "
+            f"{tuple(value.shape)}, expected ({n_obs}, {width}) "
             f"or ({n_obs}, {n_categories})"
         )
     if value.ndim == 2 and value.shape[-1] == 1:
