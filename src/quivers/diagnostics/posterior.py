@@ -302,7 +302,17 @@ class PosteriorAnalysis(ValueModel):
             elif values.shape[:2] != shape:
                 raise ValueError("posterior sites have incompatible chain/draw axes")
         if shape is None:
-            raise ValueError("posterior analysis requires latent draws")
+            # A parameter-free program still has recorded predictive units.
+            # Their actual draw axes supply the layout without a dummy latent.
+            first = next(iter(self.log_likelihood.values()), None)
+            if first is not None and first.ndim >= 3 and all(first.shape[:2]):
+                shape = first.shape[:2]
+            elif self.sample_stats:
+                first = next(iter(self.sample_stats.values()))
+                if first.ndim == 2 and all(first.shape):
+                    shape = first.shape
+            if shape is None:
+                raise ValueError("posterior analysis requires retained draw axes")
         if self.kind != "mcmc" and shape[0] != 1:
             raise ValueError(
                 "variational draws must have one pseudo-chain; independent prior draws require one layout axis"
@@ -672,15 +682,40 @@ class PosteriorAnalysis(ValueModel):
         arviz.ELPDData
             ArviZ's PSIS-LOO result. Variational draws use relative efficiency
             one; this does not correct variational approximation error.
+            If every likelihood column is constant across draws, exact uniform
+            weights replace an undefined tail fit, and Pareto shapes are NaN.
         """
         import arviz as az
 
         name = self._likelihood_name(var_name)
+        tree = self.to_datatree()
+        scores = self.log_likelihood[name]
+        if (
+            scores.numel()
+            and bool(torch.isfinite(scores).all())
+            and torch.equal(scores, scores[0, 0].expand_as(scores))
+        ):
+            # Constant likelihood columns have exactly uniform importance
+            # weights. No tail distribution exists to fit or diagnose.
+            import xarray as xr
+
+            likelihood = tree["log_likelihood"].dataset[name]
+            count = scores.shape[0] * scores.shape[1]
+            return az.loo(
+                tree,
+                var_name=name,
+                pointwise=pointwise,
+                reff=1.0,
+                log_weights=xr.full_like(likelihood, -math.log(count)),
+                pareto_k=xr.full_like(
+                    likelihood.isel(chain=0, draw=0, drop=True), math.nan
+                ),
+            )
         return az.loo(
-            self.to_datatree(),
+            tree,
             var_name=name,
             pointwise=pointwise,
-            reff=1.0 if self.kind != "mcmc" else None,
+            reff=1.0 if self.kind != "mcmc" or not self.samples else None,
         )
 
 

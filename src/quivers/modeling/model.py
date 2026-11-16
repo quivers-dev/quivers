@@ -1070,7 +1070,7 @@ class ModelFit(ValueModel):
         num_samples : int or None
             Maximum draws per MCMC chain; 100 draws for a guide when omitted.
         seed : int or None
-            Optional CPU seed for variational draws, restored on exit.
+            Optional seed for variational draws and participating native streams, restored on exit.
 
         Returns
         -------
@@ -1086,44 +1086,14 @@ class ModelFit(ValueModel):
             If an observation is hidden by marginalization and requires a
             marginal-likelihood observer rather than a conditional site score.
         """
-        if num_samples is not None and num_samples < 1:
-            raise ValueError("num_samples must be positive")
-        context = (
-            torch.random.fork_rng(devices=[]) if seed is not None else nullcontext()
+        from quivers.modeling._replay import source_analysis
+
+        bound = self.model if data is None else self.model.rebind(data)
+        return dict(
+            source_analysis(
+                bound, self.posterior, num_samples=num_samples, seed=seed
+            ).log_likelihood
         )
-        with context, torch.no_grad():
-            if seed is not None:
-                torch.random.default_generator.manual_seed(seed)
-            bound = self.model if data is None else self.model.rebind(data)
-            observations = set(bound.schema.observations)
-            if missing := observations - set(bound.data):
-                raise ValueError(
-                    f"log likelihood requires observations: {sorted(missing)}"
-                )
-            draws = self.draws(num_samples=num_samples)
-            if not draws:
-                raise ValueError("posterior has no latent draws")
-            first = next(iter(draws.values()))
-            chains, available = first.shape[:2]
-            count = available if num_samples is None else min(available, num_samples)
-            from quivers.inference._likelihood import collect_log_likelihood
-
-            values = bound.tensor_data()
-
-            def traces():
-                for chain in range(chains):
-                    for draw in range(count):
-                        latents = {
-                            name: samples[chain, draw]
-                            for name, samples in draws.items()
-                        }
-                        yield trace(
-                            bound.require_tensor_program(),
-                            bound.input,
-                            {**values, **latents},
-                        )
-
-            return collect_log_likelihood(traces(), observations, (chains, count))
 
     def analysis(
         self, *, num_samples: int | None = None, seed: int = 0
@@ -1135,7 +1105,7 @@ class ModelFit(ValueModel):
         num_samples : int or None
             Maximum recorded draws per chain, or fresh variational draws.
         seed : int
-            Guide sampling seed; the caller's CPU RNG is preserved.
+            Guide sampling seed; participating caller RNG streams are preserved.
 
         Returns
         -------
@@ -1150,48 +1120,10 @@ class ModelFit(ValueModel):
         ValueError
             If fitted response data are missing or the draw count is invalid.
         """
-        from quivers.diagnostics.posterior import PosteriorAnalysis, _sample_stats
-        from quivers.inference._likelihood import collect_log_likelihood
-        from quivers.inference._posterior import draw_count
+        from quivers.modeling._replay import source_analysis
 
-        shape = draw_count(self.posterior, num_samples)
-        bound = self.model
-        observations = set(bound.schema.observations)
-        if missing := observations - set(bound.data):
-            raise ValueError(f"log likelihood requires observations: {sorted(missing)}")
-        with torch.random.fork_rng(devices=[]), torch.no_grad():
-            torch.random.default_generator.manual_seed(seed)
-            samples = {
-                name: value[:, : shape[1]]
-                for name, value in self.draws(num_samples=shape[1]).items()
-            }
-            values = bound.tensor_data()
-            program = bound.require_tensor_program()
-
-            def traces():
-                for chain in range(shape[0]):
-                    for draw in range(shape[1]):
-                        yield trace(
-                            program,
-                            bound.input,
-                            values
-                            | {
-                                name: value[chain, draw]
-                                for name, value in samples.items()
-                            },
-                        )
-
-            likelihood = collect_log_likelihood(traces(), observations, shape)
-        return PosteriorAnalysis(
-            samples=samples,
-            log_likelihood=likelihood,
-            observed_data={name: values[name] for name in observations},
-            sample_stats=_sample_stats(self.posterior, shape[1]),
-            kind="mcmc"
-            if isinstance(self.posterior, MCMCResult)
-            else "prior"
-            if isinstance(self.posterior, PriorDraws)
-            else "variational",
+        return source_analysis(
+            self.model, self.posterior, num_samples=num_samples, seed=seed
         )
 
     def summary(self) -> dict[str, ConvergenceSummary]:

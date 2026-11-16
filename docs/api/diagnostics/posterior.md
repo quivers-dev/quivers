@@ -16,6 +16,13 @@ valid coordinates remain independent of that failure. The same scaled
 arithmetic and type-7 quantile kernel serve recorded-chain and retained
 uncertainty summaries.
 
+A source program with no latent sites can still supply observation likelihoods.
+Its recorded posterior count determines the chain/draw layout; the checked
+registry must establish that no unobserved variable is missing. Such an analysis
+has an empty parameter summary, while raw likelihoods, WAIC, and LOO remain
+available. No placeholder parameter or convergence statistic is introduced.
+Covariance and contrast requests still require their selected parameter values.
+
 ## Joint covariance and correlation
 
 `analysis.covariance(var_names=None, ddof=1)` returns a `PosteriorCovariance`
@@ -72,7 +79,13 @@ MCMC results and retained analysis snapshots; conversion detaches tensors
 without changing the retained draws.
 PSIS-LOO exposes ArviZ 1 results, including `elpd`, `elpd_i`, and `pareto_k`.
 Variational draws use relative efficiency one; this does not correct approximation
-error. Unstable importance weights may require exact refitting or a different
+error. If every selected likelihood column is finite and constant across draws,
+LOO uses exact uniform importance weights through ArviZ's
+[precomputed-weight interface](https://python.arviz.org/projects/stats/en/v1.1.0/api/generated/arviz_stats.loo.html).
+The pointwise score is unchanged; Pareto shapes are NaN because no tail was
+fitted. This also applies when retained parameters vary but do not affect the
+selected response likelihood. Varying-score analyses retain ordinary PSIS.
+Unstable importance weights may require exact refitting or a different
 predictive unit [@vehtari2017loo].
 
 The [formula workflow](../../guides/analysis-data-and-formulas.md#raw-likelihoods-and-retained-analysis)
