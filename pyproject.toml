@@ -29,7 +29,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
 dependencies = [
-    "torch>=2.0",
+    "torch>=2.1",
     "didactic>=0.18.2",
     "panproto>=0.77.0",
     "panproto-grammars-all>=0.77.0",

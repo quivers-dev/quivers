@@ -30,6 +30,7 @@ def source_recipe(
         model.checked_module,
     )
     arguments = _snapshot(dict(bound.template_arguments))
+    catalog = model.families
     input_value = bound.input.detach().clone()
 
     def run(
@@ -46,8 +47,11 @@ def source_recipe(
             and model.entry == entry
             and model.syntax is syntax
             and model.checked_module is checked
+            and model.families is catalog
         )
-        specification = model if unchanged else Model(source, entry=entry)
+        specification = (
+            model if unchanged else Model(source, entry=entry, families=catalog)
+        )
         fitted = specification.fit(
             data,
             method=chosen_method,
@@ -69,9 +73,14 @@ def source_recipe(
         run,
         snapshot_policy=snapshot_policy,
         provenance={
+            "kind": "source",
+            "schema": "qvr-refit/v1",
             "source": source,
             "entry": entry,
             "compilation_seed": bound.compilation_seed,
+            "sample_prior": sample_prior,
+            "num_prior_samples": num_prior_samples,
+            "prior_seed": prior_seed,
         },
     )
 

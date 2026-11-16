@@ -67,3 +67,63 @@ the shared cross-validation runner. See [updating and refitting](../guides/model
 for nominal row axes, data snapshots, and method seeds.
 
 ::: quivers.modeling.refit
+
+## Durable fitted artifacts
+
+`save_fit` records a source `ModelFit` as a versioned JSON specification and
+safe tensor checkpoint. `load_fit` recompiles the original QVR, restores its
+module and posterior state, and rebuilds the retained fitting recipe. It does
+not optimize a model or draw replacement posterior values. For a scanned guide,
+strict conditioned replay recovers every reached latent address from saved
+values; a missing value is an error.
+
+<!-- python: run -->
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import torch
+from quivers.modeling import Model, VariationalMethod, load_fit, save_fit
+
+artifact_source = """object Row:FinSet _
+program regression(y:Tensor[Real]([Row])):Row->Row
+    sample mu <- Normal(loc=0.0,scale=1.0)
+    observe y:Row <- Normal(loc=mu,scale=1.0)
+    return mu
+export regression
+"""
+artifact_fit = Model(artifact_source).fit(
+    {"y": torch.tensor([-0.5, 0.25, 1.0])},
+    method=VariationalMethod(num_steps=0, seed=7),
+)
+with TemporaryDirectory() as artifact_directory:
+    artifact_path = Path(artifact_directory) / "regression.qvrfit"
+    save_fit(artifact_fit, artifact_path)
+    restored_fit = load_fit(artifact_path)
+    for name, value in artifact_fit.posterior.state_dict().items():
+        assert torch.equal(value, restored_fit.posterior.state_dict()[name])
+```
+
+The checkpoint retains static arguments, typed data, compilation and method
+seeds, parameter and buffer dtypes, tied parameters, module modes, prior policy,
+and recorded chain statistics. Loaded recipes reuse `update` and the existing
+fold adapter. Saving captures values at write time. A loaded reference-owned
+source recipe shares the loaded binding's values. A cloned recipe retains an
+independent training snapshot. Neither shares memory with the original process.
+
+The default Normal guide, recorded MCMC results, and retained prior draws have
+built-in contracts. Custom guides and external Python modules require an
+explicit named `ArtifactFactory` at both write and read time. Its decoder
+receives an `ArtifactContext` when reconstructing a guide. Factories are trusted
+caller code and must reconstruct without fitting or sampling. An artifact never
+chooses an import path or falls back to arbitrary object serialization.
+
+Analysis exports retain posterior tensors and diagnostics. A fitted artifact
+additionally retains the checked model needed for prediction and refitting.
+Unsupported artifact versions, missing factories, changed latent geometry, and
+failed integrity checks are refused before a fit is returned.
+
+::: quivers.modeling.artifact
+
+::: quivers.modeling.ArtifactContext
+
+::: quivers.modeling.ArtifactFactory
