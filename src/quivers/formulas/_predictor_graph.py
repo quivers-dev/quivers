@@ -13,7 +13,7 @@ import numpy as np
 from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
-from quivers.dsl.ast_nodes import LetStep, LetExprNode, LetExprVar, ProgramDecl
+from quivers.dsl.ast_nodes import LetExprNode, LetExprVar
 from quivers.dsl.let_expr_traversal import free_let_names, substitute_let_expr
 from quivers.formulas.formula import (
     Formula,
@@ -126,24 +126,9 @@ def _parse_expression(text: str) -> LetExprNode:
     ValueError
         If the text is empty or contains statement boundaries.
     """
-    from quivers.dsl import parse
+    from quivers.dsl._value_expressions import _parse_value_expression
 
-    if not isinstance(text, str):
-        raise TypeError("a nonlinear value expression must be text")
-    if not text.strip() or any(mark in text for mark in ("\n", "\r", ";")):
-        raise ValueError(
-            "nonlinear expressions require one nonempty QVR value expression"
-        )
-    module = parse(
-        "object GraphRow : FinSet 1\n"
-        "program graph_expression : GraphRow -> GraphRow\n"
-        f"    let graph_value = {text}\n"
-        "    return graph_value\n"
-    )
-    program = next(item for item in module.statements if isinstance(item, ProgramDecl))
-    if len(program.draws) != 1 or not isinstance(program.draws[0], LetStep):
-        raise ValueError("nonlinear input must contain exactly one expression")
-    return program.draws[0].value
+    return _parse_value_expression(text)
 
 
 def _value_expression(value: NonlinearExpression):

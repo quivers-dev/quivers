@@ -23,6 +23,15 @@ describes coefficient names, priors, and group coding.
 
 `BayesianFit.draws` preserves chain and draw axes. `fixed_effects`, `random_effects`,
 and `coefficients` expose population and group coefficients with retained labels.
+`hypothesis("x - Intercept")` evaluates a checked QVR contrast over the same
+population coefficients. `parameter` selects a distributional or nonlinear
+predictor, `class_` selects an emitted parameter role, and `scope="ranef"`
+or `"coef"` with `group` retains the level axis of adjustments or combined
+coefficients. `class_=None` uses exact latent site names. `prior=True` evaluates
+the contrast on the corresponding joint prior stream, yielding region evidence
+in addition to posterior odds. It does not estimate point-null density evidence.
+See [formula hypotheses](../../guides/analysis-data-and-formulas.md#checked-hypotheses-over-fitted-coefficients)
+and [contrast summaries](../diagnostics/hypothesis.md).
 `posterior_linpred`, `posterior_epred`, and `posterior_predict` replay native
 fitted bindings on the training rows or on a supplied `new_data` frame. The first two expose predictors and
 response expectations; `posterior_predict` independently samples responses

@@ -64,6 +64,7 @@ if TYPE_CHECKING:
         waic,
     )
     from quivers.diagnostics.regression import bayesian_r2
+    from quivers.diagnostics.contrast import ContrastExpression
     from quivers.diagnostics.hypothesis import (
         HypothesisSummary,
         RegionEvidence,
@@ -88,6 +89,7 @@ if TYPE_CHECKING:
     )
 
 _LAZY_EXPORTS: dict[str, str] = {
+    "ContrastExpression": "quivers.diagnostics.contrast",
     "hypothesis_summary": "quivers.diagnostics.hypothesis",
     "HypothesisSummary": "quivers.diagnostics.hypothesis",
     "RegionEvidence": "quivers.diagnostics.hypothesis",
@@ -156,6 +158,7 @@ def __getattr__(name: str) -> _LazyExport:
 
 
 __all__ = [
+    "ContrastExpression",
     "hypothesis_summary",
     "HypothesisSummary",
     "RegionEvidence",

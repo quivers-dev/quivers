@@ -3112,6 +3112,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                             offset=0,
                             coefficient=latent,
                             raw_site=raw_site,
+                            scale_site=sigma_var,
                         ),
                     ),
                 )
@@ -3506,6 +3507,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     raw_site=joint_raw
                     if self._reparameterize == "centered"
                     else f"{prefix}z_{qgroup}_{_qvr_name(term.slope)}",
+                    scale_site=f"{prefix}sigma_{qgroup}_{_qvr_name(term.slope)}",
                 )
             )
             offset += width
@@ -3515,6 +3517,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             coordinate_axis=dimension,
             parameterization=self._reparameterize,
             members=tuple(member_layouts),
+            correlation_site=correlation,
         )
         self._group_layouts.append(layout)
         scales: list[str] = []
@@ -3904,6 +3907,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                             raw_site=latent_var
                             if self._reparameterize == "centered"
                             else f"{prefix}z_{qgroup}_{qslope}",
+                            scale_site=sigma_var,
                         ),
                     ),
                 )

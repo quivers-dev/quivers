@@ -27,6 +27,7 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.formulas.formula import FixedColumn, Formula, _CS_ONES, _qvr_name
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._priors import PriorTarget
 from quivers.inference.registry import LatentRegistry
 from quivers.formulas._group_prediction import (
     GroupRemap,
@@ -52,6 +53,8 @@ class FormulaPredictionPlan(ValueModel):
         Evaluated location and auxiliary formulas, retaining transform state.
     group_layouts : tuple[GroupBlockLayout, ...]
         Emitted raw group sites and coefficient-coordinate slices.
+    prior_targets : tuple[PriorTarget, ...]
+        Actual emitted parameter roles, authored labels, and nominal axes.
     version : str
         Runtime-plan schema identifier. This plan contains formulae objects
         and is deliberately not a portable serialized model representation.
@@ -62,6 +65,9 @@ class FormulaPredictionPlan(ValueModel):
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     group_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    prior_targets: tuple[PriorTarget, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     version: Literal["qvr-formula-prediction/v1"] = "qvr-formula-prediction/v1"

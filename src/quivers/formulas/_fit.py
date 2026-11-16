@@ -20,7 +20,7 @@ import numpy as np
 from quivers._count_capacity import _MAX_EXACT_COUNT
 from quivers.formulas._count_data import checked_integer_data
 from pathlib import Path
-from typing import Literal, Mapping, Unpack
+from typing import Literal, Mapping, Sequence, Unpack
 
 import didactic.api as dx
 from formulae.matrices import DesignMatrices
@@ -73,6 +73,8 @@ from quivers.inference.mcmc.driver import MCMCResult
 
 
 from quivers.diagnostics.posterior import PosteriorAnalysis
+from quivers.diagnostics.contrast import ContrastExpression
+from quivers.diagnostics.hypothesis import HypothesisSummary
 
 
 class BayesianFit(ValueModel):
@@ -975,6 +977,83 @@ class BayesianFit(ValueModel):
 
         return decode_response_draws(self.formula, self.posterior_predict(**options))
 
+    def hypothesis(
+        self,
+        expression: str | ContrastExpression,
+        *,
+        class_: str | None = "b",
+        parameter: str = "mu",
+        group: str | None = None,
+        scope: Literal["standard", "ranef", "coef"] = "standard",
+        prior: bool = False,
+        num_samples: int | None = None,
+        num_prior_samples: int | None = None,
+        seed: int = 0,
+        null: float | int | torch.Tensor = 0.0,
+        probs: Sequence[float] = (0.025, 0.975),
+        robust: bool = False,
+        name: str = "contrast",
+    ) -> HypothesisSummary:
+        """Evaluate a checked contrast using original fitted parameter labels.
+
+        Parameters
+        ----------
+        expression : str or ContrastExpression
+            QVR value expression over authored labels, with optional aliases.
+        class_ : str or None
+            Parameter role such as b, Intercept, sd, cor, or an auxiliary name.
+            The b role includes population intercepts. None selects exact
+            constrained latent site names.
+        parameter : str
+            Distributional or nonlinear predictor for b, Intercept, and sd.
+        group : str or None
+            Grouping factor for scale/correlation filtering or per-level scopes.
+        scope : {"standard", "ranef", "coef"}
+            Named parameters, per-level random adjustments, or per-level
+            population plus random coefficients. The latter two require b/group.
+        prior : bool
+            Also evaluate the same contrast on the corresponding joint prior
+            stream, yielding prior-corrected region evidence.
+        num_samples, num_prior_samples : int or None
+            Posterior and prior counts. None follows retained-draw conventions;
+            retained prior samples are reused when available.
+        seed : int
+            Isolated seed for guide or fresh prior draws.
+        null : float, int, or torch.Tensor
+            Finite comparison value on event axes only.
+        probs : Sequence[float]
+            Quantile probabilities, in requested order.
+        robust : bool
+            Return median/scaled MAD rather than mean/sample SD.
+        name : str
+            Output contrast label.
+
+        Returns
+        -------
+        HypothesisSummary
+            Chain/draw/event-aware uncertainty and strict-region evidence.
+            Posterior odds and prior-corrected region Bayes factors are distinct;
+            equality frequencies do not estimate a point-null Bayes factor.
+        """
+        from quivers.formulas._hypothesis import _formula_hypothesis
+
+        return _formula_hypothesis(
+            self,
+            expression,
+            class_=class_,
+            parameter=parameter,
+            group=group,
+            scope=scope,
+            prior=prior,
+            num_samples=num_samples,
+            num_prior_samples=num_prior_samples,
+            seed=seed,
+            null=null,
+            probs=probs,
+            robust=robust,
+            name=name,
+        )
+
     def analysis(
         self, *, num_samples: int | None = None, seed: int = 0
     ) -> PosteriorAnalysis:
@@ -1384,58 +1463,27 @@ class BayesianFit(ValueModel):
         dict[str, dict[str, torch.Tensor]]
             Group names and coefficient labels mapped to per-level draws.
         """
-        from quivers.formulas._posterior import replay
+        from quivers.formulas._group_layout import _group_coefficients
 
-        collected: dict[tuple[str, str], list[torch.Tensor]] = {
-            (term.group, term.slope): [] for term in predictor.random_terms
-        }
-        response = self.family.response
-        categorical = response is not None and (
-            not prefix or response.kind == "logistic_normal" and prefix == "dpar_sigma_"
+        if self.prediction_plan is None:
+            raise ValueError(
+                "group coefficient extraction requires retained emission metadata"
+            )
+        coefficients = _group_coefficients(
+            draws,
+            tuple(
+                layout
+                for layout in self.prediction_plan.group_layouts
+                if any(member.prefix == prefix for member in layout.members)
+            ),
+            self.group_levels,
         )
-        if categorical:
-            assert response is not None
-            categories = len(
-                response.coordinate_indices(tuple(str(v) for v in self.category_labels))
-            )
-        else:
-            categories = len(self.category_labels) - 1
-        if (
-            self.family.ordinal is not None
-            and self.family.ordinal.kind == "hurdle_cumulative"
-        ):
-            categories -= 1
-        specifications = [
-            (
-                term.group,
-                term.slope,
-                prefix
-                + (
-                    f"alpha_{_qvr_name(term.group)}"
-                    if term.slope == "Intercept"
-                    else f"beta_{_qvr_name(term.group)}_{_qvr_name(term.slope)}"
-                ),
-                len(predictor.group_levels[term.group]),
-                categories
-                if categorical
-                or (term.column is not None and term.column.category_specific)
-                else 0,
-            )
-            for term in predictor.random_terms
-        ]
-        for recorded in replay(self, draws, shape):
-            for group, slope, name, levels, width in specifications:
-                value = recorded.sites[name].value
-                value = (
-                    value.reshape(width, levels).T if width else value.reshape(levels)
-                )
-                collected[(group, slope)].append(value)
         result: dict[str, dict[str, torch.Tensor]] = {}
-        for (group, slope), values in collected.items():
-            stacked = torch.stack(values)
-            result.setdefault(group, {})[slope] = stacked.reshape(
-                *shape, *stacked.shape[1:]
-            )
+        for term in predictor.random_terms:
+            value = coefficients[(prefix, term.group, term.slope)]
+            if value.shape[:2] != shape:
+                raise ValueError("group coefficients have incompatible sample axes")
+            result.setdefault(term.group, {})[term.slope] = value
         return result
 
 
@@ -1824,6 +1872,7 @@ def fit(
                 module=module,
                 designs=prepared.designs,
                 group_layouts=complement.group_layouts,
+                prior_targets=complement.prior_targets,
             ),
         )
 

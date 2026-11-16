@@ -2109,3 +2109,73 @@ These hierarchies follow the released brms
 using existing QVR distribution primitives. They differ from the native
 `Horseshoe` marginal kernel, whose global scale is a learnable module parameter
 and whose local scales are integrated numerically.
+
+## Checked hypotheses over fitted coefficients
+
+`BayesianFit.hypothesis` evaluates a QVR expression over jointly retained
+coefficients. First, it selects coefficients from the fitted parameter-role
+and group layouts. Second, QIEC checks the expression with its nominal event
+axes. Third, the existing retained-draw summary reports uncertainty and
+strict-region evidence. These steps reuse the fitted model and its authored
+labels.
+
+<!-- python: run -->
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+hypothesis_data = pd.DataFrame({
+    "y": [0.1, 0.4, -0.2, 0.5, 0.0, 0.3],
+    "x": [-1.0, 0.0, 1.0, 2.0, -0.5, 0.5],
+    "z": [0.5, -0.5, 0.2, 0.0, 0.8, -0.2],
+    "g": ["a", "a", "b", "b", "c", "c"],
+})
+hypothesis_fit = fit(
+    "y ~ x + z + (1 + x | g)", data=hypothesis_data,
+    method="svi", num_steps=2, seed=31,
+    sample_prior="yes", num_prior_samples=32,
+)
+population = hypothesis_fit.hypothesis(
+    "x - z", prior=True, num_samples=16, seed=32, name="slope difference"
+)
+assert population.sample_shape == (1, 16)
+assert population.prior_sample_shape == (1, 32)
+assert population.above.prior_probability is not None
+by_group = hypothesis_fit.hypothesis(
+    "x - Intercept", scope="coef", group="g", num_samples=16, seed=32
+)
+assert by_group.coordinate_labels == (("a", "b", "c"),)
+```
+
+The default `class_="b"` includes population intercepts. `parameter="sigma"`
+selects a distributionally regressed scale, while a named nonlinear leaf
+uses that leaf's coefficient design. `class_="sd"` selects group scales and
+`class_="cor"` selects full correlation matrices reconstructed from retained
+Cholesky factors. Correlation variables use the authored block ID, or the
+group label for an ordinary block. `class_=None` instead exposes exact
+constrained latent site names, including hierarchy heads.
+
+`scope="ranef"` retains group adjustments and `scope="coef"` adds population
+coefficients once. Both require `group` and the b class. Group extraction
+shares one vectorized reconstruction with `random_effects` and `coefficients`;
+it uses the emitted slices, scales, and correlations without replaying the
+model for each draw. Component-valued coefficients retain their free
+component order and labels; a reference component is absent. Category-specific
+ordinal effects use adjacent category pairs. Group axes remain distinct from
+component axes even when their lengths coincide.
+
+Expressions use QVR arithmetic and functions, such as `exp(x)` or `pow(x, 2)`.
+For an expanded coefficient label that is not an identifier, use
+`ContrastExpression(expression="a - x", bindings={"a": original_label})`
+from `quivers.diagnostics`. Indices and reductions act on event axes;
+chain and draw axes remain protected. Unknown variables, ambiguous selectors,
+incompatible event axes, and nonfinite results fail explicitly.
+
+`prior=True` reuses retained prior samples or obtains one fresh joint stream
+through `prior_view`. It preserves hierarchical dependence rather than
+permuting parameter draws. The result distinguishes posterior region odds
+from a prior-corrected encompassing-prior Bayes factor. Their interpretation
+and finite-sample limits follow the
+[shared contrast contract](../api/diagnostics/hypothesis.md#region-odds-and-bayes-factors).
+Equality frequencies describe ties; they do not estimate a point-null density
+ratio. Variational draws also retain their variational provenance.

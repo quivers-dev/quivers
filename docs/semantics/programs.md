@@ -1856,3 +1856,28 @@ This defines a conditional restriction rather than joint conditioning of
 the entire hierarchy. The sampled global coordinate is dimensionless
 when residual autoscaling is enabled, making that dependency explicit in the
 coefficient kernel.
+
+### Retained contrast expressions
+
+A retained contrast applies one deterministic QVR value expression to each
+joint parameter draw. Its input type contains the declared event axes,
+represented by distinct static Nat binders; the chain and draw axes belong
+to the evaluator and are absent from the expression's environment. Thus an
+event reduction cannot pool posterior samples, and two equally sized but
+distinct event axes cannot become equal through a shape coincidence.
+
+The contrast uses the existing QVR parser, QIEC checker, and native value
+compiler. One checked callable is lifted across the two sample axes. A
+formula adapter supplies values from actual parameter-role and Gaussian-block
+metadata, retaining authored coefficient, component, and grouping labels.
+Centered blocks read their coefficient coordinates; noncentered blocks apply
+the retained scales and Cholesky factors once. This same reconstruction
+serves ordinary coefficient inspection.
+
+For a posterior contrast $c(\theta)$ and a proper encompassing-prior stream,
+the strict-region estimate compares $\{c(\theta)>c_0\}$ against its complement
+through posterior log odds minus prior log odds. Both streams evaluate the
+same expression jointly, retaining hierarchical dependence. Equality counts
+remain descriptive and do not define point-null density evidence. The
+[diagnostic contract](../api/diagnostics/hypothesis.md#region-odds-and-bayes-factors)
+states the prior-compatibility and finite-sample conditions.

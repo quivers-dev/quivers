@@ -12,6 +12,8 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.diagnostics._numeric import empirical_summary, probabilities, real_samples
+from quivers.diagnostics.contrast import ContrastExpression
+from quivers.diagnostics.hypothesis import HypothesisSummary
 from quivers.diagnostics.convergence import (
     ConvergenceSummary,
     summary as convergence_summary,
@@ -508,6 +510,64 @@ class PosteriorAnalysis(ValueModel):
             ddof=ddof,
             chainwise=chainwise,
             kind=self.kind,
+        )
+
+    def hypothesis(
+        self,
+        expression: str | ContrastExpression,
+        *,
+        prior: PosteriorAnalysis | None = None,
+        null: float | int | torch.Tensor = 0.0,
+        probs: Sequence[float] = (0.025, 0.975),
+        robust: bool = False,
+        name: str = "contrast",
+        dims: Mapping[str, Sequence[str]] | None = None,
+        coords: Mapping[str, Sequence[object]] | None = None,
+    ) -> HypothesisSummary:
+        """Evaluate one checked QVR contrast over retained joint draws.
+
+        Parameters
+        ----------
+        expression : str or ContrastExpression
+            QVR value expression and optional aliases to original site names.
+        prior : PosteriorAnalysis or None
+            Joint draws from the corresponding proper encompassing prior.
+            Draw counts may differ; event shapes and devices must agree.
+        null : float, int, or torch.Tensor
+            Finite comparison value on event axes only.
+        probs : Sequence[float]
+            Requested quantile probabilities in output order.
+        robust : bool
+            Use median and scaled MAD instead of mean and sample SD.
+        name : str
+            Original label of the derived contrast.
+        dims, coords : Mapping or None
+            Input event-axis identities and labels, with optional sample labels.
+            Distinct axes remain distinct even when their extents coincide.
+
+        Returns
+        -------
+        HypothesisSummary
+            Existing uncertainty, strict-region posterior odds, and optional
+            prior-corrected region evidence. Equality frequencies are descriptive;
+            this method does not estimate point-null density evidence.
+        """
+        from quivers.diagnostics.contrast import _contrast_hypothesis
+
+        self._validate_axes()
+        if prior is not None:
+            prior._validate_axes()
+        return _contrast_hypothesis(
+            self.samples,
+            expression,
+            prior=prior.samples if prior is not None else None,
+            null=null,
+            probs=probs,
+            robust=robust,
+            name=name,
+            kind=self.kind,
+            dims=dims,
+            coords=coords,
         )
 
     def _likelihood_name(self, var_name: str | None) -> str:

@@ -89,4 +89,43 @@ an equality count. This API supplies no point-null density estimate,
 Savage–Dickey ratio, or posterior model probability; those require additional
 null-model and prior-compatibility assumptions.
 
+## Checked expressions over retained draws
+
+`PosteriorAnalysis.hypothesis` evaluates a QVR value expression over its
+retained sites, then calls the same summary function. `ContrastExpression`
+maps expression aliases to original labels when a label is not a QVR
+identifier. The expression is checked once with QIEC and evaluated with
+chain and draw axes protected: `sum(a)` reduces an event axis rather than
+pooling samples. Named input event axes remain nominal; equal lengths alone
+do not make two axes interchangeable.
+
+<!-- python: run -->
+```python
+from quivers.diagnostics import ContrastExpression, PosteriorAnalysis
+
+posterior = PosteriorAnalysis(
+    samples={"condition[red]": torch.tensor([[0.2, 0.4, -0.1, 0.3]]),
+             "baseline": torch.tensor([[0.1, 0.2, 0.0, 0.1]])},
+    log_likelihood={},
+    kind="variational",
+)
+expression = ContrastExpression(
+    expression="exp(red)-baseline", bindings={"red": "condition[red]"}
+)
+contrast = posterior.hypothesis(expression, name="red effect")
+assert contrast.sample_shape == (1, 4)
+assert contrast.dimension_names == ()
+```
+
+Use `dims={"a": ("Item",), "b": ("Item",)}` to declare a shared event
+axis explicitly. Omitting `dims` assigns distinct site-specific axes;
+subtracting vectors on distinct axes fails at checking. `coords` supplies
+their original labels and optional chain/draw labels. A corresponding
+`prior=other_analysis` evaluates the same checked expression on its joint
+draw stream, with no parameter permutation. Different sample counts are
+allowed; event shapes and devices must match. These operations reuse
+retained tensors and do not refit a model.
+
+::: quivers.diagnostics.contrast
+
 ::: quivers.diagnostics.hypothesis
