@@ -111,6 +111,10 @@ def log_interval_mass(base, low, high, *, lower_closed=True, upper_closed=True):
     upper = math.inf if high is None else high
     if lower > upper or lower == upper and not (lower_closed and upper_closed):
         return -math.inf
+    if lower == upper and math.isfinite(lower):
+        from quivers.qiec._atoms import log_atom_mass
+
+        return log_atom_mass(base, lower)
     family = getattr(base, "family", None)
     arguments = getattr(base, "arguments", {})
     if family == "PointMass":
@@ -214,6 +218,28 @@ def log_interval_mass(base, low, high, *, lower_closed=True, upper_closed=True):
             if a > 0
             else _difference(_log_ndtr(b), _log_ndtr(a))
         )
+    if family == "DiscreteWeibull":
+        from quivers.qiec._count_tails import (
+            _discrete_weibull_parameters,
+            _discrete_weibull_log_interval,
+        )
+
+        q, power = _discrete_weibull_parameters(arguments)
+        if lower == math.inf or upper < 0:
+            return -math.inf
+        first = (
+            max(0, math.ceil(lower) if lower_closed else math.floor(lower) + 1)
+            if math.isfinite(lower)
+            else 0
+        )
+        last = (
+            (math.floor(upper) if upper_closed else math.ceil(upper) - 1)
+            if math.isfinite(upper)
+            else math.inf
+        )
+        if last < first:
+            return -math.inf
+        return _discrete_weibull_log_interval(q, power, first, last)
     from quivers.qiec._count_tails import COUNT_TAIL_FAMILIES, log_count_tails
 
     if family in COUNT_TAIL_FAMILIES:

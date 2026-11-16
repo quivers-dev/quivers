@@ -150,7 +150,17 @@ def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
     count_tails = distribution_count_log_tails(base, value)
     if count_tails is not None:
         return count_tails
-    probability = base.cdf(value)
+    support = base.support
+    below = value <= getattr(support, "lower_bound", -torch.inf)
+    above = value >= getattr(support, "upper_bound", torch.inf)
+    if hasattr(support, "lower_bound") or hasattr(support, "upper_bound"):
+        from quivers.continuous._censored import _interior_point
+
+        safe = _interior_point(base, value)
+        probability = base.cdf(torch.where(below | above, safe, value))
+        probability = torch.where(below, 0.0, torch.where(above, 1.0, probability))
+    else:
+        probability = base.cdf(value)
     return _log_probability(probability), _log_probability(1 - probability)
 
 
@@ -357,9 +367,29 @@ def log_interval_mass(
         If an endpoint is NaN or the base lacks the required interval capability."""
     lower_closed = _closed_flag(lower_closed, "lower_closed")
     upper_closed = _closed_flag(upper_closed, "upper_closed")
+    if (
+        isinstance(low, int | float)
+        and isinstance(high, int | float)
+        and low == high
+        and lower_closed is True
+        and upper_closed is True
+    ):
+        from quivers.continuous._atoms import _point, log_atom_mass
+
+        return log_atom_mass(base, _point(base, low))
     interval = getattr(base, "log_interval_mass", None)
     if callable(interval):
         return interval(low, high, lower_closed=lower_closed, upper_closed=upper_closed)
+    if isinstance(base, torch.distributions.Independent):
+        masses = log_interval_mass(
+            base.base_dist,
+            low,
+            high,
+            lower_closed=lower_closed,
+            upper_closed=upper_closed,
+        )
+        dimensions = base.reinterpreted_batch_ndims
+        return masses.sum(tuple(range(-dimensions, 0))) if dimensions else masses
     if base.event_shape:
         raise NotImplementedError(
             "interval normalization requires scalar events; a coupled event "

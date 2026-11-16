@@ -4832,9 +4832,28 @@ class Truncated(ContinuousMorphism):
         # Attach so the parent nn.Module tracks parameters.
         self._base_mod = base
 
-    def _interval_logmass(self, x: torch.Tensor) -> torch.Tensor:
-        """Sum exact scalar-coordinate log masses over the output event."""
-        from quivers.continuous._interval import log_interval_mass
+    def _get_dist(self, x: torch.Tensor) -> D.Distribution:
+        """Build the shared normalized restriction for independent coordinates.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs to the base conditional family.
+
+        Returns
+        -------
+        Distribution
+            One normalized scalar distribution per output coordinate.
+
+        Raises
+        ------
+        NotImplementedError
+            If the base exposes no scalar-coordinate distribution or has a
+            coupled event requiring a joint rectangle probability.
+        ValueError
+            If an interval has zero or nonfinite probability.
+        """
+        from quivers.continuous.measure import Normalize, Restrict
 
         builder = getattr(self._base, "_get_dist", None)
         if not callable(builder):
@@ -4842,15 +4861,19 @@ class Truncated(ContinuousMorphism):
                 f"Truncated requires {type(self._base).__name__} to expose "
                 "scalar-coordinate distributions through _get_dist(x)"
             )
-        masses = log_interval_mass(builder(x), self._lower, self._upper)
-        if not bool(torch.isfinite(masses).all()):
-            raise ValueError("Truncated interval has zero or nonfinite probability")
-        return masses.sum(dim=-1)
+        distribution = builder(x)
+        if distribution.event_shape:
+            raise NotImplementedError(
+                "Truncated requires a joint rectangle probability for coupled events"
+            )
+        return Normalize(Restrict(distribution, self._lower, self._upper))
 
     def rsample(
         self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
     ) -> torch.Tensor:
         """Condition each independent coordinate on the supplied interval."""
+        from quivers.continuous.measure import _bounded_rejection
+
         shape = torch.Size(sample_shape)
         builder = getattr(self._base, "_get_dist", None)
         if callable(builder):
@@ -4869,24 +4892,12 @@ class Truncated(ContinuousMorphism):
                 return TruncatedNormal(
                     distribution.loc, distribution.scale, lower, upper
                 ).rsample(shape)
-        out = self._base.rsample(x, shape)
-        mask = self._coordinate_bounds(out)
-        for _ in range(self._max_iters):
-            if mask.all():
-                return out
-            replacement = self._base.rsample(x, shape)
-            out = torch.where(mask, out, replacement)
-            mask = self._coordinate_bounds(out)
-        if not mask.all():
-            raise RuntimeError(
-                f"Truncated rejection sampling failed to fill the batch in "
-                f"{self._max_iters} iterations; the truncation mass is "
-                "vanishingly small for the supplied parameters"
-            )
-        return out
-
-    def _in_bounds(self, x: torch.Tensor) -> torch.Tensor:
-        return self._coordinate_bounds(x).all(dim=-1)
+        return _bounded_rejection(
+            lambda: self._base.rsample(x, shape),
+            self._coordinate_bounds,
+            max_rounds=self._max_iters,
+            label="Truncated",
+        )
 
     def _coordinate_bounds(self, x: torch.Tensor) -> torch.Tensor:
         m = torch.ones_like(x, dtype=torch.bool)
@@ -4897,16 +4908,7 @@ class Truncated(ContinuousMorphism):
         return m
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        base_lp = self._base.log_prob(x, y)
-        # Hard-zero outside the interval.
-        in_bounds = self._in_bounds(y)
-        truncation_lp = self._interval_logmass(x)
-        adjusted = base_lp - truncation_lp
-        return torch.where(
-            in_bounds,
-            adjusted,
-            torch.full_like(adjusted, float("-inf")),
-        )
+        return self._get_dist(x).log_prob(y).sum(dim=-1)
 
     def __repr__(self) -> str:
         return f"Truncated({self._base!r}, lower={self._lower}, upper={self._upper})"

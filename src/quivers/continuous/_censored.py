@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.distributions import (
     Distribution,
     TransformedDistribution,
-    biject_to,
+    transform_to,
     constraints,
 )
 
@@ -33,7 +33,7 @@ def _interior_point(base: Distribution, reference: Tensor) -> Tensor:
     Raises
     ------
     NotImplementedError
-        If the base has no declared scalar support."""
+        If the base has no declared support or deterministic feasible point."""
     if isinstance(base, TransformedDistribution):
         value = _interior_point(base.base_dist, reference)
         for transform in base.transforms:
@@ -43,12 +43,18 @@ def _interior_point(base: Distribution, reference: Tensor) -> Tensor:
     if support is None:
         raise NotImplementedError("censoring requires a declared scalar support")
     if support.is_discrete:
+        if base.event_shape:
+            if base.has_enumerate_support:
+                return base.enumerate_support(expand=True)[0].to(reference)
+            raise NotImplementedError(
+                "safe scoring requires a feasible point for this discrete event"
+            )
         return torch.zeros(
             base.batch_shape, dtype=reference.dtype, device=reference.device
         ) + getattr(support, "lower_bound", 0)
-    return biject_to(support)(
-        torch.zeros(base.batch_shape, dtype=reference.dtype, device=reference.device)
-    )
+    transform = transform_to(support)
+    shape = transform.inverse_shape(base.batch_shape + base.event_shape)
+    return transform(torch.zeros(shape, dtype=reference.dtype, device=reference.device))
 
 
 class Censored(Distribution):

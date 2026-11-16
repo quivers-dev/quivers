@@ -2080,50 +2080,70 @@ def _betabinomial_density(a: Mapping[str, object], value: object) -> float:
     return _beta_binomial_log_mass(total, count, first, second)
 
 
-def _ordered_probabilities(
-    a: Mapping[str, object], family: str, link: Callable[[float], float]
+def _ordered_log_probabilities(
+    a: Mapping[str, object], family: str, link: str
 ) -> tuple[float, ...]:
-    """The category probabilities of an ordered regression family.
+    """Evaluate cumulative ordinal masses with the native log-space identities.
 
     Parameters
     ----------
     a : Mapping[str, object]
-        The family's named parameters: ``eta`` and the sorted ``cutpoints``.
+        Finite predictor and strictly increasing cutpoints.
     family : str
-        The family, for the diagnostic.
-    link : Callable[[float], float]
-        The distribution function of the latent noise.
+        Native family for diagnostics.
+    link : str
+        Logit or probit cumulative link.
 
     Returns
     -------
     tuple[float, ...]
-        One probability per category, ``len(cutpoints) + 1`` of them:
-        ``F(c_0 - eta)``, the differences of consecutive ``F(c_k - eta)``,
-        and ``1 - F(c_last - eta)``.
+        Log probability of every ordered category.
 
     Raises
     ------
     DistributionError
-        If no cutpoint is given.
+        If the predictor, cutpoints, or link are invalid.
     """
+    from quivers.qiec.primitives import _log1mexp, _log_ndtr
+
     eta = real_parameter(a, "eta", family)
     cutpoints = vector_parameter(a, "cutpoints", family)
     if not cutpoints:
         raise DistributionError(f"{family} needs at least one cutpoint")
-    cumulative = [link(cut - eta) for cut in cutpoints]
-    probabilities = [cumulative[0]]
-    probabilities.extend(
-        cumulative[index] - cumulative[index - 1] for index in range(1, len(cumulative))
-    )
-    probabilities.append(1.0 - cumulative[-1])
-    return tuple(probabilities)
+    if not math.isfinite(eta) or not all(math.isfinite(cut) for cut in cutpoints):
+        raise DistributionError(f"{family} predictor and cutpoints must be finite")
+    if any(high <= low for low, high in zip(cutpoints, cutpoints[1:])):
+        raise DistributionError(f"{family} cutpoints must be strictly increasing")
+    z = tuple(cut - eta for cut in cutpoints)
+    if link == "logit":
+        cdf = tuple(_log_sigmoid(value) for value in z)
+        sf = tuple(_log_sigmoid(-value) for value in z)
+        middle = tuple(
+            cdf[i + 1] + sf[i] + _log1mexp(z[i] - z[i + 1]) for i in range(len(z) - 1)
+        )
+    elif link == "probit":
+        cdf = tuple(_log_ndtr(value) for value in z)
+        sf = tuple(_log_ndtr(-value) for value in z)
+        middle_values = []
+        for i in range(len(z) - 1):
+            # Mirror positive-tail intervals before subtracting log masses.
+            high, low = (
+                (sf[i], sf[i + 1]) if cdf[i] > -math.log(2) else (cdf[i + 1], cdf[i])
+            )
+            middle_values.append(
+                high + _log1mexp(low - high) if math.isfinite(high) else -math.inf
+            )
+        middle = tuple(middle_values)
+    else:
+        raise DistributionError(f"unsupported ordinal cumulative link {link!r}")
+    return (cdf[0], *middle, sf[-1])
 
 
 def _ordered_sample(
     a: Mapping[str, object],
     rng: random.Random,
     family: str,
-    link: Callable[[float], float],
+    link: str,
 ) -> int:
     """Draw one category from an ordered regression family.
 
@@ -2135,26 +2155,26 @@ def _ordered_sample(
         The generator to draw from.
     family : str
         The family, for the diagnostic.
-    link : Callable[[float], float]
-        The distribution function of the latent noise.
+    link : str
+        Logit or probit cumulative link.
 
     Returns
     -------
     int
         The drawn category.
     """
-    probabilities = _ordered_probabilities(a, family, link)
+    log_probabilities = _ordered_log_probabilities(a, family, link)
     uniform = rng.random()
     total = 0.0
-    for index, item in enumerate(probabilities):
-        total += item
+    for index, item in enumerate(log_probabilities):
+        total += math.exp(item)
         if uniform < total:
             return index
-    return len(probabilities) - 1
+    return len(log_probabilities) - 1
 
 
 def _ordered_density(
-    a: Mapping[str, object], value: object, family: str, link: Callable[[float], float]
+    a: Mapping[str, object], value: object, family: str, link: str
 ) -> float:
     """The log probability of one category of an ordered regression family.
 
@@ -2166,8 +2186,8 @@ def _ordered_density(
         The category.
     family : str
         The family, for the diagnostic.
-    link : Callable[[float], float]
-        The distribution function of the latent noise.
+    link : str
+        Logit or probit cumulative link.
 
     Returns
     -------
@@ -2182,11 +2202,10 @@ def _ordered_density(
     if isinstance(value, bool):
         raise DistributionError(f"{family} response categories cannot be boolean")
     category = _integer_observation(value, family)
-    probabilities = _ordered_probabilities(a, family, link)
-    if category is None or not 0 <= category < len(probabilities):
+    log_probabilities = _ordered_log_probabilities(a, family, link)
+    if category is None or not 0 <= category < len(log_probabilities):
         return -math.inf
-    mass = probabilities[category]
-    return math.log(mass) if mass > 0.0 else -math.inf
+    return log_probabilities[category]
 
 
 def _orderedlogistic_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -2204,7 +2223,7 @@ def _orderedlogistic_sample(a: Mapping[str, object], rng: random.Random) -> obje
     object
         The drawn category.
     """
-    return _ordered_sample(a, rng, "OrderedLogistic", _sigmoid)
+    return _ordered_sample(a, rng, "OrderedLogistic", "logit")
 
 
 def _orderedlogistic_density(a: Mapping[str, object], value: object) -> float:
@@ -2222,7 +2241,7 @@ def _orderedlogistic_density(a: Mapping[str, object], value: object) -> float:
     float
         The log probability, ``-inf`` outside the categories.
     """
-    return _ordered_density(a, value, "OrderedLogistic", _sigmoid)
+    return _ordered_density(a, value, "OrderedLogistic", "logit")
 
 
 def _orderedprobit_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -2240,7 +2259,7 @@ def _orderedprobit_sample(a: Mapping[str, object], rng: random.Random) -> object
     object
         The drawn category.
     """
-    return _ordered_sample(a, rng, "OrderedProbit", _normal_cdf)
+    return _ordered_sample(a, rng, "OrderedProbit", "probit")
 
 
 def _orderedprobit_density(a: Mapping[str, object], value: object) -> float:
@@ -2258,7 +2277,7 @@ def _orderedprobit_density(a: Mapping[str, object], value: object) -> float:
     float
         The log probability, ``-inf`` outside the categories.
     """
-    return _ordered_density(a, value, "OrderedProbit", _normal_cdf)
+    return _ordered_density(a, value, "OrderedProbit", "probit")
 
 
 # ---------------------------------------------------------------------------

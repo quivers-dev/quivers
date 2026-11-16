@@ -71,15 +71,18 @@ def _class_metadata(distribution_type, registry_size):
     )
 
 
-def _point(distribution, value):
-    """Broadcast a scalar query against native parameter dtype and batch axes.
+def _point(distribution, value, *, reject_nan=True):
+    """Broadcast a query against native parameters without rounding integers.
 
     Parameters
     ----------
     distribution : Distribution
-        Scalar-event distribution.
+        Distribution retaining its batch and event dimensions.
     value : Tensor or float
         Query points.
+    reject_nan : bool
+        Reject invalid atom-query endpoints. Density evaluation instead masks
+        NaNs as values outside the declared support.
 
     Returns
     -------
@@ -96,14 +99,24 @@ def _point(distribution, value):
     ref = _reference(distribution)
     point = torch.as_tensor(
         value,
-        dtype=ref.dtype if isinstance(value, int | float) else None,
+        dtype=(
+            torch.long
+            if isinstance(value, int) and distribution.support.is_discrete
+            else ref.dtype
+            if isinstance(value, int | float)
+            else None
+        ),
         device=ref.device,
     )
     if not point.is_floating_point():
-        point = point.to(ref.dtype)
-    if bool(torch.isnan(point).any()):
+        point = point.to(torch.long if distribution.support.is_discrete else ref.dtype)
+    if reject_nan and bool(torch.isnan(point).any()):
         raise ValueError("atom queries cannot contain NaN")
-    return point.expand(torch.broadcast_shapes(point.shape, distribution.batch_shape))
+    return point.expand(
+        torch.broadcast_shapes(
+            point.shape, distribution.batch_shape + distribution.event_shape
+        )
+    )
 
 
 def _atomless(distribution):
@@ -303,12 +316,12 @@ def log_atom_mass(distribution: Distribution, value: Tensor) -> Tensor:
 def safe_log_prob(
     distribution: Distribution, value: Tensor, *, active: Tensor | None = None
 ) -> Tensor:
-    """Mask unsupported scalar observations before invoking native validation.
+    """Mask unsupported observations before invoking native validation.
 
     Parameters
     ----------
     distribution : Distribution
-        Scalar-event distribution.
+        Native distribution with a declared support and feasible scoring point.
     value : Tensor
         Query points, including observations outside one mixture component.
     active : Tensor or None
@@ -323,19 +336,32 @@ def safe_log_prob(
     Raises
     ------
     NotImplementedError
-        If safe substitution is requested for coupled native events.
+        If the support has no deterministic feasible-point construction.
     """
-    if distribution.event_shape:
-        raise NotImplementedError(
-            "safe mixture scoring currently requires scalar events"
-        )
     from quivers.continuous._censored import _interior_point
 
-    point = _point(distribution, value)
+    point = _point(distribution, value, reject_nan=False)
     valid = cast(constraints.Constraint, distribution.support).check(point)
     if active is not None:
         valid = valid & active
+    if isinstance(distribution, Independent):
+        dimensions = distribution.reinterpreted_batch_ndims
+        if dimensions == 0:
+            return safe_log_prob(distribution.base_dist, point, active=valid)
+        coordinate_active = valid.reshape(valid.shape + (1,) * dimensions)
+        scores = safe_log_prob(distribution.base_dist, point, active=coordinate_active)
+        return scores.sum(tuple(range(scores.ndim - dimensions, scores.ndim)))
     safe = _interior_point(distribution, point)
+    point_valid = valid.reshape(valid.shape + (1,) * len(distribution.event_shape))
+    if distribution.event_shape:
+        # Some coupled support checks first reject an invalid structural
+        # property for the whole batch. Recheck after feasible substitution
+        # so another row cannot evade its remaining support conditions.
+        candidate = torch.where(point_valid, point, safe)
+        valid = valid & cast(constraints.Constraint, distribution.support).check(
+            candidate
+        )
+        point_valid = valid.reshape(valid.shape + (1,) * len(distribution.event_shape))
     return torch.where(
-        valid, distribution.log_prob(torch.where(valid, point, safe)), -torch.inf
+        valid, distribution.log_prob(torch.where(point_valid, point, safe)), -torch.inf
     )

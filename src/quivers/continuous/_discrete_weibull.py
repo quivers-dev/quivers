@@ -59,34 +59,65 @@ def _log_expm1_from_log(log_value: Tensor) -> Tensor:
     return torch.where(small, small_result, torch.where(large, large_result, regular))
 
 
-def _log_mass(probs: Tensor, concentration: Tensor, value: Tensor) -> Tensor:
-    """Evaluate the discrete Weibull mass without subtracting adjacent powers.
+def _integer_interval_log_mass(
+    probs: Tensor, concentration: Tensor, first: Tensor, last: Tensor
+) -> Tensor:
+    """Factor the probability between nonnegative integer endpoints.
 
     Parameters
     ----------
-    probs : Tensor
-        Survival probabilities in the half-open unit interval.
-    concentration : Tensor
-        Positive Weibull powers.
-    value : Tensor
-        Candidate counts, broadcastable with the parameters.
+    probs, concentration : Tensor
+        Survival parameter and positive Weibull power.
+    first, last : Tensor
+        Inclusive integer endpoints, with last possibly positive infinity.
 
     Returns
     -------
     Tensor
-        Log count masses, negative infinity outside the integer support.
+        Log interval masses without subtracting rounded CDFs or powers.
+    """
+    positive = first > 0
+    m = torch.where(positive, first, 1.0)
+    q = torch.where(probs > 0, probs, 0.5)
+    log_rate = (-q.log()).log()
+    log_magnitude = log_rate + concentration * m.log()
+    survival = _negative_exp(log_magnitude)
+    finite = torch.isfinite(last)
+    n = torch.where(finite, last, first)
+    # Subtract the integer endpoints before adding one; first+1 could round
+    # back to first at the exact Float64 count boundary.
+    log_ratio = torch.log1p((n - first + 1) / m)
+    log_increment = concentration.log() + log_ratio.log()
+    log_difference = log_magnitude + _log_expm1_from_log(log_increment)
+    ordinary = survival + _log1mexp_neg_exp(log_difference)
+    ordinary = torch.where(finite, ordinary, survival)
+    cdf = _log1mexp_neg_exp(log_rate + concentration * torch.log1p(n))
+    cdf = torch.where(n == 0, torch.log1p(-probs), cdf)
+    cdf = torch.where(finite, cdf, 0.0)
+    result = torch.where(positive, ordinary, cdf)
+    result = torch.where(probs > 0, result, torch.where(positive, -torch.inf, 0.0))
+    # The zero cell has finite one-sided probability derivatives at q=0.
+    return torch.where((first == 0) & (last == 0), torch.log1p(-probs), result)
+
+
+def _log_mass(probs: Tensor, concentration: Tensor, value: Tensor) -> Tensor:
+    """Score one integer through the common factored interval kernel.
+
+    Parameters
+    ----------
+    probs, concentration : Tensor
+        Survival probability and Weibull power.
+    value : Tensor
+        Candidate count observations.
+
+    Returns
+    -------
+    Tensor
+        Log mass, negative infinity outside integer support.
     """
     valid = torch.isfinite(value) & (value >= 0) & (value == value.floor())
-    positive = valid & (value > 0) & (probs > 0)
-    point = torch.where(positive, value, 1.0)
-    q = torch.where(positive, probs, 0.5)
-    log_rate = (-q.log()).log()
-    log_power = concentration * point.log()
-    log_increment = concentration.log() + torch.log1p(point.reciprocal()).log()
-    log_difference = log_rate + log_power + _log_expm1_from_log(log_increment)
-    ordinary = _negative_exp(log_rate + log_power) + _log1mexp_neg_exp(log_difference)
-    result = torch.where(value == 0, torch.log1p(-probs), ordinary)
-    result = torch.where((value > 0) & (probs == 0), -torch.inf, result)
+    point = torch.where(valid, value, 0.0)
+    result = _integer_interval_log_mass(probs, concentration, point, point)
     return torch.where(valid, result, -torch.inf)
 
 
@@ -186,6 +217,59 @@ class DiscreteWeibull(Distribution):
         """
         _check_count_observation_source(value)
         return _log_mass(self.probs, self.concentration, value.double())
+
+    def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
+        """Evaluate an integer interval without subtracting rounded tail values.
+
+        Parameters
+        ----------
+        low, high : Tensor or float or None
+            Real endpoints; None leaves a side unbounded.
+        lower_closed, upper_closed : bool or Tensor
+            Endpoint membership, optionally varying across batch rows.
+
+        Returns
+        -------
+        Tensor
+            Exact factored log probabilities on the distribution batch.
+
+        Raises
+        ------
+        ValueError
+            If an endpoint is NaN.
+        TypeError
+            If endpoint membership is not Boolean.
+        """
+        from quivers.continuous._interval import _closed_flag
+
+        lower_closed = _closed_flag(lower_closed, "lower_closed")
+        upper_closed = _closed_flag(upper_closed, "upper_closed")
+        lower = torch.as_tensor(
+            -torch.inf if low is None else low,
+            dtype=torch.float64,
+            device=self.probs.device,
+        )
+        upper = torch.as_tensor(
+            torch.inf if high is None else high,
+            dtype=torch.float64,
+            device=self.probs.device,
+        )
+        if bool(torch.isnan(lower).any()) or bool(torch.isnan(upper).any()):
+            raise ValueError("interval endpoints must not be NaN")
+        first = torch.where(
+            torch.as_tensor(lower_closed, device=lower.device),
+            lower.ceil(),
+            lower.floor() + 1,
+        ).clamp_min(0)
+        last = torch.where(
+            torch.as_tensor(upper_closed, device=upper.device),
+            upper.floor(),
+            upper.ceil() - 1,
+        )
+        valid = torch.isfinite(first) & (last >= first)
+        first, last = torch.where(valid, first, 0.0), torch.where(valid, last, 0.0)
+        mass = _integer_interval_log_mass(self.probs, self.concentration, first, last)
+        return torch.where(valid, mass, -torch.inf)
 
     def _log_tails(self, value):
         """Evaluate log count tails with finite interval-bound derivatives.

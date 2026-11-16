@@ -600,6 +600,10 @@ counts with survival probability `P(Y >= k) = q**(k**b)`. It requires
 The probability parameter is not a response mean. Its mean is the
 sum of `q**(k**b)` over positive integers, as in the
 [formal count definition](../semantics/programs.md#discrete-weibull-counts).
+Native and reference interval queries use its exact tail law and a shared
+factored power-difference kernel for finite intervals. This retains tiny
+positive masses at small concentrations without subtracting rounded CDFs or
+stopping a count sum while substantial tail mass remains.
 
 `ZeroInflatedAsymmetricLaplace(zero_prob, loc, scale, quantile)` combines
 an exact zero atom with a continuous asymmetric Laplace response. The

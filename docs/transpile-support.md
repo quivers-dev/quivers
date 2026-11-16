@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 47 programs of the [examples gallery](examples/index.md) and for 151 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 47 programs of the [examples gallery](examples/index.md) and for 155 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 14 / 47          | 73 / 151   |
-| [church](semantics/transpile-correctness/church.md)   | 16 / 47          | 95 / 151   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 23 / 47          | 110 / 151  |
-| [gen](semantics/transpile-correctness/gen.md)         | 21 / 47          | 99 / 151   |
-| [jags](semantics/transpile-correctness/jags.md)       | 20 / 47          | 83 / 151   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 24 / 47          | 125 / 151  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 23 / 47          | 111 / 151  |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 24 / 47          | 127 / 151  |
-| [stan](semantics/transpile-correctness/stan.md)       | 23 / 47          | 99 / 151   |
-| [turing](semantics/transpile-correctness/turing.md)   | 21 / 47          | 103 / 151  |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 23 / 47          | 104 / 151  |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 14 / 47          | 73 / 155   |
+| [church](semantics/transpile-correctness/church.md)   | 16 / 47          | 95 / 155   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 23 / 47          | 113 / 155  |
+| [gen](semantics/transpile-correctness/gen.md)         | 21 / 47          | 99 / 155   |
+| [jags](semantics/transpile-correctness/jags.md)       | 20 / 47          | 83 / 155   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 24 / 47          | 127 / 155  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 23 / 47          | 111 / 155  |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 24 / 47          | 130 / 155  |
+| [stan](semantics/transpile-correctness/stan.md)       | 23 / 47          | 99 / 155   |
+| [turing](semantics/transpile-correctness/turing.md)   | 21 / 47          | 103 / 155  |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 23 / 47          | 104 / 155  |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -164,6 +164,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/observe_alr_reference`                    | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/observe_bernoulli_logits`                 | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_bernoulli_logits_rows`            | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_bernstein_hazard_log_rate`        | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/observe_binomial_logits`                  | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/observe_class_code`                       | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_com_poisson_log_rate`             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
@@ -177,6 +178,7 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/observe_mvn_host_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_mvn_lkj_factor`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_negative_binomial_logits`         | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
+| `steps/observe_onehot_categorical_logits`        | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_ordered_probit`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_ordinal_code`                     | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_over_vector_location`             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -184,6 +186,8 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/observe_per_row_gamma_rate`               | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_plated_vector_location`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_probs_data`                       | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_relaxed_bernoulli_logits`         | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_relaxed_onehot_logits`            | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
 | `steps/observe_shared_probs_vector`              | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_step`                             | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_vector_location_latent`           | yes  | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
@@ -815,7 +819,7 @@ Every backend reports it in the same words. `bugs` on `stochastic_volatility` re
 
 ### Refused everywhere, for unrelated reasons
 
-No backend renders `steps/observe_alr_reference`, `steps/observe_com_poisson_log_rate`, `steps/observe_continuous_bernoulli_logits`, `steps/observe_dirichlet_multinomial`, `steps/observe_multinomial_logits`, and no kind is reported by all of them, so the refusals are per-target limits that happen to overlap. Section 3 carries each backend's own reason.
+No backend renders `steps/observe_alr_reference`, `steps/observe_bernstein_hazard_log_rate`, `steps/observe_com_poisson_log_rate`, `steps/observe_continuous_bernoulli_logits`, `steps/observe_dirichlet_multinomial`, `steps/observe_multinomial_logits`, and no kind is reported by all of them, so the refusals are per-target limits that happen to overlap. Section 3 carries each backend's own reason.
 
 ## 3. What each backend alone refuses
 
@@ -866,7 +870,7 @@ bugs cannot transpile this program:
 
 **`arg:list-literal`, `family:OneHotCategorical`**
 
-Refused for: `steps/sample_onehot_probs`.
+Refused for: `steps/observe_onehot_categorical_logits`, `steps/sample_onehot_probs`.
 
 Renders on: `edward2`, `numpyro`, `pyro`.
 
@@ -877,7 +881,7 @@ arg:list-literal
 family:OneHotCategorical: no BUGS target name
 ```
 
-`bugs` on `steps/sample_onehot_probs` reports:
+`bugs` on `steps/observe_onehot_categorical_logits` reports:
 
 ```text
 bugs cannot transpile this program:
@@ -929,7 +933,7 @@ bugs cannot transpile this program:
 
 **`arg:list-literal`, `family:RelaxedOneHotCategorical`**
 
-Refused for: `steps/sample_relaxed_onehot_probs`.
+Refused for: `steps/observe_relaxed_onehot_logits`, `steps/sample_relaxed_onehot_probs`.
 
 Renders on: `edward2`, `pyro`.
 
@@ -940,7 +944,7 @@ arg:list-literal
 family:RelaxedOneHotCategorical: no BUGS target name
 ```
 
-`bugs` on `steps/sample_relaxed_onehot_probs` reports:
+`bugs` on `steps/observe_relaxed_onehot_logits` reports:
 
 ```text
 bugs cannot transpile this program:
@@ -1023,7 +1027,7 @@ call:graph:noisy
 `bugs` on `steps/call_step` reports:
 
 ```text
-the program calls the computation `noisy` at run time, and BUGS is a graph language: a model is a set of stochastic and deterministic relations between named nodes, with no statement that runs a computation, draws under a site name it computes, or scores a weight it accumulates. A pure computation whose body is a chain of bindings is inlined before the plan reaches this target, so `noisy` is either effectful or recursive. Write its draws and scores as steps of the program, or transpile to a target with a host runtime.
+the program calls the computation `noisy` at run time, and BUGS is a graph language: a model is a set of stochastic and deterministic relations between named nodes, with no statement that runs a computation, draws under a site name it computes, or scores a weight it accumulates. A pure computation is inlined only when this target can preserve its operations and control flow. In particular, eager branch selection requires both branches to have total operations; a guarded logarithm or division must remain lazy. This call cannot be safely inlined. Write supported draws and scores as program steps, or choose a target with a host runtime.
 ```
 
 **`data:per-row-vector-parameter:cuts`**
@@ -1258,6 +1262,24 @@ family:NegativeBinomial:logits: bugs has no NegativeBinomial parameterized by it
 
 ```text
 bugs cannot score a draw from `NegativeBinomial`: bugs has no NegativeBinomial parameterized by its logits; write the probability the logits name as probs
+```
+
+**`family:RelaxedBernoulli`**
+
+Refused for: `steps/observe_relaxed_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:RelaxedBernoulli: no BUGS target name
+```
+
+`bugs` on `steps/observe_relaxed_bernoulli_logits` reports:
+
+```text
+bugs cannot score a draw from `RelaxedBernoulli`: no BUGS target name
 ```
 
 **`family:Wishart:scale_tril`**
@@ -1759,7 +1781,7 @@ church cannot score a draw from `NegativeBinomial`: church has no NegativeBinomi
 
 **`family:OneHotCategorical:no-church-target`**
 
-Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+Refused for: `steps/observe_onehot_categorical_logits`, `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
 
 Renders on: `edward2`, `numpyro`, `pyro`.
 
@@ -1769,7 +1791,7 @@ Reported kinds:
 family:OneHotCategorical:no-church-target
 ```
 
-`church` on `steps/sample_onehot_probs` reports:
+`church` on `steps/observe_onehot_categorical_logits` reports:
 
 ```text
 church has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -1811,9 +1833,27 @@ family:OrderedProbit:no-church-target
 church has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:RelaxedBernoulli:no-church-target`**
+
+Refused for: `steps/observe_relaxed_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:RelaxedBernoulli:no-church-target
+```
+
+`church` on `steps/observe_relaxed_bernoulli_logits` reports:
+
+```text
+church has no `RelaxedBernoulli` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
 **`family:RelaxedOneHotCategorical:no-church-target`**
 
-Refused for: `steps/sample_relaxed_onehot_probs`.
+Refused for: `steps/observe_relaxed_onehot_logits`, `steps/sample_relaxed_onehot_probs`.
 
 Renders on: `edward2`, `pyro`.
 
@@ -1823,7 +1863,7 @@ Reported kinds:
 family:RelaxedOneHotCategorical:no-church-target
 ```
 
-`church` on `steps/sample_relaxed_onehot_probs` reports:
+`church` on `steps/observe_relaxed_onehot_logits` reports:
 
 ```text
 church has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -2217,7 +2257,7 @@ gen cannot score a draw from `NegativeBinomial`: gen has no NegativeBinomial par
 
 **`family:OneHotCategorical:no-gen-target`**
 
-Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+Refused for: `steps/observe_onehot_categorical_logits`, `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
 
 Renders on: `edward2`, `numpyro`, `pyro`.
 
@@ -2227,7 +2267,7 @@ Reported kinds:
 family:OneHotCategorical:no-gen-target
 ```
 
-`gen` on `steps/sample_onehot_probs` reports:
+`gen` on `steps/observe_onehot_categorical_logits` reports:
 
 ```text
 gen has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -2269,9 +2309,27 @@ family:OrderedProbit:no-gen-target
 gen has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:RelaxedBernoulli:no-gen-target`**
+
+Refused for: `steps/observe_relaxed_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:RelaxedBernoulli:no-gen-target
+```
+
+`gen` on `steps/observe_relaxed_bernoulli_logits` reports:
+
+```text
+gen has no `RelaxedBernoulli` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
 **`family:RelaxedOneHotCategorical:no-gen-target`**
 
-Refused for: `steps/sample_relaxed_onehot_probs`.
+Refused for: `steps/observe_relaxed_onehot_logits`, `steps/sample_relaxed_onehot_probs`.
 
 Renders on: `edward2`, `pyro`.
 
@@ -2281,7 +2339,7 @@ Reported kinds:
 family:RelaxedOneHotCategorical:no-gen-target
 ```
 
-`gen` on `steps/sample_relaxed_onehot_probs` reports:
+`gen` on `steps/observe_relaxed_onehot_logits` reports:
 
 ```text
 gen has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -2468,7 +2526,7 @@ call:graph:noisy
 `jags` on `steps/call_step` reports:
 
 ```text
-the program calls the computation `noisy` at run time, and JAGS is a graph language: a model is a set of stochastic and deterministic relations between named nodes, with no statement that runs a computation, draws under a site name it computes, or scores a weight it accumulates. A pure computation whose body is a chain of bindings is inlined before the plan reaches this target, so `noisy` is either effectful or recursive. Write its draws and scores as steps of the program, or transpile to a target with a host runtime.
+the program calls the computation `noisy` at run time, and JAGS is a graph language: a model is a set of stochastic and deterministic relations between named nodes, with no statement that runs a computation, draws under a site name it computes, or scores a weight it accumulates. A pure computation is inlined only when this target can preserve its operations and control flow. In particular, eager branch selection requires both branches to have total operations; a guarded logarithm or division must remain lazy. This call cannot be safely inlined. Write supported draws and scores as program steps, or choose a target with a host runtime.
 ```
 
 **`data:per-row-vector-parameter:cuts`**
@@ -2689,7 +2747,7 @@ jags has no `MatrixNormal` distribution. Pick a family this target supports, or 
 
 **`family:no-target-name:OneHotCategorical`**
 
-Refused for: `steps/sample_onehot_probs`.
+Refused for: `steps/observe_onehot_categorical_logits`, `steps/sample_onehot_probs`.
 
 Renders on: `edward2`, `numpyro`, `pyro`.
 
@@ -2699,7 +2757,7 @@ Reported kinds:
 family:no-target-name:OneHotCategorical
 ```
 
-`jags` on `steps/sample_onehot_probs` reports:
+`jags` on `steps/observe_onehot_categorical_logits` reports:
 
 ```text
 jags has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -2741,9 +2799,27 @@ family:no-target-name:OrderedProbit
 jags has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:no-target-name:RelaxedBernoulli`**
+
+Refused for: `steps/observe_relaxed_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:no-target-name:RelaxedBernoulli
+```
+
+`jags` on `steps/observe_relaxed_bernoulli_logits` reports:
+
+```text
+jags has no `RelaxedBernoulli` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
 **`family:no-target-name:RelaxedOneHotCategorical`**
 
-Refused for: `steps/sample_relaxed_onehot_probs`.
+Refused for: `steps/observe_relaxed_onehot_logits`, `steps/sample_relaxed_onehot_probs`.
 
 Renders on: `edward2`, `pyro`.
 
@@ -2753,7 +2829,7 @@ Reported kinds:
 family:no-target-name:RelaxedOneHotCategorical
 ```
 
-`jags` on `steps/sample_relaxed_onehot_probs` reports:
+`jags` on `steps/observe_relaxed_onehot_logits` reports:
 
 ```text
 jags has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -2916,7 +2992,7 @@ numpyro cannot score a draw from `NegativeBinomial`: numpyro has no NegativeBino
 
 **`family:no-target-name:RelaxedOneHotCategorical`**
 
-Refused for: `steps/sample_relaxed_onehot_probs`.
+Refused for: `steps/observe_relaxed_onehot_logits`, `steps/sample_relaxed_onehot_probs`.
 
 Renders on: `edward2`, `pyro`.
 
@@ -2926,7 +3002,7 @@ Reported kinds:
 family:no-target-name:RelaxedOneHotCategorical
 ```
 
-`numpyro` on `steps/sample_relaxed_onehot_probs` reports:
+`numpyro` on `steps/observe_relaxed_onehot_logits` reports:
 
 ```text
 numpyro has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -3046,7 +3122,7 @@ pymc cannot score a draw from `NegativeBinomial`: pymc has no NegativeBinomial p
 
 **`family:OneHotCategorical`**
 
-Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+Refused for: `steps/observe_onehot_categorical_logits`, `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
 
 Renders on: `edward2`, `numpyro`, `pyro`.
 
@@ -3056,15 +3132,33 @@ Reported kinds:
 family:OneHotCategorical
 ```
 
-`pymc` on `steps/sample_onehot_probs` reports:
+`pymc` on `steps/observe_onehot_categorical_logits` reports:
 
 ```text
 pymc has no `OneHotCategorical` distribution: the family registry contains no matching target distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:RelaxedBernoulli`**
+
+Refused for: `steps/observe_relaxed_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:RelaxedBernoulli
+```
+
+`pymc` on `steps/observe_relaxed_bernoulli_logits` reports:
+
+```text
+pymc has no `RelaxedBernoulli` distribution: the family registry contains no matching target distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
 **`family:RelaxedOneHotCategorical`**
 
-Refused for: `steps/sample_relaxed_onehot_probs`.
+Refused for: `steps/observe_relaxed_onehot_logits`, `steps/sample_relaxed_onehot_probs`.
 
 Renders on: `edward2`, `pyro`.
 
@@ -3074,7 +3168,7 @@ Reported kinds:
 family:RelaxedOneHotCategorical
 ```
 
-`pymc` on `steps/sample_relaxed_onehot_probs` reports:
+`pymc` on `steps/observe_relaxed_onehot_logits` reports:
 
 ```text
 pymc has no `RelaxedOneHotCategorical` distribution: the family registry contains no matching target distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -3234,7 +3328,7 @@ stan cannot score a draw from `NegativeBinomial`: stan has no NegativeBinomial p
 
 **`family:no-stan-target:OneHotCategorical`**
 
-Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+Refused for: `steps/observe_onehot_categorical_logits`, `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
 
 Renders on: `edward2`, `numpyro`, `pyro`.
 
@@ -3244,10 +3338,46 @@ Reported kinds:
 family:no-stan-target:OneHotCategorical
 ```
 
-`stan` on `steps/sample_onehot_probs` reports:
+`stan` on `steps/observe_onehot_categorical_logits` reports:
 
 ```text
 stan has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:no-stan-target:RelaxedBernoulli`**
+
+Refused for: `steps/observe_relaxed_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:no-stan-target:RelaxedBernoulli
+```
+
+`stan` on `steps/observe_relaxed_bernoulli_logits` reports:
+
+```text
+stan has no `RelaxedBernoulli` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:no-stan-target:RelaxedOneHotCategorical`**
+
+Refused for: `steps/observe_relaxed_onehot_logits`.
+
+Renders on: `edward2`, `pyro`.
+
+Reported kinds:
+
+```text
+family:no-stan-target:RelaxedOneHotCategorical
+```
+
+`stan` on `steps/observe_relaxed_onehot_logits` reports:
+
+```text
+stan has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
 **`let-expr:axis-reduction:stan`**
@@ -3523,7 +3653,7 @@ turing cannot score a draw from `NegativeBinomial`: turing has no NegativeBinomi
 
 **`family:OneHotCategorical`**
 
-Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+Refused for: `steps/observe_onehot_categorical_logits`, `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
 
 Renders on: `edward2`, `numpyro`, `pyro`.
 
@@ -3533,7 +3663,7 @@ Reported kinds:
 family:OneHotCategorical: no Turing.jl mapping
 ```
 
-`turing` on `steps/sample_onehot_probs` reports:
+`turing` on `steps/observe_onehot_categorical_logits` reports:
 
 ```text
 turing cannot score a draw from `OneHotCategorical`: no Turing.jl mapping
@@ -3575,9 +3705,27 @@ family:OrderedProbit: no Turing.jl mapping
 turing cannot score a draw from `OrderedProbit`: no Turing.jl mapping
 ```
 
+**`family:RelaxedBernoulli`**
+
+Refused for: `steps/observe_relaxed_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:RelaxedBernoulli: no Turing.jl mapping
+```
+
+`turing` on `steps/observe_relaxed_bernoulli_logits` reports:
+
+```text
+turing cannot score a draw from `RelaxedBernoulli`: no Turing.jl mapping
+```
+
 **`family:RelaxedOneHotCategorical`**
 
-Refused for: `steps/sample_relaxed_onehot_probs`.
+Refused for: `steps/observe_relaxed_onehot_logits`, `steps/sample_relaxed_onehot_probs`.
 
 Renders on: `edward2`, `pyro`.
 
@@ -3587,7 +3735,7 @@ Reported kinds:
 family:RelaxedOneHotCategorical: no Turing.jl mapping
 ```
 
-`turing` on `steps/sample_relaxed_onehot_probs` reports:
+`turing` on `steps/observe_relaxed_onehot_logits` reports:
 
 ```text
 turing cannot score a draw from `RelaxedOneHotCategorical`: no Turing.jl mapping
@@ -3924,7 +4072,7 @@ webppl has no `InverseWishart` distribution. Pick a family this target supports,
 
 **`family:no-webppl-target:OneHotCategorical`**
 
-Refused for: `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
+Refused for: `steps/observe_onehot_categorical_logits`, `steps/sample_onehot_probs`, `steps/sample_onehot_sampled_probs`.
 
 Renders on: `edward2`, `numpyro`, `pyro`.
 
@@ -3934,7 +4082,7 @@ Reported kinds:
 family:no-webppl-target:OneHotCategorical
 ```
 
-`webppl` on `steps/sample_onehot_probs` reports:
+`webppl` on `steps/observe_onehot_categorical_logits` reports:
 
 ```text
 webppl has no `OneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
@@ -3976,9 +4124,27 @@ family:no-webppl-target:OrderedProbit
 webppl has no `OrderedProbit` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
 ```
 
+**`family:no-webppl-target:RelaxedBernoulli`**
+
+Refused for: `steps/observe_relaxed_bernoulli_logits`.
+
+Renders on: `edward2`, `numpyro`, `pyro`.
+
+Reported kinds:
+
+```text
+family:no-webppl-target:RelaxedBernoulli
+```
+
+`webppl` on `steps/observe_relaxed_bernoulli_logits` reports:
+
+```text
+webppl has no `RelaxedBernoulli` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
 **`family:no-webppl-target:RelaxedOneHotCategorical`**
 
-Refused for: `steps/sample_relaxed_onehot_probs`.
+Refused for: `steps/observe_relaxed_onehot_logits`, `steps/sample_relaxed_onehot_probs`.
 
 Renders on: `edward2`, `pyro`.
 
@@ -3988,7 +4154,7 @@ Reported kinds:
 family:no-webppl-target:RelaxedOneHotCategorical
 ```
 
-`webppl` on `steps/sample_relaxed_onehot_probs` reports:
+`webppl` on `steps/observe_relaxed_onehot_logits` reports:
 
 ```text
 webppl has no `RelaxedOneHotCategorical` distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.

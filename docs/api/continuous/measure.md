@@ -66,6 +66,14 @@ response instead uses the normalized restriction as its whole response law.
 The `Censored` distribution is a third operation: it clamps sampled values to
 its endpoints and retains the resulting endpoint atoms.
 
+Restriction masks excluded values before invoking a base density. This retains
+zero mass outside either the interval or a parameter-dependent base support,
+without evaluating an invalid logarithm in an inactive branch. Independent event
+coordinates reduce the mask to their event's batch axes. Conditional
+`families.Truncated` reuses `Normalize(Restrict(...))` for its coordinate laws;
+both interfaces share the rejection loop while retaining their sampling policy
+and attempt budget. Normal coordinates retain their specialized inverse sampler.
+
 ## Batch selection and transformed event shapes
 
 `Measure.select_batch(active, output_shape=...)` selects active batch cells

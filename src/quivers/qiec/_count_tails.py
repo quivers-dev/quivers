@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 
 from quivers.qiec._beta_tails import beta_fraction, log_beta_front
 from quivers.qiec._gamma_tails import _regularized_gamma_logs, _log_complement
 from quivers.qiec._count_mixtures import _parameters, _beta_binomial_log_mass
 from quivers.qiec._sampling import _trial_count
+from quivers.qiec.primitives import _log1mexp
 from quivers.qiec.reference_support import (
     DistributionError,
     log_probabilities,
@@ -24,6 +26,7 @@ COUNT_TAIL_FAMILIES = frozenset(
         "NegativeBinomial",
         "Poisson",
         "Geometric",
+        "DiscreteWeibull",
         "BetaBinomial",
         "ZeroInflatedPoisson",
         "ZeroInflatedNegativeBinomial",
@@ -215,6 +218,97 @@ def _bb_sum(n, k, a, b, upper, max_terms):
     return min(0.0, total)
 
 
+def _discrete_weibull_parameters(a: Mapping[str, object]) -> tuple[float, float]:
+    """Read a proper count survival parameter and positive Weibull power.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Survival probability and concentration.
+
+    Returns
+    -------
+    tuple[float, float]
+        Validated survival parameter and positive power.
+
+    Raises
+    ------
+    DistributionError
+        If parameters do not define a proper discrete Weibull law.
+    """
+    q = real_parameter(a, "probs", "DiscreteWeibull")
+    power = real_parameter(a, "concentration", "DiscreteWeibull")
+    if not 0 <= q < 1 or not math.isfinite(power) or power <= 0:
+        raise DistributionError(
+            "DiscreteWeibull requires 0 <= probs < 1 and finite positive concentration"
+        )
+    return q, power
+
+
+def _log1mexp_neg_exp(log_t: float) -> float:
+    """Evaluate a complementary exponential from its logarithmic intensity.
+
+    Parameters
+    ----------
+    log_t : float
+        Log of a nonnegative intensity, including either infinite limit.
+
+    Returns
+    -------
+    float
+        Log(1-exp(-exp(log_t))) without dropping a small intensity.
+    """
+    if log_t > 709.782712893384:
+        return 0.0
+    if log_t < -20:
+        t = math.exp(log_t)
+        return log_t + math.log1p(-t / 2 + t * t / 6)
+    return _log1mexp(-math.exp(log_t))
+
+
+def _discrete_weibull_log_interval(
+    q: float, power: float, first: int, last: float
+) -> float:
+    """Factor a discrete Weibull interval before adjacent powers can round equal.
+
+    Parameters
+    ----------
+    q, power : float
+        Validated survival probability and positive Weibull power.
+    first : int
+        Inclusive nonnegative first count.
+    last : float
+        Inclusive last integer count or positive infinity.
+
+    Returns
+    -------
+    float
+        Log probability of the integer interval.
+    """
+    if first == 0:
+        return log_count_tails(
+            "DiscreteWeibull", {"probs": q, "concentration": power}, last
+        )[0]
+    if q == 0:
+        return -math.inf
+    log_magnitude = math.log(-math.log(q)) + power * math.log(first)
+    if log_magnitude > 709.782712893384:
+        return -math.inf
+    survival = -math.exp(log_magnitude)
+    if last == math.inf:
+        return survival
+    log_ratio = math.log1p((last - first + 1) / first)
+    increment = power * log_ratio
+    log_increment = (
+        increment
+        if increment > 40
+        else math.log(math.expm1(increment))
+        if increment > 0
+        else math.log(power) + math.log(log_ratio)
+    )
+    return survival + _log1mexp_neg_exp(log_magnitude + log_increment)
+
+
 def log_count_tails(name, arguments, value, *, max_terms=262144):
     """Evaluate scalar counting-law tails without a truncated infinite sum.
 
@@ -242,6 +336,20 @@ def log_count_tails(name, arguments, value, *, max_terms=262144):
     point = float(value)
     if math.isnan(point):
         raise DistributionError("count CDF query must not be NaN")
+    if name == "DiscreteWeibull":
+        q, power = _discrete_weibull_parameters(arguments)
+        if point < 0:
+            return -math.inf, 0.0
+        if point == math.inf or q == 0:
+            return 0.0, -math.inf
+        count = math.floor(point) + 1
+        if count == 1:
+            return math.log1p(-q), math.log(q)
+        log_magnitude = math.log(-math.log(q)) + power * math.log(count)
+        sf = (
+            -math.exp(log_magnitude) if log_magnitude <= 709.782712893384 else -math.inf
+        )
+        return _log1mexp_neg_exp(log_magnitude), sf
     if name == "Categorical":
         probabilities = simplex(arguments, name)
         if point < 0:

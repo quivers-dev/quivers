@@ -632,6 +632,14 @@ other bases use bounded rejection and explicitly fail when its attempt
 limit is exhausted. This rejection path supplies no general pathwise
 derivative for parameter-dependent acceptance.
 
+The conditional wrapper constructs the same `Normalize(Restrict(...))`
+coordinate laws as the measure interface. Both restrict the score's domain
+before evaluating the underlying density: an excluded point contributes zero
+mass, and an inactive branch is evaluated only at a feasible support point.
+For independent vector events, the restriction mask is reduced over event
+coordinates before the scalar event score is selected. This preserves the
+batch/event distinction and avoids invalid intermediate derivatives.
+
 The derivative of the mathematical normalizer and an executor's ability
 to compute it are separate questions. Native Gamma interval masses use
 float64 lower-tail series and upper-tail continued fractions, with
@@ -660,6 +668,14 @@ $$
 \mathbb E[Y]=\sum_{k=1}^\infty q^{k^b},\qquad
 \mathbb E[Y^2]=\sum_{k=1}^\infty(2k-1)q^{k^b}.
 $$
+
+For integer $0\leq a\leq c$, the interval mass is
+$q^{a^b}-q^{(c+1)^b}$. Native and reference execution factor this
+power difference before taking logarithms, sharing the singleton and interval
+kernel. Thus a small concentration does not identify two distinct cumulative
+probabilities merely because both round to the same floating-point value.
+Unbounded intervals use the corresponding exact tail expression; an early
+stop in a generic count sum is not substituted for the remaining tail.
 
 Both sums are finite for the admitted parameters. The formula family's
 main parameter `mu` denotes $q$, following the

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 import torch
 from torch import Tensor
@@ -1017,22 +1018,15 @@ class Restrict(Measure):
         -------
         Tensor
             Raw log density or mass at the evaluation points."""
-        value_b = torch.as_tensor(value)
-        base_lp = self.base.log_prob(value_b)
-        out = base_lp.clone()
-        if self.low is not None:
-            below = (value_b < self.low) | (
-                (value_b == self.low)
-                & ~torch.as_tensor(self.lower_closed, device=value_b.device)
+        from quivers.continuous._atoms import _point, safe_log_prob
+
+        point = _point(self.base, value, reject_nan=False)
+        inside = self._inside(point)
+        if self.event_shape:
+            inside = inside.all(
+                tuple(range(inside.ndim - len(self.event_shape), inside.ndim))
             )
-            out = torch.where(below, torch.full_like(out, _NEG_INF), out)
-        if self.high is not None:
-            above = (value_b > self.high) | (
-                (value_b == self.high)
-                & ~torch.as_tensor(self.upper_closed, device=value_b.device)
-            )
-            out = torch.where(above, torch.full_like(out, _NEG_INF), out)
-        return out
+        return safe_log_prob(self.base, point, active=inside)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         """Draw from the restricted, renormalised measure.
@@ -1218,27 +1212,63 @@ class Restrict(Measure):
         RuntimeError
             If an entry stays outside after `_REJECTION_ROUNDS` redraws.
         """
-        draws = _sample_active(self.base, sample_shape, active)
-        ok = self._inside(draws) | ~active
-        for _ in range(_REJECTION_ROUNDS):
-            if bool(ok.all()):
-                return draws
-            fresh = _sample_active(self.base, sample_shape, active)
-            draws = torch.where(ok, draws, fresh)
-            ok = self._inside(draws) | ~active
-        if bool(ok.all()):
-            return draws
-        raise RuntimeError(
-            f"Restrict: {int((~ok).sum())} draw(s) of the base stayed outside "
-            f"[{self.low}, {self.high}] after {_REJECTION_ROUNDS} redraws; the "
-            f"interval holds too little of the base's mass to sample by "
-            f"rejection"
+        return _bounded_rejection(
+            lambda: _sample_active(self.base, sample_shape, active),
+            lambda values: self._inside(values) | ~active,
+            max_rounds=_REJECTION_ROUNDS,
+            label="Restrict",
         )
 
 
 #: How many times rejection sampling redraws an entry outside a
 #: restriction's interval before it reports the interval as too small.
 _REJECTION_ROUNDS = 10_000
+
+
+def _bounded_rejection(
+    draw: Callable[[], Tensor],
+    accept: Callable[[Tensor], Tensor],
+    *,
+    max_rounds: int,
+    label: str,
+) -> Tensor:
+    """Fill independent coordinates while preserving the supplied draw's AD policy.
+
+    Parameters
+    ----------
+    draw : Callable
+        Fresh draws with the same sample, batch, and event shape on every call.
+    accept : Callable
+        Boolean acceptance mask broadcastable to those draws.
+    max_rounds : int
+        Maximum replacement draws following the initial candidate.
+    label : str
+        Operator name included in exhaustion diagnostics.
+
+    Returns
+    -------
+    Tensor
+        Accepted coordinates in their original shape.
+
+    Raises
+    ------
+    RuntimeError
+        If the budget expires before every coordinate is accepted.
+    """
+    values = draw()
+    accepted = accept(values)
+    for _ in range(max_rounds):
+        if bool(accepted.all()):
+            return values
+        values = torch.where(accepted, values, draw())
+        accepted = accept(values)
+    if bool(accepted.all()):
+        return values
+    raise RuntimeError(
+        f"{label} rejection sampling failed to fill {int((~accepted).sum())} "
+        f"coordinates after {max_rounds} redraws; the interval holds too little "
+        "of the base's mass to sample by rejection"
+    )
 
 
 class Pushforward(Measure):

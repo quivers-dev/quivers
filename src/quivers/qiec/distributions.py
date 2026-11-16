@@ -25,6 +25,10 @@ from quivers.qiec._multinomial import (
     SAMPLERS as _COUNT_VECTOR_SAMPLERS,
     DENSITIES as _COUNT_VECTOR_DENSITIES,
 )
+from quivers.qiec._count_tails import (
+    _discrete_weibull_parameters,
+    _discrete_weibull_log_interval,
+)
 from quivers.qiec._sampling import (
     _binomial_sample as _sample_binomial_count,
     _dirichlet_weights,
@@ -1492,33 +1496,6 @@ def _asymmetric_laplace_density(a: Mapping[str, object], value: object) -> float
     return math.log(quantile) + math.log1p(-quantile) - math.log(scale) - loss
 
 
-def _discrete_weibull_parameters(a: Mapping[str, object]) -> tuple[float, float]:
-    """Read a proper count survival parameter and positive Weibull power.
-
-    Parameters
-    ----------
-    a : Mapping[str, object]
-        Survival probability and concentration.
-
-    Returns
-    -------
-    tuple[float, float]
-        Validated survival parameter and positive power.
-
-    Raises
-    ------
-    DistributionError
-        If parameters do not define a proper discrete Weibull law.
-    """
-    q = _real(a, "probs", "DiscreteWeibull")
-    power = _real(a, "concentration", "DiscreteWeibull")
-    if not 0 <= q < 1 or not math.isfinite(power) or power <= 0:
-        raise DistributionError(
-            "DiscreteWeibull requires 0 <= probs < 1 and finite positive concentration"
-        )
-    return q, power
-
-
 def _discrete_weibull_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw a count by a constant-work exponential transform.
 
@@ -1572,32 +1549,7 @@ def _discrete_weibull_density(a: Mapping[str, object], value: object) -> float:
     point = _integer_observation(value, "DiscreteWeibull", float64=True)
     if point is None or point < 0:
         return -math.inf
-    if point == 0:
-        return math.log1p(-q)
-    if q == 0:
-        return -math.inf
-    log_magnitude = math.log(-math.log(q)) + power * math.log(point)
-    if log_magnitude > 709.782712893384:
-        return -math.inf
-    increment = power * math.log1p(1 / point)
-    log_increment = (
-        increment
-        if increment > 40
-        else math.log(math.expm1(increment))
-        if increment > 0
-        else math.log(power) + math.log(math.log1p(1 / point))
-    )
-    log_difference = log_magnitude + log_increment
-    if log_difference > math.log(40):
-        factor = 0.0
-    elif log_difference < -20:
-        difference = math.exp(log_difference)
-        factor = log_difference + math.log1p(
-            -difference / 2 + difference * difference / 6
-        )
-    else:
-        factor = math.log(-math.expm1(-math.exp(log_difference)))
-    return -math.exp(log_magnitude) + factor
+    return _discrete_weibull_log_interval(q, power, point, point)
 
 
 def _zero_inflated_asymmetric_laplace_probability(a: Mapping[str, object]) -> float:

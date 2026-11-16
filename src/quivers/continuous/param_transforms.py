@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import torch
 from torch import Tensor
 from torch.distributions import constraints
 
@@ -150,7 +151,10 @@ def _softplus_shifted(shift: float) -> Bijector:
     Bijector
         Softplus followed by the shift.
     """
-    return ComposeBijector(AffineBijector(scale=1.0, shift=shift), SoftplusBijector())
+    return ComposeBijector(
+        AffineBijector(scale=1.0, shift=torch.tensor(shift, dtype=torch.float64)),
+        SoftplusBijector(),
+    )
 
 
 TRANSFORM_TO_BIJECTOR: dict[str, Bijector] = {
