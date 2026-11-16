@@ -4,6 +4,14 @@
 # pyright: reportUndefinedVariable=false
 
 
+def _qvr_select(condition, then, otherwise):
+    """Select with a host Boolean or a symbolic PyTensor condition."""
+    pt = pymc.pytensorf.pt
+    if isinstance(condition, bool):
+        condition = pt.constant(condition, dtype="bool")
+    return pt.switch(condition, then, otherwise)
+
+
 def _qvr_probability_check(value, valid, name, integer=False):
     from pytensor.raise_op import Assert
 

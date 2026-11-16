@@ -230,13 +230,6 @@ _qvr_qiec_host_math.update(
 )
 
 
-def _qvr_select(condition, then, otherwise):
-    pt = pymc.pytensorf.pt
-    if isinstance(condition, bool):
-        condition = pt.constant(condition, dtype="bool")
-    return pt.switch(condition, then, otherwise)
-
-
 _qvr_qiec_host_math.update({"select_real": _qvr_select, "select_int": _qvr_select})
 
 

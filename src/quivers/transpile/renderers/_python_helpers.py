@@ -481,35 +481,6 @@ _POINTWISE_OPERAND_SYMBOLS: dict[str, tuple[str, ...]] = {
 _PYMC_TENSOR: tuple[str, ...] = ("pymc", "pytensorf", "pt", "as_tensor_variable")
 
 
-def _reads_a_name(expr: LetExprNode) -> bool:
-    """Whether an expression reads a bound name anywhere.
-
-    Parameters
-    ----------
-    expr : LetExprNode
-        The expression.
-
-    Returns
-    -------
-    bool
-        ``False`` for an expression of literals alone, which the
-        emitted program computes as a Python number or Boolean.
-    """
-    if isinstance(expr, LetExprVar):
-        return True
-    if isinstance(expr, LetExprBinOp):
-        return _reads_a_name(expr.left) or _reads_a_name(expr.right)
-    if isinstance(expr, LetExprUnaryOp):
-        return _reads_a_name(expr.operand)
-    if isinstance(expr, LetExprCall):
-        return any(_reads_a_name(argument) for argument in expr.args)
-    if isinstance(expr, LetExprIndex):
-        return True
-    if isinstance(expr, LetExprList):
-        return any(_reads_a_name(item) for item in expr.items)
-    return False
-
-
 def _symbolic_index(expr: LetExprNode) -> bool:
     """Whether an index expression calls a builtin, so PyMC builds it as a tensor.
 
@@ -964,23 +935,10 @@ def render_let_expr_python(
             or (pointwise and len(expr.args) == 2)
             else None
         )
-        for position, a in enumerate(expr.args):
+        for a in expr.args:
             rendered = render_let_expr_python(ctx, a)
             if operand is not None:
                 rendered = call(ctx, attribute(ctx, operand), positional=(rendered,))
-            elif (
-                ctx.target == "pymc"
-                and expr.func == "select"
-                and position == 0
-                and not _reads_a_name(a)
-            ):
-                # PyTensor refuses a Python Boolean as a tensor, and a
-                # comparison of numbers alone (a factor binder, unrolled,
-                # against a bound) is one; NumPy's array of it is
-                # accepted.
-                rendered = call(
-                    ctx, attribute(ctx, ("np", "asarray")), positional=(rendered,)
-                )
             ctx.e(args, rendered, "child_of")
         # A reducing primitive (``sum``, ``mean``, ...) collapses the
         # last axis of its argument. The renamed callee already targets

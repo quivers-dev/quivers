@@ -223,13 +223,6 @@ def LKJCholesky(name, n, eta, **kwargs):
 # qvr-shared-probability:pymc:end
 
 
-def _qvr_select(condition, then, otherwise):
-    pt = pymc.pytensorf.pt
-    if isinstance(condition, bool):
-        condition = pt.constant(condition, dtype="bool")
-    return pt.switch(condition, then, otherwise)
-
-
 def _qvr_bool_not(value):
     if isinstance(value, bool):
         return not value
