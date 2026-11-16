@@ -6,6 +6,7 @@ import subprocess
 
 from quivers.dsl import Compiler, parse
 from quivers.transpile.qiec_ir import IRQiecIndexSum, lower_qiec_ir
+from quivers.transpile._runtime_sources import javascript_runtime_source
 from tests.transpile._tools import require_scheme, require_tool
 from tests.transpile._webppl import run_webppl
 
@@ -76,7 +77,7 @@ def test_actual_webppl_specialization_uses_functional_arithmetic(tmp_path):
     )
     path = tmp_path / "index-sums.wppl"
     path.write_text(
-        (RUNTIME / "runtime_qiec.js").read_text()
+        javascript_runtime_source(RUNTIME / "runtime_qiec.js").decode()
         + f"\ndisplay(JSON.stringify([{calls}]));\n"
     )
     result = run_webppl(path)

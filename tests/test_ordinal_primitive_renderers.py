@@ -21,6 +21,7 @@ from quivers.qiec.primitives import IMPLEMENTATIONS
 from quivers.transpile import available_targets, transpile, UnsupportedConstruct
 from quivers.transpile._builtin_spellings import BUILTIN_SPELLINGS, Refusal
 from quivers.transpile.qiec_ir import capabilities_for_target
+from quivers.transpile._runtime_sources import javascript_runtime_source
 from tests.transpile._tools import require_tool, require_scheme
 from tests.transpile._webppl import run_webppl
 
@@ -226,7 +227,7 @@ def test_probability_pymc_symbolic_values_derivatives_and_domain_assertions(name
 def test_shared_javascript_probability_runtime_values_and_checked_domains():
     driver = """
 var error = function(message) { throw new Error(message); };
-""" + (RUNTIME / "runtime_qiec.js").read_text()
+""" + javascript_runtime_source(RUNTIME / "runtime_qiec.js").decode()
     cases = [(name, value) for name in NAMES for value in VALUES[name]]
     calls = [
         f"_qvr_{name}_scalar({'Infinity' if value == math.inf else '-Infinity' if value == -math.inf else repr(value)})"
@@ -401,16 +402,27 @@ def test_shared_julia_probability_runtime_executes_values_and_domains(tmp_path):
 
 
 @pytest.mark.parametrize("canonical", [False, True])
-def test_emitted_webppl_checked_probability_compiles_and_executes(canonical, tmp_path):
-    source = _rendered("log_ndtr", "webppl", canonical).decode()
-    script = tmp_path / "normal-tail.wppl"
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("log_probability", 0.2),
+        ("positive_parameter", 0.2),
+        ("log1mexp", -0.2),
+        ("log_ndtr", -40.0),
+    ],
+)
+def test_emitted_webppl_checked_probability_compiles_and_executes(
+    canonical, name, value, tmp_path
+):
+    source = _rendered(name, "webppl", canonical).decode()
+    script = tmp_path / "checked-probability.wppl"
     script.write_text(
         source
-        + '\nvar result = Infer({method:"MCMC",samples:2,burn:0},function(){return model(0,-40,0);});\ndisplay(JSON.stringify(result.support()));\n'
+        + f'\nvar result = Infer({{method:"MCMC",samples:2,burn:0}},function(){{return model(0,{value},0);}});\ndisplay(JSON.stringify(result.support()));\n'
     )
     completed = run_webppl(script)
     assert json.loads(completed.stdout) == pytest.approx(
-        [_expected("log_ndtr", -40.0)], rel=3e-14
+        [_expected(name, value)], rel=3e-14
     )
 
 

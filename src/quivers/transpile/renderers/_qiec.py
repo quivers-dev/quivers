@@ -219,7 +219,12 @@ def render_computations_dynamic(
             f"qvr-{public_target}", [diagnostic.kind for diagnostic in diagnostics]
         )
     grammar = _DYNAMIC_TARGETS[public_target]
-    runtime = _RUNTIMES[grammar].read_text()
+    if grammar == "javascript":
+        from quivers.transpile._runtime_sources import javascript_runtime_source
+
+        runtime = javascript_runtime_source(_RUNTIMES[grammar]).decode()
+    else:
+        runtime = _RUNTIMES[grammar].read_text()
     definitions = _dynamic_definitions(module, grammar, public_target)
     _graft_parsed_children(
         sb,

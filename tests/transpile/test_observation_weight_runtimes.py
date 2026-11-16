@@ -13,6 +13,7 @@ import pytest
 
 from quivers.dsl import parse
 from quivers.transpile import UnsupportedConstruct, available_targets, transpile
+from quivers.transpile._runtime_sources import javascript_runtime_source
 from tests.transpile._tools import require_scheme, require_tool
 from tests.transpile._webppl import run_webppl
 
@@ -68,7 +69,7 @@ def test_javascript_runtime_checks_values_and_tensor_broadcasting(
         "var _ = {has: (value, key) => Object.prototype.hasOwnProperty.call(value, key)};\n"
         "var apply = (fn, xs) => fn.apply(null, xs);\n"
         "var error = message => { throw new Error(message); };\n"
-        + runtime.read_text()
+        + javascript_runtime_source(runtime).decode()
         + """
 var invalid = [-1, Infinity, -Infinity, NaN, true, false, [0, -1], [0, NaN], [0, true]];
 var rejected = invalid.map(function(value) {

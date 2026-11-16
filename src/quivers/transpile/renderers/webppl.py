@@ -3322,9 +3322,11 @@ def _load_runtime_webppl_schema() -> tuple[panproto.Schema, str, tuple[str, ...]
     the per-render `program` so the emit's top-level statements
     appear in the original file's layout.
     """
+    from quivers.transpile._runtime_sources import javascript_runtime_source
+
     schema = parser_registry().parse_with_protocol(
         "javascript",
-        _RUNTIME_WEBPPL_PATH.read_bytes(),
+        javascript_runtime_source(_RUNTIME_WEBPPL_PATH),
         str(_RUNTIME_WEBPPL_PATH),
     )
     src_id = next(
