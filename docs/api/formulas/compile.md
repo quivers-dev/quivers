@@ -81,3 +81,8 @@ coefficient binders and conditional group geometry. See the
 ::: quivers.formulas.R2D2
 
 ::: quivers.formulas.normalize_priors
+
+
+::: quivers.formulas.PriorInput
+
+::: quivers.formulas.PriorDistribution
