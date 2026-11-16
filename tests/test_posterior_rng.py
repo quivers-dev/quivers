@@ -227,3 +227,90 @@ def test_none_seed_does_not_rewind_caller_stream_when_guide_raises(device, monke
         with pytest.raises(RuntimeError, match="caller stream failure"):
             constrained_draws(guide, torch.zeros(1, 1), num_samples=2, seed=None)
         assert torch.equal(_state(device), local.get_state())
+
+
+def test_empty_guide_skips_sampling_only_after_registry_and_budget_validation(
+    monkeypatch,
+):
+    guide = _guide()
+    empty = AutoNormalGuide(guide.registry.model, observed_names={"z"})
+
+    def forbidden(x):
+        raise AssertionError("empty guide must not sample")
+
+    monkeypatch.setattr(empty, "rsample", forbidden)
+    state = torch.get_rng_state().clone()
+    assert (
+        constrained_draws(
+            empty, torch.zeros(1, 1), registry=empty.registry, num_samples=9, seed=18
+        )
+        == {}
+    )
+    assert torch.equal(state, torch.get_rng_state())
+    with pytest.raises(ValueError, match="positive integer"):
+        constrained_draws(empty, torch.zeros(1, 1), num_samples=0)
+    with pytest.raises(ValueError, match="guide sites"):
+        constrained_draws(
+            empty, torch.zeros(1, 1), registry=guide.registry, num_samples=9
+        )
+    monkeypatch.setattr(guide, "rsample", forbidden)
+    with pytest.raises(ValueError, match="guide sites"):
+        constrained_draws(
+            guide, torch.zeros(1, 1), registry=empty.registry, num_samples=9
+        )
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_ancestral_draws_restore_streams_and_match_independent_normal_generator(device):
+    from quivers.inference import prior_draws
+
+    model = _guide().registry.model.to(device)
+    input = torch.zeros(1, 1, device=device)
+    with _restore(device):
+        cpu = _state(torch.device("cpu"))
+        before = _state(device)
+        first = prior_draws(model, input, num_samples=4, seed=27)
+        assert torch.equal(cpu, _state(torch.device("cpu")))
+        assert torch.equal(before, _state(device))
+        values = first.samples["z"]
+        generator = torch.Generator(device=device).manual_seed(27)
+        expected = torch.stack(
+            [
+                torch.randn(
+                    values.shape[2:],
+                    dtype=values.dtype,
+                    device=device,
+                    generator=generator,
+                )
+                for _ in range(4)
+            ]
+        ).unsqueeze(0)
+        torch.testing.assert_close(values, expected, rtol=0, atol=0)
+        torch.randn(3, device=device)
+        second = prior_draws(model, input, num_samples=4, seed=27)
+        torch.testing.assert_close(
+            first.samples["z"], second.samples["z"], rtol=0, atol=0
+        )
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_ancestral_failure_restores_streams(device, monkeypatch):
+    import importlib
+    from quivers.inference import prior_draws
+
+    trace_module = importlib.import_module("quivers.inference.trace")
+
+    def fail(*args, **kwargs):
+        torch.randn(4)
+        torch.randn(5, device=device)
+        raise RuntimeError("deliberate prior failure")
+
+    monkeypatch.setattr(trace_module, "trace", fail)
+    model = _guide().registry.model.to(device)
+    with _restore(device):
+        cpu = _state(torch.device("cpu"))
+        before = _state(device)
+        with pytest.raises(RuntimeError, match="deliberate prior failure"):
+            prior_draws(model, torch.zeros(1, 1, device=device), num_samples=2, seed=17)
+        assert torch.equal(cpu, _state(torch.device("cpu")))
+        assert torch.equal(before, _state(device))

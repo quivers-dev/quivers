@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from itertools import chain
 from typing import Literal, cast
 
 import didactic.api as dx
@@ -167,6 +168,7 @@ def prior_draws(
     """
     from quivers.inference._posterior import collect_site_draws, sample_count
     from quivers.inference._prior_projection import project_prior_sites
+    from quivers.inference._response import response_rng
     from quivers.inference.mcmc.driver import MCMC
     from quivers.inference.registry import _require_one_run, _trace_latent_values
     from quivers.inference.trace import trace
@@ -180,8 +182,15 @@ def prior_draws(
             return method.run(project_prior_sites(model), input, data)
         count = sample_count(num_samples)
         projected = _ancestral_program(model)
-        with torch.random.fork_rng(devices=[]), torch.no_grad():
-            torch.random.default_generator.manual_seed(seed)
+        with (
+            response_rng(
+                seed,
+                chain(
+                    (input,), data.values(), projected.parameters(), projected.buffers()
+                ),
+            ),
+            torch.no_grad(),
+        ):
 
             def values():
                 """Yield one independent constrained joint draw.

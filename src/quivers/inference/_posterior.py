@@ -81,7 +81,12 @@ def constrained_draws(
     else:
         from quivers.inference._response import response_rng
 
-        registry = posterior.registry if registry is None else registry
+        guide_registry = posterior.registry
+        registry = guide_registry if registry is None else registry
+        if set(registry.names) != set(guide_registry.names):
+            raise ValueError("guide sites do not match the fitted latent sites")
+        if not registry.names:
+            return {}
         context = (
             response_rng(
                 seed, chain((input,), posterior.parameters(), posterior.buffers())
