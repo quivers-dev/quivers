@@ -15,7 +15,12 @@ The simulation-based calibration tools (`sbc`, `sbc_ranks`,
 the program it targets; they also need only torch, and are bound on
 first access because they build on the inference layer.
 
-The remaining functions convert quivers fits into the
+Retained uncertainty, covariance, contrast-region evidence, and regression
+variance ratios also need only torch. They describe supplied or retained
+draws with explicit provenance; they do not infer convergence diagnostics
+for a variational approximation.
+
+The ArviZ adapters convert quivers fits into the
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)
 data model of [ArviZ](https://python.arviz.org/) and wrap the
 canonical ArviZ entry points (`arviz.compare`, `arviz.loo`,

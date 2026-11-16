@@ -61,7 +61,9 @@ class PosteriorSummary(ValueModel):
     sd: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     probs: tuple[float, ...]
     quantiles: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    convergence: ConvergenceSummary | None = None
+    convergence: ConvergenceSummary | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 class PosteriorCovariance(ValueModel):
