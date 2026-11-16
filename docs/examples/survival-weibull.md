@@ -172,7 +172,7 @@ truth = {"alpha": true_alpha, "beta": true_beta, "k": true_k}
 compiled = model.log_joint(x_in, {**truth, **observations}).sum()
 print(f"compiled log joint:    {float(compiled):.4f}")
 print(f"censored Weibull + prior: {float(log_lik + log_prior):.4f}")
-assert torch.allclose(compiled, log_lik + log_prior, rtol=1e-5)
+assert torch.allclose(compiled.double(), (log_lik + log_prior).double(), rtol=1e-5)
 
 # Treating the censored times as events gives a different density.
 naive = weibull_true.log_prob(t).sum() + log_prior
