@@ -101,7 +101,7 @@ from quivers.inference.smc import (
     TemperedPotential,
     resample,
 )
-from quivers.inference.predictive import Predictive
+from quivers.inference.predictive import Predictive, posterior_expectations
 from quivers.inference.dais import AutoDAIS
 from quivers.inference.warmup import WarmupThenHMC
 from quivers.inference.transforms import (
@@ -194,6 +194,7 @@ __all__ = [
     "ScoreFunction",
     "SVI",
     "Predictive",
+    "posterior_expectations",
     "bayesian_lift_parameters",
     "lift_to_bayesian_program",
     "lift_from_log_prob",

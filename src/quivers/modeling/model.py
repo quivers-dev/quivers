@@ -1,6 +1,6 @@
 """Compile, bind, and inspect QVR models through checked input metadata."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Protocol, Literal, cast
@@ -45,6 +45,7 @@ from quivers.qiec import (
 
 
 from quivers.diagnostics.posterior import PosteriorAnalysis
+from quivers.diagnostics.conditional import ConditionalEffects, PredictionGrid
 
 
 class ModelSchema(ValueModel):
@@ -722,6 +723,142 @@ class ModelFit(ValueModel):
     )
 
     losses: tuple[float, ...] = ()
+
+    def posterior_epred(
+        self,
+        data: Mapping[str, object] | None = None,
+        *,
+        input: torch.Tensor | None = None,
+        sites: Sequence[str] | None = None,
+        num_samples: int | None = None,
+        mc_samples: int | None = None,
+        seed: int = 0,
+    ) -> dict[str, torch.Tensor]:
+        """Read native conditional response expectations at retained joint draws.
+
+        Parameters
+        ----------
+        data : Mapping[str, object] or None
+            New checked predictors and optional conditioning responses;
+            None retains the original fitted binding.
+        input : torch.Tensor or None
+            One-run execution input; the fitted input by default.
+        sites : Sequence[str] or None
+            Response names, or None for all declared observations. Exact Scan
+            occurrence labels are supported by the generic collector.
+        num_samples : int or None
+            Leading draws per recorded chain, or fresh variational draw count.
+        mc_samples : int or None
+            Explicit approximation budget for certified finite response means
+            without an analytic expression.
+        seed : int
+            Isolated posterior and response seed; caller RNG is restored.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Conditional means preserving chain/draw/checked observation axes.
+            Categorical and ordinal responses append a probability axis.
+            Upstream observed and lexical values retain their conditioning;
+            this is not an analytic joint integration over other responses.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If binding, latent geometry, selected sites, or response moments
+            violate the existing checked prediction contract.
+        """
+        from quivers.inference.predictive import posterior_expectations
+
+        bound = (
+            self.model
+            if data is None and input is None
+            else self.model.rebind(
+                self.model.data if data is None else data, input=input
+            )
+        )
+        return posterior_expectations(
+            bound.require_tensor_program(),
+            self.posterior,
+            bound.input,
+            bound.tensor_data(),
+            sites=tuple(
+                site.name for site in bound.schema.entry.sites if site.kind == "observe"
+            )
+            or bound.schema.observations
+            if sites is None
+            else sites,
+            num_samples=num_samples,
+            mc_samples=mc_samples,
+            seed=seed,
+        )
+
+    def conditional_effects(
+        self,
+        grid: PredictionGrid,
+        *,
+        site: str | None = None,
+        num_samples: int | None = None,
+        mc_samples: int | None = None,
+        seed: int = 0,
+    ) -> ConditionalEffects:
+        """Evaluate expected source responses on one checked predictor grid.
+
+        Parameters
+        ----------
+        grid : PredictionGrid
+            Explicit row-axis effect and conditioning coordinates.
+        site : str or None
+            Declared observation; may be omitted when exactly one exists.
+        num_samples : int or None
+            Leading draws per recorded chain or fresh variational draw count.
+        mc_samples : int or None
+            Explicit finite-moment approximation budget when required.
+        seed : int
+            Isolated posterior and response random stream.
+
+        Returns
+        -------
+        ConditionalEffects
+            Joint expected responses with explicit conditional or empirical
+            reduction. Source grouping inputs remain checked numeric maps;
+            the fitted latent-layout guard prevents accidental new identities.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If observation selection, row-axis identity, conditioning data,
+            latent layout, or response moments are invalid.
+        """
+        from quivers.modeling._prediction import grid_data
+
+        if site is None:
+            observations = tuple(
+                site.name
+                for site in self.model.schema.entry.sites
+                if site.kind == "observe"
+            )
+            if len(observations) != 1:
+                raise ValueError(
+                    "select site explicitly when the model has multiple observations"
+                )
+            site = observations[0]
+        data = grid_data(self.model, grid, site)
+        predictions = self.posterior_epred(
+            data,
+            sites=(site,),
+            num_samples=num_samples,
+            mc_samples=mc_samples,
+            seed=seed,
+        )[site]
+        return grid.result(
+            predictions,
+            kind="mcmc"
+            if isinstance(self.posterior, MCMCResult)
+            else "prior"
+            if isinstance(self.posterior, PriorDraws)
+            else "variational",
+        )
 
     def evidence(self, sampler: SMC) -> SMCResult:
         """Estimate the fitted target's normalizing constant with existing SMC.

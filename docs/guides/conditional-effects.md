@@ -115,3 +115,62 @@ The retained result reuses
 contrasts. No additional fitting, convergence estimator, or contrast parser is
 introduced. See the [conditional-effects API](../api/diagnostics/conditional.md)
 for the grid and result records.
+
+## Expected responses from QVR source
+
+Source fits use the same grid and result records. `ModelFit.posterior_epred`
+reads the native response law at each retained joint draw; it preserves recorded
+chain boundaries and uses the leading requested draws from each chain. It
+returns category probabilities for categorical and ordinal responses, and native
+means for other laws. It does not estimate an analytic mean by averaging response
+replications.
+
+<!-- python: run -->
+```python
+import torch
+from quivers.modeling import Model, VariationalMethod
+
+source = """object Row : FinSet _
+object Out : Real 1
+program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out
+    sample slope <- Normal(loc=0.0, scale=1.0)
+    let mu = slope * x
+    observe y : Row <- Normal(loc=mu, scale=1.0)
+    return slope
+export regression
+"""
+source_fit = Model(source).fit(
+    {"x": torch.tensor([0., 1., 2.]), "y": torch.tensor([0., 1., 2.])},
+    method=VariationalMethod(num_steps=5, seed=4),
+)
+source_grid = prediction_grid({"x": [0., 1., 2.]}, conditions={})
+source_effects = source_fit.conditional_effects(source_grid, num_samples=5, seed=8)
+assert source_effects.draws.shape == (1, 5, 3, 1)
+expectations = source_fit.posterior_epred(num_samples=5, seed=8)
+assert expectations["y"].shape == (1, 5, 3)
+```
+
+Source grid binding uses the selected observation's nominal leading axis.
+For instance, equally sized `Row` and `Other` objects remain distinct: changing
+`Row` predictors retains a fitted tensor indexed by `Other`. Every required
+row predictor needs an explicit grid or conditioning column. Scalar inputs may
+be supplied as constant conditioning columns; varying them requires a declared
+row tensor. Explicit finite cardinalities remain fixed, while open extents may
+specialize to the grid size. Source grouping inputs retain their checked numeric
+index maps and fitted latent dimensions.
+
+With several observations, select one through `site="response_name"`. These
+are conditional response expectations: supplied upstream observations and
+lexically computed values retain their conditioning semantics. They are not an
+analytic integration over other responses. Recording-event likelihood weights
+and censoring do not change the response law; truncation does. If a native
+analytic mean is unavailable, `mc_samples` permits an explicit, seeded
+approximation only for bounded laws or laws with a finite-mean certificate.
+Undefined means remain errors. Raw log likelihoods keep their ordinary recorded
+event semantics.
+
+The lower-level [posterior expectation collector](../api/inference/predictive.md)
+also accepts exact Scan occurrence names. Repeated occurrences are stacked in
+execution order on their native batch/event layouts, including any retained run
+axis. Selecting an exact occurrence alongside its base name gives that occurrence
+to the exact selector and leaves the others under the base selector.

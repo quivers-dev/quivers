@@ -21,6 +21,14 @@ with a variational guide. The guide and retained posterior draws do not enter
 the evidence calculation. Observation weights define a powered target whose
 normalizing constant need not be an ordinary data probability.
 
+`ModelFit.posterior_epred` collects native conditional response expectations
+with retained chain/draw axes. `ModelFit.conditional_effects` applies this
+collector once to a bounded predictor grid, using the checked nominal row axis
+to distinguish row inputs from unrelated fitted tensors. Both reuse the fitted
+latent layout and deterministic parameters; neither fits a new posterior.
+See [source conditional effects](../guides/conditional-effects.md#expected-responses-from-qvr-source)
+for conditioning, Scan addressing, and finite-moment approximation semantics.
+
 <!-- python: run -->
 ```python
 import torch

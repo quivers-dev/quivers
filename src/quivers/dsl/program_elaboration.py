@@ -72,6 +72,9 @@ from quivers.dsl.ast_nodes import (
     ProgramStep,
     ReturnStep,
     QiecTypeName,
+    QiecTypeApplication,
+    QiecShapeIndex,
+    QiecIndexName,
     QiecValueParameter,
     QiecIndexLiteral,
     QiecIndexBinder,
@@ -2969,6 +2972,21 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     bindings,
                 )
             )
+            axes = self._axes_of_type(declared_type)
+            if (
+                isinstance(step.type_expr, QiecTypeApplication)
+                and step.type_expr.constructor == "Tensor"
+                and len(step.type_expr.indices) == 1
+                and isinstance(step.type_expr.indices[0], QiecShapeIndex)
+            ):
+                # Lowering closed dimensions replaces their names by sizes.
+                # Keep the authored nominal axes beside the checked type;
+                # equal cardinalities do not identify different objects.
+                dimensions = step.type_expr.indices[0].dimensions
+                axes = tuple(
+                    dimension.name if isinstance(dimension, QiecIndexName) else inferred
+                    for dimension, inferred in zip(dimensions, axes, strict=True)
+                )
             self._declare_parameter(
                 step.name,
                 declared_type,
@@ -2979,6 +2997,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 scope,
                 state,
                 step,
+                axes=axes,
                 constraint="nonnegative"
                 if isinstance(step.type_expr, QiecTypeName)
                 and step.type_expr.name == "Nat"
