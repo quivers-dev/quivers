@@ -318,6 +318,57 @@ def analyze_module(
     )
 
 
+def target_diagnostics(
+    checked: QiecModule, source: Module, target: str
+) -> tuple[QiecToolingDiagnostic, ...]:
+    """Check a target against an already checked source module.
+
+    Capability diagnostics take precedence over target-plan refusals. The
+    authoritative transpile preflights perform both checks; this adapter only
+    translates their results into the diagnostic record shared by tools.
+    It neither parses nor elaborates the source again.
+
+    Parameters
+    ----------
+    checked : QiecModule
+        The checked QIEC projection of ``source``.
+    source : Module
+        The corresponding parsed source module.
+    target : str
+        The transpile target.
+
+    Returns
+    -------
+    tuple[QiecToolingDiagnostic, ...]
+        Capability failures with their source origins, or plan refusals with
+        the original structured kinds and messages. An empty tuple means
+        these preflights admitted the module; rendering may impose further
+        restrictions.
+    """
+    from quivers.transpile._api import UnsupportedConstruct
+    from quivers.transpile.plan import checked_program_plan
+    from quivers.transpile.qiec_ir import analyze_qiec_capabilities
+
+    capabilities = analyze_qiec_capabilities(checked, target)
+    if capabilities:
+        return tuple(
+            QiecToolingDiagnostic(
+                message=diagnostic.message,
+                code=diagnostic.kind,
+                line=(diagnostic.origin.line or 0) if diagnostic.origin else 0,
+                col=(diagnostic.origin.column or 0) if diagnostic.origin else 0,
+            )
+            for diagnostic in capabilities
+        )
+    try:
+        checked_program_plan(checked, source, target)
+    except UnsupportedConstruct as error:
+        return tuple(
+            QiecToolingDiagnostic(message=str(error), code=kind) for kind in error.kinds
+        )
+    return ()
+
+
 def qiec_diagnostic(error: Exception) -> QiecToolingDiagnostic:
     """Normalize lowerer/kernel exceptions into the public QIEC code set.
 

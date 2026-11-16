@@ -44,10 +44,8 @@ from quivers.dsl.constraints import check_constraints
 from quivers.dsl.qiec_tooling import (
     analyze_module,
     qiec_module_name,
+    target_diagnostics,
 )
-from quivers.transpile import UnsupportedConstruct
-from quivers.transpile.plan import checked_program_plan
-from quivers.transpile.qiec_ir import analyze_qiec_capabilities
 
 type CheckSeverity = Literal["error", "warning", "note"]
 """The severity of a `CheckDiagnostic`."""
@@ -223,34 +221,17 @@ def check_file(path: Path, *, target: str | None = None) -> list[CheckDiagnostic
         )
 
     if target is not None and analysis.qiec_module is not None:
-        capabilities = analyze_qiec_capabilities(analysis.qiec_module, target)
-        for capability in capabilities:
-            origin = capability.origin
-            diags.append(
-                CheckDiagnostic(
-                    file=str(path),
-                    line=(origin.line or 0) if origin is not None else 0,
-                    col=(origin.column or 0) if origin is not None else 0,
-                    severity="error",
-                    code=capability.kind,
-                    message=capability.message,
-                )
+        diags.extend(
+            CheckDiagnostic(
+                file=str(path),
+                line=diagnostic.line,
+                col=diagnostic.col,
+                severity="error",
+                code=diagnostic.code,
+                message=diagnostic.message,
             )
-        if not capabilities:
-            try:
-                checked_program_plan(analysis.qiec_module, module, target)
-            except UnsupportedConstruct as error:
-                diags.extend(
-                    CheckDiagnostic(
-                        file=str(path),
-                        line=0,
-                        col=0,
-                        severity="error",
-                        code=kind,
-                        message=str(error),
-                    )
-                    for kind in error.kinds
-                )
+            for diagnostic in target_diagnostics(analysis.qiec_module, module, target)
+        )
 
     return diags
 

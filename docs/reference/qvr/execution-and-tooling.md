@@ -37,6 +37,12 @@ The VS Code and Cursor extension exposes the target as the setting `qvr.transpil
 may change it with `workspace/didChangeConfiguration`, and the server then rechecks every open
 document without reparsing it.
 
+The CLI, REPL, language server, and Jupyter kernel share the same target preflight.
+It first checks reachable capabilities, then derives a target plan if those checks pass.
+All four preserve diagnostic kinds, messages, and source locations. Retargeting an open
+document reuses its checked module; a successful preflight still requires rendering and
+execution with the target's toolchain.
+
 ## List entry points
 
 An *entry point* is a named computation or program that a module exposes to `qvr run`,

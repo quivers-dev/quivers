@@ -223,6 +223,37 @@ def test_kernel_versions_follow_the_installed_package() -> None:
     assert "codemirror_mode" not in QuiversKernel.language_info
 
 
+@pytest.mark.parametrize("silent", [False, True])
+def test_kernel_preserves_target_refusal_category_and_message(tmp_path, silent):
+    from quivers.cli.check import check_file
+
+    path = tmp_path / "recursive.qvr"
+    path.write_text(
+        "define count(n : Int) : Int !{} =\n"
+        "    if n == 0 then\n"
+        "        return 0\n"
+        "    else\n"
+        "        let rest <- count(n - 1)\n"
+        "        return rest + 1\n"
+    )
+    diagnostics = check_file(path, target="bugs")
+    assert diagnostics and all(
+        d.code.startswith("qiec:capability:") for d in diagnostics
+    )
+    kernel = _kernel()
+    assert kernel.repl.set_option("target=bugs").ok
+    reply = kernel.do_execute(f":load {path}\n\nobject Never : FinSet 2", silent=silent)
+    assert reply["status"] == "error"
+    assert reply["ename"] == diagnostics[0].code
+    assert reply["evalue"] == "\n".join(d.message for d in diagnostics)
+    assert reply["traceback"] == [f"{d.code}: {d.message}" for d in diagnostics]
+    assert not kernel.repl.info("Never").ok
+    if silent:
+        assert kernel._captured == []
+    else:
+        assert [kind for kind, _ in kernel._captured] == ["error"]
+
+
 def test_notebook_preserves_blank_lines_inside_a_computation() -> None:
     kernel = _kernel()
     reply = kernel.do_execute(

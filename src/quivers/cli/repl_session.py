@@ -111,6 +111,7 @@ from quivers.dsl.qiec_tooling import (
     qiec_module_name,
     qualified_operation_signature,
     render_effect,
+    target_diagnostics,
 )
 from quivers.qiec import (
     EntryRun,
@@ -132,8 +133,6 @@ from quivers.qiec.effects import render_row
 from quivers.qiec.entries import json_value
 from quivers.qiec.module import inferred_computation_type, validate_module
 from quivers.transpile import UnsupportedConstruct, available_targets, transpile
-from quivers.transpile.plan import checked_program_plan
-from quivers.transpile.qiec_ir import analyze_qiec_capabilities
 
 Severity = Literal["error", "warning", "info", "ok"]
 
@@ -415,36 +414,18 @@ class ReplSession:
                 )
             )
         if self.options.target and analysis.qiec_module is not None:
-            capabilities = analyze_qiec_capabilities(
-                analysis.qiec_module, self.options.target
-            )
-            for capability in capabilities:
-                origin = capability.origin
-                diags.append(
-                    Diagnostic(
-                        message=capability.message,
-                        severity="error",
-                        line=(origin.line or 0) if origin is not None else 0,
-                        col=(origin.column or 0) if origin is not None else 0,
-                        code=capability.kind,
-                    )
+            diags.extend(
+                Diagnostic(
+                    message=diagnostic.message,
+                    severity="error",
+                    line=diagnostic.line,
+                    col=diagnostic.col,
+                    code=diagnostic.code,
                 )
-            if not capabilities:
-                try:
-                    checked_program_plan(
-                        analysis.qiec_module, module, self.options.target
-                    )
-                except UnsupportedConstruct as error:
-                    diags.extend(
-                        Diagnostic(
-                            message=str(error),
-                            severity="error",
-                            line=0,
-                            col=0,
-                            code=kind,
-                        )
-                        for kind in error.kinds
-                    )
+                for diagnostic in target_diagnostics(
+                    analysis.qiec_module, module, self.options.target
+                )
+            )
         self._module = module
         self._compiler = analysis.compiler
         self._qiec_module = analysis.qiec_module
