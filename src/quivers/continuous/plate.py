@@ -323,7 +323,11 @@ class PlateDraw(ContinuousMorphism):
             isinstance(family.codomain, Euclidean)
             and family.codomain.intrinsic_shape is not None
         )
-        if per_row_shape == (1,) and family.support.event_dim == 0 and not explicit_shape:
+        if (
+            per_row_shape == (1,)
+            and family.support.event_dim == 0
+            and not explicit_shape
+        ):
             per_row_shape = ()
         # `plate_rows` keeps the row structure of the flattened
         # codomain recoverable: a consumer that reads the variable as

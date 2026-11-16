@@ -195,9 +195,12 @@ def test_invalid_score_contracts_are_rejected_without_silent_reshaping(bad):
 
 def test_response_selection_and_retained_fit_requirements_are_explicit():
     plan = FoldPlan(assignments=(0, 1))
-    refit = lambda split: FoldPrediction(
-        log_likelihood={"a": torch.zeros(1, 2, 1), "b": torch.zeros(1, 2, 1)}
-    )
+
+    def refit(split):
+        return FoldPrediction(
+            log_likelihood={"a": torch.zeros(1, 2, 1), "b": torch.zeros(1, 2, 1)}
+        )
+
     with pytest.raises(ValueError, match="select responses"):
         cross_validate(plan, refit)
     with pytest.raises(ValueError, match="actual fitted"):
