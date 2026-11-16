@@ -2789,7 +2789,10 @@ def _make_dynamic_operator_distribution(
     support = prototype.support
     assert isinstance(support, _constraints.Constraint)
     if prototype.event_shape and isinstance(codomain, Euclidean):
-        codomain = Euclidean(name=codomain.name, dim=math.prod(prototype.event_shape))
+        codomain = codomain.with_(
+            dim=math.prod(prototype.event_shape),
+            intrinsic_shape=tuple(prototype.event_shape),
+        )
     widths = tuple(
         int(width) if width is not None else None
         for kind, width in specs

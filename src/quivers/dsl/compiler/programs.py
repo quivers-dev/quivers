@@ -7914,16 +7914,13 @@ class _ProgramsMixin:
                 )
             return Covariance(name=f"_{var_names[0]}", dim=matrix_dim)
         if family == "MatrixNormal":
-            # A matrix normal draws one R x C matrix, its R C entries the
-            # ``[over=[R, C]]`` axes or the checked extents of its mean.
-            entries = (
-                event_size
-                if event_size is not None
-                else math.prod(checked_event)
-                if checked_event is not None
-                else None
+            # Preserve the declared rectangle independently of its entry count.
+            shape = (
+                self._axis_event_shape(event_axis)
+                if event_axis is not None
+                else checked_event
             )
-            if entries is None:
+            if shape is None or len(shape) != 2:
                 raise CompileError(
                     f"MatrixNormal draw of {var_names[0]!r} fixes no matrix "
                     f"shape the compiled runtime can build it at: name its axes "
@@ -7931,7 +7928,9 @@ class _ProgramsMixin:
                     line,
                     col,
                 )
-            return Euclidean(name=f"_{var_names[0]}", dim=entries)
+            return Euclidean(
+                name=f"_{var_names[0]}", dim=math.prod(shape), intrinsic_shape=shape
+            )
         record = FAMILIES.get(family)
         if (
             record is not None

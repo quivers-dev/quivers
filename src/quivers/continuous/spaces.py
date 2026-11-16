@@ -14,6 +14,7 @@ The space family is a sum type:
 `UnitInterval` is a convenience factory for ``[0, 1]^d``.
 """
 
+from math import prod
 from typing import Literal
 
 import didactic.api as dx
@@ -71,6 +72,28 @@ class Euclidean(ContinuousSpace):
     rather than as a value, because the plate axis is a batch axis
     there and the per-row parameter width is `row_width`, never the
     flat ``dim``.
+
+    ``intrinsic_shape`` optionally records the tensor axes of one event. Its
+    product must equal ``dim``. Without it, events retain the legacy flat
+    vector shape ``(dim,)``; neither a singleton axis nor a rectangle is
+    inferred from the number of entries.
+
+    Parameters
+    ----------
+    name : str
+        Carrier label.
+    dim : int
+        Total scalar entries in one event.
+    low : float or None
+        Optional common lower bound on each entry.
+    high : float or None
+        Optional common upper bound on each entry.
+    plate_rows : int or None
+        Number of rows represented by a flattened plate carrier.
+    intrinsic_shape : tuple of int or None
+        Explicit tensor event axes, including any singleton or empty axes.
+    kind : Literal["euclidean"]
+        Tagged-union discriminator.
     """
 
     name: str
@@ -78,7 +101,29 @@ class Euclidean(ContinuousSpace):
     low: float | None = None
     high: float | None = None
     plate_rows: int | None = None
+    intrinsic_shape: tuple[int, ...] | None = None
     kind: Literal["euclidean"] = "euclidean"
+
+    @dx.model_validator()
+    def _validate_intrinsic_shape(self) -> None:
+        """Require declared event axes to describe exactly the carrier entries.
+
+        Raises
+        ------
+        ValueError
+            If an extent is not a nonnegative integer or its product differs
+            from the flat dimension.
+        """
+        if self.intrinsic_shape is not None:
+            if any(type(size) is not int or size < 0 for size in self.intrinsic_shape):
+                raise ValueError("intrinsic_shape extents must be nonnegative integers")
+            if prod(self.intrinsic_shape) != self.dim:
+                raise ValueError("intrinsic_shape product must equal Euclidean dim")
+
+    @property
+    def event_shape(self) -> tuple[int, ...]:
+        """Declared tensor event axes, or the legacy flat vector shape."""
+        return (self.dim,) if self.intrinsic_shape is None else self.intrinsic_shape
 
     @property
     def is_bounded(self) -> bool:
@@ -105,18 +150,63 @@ class Euclidean(ContinuousSpace):
         return self.dim // rows
 
     def contains(self, x: torch.Tensor) -> torch.Tensor:
-        result = torch.ones(x.shape[:-1], dtype=torch.bool, device=x.device)
+        """Check bounds over the event axes, retaining every batch axis.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Points with the declared trailing event shape.
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean membership with only the leading batch axes.
+
+        Raises
+        ------
+        ValueError
+            If an explicitly shaped point has incompatible event axes.
+        """
+        rank = len(self.event_shape)
+        if self.intrinsic_shape is not None and (
+            x.ndim < rank or rank and tuple(x.shape[-rank:]) != self.event_shape
+        ):
+            raise ValueError(
+                f"expected trailing event shape {self.event_shape}, got {tuple(x.shape)}"
+            )
+        batch_shape = x.shape[:-rank] if rank else x.shape
+        result = torch.ones(batch_shape, dtype=torch.bool, device=x.device)
+        axes = tuple(range(x.ndim - rank, x.ndim))
         if self.low is not None:
-            result = result & (x >= self.low).all(dim=-1)
+            valid = x >= self.low
+            result = result & (valid.all(dim=axes) if axes else valid)
         if self.high is not None:
-            result = result & (x <= self.high).all(dim=-1)
+            valid = x <= self.high
+            result = result & (valid.all(dim=axes) if axes else valid)
         return result
 
     def sample_uniform(self, n: int) -> torch.Tensor:
+        """Sample bounded events while retaining their declared tensor axes.
+
+        Parameters
+        ----------
+        n : int
+            Number of independently sampled events.
+
+        Returns
+        -------
+        torch.Tensor
+            Samples of shape ``(n, *event_shape)``.
+
+        Raises
+        ------
+        ValueError
+            If the space has no finite pair of bounds.
+        """
         if not self.is_bounded:
             raise ValueError("cannot sample uniformly from unbounded Euclidean space")
         assert self.low is not None and self.high is not None
-        return torch.rand(n, self.dim) * (self.high - self.low) + self.low
+        return torch.rand(n, *self.event_shape) * (self.high - self.low) + self.low
 
     def __str__(self) -> str:
         bounds = ""
