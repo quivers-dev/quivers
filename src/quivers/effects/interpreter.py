@@ -889,6 +889,29 @@ def _event_numel(morphism: torch.nn.Module | None) -> int | None:
     return 1
 
 
+def _declared_event(morphism: torch.nn.Module | None, value: torch.Tensor) -> bool:
+    """Check an exact intrinsic event shape before classifying a run axis.
+
+    Parameters
+    ----------
+    morphism : torch.nn.Module or None
+        Native law with optional explicit tensor-event geometry.
+    value : torch.Tensor
+        Supplied value before any run slicing.
+
+    Returns
+    -------
+    bool
+        True when all value axes belong to the explicitly declared event.
+    """
+    codomain = getattr(morphism, "codomain", None)
+    return (
+        isinstance(codomain, ContinuousSpace)
+        and getattr(codomain, "intrinsic_shape", None) is not None
+        and tuple(value.shape) == codomain.event_shape
+    )
+
+
 def _plated_value(
     morphism: PlateDraw | VectorisedObserve, value: torch.Tensor
 ) -> torch.Tensor:
@@ -2427,7 +2450,11 @@ def _run_slice(
         if single is not None and value.numel() == single:
             # One value every run shares, at one run's layout: led by
             # the run axis of length one.
-            if value.dim() >= 1 and int(value.shape[0]) == 1:
+            if (
+                not _declared_event(morphism, value)
+                and value.dim() >= 1
+                and int(value.shape[0]) == 1
+            ):
                 return value
             return value.unsqueeze(0)
         if runs == 1:
@@ -2507,7 +2534,10 @@ def _vectorized_sites(
         single = _event_numel(morphism)
         if single is None:
             return None
-        if (
+        if _declared_event(morphism, value):
+            one = _run_slice(kernel, label, value, 1, 0)
+            rows = one.expand(runs, *one.shape[1:])
+        elif (
             value.dim() >= 1
             and int(value.shape[0]) == runs
             and value.numel() == runs * single
