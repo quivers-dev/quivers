@@ -248,6 +248,55 @@ class FamilyCatalog(Mapping[str, DistributionFamily]):
         )
         return result
 
+    def with_catalog(self, other: FamilyCatalog) -> FamilyCatalog:
+        """Combine immutable extensions without replacing executable identities.
+
+        Parameters
+        ----------
+        other : FamilyCatalog
+            Independently retained definitions to add to this catalog.
+
+        Returns
+        -------
+        FamilyCatalog
+            A catalog sharing the original implementations and support objects.
+            Identical repeated definitions are retained once.
+
+        Raises
+        ------
+        TypeError
+            If other is not a FamilyCatalog.
+        ValueError
+            If a repeated family name has another contract, implementation,
+            or support identity, or a new name collides with a stable family id.
+        """
+        if not isinstance(other, FamilyCatalog):
+            raise TypeError("catalog composition requires a FamilyCatalog")
+        result = self
+        for name, semantic in other._definitions.items():
+            implementation = other._implementations[name]
+            support = other._supports[name]
+            if name in result._definitions:
+                if (
+                    result._definitions[name] != semantic
+                    or result._implementations[name] is not implementation
+                    or result._supports[name] is not support
+                ):
+                    raise ValueError(
+                        f"distribution family {name!r} has conflicting catalog definitions"
+                    )
+                continue
+            result = result.with_family(
+                semantic,
+                implementation,
+                **(
+                    {}
+                    if isinstance(implementation, FamilySpec)
+                    else {"support": support}
+                ),
+            )
+        return result
+
     def build(self, name: str, arguments: Mapping[str, torch.Tensor]) -> Distribution:
         """Construct and validate a custom law without sampling or detaching it.
 

@@ -54,12 +54,17 @@ from quivers.formulas._predictor_graph import (
 
 from quivers.formulas._prediction import FormulaPredictionPlan
 from quivers.formulas._group_covariance import GroupCovariance
-from quivers.formulas._response import count_totals, response_tensor
+from quivers.formulas._response import (
+    count_totals,
+    expected_response,
+    response_tensor,
+)
 from quivers.formulas._priors import PriorInput, PriorSet, normalize_priors
 from quivers.formulas._response_modifiers import (
     ResponseDraws,
     ExpectationOptions,
     PredictionOptions,
+    response_input_name,
 )
 from quivers.inference import (
     ELBO,
@@ -1065,7 +1070,6 @@ class BayesianFit(ValueModel):
             collect_draws,
             replay,
             response_distribution,
-            response_mean,
             response_rng,
             row_binding,
         )
@@ -1119,35 +1123,13 @@ class BayesianFit(ValueModel):
             """
             for recorded in replay(self, draws, shape, context=context):
                 distribution = response_distribution(recorded, response)
-                if component == "decision":
-                    from quivers.continuous._wiener import Wiener
-
-                    if not isinstance(distribution, Wiener):
-                        raise TypeError(
-                            "the response has no binary decision probabilities"
-                        )
-                    value = distribution.choice_probs
-                elif self.family.name == "wiener":
-                    from quivers.continuous._wiener import Wiener
-
-                    assert isinstance(distribution, Wiener)
-                    value = distribution.mean_response_time
-                elif self.family.observe_family == "Categorical":
-                    if not isinstance(distribution, torch.distributions.Categorical):
-                        raise TypeError(
-                            "the categorical response has no native class probabilities"
-                        )
-                    value = distribution.probs
-                elif self.family.ordinal is not None:
-                    from quivers.formulas._posterior import category_probabilities
-
-                    value = category_probabilities(distribution, categories)
-                else:
-                    value = response_mean(distribution, mc_samples)
-                if not torch.isfinite(value).all():
-                    raise ValueError(
-                        f"{self.family.observe_family} has an undefined or nonfinite response mean at a posterior draw"
-                    )
+                value = expected_response(
+                    distribution,
+                    self.family,
+                    categories=categories,
+                    decision=component == "decision",
+                    mc_samples=mc_samples,
+                )
                 yield row_binding(
                     value, rows, self.formula.response_layout.event_shape or categories
                 )
@@ -1451,8 +1433,6 @@ class BayesianFit(ValueModel):
                 seed=seed,
             )
             if trials is not None:
-                from quivers.formulas._response_modifiers import response_input_name
-
                 name = response_input_name(self.formula)
                 context = context.with_(
                     observations=dict(context.observations)
@@ -1553,6 +1533,7 @@ class BayesianFit(ValueModel):
             response_rng,
         )
         from quivers.formulas._prediction import prepare_prediction
+        from quivers.inference._response import response_sample
 
         context = prepare_prediction(
             self,
@@ -1583,13 +1564,8 @@ class BayesianFit(ValueModel):
                 If the selected response has no requested native operation.
             """
             for recorded in replay(self, draws, shape, context=context):
-                sampleable = recorded.sites[response].sampleable
-                if sampleable is None:
-                    raise TypeError("the response has no native sampling operation")
-                # The native observation expands shared parameters before
-                # sampling, so different rows receive independent draws.
                 yield row_binding(
-                    sampleable.raw_morphism.rsample(sampleable.input),
+                    response_sample(recorded, response),
                     rows,
                     self.formula.response_layout.event_shape,
                 )
@@ -2443,7 +2419,6 @@ def _prepare_fit(
     lens, parsed = prepared.lens, prepared.formula
     predictor_name = "neural_eta" if predictor is not None else None
     family_obj = prepared.family
-    binomial_trials = prepared.binomial_trials
     selection = parsed.modifiers.subset
     if selection is not None and predictor_data is not None:
         if predictor_data.shape[0] != selection.size:
@@ -2481,23 +2456,7 @@ def _prepare_fit(
         )
     program = morphism
 
-    observations: dict[str, torch.Tensor] = {}
-    observations.update(lens.fixed_column_observations(parsed))
-    from quivers.formulas._response_modifiers import response_input_name
-
-    observations[response_input_name(parsed)] = response_tensor(parsed, family_obj)
-    for _, _, predictor_formula in lens._predictor_items(parsed):
-        for group, codes in predictor_formula.group_indices.items():
-            observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
-                list(codes), dtype=torch.long
-            )
-    if family_obj.trials_parameter is not None:
-        trials = prepared.trials
-        assert trials is not None
-        if parsed.response_layout.event_shape:
-            observations["formula_trials"] = trials
-        if isinstance(binomial_trials, str) and not parsed.response_layout.event_shape:
-            observations[_qvr_name(binomial_trials)] = trials
+    observations = _formula_observations(prepared)
     if predictor is not None:
         assert predictor_data is not None
         assert predictor_name is not None
@@ -2541,6 +2500,53 @@ def _prepare_fit(
         predictor_reference,
         preparation_data,
     )
+
+
+def _formula_observations(
+    prepared: _PreparedFormula,
+    *,
+    formula: Formula | None = None,
+    lens: FormulaToQVRModule | None = None,
+) -> dict[str, torch.Tensor]:
+    """Bind the existing response/design contracts independently of compilation.
+
+    Parameters
+    ----------
+    prepared : _PreparedFormula
+        Canonical family, trial and response preparation.
+    formula : Formula or None
+        Optional same-response formula with reconciled joint grouping codes.
+    lens : FormulaToQVRModule or None
+        Optional same-response lens with reconciled auxiliary and graph codes.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        Actual response, modifier, predictor and grouping input carriers.
+    """
+    parsed = prepared.formula if formula is None else formula
+    lens = prepared.lens if lens is None else lens
+    family_obj = prepared.family
+    observations: dict[str, torch.Tensor] = {}
+    observations.update(lens.fixed_column_observations(parsed))
+
+    observations[response_input_name(parsed)] = response_tensor(parsed, family_obj)
+    for _, _, predictor_formula in lens._predictor_items(parsed):
+        for group, codes in predictor_formula.group_indices.items():
+            observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
+                list(codes), dtype=torch.long
+            )
+    if family_obj.trials_parameter is not None:
+        trials = prepared.trials
+        assert trials is not None
+        if parsed.response_layout.event_shape:
+            observations["formula_trials"] = trials
+        if (
+            isinstance(prepared.binomial_trials, str)
+            and not parsed.response_layout.event_shape
+        ):
+            observations[_qvr_name(prepared.binomial_trials)] = trials
+    return observations
 
 
 def _initial_values(

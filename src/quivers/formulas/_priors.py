@@ -106,9 +106,10 @@ class PriorSpec(ValueModel):
     class_ : str or None
         Parameter class: b excludes intercepts; Intercept, sd, cor, and
         auxiliary parameter names select their corresponding roles.
-    coef, group, dpar, nlpar, site : str or None
+    coef, group, dpar, nlpar, site, response : str or None
         Expanded coefficient label, original group name, distributional or
-        nonlinear parameter name, or exact generated site. None is a wildcard.
+        nonlinear parameter name, exact generated site, or authored joint-response
+        label. None is a wildcard.
     lower, upper : float or None
         Optional finite bounds, intersected with the target's domain.
     block : str or None
@@ -123,6 +124,7 @@ class PriorSpec(ValueModel):
     dpar: str | None = None
     nlpar: str | None = None
     site: str | None = None
+    response: str | None = None
     lower: float | None = None
     upper: float | None = None
     block: str | None = None
@@ -131,7 +133,7 @@ class PriorSpec(ValueModel):
     def _validate(self) -> None:
         if isinstance(self.distribution, str) and not self.distribution.strip():
             raise ValueError("a prior distribution must not be empty")
-        for name in ("class_", "coef", "group", "dpar", "nlpar", "site", "block"):
+        for name in (*_SELECTORS, "block"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value):
                 raise ValueError(f"prior selector {name} must be nonempty text or None")
@@ -189,7 +191,7 @@ class PriorSet(ValueModel):
 
 type PriorInput = Mapping[str, str] | PriorSpec | PriorSet | Sequence[PriorSpec]
 """Authored exact-name overrides or typed rules normalized to one immutable PriorSet."""
-_SELECTORS = ("class_", "coef", "group", "dpar", "nlpar", "site")
+_SELECTORS = ("class_", "coef", "group", "dpar", "nlpar", "site", "response")
 
 
 def normalize_priors(value: PriorInput | None) -> PriorSet:
@@ -240,8 +242,8 @@ class PriorTarget(ValueModel):
     ----------
     site, class_ : str
         Generated binder and semantic parameter class.
-    coef, group, dpar, nlpar : str or None
-        Authored coefficient, grouping, and predictor labels.
+    coef, group, dpar, nlpar, response : str or None
+        Authored coefficient, grouping, predictor, and joint-response labels.
     axes : tuple[str, ...]
         Nominal independent coefficient axes in source order.
     shape : tuple[int, ...]
@@ -260,6 +262,7 @@ class PriorTarget(ValueModel):
     group: str | None = None
     dpar: str | None = None
     nlpar: str | None = None
+    response: str | None = None
     axes: tuple[str, ...] = ()
     shape: tuple[int, ...] = ()
     lower: float | None = None

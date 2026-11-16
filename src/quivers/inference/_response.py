@@ -10,6 +10,33 @@ from quivers._rng import seeded_rng
 from quivers.inference.trace import Trace
 
 
+def response_sample(recorded: Trace, response: str) -> torch.Tensor:
+    """Sample through the retained native carrier and observation batch layout.
+
+    Parameters
+    ----------
+    recorded : Trace
+        Execution trace containing the requested response.
+    response : str
+        Actual response-site binding.
+
+    Returns
+    -------
+    torch.Tensor
+        Native response coordinates, with independent observation rows.
+
+    Raises
+    ------
+    TypeError
+        If the response exposes no native sampling operation.
+    """
+    sampleable = recorded.sites[response].sampleable
+    if sampleable is None:
+        raise TypeError("the response has no native sampling operation")
+    morphism = getattr(sampleable, "raw_morphism", sampleable.morphism)
+    return morphism.rsample(sampleable.input)
+
+
 def response_distribution(recorded: Trace, response: str) -> Distribution:
     """Read the actual native response distribution constructed by a replay.
 

@@ -43,8 +43,10 @@ import numpy as np
 from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
+from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
+from quivers.formulas._smooth import PSpline
 
 
 #: R-style transforms wired into formulae's evaluation namespace.
@@ -143,11 +145,7 @@ def _contains_cs(expression: object) -> bool:
     bool
         Whether this expression contains a category-specific modifier.
     """
-    if getattr(expression, "callee", None) == "cs":
-        return True
-    return any(_contains_cs(arg) for arg in getattr(expression, "args", ())) or any(
-        _contains_cs(arg) for arg in getattr(expression, "kwargs", {}).values()
-    )
+    return bool(_modifier_calls(expression, frozenset({"cs"})))
 
 
 def _exposure(values: object) -> np.ndarray:
@@ -174,25 +172,29 @@ def _exposure(values: object) -> np.ndarray:
     return np.log(exposure)
 
 
-def _offset_calls(expression: object) -> set[str]:
-    """Find offset modifiers within a formulae lazy expression.
+def _modifier_calls(
+    expression: object, names: frozenset[str] = frozenset({"offset", "exposure"})
+) -> set[str]:
+    """Collect selected modifiers within a formulae lazy expression.
 
     Parameters
     ----------
     expression : object
         Parsed call, operator, variable, or literal.
+    names : frozenset[str]
+        Modifier names to collect through the same expression traversal.
 
     Returns
     -------
     set[str]
-        Names of offset and exposure calls in the expression tree.
+        Selected modifier names found in the expression tree.
     """
     callee = getattr(expression, "callee", None)
-    found = {callee} if callee in {"offset", "exposure"} else set()
+    found = {callee} if callee in names else set()
     for argument in getattr(expression, "args", ()):
-        found.update(_offset_calls(argument))
+        found.update(_modifier_calls(argument, names))
     for argument in getattr(expression, "kwargs", {}).values():
-        found.update(_offset_calls(argument))
+        found.update(_modifier_calls(argument, names))
     return found
 
 
@@ -296,9 +298,124 @@ class RandomTerm(ValueModel):
     group: str
     correlation_id: str | None = None
     shared: bool = False
-    column: FixedColumn | None = dx.field(
+    column: FixedColumn | SymbolicColumn | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+
+
+class SplineBasis(ValueModel):
+    """Immutable structural state of an evaluated B-spline basis.
+
+    Attributes
+    ----------
+    knots : tuple[float, ...]
+        Complete nondecreasing knot sequence, including repeated boundaries.
+    degree : int
+        Nonnegative polynomial degree. The source basis width is the knot
+        count minus degree minus one.
+    """
+
+    knots: tuple[float, ...]
+    degree: int
+
+    @dx.model_validator()
+    def _validate(self) -> None:
+        """Validate immutable knot geometry.
+
+        Raises
+        ------
+        ValueError
+            If knots or polynomial degree cannot define the retained basis.
+        """
+        if (
+            type(self.degree) is not int
+            or self.degree < 0
+            or len(self.knots) <= self.degree + 1
+            or not np.isfinite(self.knots).all()
+            or any(left > right for left, right in zip(self.knots, self.knots[1:]))
+            or self.knots[0] >= self.knots[-1]
+        ):
+            raise ValueError(
+                "spline structure requires finite nondecreasing knots and a valid polynomial degree"
+            )
+
+
+class GaussianDesignTerm(ValueModel):
+    """One coupled Gaussian coefficient block evaluated on response rows.
+
+    Attributes
+    ----------
+    term, qvr_name : str
+        Authored term label and normalized runtime design identifier.
+    column_indices : tuple[int, ...]
+        Columns of the retained formula evaluator carrying penalized coordinates.
+    data : np.ndarray
+        Read-only response-row by Gaussian-coordinate design matrix. Coordinates
+        multiply standard-Normal innovations and one independently sampled scale.
+        Unpenalized null-space columns retain ordinary population priors.
+    basis : SplineBasis or None
+        Retained structural basis state when generated from a spline.
+    coefficient_map : tuple[tuple[float, ...], ...]
+        Original basis coordinates to evaluated null and Gaussian coordinates,
+        in their retained evaluator-column order; empty for a supplied design.
+    constraint : tuple[float, ...]
+        Original training-basis mean defining the identification constraint.
+    """
+
+    term: str
+    qvr_name: str
+    column_indices: tuple[int, ...]
+    data: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(_read_only))
+    basis: SplineBasis | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    coefficient_map: tuple[tuple[float, ...], ...] = ()
+    constraint: tuple[float, ...] = ()
+
+    @dx.model_validator()
+    def _validate(self) -> None:
+        """Validate retained row and coefficient coordinate geometry.
+
+        Raises
+        ------
+        ValueError
+            If design, basis map, or centering dimensions disagree.
+        """
+        if (
+            self.data.ndim != 2
+            or self.data.dtype.kind not in "iuf"
+            or not np.isfinite(self.data).all()
+        ):
+            raise ValueError(
+                "Gaussian design terms require a finite real row-by-coordinate matrix"
+            )
+        if (
+            self.data.shape[1] < 1
+            or len(self.column_indices) != self.data.shape[1]
+            or tuple(sorted(set(self.column_indices))) != self.column_indices
+            or any(type(index) is not int or index < 0 for index in self.column_indices)
+        ):
+            raise ValueError(
+                "Gaussian design coordinate indices must align with the retained basis width"
+            )
+        if self.coefficient_map:
+            matrix = np.asarray(self.coefficient_map)
+            if (
+                matrix.ndim != 2
+                or not np.isfinite(matrix).all()
+                or matrix.shape[1] <= max(self.column_indices)
+                or len(self.constraint) not in {0, matrix.shape[0]}
+            ):
+                raise ValueError(
+                    "retained Gaussian coordinate maps must align with source basis and centering"
+                )
+            if (
+                self.basis is not None
+                and matrix.shape[0] != len(self.basis.knots) - self.basis.degree - 1
+            ):
+                raise ValueError(
+                    "retained Gaussian coordinate map disagrees with its spline basis width"
+                )
 
 
 class CensoringSpec(ValueModel):
@@ -499,6 +616,8 @@ class Formula(ValueModel):
     fixed_columns : tuple[FixedColumn, ...]
         One entry per design-matrix column (matches R/brms's
         one-coefficient-per-column convention).
+    design_terms : tuple[GaussianDesignTerm, ...]
+        Coupled Gaussian basis contributions with separate penalty-scale priors.
     random_terms : tuple[RandomTerm, ...]
         Random-effect group specifications.
     response_values : np.ndarray
@@ -520,8 +639,11 @@ class Formula(ValueModel):
 
     formula: str
     response_name: str
-    fixed_columns: tuple[FixedColumn, ...] = dx.field(
+    fixed_columns: tuple[FixedColumn | SymbolicColumn, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    design_terms: tuple[GaussianDesignTerm, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     random_terms: tuple[RandomTerm, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
@@ -572,6 +694,8 @@ class FormulaData(ValueModel):
         Normalized fixed-column names carrying ordinal transition coefficients.
     fixed_column_order : tuple[str, ...]
         Authored fixed-column order, retained across staged predictor emission.
+    design_terms : tuple[GaussianDesignTerm, ...]
+        Retained coupled Gaussian designs, preserving source-lens value equality.
     group_original_names : dict[str, str]
         Original group names keyed by normalized group name.
     group_levels : dict[str, tuple[str, ...]]
@@ -611,8 +735,14 @@ class FormulaData(ValueModel):
         opaque=True,
         extras=opaque_by_value(_read_only_columns),
     )
+    symbolic_columns: Mapping[str, SymbolicColumn] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     category_specific_columns: tuple[str, ...] = ()
     fixed_column_order: tuple[str, ...] = ()
+    design_terms: tuple[GaussianDesignTerm, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     group_original_names: dict[str, str] = dx.field(default_factory=dict)
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
@@ -949,12 +1079,13 @@ def _formula_and_design(
     nw_df = nw.from_native(pandas_df, eager_only=True)
     namespace: dict[str, object] = dict(_R_TRANSFORMS)
     if extra_namespace:
-        if {"offset", "exposure", "cs", "cbind"} & extra_namespace.keys():
+        if {"offset", "exposure", "cs", "cbind", "s"} & extra_namespace.keys():
             raise ValueError(
                 "offset, exposure, cs, and cbind are reserved formula modifiers"
             )
         namespace.update(extra_namespace)
     namespace["exposure"] = _exposure
+    namespace["s"] = PSpline
     namespace["cbind"] = lambda *columns: np.column_stack(columns)
     cs_normalized = _normalize_cs_intercept(normalized_formula)
     if _CS_ONES in pandas_df.columns:
@@ -972,7 +1103,7 @@ def _formula_and_design(
             components = getattr(term, "components", ())
             modifiers = set().union(
                 *(
-                    _offset_calls(getattr(component, "call", None))
+                    _modifier_calls(getattr(component, "call", None))
                     for component in components
                 )
             )
@@ -982,7 +1113,7 @@ def _formula_and_design(
             if modifiers and not (
                 root is not None
                 and getattr(root, "callee", None) in {"offset", "exposure"}
-                and not any(_offset_calls(argument) for argument in root.args)
+                and not any(_modifier_calls(argument) for argument in root.args)
             ):
                 raise ValueError(
                     "offset and exposure terms must be standalone additive terms"
@@ -990,7 +1121,7 @@ def _formula_and_design(
         for term in description.group_terms:
             components = getattr(term.expr, "components", ())
             if any(
-                _offset_calls(getattr(component, "call", None))
+                _modifier_calls(getattr(component, "call", None))
                 for component in components
             ):
                 raise ValueError(
@@ -1006,6 +1137,7 @@ def _formula_and_design(
     n_obs = int(pandas_df.shape[0])
 
     fixed_columns: list[FixedColumn] = []
+    design_terms: list[GaussianDesignTerm] = []
     offsets: list[FixedColumn] = []
     if dm.common is not None:
         for term_name, term in dm.common.terms.items():
@@ -1016,7 +1148,48 @@ def _formula_and_design(
                 if len(components) == 1
                 else None
             )
-            if modifier in {"offset", "exposure"}:
+            if modifier != "s" and any(
+                _modifier_calls(getattr(component, "call", None), frozenset({"s"}))
+                for component in components
+            ):
+                raise ValueError(
+                    "smooths must be standalone additive terms; use a retained tensor/by design for smooth interactions"
+                )
+            if modifier == "s":
+                assert components
+                transform = components[0].call.stateful_transform
+                if not isinstance(transform, PSpline):
+                    raise ValueError(
+                        "smooth terms require the retained spline evaluator"
+                    )
+                fixed_columns.extend(columns[: transform.null_width])
+                selected = tuple(range(transform.null_width, len(columns)))
+                assert transform.penalty is not None
+                coefficient_map = tuple(
+                    (*fixed, *random)
+                    for fixed, random in zip(
+                        transform.penalty.null_factor,
+                        transform.penalty.random_factor,
+                        strict=True,
+                    )
+                )
+                design_terms.append(
+                    GaussianDesignTerm(
+                        term=term_name,
+                        qvr_name="smooth_" + _qvr_name(term_name),
+                        column_indices=selected,
+                        data=np.column_stack(
+                            [columns[index].data for index in selected]
+                        ),
+                        basis=SplineBasis(
+                            knots=tuple(transform.basis._knots.tolist()),
+                            degree=transform.basis._degree,
+                        ),
+                        coefficient_map=coefficient_map,
+                        constraint=transform.penalty.constraint,
+                    )
+                )
+            elif modifier in {"offset", "exposure"}:
                 if len(columns) != 1 or columns[0].data.shape != (n_obs,):
                     raise ValueError(
                         "offset and exposure terms must produce one value per response row"
@@ -1032,6 +1205,13 @@ def _formula_and_design(
     group_indices: dict[str, tuple[int, ...]] = {}
     if dm.group is not None:
         for term in dm.group.terms.values():
+            if any(
+                _modifier_calls(getattr(component, "call", None), frozenset({"s"}))
+                for component in getattr(term.expr, "components", ())
+            ):
+                raise ValueError(
+                    "random smooths require a structured smooth/group design, not ordinary random coefficients"
+                )
             group = term.factor.name
             identity, shared = random_blocks.get((term.expr.name, group), (None, False))
             for column in _explode_term(term.expr.name, term.expr, n_obs):
@@ -1106,6 +1286,7 @@ def _formula_and_design(
         formula=formula,
         response_name=response_name,
         fixed_columns=tuple(fixed_columns),
+        design_terms=tuple(design_terms),
         offsets=tuple(offsets),
         modifiers=response_modifiers,
         random_terms=tuple(random_terms),
@@ -1118,6 +1299,8 @@ def _formula_and_design(
 
 __all__ = [
     "FixedColumn",
+    "GaussianDesignTerm",
+    "SplineBasis",
     "RandomTerm",
     "Formula",
     "ResponseLayout",

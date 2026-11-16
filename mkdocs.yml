@@ -194,6 +194,7 @@ nav:
       - "Tree and Graph Autoencoders: Signatures and Encoders": guides/structural-compression-signatures-and-encoders.md
       - "Tree and Graph Autoencoders: Decoders and Losses": guides/structural-compression-decoders-and-losses.md
       - "Analysis: Data and Formulas": guides/analysis-data-and-formulas.md
+      - Structured Predictor Terms: guides/formula-special-predictors.md
       - "Analysis: Fitting and Diagnostics": guides/analysis-fitting-and-diagnostics.md
       - Conditional Effects: guides/conditional-effects.md
       - "Interactive tools: REPL, kernel, and language server": guides/repl-and-lsp.md

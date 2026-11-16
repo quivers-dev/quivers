@@ -89,6 +89,10 @@ paired with a likelihood that handles missing values.
 
 ## Formulas: `quivers.formulas`
 
+For penalized `s(x, bs='ps')` bases, see
+[structured predictor terms](formula-special-predictors.md). Their Gaussian
+penalty coordinates remain separate from ordinary fixed-design columns.
+
 `y ~ x + (1 | g)` predicts the response `y` from the predictor `x`, with an intercept
 that may differ by group `g`. The intercept is the baseline, the slope multiplies `x`,
 and the group offsets come from a shared distribution, which gives partial pooling

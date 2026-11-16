@@ -246,7 +246,10 @@ def _numeric_matrix(values: object, rows: int, name: str) -> np.ndarray:
 
 
 def _column_values(
-    columns: tuple[FixedColumn, ...], matrices: Mapping[str, np.ndarray]
+    columns: tuple[FixedColumn, ...],
+    matrices: Mapping[str, np.ndarray],
+    *,
+    structured_widths: Mapping[str, int] | None = None,
 ) -> Iterator[tuple[FixedColumn, np.ndarray]]:
     """Match fitted exploded-column labels to fresh term-matrix positions.
 
@@ -256,6 +259,9 @@ def _column_values(
         Fitted labels in design-column order.
     matrices : Mapping[str, numpy.ndarray]
         Fresh matrices keyed by the original term name.
+    structured_widths : Mapping[str, int] or None
+        Full retained width for terms whose remaining columns belong to
+        explicitly identified coupled Gaussian designs.
 
     Yields
     ------
@@ -276,7 +282,7 @@ def _column_values(
             raise ValueError(f"new_data changed the design width of {column.term!r}")
         yield column, matrix[:, index]
     for name, count in positions.items():
-        if matrices[name].shape[1] != count:
+        if matrices[name].shape[1] != (structured_widths or {}).get(name, count):
             raise ValueError(f"new_data changed the design width of {name!r}")
 
 
@@ -326,7 +332,23 @@ def _predictor_bindings(
                 evaluated.design_matrix[:, slice_], rows, name
             )
     result = {}
-    for column, values in _column_values(formula.fixed_columns, matrices):
+    for term in formula.design_terms:
+        values = matrices[term.term][:, term.column_indices]
+        result[prefix + term.qvr_name] = torch.as_tensor(
+            values.copy(), dtype=torch.float64
+        )
+    structured_widths = {
+        term.term: max(term.column_indices) + 1 for term in formula.design_terms
+    }
+    for column, values in _column_values(
+        tuple(
+            column
+            for column in formula.fixed_columns
+            if isinstance(column, FixedColumn)
+        ),
+        matrices,
+        structured_widths=structured_widths,
+    ):
         if not column.is_intercept:
             result[prefix + column.qvr_name] = torch.as_tensor(
                 values.copy(), dtype=torch.float32
@@ -367,7 +389,7 @@ def _predictor_bindings(
             {
                 term.column.name: term.column
                 for term in formula.random_terms
-                if term.column is not None
+                if isinstance(term.column, FixedColumn)
             }.values()
         )
         for column, values in _column_values(columns, slope_matrices):

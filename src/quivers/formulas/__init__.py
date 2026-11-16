@@ -30,6 +30,8 @@ from __future__ import annotations
 
 from quivers.formulas.formula import (
     FixedColumn,
+    GaussianDesignTerm,
+    SplineBasis,
     RandomTerm,
     Formula,
     FormulaData,
@@ -83,6 +85,8 @@ from quivers.formulas._response_modifiers import (
 __all__ = [
     # formula
     "FixedColumn",
+    "GaussianDesignTerm",
+    "SplineBasis",
     "RandomTerm",
     "Formula",
     "FormulaData",

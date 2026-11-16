@@ -7,6 +7,13 @@ lookups. `formula_from_data` builds it over `formulae.design_matrices`, so its
 [design matrices](../../tutorials/python/08-analysis-pipelines.md#a-first-fit-gaussian-regression-in-one-line)
 depend on the data and the category encoding as well as on the formula.
 
+`Formula.design_terms` retains coupled Gaussian bases as `GaussianDesignTerm`
+values. Their innovation coordinates and positive penalty scales are distinct
+from ordinary fixed columns; `FormulaData.design_terms` preserves the same
+immutable records across source-lens round trips. The
+[structured predictor guide](../../guides/formula-special-predictors.md)
+describes the current P-spline constructor and retained new-data transforms.
+
 `Formula`, `FormulaData`, and `FixedColumn` are immutable values that
 compare by every field. Two formulas are equal only when their formula
 strings, response names, fixed columns (labels and data), random

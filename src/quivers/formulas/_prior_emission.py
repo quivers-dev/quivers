@@ -17,6 +17,7 @@ from quivers.dsl.ast_nodes import (
     ProgramDecl,
     ProgramStep,
     SampleStep,
+    ObserveStep,
     TypeName,
     TypeFromExpr,
     DiscreteConstructor,
@@ -56,7 +57,7 @@ def _ordered_steps(steps: Sequence[ProgramStep]) -> tuple[ProgramStep, ...]:
     """
     bindings = {}
     for index, step in enumerate(steps):
-        if isinstance(step, SampleStep):
+        if isinstance(step, (SampleStep, ObserveStep)):
             bindings.update((name, index) for name in step.vars)
         elif isinstance(step, LetStep):
             bindings[step.name] = index
@@ -94,8 +95,8 @@ def apply_prior_plan(
     selected: Mapping[str, PriorSpec],
     *,
     draw: Callable[[str, str], SampleStep],
-    training_rows: int,
-    sigma: str | None = None,
+    training_rows: int | Mapping[str, int],
+    sigma: str | Mapping[str, str] | None = None,
 ) -> Module:
     """Rewrite existing prior sites and emit shared proper shrinkage hyperpriors.
 
@@ -109,10 +110,13 @@ def apply_prior_plan(
         Resolved rules from the same catalogue.
     draw : Callable
         Existing compositional QVR prior parser, taking a binder and source.
-    training_rows : int
-        Retained training row count for horseshoe par_ratio calibration.
-    sigma : str or None
-        Existing scalar residual-scale binding, absent when autoscaling is invalid.
+    training_rows : int or Mapping[str, int]
+        Retained training count, or counts by selected site for response
+        graphs with different observation sets. Shared shrinkage calibrates
+        each coefficient to its own response count.
+    sigma : str or Mapping[str, str] or None
+        Existing scalar residual scale, or one scale per selected site in a
+        joint response graph. Absent when autoscaling is invalid.
 
     Returns
     -------
@@ -186,11 +190,25 @@ def apply_prior_plan(
                 ),
             ),
         )
+        counts: dict[str, int] = {}
+        common_count: int | None = None
         if isinstance(hierarchy, RegularizedHorseshoe):
+            counts = {
+                target.site: training_rows[target.site]
+                if isinstance(training_rows, Mapping)
+                else training_rows
+                for target, _ in members
+            }
+            common_counts = set(counts.values())
+            common_count = (
+                next(iter(common_counts)) if len(common_counts) == 1 else None
+            )
             global_scale = (
                 hierarchy.scale_global
                 if hierarchy.par_ratio is None
-                else hierarchy.par_ratio / math.sqrt(training_rows)
+                else hierarchy.par_ratio / math.sqrt(common_count)
+                if common_count is not None
+                else hierarchy.par_ratio
             )
             hyper.extend(
                 (
@@ -239,6 +257,9 @@ def apply_prior_plan(
                 hyper.append(allocation.with_(index=TypeName(name=axis)))
         offset = 0
         for target, rule in members:
+            target_sigma = (
+                sigma.get(target.site) if isinstance(sigma, Mapping) else sigma
+            )
             coordinate = _literal(offset, integral=True)
             binders = tuple(
                 (f"prior_coordinate_{i}", name) for i, name in enumerate(target.axes)
@@ -251,13 +272,17 @@ def apply_prior_plan(
                 )
             autoscale = (
                 hierarchy.autoscale
-                and sigma is not None
+                and target_sigma is not None
                 and target.dpar in (None, "mu")
             )
             if isinstance(hierarchy, RegularizedHorseshoe):
                 log_global = _call("log", _var(prefix + "_global"))
-                if autoscale and sigma is not None:
-                    log_global = _add(log_global, _call("log", _var(sigma)))
+                if hierarchy.par_ratio is not None and common_count is None:
+                    log_global = _sub(
+                        log_global, _literal(math.log(counts[target.site]) / 2)
+                    )
+                if autoscale and target_sigma is not None:
+                    log_global = _add(log_global, _call("log", _var(target_sigma)))
                 log_product = _add(
                     log_global, _call("log", _index(prefix + "_local", coordinate))
                 )
@@ -286,8 +311,8 @@ def apply_prior_plan(
                         _call("log1p", _mul(_literal(-1), fraction)),
                     ),
                 )
-                if autoscale and sigma is not None:
-                    log_scale = _add(log_scale, _call("log", _var(sigma)))
+                if autoscale and target_sigma is not None:
+                    log_scale = _add(log_scale, _call("log", _var(target_sigma)))
             scale = _call("exp", log_scale)
             if binders:
                 scale = _factor(binders, body=scale)
@@ -359,6 +384,8 @@ def build_prior_targets(
     nonlinear_names=(),
     draw,
     thresholds_by=None,
+    predictor_scopes=None,
+    predictor_component_labels=None,
 ):
     """Combine explicit formula roles, group layouts, and actual sample axes.
 
@@ -380,6 +407,11 @@ def build_prior_targets(
         Existing compositional prior parser.
     thresholds_by : str or None
         Original ordinal threshold grouping factor.
+    predictor_scopes : Mapping or None
+        Explicit response/dpar/nlpar coordinates for a joint program's
+        existing predictor prefixes. Ordinary programs derive their scopes.
+    predictor_component_labels : Mapping or None
+        Free component labels for each explicitly indexed joint predictor.
 
     Returns
     -------
@@ -399,6 +431,7 @@ def build_prior_targets(
         prefix: ({"nlpar": name} if name in nonlinear_names else {"dpar": name})
         for name, prefix, _ in predictors
     }
+    scopes.update(predictor_scopes or {})
     labels = ()
     if family.response is not None:
         names = tuple(
@@ -409,7 +442,7 @@ def build_prior_targets(
             names = tuple(str(i) for i in sorted(set(formula.response_values.tolist())))
         labels = tuple(str(names[i]) for i in family.response.coordinate_indices(names))
 
-    def add(site, role, *, lower=None, upper=None, **metadata):
+    def add(site, role, *, lower=None, upper=None, component_labels=None, **metadata):
         if site not in samples or site in targets:
             return
         step = samples[site]
@@ -429,13 +462,22 @@ def build_prior_targets(
             lower=lower,
             upper=upper,
             event_rank=record.event_rank,
-            component_labels=labels
-            if axes and role in {"b", "Intercept", "sd"}
+            component_labels=(labels if component_labels is None else component_labels)
+            if axes and role in {"b", "Intercept", "sd", "sds"}
             else (),
             **metadata,
         )
 
     for _name, prefix, predictor in predictors:
+        for term in predictor.design_terms:
+            add(
+                prefix + term.qvr_name + "_scale",
+                "sds",
+                coef=term.term,
+                lower=0.0,
+                component_labels=(predictor_component_labels or {}).get(prefix),
+                **scopes[prefix],
+            )
         for column in predictor.fixed_columns:
             site = prefix + (
                 "intercept" if column.is_intercept else "beta_" + column.qvr_name
@@ -444,6 +486,7 @@ def build_prior_targets(
                 site,
                 "Intercept" if column.is_intercept else "b",
                 coef=column.name,
+                component_labels=(predictor_component_labels or {}).get(prefix),
                 **scopes[prefix],
             )
         for term in predictor.random_terms:
@@ -454,6 +497,7 @@ def build_prior_targets(
                 coef=term.slope,
                 group=term.group,
                 lower=0.0,
+                component_labels=(predictor_component_labels or {}).get(prefix),
                 **scopes[prefix],
             )
     for layout in layouts:

@@ -271,3 +271,67 @@ def resolve_trials(family: Family, trials: int | str | None) -> int | str | None
         "dirichlet_multinomial",
     }
     return 1 if trials is None and not vector_counts else trials
+
+
+def expected_response(
+    distribution: torch.distributions.Distribution,
+    family: Family,
+    *,
+    categories: int = 0,
+    decision: bool = False,
+    mc_samples: int | None = None,
+) -> torch.Tensor:
+    """Read the declared response measurement from one native conditional law.
+
+    Parameters
+    ----------
+    distribution : torch.distributions.Distribution
+        Native law produced by the existing program replay.
+    family : Family
+        Retained response-family semantics and category ordering.
+    categories : int
+        Actual ordered or categorical response extent, zero for numeric events.
+    decision : bool
+        Return Wiener lower/upper probabilities rather than reaction-time means.
+    mc_samples : int or None
+        Explicit Monte Carlo expectation budget for certified finite means.
+
+    Returns
+    -------
+    torch.Tensor
+        Response means, category probabilities, or decision probabilities.
+
+    Raises
+    ------
+    ValueError, TypeError
+        If the requested measurement is unavailable, undefined, or nonfinite.
+    """
+    from quivers.inference._response import category_probabilities, response_mean
+
+    if family.observe_family == "VonMises":
+        raise TypeError(
+            "a circular response expectation requires an angular convention"
+        )
+    if decision or family.name == "wiener":
+        from quivers.continuous._wiener import Wiener
+
+        if not isinstance(distribution, Wiener):
+            raise TypeError("the response has no binary decision probabilities")
+        value = (
+            distribution.choice_probs if decision else distribution.mean_response_time
+        )
+    elif family.observe_family == "Categorical":
+        if not isinstance(distribution, torch.distributions.Categorical):
+            raise TypeError(
+                "the categorical response has no native class probabilities"
+            )
+        value = distribution.probs
+    elif family.ordinal is not None:
+        value = category_probabilities(distribution, categories)
+    else:
+        value = response_mean(distribution, mc_samples)
+    if not torch.isfinite(value).all():
+        raise ValueError(
+            f"{family.observe_family} has an undefined or nonfinite response mean at a posterior draw"
+        )
+    return value

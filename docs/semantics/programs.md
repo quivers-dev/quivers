@@ -2074,3 +2074,36 @@ same expression jointly, retaining hierarchical dependence. Equality counts
 remain descriptive and do not define point-null density evidence. The
 [diagnostic contract](../api/diagnostics/hypothesis.md#region-odds-and-bayes-factors)
 states the prior-compatibility and finite-sample conditions.
+
+### Penalized Gaussian design terms
+
+The formula frontend's explicit `s(x, bs='ps')` constructor retains an
+original B-spline design $B$ and the coefficient-difference penalty
+$S=D_m^\mathsf{T}D_m$. Its training constraint is
+$c^\mathsf{T}\beta=0$, where $c$ is the column mean of $B$. Let $Q$ span
+this constraint's null space, and diagonalize
+$Q^\mathsf{T}SQ=U\Lambda U^\mathsf{T}$. Zero eigenvalues identify
+unpenalized coordinates. Positive eigenvalues identify penalized coordinates.
+The emitted coefficient map is
+
+$$
+\beta=QU_0\gamma+QU_+\Lambda_+^{-1/2}\,\tau z,
+\qquad z\sim\mathcal N(0,I).
+$$
+
+The null-space coefficients $\gamma$ receive ordinary population priors.
+The positive scale $\tau$ receives the configured scale prior, selected by
+the common `sds` role. Thus the penalty defines Gaussian coordinates without
+pretending to regularize an unidentified null direction. The latent program
+uses $(\gamma,z,\tau)$ directly. Its existing inference transforms account
+for their supports and Jacobians. No separate smooth density or fitting
+engine is introduced.
+
+`GaussianDesignTerm` retains the evaluated Gaussian design, named coordinate
+ownership, structural spline knots and degree, coefficient map, and training
+constraint. `FormulaData` preserves it by value. Fresh rows evaluate the same
+basis and coefficient map. They do not choose new knots or impose a new
+centering constraint. Component-valued predictors retain separate Gaussian
+innovations and scale coordinates for each free response component. The
+[structured predictor guide](../guides/formula-special-predictors.md) states
+the implemented constructor and its current frontend limits.
