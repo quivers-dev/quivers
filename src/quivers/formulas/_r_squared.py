@@ -26,7 +26,9 @@ def _responses(fit: BayesianFit, options: ExpectationOptions) -> torch.Tensor:
         frame = nw.from_native(data, eager_only=True).to_pandas()
         response = fit.prediction_plan.designs["mu"].response
         if response is None:
-            raise ValueError("new-data R-squared requires a retained response transform")
+            raise ValueError(
+                "new-data R-squared requires a retained response transform"
+            )
         term = response.term.term
         try:
             values = np.asarray(term.eval_new_data(frame))
