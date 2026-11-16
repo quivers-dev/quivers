@@ -1051,6 +1051,7 @@ class _HostSteps:
         self.program = run.kernel.program
         self.x = x
         self.axis = axis
+        self._given_observations = frozenset(run.observations)
 
     def _one_run(
         self, step: HostStep, env: dict[str, torch.Tensor]
@@ -1267,6 +1268,20 @@ class _HostSteps:
             lambda name: self.axis.carries(step.program, name),
         )
         assert step.site is not None
+        if isinstance(spec, Observe) and len(spec.names) == 1 and spec.names[0] in env:
+            address = (
+                site_label(step.site, self.run.occurrences.get(step.site, 0))
+                if step.scanned
+                else step.site
+            )
+            if address not in self._given_observations:
+                value = env[spec.names[0]]
+                carries = self.axis.carries(step.program, spec.names[0])
+                if _plated(morphism) and carries:
+                    value = value[0]
+                    carries = False
+                self.run.observations[address] = _canonical(morphism, value)
+                self.axis.given(step.program, step.site, carries)
         values = parameters(step.site, morphism)
         drawing: ContinuousMorphism = (
             _ParameterizedMorphism(morphism, values) if values else morphism
@@ -2627,16 +2642,23 @@ def _run_once(
             ),
         )
     )
-    if sites:
-        clamped = {
-            label: _canonical(_site_morphism(kernel, label), value)
-            for label, value in sites.items()
-        }
+    if sites or any(
+        isinstance(step.spec, Observe)
+        and len(step.spec.names) == 1
+        and step.spec.names[0] in step.environment
+        for step in kernel.steps
+    ):
+        run.observations.update(
+            {
+                label: _canonical(_site_morphism(kernel, label), value)
+                for label, value in sites.items()
+            }
+        )
         random_installations.append(
             Installation(
                 instance=kernel.random,
                 runtime=condition_handler(
-                    clamped,
+                    run.observations,
                     score_instance=kernel.score.entry.instance,
                     result_validator=host_value,
                     missing=MissingValuePolicy.FORWARD,

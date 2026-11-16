@@ -35,6 +35,14 @@ program with_params(a, b) : Y * Z -> Y
     return y
 ```
 
+An `observe` step may score a value from an earlier `let`. For instance,
+`let centered = raw - 2.0` followed by
+`observe centered : Row <- Normal(loc=mean, scale=1.0)` treats `raw` as
+the external measurement and computes the scored response inside the
+program. The computed response adds no latent coordinate. The
+[observation semantics](../semantics/programs.md#22-observe) specify the
+score and its reference measure.
+
 A program without `observe` or `score` steps defines a Markov kernel from its input
 to its output, the composite of its draws in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category)
 of the Giry monad. `observe` and `score` multiply each execution by a nonnegative

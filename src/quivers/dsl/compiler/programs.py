@@ -5480,7 +5480,7 @@ class _ProgramsMixin:
                 continue
             draw = step
             for v in draw.vars:
-                if v in bound_vars:
+                if v in bound_vars and not draw.is_observed:
                     raise CompileError(
                         f"variable {v!r} already bound in program", draw.line, draw.col
                     )

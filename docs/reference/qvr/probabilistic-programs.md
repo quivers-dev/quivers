@@ -59,6 +59,23 @@ in scope throughout the body, and every use must agree with its declared type.
 Declaring a parameter performs no random draw or score. In particular, the
 parameter `y` above becomes an observation because the body uses `observe y`;
 its type annotation alone does not determine that role.
+An observation can also score a value bound earlier in the body:
+
+```qvr
+object Row : FinSet 3
+program centered(raw : Tensor[Real]([Row])) : Row -> Row
+    let y = raw - 2.0
+    observe y : Row <- Normal(loc=0.0, scale=1.0)
+    return y
+export centered
+```
+
+Here `raw` is the external input, and `y` is computed before it is scored.
+Guides and MCMC kernels allocate no latent coordinate for `y`. The observation
+uses the same row axes, weights, and density rules as an externally supplied
+response. It introduces no automatic change-of-variables correction; modeling
+a transformed measurement may require an explicit Jacobian score.
+
 `object Row : FinSet _` requests specialization from supplied checked shapes or
 direct index evidence. See [data binding and fitting](../../guides/model-data-and-fitting.md)
 for the inference rules and [interactive inspection](../../guides/repl-and-lsp.md#checked-parameters-in-interactive-tools)

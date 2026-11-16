@@ -55,7 +55,7 @@ from quivers.continuous._matrix import PositiveDefiniteTransform
 from quivers.effects.subsample import refuse_subsampling
 from quivers.continuous.plate import PlateDraw
 from quivers.continuous.morphisms import ContinuousMorphism
-from quivers.continuous.program_steps import Call, Draw, Observe, Scan
+from quivers.continuous.program_steps import Call, Draw, Let, Observe, Scan, Score
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import ContinuousSpace
 from quivers.effects.trace_types import Trace
@@ -526,7 +526,9 @@ class LatentRegistry:
             Variable names treated as observations. Sample sites
             with names in this set are skipped (their values come
             from the conditioning data dict at trace time, not
-            from a guide).
+            from a guide). An observation of an earlier lexical binding
+            is also skipped: its value is computed by the model, rather
+            than supplied by a guide.
 
         Returns
         -------
@@ -544,12 +546,19 @@ class LatentRegistry:
             )
         sites: dict[str, LatentSite] = {}
         flat_cursor = 0
+        bound = set(model._params or ())
+        computed_observed: set[str] = set()
 
         for spec_idx, spec in enumerate(model.steps):
+            if isinstance(spec, Let | Score | Call | Scan):
+                bound.add(spec.name)
+                continue
             if not isinstance(spec, Draw | Observe):
                 continue
             for var in spec.names:
-                if var in observed:
+                if var in observed or isinstance(spec, Observe) and var in bound:
+                    if var not in sites:
+                        computed_observed.add(var)
                     continue
                 morph = model.step_module(spec)
                 if morph is None:
@@ -566,8 +575,9 @@ class LatentRegistry:
                 )
                 sites[var] = site
                 flat_cursor += site.flat_length
+            bound.update(spec.names)
 
-        return cls(sites, observed, model)
+        return cls(sites, observed | computed_observed, model)
 
     @classmethod
     def from_trace(

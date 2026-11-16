@@ -596,6 +596,15 @@ general not a subprobability kernel. The observed values are given at run time w
 inputs ([observations](../guides/programs.md#the-observations-dict)), and normalization is left to
 [inference](#6-inference-and-conditioning).
 
+When an earlier lexical binding defines $v=f(\phi)$, the same rule
+uses $f(\phi)$ in place of $v_{\mathrm{obs}}$. The observation contributes
+$p_F(f(\phi);\theta_F(\bar a,\phi))$ and preserves that value; it does not
+integrate over a new coordinate. In particular, a deterministic response
+encoding introduces no guide or MCMC coordinate. A scanned body recomputes
+the value at each occurrence, and a plated observation scores its row and
+event axes without an additional run axis. This is a likelihood score;
+it does not itself introduce the Jacobian of $f$.
+
 #### Power-likelihood weights {#observation-weights}
 
 An observation with `[weights=w]` replaces its log likelihood $\ell$ by

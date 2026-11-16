@@ -185,7 +185,9 @@ class Observe(Step):
     [`Draw`][quivers.continuous.program_steps.Draw] does; its value is
     supplied under its name through ``observations`` when sampling and
     through the intermediates when scoring, and its log density joins
-    the log joint.
+    the log joint. If an earlier binding already supplies the name,
+    the observation scores that value. It adds no latent coordinate;
+    a computed plated value retains the plate's row and event axes.
 
     Attributes
     ----------
