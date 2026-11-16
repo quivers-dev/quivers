@@ -326,7 +326,9 @@ def target_diagnostics(
     Capability diagnostics take precedence over target-plan refusals. The
     authoritative transpile preflights perform both checks; this adapter only
     translates their results into the diagnostic record shared by tools.
-    It neither parses nor elaborates the source again.
+    It neither parses nor elaborates the source again. A request-local
+    preparation shares the checked module's structural projection between
+    capability checking and planning.
 
     Parameters
     ----------
@@ -346,10 +348,11 @@ def target_diagnostics(
         restrictions.
     """
     from quivers.transpile._api import UnsupportedConstruct
-    from quivers.transpile.plan import checked_program_plan
+    from quivers.transpile.plan import _TargetPreparation
     from quivers.transpile.qiec_ir import analyze_qiec_capabilities
 
-    capabilities = analyze_qiec_capabilities(checked, target)
+    preparation = _TargetPreparation(checked, source, target)
+    capabilities = analyze_qiec_capabilities(preparation.projection, target)
     if capabilities:
         return tuple(
             QiecToolingDiagnostic(
@@ -361,7 +364,7 @@ def target_diagnostics(
             for diagnostic in capabilities
         )
     try:
-        checked_program_plan(checked, source, target)
+        preparation.checked_program_plan()
     except UnsupportedConstruct as error:
         return tuple(
             QiecToolingDiagnostic(message=str(error), code=kind) for kind in error.kinds

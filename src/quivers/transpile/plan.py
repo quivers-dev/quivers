@@ -172,7 +172,12 @@ from quivers.transpile.lower import (
     pick_program,
     scalar_carrier_constraint,
 )
-from quivers.transpile.qiec_ir import IRQiecStatic, _convert, lower_qiec_ir
+from quivers.transpile.qiec_ir import (
+    IRQiecModule,
+    IRQiecStatic,
+    _convert,
+    lower_qiec_ir,
+)
 from quivers.transpile._pure_calls import (
     _VALUE_TYPES,
     _TRANSPARENT,
@@ -187,25 +192,85 @@ from quivers.transpile._pure_calls import (
 _REGISTRY_NAMES: dict[str, dict[str, str]] = {"GP": {"covariance_matrix": "kernel"}}
 
 
-class _Planner:
-    """Derive one program's plan from the checked module.
+class _TargetPreparation:
+    """Retain one checked source and its projection within a target request.
+
+    The projection is constructed here, never supplied by a caller. Both
+    capability analysis and planning thus read the same checked module, while
+    a separate request or revised source owns a separate preparation.
 
     Parameters
     ----------
     module : QiecModule
-        The checked module.
+        The checked module corresponding to ``source``.
     source : Module
-        The expanded source, read for object cardinalities and bounds,
-        morphism declarations, and the morphism each site draws
-        through.
+        The original parsed source, retained by identity for this request.
     target : str
-        The transpile target the plan serves, named in diagnostics.
+        The selected target.
     """
 
     def __init__(self, module: QiecModule, source: Module, target: str) -> None:
         self.module = module
         self.source = source
         self.target = target
+        self._projection: IRQiecModule | None = None
+
+    @property
+    def projection(self) -> IRQiecModule:
+        """The structural projection of this request's checked module.
+
+        Returns
+        -------
+        IRQiecModule
+            The module, projected at most once during this preparation.
+        """
+        if self._projection is None:
+            self._projection = lower_qiec_ir(self.module)
+        return self._projection
+
+    def checked_program_plan(self) -> IRProgram | None:
+        """Derive the selected program's plan from this request's source.
+
+        Returns
+        -------
+        IRProgram | None
+            The plan, or ``None`` when the source declares no program.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the program records an elaboration gap or cannot be planned.
+        """
+        if not any(
+            isinstance(statement, ProgramDecl) for statement in self.source.statements
+        ):
+            return None
+        expanded = expand_composite_lets(self.source, target="stan")
+        program = pick_program(expanded)
+        if self.module.gap:
+            kind = self.module.gap.partition("; ")[0]
+            raise UnsupportedConstruct(f"qvr-{self.target}", [kind])
+        return _Planner(self, expanded).plan(program)
+
+
+class _Planner:
+    """Derive one program's plan from the checked module.
+
+    Parameters
+    ----------
+    preparation : _TargetPreparation
+        The request's checked module, target, and owned projection.
+    source : Module
+        The expanded source, read for object cardinalities and bounds,
+        morphism declarations, and the morphism each site draws
+        through.
+    """
+
+    def __init__(self, preparation: _TargetPreparation, source: Module) -> None:
+        self.preparation = preparation
+        self.module = module = preparation.module
+        self.source = source
+        self.target = preparation.target
         self.computations = {item.name: item for item in module.computations}
         self.entries = {entry.name: entry for entry in module.entries}
         shapes = object_shapes(source)
@@ -282,7 +347,7 @@ class _Planner:
             name=program.name,
             inputs=tuple(_spelled(item) for item in inputs),
             body=tuple(_spelled(item) for item in body),
-            module=lower_qiec_ir(self.module),
+            module=self.preparation.projection,
             cards=dict(self.cards),
         )
 
@@ -3027,10 +3092,11 @@ class Lower(dx.Mapping[Module, IRProgram]):
             # report the established precise ``program:absent`` error.
             pick_program(module)
             raise UnsupportedConstruct(f"qvr-{target}", ["program:absent"])
+        preparation = _TargetPreparation(qiec_module, module, target)
         if not any(
             isinstance(statement, ProgramDecl) for statement in module.statements
         ):
-            qiec_ir = lower_qiec_ir(qiec_module)
+            qiec_ir = preparation.projection
             return IRProgram(
                 name=qiec_ir.module, inputs=(), body=(), module=qiec_ir, cards={}
             )
@@ -3044,10 +3110,10 @@ class Lower(dx.Mapping[Module, IRProgram]):
                 name=program.name,
                 inputs=(),
                 body=(),
-                module=lower_qiec_ir(qiec_module),
+                module=preparation.projection,
                 cards={},
             )
-        plan = checked_program_plan(qiec_module, module, target)
+        plan = preparation.checked_program_plan()
         assert plan is not None
         return plan
 
@@ -3140,7 +3206,7 @@ def program_plan(
     IRProgram
         The plan.
     """
-    return _Planner(module, source, target).plan(program)
+    return _Planner(_TargetPreparation(module, source, target), source).plan(program)
 
 
 def checked_program_plan(
@@ -3172,14 +3238,7 @@ def checked_program_plan(
         If the program falls in an elaboration gap or its checked computation
         cannot be represented by the target plan.
     """
-    if not any(isinstance(statement, ProgramDecl) for statement in source.statements):
-        return None
-    expanded = expand_composite_lets(source, target="stan")
-    program = pick_program(expanded)
-    if module.gap:
-        kind = module.gap.partition("; ")[0]
-        raise UnsupportedConstruct(f"qvr-{target}", [kind])
-    return program_plan(module, expanded, program, target)
+    return _TargetPreparation(module, source, target).checked_program_plan()
 
 
 __all__ = [
