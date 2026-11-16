@@ -356,6 +356,8 @@ def _formula_hypothesis(
     """
     if not isinstance(prior, bool):
         raise TypeError("prior must be Boolean")
+    if summary.get("point") is not None and not prior:
+        raise ValueError("point-density evidence requires prior=True")
     if num_prior_samples is not None and not prior:
         raise ValueError("num_prior_samples requires prior=True")
     options = dict(class_=class_, parameter=parameter, group=group, scope=scope)

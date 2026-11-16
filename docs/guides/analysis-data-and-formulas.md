@@ -2123,6 +2123,7 @@ labels.
 ```python
 import pandas as pd
 from quivers.formulas import fit
+from quivers.diagnostics import PointNullSpec
 
 hypothesis_data = pd.DataFrame({
     "y": [0.1, 0.4, -0.2, 0.5, 0.0, 0.3],
@@ -2145,6 +2146,11 @@ by_group = hypothesis_fit.hypothesis(
     "x - Intercept", scope="coef", group="g", num_samples=16, seed=32
 )
 assert by_group.coordinate_labels == (("a", "b", "c"),)
+point_comparison = hypothesis_fit.hypothesis(
+    "x - z", prior=True, num_samples=16, seed=32,
+    point=PointNullSpec(bandwidth="scott"),
+)
+assert point_comparison.point_evidence.log_bayes_factor_01 is None
 ```
 
 The default `class_="b"` includes population intercepts. `parameter="sigma"`
@@ -2179,3 +2185,12 @@ and finite-sample limits follow the
 [shared contrast contract](../api/diagnostics/hypothesis.md#region-odds-and-bayes-factors).
 Equality frequencies describe ties; they do not estimate a point-null density
 ratio. Variational draws also retain their variational provenance.
+
+Use `point=PointNullSpec(...)` with `prior=True` to compare marginal densities
+at the null on those same joint streams. `point_evidence` retains the density
+ratio and bandwidth metadata separately from region odds and equality counts.
+A point-null Bayes factor additionally requires explicit proper-continuous
+prior and compatible-null-prior declarations; the
+[density interface](../api/diagnostics/density.md#density-ratios-and-their-assumptions)
+states their meaning. Group and component coordinates remain separate marginal
+comparisons, rather than one joint multivariate point null.

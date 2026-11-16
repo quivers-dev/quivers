@@ -13,6 +13,7 @@ from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.diagnostics._coordinates import event_dimensions
 from quivers.diagnostics._numeric import real_samples
 from quivers.diagnostics.hypothesis import HypothesisSummary, hypothesis_summary
+from quivers.diagnostics.density import PointNullSpec
 from quivers.dsl._value_expressions import _parse_value_expression
 from quivers.dsl.ast_nodes import LetExprVar, LetStep, ProgramDecl
 from quivers.dsl.let_expr_traversal import free_let_names, substitute_let_expr
@@ -300,6 +301,7 @@ def _contrast_hypothesis(
     null: float | int | torch.Tensor = 0.0,
     probs: Sequence[float] = (0.025, 0.975),
     robust: bool = False,
+    point: PointNullSpec | None = None,
     name: str = "contrast",
     kind: Literal["mcmc", "variational", "prior", "unspecified"] = "unspecified",
     dims: Mapping[str, Sequence[str]] | None = None,
@@ -319,6 +321,8 @@ def _contrast_hypothesis(
         Requested quantile probabilities in output order.
     robust : bool
         Use median and scaled MAD instead of mean and sample SD.
+    point : PointNullSpec or None
+        Optional marginal point-density request on a checked Real contrast.
     name : str
         Output contrast label.
     kind : str
@@ -329,7 +333,7 @@ def _contrast_hypothesis(
     Returns
     -------
     HypothesisSummary
-        Existing strict-region summaries without point-null density evidence.
+        Strict-region summaries and optional distinct point-density evidence.
 
     Raises
     ------
@@ -344,12 +348,15 @@ def _contrast_hypothesis(
     if not isinstance(expression, ContrastExpression):
         raise TypeError("a contrast requires text or ContrastExpression")
     plan = _contrast_plan(expression, samples, dims, coords)
+    if point is not None and plan.carrier != "Real":
+        raise TypeError("point-density evidence requires a checked Real contrast")
     return hypothesis_summary(
         _evaluate_contrast(plan, samples),
         prior=_evaluate_contrast(plan, prior) if prior is not None else None,
         null=null,
         probs=probs,
         robust=robust,
+        point=point,
         name=name,
         kind=kind,
         dims=plan.dimensions,

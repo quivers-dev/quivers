@@ -14,6 +14,7 @@ from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.diagnostics._numeric import empirical_summary, probabilities, real_samples
 from quivers.diagnostics.contrast import ContrastExpression
 from quivers.diagnostics.hypothesis import HypothesisSummary
+from quivers.diagnostics.density import PointNullSpec
 from quivers.diagnostics.convergence import (
     ConvergenceSummary,
     summary as convergence_summary,
@@ -520,6 +521,7 @@ class PosteriorAnalysis(ValueModel):
         null: float | int | torch.Tensor = 0.0,
         probs: Sequence[float] = (0.025, 0.975),
         robust: bool = False,
+        point: PointNullSpec | None = None,
         name: str = "contrast",
         dims: Mapping[str, Sequence[str]] | None = None,
         coords: Mapping[str, Sequence[object]] | None = None,
@@ -539,6 +541,9 @@ class PosteriorAnalysis(ValueModel):
             Requested quantile probabilities in output order.
         robust : bool
             Use median and scaled MAD instead of mean and sample SD.
+        point : PointNullSpec or None
+            Optional marginal density comparison on the same joint prior and
+            posterior contrast; requires a checked Real result and prior draws.
         name : str
             Original label of the derived contrast.
         dims, coords : Mapping or None
@@ -550,7 +555,7 @@ class PosteriorAnalysis(ValueModel):
         HypothesisSummary
             Existing uncertainty, strict-region posterior odds, and optional
             prior-corrected region evidence. Equality frequencies are descriptive;
-            this method does not estimate point-null density evidence.
+            requested point_evidence retains a separate marginal density ratio.
         """
         from quivers.diagnostics.contrast import _contrast_hypothesis
 
@@ -564,6 +569,7 @@ class PosteriorAnalysis(ValueModel):
             null=null,
             probs=probs,
             robust=robust,
+            point=point,
             name=name,
             kind=self.kind,
             dims=dims,

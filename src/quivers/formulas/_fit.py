@@ -78,6 +78,7 @@ from quivers.diagnostics.posterior import PosteriorAnalysis
 from quivers.diagnostics.conditional import ConditionalEffects, PredictionGrid
 from quivers.diagnostics.contrast import ContrastExpression
 from quivers.diagnostics.hypothesis import HypothesisSummary
+from quivers.diagnostics.density import PointNullSpec
 
 
 class BayesianFit(ValueModel):
@@ -1104,6 +1105,7 @@ class BayesianFit(ValueModel):
         null: float | int | torch.Tensor = 0.0,
         probs: Sequence[float] = (0.025, 0.975),
         robust: bool = False,
+        point: PointNullSpec | None = None,
         name: str = "contrast",
     ) -> HypothesisSummary:
         """Evaluate a checked contrast using original fitted parameter labels.
@@ -1137,6 +1139,9 @@ class BayesianFit(ValueModel):
             Quantile probabilities, in requested order.
         robust : bool
             Return median/scaled MAD rather than mean/sample SD.
+        point : PointNullSpec or None
+            Optional marginal point-density comparison using these same joint
+            contrast streams. Requires prior=True and a checked Real result.
         name : str
             Output contrast label.
 
@@ -1146,6 +1151,8 @@ class BayesianFit(ValueModel):
             Chain/draw/event-aware uncertainty and strict-region evidence.
             Posterior odds and prior-corrected region Bayes factors are distinct;
             equality frequencies do not estimate a point-null Bayes factor.
+            Optional point_evidence uses the shared density estimator and retains
+            its bandwidth and explicit assumption declarations.
         """
         from quivers.formulas._hypothesis import _formula_hypothesis
 
@@ -1163,6 +1170,7 @@ class BayesianFit(ValueModel):
             null=null,
             probs=probs,
             robust=robust,
+            point=point,
             name=name,
         )
 

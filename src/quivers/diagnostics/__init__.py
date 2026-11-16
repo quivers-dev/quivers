@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     )
     from quivers.diagnostics.density import (
         PointNullAssumptions,
+        PointNullSpec,
         DensityOrdinate,
         DensityRatio,
         log_density_ordinate,
@@ -107,6 +108,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "ConditionalEffects": "quivers.diagnostics.conditional",
     "prediction_grid": "quivers.diagnostics.conditional",
     "PointNullAssumptions": "quivers.diagnostics.density",
+    "PointNullSpec": "quivers.diagnostics.density",
     "DensityOrdinate": "quivers.diagnostics.density",
     "DensityRatio": "quivers.diagnostics.density",
     "log_density_ordinate": "quivers.diagnostics.density",
@@ -185,6 +187,7 @@ __all__ = [
     "ConditionalEffects",
     "prediction_grid",
     "PointNullAssumptions",
+    "PointNullSpec",
     "DensityOrdinate",
     "DensityRatio",
     "log_density_ordinate",

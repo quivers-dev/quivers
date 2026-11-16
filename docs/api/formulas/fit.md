@@ -61,6 +61,11 @@ the contrast on the corresponding joint prior stream, yielding region evidence
 in addition to posterior odds. It does not estimate point-null density evidence.
 See [formula hypotheses](../../guides/analysis-data-and-formulas.md#checked-hypotheses-over-fitted-coefficients)
 and [contrast summaries](../diagnostics/hypothesis.md).
+An explicit `point=PointNullSpec(...)` with `prior=True` also returns
+`point_evidence` from those same joint streams. Its marginal density ratio,
+optional declared-assumption point Bayes factor, bandwidths, and numerical
+limits follow the [shared density interface](../diagnostics/density.md).
+
 `posterior_linpred`, `posterior_epred`, and `posterior_predict` replay native
 fitted bindings on the training rows or on a supplied `new_data` frame. The first two expose predictors and
 response expectations; `posterior_predict` independently samples responses

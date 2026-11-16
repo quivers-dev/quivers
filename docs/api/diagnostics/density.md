@@ -152,4 +152,47 @@ storage remains caller-owned; copying and serialization retain the nested
 ordinate records and their opaque tensors. CUDA behavior is conditional
 on a Float64-capable device; this API does not claim MPS Float64 support.
 
+
+## Requests from checked hypotheses
+
+`PointNullSpec` packages the existing bandwidth, assumption, and workspace
+options for `hypothesis_summary`, `PosteriorAnalysis.hypothesis`, and
+`BayesianFit.hypothesis`. The result places this comparison in
+`HypothesisSummary.point_evidence`, alongside unchanged region and equality
+summaries. The checked-expression methods require a Real result; the formula
+method also requires `prior=True`. All methods reuse the same joint contrast
+streams for both summaries, preserving hierarchical dependence.
+
+<!-- python: run -->
+```python
+import math
+import torch
+from quivers.diagnostics import PointNullSpec, PosteriorAnalysis
+
+generator = torch.Generator().manual_seed(29)
+prior = PosteriorAnalysis(
+    samples={"theta": torch.randn(1, 1024, generator=generator)},
+    log_likelihood={}, kind="prior",
+)
+posterior = PosteriorAnalysis(
+    samples={"theta": 0.48 + math.sqrt(0.2) * torch.randn(
+        1, 1024, generator=generator,
+    )},
+    log_likelihood={}, kind="mcmc",
+)
+comparison = posterior.hypothesis(
+    "theta", prior=prior,
+    point=PointNullSpec(bandwidth="scott", max_working_elements=128),
+)
+assert torch.isfinite(comparison.point_evidence.log_ratio)
+assert comparison.point_evidence.log_bayes_factor_01 is None
+```
+
+This request returns a diagnostic density ratio. To request a point-null Bayes
+factor, supply `assumptions=PointNullAssumptions(...)` in the configuration,
+with both declarations justified by the model described above. Each event
+coordinate remains a separate scalar comparison. The returned `log_ratio`
+retains the factored tail calculation; subtracting the displayed ordinate
+fields again may lose precision.
+
 ::: quivers.diagnostics.density

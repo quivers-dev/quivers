@@ -11,6 +11,7 @@ import torch
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.diagnostics._coordinates import axis_labels, event_dimensions
 from quivers.diagnostics._numeric import empirical_summary, probabilities, real_samples
+from quivers.diagnostics.density import DensityRatio, PointNullSpec, density_ratio
 
 
 class RegionEvidence(ValueModel):
@@ -71,6 +72,9 @@ class HypothesisSummary(ValueModel):
         Whether location and dispersion use median and scaled MAD.
     kind : str
         Caller-supplied provenance; no convergence diagnostics are inferred.
+    point_evidence : DensityRatio or None
+        Optional marginal posterior/prior density comparison at the null,
+        separate from strict-region evidence and descriptive equality frequency.
     """
 
     estimate: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -95,6 +99,9 @@ class HypothesisSummary(ValueModel):
     draw_labels: tuple[object, ...] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     robust: bool
     kind: Literal["mcmc", "variational", "prior", "unspecified"]
+    point_evidence: DensityRatio | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def _contrasts(values: torch.Tensor, label: str) -> torch.Tensor:
@@ -206,6 +213,7 @@ def hypothesis_summary(
     probs: Sequence[float] = (0.025, 0.975),
     prior: torch.Tensor | None = None,
     robust: bool = False,
+    point: PointNullSpec | None = None,
     name: str = "contrast",
     kind: Literal["mcmc", "variational", "prior", "unspecified"] = "unspecified",
     dims: Sequence[str] | None = None,
@@ -228,6 +236,9 @@ def hypothesis_summary(
     robust : bool
         Return median and MAD divided by the standard-normal 0.75 quantile
         instead of mean and sample SD. Quantiles do not depend on this flag.
+    point : PointNullSpec or None
+        Explicit marginal point-density request. Requires finite continuous
+        floating posterior and prior draws; the two strict regions are unchanged.
     name : str
         Nonempty contrast name, retained without parsing.
     kind : {"mcmc", "variational", "prior", "unspecified"}
@@ -241,8 +252,9 @@ def hypothesis_summary(
     -------
     HypothesisSummary
         Detached Float64 summaries on the original device. Equality frequencies
-        are descriptive; no point-null density or posterior model probability
-        is estimated. Single-draw sample SD is NaN; constant multi-draw SD is zero.
+        are descriptive. Optional point_evidence retains the shared density
+        estimator's bandwidths and assumption declarations, without inferring
+        posterior model probabilities. Single-draw SD is NaN; constant SD is zero.
 
     Raises
     ------
@@ -261,6 +273,10 @@ def hypothesis_summary(
     zero frequency may instead produce infinite empirical log evidence; finite
     draws do not establish an exact population probability of zero.
     """
+    if point is not None and not isinstance(point, PointNullSpec):
+        raise TypeError("point must be PointNullSpec or None")
+    if point is not None and prior is None:
+        raise ValueError("point-density evidence requires joint prior draws")
     values = _contrasts(contrast, "contrast")
     levels = probabilities(probs)
     if not isinstance(robust, bool):
@@ -315,6 +331,23 @@ def hypothesis_summary(
         draw_labels=axis_labels("draw", contrast.shape[1], coords),
         robust=robust,
         kind=kind,
+        point_evidence=(
+            density_ratio(
+                contrast,
+                prior,
+                null=null,
+                bandwidth=point.bandwidth,
+                prior_bandwidth=point.prior_bandwidth,
+                adjust=point.adjust,
+                assumptions=point.assumptions,
+                name=name,
+                dims=dimension_names,
+                coords=coords,
+                max_working_elements=point.max_working_elements,
+            )
+            if point is not None and prior is not None
+            else None
+        ),
     )
 
 

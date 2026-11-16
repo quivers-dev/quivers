@@ -130,6 +130,14 @@ draw stream, with no parameter permutation. Different sample counts are
 allowed; event shapes and devices must match. These operations reuse
 retained tensors and do not refit a model.
 
+An explicit `point=PointNullSpec(...)` request adds the existing
+[marginal density comparison](density.md#requests-from-checked-hypotheses)
+to `result.point_evidence`. It uses the same checked contrast and joint prior
+stream, with no extra expression compilation or inference replay. Known Int
+contrasts fail this continuous-density request before diagnostic conversion.
+A Real carrier alone does not establish continuity or a compatible null prior;
+those distributional assumptions remain explicit caller declarations.
+
 ::: quivers.diagnostics.contrast
 
 ::: quivers.diagnostics.hypothesis

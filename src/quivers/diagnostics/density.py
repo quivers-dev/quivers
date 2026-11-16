@@ -39,6 +39,44 @@ class PointNullAssumptions(ValueModel):
     compatible_null_prior: bool
 
 
+class PointNullSpec(ValueModel):
+    """Request marginal density evidence from the shared joint contrast streams.
+
+    Parameters
+    ----------
+    bandwidth : str, float, or torch.Tensor
+        Posterior Gaussian bandwidth: nrd0, scott, or a positive scalar/event
+        tensor. Bandwidth tensors retain their original identity.
+    prior_bandwidth : str, float, torch.Tensor, or None
+        Prior bandwidth policy; None estimates it separately under bandwidth.
+    adjust : float
+        Positive multiplier on both selected bandwidths.
+    assumptions : PointNullAssumptions or None
+        Optional explicit declarations allowing a point-null BF01 interpretation.
+        Without both declarations the result remains a diagnostic density ratio.
+    max_working_elements : int
+        Positive bound on each shared density estimator's kernel workspace.
+
+    Notes
+    -----
+    Every retained event coordinate is a separate scalar contrast; this request
+    does not estimate a joint multivariate point-null density. The estimator's
+    resource, finite-continuous-sample, and bandwidth checks apply when used.
+    """
+
+    bandwidth: str | float | torch.Tensor = dx.field(
+        default="nrd0", opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    prior_bandwidth: str | float | torch.Tensor | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    adjust: float = 1.0
+    assumptions: PointNullAssumptions | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    max_working_elements: int = 262144
+
+
 class DensityOrdinate(ValueModel):
     """A marginal Gaussian KDE ordinate for each scalar event coordinate.
 
@@ -750,6 +788,7 @@ def density_ratio(
 
 __all__ = [
     "PointNullAssumptions",
+    "PointNullSpec",
     "DensityOrdinate",
     "DensityRatio",
     "log_density_ordinate",
