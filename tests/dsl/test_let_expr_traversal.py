@@ -156,3 +156,12 @@ def test_callee_substitution_renames_a_capturing_binder() -> None:
     assert isinstance(replaced, LetExprLambda)
     assert replaced.param == "g_1"
     assert replaced.body == LetExprCall(func="g", args=(_var("g_1"),))
+
+
+def test_a_replacement_expression_callee_stays_free_under_a_lambda() -> None:
+    expression = LetExprLambda(param="f", body=_var("x"))
+    replacement = LetExprCall(func="f", args=())
+    replaced = substitute_let_expr(expression, {"x": replacement})
+    assert replaced.param == "f_1"
+    assert replaced.body == replacement
+    assert free_let_names(replaced, include_callees=True) == ("f",)

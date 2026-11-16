@@ -883,7 +883,7 @@ _BUGS.update(
 
 
 def _probability_builtins_used(
-    body: tuple[IRNode, ...], *, include_select: bool = False
+    body: tuple[IRNode, ...], *, include_boolean: bool = False
 ) -> frozenset[str]:
     """Find probability calls in deterministic and score expressions.
 
@@ -891,8 +891,8 @@ def _probability_builtins_used(
     ----------
     body : tuple[IRNode, ...]
         Ordinary statements, including nested marginalization scopes.
-    include_select : bool
-        Also find the PyMC helper that retains literal Boolean conditions.
+    include_boolean : bool
+        Also find PyMC helpers that preserve scalar and symbolic Booleans.
 
     Returns
     -------
@@ -913,7 +913,7 @@ def _probability_builtins_used(
     def expression(node: LetExprNode) -> None:
         if isinstance(node, LetExprCall):
             if node.func in _PROBABILITY_BUILTINS or (
-                include_select and node.func == "select"
+                include_boolean and node.func == "select"
             ):
                 found.add(node.func)
             for argument in node.args:
@@ -922,6 +922,8 @@ def _probability_builtins_used(
             expression(node.left)
             expression(node.right)
         elif isinstance(node, LetExprUnaryOp):
+            if include_boolean and node.op == "not":
+                found.add("bool_not")
             expression(node.operand)
         elif isinstance(node, LetExprIndex):
             expression(node.array)
@@ -947,7 +949,7 @@ def _probability_builtins_used(
             expression(node.expr)
         elif isinstance(node, IRMarginalize):
             found.update(
-                _probability_builtins_used(node.scope, include_select=include_select)
+                _probability_builtins_used(node.scope, include_boolean=include_boolean)
             )
     return frozenset(found)
 

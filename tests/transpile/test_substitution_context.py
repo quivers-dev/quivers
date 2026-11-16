@@ -18,16 +18,32 @@ equal to the hand-built expected tree.
 
 from __future__ import annotations
 
+import pytest
+
 from quivers.dsl.ast_nodes import (
     LetExprBinOp,
+    LetExprBool,
     LetExprCall,
+    LetExprFactor,
     LetExprIndex,
+    LetExprLambda,
     LetExprLiteral,
     LetExprNode,
+    LetExprTuple,
     LetExprUnaryOp,
+    LetExprUnit,
     LetExprVar,
+    LetFactorBinder,
+    QiecConstructorValue,
+    QiecTypeName,
+    TypeName,
 )
-from quivers.transpile.renderers._stan_helpers import _substitute_let_expr
+from quivers.dsl.let_expr_traversal import free_let_names, map_let_expr
+from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
+from quivers.transpile.renderers._stan_helpers import (
+    _AFFINE_EXPRESSION,
+    _substitute_let_expr,
+)
 
 
 def _stan_substitute(expr: LetExprNode, name: str, value: int) -> LetExprNode:
@@ -266,3 +282,128 @@ def test_call_args_are_scalar_slots() -> None:
     assert isinstance(inner, LetExprBinOp)
     assert isinstance(inner.left, LetExprLiteral)
     assert inner.left.value == 0
+
+
+def test_boolean_negation_and_authored_locations_survive_substitution() -> None:
+    expression = LetExprUnaryOp(
+        op="not", operand=LetExprVar(name="flag"), line=7, col=13
+    )
+    result = _substitute_let_expr(
+        expression,
+        "flag",
+        index_value=LetExprBool(value=False),
+        scalar_value=LetExprBool(value=False),
+    )
+    assert result == expression.with_(operand=LetExprBool(value=False))
+
+
+@pytest.mark.parametrize(
+    "expression,expected",
+    [
+        (LetExprBool(value=True), LetExprBool(value=True)),
+        (LetExprUnit(), LetExprUnit()),
+        (
+            LetExprTuple(items=(LetExprVar(name="v"), LetExprUnit())),
+            LetExprTuple(items=(LetExprLiteral(value=0), LetExprUnit())),
+        ),
+        (
+            QiecConstructorValue(
+                constructor="Box",
+                fields=(LetExprVar(name="v"),),
+                result_type=QiecTypeName(name="Box"),
+                line=8,
+                col=4,
+            ),
+            QiecConstructorValue(
+                constructor="Box",
+                fields=(LetExprLiteral(value=0),),
+                result_type=QiecTypeName(name="Box"),
+                line=8,
+                col=4,
+            ),
+        ),
+    ],
+)
+def test_shared_expression_variants_reach_renderers_without_a_second_case_table(
+    expression, expected
+) -> None:
+    assert _python_substitute(expression, "v", 0) == expected
+
+
+@pytest.mark.parametrize("binder_kind", ["lambda", "factor"])
+def test_replacement_remains_free_under_a_capturing_renderer_binder(binder_kind):
+    body = LetExprTuple(items=(LetExprVar(name="v"), LetExprVar(name="j")))
+    expression = (
+        LetExprLambda(param="j", body=body)
+        if binder_kind == "lambda"
+        else LetExprFactor(
+            binders=(LetFactorBinder(var="j", index=TypeName(name="Row")),),
+            body=body,
+        )
+    )
+    replacement = LetExprVar(name="j")
+    result = _substitute_let_expr(
+        expression, "v", index_value=replacement, scalar_value=replacement
+    )
+    assert free_let_names(result) == ("j",)
+    assert result.body == LetExprTuple(
+        items=(LetExprVar(name="j"), LetExprVar(name="j_1"))
+    )
+    assert (result.param if binder_kind == "lambda" else result.binders[0].var) == "j_1"
+    # An explicitly shadowing binder remains untouched, including index slots.
+    assert (
+        _substitute_let_expr(
+            expression, "j", index_value=replacement, scalar_value=replacement
+        )
+        == expression
+    )
+
+
+def test_index_replacement_cannot_be_captured_by_an_enclosing_binder():
+    expression = LetExprLambda(
+        param="j",
+        body=LetExprIndex(array=LetExprVar(name="a"), indices=(LetExprVar(name="i"),)),
+    )
+    result = _substitute_let_expr(
+        expression,
+        "i",
+        index_value=LetExprVar(name="j"),
+        scalar_value=LetExprLiteral(value=0),
+    )
+    assert result.param == "j_1"
+    assert result.body.indices == (LetExprVar(name="j"),)
+    assert free_let_names(result) == ("a", "j")
+
+
+def test_affine_extension_preserves_layout_and_uses_canonical_capture_avoidance():
+    expression = LetExprAffineMap(
+        weight=LetExprIndex(
+            array=LetExprVar(name="w"), indices=(LetExprVar(name="v"),)
+        ),
+        bias=LetExprVar(name="v"),
+        sources=(
+            LetAffineSource(
+                value=LetExprLambda(param="j", body=LetExprVar(name="v")), width=3
+            ),
+        ),
+        row_offset=2,
+        rows=4,
+        transform="exp",
+    )
+    result = _substitute_let_expr(
+        expression,
+        "v",
+        index_value=LetExprLiteral(value=1),
+        scalar_value=LetExprVar(name="j"),
+    )
+    assert isinstance(result, LetExprAffineMap)
+    assert result.weight.indices == (LetExprLiteral(value=1),)
+    assert result.bias == LetExprVar(name="j")
+    assert result.sources[0].value.param == "j_1"
+    assert result.sources[0].value.body == LetExprVar(name="j")
+    assert (result.row_offset, result.rows, result.transform) == (2, 4, "exp")
+    assert result.sources[0].width == 3
+    assert free_let_names(result, extension=_AFFINE_EXPRESSION) == ("w", "j")
+    assert (
+        map_let_expr(result, lambda node: node, extension=_AFFINE_EXPRESSION) == result
+    )

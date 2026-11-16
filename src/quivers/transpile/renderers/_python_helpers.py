@@ -136,6 +136,7 @@ class PyCtx:
         # block, so only it drains this; the other backends assume their
         # framework runtime is already in scope.
         self.required_imports: set[tuple[tuple[str, ...], str]] = set()
+        self.imported_modules: set[tuple[tuple[str, ...], str | None]] = set()
 
     @property
     def builder(self) -> panproto.SchemaBuilder:
@@ -165,6 +166,35 @@ def identifier(ctx: PyCtx, text: str) -> str:
     vid = ctx.v(ctx.fresh("id"), "identifier")
     ctx.literal(vid, text)
     return vid
+
+
+def import_module(ctx: PyCtx, path: tuple[str, ...], alias: str | None = None) -> None:
+    """Emit one shared module import, retaining its optional local alias.
+
+    Parameters
+    ----------
+    ctx : PyCtx
+        Python target context with a module root named mod.
+    path : tuple[str, ...]
+        Nonempty dotted module path.
+    alias : str or None
+        Optional binding name; repeated identical imports are emitted once.
+    """
+    key = (path, alias)
+    if key in ctx.imported_modules:
+        return
+    ctx.imported_modules.add(key)
+    statement = ctx.v(ctx.fresh("imp"), "import_statement")
+    dotted = ctx.v(ctx.fresh("module"), "dotted_name")
+    for part in path:
+        ctx.e(dotted, identifier(ctx, part), "child_of")
+    name = dotted
+    if alias is not None:
+        name = ctx.v(ctx.fresh("alias"), "aliased_import")
+        ctx.e(name, dotted, "name")
+        ctx.e(name, identifier(ctx, alias), "alias")
+    ctx.e(statement, name, "name")
+    ctx.e("mod", statement, "child_of")
 
 
 def string_literal(ctx: PyCtx, text: str) -> str:
@@ -598,7 +628,12 @@ def _render_python_operand(
     (``t[i + 1]``) keeps its integer spelling.
     """
     vid = render_let_expr_python(ctx, expr, index_slot=index_slot)
-    if isinstance(expr, (LetExprBinOp, LetExprUnaryOp)):
+    if (
+        isinstance(expr, LetExprBinOp)
+        and expr.op not in _PY_COMPARISONS
+        or isinstance(expr, LetExprUnaryOp)
+        and expr.op != "not"
+    ):
         return python_paren(ctx, vid)
     return vid
 
@@ -794,21 +829,25 @@ def render_let_expr_python(
         ctx.literal(v, json.dumps(expr.value))
         return v
     if isinstance(expr, LetExprBinOp) and expr.op in _PY_COMPARISONS:
-        # A comparison is Python's `comparison_operator`, whose operator
-        # field is plural (`operators`) because Python chains them; each
-        # array library compares entry by entry.
-        c = ctx.v(ctx.fresh("cmp"), "comparison_operator")
-        ctx.constraint(c, "field:operators", expr.op)
-        ctx.constraint(c, "chose-alt-fingerprint", expr.op)
-        ctx.e(
-            c, _render_python_operand(ctx, expr.left, index_slot=index_slot), "child_of"
+        # Python's operator functions preserve scalar precision and delegate
+        # tensor comparisons to the host. PyTensor requires explicit symbolic
+        # equality rather than TensorVariable.__eq__, which compares identity.
+        name = {"==": "eq", "!=": "ne", "<": "lt", "<=": "le", ">": "gt", ">=": "ge"}[
+            expr.op
+        ]
+        if ctx.target == "pymc":
+            path = ("pymc", "pytensorf", "pt", "neq" if name == "ne" else name)
+        else:
+            import_module(ctx, ("operator",), "_qvr_operator")
+            path = ("_qvr_operator", name)
+        return call(
+            ctx,
+            attribute(ctx, path),
+            positional=(
+                render_let_expr_python(ctx, expr.left, index_slot=index_slot),
+                render_let_expr_python(ctx, expr.right, index_slot=index_slot),
+            ),
         )
-        ctx.e(
-            c,
-            _render_python_operand(ctx, expr.right, index_slot=index_slot),
-            "child_of",
-        )
-        return c
     if isinstance(expr, LetExprBinOp):
         # Python tree-sitter's `binary_operator` has CHOICE alts per
         # operator (`+`, `-`, `*`, `**`, etc.). The walker discriminates
@@ -832,6 +871,32 @@ def render_let_expr_python(
         )
         return b
     if isinstance(expr, LetExprUnaryOp):
+        if expr.op == "not":
+            # Python's scalar `not` refuses multi-element host tensors, while
+            # `~` maps a Python Boolean to an integer. Host logical negation
+            # preserves both scalar and lifted Boolean semantics.
+            paths = {
+                "pyro": ("torch", "logical_not"),
+                "numpyro": ("jnp", "logical_not"),
+                "pymc": ("_qvr_bool_not",),
+                "edward2": ("tf", "logical_not"),
+            }
+            if ctx.target not in paths:
+                raise UnsupportedConstruct(
+                    f"qvr-{ctx.target}", ["let-expr:not:unknown-array-host"]
+                )
+            operand = _render_python_operand(ctx, expr.operand, index_slot=index_slot)
+            if ctx.target == "pyro":
+                operand = call(
+                    ctx, attribute(ctx, ("torch", "as_tensor")), positional=(operand,)
+                )
+            return call(
+                ctx,
+                identifier(ctx, paths[ctx.target][0])
+                if len(paths[ctx.target]) == 1
+                else attribute(ctx, paths[ctx.target]),
+                positional=(operand,),
+            )
         u = ctx.v(ctx.fresh("uop"), "unary_operator")
         ctx.constraint(u, "field:operator", "-")
         ctx.constraint(u, "chose-alt-fingerprint", "-")
@@ -1899,6 +1964,7 @@ __all__ = [
     "float_literal",
     "function_def",
     "identifier",
+    "import_module",
     "marginal_atom_axis",
     "marginal_support_size",
     "marginal_weight_probs",

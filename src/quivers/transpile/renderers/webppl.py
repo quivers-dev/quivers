@@ -2743,9 +2743,7 @@ def _reduce_last_axis(
             right=_reduce_last_axis(expr.right, ranks, full_ranks),
         )
     if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(
-            operand=_reduce_last_axis(expr.operand, ranks, full_ranks)
-        )
+        return expr.with_(operand=_reduce_last_axis(expr.operand, ranks, full_ranks))
     if isinstance(expr, LetExprCall):
         args = tuple(_reduce_last_axis(a, ranks, full_ranks) for a in expr.args)
         if (
@@ -2938,12 +2936,12 @@ def _vectorize_let_expr(expr: LetExprNode, ranks: Mapping[str, int]) -> LetExprN
             return LetExprCall(
                 func="_qvr_bcast",
                 args=(
-                    LetExprString(value="-"),
-                    LetExprLiteral(value=0.0),
-                    operand,
+                    LetExprString(value="not" if expr.op == "not" else "-"),
+                    operand if expr.op == "not" else LetExprLiteral(value=0.0),
+                    LetExprLiteral(value=0.0) if expr.op == "not" else operand,
                 ),
             )
-        return LetExprUnaryOp(operand=operand)
+        return expr.with_(operand=operand)
     if isinstance(expr, LetExprCall):
         return LetExprCall(
             func=expr.func,

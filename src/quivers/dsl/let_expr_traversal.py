@@ -9,17 +9,69 @@ instead of being silently treated as a leaf.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
+from typing import Protocol
 
 from quivers.dsl import ast_nodes as surface
 
 
-def let_expr_children(expr: surface.LetExprNode) -> tuple[surface.LetExprNode, ...]:
+class LetExprExtension(Protocol):
+    """Expose binder-free downstream expressions to canonical traversal.
+
+    An adapter lists every expression child in a stable order and rebuilds
+    its node over children in that same order. It preserves all other fields.
+    An extension cannot introduce a binder; binder scope and capture avoidance
+    are defined by the shared surface AST, independently of the downstream IR.
+    """
+
+    def children(
+        self, node: surface.LetExprNode
+    ) -> tuple[surface.LetExprNode, ...] | None:
+        """Read the direct children of a supported extension.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            Expression that is not a canonical surface variant.
+
+        Returns
+        -------
+        tuple[LetExprNode, ...] or None
+            All expression children in source order, or None for an unsupported
+            node. An empty tuple denotes a supported leaf.
+        """
+        ...
+
+    def rebuild(
+        self, node: surface.LetExprNode, children: tuple[surface.LetExprNode, ...]
+    ) -> surface.LetExprNode:
+        """Rebuild an extension without changing its non-expression metadata.
+
+        Parameters
+        ----------
+        node : LetExprNode
+            Supported extension previously read by children.
+        children : tuple[LetExprNode, ...]
+            Rewritten operands in the same order and arity.
+
+        Returns
+        -------
+        LetExprNode
+            The reconstructed extension, retaining its other fields.
+        """
+        ...
+
+
+def let_expr_children(
+    expr: surface.LetExprNode, *, extension: LetExprExtension | None = None
+) -> tuple[surface.LetExprNode, ...]:
     """Return the immediate expression children of ``expr`` in source order.
 
     Parameters
     ----------
     expr : LetExprNode
         The expression to take apart.
+    extension : LetExprExtension or None
+        Child/rebuild adapter for binder-free nodes owned by a downstream IR.
 
     Returns
     -------
@@ -60,18 +112,24 @@ def let_expr_children(expr: surface.LetExprNode) -> tuple[surface.LetExprNode, .
         return (expr.receiver, *expr.args)
     if isinstance(expr, surface.QiecConstructorValue):
         return expr.fields
+    if extension is not None and (children := extension.children(expr)) is not None:
+        return children
     raise TypeError(
         f"let_expr_children: unsupported let-expression variant {type(expr).__name__}"
     )
 
 
-def walk_let_expr(expr: surface.LetExprNode) -> Iterator[surface.LetExprNode]:
+def walk_let_expr(
+    expr: surface.LetExprNode, *, extension: LetExprExtension | None = None
+) -> Iterator[surface.LetExprNode]:
     """Yield ``expr`` and all descendants in preorder.
 
     Parameters
     ----------
     expr : LetExprNode
         The root of the walk.
+    extension : LetExprExtension or None
+        Child/rebuild adapter for binder-free downstream IR nodes.
 
     Yields
     ------
@@ -84,13 +142,15 @@ def walk_let_expr(expr: surface.LetExprNode) -> Iterator[surface.LetExprNode]:
         If the walk reaches an unsupported let-expression variant.
     """
     yield expr
-    for child in let_expr_children(expr):
-        yield from walk_let_expr(child)
+    for child in let_expr_children(expr, extension=extension):
+        yield from walk_let_expr(child, extension=extension)
 
 
 def map_let_expr(
     expr: surface.LetExprNode,
     transform: Callable[[surface.LetExprNode], surface.LetExprNode],
+    *,
+    extension: LetExprExtension | None = None,
 ) -> surface.LetExprNode:
     """Rebuild ``expr`` bottom-up, applying ``transform`` at every node.
 
@@ -106,6 +166,8 @@ def map_let_expr(
         The root of the rewrite.
     transform : Callable[[LetExprNode], LetExprNode]
         The rewrite applied to each rebuilt node.
+    extension : LetExprExtension or None
+        Child/rebuild adapter for binder-free downstream IR nodes.
 
     Returns
     -------
@@ -177,6 +239,8 @@ def map_let_expr(
             )
         if isinstance(node, surface.QiecConstructorValue):
             return transform(node.with_(fields=tuple(map(rebuild, node.fields))))
+        if extension is not None and (children := extension.children(node)) is not None:
+            return transform(extension.rebuild(node, tuple(map(rebuild, children))))
         raise TypeError(
             f"map_let_expr: unsupported let-expression variant {type(node).__name__}"
         )
@@ -189,6 +253,7 @@ def free_let_names(
     *,
     bound: frozenset[str] = frozenset(),
     include_callees: bool = False,
+    extension: LetExprExtension | None = None,
 ) -> tuple[str, ...]:
     """Return free value names in first-use order.
 
@@ -204,6 +269,8 @@ def free_let_names(
         Names already bound around ``expr``, which are not free.
     include_callees : bool
         Whether the function name of a call counts as a free name.
+    extension : LetExprExtension or None
+        Child/rebuild adapter for binder-free downstream IR nodes.
 
     Returns
     -------
@@ -242,7 +309,7 @@ def free_let_names(
             for case in node.cases:
                 visit(case.value, inner)
             return
-        for child in let_expr_children(node):
+        for child in let_expr_children(node, extension=extension):
             visit(child, local_bound)
 
     visit(expr, bound)
@@ -253,6 +320,7 @@ def free_let_callees(
     expr: surface.LetExprNode,
     *,
     bound: frozenset[str] = frozenset(),
+    extension: LetExprExtension | None = None,
 ) -> tuple[str, ...]:
     """Return the free callee names of calls in first-use order.
 
@@ -265,6 +333,8 @@ def free_let_callees(
         The expression to scan.
     bound : frozenset[str]
         Names already bound around ``expr``, which are not free.
+    extension : LetExprExtension or None
+        Child/rebuild adapter for binder-free downstream IR nodes.
 
     Returns
     -------
@@ -287,10 +357,10 @@ def free_let_callees(
             return
         elif isinstance(node, surface.LetExprFactor):
             inner = local_bound | {binder.var for binder in node.binders}
-            for child in let_expr_children(node):
+            for child in let_expr_children(node, extension=extension):
                 visit(child, inner)
             return
-        for child in let_expr_children(node):
+        for child in let_expr_children(node, extension=extension):
             visit(child, local_bound)
 
     visit(expr, bound)
@@ -302,6 +372,8 @@ def substitute_let_expr(
     substitution: Mapping[str, surface.LetExprNode],
     *,
     callees: Mapping[str, str] | None = None,
+    index_substitution: Mapping[str, surface.LetExprNode] | None = None,
+    extension: LetExprExtension | None = None,
 ) -> surface.LetExprNode:
     """Substitute expressions for free variables in ``expr`` without capture.
 
@@ -319,6 +391,13 @@ def substitute_let_expr(
         ``f(...)``. A callee bound by an enclosing lambda or factor is
         not free and keeps its name; a binder that would capture a
         replacement callee name is renamed like any other capture.
+    index_substitution : Mapping[str, LetExprNode] or None
+        Optional overrides in the direct index positions of an indexing node.
+        All other positions use ``substitution``. This preserves the separate
+        value and index origins of a target language without a second walk.
+    extension : LetExprExtension or None
+        Child/rebuild adapter for binder-free downstream IR nodes. Extensions
+        add structural cases; scope and capture avoidance remain in this walk.
 
     Returns
     -------
@@ -331,11 +410,29 @@ def substitute_let_expr(
         If the rewrite reaches an unsupported let-expression variant.
     """
     callee_map: Mapping[str, str] = {} if callees is None else callees
-    occupied = set(free_let_names(expr, include_callees=True))
-    for replacement in substitution.values():
-        occupied.update(free_let_names(replacement, include_callees=True))
+    index_map = (
+        substitution
+        if index_substitution is None
+        else dict(substitution) | dict(index_substitution)
+    )
+
+    def free_names(
+        node: surface.LetExprNode, *, include_callees: bool = False
+    ) -> tuple[str, ...]:
+        """Read free names through the same structural extension boundary."""
+        return free_let_names(
+            node, include_callees=include_callees, extension=extension
+        )
+
+    occupied = set(free_names(expr, include_callees=True))
+    replacement_maps = (
+        (substitution,) if index_map is substitution else (substitution, index_map)
+    )
+    for replacements in replacement_maps:
+        for replacement in replacements.values():
+            occupied.update(free_names(replacement, include_callees=True))
     occupied.update(callee_map.values())
-    for node in walk_let_expr(expr):
+    for node in walk_let_expr(expr, extension=extension):
         if isinstance(node, surface.LetExprLambda):
             occupied.add(node.param)
         elif isinstance(node, surface.LetExprFactor):
@@ -352,12 +449,21 @@ def substitute_let_expr(
 
     def replacement_names(
         active: Mapping[str, surface.LetExprNode],
+        active_indices: Mapping[str, surface.LetExprNode],
         active_callees: Mapping[str, str],
         body: surface.LetExprNode,
     ) -> set[str]:
-        used_keys = set(free_let_names(body)) & active.keys()
-        names = {name for key in used_keys for name in free_let_names(active[key])}
-        used_callees = set(free_let_names(body, include_callees=True))
+        used_keys = set(free_names(body))
+        replacements_by_slot = (
+            (active,) if active_indices is active else (active, active_indices)
+        )
+        names = {
+            name
+            for replacements in replacements_by_slot
+            for key in used_keys & replacements.keys()
+            for name in free_names(replacements[key], include_callees=True)
+        }
+        used_callees = set(free_names(body, include_callees=True))
         names.update(
             active_callees[key] for key in used_callees & active_callees.keys()
         )
@@ -367,9 +473,17 @@ def substitute_let_expr(
         node: surface.LetExprNode,
         active: Mapping[str, surface.LetExprNode],
         active_callees: Mapping[str, str],
+        active_indices: Mapping[str, surface.LetExprNode],
+        *,
+        in_index_slot: bool = False,
     ) -> surface.LetExprNode:
         if isinstance(node, surface.LetExprVar):
-            return active.get(node.name, node)
+            return (active_indices if in_index_slot else active).get(node.name, node)
+
+        def rewrite(child: surface.LetExprNode) -> surface.LetExprNode:
+            """Recurse into an ordinary value position, retaining active scopes."""
+            return replace(child, active, active_callees, active_indices)
+
         if isinstance(
             node,
             surface.LetExprLiteral
@@ -380,54 +494,73 @@ def substitute_let_expr(
             return node
         if isinstance(node, surface.LetExprBinOp):
             return node.with_(
-                left=replace(node.left, active, active_callees),
-                right=replace(node.right, active, active_callees),
+                left=rewrite(node.left),
+                right=rewrite(node.right),
             )
         if isinstance(node, surface.LetExprUnaryOp):
-            return node.with_(operand=replace(node.operand, active, active_callees))
+            return node.with_(operand=rewrite(node.operand))
         if isinstance(node, surface.LetExprCall):
             return node.with_(
                 func=active_callees.get(node.func, node.func),
-                args=tuple(replace(item, active, active_callees) for item in node.args),
+                args=tuple(map(rewrite, node.args)),
             )
         if isinstance(node, surface.LetExprIndex):
             return node.with_(
-                array=replace(node.array, active, active_callees),
+                array=rewrite(node.array),
                 indices=tuple(
-                    replace(item, active, active_callees) for item in node.indices
+                    replace(
+                        item, active, active_callees, active_indices, in_index_slot=True
+                    )
+                    for item in node.indices
                 ),
             )
         if isinstance(node, surface.LetExprList | surface.LetExprTuple):
-            return node.with_(
-                items=tuple(
-                    replace(item, active, active_callees) for item in node.items
-                )
-            )
+            return node.with_(items=tuple(map(rewrite, node.items)))
         if isinstance(node, surface.LetExprLambda):
             inner = {key: value for key, value in active.items() if key != node.param}
+            inner_indices = (
+                inner
+                if active_indices is active
+                else {
+                    key: value
+                    for key, value in active_indices.items()
+                    if key != node.param
+                }
+            )
             inner_callees = {
                 key: value for key, value in active_callees.items() if key != node.param
             }
             param = node.param
             body = node.body
-            if param in replacement_names(inner, inner_callees, body):
+            if param in replacement_names(inner, inner_indices, inner_callees, body):
                 renamed = fresh(param)
+                alpha = {
+                    param: surface.LetExprVar(
+                        name=renamed, line=node.line, col=node.col
+                    )
+                }
                 body = replace(
                     body,
-                    {
-                        param: surface.LetExprVar(
-                            name=renamed,
-                            line=node.line,
-                            col=node.col,
-                        )
-                    },
+                    alpha,
                     {param: renamed},
+                    alpha,
                 )
                 param = renamed
-            return node.with_(param=param, body=replace(body, inner, inner_callees))
+            return node.with_(
+                param=param, body=replace(body, inner, inner_callees, inner_indices)
+            )
         if isinstance(node, surface.LetExprFactor):
             bound = {binder.var for binder in node.binders}
             inner = {key: value for key, value in active.items() if key not in bound}
+            inner_indices = (
+                inner
+                if active_indices is active
+                else {
+                    key: value
+                    for key, value in active_indices.items()
+                    if key not in bound
+                }
+            )
             inner_callees = {
                 key: value for key, value in active_callees.items() if key not in bound
             }
@@ -437,7 +570,7 @@ def substitute_let_expr(
             captures = {
                 name
                 for body in bodies
-                for name in replacement_names(inner, inner_callees, body)
+                for name in replacement_names(inner, inner_indices, inner_callees, body)
             }
             binders = list(node.binders)
             body = node.body
@@ -454,40 +587,45 @@ def substitute_let_expr(
                     )
                 }
                 alpha_callees = {binder.var: renamed}
-                body = None if body is None else replace(body, alpha, alpha_callees)
+                body = (
+                    None if body is None else replace(body, alpha, alpha_callees, alpha)
+                )
                 cases = tuple(
-                    case.with_(value=replace(case.value, alpha, alpha_callees))
+                    case.with_(value=replace(case.value, alpha, alpha_callees, alpha))
                     for case in cases
                 )
                 binders[position] = binder.with_(var=renamed)
             return node.with_(
                 binders=tuple(binders),
-                body=None if body is None else replace(body, inner, inner_callees),
+                body=None
+                if body is None
+                else replace(body, inner, inner_callees, inner_indices),
                 cases=tuple(
-                    case.with_(value=replace(case.value, inner, inner_callees))
+                    case.with_(
+                        value=replace(case.value, inner, inner_callees, inner_indices)
+                    )
                     for case in cases
                 ),
             )
         if isinstance(node, surface.LetExprMethodCall):
             return node.with_(
-                receiver=replace(node.receiver, active, active_callees),
-                args=tuple(replace(item, active, active_callees) for item in node.args),
+                receiver=rewrite(node.receiver),
+                args=tuple(map(rewrite, node.args)),
             )
         if isinstance(node, surface.QiecConstructorValue):
-            return node.with_(
-                fields=tuple(
-                    replace(field, active, active_callees) for field in node.fields
-                )
-            )
+            return node.with_(fields=tuple(map(rewrite, node.fields)))
+        if extension is not None and (children := extension.children(node)) is not None:
+            return extension.rebuild(node, tuple(map(rewrite, children)))
         raise TypeError(
             f"substitute_let_expr: unsupported let-expression variant "
             f"{type(node).__name__}"
         )
 
-    return replace(expr, substitution, callee_map)
+    return replace(expr, substitution, callee_map, index_map)
 
 
 __all__ = [
+    "LetExprExtension",
     "free_let_callees",
     "free_let_names",
     "let_expr_children",

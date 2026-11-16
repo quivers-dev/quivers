@@ -125,6 +125,15 @@ var _qvr_bcast = function(op, a, b) {
       : op === "min" ? Math.min(a, b)
       : op === "quot" ? Math.trunc(a / b)
       : op === "rem" ? a % b
+      : op === "==" ? a === b
+      : op === "!=" ? a !== b
+      : op === "<" ? a < b
+      : op === "<=" ? a <= b
+      : op === ">" ? a > b
+      : op === ">=" ? a >= b
+      : op === "&&" ? a && b
+      : op === "||" ? a || b
+      : op === "not" ? !a
       : NaN;
   }
   var n = a_arr ? a.length : b.length;

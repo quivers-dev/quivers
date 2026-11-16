@@ -228,3 +228,9 @@ def _qvr_select(condition, then, otherwise):
     if isinstance(condition, bool):
         condition = pt.constant(condition, dtype="bool")
     return pt.switch(condition, then, otherwise)
+
+
+def _qvr_bool_not(value):
+    if isinstance(value, bool):
+        return not value
+    return pymc.pytensorf.pt.invert(value)

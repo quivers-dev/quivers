@@ -26,6 +26,7 @@ from quivers.transpile.renderers._python_helpers import (
     factor_tower_names,
     float_literal,
     identifier,
+    import_module,
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
@@ -700,21 +701,13 @@ class NumPyroRenderer(RendererBase):
 
     def _emit_plain_import(self, py: PyCtx, chain: tuple[str, ...]) -> None:
         """Emit ``import <a>.<b>.<c>``."""
-        stmt = py.v(py.fresh("imp"), "import_statement")
-        name = self._dotted_name(py, chain)
-        py.e(stmt, name, "name")
-        py.e("mod", stmt, "child_of")
+        import_module(py, chain)
 
     def _emit_aliased_import(
         self, py: PyCtx, chain: tuple[str, ...], alias: str
     ) -> None:
         """Emit ``import <a>.<b> as <alias>``."""
-        stmt = py.v(py.fresh("imp"), "import_statement")
-        aliased = py.v(py.fresh("alias"), "aliased_import")
-        py.e(aliased, self._dotted_name(py, chain), "name")
-        py.e(aliased, identifier(py, alias), "alias")
-        py.e(stmt, aliased, "name")
-        py.e("mod", stmt, "child_of")
+        import_module(py, chain, alias)
 
     def _dotted_name(self, py: PyCtx, chain: tuple[str, ...]) -> str:
         """Build a ``dotted_name`` vertex from the chain segments."""

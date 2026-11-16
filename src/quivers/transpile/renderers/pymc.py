@@ -230,7 +230,7 @@ class PyMCRenderer(RendererBase):
             or _ir_uses_logit_helper(ir.body)
             or qiec_helper_families_used(ir, self.target)
         )
-        if family_helpers or _probability_builtins_used(ir.body, include_select=True):
+        if family_helpers or _probability_builtins_used(ir.body, include_boolean=True):
             _graft_runtime_pymc_helpers(py, probability_only=not family_helpers)
 
         # Trailing `return model` inside the function body (outside
@@ -1863,6 +1863,7 @@ def _graft_runtime_pymc_helpers(py: PyCtx, *, probability_only: bool = False) ->
                         "_qvr_observation_status",
                         "_qvr_interval_upper",
                         "_qvr_select",
+                        "_qvr_bool_not",
                     )
                 )
                 for edge in src_schema.edges
