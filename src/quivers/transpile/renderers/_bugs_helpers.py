@@ -30,6 +30,8 @@ tag with the correct backend.
 
 from __future__ import annotations
 
+from quivers.transpile.renderers._ranks import factor_axis_name
+
 import math
 from typing import Literal, Protocol, runtime_checkable
 
@@ -56,11 +58,6 @@ from quivers.dsl.ast_nodes import (
     LetExprVar,
     LetFactorBinder,
     LetFactorCase,
-)
-from quivers.dsl.ast_nodes.objects import (
-    DiscreteConstructor,
-    ObjectExpr,
-    TypeName,
 )
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.renderers._let_expr_traversal import AFFINE_EXPRESSION
@@ -1536,7 +1533,7 @@ def _factor_axis_size(ctx: _BugsLetCtx, binder: LetFactorBinder) -> int:
     when the axis is a constructor with no static size or when the
     name is unknown.
     """
-    name = _object_expr_axis_name(ctx, binder.index)
+    name = factor_axis_name(binder.index, target=_target(ctx))
     size = ctx.cards.get(name)
     if size is None:
         raise UnsupportedConstruct(
@@ -1548,33 +1545,6 @@ def _factor_axis_size(ctx: _BugsLetCtx, binder: LetFactorBinder) -> int:
             ],
         )
     return int(size)
-
-
-def _object_expr_axis_name(ctx: _BugsLetCtx, obj: ObjectExpr) -> str:
-    """Resolve an `ObjectExpr` to the axis name a `cards` lookup wants.
-
-    Handles `TypeName` directly and `DiscreteConstructor("FinSet", N)`
-    as a literal anonymous axis (the size is the integer arg).
-    """
-    if isinstance(obj, TypeName):
-        return obj.name
-    if isinstance(obj, DiscreteConstructor) and obj.constructor == "FinSet":
-        if len(obj.args) == 1 and obj.args[0].isdigit():
-            return obj.args[0]
-        raise UnsupportedConstruct(
-            f"qvr-{_target(ctx)}-helper",
-            [
-                f"let-expr:LetExprFactor:{_target(ctx)}: "
-                f"non-literal FinSet binder {obj.args!r}"
-            ],
-        )
-    raise UnsupportedConstruct(
-        f"qvr-{_target(ctx)}-helper",
-        [
-            f"let-expr:LetExprFactor:{_target(ctx)}: binder "
-            f"index {type(obj).__name__} not supported"
-        ],
-    )
 
 
 def _enumerate_indices(

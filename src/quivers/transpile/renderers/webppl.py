@@ -8,13 +8,15 @@ calls, and wrapper families inline their referenced distribution.
 
 from __future__ import annotations
 
+from quivers.transpile._resolve import source_declarations
+
 import pathlib
 from collections.abc import Mapping
 from typing import Callable
 
 import panproto
 
-from quivers.dsl.ast_nodes import Expr, DefineDecl, Module, MorphismDecl
+from quivers.dsl.ast_nodes import Module
 from quivers.dsl.ast_nodes.let_expressions import (
     LetFactorCase,
     LetExprBinOp,
@@ -265,7 +267,7 @@ class WebPPLRenderer(RendererBase):
         assert_no_dropped_param_map(ir, self.target)
         proto = self.target_protocol()
         sb = proto.schema()
-        morphisms, lets = self._resolve_morphisms_and_lets()
+        morphisms, lets = source_declarations(self._source_module)
         ctx = RenderContext(sb=sb, morphisms=morphisms, defines=lets)
         # Reset per-render state.
         self._fresh_n = 0
@@ -2539,28 +2541,6 @@ class WebPPLRenderer(RendererBase):
     # ------------------------------------------------------------------
     # Morphism / let resolution for IRArgFamilyRef.
     # ------------------------------------------------------------------
-
-    def _resolve_morphisms_and_lets(
-        self,
-    ) -> tuple[dict[str, MorphismDecl], dict[str, Expr]]:
-        """Build the morphism / let tables from the source module.
-
-        Used by `IRArgFamilyRef` resolution. Empty when the
-        renderer was constructed without a source module; in that
-        case `IRArgFamilyRef` rendering raises with a precise
-        kind tag.
-        """
-        if self._source_module is None:
-            return {}, {}
-        morphisms: dict[str, MorphismDecl] = {}
-        lets: dict[str, Expr] = {}
-        for stmt in self._source_module.statements:
-            if isinstance(stmt, MorphismDecl):
-                for name in stmt.names:
-                    morphisms[name] = stmt
-            elif isinstance(stmt, DefineDecl):
-                lets[stmt.name] = stmt.expr
-        return morphisms, lets
 
 
 def _free_names_in_let_expr(expr: LetExprNode) -> tuple[str, ...]:

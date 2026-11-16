@@ -8,6 +8,8 @@ zeros trick. Family names and argument conversions come from
 
 from __future__ import annotations
 
+from quivers.transpile.renderers._ranks import classify_bindings
+
 from collections.abc import Iterable
 from typing import Literal
 
@@ -55,7 +57,6 @@ from quivers.transpile.ir import (
     IRSample,
     IRScore,
     Plate,
-    event_dim_of,
 )
 from quivers.transpile.renderers._one_based import is_class_code_family
 from quivers.transpile.renderers._bugs_helpers import (
@@ -426,7 +427,7 @@ class JAGSRenderer(RendererBase):
         proto = self.target_protocol()
         sb = proto.schema()
         jctx = _JAGSCtx(sb=sb, morphisms={}, lets={})
-        jctx.scalar_refs, jctx.bound_refs = _classify_bindings(ir)
+        jctx.scalar_refs, jctx.bound_refs = classify_bindings(ir)
         self._cards = dict(ir.cards)
         # Cache decl_plates so the deterministic emitter can re-index
         # let-expression refs by their declared batch_dims.
@@ -3956,54 +3957,6 @@ def _ir_arg_to_let_expr(arg: IRArg) -> LetExprNode:
         f"qvr-{_BACKEND}",
         [f"broadcast:value:{type(arg).__name__}"],
     )
-
-
-def _is_scalar_shape(plate: Plate) -> bool:
-    """A binding whose plate carries neither batch nor event axes is
-    rank-0 in every replicated / joint dimension."""
-    return not plate.batch_dims and not plate.event_dims
-
-
-def _classify_bindings(
-    ir: IRProgram,
-) -> tuple[frozenset[str], frozenset[str]]:
-    """Classify every bindable name in `ir` as scalar and / or bound.
-
-    Returns ``(scalar_refs, bound_refs)``. A name is *bound* when the
-    program introduces it (a data input, sample, observe, deterministic
-    let, or marginalize latent). A bound name is *scalar* when it is
-    rank-0: an empty plate plus a scalar-support constraint for the
-    stochastic / input bindings, and an empty plate whose let-expression
-    is not a vector-producing list / factor construct for the
-    deterministic ones. A let-bound scalar thus lands in
-    `scalar_refs` exactly like a free scalar input, so the JAGS
-    ``rep(<scalar>, K)`` broadcast fires on both.
-    """
-    scalar: set[str] = set()
-    bound: set[str] = set()
-
-    def _record_stochastic(name: str, plate: Plate, constraint: ConstraintSpec) -> None:
-        bound.add(name)
-        if _is_scalar_shape(plate) and (event_dim_of(constraint.to_constraint()) == 0):
-            scalar.add(name)
-
-    def _visit(nodes: tuple[IRNode, ...]) -> None:
-        for node in nodes:
-            if isinstance(node, (IRDataInput, IRSample, IRObserve)):
-                _record_stochastic(node.name, node.plate, node.constraint)
-            elif isinstance(node, IRDeterministic):
-                bound.add(node.name)
-                if _is_scalar_shape(node.plate) and not isinstance(
-                    node.expr, (LetExprList, LetExprFactor)
-                ):
-                    scalar.add(node.name)
-            elif isinstance(node, IRMarginalize):
-                _record_stochastic(node.latent, node.plate, node.constraint)
-                _visit(node.scope)
-
-    _visit(ir.inputs)
-    _visit(ir.body)
-    return frozenset(scalar), frozenset(bound)
 
 
 __all__ = ["JAGSRenderer"]

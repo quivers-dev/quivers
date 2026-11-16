@@ -7,6 +7,8 @@ with ``numpyro.factor``. Array broadcasts use ``jax.numpy.full``.
 
 from __future__ import annotations
 
+from quivers.transpile.renderers._ranks import classify_bindings
+
 import pathlib
 
 import panproto
@@ -46,10 +48,6 @@ from quivers.transpile.renderers._python_helpers import (
 )
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
-from quivers.dsl.ast_nodes.let_expressions import (
-    LetExprFactor,
-    LetExprList,
-)
 from quivers.transpile.ir import (
     ConstraintSpec,
     Dim,
@@ -74,7 +72,6 @@ from quivers.transpile.ir import (
     IRCall,
     IRScore,
     Plate,
-    event_dim_of,
 )
 from quivers.transpile.renderers._base import (
     marginalize_row_rank,
@@ -229,7 +226,7 @@ class NumPyroRenderer(RendererBase):
             factor_towers=factor_tower_names(ir),
             name_plates=name_plate_map(ir),
         )
-        scalar_refs, bound_refs = _classify_bindings(ir)
+        scalar_refs, bound_refs = classify_bindings(ir)
         ctx = _NumPyroCtx(
             sb=sb,
             morphisms={},
@@ -1999,54 +1996,6 @@ def _as_numpyro_ctx(ctx: RenderContext) -> _NumPyroCtx:
             ["ctx:type-mismatch"],
         )
     return ctx
-
-
-def _is_scalar_shape(plate: Plate) -> bool:
-    """A binding whose plate carries neither batch nor event axes is
-    rank-0 in every replicated / joint dimension."""
-    return not plate.batch_dims and not plate.event_dims
-
-
-def _classify_bindings(
-    ir: IRProgram,
-) -> tuple[frozenset[str], frozenset[str]]:
-    """Classify every bindable name in `ir` as scalar and / or bound.
-
-    Returns ``(scalar_refs, bound_refs)``. A name is *bound* when the
-    program introduces it (a data input, sample, observe, deterministic
-    let, or marginalize latent). A bound name is *scalar* when it is
-    rank-0: an empty plate plus a scalar-support constraint for the
-    stochastic / input bindings, and an empty plate whose let-expression
-    is not a vector-producing list / factor construct for the
-    deterministic ones. A let-bound scalar literal thus lands in
-    `scalar_refs` exactly like a free scalar input, so the NumPyro
-    broadcast fires on both.
-    """
-    scalar: set[str] = set()
-    bound: set[str] = set()
-
-    def _record_stochastic(name: str, plate: Plate, constraint: ConstraintSpec) -> None:
-        bound.add(name)
-        if _is_scalar_shape(plate) and (event_dim_of(constraint.to_constraint()) == 0):
-            scalar.add(name)
-
-    def _visit(nodes: tuple[IRNode, ...]) -> None:
-        for node in nodes:
-            if isinstance(node, (IRDataInput, IRSample, IRObserve)):
-                _record_stochastic(node.name, node.plate, node.constraint)
-            elif isinstance(node, IRDeterministic):
-                bound.add(node.name)
-                if _is_scalar_shape(node.plate) and not isinstance(
-                    node.expr, (LetExprList, LetExprFactor)
-                ):
-                    scalar.add(node.name)
-            elif isinstance(node, IRMarginalize):
-                _record_stochastic(node.latent, node.plate, node.constraint)
-                _visit(node.scope)
-
-    _visit(ir.inputs)
-    _visit(ir.body)
-    return frozenset(scalar), frozenset(bound)
 
 
 # ---------------------------------------------------------------------------

@@ -55,6 +55,10 @@ a placeholder.
 
 from __future__ import annotations
 
+from quivers.transpile.renderers._ranks import factor_axis_name
+
+from quivers.transpile.renderers._ranks import let_event_rank
+
 from typing import Protocol, runtime_checkable
 
 from quivers.dsl.let_expr_traversal import substitute_let_expr
@@ -73,11 +77,6 @@ from quivers.dsl.ast_nodes import (
     LetExprVar,
 )
 from quivers.dsl.ast_nodes.let_expressions import LetFactorBinder, LetFactorCase
-from quivers.dsl.ast_nodes.objects import (
-    DiscreteConstructor,
-    ObjectExpr,
-    TypeName,
-)
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.renderers._let_expr_traversal import AFFINE_EXPRESSION
 from quivers.transpile._builtin_spellings import native_path
@@ -418,42 +417,6 @@ def infer_array_rank(ctx: _JlShapeView, expr: LetExprNode) -> int:
     if isinstance(expr, LetExprAffineMap):
         # One head's row block is a length-`rows` vector.
         return 1
-    return 0
-
-
-def _infer_event_rank(ctx: _JlShapeView, expr: LetExprNode) -> int:
-    """Infer the event rank of a let-expression at emit time.
-
-    Leaf variables read their rank from `ctx.name_event_rank`;
-    compound expressions propagate it structurally, mirroring the
-    Python helper's walk: binary operators broadcast to the wider
-    operand, unary minus and elementwise math preserve the rank, a
-    reducing primitive collapses to 0, and each index a subscript
-    supplies consumes one axis.
-    """
-    if isinstance(expr, (LetExprLiteral, LetExprString)):
-        return 0
-    if isinstance(expr, LetExprVar):
-        return ctx.name_event_rank.get(expr.name, 0)
-    if isinstance(expr, LetExprBinOp):
-        return max(
-            _infer_event_rank(ctx, expr.left),
-            _infer_event_rank(ctx, expr.right),
-        )
-    if isinstance(expr, LetExprUnaryOp):
-        return _infer_event_rank(ctx, expr.operand)
-    if isinstance(expr, LetExprCall):
-        if expr.func in _AXIS_REDUCING_CALLS and len(expr.args) == 1:
-            return 0
-        return max((_infer_event_rank(ctx, a) for a in expr.args), default=0)
-    if isinstance(expr, LetExprIndex):
-        arr_rank = _infer_event_rank(ctx, expr.array)
-        return max(0, arr_rank - len(expr.indices))
-    if isinstance(expr, LetExprList):
-        return max(
-            (_infer_event_rank(ctx, item) for item in expr.items),
-            default=0,
-        )
     return 0
 
 
@@ -901,7 +864,10 @@ def _reduces_named_axis(
         func in _AXIS_REDUCING_CALLS
         and len(args) == 1
         and not _is_tower(ctx, args[0])
-        and (_infer_event_rank(ctx, args[0]) > 0 or infer_array_rank(ctx, args[0]) >= 2)
+        and (
+            let_event_rank(args[0], ctx.name_event_rank) > 0
+            or infer_array_rank(ctx, args[0]) >= 2
+        )
     )
 
 
@@ -1435,7 +1401,7 @@ def _factor_axis_size(ctx: _JlState, binder: LetFactorBinder) -> int:
     when the axis is a constructor with no static size or when the
     name is unknown.
     """
-    name = _object_expr_axis_name(ctx, binder.index)
+    name = factor_axis_name(binder.index, target=_target(ctx))
     size = ctx.cards.get(name)
     if size is None:
         raise UnsupportedConstruct(
@@ -1447,34 +1413,6 @@ def _factor_axis_size(ctx: _JlState, binder: LetFactorBinder) -> int:
             ],
         )
     return int(size)
-
-
-def _object_expr_axis_name(ctx: _JlState, obj: ObjectExpr) -> str:
-    """Resolve an `ObjectExpr` to the axis name a `cards` lookup wants.
-
-    Handles `TypeName` directly and
-    `DiscreteConstructor("FinSet", N)` as a literal anonymous axis
-    (the size is the integer arg).
-    """
-    if isinstance(obj, TypeName):
-        return obj.name
-    if isinstance(obj, DiscreteConstructor) and obj.constructor == "FinSet":
-        if len(obj.args) == 1 and obj.args[0].isdigit():
-            return obj.args[0]
-        raise UnsupportedConstruct(
-            f"qvr-{_target(ctx)}-helper",
-            [
-                f"let-expr:LetExprFactor:{_target(ctx)}: "
-                f"non-literal FinSet binder {obj.args!r}"
-            ],
-        )
-    raise UnsupportedConstruct(
-        f"qvr-{_target(ctx)}-helper",
-        [
-            f"let-expr:LetExprFactor:{_target(ctx)}: binder "
-            f"index {type(obj).__name__} not supported"
-        ],
-    )
 
 
 def _substitute(expr: LetExprNode, name: str, value: LetExprNode) -> LetExprNode:

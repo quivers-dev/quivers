@@ -55,6 +55,8 @@ The Stan-specific layout decisions:
 
 from __future__ import annotations
 
+from quivers.transpile._resolve import source_declarations
+
 import math
 import pathlib
 from collections.abc import Callable, Mapping
@@ -65,10 +67,7 @@ from torch.distributions.constraints import Constraint
 
 from quivers.dsl.ast_nodes import (
     DrawArg,
-    Expr,
-    DefineDecl,
     Module,
-    MorphismDecl,
 )
 from quivers.dsl.ast_nodes.let_expressions import (
     LetExprCall,
@@ -427,7 +426,7 @@ class StanRenderer(RendererBase):
         assert_no_dropped_param_map(ir, self.target)
         proto = self.target_protocol()
         sb = proto.schema()
-        morphisms, lets = self._resolve_morphisms_and_lets()
+        morphisms, lets = source_declarations(self._source_module)
         ctx = RenderContext(sb=sb, morphisms=morphisms, defines=lets)
         # Reset per-render state.
         self._blocks = {}
@@ -4273,27 +4272,6 @@ class StanRenderer(RendererBase):
         return self._declared_shapes_state
 
     # ----- morphism / let resolution -----
-
-    def _resolve_morphisms_and_lets(
-        self,
-    ) -> tuple[dict[str, MorphismDecl], dict[str, Expr]]:
-        """Build the morphism / let tables from the source module.
-
-        Used by [`IRArgFamilyRef`][quivers.transpile.ir.IRArgFamilyRef]
-        resolution. Empty when the renderer was constructed without a
-        source module; in that case `IRArgFamilyRef` rendering raises.
-        """
-        if self._source_module is None:
-            return {}, {}
-        morphisms: dict[str, MorphismDecl] = {}
-        lets: dict[str, Expr] = {}
-        for stmt in self._source_module.statements:
-            if isinstance(stmt, MorphismDecl):
-                for name in stmt.names:
-                    morphisms[name] = stmt
-            elif isinstance(stmt, DefineDecl):
-                lets[stmt.name] = stmt.expr
-        return morphisms, lets
 
 
 #: The supports of a discrete draw, which Stan's samplers carry no

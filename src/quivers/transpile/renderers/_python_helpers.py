@@ -15,6 +15,8 @@ renderer to emit `let <name> = <expr>` as a deterministic
 
 from __future__ import annotations
 
+from quivers.transpile.renderers._ranks import let_event_rank
+
 import json
 from typing import TYPE_CHECKING
 
@@ -952,7 +954,7 @@ def render_let_expr_python(
             expr.func in _AXIS_REDUCING_CALLS
             and len(expr.args) == 1
             and (
-                _infer_event_rank(ctx, expr.args[0]) > 0
+                let_event_rank(expr.args[0], ctx.name_event_rank) > 0
                 or reduces_last_of_several_axes(expr, ctx.name_rank)
             )
         )
@@ -1160,64 +1162,6 @@ def _render_affine_map_python(ctx: PyCtx, expr: LetExprAffineMap) -> str:
     if expr.transform == "exp":
         return call(ctx, _resolve_python_call(ctx, "exp"), positional=(total,))
     return total
-
-
-def _infer_event_rank(ctx: PyCtx, expr: LetExprNode) -> int:
-    """Infer the event rank of a let-expression at emit time.
-
-    The rank of a leaf variable is ``len(plate.event_dims)`` for the
-    IRDataInput / IRSample / IRObserve / IRDeterministic it references,
-    read from `PyCtx.name_event_rank`; compound expressions propagate
-    the rank structurally:
-
-    - [`LetExprLiteral`][quivers.dsl.ast_nodes.LetExprLiteral] /
-      [`LetExprString`][quivers.dsl.ast_nodes.LetExprString] -> 0.
-    - [`LetExprVar`][quivers.dsl.ast_nodes.LetExprVar] ->
-      ``ctx.name_event_rank.get(name, 0)``.
-    - [`LetExprBinOp`][quivers.dsl.ast_nodes.LetExprBinOp] -> max of the
-      operand ranks (broadcasting lifts the lower-rank operand).
-    - [`LetExprUnaryOp`][quivers.dsl.ast_nodes.LetExprUnaryOp] -> the
-      operand rank (negation is shape-preserving).
-    - [`LetExprCall`][quivers.dsl.ast_nodes.LetExprCall] to a reducing
-      primitive -> 0 (the reduction collapses the event axis); any
-      other callee -> max of its arg ranks (treating element-wise math
-      like ``sigmoid`` / ``exp`` as shape-preserving).
-    - [`LetExprIndex`][quivers.dsl.ast_nodes.LetExprIndex] ->
-      ``max(0, arr.rank - len(indices))`` (each scalar index consumes
-      one event axis).
-    - [`LetExprList`][quivers.dsl.ast_nodes.LetExprList] -> max of the
-      element ranks.
-
-    Other node kinds are treated as scalar; the helper is conservative
-    and never lifts the rank when it is not certain.
-    """
-    if isinstance(expr, (LetExprLiteral, LetExprString)):
-        return 0
-    if isinstance(expr, LetExprVar):
-        return ctx.name_event_rank.get(expr.name, 0)
-    if isinstance(expr, LetExprBinOp):
-        return max(
-            _infer_event_rank(ctx, expr.left),
-            _infer_event_rank(ctx, expr.right),
-        )
-    if isinstance(expr, LetExprUnaryOp):
-        return _infer_event_rank(ctx, expr.operand)
-    if isinstance(expr, LetExprCall):
-        if expr.func in _AXIS_REDUCING_CALLS and len(expr.args) == 1:
-            return 0
-        return max(
-            (_infer_event_rank(ctx, a) for a in expr.args),
-            default=0,
-        )
-    if isinstance(expr, LetExprIndex):
-        arr_rank = _infer_event_rank(ctx, expr.array)
-        return max(0, arr_rank - len(expr.indices))
-    if isinstance(expr, LetExprList):
-        return max(
-            (_infer_event_rank(ctx, item) for item in expr.items),
-            default=0,
-        )
-    return 0
 
 
 def name_event_rank_map(ir: IRProgram) -> dict[str, int]:

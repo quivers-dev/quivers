@@ -17,6 +17,7 @@ from quivers.dsl.step_resolution import (
     ResolvedDist,
     StepResolutionError,
     build_let_table,
+    morphism_table,
 )
 from quivers.dsl.step_resolution import (
     build_morphism_table as _build_morphism_table,
@@ -103,6 +104,34 @@ def build_morphism_table(module: Module) -> dict[str, MorphismDecl]:
         raise UnsupportedConstruct(error.target, error.explained_kinds) from error
 
 
+def source_declarations(
+    module: Module | None,
+) -> tuple[dict[str, MorphismDecl], dict[str, Expr]]:
+    """Read source declarations through the canonical language indexes.
+
+    Parameters
+    ----------
+    module : Module or None
+        Parsed source accompanying a renderer, if available.
+
+    Returns
+    -------
+    tuple[dict[str, MorphismDecl], dict[str, Expr]]
+        Morphism and alias tables; two empty tables without source.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If source declarations violate the language's name or initializer rules.
+    """
+    if module is None:
+        return {}, {}
+    try:
+        return morphism_table(module), build_let_table(module)
+    except StepResolutionError as error:
+        raise UnsupportedConstruct(error.target, error.explained_kinds) from error
+
+
 def param_source_kind(decl: MorphismDecl, *, target: str) -> str | None:
     """Name a morphism's parameter source, reporting failure as unsupported.
 
@@ -135,4 +164,5 @@ __all__ = [
     "build_morphism_table",
     "param_source_kind",
     "resolve_step_dist",
+    "source_declarations",
 ]
