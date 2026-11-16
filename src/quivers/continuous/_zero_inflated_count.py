@@ -9,6 +9,7 @@ import torch
 from torch import Tensor
 
 from quivers.continuous._count_cdf import _CountCDF
+from quivers.continuous._closed_probability import _check_count_observation_source
 from torch.distributions import Distribution, constraints
 
 from quivers.continuous._closed_probability import (
@@ -269,6 +270,7 @@ class BetaBinomial(_CountCDF, Distribution):
         Tensor
             Log mass, negative infinity outside the trial support.
         """
+        _check_count_observation_source(value)
         n, a, b, value = torch.broadcast_tensors(
             self.total_count,
             self.concentration1,
@@ -457,6 +459,7 @@ class _InflatedCount(_CountCDF, Distribution):
         Tensor
             Exact log probability, including closed mixture endpoints.
         """
+        _check_count_observation_source(value)
         if self._validate_args:
             self._validate_sample(value)
         valid = self.support.check(value)
@@ -831,6 +834,7 @@ class HurdleNegativeBinomial(ZeroInflatedNegativeBinomial):
         Tensor
             Exact log probabilities including the p=0 limit.
         """
+        _check_count_observation_source(value)
         if self._validate_args:
             self._validate_sample(value)
         valid = self.support.check(value)

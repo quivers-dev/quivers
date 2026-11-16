@@ -552,6 +552,12 @@ preserves their exact integer representation in float64; `Int` remains a
 signed 64-bit carrier. Supply large counts as integer tensors or integer
 source literals. Converting an already-rounded float32 count to float64
 does not restore the original integer.
+Arithmetic count observations use the same exact-integer limit. Native and
+reference execution check original finite counts before floating conversion and
+refuse magnitudes above `2**53`. With argument validation disabled, fractional,
+nonfinite, and other off-support observations have log mass negative infinity;
+they are never truncated to an integer. Finite category indices use their own
+support checks and do not acquire this arithmetic-count limit.
 A source integer literal also retains its integer value through parsing,
 static substitution, and family argument binding. Stable deviance,
 Stirling, and gamma-increment formulas avoid subtracting nearly equal

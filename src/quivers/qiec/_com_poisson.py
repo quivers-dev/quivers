@@ -3,10 +3,13 @@
 import math
 import random
 from collections.abc import Mapping
-from typing import cast
 
 from quivers.qiec._count_mixtures import _deviance, _stirling_error
-from quivers.qiec.reference_support import DistributionError, real_parameter
+from quivers.qiec.reference_support import (
+    DistributionError,
+    real_parameter,
+    _integer_observation,
+)
 
 
 def _parameters(a: Mapping[str, object]) -> tuple[float, float, int]:
@@ -113,11 +116,8 @@ def density(a: Mapping[str, object], value: object) -> float:
         If the tail bound cannot be certified within the term budget.
     """
     lr, nu, mode = _parameters(a)
-    try:
-        point = float(cast(float, value))
-    except TypeError, ValueError:
-        return -math.inf
-    if not math.isfinite(point) or point < 0 or point != math.floor(point):
+    point = _integer_observation(value, "COMPoisson", float64=True)
+    if point is None or point < 0:
         return -math.inf
     if lr == -math.inf:
         return 0.0 if point == 0 else -math.inf

@@ -10,6 +10,7 @@ from quivers.qiec._count_mixtures import (
     _beta_binomial_log_mass,
 )
 from quivers.qiec.reference_support import (
+    _integer_observation,
     DistributionError,
     vector_parameter,
     simplex,
@@ -97,17 +98,12 @@ def _event(value: object, n: int, categories: int):
         raise DistributionError(f"count event requires {categories} categories")
     counts = []
     for v in value:
-        if isinstance(v, int) and v > 2**53:
-            raise DistributionError("count event exceeds exact Float64 capacity 2**53")
-        if (
-            isinstance(v, bool)
-            or not isinstance(v, int | float)
-            or not math.isfinite(v)
-            or v < 0
-            or v != int(v)
-        ):
+        if isinstance(v, bool):
             return None
-        counts.append(int(v))
+        count = _integer_observation(v, "vector counts", float64=True)
+        if count is None or count < 0:
+            return None
+        counts.append(count)
     return tuple(counts) if sum(counts) == n else None
 
 

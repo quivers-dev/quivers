@@ -1123,7 +1123,7 @@ def _poisson_density(a: Mapping[str, object], value: object) -> float:
         The log density, ``-inf`` outside the support; at a zero rate
         the mass sits at zero alone.
     """
-    count = _integer_observation(value, "Poisson")
+    count = _integer_observation(value, "Poisson", float64=True)
     rate = _real(a, "rate", "Poisson")
     if count is None:
         return -math.inf
@@ -1165,7 +1165,7 @@ def _binomial_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density, ``-inf`` outside the support.
     """
-    count = _integer_observation(value, "Binomial")
+    count = _integer_observation(value, "Binomial", float64=True)
     if count is None:
         return -math.inf
     trials = _trial_count(a.get("total_count"))
@@ -1222,7 +1222,7 @@ def _geometric_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density, ``-inf`` outside the support.
     """
-    failures = _integer_observation(value, "Geometric")
+    failures = _integer_observation(value, "Geometric", float64=True)
     from quivers.qiec._count_tails import geometric_coordinates
 
     log_success, log_failure = geometric_coordinates(a)
@@ -1569,7 +1569,7 @@ def _discrete_weibull_density(a: Mapping[str, object], value: object) -> float:
         Log mass, negative infinity outside the integer support.
     """
     q, power = _discrete_weibull_parameters(a)
-    point = _integer_observation(value, "DiscreteWeibull")
+    point = _integer_observation(value, "DiscreteWeibull", float64=True)
     if point is None or point < 0:
         return -math.inf
     if point == 0:

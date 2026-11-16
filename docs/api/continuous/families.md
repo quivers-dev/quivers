@@ -329,6 +329,11 @@ representation; the general `Int` carrier remains signed 64-bit. Large
 counts should arrive as integer arrays or integer literals, since promotion
 cannot recover a value already rounded in float32. Discrete samples remain
 integer-valued and non-reparameterized.
+Arithmetic count observations are checked before conversion as well: a finite
+original value outside `[-2**53, 2**53]` is refused. With argument validation
+disabled, fractional, nonfinite, or other off-support values return negative
+infinity rather than being truncated. Finite category indices retain their
+separate support contract without imposing the arithmetic-count bound.
 The count density kernels use stable deviance, Stirling, and
 gamma-increment formulas where applicable; this precision policy does
 not assert a uniform numerical error bound over all parameter regimes.

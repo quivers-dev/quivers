@@ -2021,7 +2021,7 @@ def _negativebinomial_density(a: Mapping[str, object], value: object) -> float:
         count is waited on, as the torch convention has it. A
         ``total_count`` of zero is the point mass at zero.
     """
-    count = _integer_observation(value, "NegativeBinomial")
+    count = _integer_observation(value, "NegativeBinomial", float64=True)
     if count is None:
         return -math.inf
     total = real_parameter(a, "total_count", "NegativeBinomial")
@@ -2071,7 +2071,7 @@ def _betabinomial_density(a: Mapping[str, object], value: object) -> float:
     float
         The log probability, ``-inf`` outside ``0..total_count``.
     """
-    count = _integer_observation(value, "BetaBinomial")
+    count = _integer_observation(value, "BetaBinomial", float64=True)
     if count is None:
         return -math.inf
     total = _trial_count(a.get("total_count"))
@@ -3957,7 +3957,7 @@ def _zip_density(a: Mapping[str, object], value: object) -> float:
         ``log(pi + (1 - pi) e^-rate)`` at zero, ``log(1 - pi)`` plus the
         Poisson log mass elsewhere, ``-inf`` below zero.
     """
-    count = _integer_observation(value, "ZeroInflatedPoisson")
+    count = _integer_observation(value, "ZeroInflatedPoisson", float64=True)
     zero_prob = real_parameter(a, "zero_prob", "ZeroInflatedPoisson")
     rate = real_parameter(a, "rate", "ZeroInflatedPoisson")
     if count is None or count < 0:
@@ -4040,7 +4040,7 @@ def _hurdle_density(a: Mapping[str, object], value: object) -> float:
         ``log pi`` at zero, ``log(1 - pi)`` plus the zero-truncated
         Poisson log mass elsewhere, ``-inf`` below zero.
     """
-    count = _integer_observation(value, "HurdlePoisson")
+    count = _integer_observation(value, "HurdlePoisson", float64=True)
     zero_prob, rate = _hurdle_parameters(a)
     if count is None or count < 0:
         return -math.inf

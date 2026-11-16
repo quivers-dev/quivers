@@ -3,6 +3,7 @@
 import math
 
 import torch
+from quivers.continuous._closed_probability import _check_count_observation_source
 from torch import Tensor
 from torch.distributions import Distribution, constraints
 
@@ -297,6 +298,7 @@ class COMPoisson(Distribution):
         Tensor
             Float64 log masses, negative infinity off support.
         """
+        _check_count_observation_source(value)
         value = torch.as_tensor(
             value, device=self.dispersion.device, dtype=torch.float64
         )

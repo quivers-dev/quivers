@@ -17,6 +17,7 @@ from quivers.continuous._closed_probability import (
     _binomial_log_mass,
     _beta_binomial_log_mass,
     _check_trial_count_source,
+    _check_count_observation_source,
 )
 
 
@@ -115,8 +116,7 @@ def _count_event(value, total_count: Tensor, categories: int):
     ValueError
         If event width or exact count representation is invalid.
     """
-    source = torch.as_tensor(value, device=total_count.device)
-    _check_trial_count_source(source)
+    _check_count_observation_source(value)
     point = torch.as_tensor(value, dtype=torch.float64, device=total_count.device)
     if point.ndim < 1 or point.shape[-1] != categories:
         raise ValueError(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 from quivers.continuous._count_cdf import _CountCDF
+from quivers.continuous._closed_probability import _check_count_observation_source
 from torch.distributions import constraints as _constraints
 from torch.distributions.distribution import Distribution
 
@@ -175,6 +176,7 @@ class HurdlePoisson(_CountCDF, Distribution):
         ValueError
             If validation is enabled and an observation is outside the support.
         """
+        _check_count_observation_source(value)
         if self._validate_args:
             self._validate_sample(value)
         valid = _constraints.nonnegative_integer.check(value)

@@ -45,6 +45,7 @@ import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from torch.distributions.utils import lazy_property
 
+from quivers._count_capacity import _MAX_EXACT_COUNT, _check_scalar_count_capacity
 from quivers.continuous._count_cdf import _CountCDF
 
 
@@ -97,6 +98,25 @@ class _ValidatedCategorical(_CountCDF, D.Categorical):
             probs = probs / largest
         super().__init__(probs=probs, logits=logits, validate_args=validate_args)
 
+    def log_prob(self, value):
+        """Score categories without truncating fractional or nonfinite indices.
+
+        Parameters
+        ----------
+        value : Tensor
+            Candidate category indices.
+
+        Returns
+        -------
+        Tensor
+            Log masses, negative infinity outside the finite category support.
+        """
+        if self._validate_args:
+            self._validate_sample(value)
+        valid = self.support.check(value)
+        point = torch.where(valid, value, 0)
+        return torch.where(valid, super().log_prob(point), -torch.inf)
+
     @lazy_property
     def logits(self):
         """Preserve exact zero category probabilities in log-space scoring.
@@ -130,49 +150,204 @@ class _ValidatedCategorical(_CountCDF, D.Categorical):
         return super().expand(batch_shape, new)
 
 
-_MAX_EXACT_TRIALS = 2**53
+# These storage ranges prove exact count capacity without inspecting values.
+_SMALL_COUNT_DTYPES = (
+    torch.bool,
+    torch.uint8,
+    torch.int8,
+    torch.int16,
+    torch.int32,
+    getattr(torch, "uint16", None),
+    getattr(torch, "uint32", None),
+)
 
 
-def _check_trial_count_source(total_count) -> None:
-    """Reject integer trial inputs that a float64 count kernel cannot preserve.
+class _CountSourceCapacity(torch.autograd.Function):
+    """Validate a physical count batch under reverse, forward, and mapped AD."""
+
+    @staticmethod
+    def forward(value, label, signed):
+        """Check physical storage before any floating conversion.
+
+        Parameters
+        ----------
+        value : Tensor
+            Original count tensor.
+        label : str
+            Diagnostic input role.
+        signed : bool
+            Check both finite observation bounds instead of the trial upper bound.
+
+        Returns
+        -------
+        Tensor
+            The unchanged input, used only as an identity validation token.
+
+        Raises
+        ------
+        ValueError
+            If any original count exceeds exact Float64 capacity.
+        TypeError
+            If storage is unsupported unsigned64.
+        """
+        if value.dtype == getattr(torch, "uint64", None):
+            raise TypeError(f"{label} use signed64 integer counts")
+        if value.is_floating_point() or value.dtype == torch.int64:
+            outside = value > _MAX_EXACT_COUNT
+            if signed:
+                outside = outside | (value < -_MAX_EXACT_COUNT)
+                if value.is_floating_point():
+                    outside = outside & torch.isfinite(value)
+            elif value.is_floating_point():
+                outside = outside | torch.isposinf(value)
+            if bool(outside.any()):
+                raise ValueError(
+                    f"{label} exceed the exact float64 integer capacity 2**53"
+                )
+        return value
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        """Retain no tensors for this identity validation operation.
+
+        Parameters
+        ----------
+        ctx : object
+            Autograd context.
+        inputs : tuple
+            Original count and static diagnostic options.
+        output : Tensor
+            Unchanged count tensor.
+        """
+
+    @staticmethod
+    def backward(ctx, *grad_outputs):
+        """Propagate identity gradients without differentiating validation.
+
+        Parameters
+        ----------
+        ctx : object
+            Unused context.
+        *grad_outputs : Tensor
+            Output cotangent.
+
+        Returns
+        -------
+        tuple
+            Original cotangent and no gradients for static options.
+        """
+        return grad_outputs[0], None, None
+
+    @staticmethod
+    def jvp(ctx, *grad_inputs):
+        """Propagate an identity forward tangent.
+
+        Parameters
+        ----------
+        ctx : object
+            Unused context.
+        *grad_inputs : Tensor or None
+            Count tangent and absent tangents for static diagnostic options.
+
+        Returns
+        -------
+        Tensor
+            Unchanged count tangent.
+        """
+        return grad_inputs[0]
+
+    @staticmethod
+    def vmap(info, in_dims, *args):
+        """Check every mapped count in one physical validation pass.
+
+        Parameters
+        ----------
+        info : object
+            Torch batching context.
+        in_dims : tuple
+            Mapped axes for count and static options.
+        *args : Tensor or str or bool
+            Physical count batch and static diagnostic options.
+
+        Returns
+        -------
+        tuple
+            Checked counts and their original mapped axis.
+        """
+        return _CountSourceCapacity.apply(*args), in_dims[0]
+
+
+def _check_count_source(value, *, label: str, signed: bool) -> None:
+    """Validate capacity before tensor or sequence conversions can round counts.
 
     Parameters
     ----------
-    total_count : torch.Tensor or int or float
-        Source trial count, sequence, or array before a floating-point conversion.
+    value : Tensor or Real or Sequence
+        Original trial parameter or observation.
+    label : str
+        Input role for diagnostics.
+    signed : bool
+        Check finite observations against both exact-integer bounds.
 
     Raises
     ------
     ValueError
-        If any real trial count exceeds 2**53.
+        If a source count exceeds exact Float64 capacity.
     TypeError
-        If trials use unsigned64 instead of the canonical signed integer dtype.
+        If a tensor uses unsupported unsigned64 integer storage.
     """
-    message = (
-        "native count trials must be <= 2**53 for exact float64 integer representation"
-    )
-    if isinstance(total_count, Real):
-        if total_count > _MAX_EXACT_TRIALS:
-            raise ValueError(message)
-        return
-    if isinstance(total_count, torch.Tensor):
-        if total_count.dtype == getattr(torch, "uint64", None):
-            raise TypeError("native trial tensors use signed64 integer counts")
-        if (
-            total_count.is_floating_point() or total_count.dtype == torch.int64
-        ) and bool((total_count > _MAX_EXACT_TRIALS).any()):
-            raise ValueError(message)
-        return
-    if isinstance(total_count, Sequence) and not isinstance(total_count, str | bytes):
-        # Inspect every scalar before mixed Python sequences can infer a
-        # floating dtype and round an otherwise exact large integer.
-        for item in total_count:
-            _check_trial_count_source(item)
-        return
-    if hasattr(total_count, "dtype") and hasattr(total_count, "shape"):
-        # Array providers retain their existing storage dtype. No NumPy
-        # dependency or intermediate default-floating conversion is needed.
-        _check_trial_count_source(torch.as_tensor(total_count))
+    if isinstance(value, Real):
+        _check_scalar_count_capacity(
+            cast(int | float, value), label=label, signed=signed
+        )
+    elif isinstance(value, Tensor):
+        if value.dtype in _SMALL_COUNT_DTYPES or (
+            signed and value.dtype == torch.float16
+        ):
+            return
+        _CountSourceCapacity.apply(value.detach(), label, signed)
+    elif isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        # Inspect originals before mixed sequences infer a floating dtype.
+        for item in value:
+            _check_count_source(item, label=label, signed=signed)
+    elif hasattr(value, "dtype") and hasattr(value, "shape"):
+        _check_count_source(torch.as_tensor(value), label=label, signed=signed)
+
+
+def _check_trial_count_source(total_count) -> None:
+    """Reject trial inputs that a Float64 count kernel cannot preserve.
+
+    Parameters
+    ----------
+    total_count : Tensor or Real or Sequence
+        Original trial count before conversion.
+
+    Raises
+    ------
+    ValueError
+        If a trial exceeds 2**53.
+    TypeError
+        If trials use unsigned64 instead of signed integer storage.
+    """
+    _check_count_source(total_count, label="native count trials", signed=False)
+
+
+def _check_count_observation_source(value) -> None:
+    """Reject observations that count arithmetic cannot represent exactly.
+
+    Parameters
+    ----------
+    value : Tensor or Real or Sequence
+        Original observation before any floating conversion or support masking.
+
+    Raises
+    ------
+    ValueError
+        If a finite observation lies outside [-2**53, 2**53].
+    TypeError
+        If observations use unsupported unsigned64 integer storage.
+    """
+    _check_count_source(value, label="count observations", signed=True)
 
 
 def _require_sample_capacity(value: torch.Tensor) -> torch.Tensor:
@@ -195,7 +370,7 @@ def _require_sample_capacity(value: torch.Tensor) -> torch.Tensor:
         operational failure, not truncation or conditioning of the law.
     """
     if not bool(
-        (torch.isfinite(value) & (value >= 0) & (value <= _MAX_EXACT_TRIALS)).all()
+        (torch.isfinite(value) & (value >= 0) & (value <= _MAX_EXACT_COUNT)).all()
     ):
         raise RuntimeError(
             "count sampling exceeds the exact float64 integer capacity 2**53"
@@ -472,7 +647,12 @@ def _out_of_support(value: torch.Tensor, total: torch.Tensor) -> torch.Tensor:
     torch.Tensor
         A Boolean mask.
     """
-    return (value < 0) | (value > total)
+    return (
+        ~torch.isfinite(value)
+        | (value != value.floor())
+        | (value < 0)
+        | (value > total)
+    )
 
 
 def _count_log(count: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
@@ -602,13 +782,19 @@ class ClosedBernoulli(_CountCDF, D.Bernoulli):
             The log masses: ``-inf`` for a success under ``probs = 0``
             or a failure under ``probs = 1``.
         """
-        probs = self._closed_probs
-        if probs is None:
-            return super().log_prob(value)
         if self._validate_args:
             self._validate_sample(value)
-        value, probs = torch.broadcast_tensors(value.to(probs.dtype), probs)
-        return _count_log(value, probs) + _count_log_complement(1.0 - value, probs)
+        valid = _constraints.boolean.check(value)
+        point = torch.where(valid, value, 0)
+        probs = self._closed_probs
+        if probs is None:
+            result = super().log_prob(point.to(self.logits.dtype))
+        else:
+            point, probs = torch.broadcast_tensors(point.to(probs.dtype), probs)
+            result = _count_log(point, probs) + _count_log_complement(
+                1.0 - point, probs
+            )
+        return torch.where(valid, result, -torch.inf)
 
 
 class ClosedBinomial(_CountCDF, D.Binomial):
@@ -727,6 +913,7 @@ class ClosedBinomial(_CountCDF, D.Binomial):
             nonnegative integer.
         """
         probs = self._closed_probs
+        _check_count_observation_source(value)
         if self._validate_args:
             _require_counts(value)
         value, total = torch.broadcast_tensors(
@@ -824,12 +1011,14 @@ class ClosedNegativeBinomial(_CountCDF, D.NegativeBinomial):
         torch.Tensor
             The log masses, ``-inf`` below zero.
         """
+        _check_count_observation_source(value)
         if self._validate_args:
             self._validate_sample(value)
         value, total = torch.broadcast_tensors(
             value.to(torch.float64), self.total_count
         )
-        positive = (value > 0) & (total > 0)
+        valid = _constraints.nonnegative_integer.check(value)
+        positive = valid & (value > 0) & (total > 0)
         k = torch.where(positive, value, torch.ones_like(value))
         r = torch.where(positive, total, torch.ones_like(total))
         probs = self._closed_probs
@@ -849,7 +1038,7 @@ class ClosedNegativeBinomial(_CountCDF, D.NegativeBinomial):
         result = torch.where(
             value == 0, zero, torch.where(positive, stable, -torch.inf)
         )
-        return result
+        return torch.where(valid, result, -torch.inf)
 
     @property
     def mean(self) -> torch.Tensor:
@@ -1001,6 +1190,7 @@ class ClosedGeometric(_CountCDF, D.Geometric):
         Tensor
             Log probabilities, negative infinity outside the counting support.
         """
+        _check_count_observation_source(value)
         if self._validate_args:
             self._validate_sample(value)
         value = torch.as_tensor(value, device=self.probs.device).double()
@@ -1122,10 +1312,12 @@ class ClosedPoisson(_CountCDF, D.Poisson):
         torch.Tensor
             The log masses.
         """
+        _check_count_observation_source(value)
         if self._validate_args:
             self._validate_sample(value)
         value, rate = torch.broadcast_tensors(value.to(self.rate.dtype), self.rate)
-        positive = value > 0
+        valid = _constraints.nonnegative_integer.check(value)
+        positive = valid & (value > 0)
         k = torch.where(positive, value, torch.ones_like(value))
         safe_rate = torch.where(rate > 0, rate, torch.ones_like(rate))
         stable = (
@@ -1134,7 +1326,7 @@ class ClosedPoisson(_CountCDF, D.Poisson):
             - _deviance(k, safe_rate.log())
         )
         stable = torch.where(rate > 0, stable, -torch.inf)
-        return torch.where(positive, stable, -rate)
+        return torch.where(valid, torch.where(positive, stable, -rate), -torch.inf)
 
 
 __all__ = [

@@ -3,6 +3,7 @@
 import math
 
 import torch
+from quivers.continuous._closed_probability import _check_count_observation_source
 from torch import Tensor
 from torch.distributions import Distribution, constraints
 
@@ -183,6 +184,7 @@ class DiscreteWeibull(Distribution):
         Tensor
             Log mass, negative infinity outside the support.
         """
+        _check_count_observation_source(value)
         return _log_mass(self.probs, self.concentration, value.double())
 
     def _log_tails(self, value):

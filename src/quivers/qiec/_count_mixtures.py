@@ -441,7 +441,7 @@ def count_mixture_log_prob(
     p = _parameters(arguments, family)
     if isinstance(value, bool) or not isinstance(value, int | float):
         return -math.inf
-    count = _integer_observation(value, family)
+    count = _integer_observation(value, family, float64=True)
     if count is None or count < 0:
         return -math.inf
     zero = p["zero_prob"]

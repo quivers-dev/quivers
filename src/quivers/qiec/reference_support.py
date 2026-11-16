@@ -11,6 +11,8 @@ from collections.abc import Callable, Mapping, Sequence
 import math
 import random
 
+from quivers._count_capacity import _check_scalar_count_capacity
+
 
 class DistributionError(ValueError):
     """A distribution could not be constructed, sampled, or scored."""
@@ -288,7 +290,9 @@ def finite_value(value: object, family: str) -> float:
     return float(value)
 
 
-def _integer_observation(value: object, family: str) -> int | None:
+def _integer_observation(
+    value: object, family: str, *, float64: bool = False
+) -> int | None:
     """Read an integral observation without truncating or rounding integers.
 
     Parameters
@@ -297,6 +301,8 @@ def _integer_observation(value: object, family: str) -> int | None:
         Scalar response candidate, including Boolean zero/one values.
     family : str
         Native family name for nonnumeric-value diagnostics.
+    float64 : bool
+        Require exact Float64 count capacity before an arithmetic count kernel.
 
     Returns
     -------
@@ -307,8 +313,13 @@ def _integer_observation(value: object, family: str) -> int | None:
     Raises
     ------
     DistributionError
-        If the observation is not a supported numeric scalar.
+        If the observation is not numeric or exceeds the requested count capacity.
     """
+    if float64 and isinstance(value, int | float):
+        try:
+            _check_scalar_count_capacity(value, label="count observations", signed=True)
+        except ValueError as error:
+            raise DistributionError(str(error)) from error
     if isinstance(value, int):
         return int(value)
     point = finite_value(value, family)
