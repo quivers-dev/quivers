@@ -51,6 +51,7 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
     "FisherSnedecor": ("df1", "df2"),
     "Uniform": ("low", "high"),
     "MultivariateNormal": ("loc", "scale_tril"),
+    "MultivariateStudentT": ("df", "loc", "scale_tril"),
     "LowRankMVN": ("loc", "cov_factor", "cov_diag"),
     "RelaxedBernoulli": ("temperature", "probs"),
     "RelaxedOneHotCategorical": ("temperature", "probs"),
@@ -123,6 +124,11 @@ _ALTERNATIVE_SCHEMAS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("loc", "scale_tril"),
         ("loc", "covariance_matrix"),
         ("loc", "precision_matrix"),
+    ),
+    "MultivariateStudentT": (
+        ("df", "loc", "scale_tril"),
+        ("df", "loc", "covariance_matrix"),
+        ("df", "loc", "precision_matrix"),
     ),
     "MatrixNormal": (
         ("loc", "row_covariance", "col_covariance"),

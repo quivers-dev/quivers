@@ -44,6 +44,7 @@ from quivers.continuous._cox import CoxPH
 from quivers._splines import MSplineBasis
 from quivers._spline_design import cox_spline_basis
 from quivers.continuous._additive_log_ratio import AdditiveLogRatioNormal
+from quivers.continuous._multivariate_student_t import MultivariateStudentT
 from quivers.continuous._multinomial import (
     Multinomial,
     DirichletMultinomial,
@@ -1826,6 +1827,7 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
     """
 
     _event_offset = 0
+    _extra_raw_parameters = 0
     _distribution_class = D.MultivariateNormal
 
     def __init__(
@@ -1843,7 +1845,7 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         n_tril = d * (d + 1) // 2
         self.param_source = _make_source(
             domain,
-            d + n_tril,
+            d + n_tril + self._extra_raw_parameters,
             hidden_dim,
             param_source=param_source,
             param_source_option=param_source_option,
@@ -1854,7 +1856,7 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
     def _get_dist(self, x: torch.Tensor) -> D.Distribution:
         raw = self.param_source(x)
         loc = raw[..., : self._d]
-        tril_raw = raw[..., self._d :]
+        tril_raw = raw[..., self._d : self._d + self._n_tril]
 
         # build lower-triangular matrix
         batch_shape = tril_raw.shape[:-1]
@@ -1874,7 +1876,24 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         diag_idx = torch.arange(self._d)
         L[..., diag_idx, diag_idx] = F.softplus(L[..., diag_idx, diag_idx]) + EPS
 
-        return self._distribution_class(loc, scale_tril=L)
+        return self._distribution_from_raw(loc, L, raw)
+
+    def _distribution_from_raw(
+        self, loc: torch.Tensor, factor: torch.Tensor, raw: torch.Tensor
+    ) -> D.Distribution:
+        """Construct a law from the shared Gaussian location/factor unpacking.
+
+        Parameters
+        ----------
+        loc, factor, raw : torch.Tensor
+            Decoded Gaussian heads and the complete parameter-source output.
+
+        Returns
+        -------
+        torch.distributions.Distribution
+            Distribution retaining the same event coordinates.
+        """
+        return self._distribution_class(loc, scale_tril=factor)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         dist = self._get_dist(x)
@@ -1887,6 +1906,43 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
     ) -> torch.Tensor:
         dist = self._get_dist(x)
         return dist.rsample(sample_shape)
+
+
+class ConditionalMultivariateStudentT(ConditionalMultivariateNormal):
+    """Learn a Student radial scale alongside the existing Gaussian heads.
+
+    Parameters
+    ----------
+    domain, codomain : AnySpace
+        Input carrier and real-vector response space.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-network hidden dimensions.
+    param_source : ParamSource or None
+        Reusable source emitting location, packed Cholesky, and one df head.
+    param_source_option : str or None
+        Existing parameter-source strategy.
+    """
+
+    _extra_raw_parameters = 1
+
+    def _distribution_from_raw(
+        self, loc: torch.Tensor, factor: torch.Tensor, raw: torch.Tensor
+    ) -> D.Distribution:
+        """Add the positive radial head to the shared Gaussian geometry.
+
+        Parameters
+        ----------
+        loc, factor, raw : torch.Tensor
+            Decoded Gaussian heads and complete learned output.
+
+        Returns
+        -------
+        torch.distributions.Distribution
+            Marginal Student vector law with learned degrees of freedom.
+        """
+        return MultivariateStudentT(
+            F.softplus(raw[..., -1]) + EPS, loc, scale_tril=factor
+        )
 
 
 class ConditionalAdditiveLogRatioNormal(ConditionalMultivariateNormal):
@@ -4082,6 +4138,21 @@ _register_family(
 
 _register_family(
     FamilySpec(
+        name="MultivariateStudentT",
+        dist_class=MultivariateStudentT,
+        params=(
+            ParamSpec(name="df", transform="softplus"),
+            ParamSpec(name="loc", transform="id"),
+            ParamSpec(name="scale_tril", transform="id"),
+        ),
+        support=_constraints.real_vector,
+        output_kind="mvn",
+        conditional_class_override=ConditionalMultivariateStudentT,
+    )
+)
+
+_register_family(
+    FamilySpec(
         name="AdditiveLogRatioNormal",
         dist_class=AdditiveLogRatioNormal,
         params=(
@@ -4954,6 +5025,8 @@ __all__ = [
     "AdditiveLogRatioNormal",
     "ConditionalAdditiveLogRatioNormal",
     "ConditionalMultivariateNormal",
+    "MultivariateStudentT",
+    "ConditionalMultivariateStudentT",
     "ConditionalLowRankMVN",
     "ConditionalRelaxedBernoulli",
     "ConditionalRelaxedOneHotCategorical",

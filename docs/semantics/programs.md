@@ -255,6 +255,26 @@ extents specify these types; runtime trial and probability or
 concentration tensors specify the kernel. Declaring either tensor
 introduces no observation or random effect.
 
+#### Multivariate Student events
+
+For positive degrees of freedom $\nu$, location $\mu\in\mathbb R^d$,
+and nonsingular lower Cholesky factor $L$, let
+$\delta=(y-\mu)^\mathsf T(LL^\mathsf T)^{-1}(y-\mu)$. The
+`MultivariateStudentT` kernel has log density
+
+$$
+\log\Gamma((\nu+d)/2)-\log\Gamma(\nu/2)
+-\frac d2\log(\nu\pi)-\sum_j\log L_{jj}
+-\frac{\nu+d}{2}\log(1+\delta/\nu).
+$$
+
+Its vector coordinates share one chi-squared radial scale. The event axis
+is separate from observation batch axes, and a vector contributes one
+marginal log density per observation. No auxiliary scale site enters its
+pointwise likelihood. The Gaussian scale $LL^\mathsf T$ is not the Student
+response covariance; the latter exists for $\nu>2$ and equals
+$\nu LL^\mathsf T/(\nu-2)$.
+
 #### Additive log-ratio Normal events
 
 For $d\geq1$, let $Z\sim\mathcal N_d(\mu,LL^\mathsf T)$, where $L$

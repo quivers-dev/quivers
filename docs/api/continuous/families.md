@@ -364,6 +364,16 @@ for the distinction between sampling limits and density evaluation.
 ::: quivers.continuous._zero_inflated_count
 
 
+## Multivariate Student events
+
+The Gaussian scale matrix is distinct from the Student response covariance.
+See the [multivariate Student guide](../../guides/continuous-families.md#multivariate-student-responses)
+for event axes, moment boundaries, and constructor alternatives.
+
+::: quivers.continuous.MultivariateStudentT
+
+::: quivers.continuous.ConditionalMultivariateStudentT
+
 ## Matrix-normal factors
 
 `MatrixNormal` accepts independently exclusive `row_covariance` /

@@ -111,6 +111,8 @@ from quivers.continuous.families import (
     ConditionalMixture,
     ConditionalMixtureNormal,
     ConditionalMultivariateNormal,
+    ConditionalMultivariateStudentT,
+    MultivariateStudentT,
     ConditionalNegativeBinomial,
     ConditionalNormal,
     ConditionalOneHotCategorical,
@@ -1063,6 +1065,27 @@ FAMILY_META: dict[str, FamilyMeta] = {
                     arg_name="covariance_matrix",
                     axis_indices=(0, 0),
                     constraint_kind="positive_definite",
+                ),
+            ),
+            event_axis_source=OverOrCodomainAxes(axis_count=1),
+            sample_constraint_kind="real_vector",
+        ),
+    ),
+    "MultivariateStudentT": FamilyMeta(
+        qvr_name="MultivariateStudentT",
+        event_rank=1,
+        distribution_class=MultivariateStudentT,
+        quivers_class=ConditionalMultivariateStudentT,
+        target_names={},
+        structured_lowering=StructuredSampleLowering(
+            args=(
+                StructuredDataArg(
+                    arg_name="loc", axis_indices=(0,), constraint_kind="real_vector"
+                ),
+                StructuredDataArg(
+                    arg_name="scale_tril",
+                    axis_indices=(0, 0),
+                    constraint_kind="real_matrix",
                 ),
             ),
             event_axis_source=OverOrCodomainAxes(axis_count=1),

@@ -1523,7 +1523,7 @@ class _ProgramWalk:
             )
             names = [name for name, _ in pairs]
             pre = [arg for _, arg in pairs]
-        constraints = _resolve_arg_constraints(meta, tuple(pre), self.ctx)
+        constraints = _resolve_arg_constraints(meta, tuple(pre), self.ctx, tuple(names))
         event_axes = tuple(
             dim.name for dim in plate.event_dims if isinstance(dim, DimStatic)
         )

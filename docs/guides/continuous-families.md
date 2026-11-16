@@ -817,6 +817,35 @@ structure.
 
 ## Structured priors over weight matrices
 
+### Multivariate Student responses
+
+`MultivariateStudentT(df, loc, scale_tril=...)` retains one real-vector event
+axis. It also accepts `covariance_matrix` or `precision_matrix` instead of
+the factor, using the same Gaussian scale geometry as `MultivariateNormal`.
+The covariance parameter names describe the Gaussian scale: the response
+covariance is `df/(df-2)` times that matrix when `df > 2`.
+
+Coordinates share a single chi-squared radial scale, so this law differs
+from independent scalar Student responses even when its scale is diagonal.
+Scoring evaluates the marginal Student density directly, and `rsample`
+supports pathwise derivatives of all three heads. The response mean is
+`loc` for `df > 1`; it is undefined otherwise. Marginal variances are
+infinite for `1 < df <= 2` and undefined for `df <= 1`.
+
+```qvr
+object Row : FinSet 3
+object Component : FinSet 2
+program student_response : Row -> Row
+    observe y : Row <- MultivariateStudentT(df=5.0, loc=[0.0,1.0], scale_tril=[[1.0,0.0],[0.5,1.0]]) [over=Component]
+    return y
+export student_response
+```
+
+`ConditionalMultivariateStudentT` reuses the existing Gaussian location and
+packed Cholesky heads, adding one positive degrees-of-freedom head. The
+native and checked reference runtimes implement this family; external
+renderers report a capability error until a target mapping is implemented.
+
 ### MatrixNormal: matrix prior with Kronecker covariance {#matrixnormal-kronecker-covariance-matrix-prior}
 
 The rows of a weight matrix may covary because their inputs are related, and its

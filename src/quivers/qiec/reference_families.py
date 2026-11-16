@@ -32,6 +32,7 @@ from quivers.qiec._count_mixtures import (
     _require_sample_capacity as _require_count_sample_capacity,
     _beta_binomial_log_mass,
     _validate_beta_concentrations,
+    _log_gamma_increment,
 )
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.reference_support import (
@@ -2614,13 +2615,15 @@ def _mixturenormal_density(a: Mapping[str, object], value: object) -> float:
     )
 
 
-def _alr_parameters(a: Mapping[str, object]) -> tuple[Vector, Matrix]:
-    """Validate correlated additive-log-ratio Gaussian parameters.
+def _gaussian_parameters(a: Mapping[str, object], family: str) -> tuple[Vector, Matrix]:
+    """Validate the shared location and Gaussian factor geometry.
 
     Parameters
     ----------
     a : Mapping[str, object]
         Gaussian location and lower Cholesky factor.
+    family : str
+        Law name retained in located parameter diagnostics.
 
     Returns
     -------
@@ -2632,8 +2635,16 @@ def _alr_parameters(a: Mapping[str, object]) -> tuple[Vector, Matrix]:
     DistributionError
         If the Gaussian dimensions or Cholesky constraints fail.
     """
-    loc = vector_parameter(a, "loc", "AdditiveLogRatioNormal")
-    factor = _matrix_parameter(a, "scale_tril", "AdditiveLogRatioNormal")
+    if (
+        sum(
+            name in a
+            for name in ("scale_tril", "covariance_matrix", "precision_matrix")
+        )
+        != 1
+    ):
+        raise DistributionError(f"{family} requires exactly one scale representation")
+    loc = vector_parameter(a, "loc", family)
+    factor = _covariance_factor(a, family)
     d = len(loc)
     if (
         not d
@@ -2647,7 +2658,7 @@ def _alr_parameters(a: Mapping[str, object]) -> tuple[Vector, Matrix]:
         )
     ):
         raise DistributionError(
-            "AdditiveLogRatioNormal requires matching finite location and lower Cholesky factor"
+            f"{family} requires matching finite location and lower Cholesky factor"
         )
     return loc, factor
 
@@ -2706,7 +2717,7 @@ def _alr_sample(a: Mapping[str, object], rng: random.Random) -> object:
     DistributionError
         If floating point cannot represent the sampled interior point.
     """
-    loc, factor = _alr_parameters(a)
+    loc, factor = _gaussian_parameters(a, "AdditiveLogRatioNormal")
     reference = _alr_reference(a, len(loc) + 1)
     ratios_list = list(_draw_mvn(loc, factor, rng))
     ratios_list.insert(reference, 0.0)
@@ -2741,7 +2752,7 @@ def _alr_density(a: Mapping[str, object], value: object) -> float:
     DistributionError
         If the event has the wrong number of components.
     """
-    loc, factor = _alr_parameters(a)
+    loc, factor = _gaussian_parameters(a, "AdditiveLogRatioNormal")
     reference = _alr_reference(a, len(loc) + 1)
     point = _as_vector(value, "AdditiveLogRatioNormal point")
     if len(point) != len(loc) + 1:
@@ -2777,11 +2788,8 @@ def _mvn_sample(a: Mapping[str, object], rng: random.Random) -> object:
     object
         The drawn vector.
     """
-    return _draw_mvn(
-        vector_parameter(a, "loc", "MultivariateNormal"),
-        _covariance_factor(a, "MultivariateNormal"),
-        rng,
-    )
+    loc, factor = _gaussian_parameters(a, "MultivariateNormal")
+    return _draw_mvn(loc, factor, rng)
 
 
 def _mvn_density(a: Mapping[str, object], value: object) -> float:
@@ -2799,10 +2807,76 @@ def _mvn_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density.
     """
-    return _mvn_log_prob(
-        _as_vector(value, "MultivariateNormal point"),
-        vector_parameter(a, "loc", "MultivariateNormal"),
-        _covariance_factor(a, "MultivariateNormal"),
+    loc, factor = _gaussian_parameters(a, "MultivariateNormal")
+    return _mvn_log_prob(_as_vector(value, "MultivariateNormal point"), loc, factor)
+
+
+def _mvstudent_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Sample one shared Student radial scale around the Gaussian geometry.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Degrees of freedom, location, and one scale representation.
+    rng : random.Random
+        Explicit host random stream.
+
+    Returns
+    -------
+    object
+        One vector draw on the native event carrier.
+
+    Raises
+    ------
+    DistributionError
+        If parameters are invalid or a draw exceeds finite host capacity.
+    """
+    df = _positive_parameter(a, "df", "MultivariateStudentT")
+    loc, factor = _gaussian_parameters(a, "MultivariateStudentT")
+    noise = _draw_mvn(tuple(0.0 for _ in loc), factor, rng)
+    log_scale = (math.log(df / 2) - _log_standard_gamma(df / 2, rng)) / 2
+    if log_scale > _LOG_FLOAT_MAX:
+        raise DistributionError(
+            "MultivariateStudentT draw exceeds finite host capacity"
+        )
+    scale = math.exp(log_scale)
+    return tuple(mean + scale * value for mean, value in zip(loc, noise, strict=True))
+
+
+def _mvstudent_density(a: Mapping[str, object], value: object) -> float:
+    """Score a marginal Student vector without latent radial augmentation.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Degrees of freedom, location, and one scale representation.
+    value : object
+        Vector observation in retained event order.
+
+    Returns
+    -------
+    float
+        Marginal log density.
+
+    Raises
+    ------
+    DistributionError
+        If the Gaussian geometry, degrees of freedom, or event width is invalid.
+    """
+    df = _positive_parameter(a, "df", "MultivariateStudentT")
+    loc, factor = _gaussian_parameters(a, "MultivariateStudentT")
+    point = _as_vector(value, "MultivariateStudentT point")
+    if len(point) != len(loc):
+        raise DistributionError("MultivariateStudentT point has the wrong event width")
+    residual = tuple(x - mean for x, mean in zip(point, loc, strict=True))
+    whitened = _solve_lower(factor, residual)
+    squared = math.fsum(x * x for x in whitened)
+    width = len(loc)
+    return (
+        _log_gamma_increment(df / 2, width / 2)
+        - width / 2 * (math.log(df) + math.log(math.pi))
+        - _log_det_from_cholesky(factor) / 2
+        - (df + width) / 2 * math.log1p(squared / df)
     )
 
 
@@ -4558,6 +4632,7 @@ SAMPLERS: Mapping[str, Sampler] = {
     "MixtureNormal": _mixturenormal_sample,
     "AdditiveLogRatioNormal": _alr_sample,
     "MultivariateNormal": _mvn_sample,
+    "MultivariateStudentT": _mvstudent_sample,
     "LowRankMVN": _lowrankmvn_sample,
     "GP": _gp_sample,
     "Wishart": _wishart_sample,
@@ -4607,6 +4682,7 @@ DENSITIES: Mapping[str, Density] = {
     "MixtureNormal": _mixturenormal_density,
     "AdditiveLogRatioNormal": _alr_density,
     "MultivariateNormal": _mvn_density,
+    "MultivariateStudentT": _mvstudent_density,
     "LowRankMVN": _lowrankmvn_density,
     "GP": _gp_density,
     "Wishart": _wishart_density,

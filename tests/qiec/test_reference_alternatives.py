@@ -22,6 +22,7 @@ import torch.distributions as D
 
 from quivers.qiec.distributions import ReferenceBackend
 from quivers.qiec.families import FAMILIES
+from quivers.continuous._multivariate_student_t import MultivariateStudentT
 
 type Host = float | int | bool | tuple[object, ...]
 """A host value: a number, a boolean, or nested tuples of numbers."""
@@ -57,6 +58,16 @@ _CASES: dict[str, tuple[dict[str, Host], dict[str, dict[str, Host]], Host, Oracl
         },
         (0.3, 0.4),
         D.MultivariateNormal,
+    ),
+    "MultivariateStudentT": (
+        {"df": 5.0, "loc": (0.0, 1.0)},
+        {
+            "scale_tril": {"scale_tril": _L},
+            "covariance_matrix": {"covariance_matrix": _COVARIANCE},
+            "precision_matrix": {"precision_matrix": _PRECISION},
+        },
+        (0.3, 0.4),
+        MultivariateStudentT,
     ),
     "Wishart": (
         {"df": 4.0},

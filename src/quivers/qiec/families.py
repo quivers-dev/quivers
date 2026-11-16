@@ -1316,6 +1316,39 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
+        name="MultivariateStudentT",
+        parameters=(
+            FamilyParameter(name="df", constraint="positive", rank=0),
+            FamilyParameter(name="loc", constraint="real", rank=1, event_dims=(0,)),
+            FamilyParameter(
+                name="covariance_matrix",
+                constraint="positive_definite",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="precision_matrix",
+                constraint="positive_definite",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="scale_tril",
+                constraint="lower_cholesky",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+        ),
+        support="real",
+        element=REAL,
+        event_rank=1,
+        event_sources=("loc",),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="LowRankMVN",
         parameters=(
             FamilyParameter(name="loc", constraint="real", rank=1, event_dims=(0,)),

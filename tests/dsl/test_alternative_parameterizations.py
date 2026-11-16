@@ -26,6 +26,7 @@ from quivers.dsl.family_schemas import family_parameterizations
 from quivers.dsl.qiec_lowering import QiecDiagnosticError
 from quivers.inference.trace import trace
 from quivers.qiec.families import FAMILIES
+from quivers.continuous._multivariate_student_t import MultivariateStudentT
 
 type Host = float | int | list[float] | list[int] | list[list[float]]
 """A number, a vector, or a matrix as a case writes it."""
@@ -352,6 +353,28 @@ _CASES: dict[str, tuple[str, str, str, dict[str, Host], dict[str, Host], Oracle]
         ),
     ),
 }
+
+
+for _parameter, _matrix in (
+    ("covariance_matrix", _COVARIANCE),
+    ("precision_matrix", _PRECISION),
+):
+    _CASES["multivariate-student-" + _parameter] = (
+        "MultivariateStudentT",
+        _parameter,
+        "program p:One->One\n"
+        f"    observe y:Row <- MultivariateStudentT(df=5.0,loc=[0.0,1.0],{_parameter}={_matrix!r}) [over=Two]\n"
+        "    return y\n",
+        {"y": [[0.2, -0.1], [0.5, 0.8], [1.3, 0.7], [-0.2, 1.8]]},
+        {},
+        lambda s: (
+            MultivariateStudentT(
+                _t(5.0), _t([0.0, 1.0]), covariance_matrix=_t(_COVARIANCE)
+            )
+            .log_prob(s["y"])
+            .sum()
+        ),
+    )
 
 
 # Both factor slots share the rectangular event proof and the same dense oracle.

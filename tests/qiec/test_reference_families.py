@@ -353,6 +353,10 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
         {"loc": (0.0, 1.0), "covariance_matrix": ((2.0, 0.5), (0.5, 1.0))},
         ((0.3, 0.8), (-1.0, 2.0)),
     ),
+    "MultivariateStudentT": (
+        {"df": 5.0, "loc": (0.0, 1.0), "covariance_matrix": ((2.0, 0.5), (0.5, 1.0))},
+        ((0.3, 0.8), (-1.0, 2.0)),
+    ),
     "LowRankMVN": (
         {
             "loc": (0.0, 1.0, -1.0),

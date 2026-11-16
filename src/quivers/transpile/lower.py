@@ -1789,6 +1789,7 @@ def _resolve_arg_constraints(
     meta: FamilyMeta,
     args: tuple[IRArg, ...],
     ctx: _LowerCtx,
+    arg_names: tuple[str, ...] = (),
 ) -> dict[str, Constraint]:
     """Return the `arg_constraints` dict for `meta`, evaluating the
     sentinel instance when `arg_constraints` is a property rather
@@ -1796,7 +1797,7 @@ def _resolve_arg_constraints(
     cls_attr = meta.distribution_class.arg_constraints
     if isinstance(cls_attr, dict):
         return cls_attr
-    instance = _make_sentinel(meta, args, ctx)
+    instance = _make_sentinel(meta, args, ctx, arg_names)
     return dict(instance.arg_constraints)
 
 
