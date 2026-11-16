@@ -221,6 +221,8 @@ _UNSPELLED_ALTERNATIVES: dict[tuple[str, str], str] = {
     },
     ("MultivariateNormal", "precision_matrix"): "covariance_matrix",
     ("Wishart", "precision_matrix"): "scale_tril",
+    ("MatrixNormal", "row_scale_tril"): "row_covariance",
+    ("MatrixNormal", "col_scale_tril"): "col_covariance",
 }
 
 
