@@ -52,6 +52,15 @@ so its samples lie inside that support, and its `log_prob` includes the log abso
 determinant of the
 [Jacobian](https://en.wikipedia.org/wiki/Jacobian_matrix_and_determinant).
 
+Guides and named initialization use the same
+[`LatentSite`](../api/inference/guide.md#quivers.inference.registry.LatentSite)
+geometry. Unconstrained coordinates are flat within each site; constrained
+values retain their declared event axes, including rectangular matrices and
+singleton matrix dimensions. The shared transform reduces Jacobians over the
+support's event axes while retaining run and plate axes. Thus a matrix event
+does not acquire extra independent observations when a guide evaluates its
+density, and subsampling still selects the declared plate rows.
+
 ### AutoNormalGuide
 
 A diagonal Gaussian approximation with one bijector per site, which maps

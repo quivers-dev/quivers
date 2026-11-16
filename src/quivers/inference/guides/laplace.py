@@ -155,12 +155,8 @@ class AutoLaplaceApproximation(Guide):
                 z_site = per_site_unconstrained[site.name]
                 if not site.is_plate:
                     z_site = z_site.unsqueeze(0)
-                v = site.bijector(z_site)
-                log_det_sum = log_det_sum + (
-                    site.bijector.log_abs_det_jacobian(z_site, v).sum()
-                )
-                if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
-                    v = v.squeeze(-1)
+                v, log_det = site.constrain(z_site)
+                log_det_sum = log_det_sum + log_det.sum()
                 constrained[site.name] = v
             log_p = model.log_joint(x, {**constrained, **observations})
             return -(log_p.sum() + log_det_sum)
@@ -199,9 +195,7 @@ class AutoLaplaceApproximation(Guide):
             z_site = per_site[site.name]
             if not site.is_plate:
                 z_site = z_site.unsqueeze(0).expand(batch, *site.unconstrained_shape)
-            v = site.bijector(z_site)
-            if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
-                v = v.squeeze(-1)
+            v, _ = site.constrain(z_site)
             result[site.name] = v
         return result
 
@@ -232,17 +226,11 @@ class AutoLaplaceApproximation(Guide):
                     f"{type(self).__name__}.log_prob: missing site {site.name!r}"
                 )
             v = sites[site.name]
-            if site.is_scalar and v.dim() == (1 if site.is_plate else 1):
-                v_e = v.unsqueeze(-1)
-            else:
-                v_e = v
-            if not site.is_plate and v_e.dim() == len(site.unconstrained_shape) + 1:
-                v_e = v_e[0]
-            z_site = site.bijector.inv(v_e)
+            if not site.is_plate and v.dim() == len(site.constrained_shape) + 1:
+                v = v[0]
+            z_site, log_det = site.unconstrain(v)
             unconstrained_per_site[site.name] = z_site
-            bijector_log_det = bijector_log_det + (
-                site.bijector.inv.log_abs_det_jacobian(v_e, z_site).sum()
-            )
+            bijector_log_det = bijector_log_det + log_det.sum()
         z_flat = self._registry.flatten_unconstrained(unconstrained_per_site)
         gauss = D.MultivariateNormal(self.map_z, scale_tril=self._scale_tril)
         log_q_z = gauss.log_prob(z_flat)

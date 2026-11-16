@@ -268,9 +268,7 @@ class AmortizedGuide(Guide):
         width = math.prod(_event_shape(encoder.codomain)) or 1
         if _same_support(support, site.support):
             through_bijector = False
-            expected = site.constrained_dim
-            if site.support is _constraints.corr_cholesky:
-                expected = site.constrained_dim * site.constrained_dim
+            expected = math.prod(AmortizedGuide._event(site)) or 1
         elif _same_support(support, _constraints.real) or _same_support(
             support, _constraints.real_vector
         ):
@@ -451,16 +449,13 @@ class AmortizedGuide(Guide):
         """
         site = binding.site
         if binding.through_bijector:
-            value = site.bijector(z)
-            if not isinstance(value, torch.Tensor):
-                raise TypeError("AmortizedGuide: a bijector returned a non-tensor")
+            if site.is_plate:
+                plate = site.plate_shape or (site.plate_index_size,)
+                leading = z.shape[: -(len(plate) + 1)]
+                z = z.reshape(*leading, *site.unconstrained_shape)
+            value, _ = site.constrain(z)
         else:
-            value = z
-            if site.support is _constraints.corr_cholesky:
-                d = site.constrained_dim
-                value = value.reshape(*value.shape[:-1], d, d)
-        if site.is_scalar and value.dim() >= 1 and value.shape[-1] == 1:
-            value = value.squeeze(-1)
+            value = z.reshape(*z.shape[:-1], *self._event(site))
         return value
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -523,8 +518,7 @@ class AmortizedGuide(Guide):
             site = binding.site
             value = sites[name].reshape(*leading, *self._event(site))
             if binding.through_bijector:
-                z = site.bijector.inv(value)
-                log_det = site.bijector.inv.log_abs_det_jacobian(value, z)
+                z, log_det = site.unconstrain(value)
                 log_det = log_det.reshape(*leading, -1).sum(-1)
             else:
                 z = value
@@ -586,8 +580,7 @@ class AmortizedGuide(Guide):
 
     @staticmethod
     def _event(site: LatentSite) -> tuple[int, ...]:
-        """A site's event shape on its support, with the length-one axis
-        kept.
+        """A site's event shape, excluding its declared plate axes.
 
         Parameters
         ----------
@@ -597,12 +590,12 @@ class AmortizedGuide(Guide):
         Returns
         -------
         tuple[int, ...]
-            ``(d, d)`` for a correlation Cholesky factor, ``(d,)``
-            otherwise.
+            The constrained event axes; empty for scalar events.
         """
-        if site.support is _constraints.corr_cholesky:
-            return (site.constrained_dim, site.constrained_dim)
-        return (site.constrained_dim,)
+        plate_ndims = (
+            len(site.plate_shape or (site.plate_index_size,)) if site.is_plate else 0
+        )
+        return site.constrained_shape[plate_ndims:]
 
 
 __all__ = ["AmortizedGuide"]

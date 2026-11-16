@@ -151,9 +151,7 @@ class AutoNormalGuide(Guide):
             loc_b = loc.unsqueeze(0).expand(batch, *site.unconstrained_shape)
             scale_b = scale.unsqueeze(0).expand(batch, *site.unconstrained_shape)
             z = D.Normal(loc_b, scale_b).rsample()
-        v = site.bijector(z)
-        if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
-            v = v.squeeze(-1)
+        v, _ = site.constrain(z)
         return z, v
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -193,16 +191,13 @@ class AutoNormalGuide(Guide):
             if site.name not in sites:
                 continue
             v = sites[site.name]
-            if site.is_scalar and v.dim() == (1 if site.is_plate else 1):
-                v = v.unsqueeze(-1)
-            z = site.bijector.inv(v)
+            z, log_abs_det = site.unconstrain(v)
             loc = self._loc(site.name)
             scale = self._scale(site.name)
             if site.is_plate:
                 # Plate latent: single shared sample, scalar density
                 # broadcast against the batch accumulator.
                 log_q_z = D.Normal(loc, scale).log_prob(z)
-                log_abs_det = site.bijector.inv.log_abs_det_jacobian(v, z)
                 plate_shape = site.plate_shape or (site.plate_index_size,)
                 kept = (
                     subsampled_rows(
@@ -228,7 +223,6 @@ class AutoNormalGuide(Guide):
                 loc_b = loc.unsqueeze(0).expand(batch, *site.unconstrained_shape)
                 scale_b = scale.unsqueeze(0).expand(batch, *site.unconstrained_shape)
                 log_q_z = D.Normal(loc_b, scale_b).log_prob(z)
-                log_abs_det = site.bijector.inv.log_abs_det_jacobian(v, z)
                 while log_q_z.dim() > 1:
                     log_q_z = log_q_z.sum(dim=-1)
                 while log_abs_det.dim() > 1:

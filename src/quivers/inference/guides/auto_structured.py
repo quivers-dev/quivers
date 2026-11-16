@@ -126,18 +126,11 @@ def _site_flat_length(site: LatentSite) -> int:
 def _push_through_bijector(
     site: LatentSite, z_flat: torch.Tensor, batch: int
 ) -> torch.Tensor:
-    """Reshape a flat unconstrained draw into the site's shape,
-    apply the constrained-support bijector, then squeeze the
-    trailing length-1 event axis if the site is scalar-supported.
-    """
+    """Apply the site's shared structured transform to a flat guide draw."""
     z_shaped = z_flat.reshape(*site.unconstrained_shape)
-    if site.is_plate:
-        v: torch.Tensor = site.bijector(z_shaped)
-    else:
-        z_batched = z_shaped.unsqueeze(0).expand(batch, *site.unconstrained_shape)
-        v = site.bijector(z_batched)
-    if site.is_scalar and v.dim() >= 1 and v.shape[-1] == 1:
-        v = v.squeeze(-1)
+    if not site.is_plate:
+        z_shaped = z_shaped.unsqueeze(0).expand(batch, *site.unconstrained_shape)
+    v, _ = site.constrain(z_shaped)
     return v
 
 
@@ -400,15 +393,9 @@ class AutoStructured(Guide):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Invert the bijector and return `(z_shaped, log|det J^{-1}|)`
         at the natural site shape."""
-        if site.is_scalar and v.dim() == (1 if site.is_plate else 1):
-            v_e = v.unsqueeze(-1)
-        else:
-            v_e = v
-        if not site.is_plate and v_e.dim() == len(site.unconstrained_shape) + 1:
-            v_e = v_e[0]
-        z: torch.Tensor = site.bijector.inv(v_e)
-        log_det = site.bijector.inv.log_abs_det_jacobian(v_e, z)
-        return z, log_det
+        if not site.is_plate and v.dim() == len(site.constrained_shape) + 1:
+            v = v[0]
+        return site.unconstrain(v)
 
     def log_prob(
         self,

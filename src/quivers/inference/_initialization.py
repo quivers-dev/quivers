@@ -53,9 +53,7 @@ def unconstrained_initial_values(
             raise ValueError(
                 f"initial value for {name!r} must lie in the interior of its support"
             )
-        inverted = site.bijector.inv(tensor)
-        assert isinstance(inverted, torch.Tensor)
-        unconstrained = inverted.reshape(site.unconstrained_shape)
+        unconstrained, _ = site.unconstrain(tensor)
         if not bool(torch.isfinite(unconstrained).all()):
             raise ValueError(
                 f"initial value for {name!r} must lie in the interior of its support"
