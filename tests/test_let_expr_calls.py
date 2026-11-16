@@ -80,6 +80,8 @@ class TestBuiltinPrimitives:
             x = -x
         elif name == "log_probability":
             x = x.sigmoid()
+        elif name == "observation_status":
+            x = torch.randint(-1, 3, x.shape)
         fn = _compile(_call(name, _var("x")))
         out = fn({"x": x})
         # min/max/argmin/argmax etc collapse the last axis; sum/mean

@@ -1754,7 +1754,21 @@ def _perturb_by_support(
     elif isinstance(support, type(constraints.real)):
         moved = work + scale * noise
     else:
-        return None
+        # Custom supports expose their coordinates through the same registry
+        # used by inference. In particular, a normalized restriction retains
+        # its own support rather than pretending to be the base constraint.
+        try:
+            transform = torch.distributions.biject_to(support)
+        except NotImplementedError:
+            return None
+        coordinate = transform.inv(work)
+        if not bool(torch.isfinite(coordinate).all()):
+            return None
+        if coordinate.shape != noise.shape:
+            noise = torch.randn(
+                coordinate.shape, generator=generator, dtype=torch.float64
+            )
+        moved = transform(coordinate + scale * noise)
     return moved.to(dtype=value.dtype)
 
 
