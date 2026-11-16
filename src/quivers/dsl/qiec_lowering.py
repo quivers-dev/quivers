@@ -29,7 +29,7 @@ from quivers._family_schemas import (
     _select_parameterization,
     _semantic_parameterizations,
 )
-from quivers._values import HeldValue, OPAQUE_BY_VALUE
+from quivers._values import OPAQUE_BY_VALUE, HeldValue, ValueModel
 from quivers.qiec._models import QiecModel
 from quivers.dsl import ast_nodes as surface
 from quivers.qiec.canonical import (
@@ -240,7 +240,7 @@ PROGRAM_CONTEXT_TYPES = (
 )
 
 
-class QvrQiecSource(dx.Model):
+class QvrQiecSource(ValueModel):
     """A parsed QVR projection plus the identity absent from the AST root.
 
     Parameters
