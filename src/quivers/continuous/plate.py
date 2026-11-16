@@ -166,6 +166,10 @@ def _array_parameter_rows(
         One parameter feature row per row and independent array position.
     """
     entries = math.prod(array_shape)
+    if x.shape[0] == 1 and rows != 1:
+        # The caller declares the outer row count. A shared conditioning
+        # row must cover those rows before expanding their array entries.
+        x = x.expand(rows, *x.shape[1:])
     if x.shape[0] == rows * entries:
         # The checked packing may already supply one parameter row for
         # every independent array entry. Do not replicate those rows.
