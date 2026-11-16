@@ -9,6 +9,13 @@ from torch import Tensor
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
 
+from quivers.continuous._gaussian_tails import (
+    exgaussian_log_component,
+    log_erfcx_positive,
+    log_scaled_erfcx_difference,
+    paired_log_tails,
+)
+
 
 class ExGaussian(Distribution):
     """Sum of independent Normal and Exponential random variables.
@@ -70,42 +77,91 @@ class ExGaussian(Distribution):
         if self._validate_args:
             self._validate_sample(value)
         standardized = (value - self.loc) / self.scale
-        rate_scale = self.rate * self.scale
-        difference = rate_scale - standardized
-        # erfcx removes cancellation between the positive quadratic and
-        # the Gaussian left tail. Mask its inactive negative argument.
-        left = (
-            self.rate.log()
-            - math.log(2.0)
-            - 0.5 * standardized.square()
-            + torch.special.erfcx(difference.clamp_min(0) / math.sqrt(2.0)).log()
+        return self.rate.log() + exgaussian_log_component(
+            standardized, self.rate * self.scale
         )
-        right_rate_scale = torch.where(
-            difference > 0, torch.zeros_like(rate_scale), rate_scale
+
+    def _log_tails(self, value: Tensor) -> tuple[Tensor, Tensor]:
+        if bool(torch.isnan(value).any()):
+            raise ValueError("ExGaussian tails require non-NaN evaluation points")
+        finite = torch.isfinite(value)
+        loc, scale, rate = self.loc.double(), self.scale.double(), self.rate.double()
+        point = torch.where(finite, value.double(), loc)
+        z = (point - loc) / scale
+        rate_scale = rate * scale
+        lower = log_scaled_erfcx_difference(
+            -z / math.sqrt(2), rate_scale / math.sqrt(2)
+        ) - math.log(2)
+        upper = torch.logsumexp(
+            torch.stack(
+                (torch.special.log_ndtr(-z), exgaussian_log_component(z, rate_scale))
+            ),
+            dim=0,
         )
-        right_standardized = torch.where(
-            difference > 0, torch.zeros_like(standardized), standardized
+        lower, upper = paired_log_tails(lower, upper)
+        return (
+            torch.where(finite, lower, torch.where(value > 0, 0.0, -torch.inf)),
+            torch.where(finite, upper, torch.where(value > 0, -torch.inf, 0.0)),
         )
-        right = (
-            self.rate.log()
-            + 0.5 * right_rate_scale.square()
-            - right_rate_scale * right_standardized
-            + torch.special.log_ndtr(-difference.clamp_max(0))
-        )
-        return torch.where(difference > 0, left, right)
+
+    def log_cdf(self, value: Tensor) -> Tensor:
+        """Return log P(Y <= value), retaining small Gaussian-exponential tails.
+
+        Parameters
+        ----------
+        value : Tensor
+            Extended-real evaluation points, broadcast with the batch.
+
+        Returns
+        -------
+        Tensor
+            Log cumulative probabilities. Computed in Float64 to retain
+            probabilities that ordinary CDF evaluation rounds away.
+        """
+        return self._log_tails(value)[0]
+
+    def log_survival_function(self, value: Tensor) -> Tensor:
+        """Return log P(Y > value), without subtracting a rounded CDF.
+
+        Parameters
+        ----------
+        value : Tensor
+            Extended-real evaluation points, broadcast with the batch.
+
+        Returns
+        -------
+        Tensor
+            Log strict upper-tail probabilities. Computed in Float64 to retain
+            probabilities that ordinary CDF evaluation rounds away.
+        """
+        return self._log_tails(value)[1]
+
+    def log_density_variation(self, lower: Tensor, upper: Tensor) -> Tensor:
+        """Bound the absolute log-density change across a finite interval.
+
+        Parameters
+        ----------
+        lower, upper : Tensor
+            Finite interval endpoints, broadcast against the parameters.
+
+        Returns
+        -------
+        Tensor
+            A nonnegative Float64 variation bound, or infinity outside a
+            finite positive-width interval. The inverse Mills ratio obeys
+            m(t) <= max(-t, 0) + 1, yielding a conservative score bound.
+        """
+        lower, upper = lower.double(), upper.double()
+        valid = torch.isfinite(lower) & torch.isfinite(upper) & (upper > lower)
+        start = torch.where(valid, lower, self.loc.double())
+        width = torch.where(valid, upper - lower, 1.0)
+        rate, scale = self.rate.double(), self.scale.double()
+        t = (start - self.loc.double()) / scale - rate * scale
+        bound = width * (rate + ((-t).clamp_min(0) + 1) / scale)
+        return torch.where(valid, bound, torch.inf)
 
     def cdf(self, value: Tensor) -> Tensor:
-        if self._validate_args:
-            self._validate_sample(value)
-        finite = torch.isfinite(value)
-        point = torch.where(finite, value, self.loc)
-        standardized = (point - self.loc) / self.scale
-        first = torch.special.log_ndtr(standardized)
-        second = self.log_prob(point) - self.rate.log()
-        # The second term is bounded by the first; preserve that bound
-        # against rounding before taking the stable exponential difference.
-        result = first.exp() * -torch.expm1((second - first).clamp_max(0))
-        return torch.where(finite, result, (value > 0).to(result))
+        return self.log_cdf(value).exp().to(dtype=torch.result_type(value, self.loc))
 
     def rsample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         shape = self._extended_shape(sample_shape)
@@ -218,20 +274,95 @@ class InverseGaussian(Distribution):
         )
         return torch.where(inside, result, torch.full_like(result, -math.inf))
 
-    def cdf(self, value: Tensor) -> Tensor:
-        if self._validate_args and not bool(constraints.real.check(value).all()):
-            raise ValueError("InverseGaussian.cdf requires real evaluation points")
+    def _log_tails(self, value: Tensor) -> tuple[Tensor, Tensor]:
+        if bool(torch.isnan(value).any()):
+            raise ValueError("InverseGaussian tails require non-NaN evaluation points")
         inside = (value > 0) & torch.isfinite(value)
-        point = torch.where(inside, value, self.mu)
-        root = (self.shape / point).sqrt()
-        a = root * (point / self.mu - 1)
-        b = root * (point / self.mu + 1)
-        # exp(2*lambda/mu)*Phi(-b) equals
-        # 0.5*erfcx(b/sqrt(2))*exp(-a*a/2), without an overflowing factor.
-        result = 0.5 * torch.erfc(-a / math.sqrt(2.0)) + 0.5 * torch.special.erfcx(
-            b / math.sqrt(2.0)
-        ) * torch.exp(-0.5 * a.square())
-        return torch.where(inside, result, (value > 0).to(result))
+        mu, shape = self.mu.double(), self.shape.double()
+        point = torch.where(inside, value.double(), mu)
+        root = shape.sqrt() / point.sqrt()
+        a = (point - mu) / point.sqrt() * (shape.sqrt() / mu)
+        separation = math.sqrt(2) * root
+        upper = log_scaled_erfcx_difference(a / math.sqrt(2), separation) - math.log(2)
+        b = (point.sqrt() * (shape.sqrt() / mu) + root) / math.sqrt(2)
+        lower = torch.logsumexp(
+            torch.stack(
+                (
+                    torch.special.log_ndtr(a),
+                    -0.5 * a.square() - math.log(2) + log_erfcx_positive(b),
+                )
+            ),
+            dim=0,
+        )
+        lower, upper = paired_log_tails(lower, upper)
+        return (
+            torch.where(inside, lower, torch.where(value > 0, 0.0, -torch.inf)),
+            torch.where(inside, upper, torch.where(value > 0, -torch.inf, 0.0)),
+        )
+
+    def log_cdf(self, value: Tensor) -> Tensor:
+        """Return log P(Y <= value), retaining finite extreme-tail values.
+
+        Parameters
+        ----------
+        value : Tensor
+            Extended-real evaluation points, broadcast with the batch.
+
+        Returns
+        -------
+        Tensor
+            Log cumulative probabilities. Computed in Float64 to retain
+            probabilities that ordinary CDF evaluation rounds away.
+        """
+        return self._log_tails(value)[0]
+
+    def log_survival_function(self, value: Tensor) -> Tensor:
+        """Return log P(Y > value), retaining the Gaussian divided difference.
+
+        Parameters
+        ----------
+        value : Tensor
+            Extended-real evaluation points, broadcast with the batch.
+
+        Returns
+        -------
+        Tensor
+            Log strict upper-tail probabilities. Computed in Float64 to retain
+            probabilities that ordinary CDF evaluation rounds away.
+        """
+        return self._log_tails(value)[1]
+
+    def log_density_variation(self, lower: Tensor, upper: Tensor) -> Tensor:
+        """Bound the absolute log-density change over a positive interval.
+
+        Parameters
+        ----------
+        lower, upper : Tensor
+            Interval endpoints, broadcast against the parameters.
+
+        Returns
+        -------
+        Tensor
+            A nonnegative Float64 variation bound, or infinity outside
+            finite strictly positive endpoints.
+        """
+        lower, upper = lower.double(), upper.double()
+        valid = (
+            torch.isfinite(lower)
+            & torch.isfinite(upper)
+            & (lower > 0)
+            & (upper > lower)
+        )
+        start = torch.where(valid, lower, self.mu.double())
+        width = torch.where(valid, upper - lower, 1.0)
+        mu, shape = self.mu.double(), self.shape.double()
+        bound = width * (
+            1.5 / start + 0.5 * (shape / start) / start + 0.5 * (shape / mu) / mu
+        )
+        return torch.where(valid, bound, torch.inf)
+
+    def cdf(self, value: Tensor) -> Tensor:
+        return self.log_cdf(value).exp().to(dtype=torch.result_type(value, self.mu))
 
     def rsample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         return _InverseGaussianSample.apply(

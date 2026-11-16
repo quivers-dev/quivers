@@ -100,6 +100,9 @@ def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
     -------
     tuple[Tensor, Tensor]
         Log lower and strict upper tail masses."""
+    paired = getattr(base, "_log_tails", None)
+    if callable(paired):
+        return cast(Callable[[Tensor], tuple[Tensor, Tensor]], paired)(value)
     log_cdf = getattr(base, "log_cdf", None)
     log_sf = getattr(base, "log_survival_function", None)
     if callable(log_cdf) and callable(log_sf):
@@ -279,7 +282,11 @@ def _narrow_interval(
     tuple[Tensor, Tensor] | None
         Local quadrature mask and log masses, or None when no local rule applies."""
     width = upper - lower
-    if isinstance(base, Gamma):
+    variation_bound = getattr(base, "log_density_variation", None)
+    if callable(variation_bound):
+        variation = variation_bound(lower, upper)
+        narrow = (width > 0) & (variation >= 0) & (variation < 1e-4)
+    elif isinstance(base, Gamma):
         shape, rate = base.concentration.double(), base.rate.double()
         safe_lower = lower.clamp_min(torch.finfo(torch.float64).tiny)
         variation = width * ((shape - 1).abs() / safe_lower + rate)
@@ -322,8 +329,11 @@ def _narrow_interval(
         )
     else:
         density = base.log_prob(points)
-    result = half_width.log() + torch.logsumexp(
-        density + weights.log().reshape(node_shape), dim=0
+    safe_width = torch.where(narrow, width, 0.2)
+    result = (
+        safe_width.log()
+        - torch.log(safe_width.new_tensor(2.0))
+        + torch.logsumexp(density + weights.log().reshape(node_shape), dim=0)
     )
     return narrow, result
 

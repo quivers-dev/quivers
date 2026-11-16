@@ -569,6 +569,44 @@ CDFs, inverse CDFs, moments, and samplers have separate numerical and
 derivative tests; those tests do not assert a uniform error bound over
 all tail or shape regimes.
 
+#### Gaussian response-time tails
+
+For `ExGaussian(loc, scale, rate)`, let $z=(y-\mathrm{loc})/\mathrm{scale}$
+and $r=\mathrm{rate}\,\mathrm{scale}$. Its cumulative and survival probabilities
+are
+
+$$
+F(y)=\Phi(z)-e^{r^2/2-rz}\Phi(z-r),\qquad
+S(y)=\Phi(-z)+e^{r^2/2-rz}\Phi(z-r).
+$$
+
+For `InverseGaussian(mu, shape)`, put
+$a=\sqrt{\mathrm{shape}/y}(y/\mathrm{mu}-1)$ and
+$b=\sqrt{\mathrm{shape}/y}(y/\mathrm{mu}+1)$ for $y>0$. Then
+
+$$
+F(y)=\Phi(a)+e^{2\mathrm{shape}/\mathrm{mu}}\Phi(-b),\qquad
+S(y)=\Phi(-a)-e^{2\mathrm{shape}/\mathrm{mu}}\Phi(-b).
+$$
+
+These differences need not be evaluated by subtracting ordinary probabilities.
+Both kernels use the positive Gaussian divided difference
+$D(x,d)=e^{-x^2}(\operatorname{erfcx}(x)-\operatorname{erfcx}(x+d))$.
+The ExGaussian CDF is $D(-z/\sqrt2,r/\sqrt2)/2$, and the
+InverseGaussian survival probability is
+$D(a/\sqrt2,\sqrt{2\mathrm{shape}/y})/2$.
+Keeping the separation $d$ explicit avoids losing it when two large
+Gaussian arguments round to the same value.
+
+Native and scalar reference evaluation share the continued-fraction and
+asymptotic polynomial coefficients used by this calculation. Short
+separations use the positive derivative integral, with agreement checked
+between fixed eight- and 32-node rules; numerical-capacity failures are
+explicit. Interval events use the same paired tails or the shared local
+density rule when a bound on log-density variation permits it. Thus a
+numerical tail calculation supplies the existing kernel's probability;
+it does not introduce a different response law or censoring convention.
+
 #### Truncation as normalized restriction
 
 For a base probability kernel $K_\theta$ and interval $I=[a,b]$,

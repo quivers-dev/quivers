@@ -262,6 +262,38 @@ from quivers.continuous.families import (
 )
 ```
 
+### Gaussian response-time tails
+
+`ExGaussian(loc, scale, rate)` adds independent Normal and Exponential
+components. `InverseGaussian(mu, shape)` uses the response mean `mu` and
+positive shape directly. Both provide Float64 `log_cdf` and
+`log_survival_function` methods. Use these methods for small probabilities:
+taking the logarithm of an ordinary CDF can lose the tail before the
+logarithm is evaluated.
+
+```python
+import torch
+from quivers.continuous import ExGaussian
+from quivers.continuous.measure import Normalize, Restrict
+
+law = ExGaussian(torch.tensor(0.0, dtype=torch.float64), 1.0, 0.1)
+point = torch.tensor(-40.0, dtype=torch.float64)
+assert law.cdf(point) == 0.0
+assert -811.0 < law.log_cdf(point) < -810.0
+restricted = Normalize(Restrict(law, -40.0, -39.9))
+assert torch.isfinite(restricted.log_prob(torch.tensor(-39.95, dtype=torch.float64)))
+```
+
+Censoring and truncation reuse these paired tails in native and checked-reference
+execution. For sufficiently short intervals, a bound on log-density variation
+selects the shared positive eight-node integration rule. Thus adjacent bounds
+retain a positive interval mass even when their CDF values coincide. The tail
+calculation also uses agreeing eight- and 32-node rules for short Gaussian
+divided differences, with explicit failure on nonconvergence or exceeded
+Float64 log-tail capacity. These bounded checks do not establish a uniform
+error guarantee. Finite tail calculations support first and second derivatives
+in all response parameters, including forward automatic differentiation.
+
 ### Families on the positive reals {#positive-valued-families}
 
 For positive outputs, $(0, \infty)$:

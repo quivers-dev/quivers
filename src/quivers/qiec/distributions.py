@@ -21,6 +21,14 @@ import didactic.api as dx
 
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
+from quivers.qiec._gaussian_tails import (
+    log_erfcx_positive as _log_erfcx_positive,
+    exgaussian_log_component as _exgaussian_log_component,
+)
+from quivers.qiec._response_time import (
+    _exgaussian_parameters,
+    _inverse_gaussian_parameters,
+)
 from quivers.qiec._multinomial import (
     SAMPLERS as _COUNT_VECTOR_SAMPLERS,
     DENSITIES as _COUNT_VECTOR_DENSITIES,
@@ -1254,53 +1262,6 @@ def _times(count: int, log_mass: float) -> float:
     return 0.0 if count == 0 else count * log_mass
 
 
-def _log_erfcx_positive(value: float) -> float:
-    """Log scaled complementary error function for a nonnegative argument.
-
-    Parameters
-    ----------
-    value : float
-        A nonnegative argument.
-
-    Returns
-    -------
-    float
-        Log of the scaled complementary error function, including its tail limit.
-    """
-    if value < 5:
-        return value * value + math.log(math.erfc(value))
-    fraction = 0.0
-    for index in range(40, 0, -1):
-        fraction = (index / 2) / (value + fraction)
-    return -0.5 * math.log(math.pi) - math.log(value + fraction)
-
-
-def _exgaussian_parameters(a: Mapping[str, object]) -> tuple[float, float, float]:
-    """Read a Normal location/scale and a positive Exponential rate.
-
-    Parameters
-    ----------
-    a : Mapping[str, object]
-        Named location, scale, and Exponential rate.
-
-    Returns
-    -------
-    tuple[float, float, float]
-        Validated parameters in constructor order.
-
-    Raises
-    ------
-    DistributionError
-        If scale or rate is nonpositive, or any parameter is malformed.
-    """
-    loc = _real(a, "loc", "ExGaussian")
-    scale = _real(a, "scale", "ExGaussian")
-    rate = _real(a, "rate", "ExGaussian")
-    if scale <= 0 or rate <= 0:
-        raise DistributionError("ExGaussian needs scale > 0 and rate > 0")
-    return loc, scale, rate
-
-
 def _exgaussian_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw independent Normal and Exponential components and add them.
 
@@ -1339,45 +1300,7 @@ def _exgaussian_density(a: Mapping[str, object], value: object) -> float:
     point = _finite_value(value, "ExGaussian")
     standardized = (point - loc) / scale
     rate_scale = rate * scale
-    difference = rate_scale - standardized
-    if difference > 0:
-        return (
-            math.log(rate)
-            - math.log(2)
-            - 0.5 * standardized**2
-            + _log_erfcx_positive(difference / math.sqrt(2))
-        )
-    return (
-        math.log(rate)
-        + 0.5 * rate_scale**2
-        - rate_scale * standardized
-        + math.log(0.5 * math.erfc(difference / math.sqrt(2)))
-    )
-
-
-def _inverse_gaussian_parameters(a: Mapping[str, object]) -> tuple[float, float]:
-    """Read the positive mean and shape of an inverse Gaussian.
-
-    Parameters
-    ----------
-    a : Mapping[str, object]
-        Named response mean and positive shape.
-
-    Returns
-    -------
-    tuple[float, float]
-        Validated parameters in constructor order.
-
-    Raises
-    ------
-    DistributionError
-        If mean or shape is nonpositive, or any parameter is malformed.
-    """
-    mu = _real(a, "mu", "InverseGaussian")
-    shape = _real(a, "shape", "InverseGaussian")
-    if mu <= 0 or shape <= 0:
-        raise DistributionError("InverseGaussian needs mu > 0 and shape > 0")
-    return mu, shape
+    return math.log(rate) + _exgaussian_log_component(standardized, rate_scale)
 
 
 def _inverse_gaussian_sample(a: Mapping[str, object], rng: random.Random) -> object:

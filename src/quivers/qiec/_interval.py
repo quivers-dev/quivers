@@ -79,6 +79,48 @@ def _difference(larger, smaller):
     return larger + _log1mexp(smaller - larger) if smaller < larger else -math.inf
 
 
+def _local_interval(base, lower, upper, variation, *, maximum=1e-4):
+    """Integrate a smooth, slowly varying density with the shared positive rule.
+
+    Parameters
+    ----------
+    base : object
+        Scalar reference distribution exposing log_prob.
+    lower, upper : float
+        Finite ordered interval endpoints inside smooth support.
+    variation : float
+        Nonnegative bound on the log-density variation across the interval.
+    maximum : float
+        Strict upper bound on the permitted variation.
+
+    Returns
+    -------
+    float or None
+        Log interval mass when the local variation guard holds.
+    """
+    if not (
+        math.isfinite(lower)
+        and math.isfinite(upper)
+        and upper > lower
+        and 0 <= variation < maximum
+    ):
+        return None
+    from quivers.qiec import reference_families as rf
+
+    width = upper - lower
+    midpoint, half = lower + width / 2, width / 2
+    return (
+        math.log(width)
+        - math.log(2)
+        + rf._logsumexp(
+            [
+                math.log(weight) + float(base.log_prob(midpoint + half * node))
+                for node, weight in zip(_NODES_8, _WEIGHTS_8, strict=True)
+            ]
+        )
+    )
+
+
 def log_interval_mass(base, low, high, *, lower_closed=True, upper_closed=True):
     """Integrate a raw scalar measure over an endpoint-aware interval.
 
@@ -203,20 +245,40 @@ def log_interval_mass(base, low, high, *, lower_closed=True, upper_closed=True):
             and math.isfinite(b)
             and 0 < width / scale < 0.01 / (1 + max(abs(a), abs(b)))
         ):
-            midpoint = (lower + width / 2 - loc) / scale
-            half = width / (2 * scale)
-            return math.log(half) + rf._logsumexp(
-                [
-                    math.log(weight)
-                    - 0.5 * (midpoint + half * node) ** 2
-                    - 0.5 * math.log(2 * math.pi)
-                    for node, weight in zip(_NODES_8, _WEIGHTS_8, strict=True)
-                ]
+            local = _local_interval(
+                base,
+                lower,
+                upper,
+                width / scale * max(abs(a), abs(b)),
+                maximum=0.01,
             )
+            assert local is not None
+            return local
         return (
             _difference(_log_ndtr(-a), _log_ndtr(-b))
             if a > 0
             else _difference(_log_ndtr(b), _log_ndtr(a))
+        )
+    if family in {"ExGaussian", "InverseGaussian"}:
+        from quivers.qiec._response_time import (
+            log_response_time_tails,
+            log_density_variation,
+        )
+
+        local = _local_interval(
+            base,
+            lower,
+            upper,
+            log_density_variation(family, arguments, lower, upper),
+        )
+        if local is not None:
+            return local
+        low_cdf, low_sf = log_response_time_tails(family, arguments, lower)
+        high_cdf, high_sf = log_response_time_tails(family, arguments, upper)
+        return (
+            _difference(high_cdf, low_cdf)
+            if high_cdf < low_sf
+            else _difference(low_sf, high_sf)
         )
     if family == "DiscreteWeibull":
         from quivers.qiec._count_tails import (

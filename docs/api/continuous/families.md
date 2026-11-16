@@ -218,6 +218,21 @@ CDFs, moments, broadcasting, and reparameterized sampling. Inverse Gaussian
 samples use an exact vectorized transformation and implicit CDF derivatives;
 its discrete sampler branch is not differentiated as though it were fixed.
 
+Both laws expose `log_cdf` and `log_survival_function`. These methods use
+Float64 arithmetic and retain the smaller tail before complementing it;
+`cdf` projects the result to the promoted parameter/query dtype. Interval
+normalization uses the paired tails once per endpoint. A positive local
+density rule handles narrow intervals whose endpoint tails round to the
+same number, including adjacent representable bounds.
+
+The Gaussian divided-difference calculation checks agreement between fixed
+eight- and 32-node rules for short separations. Nonconvergence, a scaled argument magnitude above
+`1e150`, or a separation above `1e150` raises `RuntimeError`; the scalar
+reference backend raises `DistributionError`. This is a bounded numerical algorithm,
+with no uniform accuracy guarantee across all parameter regimes. Finite
+log-tail and local-interval calculations support first and second parameter
+derivatives and forward automatic differentiation.
+
 ::: quivers.continuous._response_time
 
 ## Skew, shifted, and extreme-value distributions
