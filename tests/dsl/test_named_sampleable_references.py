@@ -8,11 +8,12 @@ from quivers.dsl import loads
 from quivers.inference.trace import trace
 
 
-@pytest.mark.parametrize("reference", ["base"])
+@pytest.mark.parametrize("reference", ["base", "alias", "second_alias"])
 def test_fixed_sampleable_reference_and_alias_keep_named_initializer_order(reference):
     source = f"""object Out:Real 1
 morphism base:Out->Out ~ Normal(scale=2.0,loc=0.25)
 define alias = base
+define second_alias = alias
 program model:Out->Out
     sample b <- Restrict(high=1.0,base={reference},low=-1.0)
     return b
@@ -82,7 +83,7 @@ def test_sampleable_alias_resolution_uses_canonical_source_origin_without_bypass
     from quivers.dsl import parse
     from quivers.dsl.compiler.core import Compiler
     from quivers.dsl.ast_nodes import DrawArgDist, DrawArgName, DrawArgNamed
-    from quivers.dsl.qiec_lowering import lower_qvr_to_qiec, QiecDiagnosticError
+    from quivers.dsl.qiec_lowering import lower_qvr_to_qiec
 
     source = """object Out:Real 1
 morphism base:Out->Out ~ Normal(scale=2.0,loc=0.25)
@@ -113,5 +114,21 @@ export model
     assert tuple(argument.parameter for argument in base.args) == ("scale", "loc")
     shadowed = compiler._inline_sampleable_references("Restrict", args, {"alias"})
     assert isinstance(shadowed[0].value, DrawArgName)
-    with pytest.raises(QiecDiagnosticError, match="takes a Sampleable"):
-        lower_qvr_to_qiec(module)
+    lower_qvr_to_qiec(module)
+
+
+def test_recursive_sampleable_alias_is_a_located_canonical_resolution_error():
+    from quivers.dsl import parse
+    from quivers.dsl.qiec_lowering import lower_qvr_to_qiec, QiecDiagnosticError
+
+    source = """object Out:Real 1
+    define first = second
+    define second = first
+    program model:Out->Out
+        sample b <- Restrict(base=first,low=-1.0,high=1.0)
+        return b
+    export model
+    """
+    with pytest.raises(QiecDiagnosticError, match="cycle") as caught:
+        lower_qvr_to_qiec(parse(source))
+    assert caught.value.line == 5

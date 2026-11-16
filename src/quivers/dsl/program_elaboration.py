@@ -8530,8 +8530,22 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 code="qiec-program",
             )
         morphism = self._program_morphisms.get(name)
-        if morphism is not None and constraint == "sampleable":
-            return self._morphism_distribution(morphism, name, scope, state, node)
+        if constraint == "sampleable":
+            if morphism is None and name in self._program_lets:
+                try:
+                    resolved = resolve_step_dist(
+                        name,
+                        None,
+                        morphisms=self._program_morphisms,
+                        lets=self._program_lets,
+                        family_registry=frozenset(FAMILIES),
+                        target="qvr-qiec",
+                    )
+                except StepResolutionError as error:
+                    self._fail(node, error.detail, code="qiec-program")
+                morphism = self._program_morphisms.get(resolved.original_morphism_name)
+            if morphism is not None:
+                return self._morphism_distribution(morphism, name, scope, state, node)
         if rank > 0 and not plate.batch and (plate.empty or extents is not None):
             # A draw with no batch axes reads the input as one tensor over
             # the parameter's own axes. An axis the draw does not fix is a
