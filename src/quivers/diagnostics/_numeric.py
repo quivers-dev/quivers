@@ -118,6 +118,33 @@ def linear_quantile(sorted_values: torch.Tensor, prob: float) -> torch.Tensor:
     )
 
 
+def scaled_samples(
+    pooled: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Center and scale retained draws without overflowing an opposite-sign span.
+
+    Parameters
+    ----------
+    pooled : torch.Tensor
+        Real values with a nonempty leading sample axis. Finiteness and
+        original integer capacity remain the caller's validation policy.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        Normalized values, retained offset, and nonnegative scale. When all
+        draws agree, the scale is zero and normalized values are zero.
+        An overflowing subtraction uses zero offset and scales original values.
+    """
+    anchor = pooled[0]
+    deltas = pooled - anchor
+    shifted = torch.isfinite(deltas).all(0)
+    working = torch.where(shifted, deltas, pooled)
+    scale = working.abs().amax(0)
+    divisor = torch.where(scale > 0, scale, torch.ones_like(scale))
+    return working / divisor, torch.where(shifted, anchor, 0), scale
+
+
 def empirical_summary(
     pooled: torch.Tensor, levels: Sequence[float], *, robust: bool = False
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -141,24 +168,19 @@ def empirical_summary(
         A coordinate with any nonfinite draw returns NaN for every summary,
         without deleting or imputing draws.
     """
-    anchor = pooled[0]
-    deltas = pooled - anchor
-    shifted = torch.isfinite(deltas).all(0)
-    working = torch.where(shifted, deltas, pooled)
-    scale = working.abs().amax(0)
+    normalized, offset, scale = scaled_samples(pooled)
     divisor = torch.where(scale > 0, scale, torch.ones_like(scale))
-    normalized = working / divisor
     ordered = pooled.sort(dim=0).values if levels or robust else None
     if robust:
         assert ordered is not None
         estimate = linear_quantile(ordered, 0.5)
-        ordered_normalized = torch.where(shifted, ordered - anchor, ordered) / divisor
+        ordered_normalized = (ordered - offset) / divisor
         normalized_median = linear_quantile(ordered_normalized, 0.5)
         deviations = (normalized - normalized_median).abs().sort(dim=0).values
         dispersion = linear_quantile(deviations, 0.5) * 1.482602218505602 * scale
     else:
         center = normalized.mean(0) * scale
-        estimate = torch.where(shifted, anchor + center, center)
+        estimate = offset + center
         dispersion = (
             normalized.std(dim=0, correction=1) * scale
             if pooled.shape[0] > 1

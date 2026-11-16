@@ -415,6 +415,7 @@ nav:
       - Shared Posterior Analysis: api/diagnostics/posterior.md
       - Regression Variance Ratios: api/diagnostics/regression.md
       - Contrast Summaries and Region Evidence: api/diagnostics/hypothesis.md
+      - Density Ordinates and Point-Null Evidence: api/diagnostics/density.md
       - Convergence Diagnostics: api/diagnostics/convergence.md
       - Simulation-Based Calibration: api/diagnostics/calibration.md
       - ArviZ DataTree Adapter: api/diagnostics/arviz_io.md

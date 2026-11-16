@@ -64,6 +64,13 @@ if TYPE_CHECKING:
         waic,
     )
     from quivers.diagnostics.regression import bayesian_r2
+    from quivers.diagnostics.density import (
+        PointNullAssumptions,
+        DensityOrdinate,
+        DensityRatio,
+        log_density_ordinate,
+        density_ratio,
+    )
     from quivers.diagnostics.contrast import ContrastExpression
     from quivers.diagnostics.hypothesis import (
         HypothesisSummary,
@@ -89,6 +96,11 @@ if TYPE_CHECKING:
     )
 
 _LAZY_EXPORTS: dict[str, str] = {
+    "PointNullAssumptions": "quivers.diagnostics.density",
+    "DensityOrdinate": "quivers.diagnostics.density",
+    "DensityRatio": "quivers.diagnostics.density",
+    "log_density_ordinate": "quivers.diagnostics.density",
+    "density_ratio": "quivers.diagnostics.density",
     "ContrastExpression": "quivers.diagnostics.contrast",
     "hypothesis_summary": "quivers.diagnostics.hypothesis",
     "HypothesisSummary": "quivers.diagnostics.hypothesis",
@@ -158,6 +170,11 @@ def __getattr__(name: str) -> _LazyExport:
 
 
 __all__ = [
+    "PointNullAssumptions",
+    "DensityOrdinate",
+    "DensityRatio",
+    "log_density_ordinate",
+    "density_ratio",
     "ContrastExpression",
     "hypothesis_summary",
     "HypothesisSummary",

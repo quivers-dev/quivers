@@ -20,4 +20,8 @@ DataTree conversion and PSIS-LOO use the optional ArviZ dependency.
 strict-region probabilities and posterior odds separately from prior-corrected
 region Bayes factors. Equality frequencies remain descriptive.
 
+[Density ordinates](density.md) estimate Gaussian KDE log densities from retained
+continuous contrasts. Posterior-to-prior ratios have a point-null Bayes-factor
+interpretation only under explicit proper-prior and compatible-null declarations.
+
 ::: quivers.diagnostics
