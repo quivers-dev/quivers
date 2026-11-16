@@ -120,7 +120,7 @@ def test_hurdle_probability_fixed_sampling_and_inspection(data, method):
         family="hurdle_poisson",
         priors=PriorSpec(distribution="Beta(3,4)", class_="hu"),
     )
-    assert overridden["hu"] == "Beta(concentration1=3.0, concentration0=4.0)"
+    assert overridden["hu"] == "Beta(concentration1=3, concentration0=4)"
     fresh = pd.DataFrame({"x": [-0.5, 0.5]})
     assert result.posterior_epred(new_data=fresh, num_samples=2).shape == (1, 2, 2)
     predictive = result.posterior_predict(new_data=fresh, num_samples=2, seed=8)
