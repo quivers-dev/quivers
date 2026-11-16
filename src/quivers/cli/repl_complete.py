@@ -32,6 +32,7 @@ from quivers.dsl.pygments_lexer import (
     _BUILTIN_FUNCTION_TOKENS,
     _BUILTIN_TYPE_TOKENS,
     _KEYWORD_TOKENS,
+    _STATIC_INDEX_FUNCTION_TOKENS,
 )
 
 from quivers.dsl.qiec_tooling import (
@@ -266,7 +267,12 @@ def _keyword_completions(prefix: str) -> list[Completion]:
             out.append(Completion(text=kw, kind="keyword", detail="keyword"))
     for fn in sorted(_BUILTIN_FUNCTION_TOKENS):
         if fn.startswith(prefix):
-            out.append(Completion(text=fn, kind="function", detail="builtin"))
+            detail = (
+                "static Nat addition"
+                if fn in _STATIC_INDEX_FUNCTION_TOKENS
+                else "builtin"
+            )
+            out.append(Completion(text=fn, kind="function", detail=detail))
     for ty in sorted(_BUILTIN_TYPE_TOKENS):
         if ty.startswith(prefix):
             out.append(Completion(text=ty, kind="type", detail="builtin type"))

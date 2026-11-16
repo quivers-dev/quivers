@@ -344,7 +344,26 @@ function _qvr_qiec_specialize(value, environment)
         static_key = identity === nothing ? get(value, "name", nothing) : identity
         haskey(environment, static_key) && return environment[static_key]
     end
-    return Dict(key => _qvr_qiec_specialize(item, environment) for (key, item) in value)
+    specialized = Dict(key => _qvr_qiec_specialize(item, environment) for (key, item) in value)
+    if get(specialized, "kind", nothing) == "index-sum"
+        terms = Any[]
+        constant = specialized["constant"]
+        for term in specialized["terms"]
+            if term["kind"] == "index-literal"
+                constant += term["value"]
+            elseif term["kind"] == "index-sum"
+                append!(terms, term["terms"])
+                constant += term["constant"]
+            else
+                push!(terms, term)
+            end
+        end
+        isempty(terms) && return Dict("kind" => "index-literal", "value" => constant, "sort" => Dict("kind" => "nat"))
+        length(terms) == 1 && constant == 0 && return terms[1]
+        sort!(terms; by=term -> get(term, "identity", nothing) === nothing ? (0, term["name"]) : (1, term["identity"]))
+        return Dict("kind" => "index-sum", "terms" => terms, "constant" => constant)
+    end
+    return specialized
 end
 const _qvr_qiec_ambient_key = :qvr_qiec_ambient_handlers
 _qvr_qiec_ambient_handlers() = get(task_local_storage(), _qvr_qiec_ambient_key, Any[])

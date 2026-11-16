@@ -63,6 +63,7 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
     "Geometric": ("probs",),
     "Binomial": ("total_count", "probs"),
     "VonMises": ("loc", "concentration"),
+    "AdditiveLogRatioNormal": ("loc", "scale_tril"),
     "LogisticNormal": ("loc", "scale"),
     "OneHotCategorical": ("probs",),
     "LKJCholesky": ("concentration",),

@@ -39,6 +39,7 @@ from quivers.continuous._shape_families import (
 from quivers.continuous._skew_normal import SkewNormal
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous._com_poisson import COMPoisson
+from quivers.continuous._additive_log_ratio import AdditiveLogRatioNormal
 from quivers.continuous._closed_probability import _ValidatedCategorical
 from quivers.continuous._discrete_weibull import DiscreteWeibull
 from quivers.continuous._zero_inflated_asymmetric_laplace import (
@@ -49,6 +50,7 @@ from quivers.continuous._response_time import ExGaussian, InverseGaussian
 from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
 from quivers.continuous.measure import Normalize, PointMass, Restrict
 from quivers.continuous.families import (
+    ConditionalAdditiveLogRatioNormal,
     ConditionalCOMPoisson,
     ConditionalDiscreteWeibull,
     ConditionalZeroInflatedAsymmetricLaplace,
@@ -1346,6 +1348,13 @@ FAMILY_META: dict[str, FamilyMeta] = {
         arg_aliases={
             "pymc": {"loc": "mu", "concentration": "kappa"},
         },
+    ),
+    "AdditiveLogRatioNormal": FamilyMeta(
+        qvr_name="AdditiveLogRatioNormal",
+        event_rank=1,
+        distribution_class=AdditiveLogRatioNormal,
+        quivers_class=ConditionalAdditiveLogRatioNormal,
+        target_names={},
     ),
     "LogisticNormal": FamilyMeta(
         qvr_name="LogisticNormal",

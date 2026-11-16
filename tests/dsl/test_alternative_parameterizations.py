@@ -78,6 +78,54 @@ def _normal(value: torch.Tensor) -> torch.Tensor:
 #: Each case: its family and parameterization, the program, its data, its
 #: site values, and the oracle.
 _CASES: dict[str, tuple[str, str, str, dict[str, Host], dict[str, Host], Oracle]] = {
+    "multinomial-logits": (
+        "Multinomial",
+        "logits",
+        "program p(q:Tensor[Real]([Two])) : One -> D\n"
+        "    observe y : Row <- Multinomial(total_count=7,logits=q) [over=Two]\n"
+        "    return y\n",
+        {"q": [0.3, -0.7], "y": [[1, 6], [2, 5], [0, 7], [6, 1]]},
+        {},
+        lambda s: D.Multinomial(7, logits=_t(s["q"])).log_prob(_t(s["y"])).sum(),
+    ),
+    "dirichlet-multinomial-concentration": (
+        "DirichletMultinomial",
+        "concentration",
+        "program p(n:Tensor[Int]([Row]),alpha:Tensor[Real]([Row,Two])) : One -> D\n"
+        "    observe y : Row <- DirichletMultinomial(total_count=n,concentration=alpha) [over=Two]\n"
+        "    return y\n",
+        {
+            "n": [3, 0, 7, 4],
+            "alpha": [[0.7, 1.3], [2.0, 0.5], [1.2, 2.1], [0.4, 0.8]],
+            "y": [[1, 2], [0, 0], [2, 5], [4, 0]],
+        },
+        {},
+        lambda s: (
+            torch.lgamma(s["n"] + 1)
+            - torch.lgamma(s["y"] + 1).sum(-1)
+            + torch.lgamma(s["alpha"].sum(-1))
+            - torch.lgamma(s["alpha"].sum(-1) + s["n"])
+            + (torch.lgamma(s["alpha"] + s["y"]) - torch.lgamma(s["alpha"])).sum(-1)
+        ).sum(),
+    ),
+    "com-poisson-log-rate": (
+        "COMPoisson",
+        "log_rate",
+        "program p : One -> D\n"
+        "    observe y : Row <- COMPoisson(log_rate=0.7,dispersion=1.3)\n"
+        "    return y\n",
+        {"y": [0, 1, 3, 2]},
+        {},
+        lambda s: (
+            s["y"] * 0.7
+            - 1.3 * torch.lgamma(s["y"] + 1)
+            - torch.logsumexp(
+                torch.arange(100, dtype=torch.double) * 0.7
+                - 1.3 * torch.lgamma(torch.arange(100, dtype=torch.double) + 1),
+                0,
+            )
+        ).sum(),
+    ),
     "mvn-covariance-literal": (
         "MultivariateNormal",
         "covariance_matrix",

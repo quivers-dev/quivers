@@ -65,6 +65,8 @@ from quivers.qiec.types import (
     EqualityType,
     FunctionType,
     IndexConstructor,
+    IndexSum,
+    add_indices,
     IndexTerm,
     IndexVariable,
     ShapeIndex,
@@ -214,6 +216,14 @@ def substitute_index(term: IndexTerm, substitution: StaticSubstitution) -> Index
     """
     if isinstance(term, IndexVariable) and term.identity is None:
         return substitution.index(term.name) or term
+    if isinstance(term, IndexSum):
+        from quivers.qiec.kinds import NAT
+        from quivers.qiec.types import IndexLiteral
+
+        return add_indices(
+            *(substitute_index(argument, substitution) for argument in term.terms),
+            IndexLiteral(value=term.constant, sort=NAT),
+        )
     if isinstance(term, IndexConstructor):
         return IndexConstructor(
             name=term.name,

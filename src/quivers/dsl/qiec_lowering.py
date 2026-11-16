@@ -137,6 +137,8 @@ from quivers.qiec import (
     HandlerId,
     IndexBinder,
     IndexConstructor,
+    IndexSum,
+    add_indices,
     IndexLiteral,
     IndexTerm,
     IndexSort,
@@ -1372,6 +1374,17 @@ class _DidacticGadtProjection:
                 self._sort_for(term.sort)(),
             )
             return operation()
+        if isinstance(term, IndexSum):
+            arguments = (*term.terms, IndexLiteral(value=term.constant, sort=NAT))
+            operation = self._code_operation(
+                "nat_sum",
+                len(arguments),
+                tuple(self._sort_for(NAT)() for _ in arguments),
+                self._sort_for(NAT)(),
+            )
+            return operation(
+                *(self._static_term(argument, scope) for argument in arguments)
+            )
         if isinstance(term, IndexConstructor):
             constructor_sort = cast(UserIndexSort, term.sort)
             operation = self._index_constructors[(constructor_sort, term.name)]
@@ -2765,7 +2778,7 @@ class _Elaborator(
         expected: IndexSort,
         scope: Telescope,
         static_bindings: Mapping[str, StaticArgument] | None = None,
-    ) -> IndexVariable | IndexLiteral | IndexConstructor | ShapeIndex:
+    ) -> IndexTerm:
         """Lower an authored index term.
 
         Parameters
@@ -2792,8 +2805,15 @@ class _Elaborator(
         if isinstance(authored, surface.QiecIndexName):
             bound = (static_bindings or {}).get(authored.name)
             if bound is not None:
-                if isinstance(bound, IndexVariable | IndexLiteral):
-                    if bound.sort != expected:
+                if isinstance(
+                    bound,
+                    IndexVariable
+                    | IndexLiteral
+                    | IndexConstructor
+                    | IndexSum
+                    | ShapeIndex,
+                ):
+                    if index_sort(bound) != expected:
                         self._fail(
                             authored,
                             f"index {authored.name!r} has the wrong sort",
@@ -2834,6 +2854,17 @@ class _Elaborator(
             except (TypeError, ValueError, dx.ValidationError) as error:
                 self._fail_kernel(authored, error, fallback="qiec-index")
         if isinstance(authored, surface.QiecIndexApplication):
+            if authored.constructor == "nat_add" and expected == NAT:
+                if len(authored.arguments) != 2:
+                    self._fail(
+                        authored, "nat_add expects two Nat indices", code="qiec-index"
+                    )
+                return add_indices(
+                    *(
+                        self._lower_index(argument, NAT, scope, static_bindings)
+                        for argument in authored.arguments
+                    )
+                )
             if not isinstance(expected, UserIndexSort):
                 self._fail(
                     authored,

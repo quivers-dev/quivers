@@ -131,6 +131,7 @@ from quivers.qiec.types import (
     EqualityType,
     FunctionType,
     IndexConstructor,
+    IndexSum,
     IndexLiteral,
     IndexVariable,
     ShapeIndex,
@@ -142,6 +143,7 @@ from quivers.qiec.types import (
     index_sort,
     render_static,
     static_kind,
+    shift_index,
 )
 
 
@@ -430,6 +432,10 @@ class KernelRegistry(QiecModel):
             self._record_type_constructors(term.left)
             self._record_type_constructors(term.right)
             return
+        if isinstance(term, IndexSum):
+            for argument in term.terms:
+                self._record_type_constructors(argument)
+            return
         if isinstance(term, EffectRef | IndexConstructor):
             for argument in term.arguments:
                 self._record_type_constructors(argument)
@@ -473,6 +479,10 @@ class KernelRegistry(QiecModel):
                 raise KernelError(
                     f"invalid application of effect interface {term.name!r}"
                 )
+            return
+        if isinstance(term, IndexSum):
+            for argument in term.terms:
+                self._validate_effect_references(argument, additional)
             return
         if isinstance(term, TypeApplication | IndexConstructor):
             for argument in term.arguments:
@@ -1338,7 +1348,13 @@ def check_static(
         check_static(term.left, scope)
         check_static(term.right, scope)
         if isinstance(term.kind, (NatSort, ShapeSort, ContextSort, UserIndexSort)):
-            index_nodes = (IndexVariable, IndexLiteral, IndexConstructor, ShapeIndex)
+            index_nodes = (
+                IndexVariable,
+                IndexLiteral,
+                IndexConstructor,
+                IndexSum,
+                ShapeIndex,
+            )
             if not isinstance(term.left, index_nodes) or not isinstance(
                 term.right, index_nodes
             ):
@@ -1366,6 +1382,10 @@ def check_static(
                 )
             if term.name not in scope.effects:
                 raise KernelError(f"unbound effect variable {term.name!r}")
+        return
+    if isinstance(term, IndexSum):
+        for argument in term.terms:
+            check_static(argument, scope)
         return
     if isinstance(term, IndexConstructor):
         for argument in term.arguments:
@@ -1462,7 +1482,7 @@ def _check_binder_argument(
     if isinstance(binder, IndexBinder):
         if not isinstance(
             argument,
-            (IndexVariable, IndexLiteral, IndexConstructor, ShapeIndex),
+            (IndexVariable, IndexLiteral, IndexConstructor, IndexSum, ShapeIndex),
         ):
             raise KernelError(f"{subject} must be an index argument")
         if not _sort_matches(binder.sort, index_sort(argument)):
@@ -1642,6 +1662,12 @@ def _static_variable_identities(
     """
     if isinstance(term, TypeVariable | IndexVariable | EffectVariable):
         return (term.identity,) if term.identity is not None else ()
+    if isinstance(term, IndexSum):
+        return tuple(
+            identity
+            for argument in term.terms
+            for identity in _static_variable_identities(argument)
+        )
     if isinstance(term, TypeApplication | EffectRef | IndexConstructor):
         return tuple(
             identity
@@ -1896,7 +1922,13 @@ def _plated_sample_type(
     if supplied is not None and family.event_rank > 0:
         source_shape = tensor_shape(supplied[1])
         if source_shape is not None and len(source_shape[1]) >= family.event_rank:
-            natural = tuple(source_shape[1][len(source_shape[1]) - family.event_rank :])
+            offsets = family.event_offsets or (0,) * family.event_rank
+            natural = tuple(
+                shift_index(size, offset)
+                for size, offset in zip(
+                    source_shape[1][-family.event_rank :], offsets, strict=True
+                )
+            )
     event_axes = tuple(axis.size for axis in plate.event)
     if family.event_rank > 0:
         if len(event_axes) >= family.event_rank:
@@ -1928,6 +1960,33 @@ def _plated_sample_type(
             event = tuple(shape[1][len(plate.batch) :])
     else:
         event = event_axes
+    if family.event_rank:
+        native_event = event[-family.event_rank :]
+        offsets = family.event_offsets or (0,) * family.event_rank
+        for parameter in family.parameters:
+            actual = argument_types.get(parameter.name)
+            shape = tensor_shape(actual) if actual is not None else None
+            if (
+                not parameter.event_dims
+                or shape is None
+                or len(shape[1]) < parameter.rank
+            ):
+                continue
+            parameter_shape = shape[1][-parameter.rank :]
+            for dimension, event_dimension in zip(
+                parameter_shape, parameter.event_dims, strict=True
+            ):
+                if (
+                    event_dimension is not None
+                    and shift_index(dimension, offsets[event_dimension])
+                    != native_event[event_dimension]
+                ):
+                    raise KernelError(
+                        f"parameter {parameter.name!r} of {family.name!r} has event extent "
+                        f"{render_static(dimension)}, incompatible with sample extent "
+                        f"{render_static(native_event[event_dimension])} and offset {offsets[event_dimension]}",
+                        "qiec-distribution",
+                    )
     batch = tuple(axis.size for axis in plate.batch)
     dimensions = (*batch, *event)
     if not dimensions:

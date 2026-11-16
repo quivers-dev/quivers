@@ -70,6 +70,7 @@ from quivers.dsl.ast_nodes import (
     ObserveStep,
     OptionEntry,
     OptionName,
+    OptionList,
     OptionNumber,
     ProgramDecl,
     ProgramStep,
@@ -494,9 +495,7 @@ def _rename_step(
             args=_rename_args(step.args, values, rename),
             index=None if step.index is None else _rename_object(step.index, objects),
             axes=_rename_axes(step.axes, objects),
-            options=_rename_observation_options(step.options, values, rename)
-            if isinstance(step, ObserveStep)
-            else step.options,
+            options=_rename_step_options(step.options, objects, values, rename),
         )
     if isinstance(step, MarginalizeStep):
         return step.with_(
@@ -531,17 +530,20 @@ def _rename_step(
     return step
 
 
-def _rename_observation_options(
+def _rename_step_options(
     options: tuple[OptionEntry, ...],
+    objects: Mapping[str, str],
     values: Mapping[str, LetExprNode],
     rename: Mapping[str, str],
 ) -> tuple[OptionEntry, ...]:
-    """Substitute weight dependencies with the same capture avoidance as values.
+    """Substitute static axes and runtime weights at their respective stages.
 
     Parameters
     ----------
     options : tuple[OptionEntry, ...]
-        The observation's authored options.
+        The draw's authored options.
+    objects : Mapping[str, str]
+        Actual static object names replacing formal axes.
     values : Mapping[str, LetExprNode]
         Actual runtime values replacing formal parameter names.
     rename : Mapping[str, str]
@@ -550,7 +552,7 @@ def _rename_observation_options(
     Returns
     -------
     tuple[OptionEntry, ...]
-        The options with each weight dependency substituted.
+        Options with static axes and weight dependencies substituted.
 
     Raises
     ------
@@ -560,6 +562,19 @@ def _rename_observation_options(
     result: list[OptionEntry] = []
     for entry in options:
         option = entry.value
+        if entry.key in {"over", "iid_over"}:
+            if isinstance(option, OptionName):
+                option = option.with_(value=objects.get(option.value, option.value))
+            elif isinstance(option, OptionList):
+                option = option.with_(
+                    items=tuple(
+                        item.with_(value=objects.get(item.value, item.value))
+                        if isinstance(item, OptionName)
+                        else item
+                        for item in option.items
+                    )
+                )
+            entry = entry.with_(value=option)
         if entry.key == "weights" and isinstance(option, OptionName):
             actual = values.get(option.value)
             if actual is None:

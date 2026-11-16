@@ -376,6 +376,7 @@ from quivers.qiec.terms import (
     Var,
     WeightSum,
 )
+from quivers.qiec.index_arithmetic import infer_index_extents, solve_index_equation
 from quivers.qiec.types import (
     BOOL,
     EffectRef,
@@ -384,6 +385,7 @@ from quivers.qiec.types import (
     FunctionType,
     INT,
     IndexConstructor,
+    IndexSum,
     IndexLiteral,
     IndexTerm,
     IndexVariable,
@@ -397,6 +399,8 @@ from quivers.qiec.types import (
     TypeVariable,
     UNIT,
     check_static_arguments,
+    add_indices,
+    shift_index,
     index_sort,
     product_type,
     render_static,
@@ -514,6 +518,11 @@ __all__ = [
     "If",
     "IndexBinder",
     "IndexConstructor",
+    "IndexSum",
+    "add_indices",
+    "shift_index",
+    "infer_index_extents",
+    "solve_index_equation",
     "IndexLiteral",
     "IndexSort",
     "IndexTerm",

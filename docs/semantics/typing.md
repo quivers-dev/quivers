@@ -120,6 +120,30 @@ so specialization at $n=k$ substitutes the same $k$ into every shape and
 finite-object position. A module-level object cannot refer to a binder local
 to one program; the scope is the program signature and its body.
 
+Natural-number addition has the static rule
+
+$$
+\frac{\Delta\vdash a:\mathsf{Nat}\qquad\Delta\vdash b:\mathsf{Nat}}
+     {\Delta\vdash\mathsf{nat\_add}(a,b):\mathsf{Nat}}.
+$$
+
+It introduces no term into $\Gamma_v$ and no effect. Under valuation
+$\delta$, its denotation is $\llbracket a\rrbracket_\delta+
+\llbracket b\rrbracket_\delta$. Canonical sums collect constants and
+nominal summands, including repeated variables. Substitution rebuilds
+that normal form while leaving rigid skolems untouched; a sum cannot
+hide an escaping skolem from the ordinary scope checks. Unproved Nat
+subtraction is absent. An exact affine solution must have nonnegative
+integer coefficients and constant before it becomes a symbolic Nat term.
+
+Binding solves exact affine equations from checked shapes. It rejects
+conflicting evidence and forced negative or fractional extents, while
+underdetermined extents remain parameters requiring further evidence.
+A shape-only zero extent does not require an inhabitable categorical
+finite-set object. The
+[index reference](../reference/qvr/types-and-indexed-families.md#natural-number-extent-addition)
+distinguishes this arithmetic from user-defined index constructors.
+
 A runtime `(count : Nat)` has a different judgment: it extends $\Gamma_v$
 with an integer-valued input subject to the restriction $count\geq 0$. Its
 lowered parameter uses the arithmetic carrier `Int` and carries the checked

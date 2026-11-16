@@ -1914,7 +1914,11 @@ def check_host_data(
     TypeError
         If a datum's element type is not the one its checked type names.
     """
+    from quivers.qiec.types import IndexSum
+    from quivers.qiec.index_arithmetic import infer_index_extents
+
     extents: dict[str, tuple[int, str]] = {}
+    affine_equations: list[tuple[IndexTerm, int]] = []
     per_run_data: dict[str, bool] = {}
     nonnegative = (
         {
@@ -1965,6 +1969,8 @@ def check_host_data(
         per_run_data[name] = per_run != supplied
         dimensions = layout
         for dimension, extent in zip(dimensions, per_run):
+            if isinstance(dimension, IndexSum):
+                affine_equations.append((dimension, extent))
             if not isinstance(dimension, IndexVariable):
                 continue
             fixed = extents.setdefault(dimension.name, (extent, name))
@@ -1981,6 +1987,11 @@ def check_host_data(
             )
         if value is not None and name in nonnegative and bool((value < 0).any()):
             raise ValueError(f"host datum {name!r} must be a nonnegative integer")
+    if affine_equations:
+        for name, extent in infer_index_extents(
+            affine_equations, {key: value for key, (value, _) in extents.items()}
+        ).items():
+            extents.setdefault(name, (extent, "checked affine shapes"))
     for name, bounds in program.host_index_bounds.items():
         if name not in data:
             continue
@@ -1990,6 +2001,12 @@ def check_host_data(
                 size = bound.value
             elif isinstance(bound, IndexVariable) and bound.name in extents:
                 size = extents[bound.name][0]
+            elif isinstance(bound, IndexSum) and all(
+                term.name in extents for term in bound.terms
+            ):
+                size = bound.constant + sum(
+                    extents[term.name][0] for term in bound.terms
+                )
             else:
                 continue
             if bool(((value < 0) | (value >= size)).any()):

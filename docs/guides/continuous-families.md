@@ -62,6 +62,35 @@ checked-reference execution support these kernels; the
 [native API](../api/continuous/families.md#vector-count-events) gives the
 constructors and conditional learned-parameter variants.
 
+### Simplex events with correlated log ratios
+
+An additive log-ratio Normal models a whole composition using correlated
+Normal log ratios. Its `d` coordinates determine `d + 1` response components;
+the typed interface expresses that relationship with static Nat addition:
+
+```qvr
+program compositions[n : Nat, d : Nat](
+    location : Tensor[Real]([n, d]),
+    factor : Tensor[Real]([n, d, d]),
+    y : Tensor[Real]([n, nat_add(d, 1)]),
+) : n -> n
+    observe y : n <- AdditiveLogRatioNormal(loc=location, scale_tril=factor) [iid_over=n]
+    return y
+export compositions
+```
+
+Binding location shape `(12, 2)`, factor shape `(12, 2, 2)`, and response
+shape `(12, 3)` infers `n=12` and `d=2`. An inconsistent response width
+fails before execution. `nat_add` combines static natural indices; its
+parentheses are index application syntax, rather than a runtime pure call.
+
+The last component is the reference, so the Normal coordinates are
+`log(y[..., :-1] / y[..., -1:])`. The density includes their Jacobian,
+and each row contributes one joint score. This differs from the existing
+`LogisticNormal` stick-breaking transform. The
+[native API](../api/continuous/families.md#additive-log-ratio-normal-events)
+describes the constructor and learned conditional heads.
+
 ### COM-Poisson rates
 
 `COMPoisson(rate=..., dispersion=...)` uses a nonnegative rate and positive

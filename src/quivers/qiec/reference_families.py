@@ -2595,6 +2595,112 @@ def _mixturenormal_density(a: Mapping[str, object], value: object) -> float:
     )
 
 
+def _alr_parameters(a: Mapping[str, object]) -> tuple[Vector, Matrix]:
+    """Validate correlated additive-log-ratio Gaussian parameters.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Gaussian location and lower Cholesky factor.
+
+    Returns
+    -------
+    tuple[Vector, Matrix]
+        Nonempty location and matching positive-diagonal lower factor.
+
+    Raises
+    ------
+    DistributionError
+        If the Gaussian dimensions or Cholesky constraints fail.
+    """
+    loc = vector_parameter(a, "loc", "AdditiveLogRatioNormal")
+    factor = _matrix_parameter(a, "scale_tril", "AdditiveLogRatioNormal")
+    d = len(loc)
+    if (
+        not d
+        or len(factor) != d
+        or any(len(row) != d for row in factor)
+        or any(not math.isfinite(v) for v in loc)
+        or any(
+            not math.isfinite(v) or (i < j and v != 0) or (i == j and v <= 0)
+            for i, row in enumerate(factor)
+            for j, v in enumerate(row)
+        )
+    ):
+        raise DistributionError(
+            "AdditiveLogRatioNormal requires matching finite location and lower Cholesky factor"
+        )
+    return loc, factor
+
+
+def _alr_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw an interior simplex from correlated Gaussian log ratios.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Gaussian parameters.
+    rng : random.Random
+        Random generator.
+
+    Returns
+    -------
+    object
+        Simplex coordinates with the final coordinate as reference.
+
+    Raises
+    ------
+    DistributionError
+        If floating point cannot represent the sampled interior point.
+    """
+    loc, factor = _alr_parameters(a)
+    ratios = (*_draw_mvn(loc, factor, rng), 0.0)
+    peak = max(ratios)
+    weights = tuple(math.exp(v - peak) for v in ratios)
+    total = math.fsum(weights)
+    if not all(v > 0 for v in weights):
+        raise DistributionError(
+            "AdditiveLogRatioNormal draw underflowed the simplex interior"
+        )
+    return tuple(v / total for v in weights)
+
+
+def _alr_density(a: Mapping[str, object], value: object) -> float:
+    """Score an ALR simplex with the full change-of-variables Jacobian.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Gaussian parameters.
+    value : object
+        Candidate simplex point.
+
+    Returns
+    -------
+    float
+        Log density, or negative infinity outside the simplex interior.
+
+    Raises
+    ------
+    DistributionError
+        If the event has the wrong number of components.
+    """
+    loc, factor = _alr_parameters(a)
+    point = _as_vector(value, "AdditiveLogRatioNormal point")
+    if len(point) != len(loc) + 1:
+        raise DistributionError(
+            "AdditiveLogRatioNormal event has the wrong component count"
+        )
+    if any(not math.isfinite(v) or v <= 0 for v in point) or not math.isclose(
+        math.fsum(point), 1.0, rel_tol=0, abs_tol=1e-6
+    ):
+        return -math.inf
+    logs = tuple(math.log(v) for v in point)
+    return _mvn_log_prob(
+        tuple(v - logs[-1] for v in logs[:-1]), loc, factor
+    ) - math.fsum(logs)
+
+
 def _mvn_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``MultivariateNormal``.
 
@@ -4333,6 +4439,7 @@ SAMPLERS: Mapping[str, Sampler] = {
     "RelaxedOneHotCategorical": _relaxedonehot_sample,
     "LogisticNormal": _logisticnormal_sample,
     "MixtureNormal": _mixturenormal_sample,
+    "AdditiveLogRatioNormal": _alr_sample,
     "MultivariateNormal": _mvn_sample,
     "LowRankMVN": _lowrankmvn_sample,
     "GP": _gp_sample,
@@ -4381,6 +4488,7 @@ DENSITIES: Mapping[str, Density] = {
     "RelaxedOneHotCategorical": _relaxedonehot_density,
     "LogisticNormal": _logisticnormal_density,
     "MixtureNormal": _mixturenormal_density,
+    "AdditiveLogRatioNormal": _alr_density,
     "MultivariateNormal": _mvn_density,
     "LowRankMVN": _lowrankmvn_density,
     "GP": _gp_density,

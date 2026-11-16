@@ -36,6 +36,7 @@ import torch.distributions as D
 from torch.distributions import constraints as _constraints
 
 from quivers.continuous._com_poisson import COMPoisson
+from quivers.continuous._additive_log_ratio import AdditiveLogRatioNormal
 from quivers.continuous._multinomial import (
     Multinomial,
     DirichletMultinomial,
@@ -1702,6 +1703,9 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         Hidden layer width for neural parameter source.
     """
 
+    _event_offset = 0
+    _distribution_class = D.MultivariateNormal
+
     def __init__(
         self,
         domain: AnySpace,
@@ -1711,7 +1715,9 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         param_source_option: str | None = None,
     ) -> None:
         super().__init__(domain, codomain)
-        d = codomain.dim
+        d = codomain.dim - self._event_offset
+        if d < 1:
+            raise ValueError("Gaussian coordinate dimension must be positive")
         n_tril = d * (d + 1) // 2
         self.param_source = _make_source(
             domain,
@@ -1723,7 +1729,7 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         self._d = d
         self._n_tril = n_tril
 
-    def _get_dist(self, x: torch.Tensor) -> D.MultivariateNormal:
+    def _get_dist(self, x: torch.Tensor) -> D.Distribution:
         raw = self.param_source(x)
         loc = raw[..., : self._d]
         tril_raw = raw[..., self._d :]
@@ -1746,7 +1752,7 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         diag_idx = torch.arange(self._d)
         L[..., diag_idx, diag_idx] = F.softplus(L[..., diag_idx, diag_idx]) + EPS
 
-        return D.MultivariateNormal(loc, scale_tril=L)
+        return self._distribution_class(loc, scale_tril=L)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         dist = self._get_dist(x)
@@ -1759,6 +1765,27 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
     ) -> torch.Tensor:
         dist = self._get_dist(x)
         return dist.rsample(sample_shape)
+
+
+class ConditionalAdditiveLogRatioNormal(ConditionalMultivariateNormal):
+    """Learn correlated Gaussian log ratios against the final component.
+
+    Parameters
+    ----------
+    domain : SetObject or ContinuousSpace
+        Source space.
+    codomain : ContinuousSpace
+        Simplex space with at least two components.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-network hidden dimensions.
+    param_source : ParamSource or None
+        Reusable Gaussian coordinate parameter source.
+    param_source_option : str or None
+        Parameter-source strategy.
+    """
+
+    _event_offset = 1
+    _distribution_class = AdditiveLogRatioNormal
 
 
 class ConditionalLowRankMVN(ContinuousMorphism):
@@ -3951,6 +3978,20 @@ _register_family(
 
 _register_family(
     FamilySpec(
+        name="AdditiveLogRatioNormal",
+        dist_class=AdditiveLogRatioNormal,
+        params=(
+            ParamSpec(name="loc", transform="id"),
+            ParamSpec(name="scale_tril", transform="id"),
+        ),
+        support=_constraints.simplex,
+        output_kind="mvn",
+        conditional_class_override=ConditionalAdditiveLogRatioNormal,
+    )
+)
+
+_register_family(
+    FamilySpec(
         name="LowRankMVN",
         dist_class=D.LowRankMultivariateNormal,
         params=(
@@ -4795,6 +4836,8 @@ __all__ = [
     "ConditionalNegativeBinomial",
     "ConditionalVonMises",
     "ConditionalUniform",
+    "AdditiveLogRatioNormal",
+    "ConditionalAdditiveLogRatioNormal",
     "ConditionalMultivariateNormal",
     "ConditionalLowRankMVN",
     "ConditionalRelaxedBernoulli",

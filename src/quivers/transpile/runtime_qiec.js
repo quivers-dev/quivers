@@ -420,7 +420,18 @@ var _qvr_qiec_specialize = function(value, environment) {
     if (_.has(environment, staticKey)) { return environment[staticKey]; }
   }
   var keys = Object.keys(value);
-  return _.zipObject(keys, map(function(key) { return _qvr_qiec_specialize(value[key], environment); }, keys));
+  var specialized = _.zipObject(keys, map(function(key) { return _qvr_qiec_specialize(value[key], environment); }, keys));
+  if (specialized.kind === "index-sum") {
+    var literals = filter(function(term) { return term.kind === "index-literal"; }, specialized.terms);
+    var sums = filter(function(term) { return term.kind === "index-sum"; }, specialized.terms);
+    var variables = filter(function(term) { return term.kind !== "index-literal" && term.kind !== "index-sum"; }, specialized.terms);
+    var constant = specialized.constant + reduce(function(term, total) { return total + term.value; }, 0, literals) + reduce(function(term, total) { return total + term.constant; }, 0, sums);
+    var terms = _.sortBy(variables.concat(_.flatten(map(function(term) { return term.terms; }, sums), true)), function(term) { return term.identity ? "1:" + term.identity : "0:" + term.name; });
+    if (terms.length === 0) { return { kind: "index-literal", value: constant, sort: { kind: "nat" } }; }
+    if (terms.length === 1 && constant === 0) { return terms[0]; }
+    return { kind: "index-sum", terms: terms, constant: constant };
+  }
+  return specialized;
 };
 var _qvr_qiec_unique = function(items) { return _.uniq(items); };
 var _qvr_qiec_ambient = function() { return globalStore._qvr_qiec_ambient || []; };

@@ -40,6 +40,14 @@ _LOGIT = math.log(_P / (1.0 - _P))
 #: Each family: its fixed arguments, one argument set per alternative,
 #: the value scored, and the torch construction from the arguments.
 _CASES: dict[str, tuple[dict[str, Host], dict[str, dict[str, Host]], Host, Oracle]] = {
+    "Multinomial": (
+        {"total_count": 7},
+        {"probs": {"probs": _PROBS}, "logits": {"logits": _LOGITS}},
+        (1, 4, 2),
+        lambda total_count, **parameters: D.Multinomial(
+            int(total_count.item()), **parameters
+        ),
+    ),
     "MultivariateNormal": (
         {"loc": (0.0, 1.0)},
         {

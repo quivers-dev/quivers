@@ -93,6 +93,18 @@ def test_builtin_function_completion() -> None:
     assert "chart_fold" in texts
 
 
+def test_static_index_completion_is_distinguished_from_runtime_builtins() -> None:
+    from quivers.dsl.pure_builtins import PURE_BUILTINS
+
+    matches = [
+        c for c in all_completions(ReplSession(), "nat_a") if c.text == "nat_add"
+    ]
+    assert len(matches) == 1
+    assert matches[0].kind == "function"
+    assert matches[0].detail == "static Nat addition"
+    assert "nat_add" not in PURE_BUILTINS
+
+
 def test_builtin_type_completion() -> None:
     cs = all_completions(_session(), "Fin")
     texts = {c.text for c in cs}

@@ -107,6 +107,7 @@ def test_checked_builtins_are_repl_completion_candidates(name: str) -> None:
         "COMPoisson",
         "Multinomial",
         "DirichletMultinomial",
+        "AdditiveLogRatioNormal",
         "ZeroInflatedAsymmetricLaplace",
     ),
 )
@@ -116,17 +117,14 @@ def test_response_families_are_repl_and_lsp_completion_candidates(name: str) -> 
     from quivers.cli.repl_complete import all_completions
     from quivers.cli.repl_session import ReplSession
     from quivers.lsp.server import build_server
-    from tests.transpile.fixtures._generate_families import (
-        _INLINE_OBSERVE,
-        _inline_observe_source,
-    )
+    from tests.transpile.fixtures._generate_families import fixture_sources
 
     prefix = name[:10]
     assert any(
         item.text == name and item.kind == "type"
         for item in all_completions(ReplSession(), prefix)
     )
-    source = _inline_observe_source(name, _INLINE_OBSERVE[name])
+    source = fixture_sources()[name]
     fixture = ROOT / f"tests/transpile/fixtures/families/{name.lower()}.qvr"
     assert fixture.read_text() == source
     server = build_server()
@@ -139,11 +137,13 @@ def test_response_families_are_repl_and_lsp_completion_candidates(name: str) -> 
             )
         )
     )
-    line = source.splitlines()[4]
+    lines = source.splitlines()
+    row = next(index for index, line in enumerate(lines) if f"<- {name}(" in line)
+    line = lines[row]
     completion = server.protocol.fm.features[lsp.TEXT_DOCUMENT_COMPLETION](
         lsp.CompletionParams(
             text_document=lsp.TextDocumentIdentifier(uri=uri),
-            position=lsp.Position(line=4, character=line.index(name) + len(prefix)),
+            position=lsp.Position(line=row, character=line.index(name) + len(prefix)),
         )
     )
     assert any(

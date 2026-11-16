@@ -168,6 +168,7 @@ from quivers.qiec.terms import (
     Var,
     WeightSum,
 )
+from quivers.qiec.index_arithmetic import infer_index_extents, solve_index_equation
 from quivers.qiec.types import (
     BOOL,
     INT,
@@ -177,6 +178,8 @@ from quivers.qiec.types import (
     IndexLiteral,
     IndexTerm,
     IndexVariable,
+    IndexSum,
+    shift_index,
     ShapeIndex,
     StaticArgument,
     TypeApplication,
@@ -446,7 +449,7 @@ class ObjectInfo(QiecModel):
         Whether the object is a finite set.
     """
 
-    extent: int | IndexVariable | None = dx.field(
+    extent: int | IndexTerm | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     real_width: int | IndexVariable | None = dx.field(
@@ -3409,7 +3412,22 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         bindings: TemplateBindings,
         prefix: str,
     ) -> tuple[TemplateBindings, tuple[str, ...]]:
-        """Give a supplied natural extent an object name inside an inlined body."""
+        """Give a supplied natural extent an object name inside an inlined body.
+
+        Parameters
+        ----------
+        template : ProgramDecl
+            Program whose Nat binders are instantiated.
+        bindings : TemplateBindings
+            Capture-avoiding static and runtime argument substitutions.
+        prefix : str
+            Invocation identity used to freshen local axis names.
+
+        Returns
+        -------
+        tuple[TemplateBindings, tuple[str, ...]]
+            Substitution extended with static axes and their introduced names.
+        """
         objects = dict(bindings.objects)
         introduced: list[str] = []
         for parameter in template.binders:
@@ -5459,9 +5477,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         bindings: dict[str, IndexTerm] = {}
         for parameter, argument in zip(signature.parameters, arguments, strict=True):
-            _bind_extents(
-                parameter, self._value_type(argument, context, step), bindings
-            )
+            try:
+                _bind_extents(
+                    parameter, self._value_type(argument, context, step), bindings
+                )
+            except (TypeError, ValueError) as error:
+                self._fail_kernel(step, error, fallback="qiec-program")
         statics: list[StaticArgument] = []
         for binder in signature.telescope:
             bound = (
@@ -5743,6 +5764,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
 
         def hoist(candidate: LetExprNode) -> LetExprNode:
+            """Bind one learned call before the enclosing pure expression.
+
+            Parameters
+            ----------
+            candidate : LetExprNode
+                Visited expression node.
+
+            Returns
+            -------
+            LetExprNode
+                Reference to the bound call, or the unchanged pure node.
+            """
             if not isinstance(candidate, LetExprCall):
                 return candidate
             morphism = self._function_morphism(candidate.func)
@@ -7205,24 +7238,53 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         tuple[list[tuple[str, Value]], PlateShape]
             The arguments and plate at every extent fixed so far.
         """
+        targets = (
+            tuple(axis.size for axis in plate.event[-record.event_rank :])
+            if record.event_rank
+            else ()
+        )
         supplied = record.event_argument(arguments)
-        if (
-            supplied is not None
-            and record.event_rank
-            and len(plate.event) >= record.event_rank
-        ):
-            shape = tensor_shape(self._value_type(supplied[1], scope.context(), node))
-            if shape is not None and len(shape[1]) >= record.event_rank:
-                natural = shape[1][len(shape[1]) - record.event_rank :]
-                trailing = plate.event[len(plate.event) - record.event_rank :]
-                self._unify_extents(
-                    [
-                        (size, axis.size)
-                        for size, axis in zip(natural, trailing, strict=True)
-                    ],
-                    scope,
-                    state,
+        offsets = record.event_offsets or (0,) * record.event_rank
+        if len(targets) < record.event_rank and supplied is not None:
+            source_shape = tensor_shape(
+                self._value_type(supplied[1], scope.context(), node)
+            )
+            if source_shape is not None and len(source_shape[1]) >= record.event_rank:
+                targets = tuple(
+                    shift_index(size, offset)
+                    for size, offset in zip(
+                        source_shape[1][-record.event_rank :], offsets, strict=True
+                    )
                 )
+        if record.event_rank and len(targets) == record.event_rank:
+            pairs = []
+            for name, argument in arguments:
+                parameter = record.parameter(name)
+                shape = tensor_shape(self._value_type(argument, scope.context(), node))
+                if shape is None or len(shape[1]) < parameter.rank:
+                    continue
+                if parameter.event_dims:
+                    for size, event_dimension in zip(
+                        shape[1][-parameter.rank :], parameter.event_dims, strict=True
+                    ):
+                        if event_dimension is not None:
+                            pairs.append(
+                                (
+                                    shift_index(size, offsets[event_dimension]),
+                                    targets[event_dimension],
+                                )
+                            )
+                elif name in record.event_sources:
+                    pairs.extend(
+                        (shift_index(size, offset), target)
+                        for size, offset, target in zip(
+                            shape[1][-record.event_rank :],
+                            offsets,
+                            targets,
+                            strict=True,
+                        )
+                    )
+            self._unify_extents(pairs, scope, state)
         if not state.extent_solution:
             return arguments, plate
         substitution = self._extent_substitution(state)
@@ -7796,7 +7858,34 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         via: tuple[str, ...] | None,
         group: PlateAxis | None,
     ) -> list[tuple[str, Value]]:
-        """Bind a keyword-only construction to one complete family schema."""
+        """Bind a keyword-only construction to one complete family schema.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            Canonical semantic family.
+        surface_family : str
+            Authored constructor name selecting accepted keyword schemas.
+        raw : list[DrawArg | str | float | _Spread]
+            Authored arguments before canonical ordering.
+        step : SampleStep | ObserveStep | MarginalizeStep
+            Draw supplying source locations.
+        plate : PlateShape
+            Batch and event axes of the construction.
+        scope : _Scope
+            Current lexical environment.
+        state : _ProgramState
+            Accumulated bindings and inferred extents.
+        via : tuple[str, ...] or None
+            Group-to-row index maps.
+        group : PlateAxis or None
+            Active grouping axis.
+
+        Returns
+        -------
+        list[tuple[str, Value]]
+            Lowered named arguments in canonical constructor order.
+        """
         schemas = family_parameterizations(surface_family, record.parameter_names)
         schema_text = render_parameterizations(schemas)
         supplied: set[str] = set()
@@ -7926,15 +8015,36 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             assert name is not None
             extents: list[IndexTerm] = []
             for axis, dim in enumerate(parameter.event_dims):
+                offset = (
+                    (record.event_offsets or (0,) * record.event_rank)[dim]
+                    if dim is not None
+                    else 0
+                )
                 if dim is not None and dim in event:
-                    extents.append(event[dim])
-                    continue
+                    try:
+                        extents.append(shift_index(event[dim], -offset))
+                        continue
+                    except ValueError:
+                        # Nat subtraction needs a proved predecessor. Another
+                        # typed argument may instead supply affine evidence.
+                        pass
                 extent = self._open_extent(
                     f"{name}_extent" if parameter.rank == 1 else f"{name}_extent{axis}",
                     state,
                 )
                 if dim is not None:
-                    event[dim] = extent
+                    sample_extent = shift_index(extent, offset)
+                    if dim in event:
+                        if not self._unify_extents(
+                            [(sample_extent, event[dim])], scope, state
+                        ):
+                            self._fail(
+                                step,
+                                f"cannot infer {name!r}: declare its tensor extent to establish the affine event shape",
+                                code="qiec-program",
+                            )
+                    else:
+                        event[dim] = sample_extent
                 extents.append(extent)
             values[position] = self._draw_argument(
                 argument,
@@ -8045,10 +8155,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         for size, dim in zip(own, parameter.event_dims, strict=True):
             if dim is None:
                 continue
+            offset = (record.event_offsets or (0,) * record.event_rank)[dim]
+            sample_extent = shift_index(size, offset)
             if dim not in event:
-                event[dim] = self._resolved_extent(size, state)
+                event[dim] = self._resolved_extent(sample_extent, state)
                 continue
-            if not self._unify_extents([(size, event[dim])], scope, state):
+            if not self._unify_extents([(sample_extent, event[dim])], scope, state):
                 source = f"{value.local.name!r}, " if isinstance(value, Var) else ""
                 self._fail(
                     step,
@@ -8528,6 +8640,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         """
         if isinstance(term, IndexVariable) and term.identity is None:
             return state.extent_solution.get(term.name, term)
+        if isinstance(term, IndexSum) and state.extent_solution:
+            return substitute_index(
+                term,
+                StaticSubstitution(
+                    types=(), indices=tuple(state.extent_solution.items()), effects=()
+                ),
+            )
         return term
 
     def _unify_extents(
@@ -8567,13 +8686,17 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             right = self._resolved_extent(right, state)
             if left == right:
                 continue
-            if isinstance(left, IndexVariable) and left.name in state.open_extents:
-                variable, term = left, right
-            elif isinstance(right, IndexVariable) and right.name in state.open_extents:
-                variable, term = right, left
-            else:
+            solved = None
+            for name in sorted(_index_variables_in((left, right)) & state.open_extents):
+                variable = IndexVariable(name=name, sort=NAT)
+                term = solve_index_equation(left, right, variable)
+                if term is not None:
+                    solved = variable, term
+                    break
+            if solved is None:
                 unified = False
                 continue
+            variable, term = solved
             fixed = StaticSubstitution(
                 types=(), indices=((variable.name, term),), effects=()
             )
@@ -10751,6 +10874,8 @@ def _index_variables_in(terms: Sequence[StaticArgument]) -> frozenset[str]:
             pending.extend(term.dimensions)
         elif isinstance(term, IndexVariable):
             found.add(term.name)
+        elif isinstance(term, IndexSum):
+            pending.extend(term.terms)
     return frozenset(found)
 
 
@@ -10769,19 +10894,82 @@ def _bind_extents(
         The bindings found so far, extended in place; a variable already
         bound keeps its first binding.
     """
-    if not isinstance(parameter, TypeApplication) or not isinstance(
-        argument, TypeApplication
-    ):
-        return
-    for expected, actual in zip(parameter.arguments, argument.arguments):
-        if isinstance(expected, ShapeIndex) and isinstance(actual, ShapeIndex):
-            for dimension, extent in zip(expected.dimensions, actual.dimensions):
-                if isinstance(dimension, IndexVariable):
-                    bindings.setdefault(dimension.name, extent)
-        elif isinstance(expected, TypeApplication | TypeVariable) and isinstance(
-            actual, TypeApplication | TypeVariable
+    pairs: list[tuple[IndexTerm, IndexTerm]] = []
+    pending = [(parameter, argument)]
+    while pending:
+        expected_type, actual_type = pending.pop()
+        if not isinstance(expected_type, TypeApplication) or not isinstance(
+            actual_type, TypeApplication
         ):
-            _bind_extents(expected, actual, bindings)
+            continue
+        for expected, actual in zip(expected_type.arguments, actual_type.arguments):
+            if isinstance(expected, ShapeIndex) and isinstance(actual, ShapeIndex):
+                pairs.extend(zip(expected.dimensions, actual.dimensions))
+            elif isinstance(expected, TypeApplication | TypeVariable) and isinstance(
+                actual, TypeApplication | TypeVariable
+            ):
+                pending.append((expected, actual))
+    # Callee binders and caller dimensions can share a display name while
+    # denoting different lexical variables. Freshen only the formal side
+    # before applying the shared equation solver.
+    names = sorted(_index_variables_in((parameter,)) - bindings.keys())
+    occupied = set(_index_variables_in((argument,))) | set(bindings)
+    fresh: dict[str, str] = {}
+    for name in names:
+        candidate = f"__qvr_bind_extent${name}"
+        while candidate in occupied:
+            candidate += "$"
+        occupied.add(candidate)
+        fresh[name] = candidate
+    formal = StaticSubstitution(
+        indices=tuple(
+            (
+                *bindings.items(),
+                *(
+                    (name, IndexVariable(name=actual, sort=NAT))
+                    for name, actual in fresh.items()
+                ),
+            )
+        )
+    )
+    pairs = [(substitute_index(left, formal), right) for left, right in pairs]
+    closed = [
+        (left, int(right.value))
+        for left, right in pairs
+        if isinstance(right, IndexLiteral) and right.sort == NAT
+    ]
+    solved = (
+        {
+            name: IndexLiteral(value=size, sort=NAT)
+            for name, size in infer_index_extents(closed).items()
+        }
+        if closed
+        else {}
+    )
+    # Every successful pass fixes a fresh variable, bounding this loop by
+    # the finite formal type rather than any runtime tensor dimension.
+    changed = True
+    while changed:
+        changed = False
+        substitution = StaticSubstitution(indices=tuple(solved.items()))
+        for dimension, extent in pairs:
+            dimension = substitute_index(dimension, substitution)
+            for name in sorted(
+                _index_variables_in((dimension,))
+                & (set(fresh.values()) - solved.keys())
+            ):
+                solution = solve_index_equation(
+                    dimension, extent, IndexVariable(name=name, sort=NAT)
+                )
+                if solution is not None:
+                    solved[name] = solution
+                    changed = True
+    substitution = StaticSubstitution(indices=tuple(solved.items()))
+    for name, local in fresh.items():
+        if local in solved:
+            term = substitute_index(solved[local], substitution)
+            if not (_index_variables_in((term,)) & set(fresh.values())):
+                bindings[name] = term
 
 
 def _is_entry_point(declaration: ProgramDecl) -> bool:
@@ -10805,12 +10993,12 @@ def _is_entry_point(declaration: ProgramDecl) -> bool:
     )
 
 
-def _extent(size: int | IndexVariable) -> IndexTerm:
+def _extent(size: int | IndexTerm) -> IndexTerm:
     """An axis extent as an index term.
 
     Parameters
     ----------
-    size : int | IndexVariable
+    size : int | IndexTerm
         The extent: a cardinality, or the index variable a program
         template binds for an object parameter.
 
@@ -10819,17 +11007,17 @@ def _extent(size: int | IndexVariable) -> IndexTerm:
     IndexTerm
         The literal of the nat sort, or the variable itself.
     """
-    if isinstance(size, IndexVariable):
-        return size
-    return IndexLiteral(value=size, sort=NAT)
+    if isinstance(size, int):
+        return IndexLiteral(value=size, sort=NAT)
+    return size
 
 
-def _fixed_extent(size: int | IndexVariable) -> int | None:
+def _fixed_extent(size: int | IndexTerm) -> int | None:
     """An extent as a cardinality, when it has one.
 
     Parameters
     ----------
-    size : int | IndexVariable
+    size : int | IndexTerm
         The extent.
 
     Returns
@@ -10838,7 +11026,11 @@ def _fixed_extent(size: int | IndexVariable) -> int | None:
         The cardinality, or ``None`` for the index variable of a
         template's object parameter, which no call has fixed yet.
     """
-    return None if isinstance(size, IndexVariable) else size
+    if isinstance(size, int):
+        return size
+    return (
+        int(size.value) if isinstance(size, IndexLiteral) and size.sort == NAT else None
+    )
 
 
 def _axis_name(expr: ObjectExpr) -> str:
@@ -11141,7 +11333,7 @@ def _object_expr_info(
 
 def _size_argument(
     argument: str, table: Mapping[str, ObjectInfo]
-) -> int | IndexVariable | None:
+) -> int | IndexTerm | None:
     """Resolve a constructor size argument.
 
     Parameters

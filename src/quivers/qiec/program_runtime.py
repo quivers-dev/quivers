@@ -61,8 +61,9 @@ from quivers.qiec.terms import (
 from quivers.qiec.types import (
     REAL,
     IndexLiteral,
+    IndexSum,
+    IndexTerm,
     IndexVariable,
-    ShapeIndex,
     StaticArgument,
     TypeApplication,
     TypeExpr,
@@ -622,33 +623,37 @@ def static_arguments_for(
             f"program {entry.name!r} binds {len(entry.telescope)} extent(s); "
             f"{len(given)} static argument(s) were given"
         )
+    affine_equations: list[tuple[IndexTerm, int]] = []
+    for parameter in entry.parameters:
+        shape = tensor_shape(parameter.type)
+        if shape is None or parameter.name not in data:
+            continue
+        for depth, dimension in enumerate(shape[1]):
+            if isinstance(dimension, IndexSum | IndexVariable):
+                affine_equations.append(
+                    (dimension, _extent_of(data[parameter.name], depth))
+                )
+    inferred: dict[str, int] = {}
+    if affine_equations or given:
+        from quivers.qiec.index_arithmetic import infer_index_extents
+
+        supplied_extents = {
+            binder.name: int(value.value)
+            for binder, value in zip(entry.telescope, given)
+            if isinstance(binder, IndexBinder)
+            and isinstance(value, IndexLiteral)
+            and isinstance(value.value, int)
+        }
+        try:
+            inferred = infer_index_extents(affine_equations, supplied_extents)
+        except (TypeError, ValueError) as error:
+            raise KeyError(
+                f"program {entry.name!r} has invalid shape evidence: {error}"
+            ) from error
     arguments: list[StaticArgument] = []
     for position, binder in enumerate(entry.telescope):
         supplied = given[position] if given else None
-        found: int | None = None
-        for parameter in entry.parameters:
-            type_ = parameter.type
-            if not isinstance(type_, TypeApplication) or len(type_.arguments) != 2:
-                continue
-            shape = type_.arguments[1]
-            if not isinstance(shape, ShapeIndex):
-                continue
-            for depth, dimension in enumerate(shape.dimensions):
-                if (
-                    isinstance(dimension, IndexVariable)
-                    and dimension.name == binder.name
-                ):
-                    try:
-                        found = _extent_of(data[parameter.name], depth)
-                    except KeyError as error:
-                        raise KeyError(
-                            f"parameter {parameter.name!r} of program "
-                            f"{entry.name!r} does not fix its extent "
-                            f"{binder.name!r}: {error.args[0]}"
-                        ) from error
-                    break
-            if found is not None:
-                break
+        found: int | None = inferred.get(binder.name)
         if found is None:
             if supplied is None:
                 raise KeyError(

@@ -383,6 +383,24 @@ class IRQiecIndexConstructor(IRQiecStatic):
     kind: Literal["index-constructor"] = "index-constructor"
 
 
+class IRQiecIndexSum(IRQiecStatic):
+    """A canonical natural-number sum in the portable checked core.
+
+    Parameters
+    ----------
+    terms : tuple[IRQiecStatic, ...]
+        Nominal Nat-variable summands, with repetitions retained.
+    constant : int
+        Nonnegative constant part.
+    kind : str
+        Discriminator, always ``"index-sum"``.
+    """
+
+    terms: tuple[IRQiecStatic, ...]
+    constant: int = 0
+    kind: Literal["index-sum"] = "index-sum"
+
+
 class IRQiecShapeIndex(IRQiecStatic):
     """A shape given by its dimensions.
 
@@ -2144,6 +2162,11 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
             arguments=cast(tuple[IRQiecStatic, ...], _convert(value.arguments)),
             sort=cast(IRQiecIndexSort, _convert(value.sort)),
         )
+    if isinstance(value, ty.IndexSum):
+        return IRQiecIndexSum(
+            terms=cast(tuple[IRQiecStatic, ...], _convert(value.terms)),
+            constant=value.constant,
+        )
     if isinstance(value, ty.ShapeIndex):
         return IRQiecShapeIndex(
             dimensions=cast(tuple[IRQiecStatic, ...], _convert(value.dimensions))
@@ -3489,6 +3512,7 @@ __all__ = [
     "IRQiecIndexVariable",
     "IRQiecIndexLiteral",
     "IRQiecIndexConstructor",
+    "IRQiecIndexSum",
     "IRQiecShapeIndex",
     "IRQiecTypeVariable",
     "IRQiecTypeConstructor",

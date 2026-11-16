@@ -60,6 +60,43 @@ A constructor may be nullary or recursive. No constructor can be added after the
 the checker knows every constructor a `case` must cover. Index values are static terms, not runtime
 integers. A `Nat` literal stands for an index only where a declaration binds a `Nat`.
 
+## Natural-number extent addition
+
+The built-in Nat sort admits `nat_add(a, b)` in index positions. It states
+an exact shape relation, rather than adding runtime integer values:
+
+<!-- compile: qiec -->
+```qvr
+define keep_padded[n : Nat](
+    x : Tensor[Real]([nat_add(n, 1)]),
+) : Tensor[Real]([nat_add(1, n)]) !{} =
+    return x
+```
+
+The checker folds closed additions, flattens nested sums, and preserves
+nominal variable identities. Thus the two types above agree before `n`
+is specialized. A supplied static `n=2` gives a vector of length three.
+A program header may use the same shape relation; binding can infer `n`
+from exact tensor-length evidence. Coupled equations such as
+`n + m = 5` and `n + 2m = 8` determine both extents, while one equation
+`n + m = 5` leaves them underdetermined. Conflicting, negative, and
+nonintegral solutions are refused.
+
+A Nat used only in tensor shapes may specialize to zero. It does not
+introduce a finite-set object; using it in a categorical finite-object
+position retains that position's cardinality requirements. Nat addition
+neither creates an axis nor identifies two unrelated axes. There is no
+unconstrained Nat subtraction: cancellation may remove a constant already
+present in a checked sum, but `n - 1` requires evidence absent from a bare
+Nat binder.
+
+This uses the existing index-application grammar. In a user-defined index
+sort, a constructor named `nat_add` remains a nominal constructor; it is
+not reinterpreted as arithmetic. Program calls retain their current
+restriction to names and numeric literals as explicit static actuals;
+this addition extends checked index expressions, without changing that
+call grammar or converting indices into runtime values.
+
 ## Family declarations
 
 `Vec[A](n)` is a list of elements of type `A` whose type also records its length `n`. `Nil` has

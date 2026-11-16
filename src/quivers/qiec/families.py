@@ -109,6 +109,10 @@ class DistributionFamily(ValueModel):
         morphisms rather than from tensor parameters alone.
     targets
         The spelling each transpile target uses for the family.
+    event_offsets
+        Nonnegative offsets from parameter event dimensions to sample
+        dimensions, or empty for identity extents. An additive log-ratio
+        normal has one more simplex component than Gaussian coordinates.
     finite_support
         The finite set of values a sample ranges over, when the family
         has one independent of its parameters.
@@ -131,6 +135,7 @@ class DistributionFamily(ValueModel):
     finite_support: tuple[LiteralData, ...] | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    event_offsets: tuple[int, ...] = ()
 
     @dx.model_validator()
     def _validate_family(self) -> None:
@@ -147,6 +152,7 @@ class DistributionFamily(ValueModel):
         """
         validate_shape(self.parameters, tuple[FamilyParameter, ...], path="parameters")
         validate_shape(self.element, TypeExpr, path="element")
+        validate_shape(self.event_offsets, tuple[int, ...], path="event_offsets")
         validate_shape(
             self.finite_support, tuple[LiteralData, ...] | None, path="finite_support"
         )
@@ -155,6 +161,15 @@ class DistributionFamily(ValueModel):
             for key, value in self.targets.items()
         ):
             raise TypeError("targets must map target names to family spellings")
+        if self.event_offsets and (
+            len(self.event_offsets) != self.event_rank
+            or any(
+                type(offset) is not int or offset < 0 for offset in self.event_offsets
+            )
+        ):
+            raise ValueError(
+                "event offsets must give one nonnegative integer per native event axis"
+            )
         names = [parameter.name for parameter in self.parameters]
         if len(set(names)) != len(names):
             raise ValueError(f"family {self.name!r} repeats a parameter name")
@@ -1513,6 +1528,27 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
             "stan": "von_mises",
             "turing": "VonMises",
         },
+    ),
+    DistributionFamily(
+        name="AdditiveLogRatioNormal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=1, event_dims=(0,)),
+            FamilyParameter(
+                name="scale_tril",
+                constraint="lower_cholesky",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+        ),
+        support="simplex",
+        element=REAL,
+        event_rank=1,
+        event_sources=("loc",),
+        event_offsets=(1,),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
     ),
     DistributionFamily(
         name="LogisticNormal",

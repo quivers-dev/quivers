@@ -245,6 +245,19 @@ and [API contracts](../api/diagnostics/posterior.md). The retained tensor mappin
 use identity semantics: callers own their storage and should avoid mutating it
 while reusing an analysis.
 
+### Dependent extents with a fixed offset
+
+A checked input shape can state an exact relation such as
+`Tensor[Real]([nat_add(n, 1)])`. Binding a vector of length four then
+fixes the static extent `n` at three. Multiple checked shapes may supply
+coupled affine equations; binding solves them together and refuses
+conflicting or nonintegral evidence. An underdetermined relation requires
+further data or explicit static arguments. These relations concern
+shapes, without introducing runtime count parameters or new axes. The
+[index reference](../reference/qvr/types-and-indexed-families.md#natural-number-extent-addition)
+gives an executable typed computation and the distinction from runtime
+`Nat` values.
+
 ## Infer only dimensions determined by data
 
 A supplied tensor's checked shape provides exact extent evidence. If `x` and `y`

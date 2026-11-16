@@ -58,6 +58,12 @@ def _oracle_log_prob(family: str, arguments: dict[str, object], point: object) -
             probs=_tensor(arguments["probs"]),
         )
         return float(distribution.log_prob(_tensor(point)))
+    if family == "AdditiveLogRatioNormal":
+        y = _tensor(point)
+        normal = td.MultivariateNormal(
+            _tensor(arguments["loc"]), scale_tril=_tensor(arguments["scale_tril"])
+        )
+        return float(normal.log_prob(y[:-1].log() - y[-1].log()) - y.log().sum())
     if family == "LogisticNormal":
         distribution = td.LogisticNormal(
             _tensor(arguments["loc"]), _tensor(arguments["scale"])
@@ -254,6 +260,10 @@ def _component(loc: Sequence[float], scale: Sequence[float]) -> RuntimeDistribut
 
 
 CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
+    "AdditiveLogRatioNormal": (
+        {"loc": (0.1, -0.2), "scale_tril": ((1.0, 0.0), (0.2, 0.8))},
+        ((0.2, 0.3, 0.5), (0.6, 0.1, 0.3)),
+    ),
     "Multinomial": (
         {"total_count": 7, "probs": (0.2, 0.3, 0.5)},
         ((1, 4, 2), (0, 0, 7)),

@@ -405,4 +405,14 @@ class TestFamilyMetaWiring:
             assert meta.quivers_class is not None
             assert meta.quivers_class.__name__ == f"Conditional{family}"
         assert "GP" in FAMILY_META
-        assert len(FAMILY_META) == 79
+        from quivers.qiec.families import FAMILIES
+        from quivers.continuous.family_spec import FAMILY_REGISTRY
+
+        assert set(FAMILY_META) == set(FAMILIES)
+        assert FAMILY_REGISTRY.keys() <= FAMILY_META.keys()
+        assert {
+            "COMPoisson",
+            "Multinomial",
+            "DirichletMultinomial",
+            "AdditiveLogRatioNormal",
+        } <= FAMILY_META.keys()

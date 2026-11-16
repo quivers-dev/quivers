@@ -15,6 +15,11 @@ from quivers.dsl.ast_nodes import (
     Module,
     ObjectDecl,
     ObjectParam,
+    OptionEntry,
+    OptionList,
+    OptionName,
+    OptionString,
+    OptionValue,
     ProgramDecl,
     QiecIndexBinder,
     QiecIndexName,
@@ -33,6 +38,7 @@ from quivers.qiec import (
     Call,
     Gather,
     IndexTerm,
+    IndexSum,
     IndexVariable,
     ProgramEntry,
     QiecModule,
@@ -129,6 +135,55 @@ def has_inferred_objects(module: Module) -> bool:
     return bool(_inferred_objects(module))
 
 
+def _shape_equations(
+    entry: ProgramEntry, data: Mapping[str, object], allowed: Mapping[str, object]
+) -> list[tuple[IndexTerm, int, str]]:
+    """Read exact shape equations within one declared extent namespace."""
+    equations = []
+    for parameter in entry.parameters:
+        if parameter.name not in data:
+            continue
+        shape = tensor_shape(parameter.type)
+        supplied = _shape(data[parameter.name], parameter.name)
+        if shape is None or len(shape[1]) != len(supplied):
+            continue
+        for dimension, size in zip(shape[1], supplied, strict=True):
+            terms = (
+                (dimension,)
+                if isinstance(dimension, IndexVariable)
+                else dimension.terms
+                if isinstance(dimension, IndexSum)
+                else ()
+            )
+            if terms and all(
+                term.identity is None and term.name in allowed for term in terms
+            ):
+                equations.append((dimension, size, parameter.name))
+    return equations
+
+
+def _axis_option_names(value: OptionValue) -> tuple[str, ...]:
+    """Names in an already identified static axis option, excluding values."""
+    if isinstance(value, OptionName | OptionString):
+        return (value.value,)
+    if isinstance(value, OptionList):
+        return tuple(name for item in value.items for name in _axis_option_names(item))
+    return ()
+
+
+def _substitute_axis_option(
+    value: OptionValue, objects: Mapping[str, str]
+) -> OptionValue:
+    """Substitute static axis names without rewriting runtime option symbols."""
+    if isinstance(value, OptionName | OptionString):
+        return value.with_(value=objects.get(value.value, value.value))
+    if isinstance(value, OptionList):
+        return value.with_(
+            items=tuple(_substitute_axis_option(item, objects) for item in value.items)
+        )
+    return value
+
+
 def infer_data_objects(module: Module, data: Mapping[str, object]) -> Module:
     """Replace ``FinSet _`` when the checked inputs provide consistent evidence."""
     inferred = _inferred_objects(module)
@@ -138,30 +193,13 @@ def infer_data_objects(module: Module, data: Mapping[str, object]) -> Module:
 
     checked = lower_qvr_to_qiec(module)
     evidence: dict[str, tuple[int, str]] = {}
+    affine_equations: list[tuple[IndexTerm, int]] = []
+    affine_sources: set[str] = set()
     lower_bounds: dict[str, tuple[int, str]] = {}
     for entry in checked.entries:
-        for parameter in entry.parameters:
-            if parameter.name not in data:
-                continue
-            shape = tensor_shape(parameter.type)
-            supplied = _shape(data[parameter.name], parameter.name)
-            if shape is None or len(shape[1]) != len(supplied):
-                continue
-            for dimension, size in zip(shape[1], supplied, strict=True):
-                if (
-                    not isinstance(dimension, IndexVariable)
-                    or dimension.name not in inferred
-                ):
-                    continue
-                name = dimension.name
-                prior = evidence.setdefault(name, (size, parameter.name))
-                if prior[0] != size:
-                    declaration = inferred[name]
-                    raise CompileError(
-                        f"cannot infer {name!r}: data {prior[1]!r} requires {prior[0]}, but {parameter.name!r} requires {size}",
-                        declaration.line,
-                        declaration.col,
-                    )
+        for dimension, size, source in _shape_equations(entry, data, inferred):
+            affine_equations.append((dimension, size))
+            affine_sources.add(source)
         for name, dimensions in external_index_bounds(checked, entry).items():
             if name not in data:
                 continue
@@ -187,6 +225,22 @@ def infer_data_objects(module: Module, data: Mapping[str, object]) -> Module:
                 bound = (int(value.max()) + 1, name)
                 if axis not in lower_bounds or lower_bounds[axis][0] < bound[0]:
                     lower_bounds[axis] = bound
+    if affine_equations:
+        from quivers.qiec.index_arithmetic import infer_index_extents
+
+        try:
+            forced = infer_index_extents(
+                affine_equations, {name: value for name, (value, _) in evidence.items()}
+            )
+        except (TypeError, ValueError) as error:
+            declaration = next(iter(inferred.values()))
+            raise CompileError(
+                f"cannot infer extents from {', '.join(sorted(affine_sources))}: {error}",
+                declaration.line,
+                declaration.col,
+            ) from error
+        for name, value in forced.items():
+            evidence.setdefault(name, (value, ", ".join(sorted(affine_sources))))
     for axis, (minimum, source) in lower_bounds.items():
         if axis in evidence and evidence[axis][0] < minimum:
             declaration = inferred[axis]
@@ -256,18 +310,9 @@ def _specialize_program_parameters(
     solutions: dict[str, dict[str, int]] = {}
     for entry in checked.entries:
         binders = candidates.get(entry.name, {})
-        evidence: dict[str, tuple[int, str]] = {}
-
-        def constrain(name: str, size: int, source: str) -> None:
-            previous = evidence.setdefault(name, (size, source))
-            if size != previous[0]:
-                binder = binders[name]
-                raise CompileError(
-                    f"cannot infer {name!r}: {previous[1]!r} requires {previous[0]}, but {source!r} requires {size}",
-                    binder.line,
-                    binder.col,
-                )
-
+        if not binders:
+            continue
+        supplied_extents = {}
         for name, binder in binders.items():
             if name not in data:
                 continue
@@ -278,19 +323,22 @@ def _specialize_program_parameters(
                 raise TypeError(
                     f"static extent {name!r} requires a nonnegative integer"
                 )
-            constrain(name, int(value), name)
-        for parameter in entry.parameters:
-            if parameter.name not in data:
-                continue
-            shape = tensor_shape(parameter.type)
-            supplied = _shape(data[parameter.name], parameter.name)
-            if shape is None or len(shape[1]) != len(supplied):
-                continue
-            for dimension, size in zip(shape[1], supplied, strict=True):
-                if isinstance(dimension, IndexVariable) and dimension.name in binders:
-                    constrain(dimension.name, size, parameter.name)
+            supplied_extents[name] = int(value)
+        equations = _shape_equations(entry, data, binders)
+        from quivers.qiec.index_arithmetic import infer_index_extents
+
+        try:
+            evidence = infer_index_extents(
+                [(term, size) for term, size, _ in equations], supplied_extents
+            )
+        except (TypeError, ValueError) as error:
+            binder = next(iter(binders.values()))
+            sources = ", ".join(sorted({name for _, _, name in equations}))
+            raise CompileError(
+                f"cannot infer extents from {sources}: {error}", binder.line, binder.col
+            ) from error
         if evidence:
-            solutions[entry.name] = {name: size for name, (size, _) in evidence.items()}
+            solutions[entry.name] = evidence
     if not solutions:
         return module
     # Binding an exported entry must not consume the static arguments of its
@@ -382,7 +430,21 @@ def _specialize_program_parameters(
             continue
         sizes = solutions[declaration.name]
         objects = {}
+        object_positions = set()
+        for node in _walk(declaration):
+            if isinstance(node, TypeName):
+                object_positions.add(node.name)
+            elif isinstance(node, AxisSpec):
+                object_positions.update((*node.over, *node.iid_over))
+            elif isinstance(node, OptionEntry) and node.key in {"over", "iid_over"}:
+                object_positions.update(_axis_option_names(node.value))
         for name, size in sizes.items():
+            if name not in object_positions and not isinstance(
+                candidates[declaration.name][name], ObjectParam
+            ):
+                # A Nat used only in static indices may be zero. It does not
+                # introduce a categorical object or an inhabitable FinSet.
+                continue
             object_name = f"__qvr_{declaration.name}_{name}"
             while object_name in occupied:
                 object_name += "_"
@@ -400,6 +462,8 @@ def _specialize_program_parameters(
             )
 
         def substitute(value: object) -> object:
+            if isinstance(value, OptionEntry) and value.key in {"over", "iid_over"}:
+                return value.with_(value=_substitute_axis_option(value.value, objects))
             if isinstance(value, TypeName) and value.name in objects:
                 return value.with_(name=objects[value.name])
             if isinstance(value, QiecIndexName) and value.name in sizes:

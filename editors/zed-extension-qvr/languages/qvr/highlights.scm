@@ -154,6 +154,7 @@
 ; Registered distribution-family identifiers.
 ((identifier) @type.builtin
   (#any-of? @type.builtin
+    "AdditiveLogRatioNormal"
     "AsymmetricLaplace"
     "Bernoulli"
     "Beta"

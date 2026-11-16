@@ -314,8 +314,8 @@ def test_family_meta_carries_all_thirteen_phase_a_entries() -> None:
 
 
 def test_family_meta_catalog_count_includes_new_response_families() -> None:
-    # These additions extend the existing 60-family catalog. Pin their
-    # names independently so an unrelated replacement cannot satisfy the count.
+    # Preserve explicit response-law membership while checking the complete
+    # semantic/native catalog, including future independently registered laws.
     added = {
         "AsymmetricLaplace",
         "ExGaussian",
@@ -335,4 +335,14 @@ def test_family_meta_catalog_count_includes_new_response_families() -> None:
     }
     assert added <= FAMILY_META.keys()
     assert "GP" in FAMILY_META
-    assert len(FAMILY_META) == 76
+    from quivers.qiec.families import FAMILIES
+    from quivers.continuous.family_spec import FAMILY_REGISTRY
+
+    assert set(FAMILY_META) == set(FAMILIES)
+    assert FAMILY_REGISTRY.keys() <= FAMILY_META.keys()
+    assert {
+        "COMPoisson",
+        "Multinomial",
+        "DirichletMultinomial",
+        "AdditiveLogRatioNormal",
+    } <= FAMILY_META.keys()

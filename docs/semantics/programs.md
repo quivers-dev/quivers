@@ -159,6 +159,31 @@ extents specify these types; runtime trial and probability or
 concentration tensors specify the kernel. Declaring either tensor
 introduces no observation or random effect.
 
+#### Additive log-ratio Normal events
+
+For $d\geq1$, let $Z\sim\mathcal N_d(\mu,LL^\mathsf T)$, where $L$
+is a lower-triangular matrix with positive diagonal. Define
+
+$$
+Y_j=\frac{\exp Z_j}{1+\sum_{k=1}^d\exp Z_k}\quad(j\leq d),
+\qquad Y_{d+1}=\frac{1}{1+\sum_{k=1}^d\exp Z_k}.
+$$
+
+`AdditiveLogRatioNormal` denotes the resulting probability kernel on
+the open simplex. In its first $d$ simplex coordinates, its density is
+
+$$
+p(y)=\varphi_d\!\left(\left(\log\frac{y_j}{y_{d+1}}\right)_{j=1}^d;
+\mu,LL^\mathsf T\right)\prod_{j=1}^{d+1}y_j^{-1}.
+$$
+
+The family signature relates the location and matrix dimensions to the
+response dimension by `nat_add(d, 1)`. This is a static equation, solved
+alongside the runtime tensors' shape evidence; it introduces no random
+variable or likelihood contribution. Row dimensions remain batch axes,
+and the simplex dimension is one coupled event. The existing
+`LogisticNormal` kernel retains its distinct stick-breaking semantics.
+
 #### COM-Poisson normalization
 
 For rate $\lambda\geq0$ and dispersion $\nu>0$, `COMPoisson` has counting-measure density
@@ -1030,6 +1055,13 @@ structure inherited from the integer carrier. Lowering records the carrier as
 `Int` and retains a nonnegative constraint; native and reference input validation
 enforce both integrality and nonnegativity. The corresponding static `Nat`
 parameter instead ranges over index valuations in $\Delta$.
+Static shape dependencies may also use Nat addition. For instance,
+`Tensor[Real]([nat_add(n, 1)])` denotes vectors whose length is exactly
+one more than the extent selected by `n`. This relation remains symbolic
+until specialization and can supply exact binding evidence. It does not
+introduce a runtime count, identify independently named axes, or add a
+probabilistic factor. A zero shape-only index is admissible without
+creating a categorical finite object.
 A family's runtime shape parameter, such as Fréchet `concentration` or
 GEV `concentration`, belongs to $\Gamma_v$ even when it controls a tail
 or a support endpoint. It does not determine a tensor's index extent.

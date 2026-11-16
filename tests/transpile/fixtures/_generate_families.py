@@ -88,6 +88,13 @@ _INLINE_OBSERVE: dict[str, str] = {
 # Existing curated sources are literal snapshots: regeneration must not
 # rewrite a valid measured fixture just to change its presentation.
 _SPECIAL_SOURCES: dict[str, str] = {
+    "AdditiveLogRatioNormal": """object Row : FinSet 3
+object Component : FinSet 3
+program model : Row -> Row
+    observe y : Row <- AdditiveLogRatioNormal(loc=[0.2, -0.1], scale_tril=[[0.7, 0.0], [0.2, 0.9]]) [over=Component]
+    return y
+export model
+""",
     "Multinomial": """object Row : FinSet 3
 object Category : FinSet 3
 program model : Row -> Row

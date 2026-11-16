@@ -65,6 +65,29 @@ is a separate capability from these native interfaces.
 
 ::: quivers.continuous._multinomial
 
+## Additive log-ratio Normal events
+
+`AdditiveLogRatioNormal(loc, scale_tril)` maps a correlated Normal vector
+of dimension `d` to a simplex of dimension `d + 1`. The final component
+is the reference: `log(y[:-1] / y[-1])` has that Normal distribution.
+`scale_tril` is a lower-triangular Cholesky factor with a positive diagonal.
+Batch axes broadcast separately from the coordinate and matrix event axes.
+`ConditionalAdditiveLogRatioNormal` learns both Normal heads.
+
+The density includes the change-of-variables term `-sum(log(y))`.
+Every component is strictly positive, and components must sum to one
+within the native simplex tolerance. Native sampling is pathwise;
+native and checked-reference scores retain the entire simplex as one event.
+This family differs from `LogisticNormal`, which retains its existing
+stick-breaking transform of independent Normal coordinates. Neither the
+Normal location nor its softmax is generally the simplex expectation.
+
+The checked response extent is `nat_add(d, 1)`, expressing the same
+dimension relationship used by native construction. All external targets
+currently report this family's missing rendering capability explicitly.
+
+::: quivers.continuous._additive_log_ratio
+
 ## Discrete Weibull counts
 
 `DiscreteWeibull(probs, concentration)` has nonnegative integer support,

@@ -591,7 +591,31 @@ def _qvr_qiec_specialize(value, environment):
         key = value.get("identity") or value.get("name")
         if key in environment:
             return environment[key]
-    return {key: _qvr_qiec_specialize(item, environment) for key, item in value.items()}
+    specialized = {
+        key: _qvr_qiec_specialize(item, environment) for key, item in value.items()
+    }
+    if specialized.get("kind") == "index-sum":
+        terms = []
+        constant = specialized["constant"]
+        for term in specialized["terms"]:
+            if term.get("kind") == "index-literal":
+                constant += term["value"]
+            elif term.get("kind") == "index-sum":
+                terms.extend(term["terms"])
+                constant += term["constant"]
+            else:
+                terms.append(term)
+        if not terms:
+            return {"kind": "index-literal", "value": constant, "sort": {"kind": "nat"}}
+        if len(terms) == 1 and constant == 0:
+            return terms[0]
+        terms.sort(
+            key=lambda term: (
+                (1, term["identity"]) if term.get("identity") else (0, term["name"])
+            )
+        )
+        return {"kind": "index-sum", "terms": terms, "constant": constant}
+    return specialized
 
 
 _qvr_qiec_ambient_handlers = _qvr_qiec_contextvars.ContextVar(
