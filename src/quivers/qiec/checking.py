@@ -1924,7 +1924,7 @@ def _plated_sample_type(
         from quivers.qiec._distribution_axes import distribution_axes
 
         try:
-            distribution_axes(value)
+            distribution_axes(value, families=FAMILIES)
         except (TypeError, ValueError) as error:
             raise KernelError(str(error), "qiec-distribution") from error
         shape = tensor_shape(element)
@@ -2376,7 +2376,7 @@ def _infer_distribution(
             from quivers.qiec._distribution_axes import distribution_axes
 
             try:
-                batch, event = distribution_axes(value)
+                batch, event = distribution_axes(value, families=FAMILIES)
                 parameter_plate = PlateShape(batch=batch, event=event)
             except (TypeError, ValueError) as error:
                 raise KernelError(str(error), "qiec-distribution") from error
@@ -2589,7 +2589,7 @@ def infer_value(
 
         if not (
             isinstance(value.sampleable, DistributionValue)
-            and distribution_axes(value.sampleable)[0] == value.batch
+            and distribution_axes(value.sampleable, families=FAMILIES)[0] == value.batch
         ):
             raise KernelError(
                 f"{query} keeps its weights apart over batch axes only for a "

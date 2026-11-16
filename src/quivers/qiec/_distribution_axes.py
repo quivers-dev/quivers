@@ -1,8 +1,10 @@
 """Retained batch/event proofs of compositional distribution values."""
 
+from collections.abc import Mapping
+
 from quivers._independent import independent_axes
 from quivers.qiec.canonical import sampled_element, tensor_shape
-from quivers.qiec.families import FAMILIES
+from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.qiec.terms import (
     Comprehension,
     DistributionValue,
@@ -16,6 +18,8 @@ from quivers.qiec.terms import (
 
 def distribution_axes(
     value: Value,
+    *,
+    families: Mapping[str, DistributionFamily] | None = None,
 ) -> tuple[tuple[PlateAxis, ...], tuple[PlateAxis, ...]]:
     """Read independent batch axes separately from sampled tensor coordinates.
 
@@ -23,6 +27,8 @@ def distribution_axes(
     ----------
     value : Value
         A checked distribution construction or a tensor of constructions.
+    families : Mapping[str, DistributionFamily] or None
+        The caller's checked semantic registry, defaulting to the builtin registry.
 
     Returns
     -------
@@ -35,23 +41,27 @@ def distribution_axes(
     TypeError, ValueError
         If Independent's count is not static or consumes unavailable axes.
     """
+    registry = FAMILIES if families is None else families
     if isinstance(value, Comprehension):
         # The enclosing construction's explicit plate owns this tensor axis.
-        return distribution_axes(value.body)
+        return distribution_axes(value.body, families=registry)
     if isinstance(value, TensorValue) and value.items:
-        axes = distribution_axes(value.items[0])
-        if any(distribution_axes(item) != axes for item in value.items[1:]):
+        axes = distribution_axes(value.items[0], families=registry)
+        if any(
+            distribution_axes(item, families=registry) != axes
+            for item in value.items[1:]
+        ):
             raise ValueError(
                 "component distributions have incompatible batch/event axes"
             )
         return axes
     if isinstance(value, DistributionValue):
-        record = FAMILIES[value.name]
+        record = registry[value.name]
         arguments = dict(value.arguments)
         if record.compositional:
             base = arguments.get("base", arguments.get("component"))
             if base is not None:
-                batch, event = distribution_axes(base)
+                batch, event = distribution_axes(base, families=registry)
                 if value.name == "Independent":
                     count = arguments.get("reinterpreted_batch_ndims")
                     if not isinstance(count, LiteralValue):

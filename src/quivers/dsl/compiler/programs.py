@@ -2979,7 +2979,7 @@ class _ProgramsMixin:
         """
         if not _calls_a_computation(steps) and not has_structural_lets(steps):
             return steps
-        module = self.qiec_module
+        module = self._available_qiec_module()
         if module is None or module.gap:
             return steps
         cards = {
@@ -4296,7 +4296,7 @@ class _ProgramsMixin:
         self._sampleable_context_stack.append(sampleable_contexts)
         self._value_extents_stack.append(self._checked_value_extents(decl.name))
         checked_batch_shapes = {}
-        checked_module = self.qiec_module
+        checked_module = self._available_qiec_module()
         if checked_module is not None:
             instantiated = self._instantiated_program_contracts.get(decl.name)
             checked_entry = (
@@ -7368,6 +7368,21 @@ class _ProgramsMixin:
             )
         return codomain.with_(dim=extents[0])
 
+    def _available_qiec_module(self) -> QiecModule | None:
+        """Read optional checked metadata after preserving native diagnostics.
+
+        Returns
+        -------
+        QiecModule | None
+            Available checked metadata, or None when lowering rejected the
+            source. Native declaration checks then report their own located
+            diagnostics; compile still requires checked lowering before returning.
+        """
+        try:
+            return self.qiec_module
+        except QiecDiagnosticError:
+            return None
+
     def _host_data_spaces(self, program: str) -> dict[str, AnySpace]:
         """The spaces the host data a program reads are checked at.
 
@@ -7387,10 +7402,7 @@ class _ProgramsMixin:
             lower: its diagnostic is then raised where `compile` reads
             the module, after the declarations' own diagnostics.
         """
-        try:
-            module = self.qiec_module
-        except QiecDiagnosticError:
-            return {}
+        module = self._available_qiec_module()
         if module is None:
             return {}
         instantiated = self._instantiated_program_contracts.get(program)
@@ -7441,10 +7453,7 @@ class _ProgramsMixin:
             or when the module does not lower: its diagnostic is then
             raised where `compile` reads the module.
         """
-        try:
-            module = self.qiec_module
-        except QiecDiagnosticError:
-            return {}
+        module = self._available_qiec_module()
         if module is None:
             return {}
         instantiated = self._instantiated_program_contracts.get(program)

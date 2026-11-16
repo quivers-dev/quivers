@@ -3408,7 +3408,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         from quivers.qiec._distribution_axes import distribution_axes
 
-        batch_axes, event_axes = distribution_axes(distribution)
+        batch_axes, event_axes = distribution_axes(distribution, families=FAMILIES)
         state.sites.append(
             ProgramSite(
                 name=name,
@@ -3879,7 +3879,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         from quivers.qiec._distribution_axes import distribution_axes
 
-        batch_axes, event_axes = distribution_axes(distribution)
+        batch_axes, event_axes = distribution_axes(distribution, families=FAMILIES)
         observed_type = self._sampled_type(distribution)
         if state.markov_row_cell[0] is not None and name == state.markov_entry_cell[0]:
             # The row of a marginalized chain's cell scores the entry it
@@ -3917,7 +3917,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         from quivers.dsl._observation_lowering import recorded_density
 
         density: Value = recorded_density(
-            self, distribution, Var(local=observed), step, scope, state
+            self,
+            distribution,
+            Var(local=observed),
+            step,
+            scope,
+            state,
+            families=FAMILIES,
         )
         density = self._weighted_observation(
             density, PlateShape(batch=batch_axes, event=event_axes), step, scope, state

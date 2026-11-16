@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from quivers._observation import EVENT_OPTIONS
@@ -15,7 +16,7 @@ from quivers.qiec.canonical import (
     tensor_shape,
     tensor_type,
 )
-from quivers.qiec.families import FAMILIES
+from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.qiec.terms import (
     Comprehension,
     ConditionalValue,
@@ -43,6 +44,8 @@ def recorded_density(
     step: ObserveStep,
     scope: _Scope,
     state: _ProgramState,
+    *,
+    families: Mapping[str, DistributionFamily] = FAMILIES,
 ) -> Value:
     """Retain independent rows while scoring only their active event branch.
 
@@ -60,6 +63,8 @@ def recorded_density(
         Runtime and static scope at the observation.
     state : _ProgramState
         Shared input-contract and program construction state.
+    families : Mapping[str, DistributionFamily]
+        The same semantic registry used to check the enclosing program.
 
     Returns
     -------
@@ -75,7 +80,7 @@ def recorded_density(
     entries = {
         entry.key: entry.value for entry in step.options if entry.key in EVENT_OPTIONS
     }
-    response_batch, response_event = distribution_axes(distribution)
+    response_batch, response_event = distribution_axes(distribution, families=families)
     if not entries:
         return LogDensity(
             sampleable=distribution,
@@ -171,6 +176,20 @@ def recorded_density(
     )
 
     def scalar(value: Value, intrinsic: int = 0, consumed: int = 0) -> Value:
+        """Select one response row while preserving intrinsic coordinates.
+
+        Parameters
+        ----------
+        value : Value
+            Checked argument or compositional distribution.
+        intrinsic, consumed : int
+            Intrinsic parameter rank and enclosing axes already selected.
+
+        Returns
+        -------
+        Value
+            Row-selected value with its intrinsic coordinates intact.
+        """
         if isinstance(value, Comprehension):
             # A measure constructor retains explicit enclosing replication as
             # a comprehension. Discharge that binder before selecting any
@@ -187,7 +206,7 @@ def recorded_density(
             )
             return scalar(body, intrinsic, consumed + 1)
         if isinstance(value, DistributionValue):
-            record = FAMILIES[value.name]
+            record = families[value.name]
             ranks = {parameter.name: parameter.rank for parameter in record.parameters}
             arguments = tuple(
                 (name, scalar(argument, ranks.get(name, 0), consumed))
@@ -237,7 +256,23 @@ def recorded_density(
     def restrict(
         law: DistributionValue, low: Value, high: Value, *, closed: bool = True
     ) -> DistributionValue:
-        record = FAMILIES["Restrict"]
+        """Construct a checked interval restriction using the caller's registry.
+
+        Parameters
+        ----------
+        law : DistributionValue
+            Scalar sampling law.
+        low, high : Value
+            Interval endpoints.
+        closed : bool
+            Whether the lower endpoint belongs to the recorded event.
+
+        Returns
+        -------
+        DistributionValue
+            Unnormalized restricted law with an inclusive upper endpoint.
+        """
+        record = families["Restrict"]
         return DistributionValue(
             family=record.id,
             name=record.name,
@@ -265,7 +300,7 @@ def recorded_density(
         restricted = restrict(
             base, rows.get("trunc_lower", negative), rows.get("trunc_upper", infinity)
         )
-        record = FAMILIES["Normalize"]
+        record = families["Normalize"]
         base = DistributionValue(
             family=record.id,
             name=record.name,
@@ -298,6 +333,20 @@ def recorded_density(
         )
 
         def mass(low: Value, high: Value, *, closed: bool = True) -> Value:
+            """Query one recorded interval without sampling a latent outcome.
+
+            Parameters
+            ----------
+            low, high : Value
+                Event endpoints.
+            closed : bool
+                Whether the lower endpoint belongs to the event.
+
+            Returns
+            -------
+            Value
+                Canonical LogMass query over the restricted sampling law.
+            """
             return LogMass(
                 sampleable=restrict(base, low, high, closed=closed),
                 origin=distribution.origin,

@@ -186,3 +186,17 @@ def test_pure_compositions_preserve_integer_sample_carriers(expression):
         Compiler(
             parse(source.replace("Sampleable[Int]", "Sampleable[Real]"))
         ).qiec_module
+
+
+def test_observation_axes_use_the_same_semantic_registry_as_the_source_checker(
+    coupled_family,
+):
+    source = """object Out:Real 1
+program model(a:Tensor[Real]([5]),b:Tensor[Real]([8])):Out->Out
+    observe y <- CoupledShapeTest(a=a,b=b)
+    return y
+export model
+"""
+    checked = Compiler(parse(source)).qiec_module
+    assert checked is not None
+    assert checked.entries[0].sites[0].family == coupled_family.name
