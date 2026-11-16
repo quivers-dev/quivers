@@ -316,9 +316,9 @@ def test_integrated_selectors_preserve_catalogue_and_compositional_bounds():
     module, complement = lens.forward(formula)
     actual = lens.get_prior(formula)
     assert actual["beta_x"] == "Normal(loc=0.2, scale=0.3)"
-    assert actual["beta_z"] == "Normal(loc=0.0, scale=1.0)"
+    assert actual["beta_z"] == "Normal(loc=0, scale=1)"
     assert actual["sigma_g_x"] == "HalfNormal(scale=0.4)"
-    assert actual["cor_g"] == "LKJCholesky(concentration=3.0)"
+    assert actual["cor_g"] == "LKJCholesky(concentration=3)"
     assert complement.prior_targets == lens.prior_targets
     assert lens.backward(module, complement) == formula
     bounded = get_prior(

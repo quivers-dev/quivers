@@ -16,10 +16,12 @@ presentation labels, the original formula string) ride in
 by calling `_decode_module` on the target and fuses it with the
 complement.
 
-The lens never touches strings: the target is a `Module`
+The lens target is a `Module`
 that the existing [`quivers.dsl.compiler.Compiler`][quivers.dsl.compiler.Compiler] consumes
 directly, identical in shape to one produced by
 [`quivers.dsl.parser.parse`][quivers.dsl.parser.parse].
+Authored prior strings enter through that parser once per distinct expression
+within a forward preparation; emission and specialization retain their source AST.
 
 Emitted structure (one named scalar coefficient per design-matrix
 *column*, matching the brms / lme4 canonical layout in which
@@ -104,6 +106,7 @@ from quivers.dsl.ast_nodes import (
     QiecValueParameter,
 )
 from quivers.dsl.emit import draw_call_to_source
+from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.family_schemas import family_parameter_names
 from quivers.formulas.family import Family
 from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
@@ -148,97 +151,144 @@ from quivers.formulas.formula import (
 )
 
 
-#: Prior families whose last positional argument is a scale, so an
-#: autoscaled default divides it by the column's RMS.
-_SCALE_LAST_PRIOR_FAMILIES: frozenset[str] = frozenset(
+#: Prior families whose default scalar scale is divided by the column RMS.
+_AUTOSCALED_PRIOR_FAMILIES: frozenset[str] = frozenset(
     {"Normal", "Cauchy", "Laplace", "StudentT", "Logistic"}
 )
 
 
-def _autoscaled_prior_args(
-    family_name: str,
-    args: tuple[str | float, ...],
+def _autoscaled_prior_step(
+    step: SampleStep,
     column: "np.ndarray",
-) -> tuple[str | float, ...]:
+) -> SampleStep:
     """Rescale a default coefficient prior for its predictor column.
 
     For a term ``beta * column``, a coefficient scale ``s`` induces contribution
-    scale ``s * rms(column)``. If the prior family has a final positional scale
+    scale ``s * rms(column)``. If the prior family has a scalar scale
     argument, this function divides that argument by the column RMS. It leaves
     unsupported families, nonnumeric scales, and columns with nonpositive or
     nonfinite RMS unchanged. This follows the default autoscaling convention
     used by `rstanarm`.
+
+    Parameters
+    ----------
+    step : SampleStep
+        Parsed default coefficient prior.
+    column : np.ndarray
+        Predictor column entering the coefficient's contribution.
+
+    Returns
+    -------
+    SampleStep
+        The prior with only an eligible default scalar scale rescaled.
     """
-    if family_name not in _SCALE_LAST_PRIOR_FAMILIES or not args:
-        return args
-    scale = args[-1]
-    if not isinstance(scale, float):
-        return args
+    if step.morphism not in _AUTOSCALED_PRIOR_FAMILIES or any(
+        isinstance(arg, DrawArgNamed)
+        and isinstance(arg.value, DrawArgDist | DrawArgList)
+        for arg in step.args or ()
+    ):
+        return step
+    scale = next(
+        (
+            argument.value
+            for argument in step.args or ()
+            if isinstance(argument, DrawArgNamed)
+            and argument.parameter == "scale"
+            and isinstance(argument.value, DrawArgScalar)
+        ),
+        None,
+    )
+    if scale is None:
+        return step
     rms = float(np.sqrt(np.mean(np.square(np.asarray(column, dtype=np.float64)))))
     if not np.isfinite(rms) or rms <= 0.0:
-        return args
-    return (*args[:-1], scale / rms)
-
-
-def _parse_prior_call(text: str) -> tuple[str, tuple[str | float, ...]]:
-    """Split a brms-style prior template ``"Family(arg, arg, ...)"``
-    into its family name and a tuple of argument tokens.  Numeric
-    tokens become floats; identifier tokens stay as strings so they
-    can refer to other latents in the emitted program.
-    """
-    text = text.strip()
-    if "(" not in text or not text.endswith(")"):
-        raise ValueError(
-            f"compile_formula: prior {text!r} is not in the form "
-            f"`Family(arg1, arg2, ...)`"
+        return step
+    return step.with_(
+        args=tuple(
+            argument.with_(value=scale.with_(value=scale.value / rms))
+            if isinstance(argument, DrawArgNamed) and argument.parameter == "scale"
+            else argument
+            for argument in step.args or ()
         )
-    family, _, rest = text.partition("(")
-    body = rest[:-1]
-    args: list[str | float] = []
-    named: dict[str, str | float] = {}
-    if body.strip():
-        for token in body.split(","):
-            token = token.strip()
-            parameter: str | None = None
-            if "=" in token:
-                parameter, token = (part.strip() for part in token.split("=", 1))
-                if not parameter:
-                    raise ValueError(
-                        f"compile_formula: prior {text!r} has an empty parameter name"
-                    )
-            try:
-                value: str | float = float(token)
-            except ValueError:
-                value = token
-            if parameter is None:
-                if named:
-                    raise ValueError(
-                        f"compile_formula: prior {text!r} mixes positional and "
-                        "named arguments"
-                    )
-                args.append(value)
-            else:
-                if args:
-                    raise ValueError(
-                        f"compile_formula: prior {text!r} mixes positional and "
-                        "named arguments"
-                    )
-                if parameter in named:
-                    raise ValueError(
-                        f"compile_formula: prior {text!r} repeats parameter "
-                        f"{parameter!r}"
-                    )
-                named[parameter] = value
-    family = family.strip()
-    if named:
-        parameters = family_parameter_names(family)
-        if parameters is None or set(named) != set(parameters):
-            expected = ", ".join(parameters or ())
-            raise ValueError(
-                f"compile_formula: prior {text!r} must name exactly ({expected})"
+    )
+
+
+def _named_prior_arguments(
+    family: str, arguments: tuple[DrawArg, ...]
+) -> tuple[DrawArg, ...]:
+    """Bind prior shorthand positions through the existing constructor schemas.
+
+    Parameters
+    ----------
+    family : str
+        Authored family name, retaining semantic aliases.
+    arguments : tuple[DrawArg, ...]
+        Canonically parsed positional or named arguments.
+
+    Returns
+    -------
+    tuple[DrawArg, ...]
+        Canonical named arguments, including recursively bound constructors.
+
+    Raises
+    ------
+    ValueError
+        If a constructor is unknown, mixes argument styles, or fails its schema.
+    """
+    parameters = family_parameter_names(family)
+    if parameters is None:
+        raise ValueError(f"prior family {family!r} has no QVR parameter schema")
+    if any(isinstance(arg, DrawArgNamed) for arg in arguments) and not all(
+        isinstance(arg, DrawArgNamed) for arg in arguments
+    ):
+        raise ValueError(
+            f"prior family {family!r} mixes positional and named arguments"
+        )
+
+    def nested(argument: DrawArg) -> DrawArg:
+        """Retain each canonical argument while binding its nested constructors.
+
+        Parameters
+        ----------
+        argument : DrawArg
+            Parsed argument, list, or distribution value.
+
+        Returns
+        -------
+        DrawArg
+            The same canonical node with nested constructor names bound.
+
+        Raises
+        ------
+        ValueError
+            If a nested constructor does not match a complete schema.
+        """
+        if isinstance(argument, DrawArgDist):
+            return argument.with_(
+                args=_named_prior_arguments(argument.family, argument.args)
             )
-        return family, tuple(named[parameter] for parameter in parameters)
-    return family, tuple(args)
+        if isinstance(argument, DrawArgList):
+            return argument.with_(items=tuple(nested(item) for item in argument.items))
+        return argument
+
+    named = []
+    for position, argument in enumerate(arguments):
+        if isinstance(argument, DrawArgNamed):
+            name, value = argument.parameter, argument.value
+        else:
+            if position >= len(parameters):
+                raise ValueError(
+                    f"prior family {family!r} has no positional parameter {position}"
+                )
+            name, value = parameters[position], argument
+        named.append(DrawArgNamed(parameter=name, value=nested(value)))
+    try:
+        bound = bind_family_arguments(
+            family, tuple(named), parameters, allow_defaults=False
+        )
+    except TypeError as error:
+        raise ValueError(str(error)) from error
+    return tuple(DrawArgNamed(parameter=name, value=value) for name, value in bound)
 
 
 def _draw(
@@ -290,18 +340,52 @@ def _draw(
     )
 
 
-def _auxiliary_draw(var: str, prior: str, *, lower: float | None = None) -> SampleStep:
-    """Parse one prior call, retaining the compositional measure algebra."""
-    if "(" not in prior.partition("(")[2] and "[" not in prior:
-        family, arguments = _parse_prior_call(prior)
-        step = _draw(var, family, arguments)
-        assert isinstance(step, SampleStep)
-    else:
-        from quivers.dsl.parser import parse
+def _auxiliary_draw(
+    var: str,
+    prior: str,
+    *,
+    lower: float | None = None,
+    templates: dict[str, SampleStep] | None = None,
+) -> SampleStep:
+    """Parse one prior through QVR and retain its canonical argument AST.
 
-        module = parse(
-            f"program prior : Input -> Output\n    sample {var} <- {prior}\n    return {var}\n"
-        )
+    Parameters
+    ----------
+    var : str
+        Actual sampled site binder.
+    prior : str
+        Authored distribution expression, including positional shorthand.
+    lower : float or None
+        Existing auxiliary-domain lower-bound policy.
+    templates : dict[str, SampleStep] or None
+        Optional preparation-local cache of immutable, unbound templates.
+
+    Returns
+    -------
+    SampleStep
+        The prior with its actual binder and any required domain restriction.
+
+    Raises
+    ------
+    ValueError
+        If the text is not one complete distribution call or violates the
+        auxiliary lower-bound policy.
+    """
+    template = None if templates is None else templates.get(prior)
+    if template is None:
+        from quivers.dsl.parser import ParseError, parse
+
+        expression = prior.strip().replace("\n", "\n    ")
+        try:
+            module = parse(
+                "program prior : Input -> Output\n"
+                f"    sample prior_value <- {expression}\n"
+                "    return prior_value\n"
+            )
+        except ParseError as error:
+            raise ValueError(
+                f"invalid prior distribution {prior!r}: {error}"
+            ) from error
         if len(module.statements) != 1:
             raise ValueError(
                 "an auxiliary prior must contain a single distribution call"
@@ -311,64 +395,45 @@ def _auxiliary_draw(var: str, prior: str, *, lower: float | None = None) -> Samp
             raise ValueError(
                 "an auxiliary prior must contain a single distribution call"
             )
-        step = program.draws[0]
-        if not isinstance(step, SampleStep) or step.vars != (var,):
+        template = program.draws[0]
+        if not isinstance(template, SampleStep) or template.vars != ("prior_value",):
             raise ValueError(
                 "an auxiliary prior must contain a single distribution call"
             )
+        if template.static_args or template.index is not None or template.options:
+            raise ValueError(
+                "an auxiliary prior must contain a single distribution call"
+            )
+        template = template.with_(
+            args=_named_prior_arguments(template.morphism, template.args or ())
+        )
+        if templates is not None:
+            templates[prior] = template
+    step = template.with_(vars=(var,))
+    return _prior_lower_bound(step, lower)
 
-        def named_arguments(
-            family: str, arguments: tuple[DrawArg, ...]
-        ) -> tuple[DrawArg, ...]:
-            """Translate formula-prior positions to canonical named draw arguments.
 
-            Parameters
-            ----------
-            family : str
-                Family named by this prior node.
-            arguments : tuple[DrawArg, ...]
-                Parsed positional or named prior arguments.
+def _prior_lower_bound(step: SampleStep, lower: float | None) -> SampleStep:
+    """Retain the existing auxiliary-domain restriction on a parsed prior.
 
-            Returns
-            -------
-            tuple[DrawArg, ...]
-                Named arguments with nested distributions translated recursively.
+    Parameters
+    ----------
+    step : SampleStep
+        Bound prior, retaining its canonical arguments.
+    lower : float or None
+        Required auxiliary-domain lower bound.
 
-            Raises
-            ------
-            ValueError
-                If a positional prior argument names no canonical parameter.
-            """
-            parameters = family_parameter_names(family) or ()
-            result = []
-            for position, argument in enumerate(arguments):
-                name = (
-                    argument.parameter if isinstance(argument, DrawArgNamed) else None
-                )
-                value = (
-                    argument.value if isinstance(argument, DrawArgNamed) else argument
-                )
-                if isinstance(value, DrawArgDist):
-                    value = value.with_(args=named_arguments(value.family, value.args))
-                if isinstance(value, DrawArgList):
-                    value = value.with_(
-                        items=tuple(
-                            item.with_(args=named_arguments(item.family, item.args))
-                            if isinstance(item, DrawArgDist)
-                            else item
-                            for item in value.items
-                        )
-                    )
-                if name is None:
-                    if position >= len(parameters):
-                        raise ValueError(
-                            f"prior family {family!r} has no positional parameter {position}"
-                        )
-                    name = parameters[position]
-                result.append(DrawArgNamed(parameter=name, value=value))
-            return tuple(result)
+    Returns
+    -------
+    SampleStep
+        The same prior or its existing lower-bounded restriction.
 
-        step = step.with_(args=named_arguments(step.morphism, step.args or ()))
+    Raises
+    ------
+    ValueError
+        If an explicit restriction does not ensure the required lower bound.
+    """
+    var = step.vars[0]
     if lower is not None:
         if step.morphism == "Restrict":
             cuts = [
@@ -870,6 +935,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         }
         self._user_priors: Mapping[str, str] = dict(self._initial_user_priors)
         self._prior_steps: dict[str, SampleStep] = {}
+        self._prior_templates: dict[str, SampleStep] = {}
         self._prior_targets: tuple[PriorTarget, ...] = ()
         self._prior_module: Module | None = None
         self._hierarchy_sites: frozenset[str] = frozenset()
@@ -973,6 +1039,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         self._user_priors = dict(self._initial_user_priors)
         self._prior_steps = {}
+        self._prior_templates = {}
         self._prior_targets = ()
         self._prior_module = None
         self._hierarchy_sites = frozenset()
@@ -1292,7 +1359,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             }
             by_site = {target.site: target for target in targets}
             steps = {
-                site: ordinary_prior_step(by_site[site], rule, draw=_auxiliary_draw)
+                site: ordinary_prior_step(by_site[site], rule, draw=self._parse_prior)
                 for site, rule in ordinary.items()
             }
             resolved = {
@@ -1354,7 +1421,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     module,
                     targets,
                     special,
-                    draw=_auxiliary_draw,
+                    draw=self._parse_prior,
                     training_rows=int(formula.response_values.shape[0]),
                     sigma="sigma" if scalar_sigma else None,
                 )
@@ -1425,7 +1492,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             nonlinear_names=()
             if self._predictor_graph is None
             else tuple(self._predictor_graph.leaves),
-            draw=_auxiliary_draw,
+            draw=self._parse_prior,
             thresholds_by=self._thresholds_by,
         )
 
@@ -1880,11 +1947,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         if spec.thresholds == "equidistant" and self._thresholds_by is None:
             if ordered:
                 program_steps.append(
-                    _auxiliary_draw(
+                    self._prior_draw(
                         "cutpoint_spacing",
-                        self._user_priors.get(
-                            "cutpoint_spacing", "LogNormal(0.0, 1.0)"
-                        ),
+                        "LogNormal(0.0, 1.0)",
                         lower=0.0,
                     )
                 )
@@ -2029,13 +2094,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         cell_index = "FormulaThresholdCell"
         self._append_finite_object(statements, cell_index, n_groups * n_shape)
 
-        mean_prior = _auxiliary_draw(
+        mean_prior = self._prior_draw(
             "cutpoint_log_spacing_mean",
-            self._user_priors.get("cutpoint_log_spacing_mean", "Normal(0.0, 1.0)"),
+            "Normal(0.0, 1.0)",
         )
-        scale_prior = _auxiliary_draw(
+        scale_prior = self._prior_draw(
             "cutpoint_log_spacing_scale",
-            self._user_priors.get("cutpoint_log_spacing_scale", "HalfNormal(0.5)"),
+            "HalfNormal(0.5)",
             lower=0.0 if "cutpoint_log_spacing_scale" in self._user_priors else None,
         )
         program_steps.extend(
@@ -2859,8 +2924,36 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
         )
 
+    def _parse_prior(self, name: str, text: str) -> SampleStep:
+        """Bind a canonical prior template in this forward preparation's cache.
+
+        Parameters
+        ----------
+        name : str
+            Existing latent-site binder.
+        text : str
+            Authored prior expression.
+
+        Returns
+        -------
+        SampleStep
+            The canonical prior with its actual site name.
+
+        Raises
+        ------
+        ValueError
+            If the prior is not one valid distribution construction.
+        """
+        return _auxiliary_draw(name, text, templates=self._prior_templates)
+
     def _prior_draw(
-        self, name: str, default: str, *, column: FixedColumn | None = None, index=None
+        self,
+        name: str,
+        default: str,
+        *,
+        column: FixedColumn | None = None,
+        index=None,
+        lower: float | None = None,
     ) -> SampleStep:
         """Emit ordinary priors through one parser, retaining explicit overrides.
 
@@ -2872,6 +2965,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Autoscale only an unoverridden non-intercept default coefficient.
         index : ObjectExpr or None
             Original nominal coefficient axes.
+        lower : float or None
+            Existing auxiliary-domain lower-bound policy.
 
         Returns
         -------
@@ -2879,24 +2974,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Proper source prior with unchanged site name and index metadata.
         """
         if name in self._prior_steps:
-            return self._prior_steps[name].with_(index=index)
-        explicit = name in self._user_priors
-        text = self._user_priors.get(name, default)
-        if (
-            not explicit
-            and column is not None
-            and not column.is_intercept
-            and "(" not in text.partition("(")[2]
-            and "[" not in text
-        ):
-            family, args = _parse_prior_call(text)
-            result = _draw(
-                name, family, _autoscaled_prior_args(family, args, column.data)
-            )
-            assert isinstance(result, SampleStep)
+            result = self._prior_steps[name]
         else:
-            result = _auxiliary_draw(name, text)
-        return result.with_(index=index)
+            explicit = name in self._user_priors
+            text = self._user_priors.get(name, default)
+            result = self._parse_prior(name, text)
+            if not explicit and column is not None and not column.is_intercept:
+                result = _autoscaled_prior_step(result, column.data)
+        return _prior_lower_bound(result, lower).with_(index=index)
 
     def _append_categorical_predictor(
         self,
@@ -4107,20 +4192,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     )
                 )
             else:
-                prior, args_prior = _parse_prior_call(
-                    self._user_priors.get("rescor", self._correlation_prior)
-                )
-                if prior != "LKJCholesky":
+                prior = self._prior_draw("rescor", self._correlation_prior)
+                if prior.morphism != "LKJCholesky":
                     raise ValueError(
                         "ALR residual correlations require an LKJCholesky prior"
                     )
                 program_steps.append(
-                    _draw(
-                        "rescor",
-                        prior,
-                        args_prior,
-                        index=TypeName(name="FormulaCategoryLogit"),
-                    )
+                    prior.with_(index=TypeName(name="FormulaCategoryLogit"))
                 )
                 program_steps.append(_let("formula_alr_correlation", _var("rescor")))
             sigma = (
@@ -4459,7 +4537,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     and aux.name not in self._user_priors
                 ):
                     prior = f"Uniform(0.0, {float(np.min(formula.response_values))!r})"
-                draw = _auxiliary_draw(
+                draw = self._prior_draw(
                     aux.name,
                     prior,
                     lower=1.0
@@ -4517,7 +4595,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             basis = self._family.baseline.resolve(formula)
             baseline_objects, baseline_draws = baseline_steps(
                 basis,
-                prior=_auxiliary_draw("sbhaz", self._user_priors["sbhaz"])
+                prior=self._prior_draw("sbhaz", self._user_priors["sbhaz"])
                 if "sbhaz" in self._user_priors
                 else None,
                 group=_qvr_name(self._family.baseline.by)
