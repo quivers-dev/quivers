@@ -356,6 +356,22 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     "HalfNormal": (("scale", "softplus"),),
     "InverseGamma": (("concentration", "softplus_shifted"), ("rate", "softplus")),
     "Weibull": (("scale", "softplus"), ("concentration", "softplus")),
+    "SkewNormal": (
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("skewness", "identity"),
+    ),
+    "ShiftedLogNormal": (
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("shift", "softplus"),
+    ),
+    "Frechet": (("scale", "softplus"), ("concentration", "softplus")),
+    "GeneralizedExtremeValue": (
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("concentration", "identity"),
+    ),
     "GeneralizedPareto": (
         ("loc", "identity"),
         ("scale", "softplus"),
@@ -3320,16 +3336,17 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
     def _elaborate_program_draw(
         self: _Elaborator, step: SampleStep, scope: _Scope, state: _ProgramState
     ) -> None:
-        """Elaborate ``sample x <- sub(args)`` by running ``sub`` in place.
+        """Elaborate ``sample x <- sub[statics](values)`` in place.
 
         The program's steps join this program's under names of its own:
         each local ``z`` of ``sub`` becomes ``x$z``, the name ``sub``
         returns becomes ``x`` itself, and a pattern ``(u, v)`` takes the
         returned names positionally, as
         [`instantiate_program`][quivers.dsl.program_templates.instantiate_program]
-        states. A template's object parameters take the objects the
-        draw names and its scalar parameters the numbers or bound names,
-        so every draw of a program contributes its own sites.
+        states. Static object, morphism, and index actuals specialize
+        the callee; runtime actuals supply its typed values. Each list
+        is checked independently, and every draw of a program contributes
+        its own sites.
 
         Parameters
         ----------
@@ -3635,7 +3652,17 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         try:
             try:
-                steps = instantiate_program(template, binders, bindings)
+                from quivers.dsl.program_templates import _is_standalone_application
+
+                steps = instantiate_program(
+                    template,
+                    binders,
+                    bindings,
+                    preserve_names=(
+                        _is_standalone_application(state.declaration)
+                        and node in state.declaration.draws
+                    ),
+                )
             except TemplateError as error:
                 self._fail(node, error.message, code="qiec-program")
             self._elaborate_steps(steps, scope, state)

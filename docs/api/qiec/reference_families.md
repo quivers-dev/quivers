@@ -21,4 +21,11 @@ upper endpoint, with the exponential limit at zero; see the
 [native tail-family guide](../../guides/continuous-families.md#generalized-pareto-tails).
 Reference support does not establish an external target mapping.
 
+`SkewNormal`, `ShiftedLogNormal`, `Frechet`, and
+`GeneralizedExtremeValue` also have checked-reference densities and
+samplers, independently checked against their native laws. Their
+[formal parameter maps](../../semantics/programs.md#scalar-response-kernels-and-regression-parameters)
+distinguish native location/scale parameters from regression means.
+All 11 external renderers currently refuse these four families explicitly.
+
 ::: quivers.qiec.reference_families

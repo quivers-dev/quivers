@@ -319,13 +319,15 @@ class Model:
             if self.entry in compiler.morphisms:
                 program = compiler.morphisms[self.entry]
             else:
+                from quivers.dsl.program_templates import static_program_parameters
+
                 invoker = compiler._make_template_invoker(self.entry)
                 template = compiler._program_templates[self.entry]
                 application = {
                     parameter.name: arguments.get(
                         parameter.name, values.get(parameter.name)
                     )
-                    for parameter in template.type_params or ()
+                    for parameter in static_program_parameters(template)
                     if parameter.name in arguments or parameter.name in values
                 }
                 selected = invoker(**application)

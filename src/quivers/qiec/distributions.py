@@ -1621,6 +1621,248 @@ def _generalized_pareto_density(a: Mapping[str, object], value: object) -> float
     )
 
 
+def _response_shape_parameters(
+    a: Mapping[str, object], family: str
+) -> dict[str, float]:
+    """Read finite parameters for skew, shifted, and extreme-value responses.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named scalar parameters.
+    family : str
+        Registered response family.
+
+    Returns
+    -------
+    dict[str, float]
+        Finite parameters satisfying their scale and shape domains.
+
+    Raises
+    ------
+    DistributionError
+        If a scale, shift, or shape violates its domain.
+    """
+    names = {
+        "SkewNormal": ("loc", "scale", "skewness"),
+        "ShiftedLogNormal": ("loc", "scale", "shift"),
+        "Frechet": ("scale", "concentration"),
+        "GeneralizedExtremeValue": ("loc", "scale", "concentration"),
+    }[family]
+    p = {name: _real(a, name, family) for name in names}
+    valid = all(math.isfinite(v) for v in p.values()) and p["scale"] > 0
+    if family == "ShiftedLogNormal":
+        valid = valid and p["shift"] >= 0
+    if family == "Frechet":
+        valid = valid and p["concentration"] > 0
+    if not valid:
+        raise DistributionError(f"{family} parameters violate their response domains")
+    return p
+
+
+def _skew_normal_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Sample a skew normal from two independent standard normals.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Location, scale, and skewness.
+    rng : random.Random
+        Host random generator.
+
+    Returns
+    -------
+    object
+        A real skew-normal response.
+    """
+    p = _response_shape_parameters(a, "SkewNormal")
+    norm = math.hypot(1, p["skewness"])
+    return p["loc"] + p["scale"] * (
+        (p["skewness"] / norm) * abs(rng.gauss(0, 1)) + rng.gauss(0, 1) / norm
+    )
+
+
+def _skew_normal_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate a skew-normal density with a stable Gaussian tail.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Location, scale, and skewness.
+    value : object
+        Real response.
+
+    Returns
+    -------
+    float
+        Log density.
+    """
+    p = _response_shape_parameters(a, "SkewNormal")
+    z = (_finite_value(value, "SkewNormal") - p["loc"]) / p["scale"]
+    t = p["skewness"] * z
+    log_phi = (
+        math.log(0.5) + _log_erfcx_positive(-t / math.sqrt(2)) - t * t / 2
+        if t < 0
+        else math.log(0.5 * math.erfc(-t / math.sqrt(2)))
+    )
+    return (
+        math.log(2)
+        - math.log(p["scale"])
+        - 0.5 * math.log(2 * math.pi)
+        - z * z / 2
+        + log_phi
+    )
+
+
+def _shifted_lognormal_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw a positive lognormal component plus its nonnegative shift.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Log-location, log-scale, and shift.
+    rng : random.Random
+        Host random generator.
+
+    Returns
+    -------
+    object
+        A response above the shift.
+    """
+    p = _response_shape_parameters(a, "ShiftedLogNormal")
+    return p["shift"] + rng.lognormvariate(p["loc"], p["scale"])
+
+
+def _shifted_lognormal_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate the translated lognormal density.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Log-location, log-scale, and shift.
+    value : object
+        Real response.
+
+    Returns
+    -------
+    float
+        Log density, negative infinity at or below the shift.
+    """
+    p = _response_shape_parameters(a, "ShiftedLogNormal")
+    point = _finite_value(value, "ShiftedLogNormal") - p["shift"]
+    return (
+        _normal_log_prob(math.log(point), p["loc"], p["scale"]) - math.log(point)
+        if point > 0
+        else -math.inf
+    )
+
+
+def _frechet_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw a Frechet observation through an exponential transformation.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Positive scale and concentration.
+    rng : random.Random
+        Host random generator.
+
+    Returns
+    -------
+    object
+        A positive real response.
+    """
+    p = _response_shape_parameters(a, "Frechet")
+    exponential = max(rng.expovariate(1), math.nextafter(0, 1))
+    return p["scale"] * math.exp(-math.log(exponential) / p["concentration"])
+
+
+def _frechet_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate the Frechet density on its positive support.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Scale and concentration.
+    value : object
+        Real response.
+
+    Returns
+    -------
+    float
+        Log density, negative infinity outside the support.
+    """
+    p = _response_shape_parameters(a, "Frechet")
+    point = _finite_value(value, "Frechet")
+    if point <= 0:
+        return -math.inf
+    ratio = math.log(point) - math.log(p["scale"])
+    log_power = -p["concentration"] * ratio
+    if log_power > 709:
+        return -math.inf
+    return (
+        math.log(p["concentration"])
+        - math.log(p["scale"])
+        - (p["concentration"] + 1) * ratio
+        - math.exp(log_power)
+    )
+
+
+def _generalized_extreme_value_sample(
+    a: Mapping[str, object], rng: random.Random
+) -> object:
+    """Draw a generalized extreme-value response, including zero shape.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Location, positive scale, and real concentration.
+    rng : random.Random
+        Host random generator.
+
+    Returns
+    -------
+    object
+        A real response in the concentration-dependent interval.
+    """
+    p = _response_shape_parameters(a, "GeneralizedExtremeValue")
+    gumbel = -math.log(max(rng.expovariate(1), math.nextafter(0, 1)))
+    c = p["concentration"]
+    transformed = math.expm1(c * gumbel) / c if c else gumbel
+    return p["loc"] + p["scale"] * transformed
+
+
+def _generalized_extreme_value_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate the GEV density and its support-endpoint limits.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Location, positive scale, and real concentration.
+    value : object
+        Real response.
+
+    Returns
+    -------
+    float
+        Log density, negative infinity outside the shape-dependent support.
+    """
+    p = _response_shape_parameters(a, "GeneralizedExtremeValue")
+    z = (_finite_value(value, "GeneralizedExtremeValue") - p["loc"]) / p["scale"]
+    c = p["concentration"]
+    t = 1 + c * z
+    if t < 0:
+        return -math.inf
+    if t == 0:
+        if c == -1:
+            return -math.log(p["scale"])
+        return math.inf if c < -1 else -math.inf
+    r = math.log1p(c * z) / c if c else z
+    if -r > 709:
+        return -math.inf
+    return -math.log(p["scale"]) - (1 + c) * r - math.exp(-r)
+
+
 def _dirichlet_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``Dirichlet``.
 
@@ -1702,6 +1944,10 @@ _SAMPLERS: Mapping[str, Sampler] = MappingProxyType(
         "Cauchy": _cauchy_sample,
         "StudentT": _studentt_sample,
         "Dirichlet": _dirichlet_sample,
+        "SkewNormal": _skew_normal_sample,
+        "ShiftedLogNormal": _shifted_lognormal_sample,
+        "Frechet": _frechet_sample,
+        "GeneralizedExtremeValue": _generalized_extreme_value_sample,
         "GeneralizedPareto": _generalized_pareto_sample,
         **_STRUCTURED_SAMPLERS,
         **_COUNT_MIXTURE_SAMPLERS,
@@ -1732,6 +1978,10 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
         "Cauchy": _cauchy_density,
         "StudentT": _studentt_density,
         "Dirichlet": _dirichlet_density,
+        "SkewNormal": _skew_normal_density,
+        "ShiftedLogNormal": _shifted_lognormal_density,
+        "Frechet": _frechet_density,
+        "GeneralizedExtremeValue": _generalized_extreme_value_density,
         "GeneralizedPareto": _generalized_pareto_density,
         **_STRUCTURED_DENSITIES,
         **_COUNT_MIXTURE_DENSITIES,

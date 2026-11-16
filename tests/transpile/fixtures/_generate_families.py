@@ -75,6 +75,10 @@ _INLINE_OBSERVE: dict[str, str] = {
     "ZeroInflatedBinomial": "zero_prob=0.25, total_count=4.0, probs=0.5",
     "ZeroInflatedBetaBinomial": "zero_prob=0.25, total_count=4.0, concentration1=2.0, concentration0=2.0",
     "HurdleNegativeBinomial": "zero_prob=0.25, total_count=2.0, probs=0.5",
+    "SkewNormal": "loc=0.2, scale=1.1, skewness=0.7",
+    "ShiftedLogNormal": "loc=0.2, scale=0.5, shift=0.1",
+    "Frechet": "scale=1.3, concentration=3.0",
+    "GeneralizedExtremeValue": "loc=0.2, scale=1.1, concentration=0.1",
 }
 
 

@@ -31,6 +31,55 @@ its discrete sampler branch is not differentiated as though it were fixed.
 
 ::: quivers.continuous._response_time
 
+## Skew, shifted, and extreme-value distributions
+
+`SkewNormal(loc, scale, skewness)` uses the native Azzalini
+location/scale parameters. `ShiftedLogNormal(loc, scale, shift)` shifts
+a lognormal component by a nonnegative amount.
+`Frechet(scale, concentration)` has a positive concentration;
+`GeneralizedExtremeValue(loc, scale, concentration)` has a real one,
+with the Gumbel limit at zero. These scalar response laws have different
+moment domains and support endpoints; see the
+[native-family guide](../../guides/continuous-families.md#skew-shifted-and-extreme-value-responses).
+The formula interface performs its own response-parameter conversions.
+
+The four native distributions provide `cdf`, `log_cdf`,
+`log_survival_function`, `icdf`, and direct vectorized pathwise samples.
+Their `ConditionalSkewNormal`, `ConditionalShiftedLogNormal`,
+`ConditionalFrechet`, and `ConditionalGeneralizedExtremeValue` wrappers
+learn the native constructor parameters. Checked-reference execution is
+supported; all 11 external renderers explicitly refuse these four laws.
+Skew-normal CDF and quantile evaluation uses float64 intermediate
+arithmetic and deterministic quadrature, with no uniform error guarantee.
+Those two methods require a device with float64 support.
+
+::: quivers.continuous._skew_normal
+
+::: quivers.continuous._shape_families
+
+## Truncating conditional families
+
+`Truncated` denotes a normalized restriction of the base conditional
+distribution. For independent scalar coordinates, it sums each coordinate's
+log interval mass; a coupled event requires a joint rectangle-mass
+operation. The [formal definition](../../semantics/programs.md#truncation-as-normalized-restriction)
+distinguishes this conditioning from interval censoring.
+
+The wrapper reads the base distribution through `_get_dist(x)` and
+uses deterministic CDF or log-tail interval masses. Normal tails have a
+stable specialized calculation; Gamma and Poisson use incomplete-gamma
+probabilities. Unsupported base/event contracts and zero or nonfinite
+computed interval masses raise explicit errors. Normal sampling uses a
+stable inverse CDF; other bases use bounded rejection controlled by
+`max_rejection_iterations`. The rejection branch does not establish a
+general pathwise derivative through the acceptance event.
+
+Gamma interval masses use float64 lower-tail series, upper-tail continued
+fractions, and small-shape complement calculations. Shape and rate
+derivatives propagate through converged recurrences; nonconvergence
+within 512 iterations raises explicitly. These numerical and derivative
+contracts do not assert a uniform accuracy or convergence guarantee.
+
 ## Generalized Pareto tails
 
 `ConditionalGeneralizedPareto` learns `loc`, positive `scale`, and real

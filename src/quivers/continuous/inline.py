@@ -5,15 +5,16 @@ fixed literal values or direct variable values, without learned
 neural-network transformations. Used by the DSL compiler for inline
 draw steps like::
 
-    draw x ~ LogitNormal(0.0, 1.0)                 # all fixed
-    draw b ~ Bernoulli(x)                           # direct variable
-    draw r ~ TruncatedNormal(mu, sigma, 0.0, 1.0)  # mixed
+    sample x <- LogitNormal(mu=0.0, sigma=1.0)                   # fixed
+    sample b <- Bernoulli(probs=x)                              # variable
+    sample r <- TruncatedNormal(mu=mu, sigma=sigma, low=0.0, high=1.0)
 
 Terminology
 -----------
-- **Fixed**: all distribution parameters are float literals known at
+- **Fixed**: all distribution parameters are numeric literals known at
   compile time. The morphism has domain ``Unit`` (terminal object)
-  and ignores its input.
+  and ignores its input. Integer lexemes retain their exact integer
+  carriers until family-specific validation and conversion.
 - **Direct**: some or all parameters come from bound variables at
   runtime. The morphism uses the input tensor directly as
   distribution parameters (no learned neural-net transformation).
@@ -371,7 +372,7 @@ class FixedDistribution(ContinuousMorphism):
 class MixedInlineDistribution(ContinuousMorphism):
     """General inline distribution with arbitrary literal/variable mix.
 
-    Handles any combination of literal float values and runtime variable
+    Handles any combination of literal numeric values and runtime variable
     inputs for any distribution family. At construction time, receives a
     specification of which parameter positions are fixed literals vs.
     variable inputs, plus a builder function that creates the PyTorch
@@ -380,10 +381,10 @@ class MixedInlineDistribution(ContinuousMorphism):
     This is the general mechanism underlying all inline distribution
     patterns in the DSL::
 
-        draw x ~ Normal(0.0, 1.0)           # all fixed (0 variable inputs)
-        draw y ~ Normal(mu, sigma)           # all variable (2 variable inputs)
-        draw z ~ Normal(mu, 0.5)             # mixed (1 variable input)
-        draw w ~ TruncatedNormal(mu, 0.5, 0.0, 1.0)  # mixed
+        sample x <- Normal(loc=0.0, scale=1.0)       # all fixed
+        sample y <- Normal(loc=mu, scale=sigma)     # all variable
+        sample z <- Normal(loc=mu, scale=0.5)       # mixed
+        sample w <- TruncatedNormal(mu=mu, sigma=0.5, low=0.0, high=1.0)
 
     Parameters
     ----------
@@ -397,7 +398,7 @@ class MixedInlineDistribution(ContinuousMorphism):
         - ``('var', dim)``: a variable read from the input, ``dim``
           columns wide, or ``None`` when its width is to be read off
           the stacked input (see ``_variable_widths``);
-        - ``('lit', value)``: a fixed literal float value;
+        - ``('lit', value)``: a fixed literal numeric value;
         - ``('const', tensor)``: a fixed literal tensor, a list literal
           such as a cutpoint vector, which every row shares.
     dist_builder : callable

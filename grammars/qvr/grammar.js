@@ -7,18 +7,21 @@
  *
  *   1. Python-style indented blocks everywhere (INDENT / DEDENT via
  *      external scanner; tree-sitter-python style).
- *   2. ``KEYWORD NAMES[(params)] : SIG [options] [body]`` is the
- *      single declaration header shape. NAMES is a comma-separated
- *      identifier list wherever a declaration admits families
- *      (category / object / morphism); the option block is optional
- *      on every declaration that takes one.
+ *   2. Declaration headers start ``KEYWORD NAMES``, followed by any
+ *      construct-specific telescopes before ``: SIG``: static,
+ *      template, and pattern binders use ``[...]``; value binders
+ *      use ``(...)``. NAMES is a comma-separated identifier list
+ *      wherever a declaration admits families (category / object /
+ *      morphism). Each construct determines which lists it admits.
  *   3. ``[k=v, ...]`` option blocks carry every declaration-level
  *      knob (role, scale, level, semiring, effects, over, iid,
- *      via, ...). Option values admit signed numbers.
+ *      via, ...). Option values admit signed numbers. Named option
+ *      entries and their grammar position distinguish options from
+ *      static binders and applications, such as ``f[A](x)``.
  *   4. Sized spaces use space application (``FinSet 3``,
  *      ``Real 28 28``); constructor keyword options use braces
- *      (``Real 1 {low=-1.0, high=1.0}``), so a trailing ``[...]``
- *      always belongs to the enclosing declaration.
+ *      (``Real 1 {low=-1.0, high=1.0}``), distinct from declaration
+ *      options and static telescopes.
  *   5. ``~`` is the only initializer marker; ``#!`` doc comments
  *      attach to every declaration kind.
  *   6. Every program step carries a leading keyword
@@ -26,9 +29,9 @@
  *      variable patterns are parenthesized tuples or a bare name.
  *   7. ``|-`` (or ``⊢``) is the only premises-to-conclusion
  *      turnstile, for top-level rules and deduction rules alike.
- *   8. Top-level ``define`` binds morphism expressions; program-step
- *      ``let`` binds tensor arithmetic. The two sublanguages never
- *      share a keyword.
+ *   8. Top-level ``define`` binds a morphism expression or a checked
+ *      computation. Program-step ``let`` binds pure values, while
+ *      ``let ... <-`` calls checked computations.
  */
 
 /// <reference types="tree-sitter-cli/dsl" />

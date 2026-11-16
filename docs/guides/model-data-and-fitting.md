@@ -251,6 +251,10 @@ Object and morphism parameters belong in the static telescope instead.
 The Python `parameters=` mapping supplies static arguments, such as a known
 extent; runtime scalar values belong in `data`. Rebinding for prediction must
 retain these scalar inputs along with the other covariates.
+Explicit type actuals use the same mapping, as in
+`model.bind(data, parameters={"A": "Real"})` for an `[A : Type]` binder;
+the specialized input types are then checked against `data`. Static type
+or effect arguments can accompany finite extents inferred from tensor shapes.
 
 An empty index array cannot identify the size of its target space. A transformed
 index, such as `group_idx + 1`, does not establish the raw index's target extent.

@@ -36,6 +36,12 @@ import torch.distributions as D
 from torch.distributions import constraints as _constraints
 
 from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
+from quivers.continuous._shape_families import (
+    ShiftedLogNormal,
+    Frechet,
+    GeneralizedExtremeValue,
+)
+from quivers.continuous._skew_normal import SkewNormal
 from quivers.continuous._response_time import ExGaussian, InverseGaussian
 from quivers.continuous._zero_inflated_count import (
     ZeroInflatedNegativeBinomial,
@@ -435,6 +441,11 @@ class ConditionalNormal(ContinuousMorphism):
 
         return log_p.sum(dim=-1)
 
+    def _get_dist(self, x: torch.Tensor) -> D.Normal:
+        """Return the scalar-coordinate laws before event reduction."""
+        mu, sigma = self._get_params(x)
+        return D.Normal(mu, sigma)
+
     def rsample(
         self,
         x: torch.Tensor,
@@ -814,6 +825,41 @@ ConditionalHurdleLogNormal = _make_family(
     discrete=False,
 )
 """Conditional zero atom combined with a positive LogNormal component."""
+
+ConditionalSkewNormal = _make_family(
+    "ConditionalSkewNormal",
+    SkewNormal,
+    [("loc", "id"), ("scale", "softplus"), ("skewness", "id")],
+    "Conditional SkewNormal response distribution.",
+)
+"""Conditional skew-normal with learned location, positive scale, and real skewness."""
+
+ConditionalShiftedLogNormal = _make_family(
+    "ConditionalShiftedLogNormal",
+    ShiftedLogNormal,
+    [("loc", "id"), ("scale", "softplus"), ("shift", "softplus")],
+    "Conditional ShiftedLogNormal response distribution.",
+    support=_constraints.real,
+    inline_bounds={"shift": (0.0, math.inf)},
+)
+"""Conditional lognormal component with a learned nonnegative additive shift."""
+
+ConditionalFrechet = _make_family(
+    "ConditionalFrechet",
+    Frechet,
+    [("scale", "softplus"), ("concentration", "softplus")],
+    "Conditional Frechet response distribution.",
+)
+"""Conditional Fréchet with learned positive scale and concentration."""
+
+ConditionalGeneralizedExtremeValue = _make_family(
+    "ConditionalGeneralizedExtremeValue",
+    GeneralizedExtremeValue,
+    [("loc", "id"), ("scale", "softplus"), ("concentration", "id")],
+    "Conditional GeneralizedExtremeValue response distribution.",
+    support=_constraints.real,
+)
+"""Conditional generalized extreme value with learned location, scale, and tail index."""
 
 ConditionalGumbel = _make_family(
     "ConditionalGumbel",
@@ -4315,16 +4361,19 @@ class Truncated(ContinuousMorphism):
         - F_{\\text{cdf}}(a)} \\cdot \\mathbb{1}_{[a,b]}(x)
 
     and the morphism :math:`F_{|[a,b]} : \\Theta \\to
-    \\mathcal{G}([a,b])`. Sampling uses inverse-CDF when
-    `base` supports it; otherwise rejection sampling.
+    \\mathcal{G}([a,b])`. Independent output coordinates are conditioned
+    separately; coupled events require a joint rectangle probability
+    and are rejected. Normalizing masses are deterministic and retain
+    parameter gradients supported by the base CDF. Normal sampling uses
+    a log-space inverse CDF; other bases use bounded rejection.
 
     Parameters
     ----------
     base : ContinuousMorphism
         The base distribution-family morphism. Must expose
-        ``log_prob`` and ``rsample`` plus an ``icdf`` method or a
-        ``base_distribution`` torch ``Distribution`` for inverse-CDF
-        sampling. Falls back to rejection sampling otherwise.
+        ``log_prob`` and ``rsample`` plus ``_get_dist(x)`` returning
+        the scalar-coordinate distributions. The base must supply an
+        analytic CDF or stable log-tail methods for normalization.
     lower : float or None
         Lower bound :math:`a`. ``None`` means :math:`-\\infty`.
     upper : float or None
@@ -4336,7 +4385,7 @@ class Truncated(ContinuousMorphism):
     # Class-level transpile-time metadata. The base wrapped morphism
     # carries its own argument constraints; the bounds are simple
     # real scalars. Class-level `support` defaults to `real`; per-
-    # instance the lookup tightens via `support_at_bounds()`.
+    # instance initialization intersects static base bounds with the interval.
     arg_constraints: dict[str, _constraints.Constraint] = {
         "lower": _constraints.real,
         "upper": _constraints.real,
@@ -4360,50 +4409,87 @@ class Truncated(ContinuousMorphism):
             raise ValueError(
                 f"Truncated requires lower < upper; got lower={lower}, upper={upper}"
             )
+        if any(
+            bound is not None and not math.isfinite(bound) for bound in (lower, upper)
+        ):
+            raise ValueError("Truncated bounds must be finite or None")
+        if (
+            isinstance(max_rejection_iterations, bool)
+            or not isinstance(max_rejection_iterations, int)
+            or max_rejection_iterations < 1
+        ):
+            raise ValueError("max_rejection_iterations must be a positive integer")
         self._base = base
         self._lower = lower
         self._upper = upper
         self._max_iters = max_rejection_iterations
+        base_support = getattr(base, "support", _constraints.real)
+        base_lower = getattr(base_support, "lower_bound", None)
+        base_upper = getattr(base_support, "upper_bound", None)
+        effective_lower, effective_upper = lower, upper
+        if isinstance(base_lower, (float, int)):
+            effective_lower = base_lower if lower is None else max(lower, base_lower)
+        if isinstance(base_upper, (float, int)):
+            effective_upper = base_upper if upper is None else min(upper, base_upper)
+        if getattr(base_support, "is_discrete", False):
+            self.support = _constraints.integer_interval(
+                -math.inf if effective_lower is None else math.ceil(effective_lower),
+                math.inf if effective_upper is None else math.floor(effective_upper),
+            )
+        elif effective_lower is not None and effective_upper is not None:
+            self.support = _constraints.interval(effective_lower, effective_upper)
+        elif effective_lower is not None:
+            self.support = _constraints.greater_than(effective_lower)
+        elif effective_upper is not None:
+            self.support = _constraints.less_than(effective_upper)
         # Attach so the parent nn.Module tracks parameters.
         self._base_mod = base
 
     def _interval_logmass(self, x: torch.Tensor) -> torch.Tensor:
-        """Approximate :math:`\\log(F(b) - F(a))` via Monte-Carlo on the base.
+        """Sum exact scalar-coordinate log masses over the output event."""
+        from quivers.continuous._interval import log_interval_mass
 
-        For families with analytic CDFs (Normal, etc.) we could use
-        a closed form, but a general primitive operating across
-        every family in the registry uses 256 base samples to
-        estimate the truncation mass. This keeps the combinator
-        usable on every family without per-family special-casing.
-        """
-        with torch.no_grad():
-            samples = self._base.rsample(x.repeat(256, *([1] * (x.ndim - 1))))
-            mask = torch.ones_like(samples)
-            if self._lower is not None:
-                mask = mask * (samples >= self._lower).float()
-            if self._upper is not None:
-                mask = mask * (samples <= self._upper).float()
-            in_interval = mask.reshape(256, x.shape[0], -1).mean(dim=0)
-        return torch.log(in_interval.clamp(min=1e-30)).squeeze(-1)
+        builder = getattr(self._base, "_get_dist", None)
+        if not callable(builder):
+            raise NotImplementedError(
+                f"Truncated requires {type(self._base).__name__} to expose "
+                "scalar-coordinate distributions through _get_dist(x)"
+            )
+        masses = log_interval_mass(builder(x), self._lower, self._upper)
+        if not bool(torch.isfinite(masses).all()):
+            raise ValueError("Truncated interval has zero or nonfinite probability")
+        return masses.sum(dim=-1)
 
     def rsample(
         self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
     ) -> torch.Tensor:
-        del sample_shape
-        """Rejection-sample from the base until every entry is in :math:`[a,b]`."""
-        batch = x.shape[0]
-        out = self._base.rsample(x)
-        mask = self._in_bounds(out)
+        """Condition each independent coordinate on the supplied interval."""
+        shape = torch.Size(sample_shape)
+        builder = getattr(self._base, "_get_dist", None)
+        if callable(builder):
+            distribution = builder(x)
+            if distribution.event_shape:
+                raise NotImplementedError(
+                    "Truncated sampling of coupled events requires a joint rectangle law"
+                )
+            if isinstance(distribution, D.Normal):
+                lower = distribution.loc.new_tensor(
+                    -torch.inf if self._lower is None else self._lower
+                )
+                upper = distribution.loc.new_tensor(
+                    torch.inf if self._upper is None else self._upper
+                )
+                return TruncatedNormal(
+                    distribution.loc, distribution.scale, lower, upper
+                ).rsample(shape)
+        out = self._base.rsample(x, shape)
+        mask = self._coordinate_bounds(out)
         for _ in range(self._max_iters):
             if mask.all():
                 return out
-            replacement = self._base.rsample(x)
-            out = torch.where(
-                mask.reshape(batch, *([1] * (out.ndim - 1))).expand_as(out),
-                out,
-                replacement,
-            )
-            mask = self._in_bounds(out)
+            replacement = self._base.rsample(x, shape)
+            out = torch.where(mask, out, replacement)
+            mask = self._coordinate_bounds(out)
         if not mask.all():
             raise RuntimeError(
                 f"Truncated rejection sampling failed to fill the batch in "
@@ -4413,11 +4499,14 @@ class Truncated(ContinuousMorphism):
         return out
 
     def _in_bounds(self, x: torch.Tensor) -> torch.Tensor:
-        m = torch.ones(x.shape[:1], device=x.device, dtype=torch.bool)
+        return self._coordinate_bounds(x).all(dim=-1)
+
+    def _coordinate_bounds(self, x: torch.Tensor) -> torch.Tensor:
+        m = torch.ones_like(x, dtype=torch.bool)
         if self._lower is not None:
-            m = m & (x.reshape(x.shape[0], -1) >= self._lower).all(dim=-1)
+            m = m & (x >= self._lower)
         if self._upper is not None:
-            m = m & (x.reshape(x.shape[0], -1) <= self._upper).all(dim=-1)
+            m = m & (x <= self._upper)
         return m
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -4437,6 +4526,14 @@ class Truncated(ContinuousMorphism):
 
 
 __all__ = [
+    "SkewNormal",
+    "ConditionalSkewNormal",
+    "ShiftedLogNormal",
+    "ConditionalShiftedLogNormal",
+    "Frechet",
+    "ConditionalFrechet",
+    "GeneralizedExtremeValue",
+    "ConditionalGeneralizedExtremeValue",
     "ZeroInflatedNegativeBinomial",
     "ZeroInflatedBinomial",
     "ZeroInflatedBetaBinomial",

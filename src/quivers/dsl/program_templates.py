@@ -19,6 +19,11 @@ program's returned names onto its own positionally, and a single binder
 taking a pair binds the pair of the renamed components. ``$`` is no
 character of a source identifier, so a renamed name never collides with
 one the source declares.
+
+A standalone Python factory or define application specializes the program
+without adding a calling scope. Its source addresses remain unchanged,
+except where an actual argument requires capture-avoiding freshening;
+calls inside the specialized body retain the convention above.
 """
 
 from __future__ import annotations
@@ -74,7 +79,31 @@ from quivers.dsl.ast_nodes import (
     ScoreStep,
     TypeName,
 )
-from quivers.dsl.let_expr_traversal import map_let_expr, substitute_let_expr
+from quivers.dsl.let_expr_traversal import (
+    free_let_names,
+    map_let_expr,
+    substitute_let_expr,
+)
+
+
+def _is_standalone_application(program: ProgramDecl) -> bool:
+    """Identify the compiler's transparent application wrapper.
+
+    The reserved ``$`` separator cannot occur in an authored identifier.
+    A standalone specialization keeps its source addresses; an invocation
+    inside its body still introduces a fresh namespace.
+
+    Parameters
+    ----------
+    program : ProgramDecl
+        The enclosing compiler-generated or authored declaration.
+
+    Returns
+    -------
+    bool
+        Whether its reserved name marks a standalone specialization.
+    """
+    return program.name.startswith("__tmpl_apply$")
 
 
 class TemplateError(Exception):
@@ -276,6 +305,8 @@ def instantiate_program(
     template: ProgramDecl,
     binders: tuple[str, ...],
     bindings: TemplateBindings,
+    *,
+    preserve_names: bool = False,
 ) -> tuple[ProgramStep, ...]:
     """The steps a draw from a program runs in the caller.
 
@@ -288,6 +319,9 @@ def instantiate_program(
     bindings : TemplateBindings
         What the draw's arguments substitute for the program's
         parameters.
+    preserve_names : bool
+        Keep body addresses for a standalone specialization. Nested calls
+        still instantiate under their own binding patterns.
 
     Returns
     -------
@@ -306,6 +340,11 @@ def instantiate_program(
     body_bound = set(_bound_names(template.draws)) - bindings.values.keys()
     aliases: list[tuple[str, str]] = []
     prefix = "_".join(binders)
+    actual_names = (
+        {name for value in bindings.values.values() for name in free_let_names(value)}
+        if preserve_names
+        else set()
+    )
     rename: dict[str, str] = {}
     if len(binders) == len(returned):
         for name, binder in zip(returned, binders, strict=True):
@@ -320,7 +359,12 @@ def instantiate_program(
         )
     for name in _bound_names(template.draws):
         if name not in bindings.values:
-            rename.setdefault(name, f"{prefix}${name}")
+            rename.setdefault(
+                name,
+                name
+                if preserve_names and name not in actual_names
+                else f"{prefix}${name}",
+            )
     steps = tuple(
         _rename_step(step, bindings, rename)
         for step in template.draws

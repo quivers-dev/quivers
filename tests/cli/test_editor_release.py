@@ -21,6 +21,12 @@ COUNT_FAMILIES = (
     "ZeroInflatedBetaBinomial",
     "HurdleNegativeBinomial",
 )
+SHAPE_FAMILIES = (
+    "SkewNormal",
+    "ShiftedLogNormal",
+    "Frechet",
+    "GeneralizedExtremeValue",
+)
 
 
 def _repository() -> dict[str, object]:
@@ -82,8 +88,8 @@ def test_checked_weight_builtins_are_repl_completion_candidates(name: str) -> No
     )
 
 
-@pytest.mark.parametrize("name", COUNT_FAMILIES)
-def test_count_families_are_repl_and_lsp_completion_candidates(name: str) -> None:
+@pytest.mark.parametrize("name", (*COUNT_FAMILIES, *SHAPE_FAMILIES))
+def test_response_families_are_repl_and_lsp_completion_candidates(name: str) -> None:
     from lsprotocol import types as lsp
 
     from quivers.cli.repl_complete import all_completions
@@ -190,6 +196,10 @@ _CORPUS = (
     "    observe b : CountRow <- ZeroInflatedBinomial(zero_prob=0.2, total_count=4.0, probs=0.5)\n"
     "    observe c : CountRow <- ZeroInflatedBetaBinomial(zero_prob=0.2, total_count=4.0, concentration1=2.0, concentration0=2.0)\n"
     "    observe d : CountRow <- HurdleNegativeBinomial(zero_prob=0.2, total_count=2.0, probs=0.5)\n"
+    "    observe e : CountRow <- SkewNormal(loc=0.2, scale=1.1, skewness=0.7)\n"
+    "    observe f : CountRow <- ShiftedLogNormal(loc=0.2, scale=0.5, shift=0.1)\n"
+    "    observe g : CountRow <- Frechet(scale=1.3, concentration=3.0)\n"
+    "    observe h : CountRow <- GeneralizedExtremeValue(loc=0.2, scale=1.1, concentration=0.1)\n"
     "    return a\n"
 )
 
@@ -225,6 +235,10 @@ _EXPECTED: dict[tuple[int, str], str] = {
     (30, "ZeroInflatedBinomial"): "type",
     (31, "ZeroInflatedBetaBinomial"): "type",
     (32, "HurdleNegativeBinomial"): "type",
+    (33, "SkewNormal"): "type",
+    (34, "ShiftedLogNormal"): "type",
+    (35, "Frechet"): "type",
+    (36, "GeneralizedExtremeValue"): "type",
 }
 
 #: The tree-sitter capture names and Pygments token families that stand
@@ -396,6 +410,9 @@ def test_highlighters_classify_the_corpus_alike() -> None:
     )
     assert {(23, "observation_weight"), (25, "scale_weight")} <= set(textmate)
     assert {(29 + index, name) for index, name in enumerate(COUNT_FAMILIES)} <= set(
+        textmate
+    )
+    assert {(33 + index, name) for index, name in enumerate(SHAPE_FAMILIES)} <= set(
         textmate
     )
 

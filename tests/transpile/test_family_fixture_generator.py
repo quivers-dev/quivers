@@ -1,8 +1,10 @@
 """Family fixtures account for live registrations and exercise valid programs."""
 
 from pathlib import Path
+import math
 
 import pytest
+from scipy import stats
 import torch
 
 from quivers.continuous.programs import MonadicProgram
@@ -104,3 +106,29 @@ export model
 """
     with pytest.raises(ValueError, match="takes a Real"):
         loads(source)
+
+
+@pytest.mark.parametrize(
+    "family", ["SkewNormal", "ShiftedLogNormal", "Frechet", "GeneralizedExtremeValue"]
+)
+def test_shape_family_fixture_native_and_reference_match_independent_scipy(family):
+    values = torch.tensor([0.2, 0.4, 0.8, 1.1, 1.3, 2.1, 3.0, 4.0], dtype=torch.float64)
+    if family == "SkewNormal":
+        expected = stats.skewnorm.logpdf(values.numpy(), 0.7, loc=0.2, scale=1.1)
+    elif family == "ShiftedLogNormal":
+        expected = stats.lognorm.logpdf(values.numpy() - 0.1, 0.5, scale=math.exp(0.2))
+    elif family == "Frechet":
+        expected = stats.invweibull.logpdf(values.numpy(), 3.0, scale=1.3)
+    else:
+        # SciPy's shape parameter has the opposite sign from QVR's xi.
+        expected = stats.genextreme.logpdf(values.numpy(), -0.1, loc=0.2, scale=1.1)
+    compiled = loads(generator.fixture_sources()[family])
+    program = compiled.morphism
+    assert isinstance(program, MonadicProgram)
+    observed = trace(program, torch.zeros(1, 1, dtype=torch.long), {"y": values})
+    assert observed.log_joint is not None
+    assert observed.log_joint.sum().item() == pytest.approx(expected.sum(), rel=2e-6)
+    reference = compiled.run(
+        f"{family.lower()}_fixture", data={"y": tuple(values.tolist())}
+    )
+    assert reference.log_joint == pytest.approx(expected.sum(), rel=1e-9)

@@ -102,6 +102,111 @@ A draw may name the components of a product value: `sample (v_1, ..., v_m) <- F(
 $\llbracket \mathrm{cod}(F) \rrbracket = K_1 \times \cdots \times K_m$ and has the same denotation as
 the draw of one value $v$, with $v_i$ the $i$-th projection of $v$.
 
+#### Scalar response kernels and regression parameters
+
+A regression parameter need not occupy the same slot as a native family
+parameter. The formula compiler supplies a deterministic parameter map
+$\theta_F$ before the draw or observation; this map adds no random
+variable or likelihood factor. The following four scalar kernels use
+Lebesgue measure.
+
+For `SkewNormal(loc, scale, skewness)`, write $(\ell,s,\alpha)$
+for the parameters and put $z=(y-\ell)/s$. Its density is
+$2\varphi(z)\Phi(\alpha z)/s$,
+where $\varphi$ and $\Phi$ are the standard Normal density and CDF.
+The `skew_normal` formula parameterization instead uses response mean
+$\mu$ and response standard deviation $\sigma$. With
+$\delta=\alpha/\sqrt{1+\alpha^2}$, its parameter map is
+
+$$
+s=\frac{\sigma}{\sqrt{1-2\delta^2/\pi}},
+\qquad \ell=\mu-s\delta\sqrt{2/\pi}.
+$$
+
+`ShiftedLogNormal(loc, scale, shift)`, with parameters $(\ell,s,d)$, is the pushforward
+of $N(\ell,s^2)$ by $u\mapsto d+\exp u$. Its density at $y>d$
+includes the Jacobian $1/(y-d)$; outside that support it is zero.
+Thus its response mean is $d+\exp(\ell+s^2/2)$, while the formula's
+main predictor is the log-location $\ell$.
+
+`Frechet(scale, concentration)`, with parameters $(s,\nu)$, has
+$F(y)=\exp(-(y/s)^{-\nu})$ for $y>0$ and positive $s,\nu$.
+The mean exists for $\nu>1$ and is $s\Gamma(1-1/\nu)$; the
+variance exists for $\nu>2$. A mean-parameterized formula thus
+requires $\nu>1$ and sets $s=\mu/\Gamma(1-1/\nu)$.
+
+For `GeneralizedExtremeValue(loc, scale, concentration)`, write
+$(\ell,s,\xi)$ for the parameters and let $t=1+\xi(y-\ell)/s$.
+For $\xi\ne0$ and $t>0$,
+
+$$
+F(y)=\exp(-t^{-1/\xi}),\qquad
+f(y)=s^{-1}t^{-1/\xi-1}\exp(-t^{-1/\xi}).
+$$
+
+The zero-shape limit is Gumbel, with
+$F(y)=\exp(-\exp(-(y-\ell)/s))$. Positive $\xi$ gives a finite
+lower endpoint and negative $\xi$ a finite upper endpoint. The main
+formula parameter is location, rather than response mean. That mean
+exists for $\xi<1$ and equals
+$\ell+s(\Gamma(1-\xi)-1)/\xi$, with limit
+$\ell+s\gamma$ at zero, where $\gamma$ is Euler's constant.
+The variance exists for $\xi<1/2$.
+
+These maps follow the
+[released brms likelihood definitions](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/stan-likelihood.R).
+Matching a kernel does not identify its prior: QVR's direct GEV shape
+parameter is distinct from brms's additional scalar shape transformation.
+
+These four kernels have native and checked-reference implementations.
+All 11 external renderers currently refuse them explicitly. Their native
+CDFs, inverse CDFs, moments, and samplers have separate numerical and
+derivative tests; those tests do not assert a uniform error bound over
+all tail or shape regimes.
+
+#### Truncation as normalized restriction
+
+For a base probability kernel $K_\theta$ and interval $I=[a,b]$,
+write $Z_\theta=K_\theta(I)$. When $0<Z_\theta\leq1$,
+the truncated kernel is
+
+$$
+K^I_\theta(B)=\frac{K_\theta(B\cap I)}{Z_\theta}.
+$$
+
+Its log density inside $I$ is $\log f_\theta(y)-\log Z_\theta$.
+For a continuous scalar law, $Z_\theta=F_\theta(b)-F_\theta(a)$;
+for a discrete law the lower term is the left limit $F_\theta(a^-)$,
+so an atom at the lower endpoint remains included. Both the numerator
+and normalizer depend on the family parameters. Censoring has a
+different denotation: an interval-censored observation contributes
+$K_\theta(I)$ without conditioning the whole response law on $I$.
+
+For independent scalar coordinates truncated to a rectangle,
+$Z_\theta=\prod_j Z_{\theta,j}$, so log normalizers add over the
+event coordinates. A coupled vector event requires its joint rectangle
+mass; marginal CDF differences cannot supply that mass. An executor
+without the needed CDF or rectangle-mass operation must refuse this
+kernel, rather than replace its normalizer with a random estimate.
+
+The native `Truncated` wrapper implements this deterministic normalizer
+for independent scalar-coordinate distributions supplied by its base.
+Normal tails use a stable specialized normalizer; supplied log-tail
+methods are preferred over CDF subtraction. A zero or nonfinite
+computed mass is an error. Normal sampling uses inverse transformation;
+other bases use bounded rejection and explicitly fail when its attempt
+limit is exhausted. This rejection path supplies no general pathwise
+derivative for parameter-dependent acceptance.
+
+The derivative of the mathematical normalizer and an executor's ability
+to compute it are separate questions. Native Gamma interval masses use
+float64 lower-tail series and upper-tail continued fractions, with
+small-shape complement calculations to retain tail probabilities.
+Shape and rate derivatives propagate through converged recurrences;
+failure to converge within 512 iterations raises explicitly. This
+algorithm does not assert uniform numerical accuracy or convergence
+over all parameter regimes.
+
 #### Zero-inflated and hurdle count kernels
 
 These count families use counting measure on the nonnegative integers.
@@ -647,6 +752,9 @@ structure inherited from the integer carrier. Lowering records the carrier as
 `Int` and retains a nonnegative constraint; native and reference input validation
 enforce both integrality and nonnegativity. The corresponding static `Nat`
 parameter instead ranges over index valuations in $\Delta$.
+A family's runtime shape parameter, such as Fréchet `concentration` or
+GEV `concentration`, belongs to $\Gamma_v$ even when it controls a tail
+or a support endpoint. It does not determine a tensor's index extent.
 A static index is not implicitly converted into a runtime integer term.
 In particular, a distribution argument `total_count=n` requires a
 runtime value, such as a parameter `(n : Nat)`; a static binder

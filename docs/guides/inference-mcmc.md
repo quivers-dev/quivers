@@ -142,6 +142,59 @@ checks the sampler against the model instead, by fitting data simulated from the
 prior and testing whether the true parameters' ranks among the posterior draws are
 uniform.
 
+### Named initial values
+
+`MCMC(initial_values={"sigma": 0.5})` supplies starting values in the latent
+sites' natural coordinates. The driver first runs `init_strategy` (`"jitter"`,
+`"prior"`, `"zero"`, or a supplied `"guide"`) with each chain's seeded generator,
+then replaces the named sites in every chain. Unspecified sites retain the
+strategy's values, so a partial mapping can set a constrained scale while
+allowing dispersed starting locations.
+
+```python
+import torch
+
+from quivers.dsl import loads
+from quivers.inference import HMCKernel, MCMC
+
+model = loads("""
+object Obs : FinSet 3
+program model : Obs -> Obs
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    sample sigma <- HalfNormal(scale=1.0)
+    sample offset : Obs <- Normal(loc=0.0, scale=0.3)
+    let mean = mu + offset
+    observe y : Obs <- Normal(loc=mean, scale=sigma)
+    return mu
+export model
+""").morphism
+
+mcmc = MCMC(
+    HMCKernel(step_size=0.03, num_steps=3),
+    num_warmup=10,
+    num_samples=20,
+    num_chains=2,
+    seed=2026,
+    init_strategy="prior",
+    initial_values={"sigma": 0.5, "offset": torch.tensor([-0.2, 0.0, 0.2])},
+)
+result = mcmc.run(model, torch.zeros(1, 1), {"y": torch.tensor([0.1, 0.4, 0.8])})
+assert result.samples["offset"].shape == (2, 20, 3)
+```
+
+A scalar broadcasts over a site's declared shape; a tensor must have exactly
+that shape, including plate and event axes. Thus `"offset": 0.0` initializes
+all three offsets, while the vector above initializes them separately. A scalar
+site has shape `()`. Values must be finite, real, non-Boolean, and strictly
+inside the prior support: positive scales exceed zero, bounded values exclude
+both endpoints, and simplex coordinates are positive and sum to one. Unknown
+names, observed sites, and incompatible shapes raise before sampling.
+
+The driver detaches and copies the supplied tensors, so later changes to the
+caller's mapping or tensors do not change its initialization. Named values are
+part of [checkpoint compatibility](#checkpoints-budgets-and-sampler-statistics):
+resume with the same mapping values as the original run.
+
 ### Windowed warmup
 
 By default both kernels adapt in one phase (`adaptation="single"`):

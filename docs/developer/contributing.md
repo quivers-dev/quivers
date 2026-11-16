@@ -307,7 +307,8 @@ class ProgramDecl(Statement):
     kind: Literal["program_decl"] = "program_decl"
 ```
 
-`type_params` holds program-specific static object and morphism parameters;
+`type_params` holds program-specific static object and morphism metadata,
+plus runtime scalar metadata used for named partial application;
 `binders` holds the shared QIEC static telescope; and `value_parameters` holds
 typed runtime inputs. Bare domain names remain in `params`. Header annotations
 thus share the core's checked parameter representation, without adding a new

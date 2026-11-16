@@ -100,6 +100,54 @@ gamma = ConditionalGamma(domain, codomain)
 samples = gamma.rsample(x)  # positive
 ```
 
+### Skew, shifted, and extreme-value responses
+
+The native constructor parameters describe a distribution directly.
+A formula frontend may instead parameterize its response mean or
+standard deviation; the [regression guide](analysis-data-and-formulas.md#skew-shifted-and-extreme-value-regressions)
+gives those conversions.
+
+| Native family | Parameters and support | Response mean |
+| --- | --- | --- |
+| `SkewNormal(loc, scale, skewness)` | real location and skewness, positive scale; real responses | `loc + scale * delta * sqrt(2/pi)`, where `delta = skewness / sqrt(1 + skewness**2)` |
+| `ShiftedLogNormal(loc, scale, shift)` | Normal log-location and positive log-scale, nonnegative shift; responses greater than `shift` | `shift + exp(loc + scale**2/2)` |
+| `Frechet(scale, concentration)` | positive scale and concentration; positive responses | `scale * Gamma(1 - 1/concentration)` when concentration exceeds one |
+| `GeneralizedExtremeValue(loc, scale, concentration)` | real location and concentration, positive scale; `1 + concentration * (y-loc)/scale > 0`, with the Gumbel limit at zero | location plus the tail correction in the [formal definition](../semantics/programs.md#scalar-response-kernels-and-regression-parameters), when concentration is below one |
+
+Fréchet variance requires concentration above two; GEV variance requires
+concentration below one half. A supported density can thus have no
+finite response mean or variance. GEV's `concentration` has the opposite
+sign to the shape argument of
+[SciPy's `genextreme`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.genextreme.html).
+
+Static response extents and runtime distribution parameters remain
+separate. In the following program, `n` fixes a shared row axis;
+`sigma`, `nu`, and the other real inputs supply distribution values.
+Their declarations add no draws or scores.
+
+Native and checked-reference execution support all four families. Each of
+the 11 external renderers currently refuses them explicitly; family
+registration does not supply an external implementation.
+
+```qvr
+object Out : Real 1
+program scalar_responses[n : Nat](sigma : Real, skewness : Real, ndt : Real, nu : Real, xi : Real) : n -> Out
+    observe skewed : n <- SkewNormal(loc=0.0, scale=sigma, skewness=skewness)
+    observe shifted : n <- ShiftedLogNormal(loc=0.0, scale=sigma, shift=ndt)
+    observe extreme : n <- Frechet(scale=1.0, concentration=nu)
+    observe maxima : n <- GeneralizedExtremeValue(loc=0.0, scale=sigma, concentration=xi)
+    return sigma
+export scalar_responses
+```
+
+All four native distributions provide `cdf`, `log_cdf`,
+`log_survival_function`, `icdf`, and pathwise `rsample`. Skew-normal
+CDFs and quantiles use deterministic quadrature and float64 intermediate
+arithmetic. Their tail and derivative checks
+do not establish a uniform quadrature-error bound. Both methods require
+a device with float64 support. Fréchet and
+GEV return infinite moments outside the finite-moment domains above.
+
 ### Generalized Pareto tails
 
 `GeneralizedPareto(loc, scale, concentration)` implements the
@@ -351,6 +399,56 @@ from quivers.continuous.families import (
 )
 ```
 
+## Truncating an independent response
+
+`Truncated(base, lower=..., upper=...)` restricts a base family to an
+interval and divides its density by the probability of that interval.
+This normalizer depends on the base parameters. Censoring instead
+records that a value falls in an interval; it contributes the interval
+probability without changing the full response law.
+
+For independent scalar coordinates, interval probabilities multiply,
+and the corresponding log normalizers add. A coupled multivariate
+distribution needs a joint rectangle probability, which cannot be
+recovered from separate marginal CDFs. Missing CDF or rectangle-mass
+capabilities must produce an explicit error.
+
+The native wrapper reads the base's scalar-coordinate distributions and
+computes deterministic interval masses. It uses log-CDF or log-survival
+methods where supplied, stable Normal tails, and incomplete-gamma
+calculations for Gamma and Poisson. Other scalar bases need a working
+CDF; unsupported bases and coupled events raise explicit errors. An
+interval with zero or nonfinite computed probability is rejected.
+
+Normal sampling uses a stable inverse CDF, including far-tail intervals.
+Other bases use bounded rejection, with `max_rejection_iterations`
+controlling failure. That rejection path does not establish a general
+pathwise derivative through a parameter-dependent acceptance event.
+
+```python
+import torch
+from quivers.continuous.families import ConditionalNormal, Truncated
+from quivers.continuous.spaces import Euclidean
+
+base = ConditionalNormal(
+    Euclidean(name="Input", dim=2), Euclidean(name="Response", dim=1)
+)
+restricted = Truncated(base, lower=0.0, upper=1.0)
+inputs = torch.zeros(3, 2)
+responses = restricted.rsample(inputs)
+log_density = restricted.log_prob(inputs, responses)
+assert responses.shape == (3, 1)
+assert torch.isfinite(log_density).all()
+```
+
+The Gamma interval normalizer supports shape and rate derivatives through
+converged float64 tail recurrences. Its lower-tail series, upper-tail
+continued fraction, and small-shape complement calculations have a
+512-iteration convergence limit; nonconvergence raises explicitly. This
+policy supplies no uniform accuracy or convergence guarantee across all
+parameter regimes. Derivative support remains a separate question for
+each other base family.
+
 ## Event and batch axes {#event-rank-and-axis-role-syntax}
 
 Three kinds of axis appear in a drawn tensor [@pyroTensorShapes]. A *sample* axis counts
@@ -370,6 +468,7 @@ that choice explicit:
 | Family | Event dimensions | Interpretation |
 |---|---|---|
 | `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `AsymmetricLaplace`, `ExGaussian`, `InverseGaussian`, `HurdleGamma`, `HurdleLogNormal`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli`, `Horseshoe` | 0 | Scalar; every codomain axis is iid by default |
+| `SkewNormal`, `ShiftedLogNormal`, `Frechet`, `GeneralizedExtremeValue` | 0 | Scalar real response; extent and runtime distribution shape are separate |
 | `ZeroInflatedNegativeBinomial`, `ZeroInflatedBinomial`, `ZeroInflatedBetaBinomial`, `HurdleNegativeBinomial` | 0 | Integer count; every codomain axis is iid by default |
 | `MultivariateNormal`, `LowRankMVN`, `Dirichlet`, `OneHotCategorical`, `RelaxedOneHotCategorical`, `LogisticNormal`, `GP` | 1 | Vector; one named event axis carries the joint distribution |
 | `Wishart`, `InverseWishart`, `MatrixNormal`, `LKJCholesky` | 2 | Matrix; two named event axes carry the joint distribution |

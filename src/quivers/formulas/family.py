@@ -192,6 +192,45 @@ links: Mapping[str, Link] = {
 
 
 families: Mapping[str, Family] = {
+    "skew_normal": Family(
+        name="skew_normal",
+        location_link=_IDENTITY,
+        observe_family="SkewNormal",
+        aux_params=(
+            AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
+            AuxParam(name="alpha", prior="Normal(0.0, 4.0)", link=_IDENTITY),
+        ),
+    ),
+    "shifted_lognormal": Family(
+        name="shifted_lognormal",
+        location_link=_IDENTITY,
+        observe_family="ShiftedLogNormal",
+        aux_params=(
+            AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
+            AuxParam(name="ndt", prior="Uniform(0.0, response_min)", link=_LOG),
+        ),
+    ),
+    "frechet": Family(
+        name="frechet",
+        location_link=_LOG,
+        observe_family="Frechet",
+        aux_params=(
+            AuxParam(
+                name="nu",
+                prior="Restrict(base=Gamma(concentration=2.0, rate=0.1), low=1.0)",
+                link=links["logm1"],
+            ),
+        ),
+    ),
+    "gen_extreme_value": Family(
+        name="gen_extreme_value",
+        location_link=_IDENTITY,
+        observe_family="GeneralizedExtremeValue",
+        aux_params=(
+            AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
+            AuxParam(name="xi", prior="Normal(0.0, 0.3)", link=_IDENTITY),
+        ),
+    ),
     "gaussian": Family(
         name="gaussian",
         location_link=_IDENTITY,

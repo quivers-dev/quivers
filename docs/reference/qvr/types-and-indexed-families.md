@@ -19,8 +19,8 @@ use round brackets for their refinable static indices:
 
 | Form | Meaning | Used by |
 | --- | --- | --- |
-| `[A : Type]` | static type binder | families, constructors, effects, [handlers](effects-and-handlers.md#handler-declarations), computations, programs |
-| `[n : Nat]` | static index binder | constructors, operations, computations, programs |
+| `[A : Type]` | static type binder | families, constructors, effects, operations, [handlers](effects-and-handlers.md#handler-declarations), computations, programs |
+| `[n : Nat]` | static index binder | families, constructors, effects, operations, handlers, computations, programs |
 | `[Row : FinSet]`, `[f : Mor[A, B]]` | static object or morphism binder | programs |
 | `[E : Effect]` | static binder for an effect interface | declarations, including programs, that abstract over an effect |
 | `(n : Nat)` | family index, refined by case analysis | family declarations and case motives |

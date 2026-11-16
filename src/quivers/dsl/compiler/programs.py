@@ -2488,13 +2488,14 @@ class _ProgramsMixin:
             )
 
     def _expand_template_calls(
-        self, steps: tuple[ProgramStep, ...]
+        self, steps: tuple[ProgramStep, ...], *, preserve_names: bool = False
     ) -> tuple[ProgramStep, ...]:
         """Inline parametric-program-template call sites in a step list.
 
-        A ``draw v ~ T(args)`` step whose morphism name ``T`` is a
-        registered parametric program denotes the instantiation of
-        the dependent kernel at the supplied arguments. The body of
+        A ``sample v <- T[statics](values)`` step whose callee ``T`` is a
+        registered program supplies static and runtime arguments in
+        separate lists. For a parametric program, it instantiates the
+        dependent kernel at those arguments. The body of
         ``T`` is substituted (formal parameters → actual arguments)
         and α-renamed (every locally-bound name is prefixed by
         ``v$``, except the return-variable which is renamed to ``v``
@@ -2522,7 +2523,9 @@ class _ProgramsMixin:
                 )
                 bind_name = step.vars[0] if len(step.vars) == 1 else step.vars
                 args = step.args or ()
-                inst = self._instantiate_template(tmpl, bind_name, args, step)
+                inst = self._instantiate_template(
+                    tmpl, bind_name, args, step, preserve_names=preserve_names
+                )
                 # Recursively expand any nested template calls in the
                 # inlined body.
                 expanded.extend(self._expand_template_calls(inst))
@@ -2610,6 +2613,8 @@ class _ProgramsMixin:
         bind_name: str | tuple[str, ...],
         args: tuple,
         call_site: ProgramStep,
+        *,
+        preserve_names: bool = False,
     ) -> tuple[ProgramStep, ...]:
         """Realise one call site of a parametric program template.
 
@@ -2700,7 +2705,12 @@ class _ProgramsMixin:
                     values[parameter.name] = LetExprVar(name=alias)
                 bindings = bindings.with_(objects=objects, values=values)
                 return self._expand_bind_steps(
-                    (*captures, *instantiate_program(tmpl, binders, bindings))
+                    (
+                        *captures,
+                        *instantiate_program(
+                            tmpl, binders, bindings, preserve_names=preserve_names
+                        ),
+                    )
                 )
             except TemplateError as error:
                 raise CompileError(
@@ -3422,8 +3432,10 @@ class _ProgramsMixin:
         """Return a Python-callable wrapper around a parametric
         program template, suitable for attaching to a compiled
         `Program` so callers can write
-        ``prog.<name>(alpha=0.5, beta=0.1)`` to instantiate the
-        template at concrete parameters.
+        ``prog.<name>(n=3)`` to specialize static parameters while
+        retaining runtime inputs, or ``prog.<name>(alpha=0.5, beta=0.1)``
+        to partially apply runtime scalar values. Named partial application
+        does not change a parameter's static or runtime stage.
         """
         tmpl = self._program_templates[name]
         from quivers.dsl.program_templates import (
@@ -3560,7 +3572,7 @@ class _ProgramsMixin:
                 object_substitution[name] = TypeName(name=str(int(actual.value)))
             elif isinstance(actual, DrawArgName) and actual.text in self._objects:
                 object_substitution[name] = TypeName(name=actual.text)
-        base = f"__tmpl_call${expr.callee}${expr.line}${expr.col}"
+        base = f"__tmpl_apply${expr.callee}${expr.line}${expr.col}"
         unique_name = base
         suffix = 0
         while unique_name in self._morphisms:
@@ -3617,9 +3629,9 @@ class _ProgramsMixin:
 
     def _compile_program_template_call(self, expr: ExprMorphismCall):
         """Instantiate a parametric program template at a define-binding
-        site: ``define applied = p(f, …)`` substitutes the actual
-        morphism / object / scalar arguments for the template's
-        formal parameters, builds a synthetic non-parametric
+        site: ``define applied = p[Object](value)`` substitutes the static
+        actuals and supplies the runtime values in their separate stages,
+        builds a synthetic specialized
         `ProgramDecl`, and compiles it into a runtime
         `MonadicProgram` morphism.
 
@@ -4045,24 +4057,22 @@ class _ProgramsMixin:
         it is this program's binding of that name before the scan, else
         host data.
 
-        Parametric programs (those carrying ``type_params``) are not
-        compiled into a runtime ``MonadicProgram`` directly. They
-        denote a dependent kernel
+        A program with unresolved static parameters is retained as a
+        template. Its static telescope and runtime input space denote
+        a dependent kernel
 
         .. math::
 
             \\Pi (p_1 : P_1) \\ldots \\Pi (p_n : P_n).\\ \\mathbf{Kern}(\\mathrm{dom}(p),\\, \\mathrm{cod}(p))
 
         in the indexed family of Kleisli arrows over the parameter
-        category, and are stored as templates. Each call site of a
-        template (a ``draw v ~ template(args)`` step inside another
-        program) is realised by substituting the actual arguments
-        for the formal parameters and α-renaming all locally-bound
-        latents under the call's binding name, then inlining the
-        renamed body into the caller's step list. The freshness of
-        latent names per call site is the syntactic shadow of the
-        fact that distinct call sites contribute distinct factors
-        to the parent's joint kernel.
+        category. Typed runtime parameters alone do not require static
+        specialization: their program can compile directly, with scalar
+        partial-application metadata retained separately. A call such as
+        ``sample v <- template[Object](value)`` substitutes static actuals,
+        binds runtime values, and renames local latents under the call's
+        binding name before composing its steps into the caller. Distinct
+        call sites thus contribute distinct factors to the joint kernel.
 
         Parameters
         ----------
@@ -4170,7 +4180,11 @@ class _ProgramsMixin:
         # of the family Π(p:P).Kern(dom(p), cod(p)) at the supplied
         # arguments, contributing its own factors to the parent's
         # joint kernel.
-        expanded_draws = self._expand_template_calls(ir_draws)
+        from quivers.dsl.program_templates import _is_standalone_application
+
+        expanded_draws = self._expand_template_calls(
+            ir_draws, preserve_names=_is_standalone_application(decl)
+        )
         # The widths an inline family reads its parameters at come from
         # the checked types: of the host data the program reads, and of
         # each let as its operands type it.

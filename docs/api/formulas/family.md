@@ -10,6 +10,27 @@ while `Family.with_links(sigma="softplus")` changes a distributional scale link;
 [link selection](../../guides/analysis-data-and-formulas.md#distributional-regression-and-link-selection)
 gives the supported names and parameterizations.
 
+## Skew, shifted, and extreme-value parameters
+
+`skew_normal` uses response mean and standard deviation, converting them
+to native skew-normal location and scale. `shifted_lognormal` predicts
+the log-location of the component above `ndt`; its response expectation
+adds `ndt` after exponentiating the lognormal mean correction.
+`frechet` predicts response mean and restricts its `nu` to exceed one.
+`gen_extreme_value` predicts location and uses a direct real shape `xi`.
+The [parameter guide](../../guides/analysis-data-and-formulas.md#skew-shifted-and-extreme-value-regressions)
+gives conversions, moment domains, and the GEV shape-policy distinction
+from the pinned brms release.
+
+A regressed Fréchet `nu` requires `logm1`. Its scalar default conditions
+`Gamma(2, 0.1)` on `nu > 1`; custom scalar priors retain that restriction.
+The shifted-lognormal scalar `ndt` default is bounded by the smallest
+observed response, while a regressed `ndt` uses its declared link without
+hidden response-dependent rescaling. GEV uses identity-linked `xi` with
+scalar `Normal(0, 0.3)`, rather than the pinned brms shape-prior policy.
+
+## Other response parameters
+
 `zero_inflated_beta` uses logit mean and zero-probability links plus a log
 precision link. It lowers to native `ZeroOneInflatedBeta` with `coi=0`, retaining
 only the `phi` and `zi` auxiliaries. Its response mean includes the zero-atom

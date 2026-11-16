@@ -81,6 +81,8 @@ from quivers.dsl.ast_nodes import (
     LetStep,
     DiscreteConstructor,
     DrawArgNamed,
+    DrawArgDist,
+    DrawArgScalar,
     Module,
     ObserveStep,
     OptionEntry,
@@ -251,6 +253,62 @@ def _draw(
         args=tagged_args,
         index=index,
     )
+
+
+def _auxiliary_draw(var: str, prior: str, *, lower: float | None = None) -> SampleStep:
+    """Parse one prior call, retaining the compositional measure algebra."""
+    if "(" not in prior.partition("(")[2]:
+        family, arguments = _parse_prior_call(prior)
+        step = _draw(var, family, arguments)
+        assert isinstance(step, SampleStep)
+    else:
+        from quivers.dsl.parser import parse
+
+        module = parse(
+            f"program prior : Input -> Output\n    sample {var} <- {prior}\n    return {var}\n"
+        )
+        if len(module.statements) != 1:
+            raise ValueError(
+                "an auxiliary prior must contain a single distribution call"
+            )
+        program = module.statements[0]
+        if not isinstance(program, ProgramDecl) or len(program.draws) != 1:
+            raise ValueError(
+                "an auxiliary prior must contain a single distribution call"
+            )
+        step = program.draws[0]
+        if not isinstance(step, SampleStep) or step.vars != (var,):
+            raise ValueError(
+                "an auxiliary prior must contain a single distribution call"
+            )
+    if lower is not None:
+        if step.morphism == "Restrict":
+            cuts = [
+                arg.value
+                for arg in step.args or ()
+                if isinstance(arg, DrawArgNamed) and arg.parameter == "low"
+            ]
+            if (
+                len(cuts) != 1
+                or not isinstance(cuts[0], DrawArgScalar)
+                or cuts[0].value < lower
+            ):
+                raise ValueError(
+                    f"prior for {var!r} must have a literal lower bound at least {lower}"
+                )
+        else:
+            step = SampleStep(
+                vars=(var,),
+                morphism="Restrict",
+                args=(
+                    DrawArgNamed(
+                        parameter="base",
+                        value=DrawArgDist(family=step.morphism, args=step.args or ()),
+                    ),
+                    DrawArgNamed(parameter="low", value=DrawArgScalar(value=lower)),
+                ),
+            )
+    return step
 
 
 def _let(name: str, value: LetExprNode) -> LetStep:
@@ -641,6 +699,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         fixed_parameters: Mapping[str, float] | None = None,
     ) -> None:
         self._family = family
+        if (
+            family.name == "frechet"
+            and next(aux for aux in family.aux_params if aux.name == "nu").link.name
+            != "logm1"
+        ):
+            raise ValueError(
+                "frechet nu regression currently requires the logm1 link to ensure nu > 1"
+            )
         self._fixed_parameters = dict(fixed_parameters or {})
         self._correlation_prior = correlation_prior
         self._distributional = dict(distributional or {})
@@ -672,6 +738,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             elif name in {"zi", "zoi", "coi", "hu"}:
                 if not 0 <= value <= 1:
                     raise ValueError(f"fixed parameter {name!r} must be in [0, 1]")
+            elif name in {"alpha", "xi"}:
+                pass
+            elif name == "ndt":
+                if value < 0:
+                    raise ValueError("fixed parameter 'ndt' must be nonnegative")
+            elif name == "nu" and family.name == "frechet":
+                if value <= 1:
+                    raise ValueError("frechet fixed parameter 'nu' must exceed one")
             elif value <= 0:
                 raise ValueError(f"fixed parameter {name!r} must be strictly positive")
         unknown = self._distributional.keys() - auxiliary_names
@@ -760,6 +834,19 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for a categorical or cumulative family), or a prior does
             not parse as ``"Family(arg, ...)"``.
         """
+        if self._family.name in {"shifted_lognormal", "frechet"}:
+            response = np.asarray(formula.response_values)
+            if (
+                response.size == 0
+                or not np.isfinite(response).all()
+                or np.any(response <= 0)
+            ):
+                raise ValueError(
+                    f"{self._family.name} requires finite positive response values"
+                )
+            ndt = self._fixed_parameters.get("ndt")
+            if ndt is not None and np.any(response <= ndt):
+                raise ValueError("shifted_lognormal responses must exceed fixed ndt")
         if self._family.name == "zero_inflated_beta":
             response = np.asarray(formula.response_values)
             if (
@@ -2171,8 +2258,21 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             predictor = self._distributional.get(aux.name)
             if predictor is None:
                 prior = self._user_priors.get(aux.name, aux.prior)
-                family_name, args = _parse_prior_call(prior)
-                program_steps.append(_draw(aux.name, family_name, args))
+                if (
+                    self._family.name == "shifted_lognormal"
+                    and aux.name == "ndt"
+                    and aux.name not in self._user_priors
+                ):
+                    prior = f"Uniform(0.0, {float(np.min(formula.response_values))!r})"
+                program_steps.append(
+                    _auxiliary_draw(
+                        aux.name,
+                        prior,
+                        lower=1.0
+                        if self._family.name == "frechet" and aux.name == "nu"
+                        else None,
+                    )
+                )
             else:
                 linear_predictor = self._append_predictor(
                     predictor,
@@ -2203,6 +2303,67 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         if self._family.name == "cumulative":
             assert cutpoints_name is not None
             obs_args: tuple[str | float, ...] = ("mu", cutpoints_name)
+        elif self._family.name == "skew_normal":
+            program_steps.extend(
+                [
+                    _let(
+                        "skew_delta",
+                        _call("sin", _call("atan", _var("alpha"))),
+                    ),
+                    _let(
+                        "skew_center",
+                        _mul(
+                            _var("skew_delta"),
+                            LetExprLiteral(value=math.sqrt(2 / math.pi)),
+                        ),
+                    ),
+                    _let(
+                        "skew_scale",
+                        _div(
+                            _var("sigma"),
+                            _call(
+                                "sqrt",
+                                _sub(
+                                    LetExprLiteral(value=1.0),
+                                    _mul(_var("skew_center"), _var("skew_center")),
+                                ),
+                            ),
+                        ),
+                    ),
+                    _let(
+                        "skew_location",
+                        _sub(_var("mu"), _mul(_var("skew_scale"), _var("skew_center"))),
+                    ),
+                ]
+            )
+            obs_args = ("skew_location", "skew_scale", "alpha")
+        elif self._family.name == "shifted_lognormal":
+            obs_args = ("mu", "sigma", "ndt")
+        elif self._family.name == "frechet":
+            program_steps.append(
+                _let(
+                    "frechet_scale",
+                    _mul(
+                        _var("mu"),
+                        _call(
+                            "exp",
+                            _mul(
+                                LetExprLiteral(value=-1.0),
+                                _call(
+                                    "lgamma",
+                                    _sub(
+                                        LetExprLiteral(value=1.0),
+                                        _div(LetExprLiteral(value=1.0), _var("nu")),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            )
+            obs_args = ("frechet_scale", "nu")
+        elif self._family.name == "gen_extreme_value":
+            obs_args = ("mu", "sigma", "xi")
         elif self._family.name in {
             "negative_binomial",
             "zero_inflated_negbinomial",

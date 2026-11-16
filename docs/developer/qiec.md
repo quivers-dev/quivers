@@ -295,9 +295,10 @@ than scores.
 
 #### Calls between programs
 
-A draw from another program, `sample theta <- school_effects(0.6, School)` or
+A draw from another program, `sample theta <- school_effects[School](0.6)` or
 `sample (u, v) <- sub`, runs that program's steps in place under names of the caller. The objects
-and scalars the draw names replace the callee's template parameters. The callee's local `z`
+in brackets specialize the callee, and parenthesized values fill its runtime
+parameters. The callee's local `z`
 becomes the site `theta$z`, and the name it returns becomes `theta` itself. This holds on the
 reference machine and on the compiled runtime alike, and a transpile target spells such a site
 `theta__z`. A program over object parameters is a computation whose telescope binds one index

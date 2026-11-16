@@ -8,6 +8,7 @@ observed plate's leading batch axis.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import torch
 import torch.distributions as D
 import torch.nn as nn
@@ -68,6 +69,11 @@ class AutoNormalGuide(Guide):
         Initial scale (in unconstrained space) of every latent.
         Default ``0.1``; small enough to keep the guide near its
         prior at the start of optimisation.
+    initial_values : Mapping[str, torch.Tensor or float] or None
+        Optional natural-scale initial centers keyed by latent site. Scalars
+        broadcast to a site's shape; arrays must match it. Values must be
+        strictly inside the site's support. Other centers remain zero in
+        unconstrained space.
 
     Notes
     -----
@@ -88,6 +94,7 @@ class AutoNormalGuide(Guide):
         *,
         x: torch.Tensor | None = None,
         observations: dict[str, torch.Tensor] | None = None,
+        initial_values: Mapping[str, torch.Tensor | float] | None = None,
     ) -> None:
         super().__init__()
         self._registry = self.build_registry(
@@ -104,6 +111,14 @@ class AutoNormalGuide(Guide):
                 f"log_scale_{site.name}",
                 nn.Parameter(torch.full(site.unconstrained_shape, init_log_scale)),
             )
+        if initial_values:
+            from quivers.inference._initialization import unconstrained_initial_values
+
+            with torch.no_grad():
+                for name, value in unconstrained_initial_values(
+                    self._registry, initial_values
+                ).items():
+                    self._loc(name).copy_(value)
 
     # ------------------------------------------------------------------
     # Variational parameter access

@@ -22,6 +22,7 @@ from torch.distributions.distribution import Distribution
 
 from quivers.continuous.bijectors import Bijector
 from quivers.continuous._truncated_normal import TruncatedNormal
+from quivers.continuous._interval import _reference, log_interval_mass
 
 
 _NEG_INF = float("-inf")
@@ -199,13 +200,17 @@ class Restrict(Measure):
                 "distribution itself."
             )
         self.base = base
+        try:
+            reference = _reference(base)
+        except NotImplementedError:
+            reference = torch.tensor(0.0)
         self.low = (
-            torch.as_tensor(low, dtype=torch.get_default_dtype())
+            torch.as_tensor(low, dtype=torch.float64, device=reference.device)
             if low is not None
             else None
         )
         self.high = (
-            torch.as_tensor(high, dtype=torch.get_default_dtype())
+            torch.as_tensor(high, dtype=torch.float64, device=reference.device)
             if high is not None
             else None
         )
@@ -242,20 +247,7 @@ class Restrict(Measure):
         if isinstance(self.base, torch.distributions.Normal):
             return _normal_interval(self.base, self.low, self.high).log_normalizer()
         try:
-            if self.low is None:
-                cdf_high = self.base.cdf(self.high)
-                return torch.log(cdf_high.clamp_min(torch.finfo(cdf_high.dtype).tiny))
-            if self.high is None:
-                cdf_low = self.base.cdf(self.low)
-                surv = 1.0 - cdf_low
-                return torch.log(surv.clamp_min(torch.finfo(surv.dtype).tiny))
-            cdf_high = self.base.cdf(self.high)
-            cdf_low = self.base.cdf(self.low)
-            return torch.log(
-                (cdf_high - cdf_low).clamp_min(
-                    torch.finfo(cdf_high.dtype).tiny,
-                )
-            )
+            return log_interval_mass(self.base, self.low, self.high)
         except NotImplementedError:
             symmetric = _symmetric_fold_log_normalizer(
                 self.base,
@@ -361,21 +353,33 @@ class Restrict(Measure):
         # of one another, which single precision would collapse.
         wide = torch.float64
         try:
-            zero = torch.zeros(self.batch_shape, dtype=wide)
-            lower = zero if self.low is None else self.base.cdf(self.low.to(wide))
-            upper = (
-                zero + 1.0 if self.high is None else self.base.cdf(self.high.to(wide))
+            reference = _reference(self.base)
+            zero = torch.zeros(self.batch_shape, dtype=wide, device=reference.device)
+            lower = (
+                zero
+                if self.low is None
+                else self.base.cdf(self.low.to(device=reference.device, dtype=wide))
             )
+            upper = (
+                zero + 1.0
+                if self.high is None
+                else self.base.cdf(self.high.to(device=reference.device, dtype=wide))
+            )
+            if not bool(
+                (torch.isfinite(lower) & torch.isfinite(upper) & (upper > lower)).all()
+            ):
+                return None
             shape = self._extended_shape(sample_shape)
-            uniform = torch.rand(shape, dtype=wide)
-            draws = self.base.icdf(lower + (upper - lower) * uniform)
+            uniform = torch.rand(shape, dtype=wide, device=reference.device)
+            probability = lower + (upper - lower) * uniform
+            if not bool(((probability > 0) & (probability < 1)).all()):
+                return None
+            draws = self.base.icdf(probability)
         except NotImplementedError:
             return None
-        if self.low is not None:
-            draws = torch.maximum(draws, self.low.to(draws.dtype))
-        if self.high is not None:
-            draws = torch.minimum(draws, self.high.to(draws.dtype))
-        return draws.to(torch.get_default_dtype())
+        if not bool((torch.isfinite(draws) & self._inside(draws)).all()):
+            return None
+        return draws.to(reference)
 
     def _sample_by_rejection(self, sample_shape: torch.Size) -> Tensor:
         """Draw by redrawing each entry outside the interval.
@@ -840,30 +844,36 @@ def _symmetric_fold_log_normalizer(
 
     Returns the `-log 2` normaliser (shaped like `base.batch_shape`)
     when the restriction is one-sided, the base exposes a `loc`, the
-    finite cut equals `loc` elementwise, and the base is numerically
-    symmetric about `loc`; returns `None` otherwise so the caller can
+    finite cut equals `loc` elementwise, and the base has a known
+    symmetric location family; returns `None` otherwise so the caller can
     fall through to the discrete pmf-sum path.
     """
     one_sided = (low is None) != (high is None)
     if not one_sided:
         return None
+    if not isinstance(
+        base,
+        (
+            torch.distributions.Normal,
+            torch.distributions.StudentT,
+            torch.distributions.Cauchy,
+            torch.distributions.Laplace,
+        ),
+    ):
+        return None
     loc = getattr(base, "loc", None)
     if not isinstance(loc, Tensor):
+        return None
+    if loc.requires_grad:
+        # A fixed cut that happens to equal a learnable center has a
+        # nonzero location derivative. A constant half-mass would erase it.
         return None
     cut = low if high is None else high
     if cut is None:
         return None
     cut = cut.to(dtype=loc.dtype)
-    if not bool(torch.isclose(loc, cut, atol=1e-7, rtol=1e-6).all()):
+    if not bool((loc == cut).all()):
         return None
-    scale = getattr(base, "scale", None)
-    ref = scale if isinstance(scale, Tensor) else torch.ones_like(loc)
-    for factor in (0.5, 1.0, 2.0):
-        delta = factor * ref
-        lp_above = base.log_prob(loc + delta)
-        lp_below = base.log_prob(loc - delta)
-        if not bool(torch.isclose(lp_above, lp_below, atol=1e-6, rtol=1e-5).all()):
-            return None
     return torch.full_like(loc, -math.log(2.0))
 
 

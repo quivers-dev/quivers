@@ -155,6 +155,7 @@ Poisson = torch.distributions.Poisson
 
 
 def zip_log_lik(pi, rate, y):
+    pi, rate, y = pi.double(), rate.double(), y.double()
     log_pois = Poisson(rate).log_prob(y)
     log_zero = torch.logaddexp(torch.log(pi), torch.log1p(-pi) + log_pois)
     return torch.where(y == 0, log_zero, torch.log1p(-pi) + log_pois)

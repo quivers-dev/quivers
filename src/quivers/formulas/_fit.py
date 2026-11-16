@@ -14,6 +14,8 @@ to produce canonical ``.qvr`` source.
 
 from __future__ import annotations
 
+import math
+import numpy as np
 from pathlib import Path
 from typing import Literal, Mapping
 
@@ -694,6 +696,7 @@ def fit(
     correlation_prior: str = "LKJCholesky(1.0)",
     priors: Mapping[str, str] | None = None,
     guide: type | None = None,
+    initial_values: Mapping[str, torch.Tensor | float] | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     binomial_trials: int | str = 1,
     thresholds_by: str | None = None,
@@ -760,6 +763,15 @@ def fit(
         Per-parameter priors that override the defaults.
     guide : type or None
         The SVI guide class; `AutoNormalGuide` when omitted.
+    initial_values : Mapping[str, torch.Tensor or float] or None
+        Natural-scale starting values keyed by latent site, including
+        coefficient names. Scalars broadcast to a site's declared shape.
+        Values must lie strictly inside the prior support. MCMC applies
+        these after its seeded initial strategy; SVI passes them to the
+        guide constructor. A custom guide must accept this keyword when
+        values are supplied. For a regressed shifted-lognormal ``ndt``
+        with the log link and an intercept, default coefficient centers put the shift below
+        the minimum observed response; explicit values override those centers.
     reparameterize : {"centered", "noncentered"}
         Parameterization of the random effects.
     binomial_trials : int or str
@@ -904,6 +916,30 @@ def fit(
         else:
             predictor_categories = None
 
+        starts: dict[str, torch.Tensor | float] = {}
+        if (
+            family_obj.name == "shifted_lognormal"
+            and "ndt" in parameter_formulas
+            and next(
+                aux for aux in family_obj.aux_params if aux.name == "ndt"
+            ).link.name
+            == "log"
+        ):
+            shift_formula = parameter_formulas["ndt"]
+            if any(column.is_intercept for column in shift_formula.fixed_columns):
+                # These are initial coordinates, never a model offset.
+                for column in shift_formula.fixed_columns:
+                    name = "dpar_ndt_" + (
+                        "intercept"
+                        if column.is_intercept
+                        else f"beta_{column.qvr_name}"
+                    )
+                    starts[name] = (
+                        math.log(float(np.min(parsed.response_values)) / 4)
+                        if column.is_intercept
+                        else 0.0
+                    )
+        starts.update(initial_values or {})
         if method == "svi":
             posterior = _fit_svi(
                 program,
@@ -915,6 +951,7 @@ def fit(
                 predictor_data=predictor_data,
                 predictor_name=predictor_name,
                 predictor_categories=predictor_categories,
+                initial_values=starts,
             )
         else:
             posterior = _fit_mcmc(
@@ -925,6 +962,7 @@ def fit(
                 num_samples=1000 if num_samples is None else num_samples,
                 num_chains=4 if num_chains is None else num_chains,
                 seed=seed,
+                initial_values=starts,
             )
 
         return BayesianFit(
@@ -1206,6 +1244,7 @@ def _fit_mcmc(
     num_samples: int,
     num_chains: int,
     seed: int,
+    initial_values: Mapping[str, torch.Tensor | float] | None = None,
 ) -> MCMCResult:
     """Run seeded NUTS or HMC on the compiled program.
 
@@ -1225,6 +1264,8 @@ def _fit_mcmc(
         Independent chains.
     seed
         Seed from which the driver derives each chain's stream.
+    initial_values
+        Optional natural-scale values for named latent sites.
 
     Returns
     -------
@@ -1238,6 +1279,7 @@ def _fit_mcmc(
         num_samples=num_samples,
         num_chains=num_chains,
         seed=seed,
+        initial_values=initial_values,
     )
     # One run of the program: its observation rows come from the data
     # through the formula's plate, not from the input's rows.
@@ -1256,6 +1298,7 @@ def _fit_svi(
     predictor_data: torch.Tensor | None = None,
     predictor_name: str | None = None,
     predictor_categories: int | None = None,
+    initial_values: Mapping[str, torch.Tensor | float] | None = None,
 ):
     """Run an SVI fit + ELBO.
 
@@ -1269,7 +1312,13 @@ def _fit_svi(
     """
     if guide_cls is None:
         guide_cls = AutoNormalGuide
-    guide = guide_cls(program, observed_names=set(observations.keys()))
+    guide = (
+        guide_cls(
+            program, observed_names=set(observations), initial_values=initial_values
+        )
+        if initial_values
+        else guide_cls(program, observed_names=set(observations))
+    )
     parameters = list(program.parameters()) + list(guide.parameters())
     if predictor is not None:
         parameters.extend(predictor.parameters())

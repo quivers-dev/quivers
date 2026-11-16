@@ -37,6 +37,49 @@ observation-only likelihood weights. The column is retained on the parsed
 formula; posterior predictors use the unweighted response law at each draw.
 See [likelihood weights](../../guides/analysis-data-and-formulas.md#likelihood-weights).
 
+## Named initial values
+
+`fit(..., initial_values={...})` initializes latent sites by their generated
+QVR names, which are visible in `formula_to_qvr` output and `get_prior` results.
+Values use each site's natural scale; scalars broadcast and tensors must match
+the site's full declared shape. Unknown names, observed sites, Boolean or
+nonfinite values, incompatible shapes, and support boundaries are refused.
+The inference object detaches and copies the supplied values.
+
+```python
+import pandas as pd
+
+from quivers.formulas import fit
+
+result = fit(
+    "y ~ x",
+    data=pd.DataFrame({"y": [0.1, 0.4, 0.8], "x": [-1.0, 0.0, 1.0]}),
+    method="svi",
+    num_steps=10,
+    seed=2026,
+    initial_values={"intercept": 0.4, "beta_x": 0.0, "sigma": 0.5},
+)
+assert set(result.draws(num_samples=2)) == {"intercept", "beta_x", "sigma"}
+```
+
+For `method="svi"`, the default `AutoNormalGuide` maps these values into its
+[initial unconstrained centers](../../guides/inference-svi.md#named-initial-centers).
+A custom guide must accept `initial_values` when a nonempty mapping is supplied.
+For `"hmc"` and `"nuts"`, named values replace the corresponding coordinates
+after seeded initialization, as in the
+[MCMC interface](../../guides/inference-mcmc.md#named-initial-values).
+
+A `shifted_lognormal` fit with a regressed `ndt`, a log link, and an intercept
+initializes the population intercept to `log(min(y) / 4)` and the other
+population coefficients to zero. The implied population shift thus starts
+below every training response. Group effects retain the inference method's
+starting values. These are starting coefficients; the model's predictor and
+priors remain unchanged. Explicit `initial_values` override the automatic
+entries and can also set group sites. A custom SVI guide used with this
+automatic initialization must also accept the mapping.
+
+## Trial counts
+
 Trial-count families use `binomial_trials` for either one common count or a
 column name. Trial counts satisfy `0 <= n <= 2**53`, including zero,
 which permits only a zero response. This family-specific bound preserves

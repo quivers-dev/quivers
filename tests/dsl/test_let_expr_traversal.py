@@ -74,7 +74,7 @@ def test_factor_substitution_renames_a_capturing_binder() -> None:
 def test_every_surface_variant_has_an_explicit_traversal_case() -> None:
     leaf = _var("x")
     samples: tuple[LetExprNode, ...] = (
-        LetExprLiteral(value=1.0, integral=True),
+        LetExprLiteral(value=1, integral=True),
         LetExprBool(value=True),
         LetExprUnit(),
         leaf,

@@ -363,6 +363,91 @@ A new family is a [`Family`](../api/formulas/family.md#quivers.formulas.family.F
 value with its own observation family and link. The table's priors on auxiliary
 parameters are the library's defaults.
 
+### Skew, shifted, and extreme-value regressions
+
+A family name determines which response quantity the main predictor
+describes. These four parameterizations use different quantities:
+
+| Formula family | Main parameter | Auxiliary links |
+| --- | --- | --- |
+| `skew_normal` | response mean `mu`, identity link | log for response standard deviation `sigma`; identity for skewness `alpha` |
+| `shifted_lognormal` | Normal location of `log(y - ndt)`, identity link | log for log-scale `sigma` and nondecision time `ndt` |
+| `frechet` | positive response mean `mu`, log link | `logm1` for `nu`, with inverse `1 + exp(eta)` |
+| `gen_extreme_value` | response location `mu`, identity link | log for scale `sigma`; identity for shape `xi` |
+
+The skew-normal frontend converts its response mean and standard
+deviation into the native location and scale. With
+`delta = alpha / sqrt(1 + alpha**2)`, it uses
+`scale = sigma / sqrt(1 - 2*delta**2/pi)` and
+`loc = mu - scale*delta*sqrt(2/pi)`. Thus `posterior_epred` returns the
+main response mean, rather than that native location.
+
+For shifted lognormal responses, `ndt` shifts the entire positive
+component, and every observation must exceed it. The response expectation
+is `ndt + exp(mu + sigma**2/2)`. A main linear predictor or its transformed
+value is thus distinct from a response expectation. A fixed
+`ndt` must be below every observed response; scalar-prior initialization
+also needs to respect that support.
+
+Fréchet regression uses `scale = mu / Gamma(1 - 1/nu)`. The `logm1`
+link keeps `nu > 1`, giving a finite response mean. It does not ensure a
+finite variance, which requires `nu > 2`. The native Fréchet kernel
+separately allows any positive concentration.
+
+GEV's `mu` is location. Its expectation includes a shape-dependent
+correction and exists only for `xi < 1`; at `xi=0`, the correction is
+`sigma * EulerGamma`. QVR uses a direct shape with an identity link.
+The pinned brms release uses a different default shape link and an
+additional [scalar-shape transformation](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/inst/chunks/fun_scale_xi.stan)
+whose bounds depend on the observed responses, location, and scale.
+Matching the conditional density does not establish that same shape prior.
+
+These conversions agree with the released
+[likelihood code](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/stan-likelihood.R)
+and [response-expectation code](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/posterior_epred.R)
+where their parameter policies coincide.
+
+Scalar `sigma` defaults to `HalfCauchy(2)`, and skewness `alpha` to
+`Normal(0, 4)`. The shifted-lognormal scalar `ndt` prior is
+`Uniform(0, min(response))`, retaining the observed support. A
+regressed `ndt` remains the exponential of its predictor; there is no
+hidden rescaling by the smallest response. Initialization must respect
+that support, especially for small responses; the fitting API accepts
+[named initial values](../api/formulas/fit.md#named-initial-values)
+on the latent parameters' natural scales.
+
+The Fréchet scalar `nu` prior is `Gamma(2, 0.1)` conditioned on `nu > 1`
+with its interval-mass normalizer. A custom scalar prior is restricted
+in the same way; an explicitly restricted prior must have a literal
+lower bound at least one. A regressed `nu` requires `logm1`, so the
+response-mean conversion cannot silently enter an undefined regime.
+GEV's scalar `xi` default is `Normal(0, 0.3)` on its direct real shape.
+Predicted means require the finite-moment domain; response sampling
+and linear predictors remain distinct operations.
+
+```python
+import pandas as pd
+from quivers.formulas import formula_to_qvr
+
+response_times = pd.DataFrame({
+    "reaction": [0.7, 1.1, 1.5, 0.9],
+    "x": [-1.0, 0.0, 1.0, 2.0],
+    "z": [0.0, 1.0, -1.0, 0.5],
+})
+shifted_source = formula_to_qvr(
+    "reaction ~ x",
+    data=response_times,
+    family="shifted_lognormal",
+    fixed_parameters={"ndt": 0.1},
+    distributional={"sigma": "~ z"},
+)
+```
+
+The shape, skewness, and time-shift parameters are runtime real values.
+They do not introduce static type indices or additional syntax in a
+program header. Distributional formulas and fixed parameters use the
+same interfaces as for the existing response families.
+
 ### Zero-inflated and hurdle counts
 
 A zero-inflated count model adds a structural zero to a count distribution

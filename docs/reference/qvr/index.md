@@ -87,6 +87,10 @@ Parentheses thus do not universally mean runtime application. In a *family type*
 analysis refine; both belong to static type information. And a distribution
 application such as `Normal(loc=mean, scale=sigma)` receives runtime distribution
 parameters, though its named argument syntax differs from an ordinary positional call.
+For instance, the `concentration` argument of a tail family is a runtime
+real value, while `[n : Nat]` may fix the number of responses. A parameter
+that changes a distribution's support is still a value parameter; it does
+not become a static index merely because it is called a shape parameter.
 
 Rule and schema variables use brackets because they are substituted in types
 and patterns. A contraction's morphism inputs remain parenthesized because the

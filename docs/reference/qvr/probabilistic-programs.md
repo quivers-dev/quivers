@@ -162,6 +162,11 @@ Here `n=3` fixes the plate's extent, while `scale` remains a checked runtime
 input. Named scalar partial application, such as `.sub(n=3, scale=0.7)`, may
 also fix a runtime value; it preserves that value's runtime parameter stage.
 Supply tensor values through `Model.bind` or the execution data interface.
+Standalone specialization keeps the source's site names, so an observation
+authored as `y` is supplied under `"y"`. Calls inside the specialized body
+still introduce their own namespaces; two calls can thus observe distinct
+`a$y` and `b$y` sites. Substitution freshens a local when needed to avoid
+capturing an actual argument.
 
 A *data input* is an external value the body reads, declared as a typed header
 parameter or inferred from an otherwise unbound name, given at run time with the

@@ -578,8 +578,9 @@ is abridged, and `grammars/qvr/grammar.js` is authoritative:
 ```ebnf
 index_decl        := 'index' IDENT '=' index_constructor ('|' index_constructor)*
 static_telescope  := '[' qiec_static_binder (',' qiec_static_binder)* ']'
-qiec_static_binder := IDENT ':' ('Type' | 'Effect' | IDENT)
-index_telescope   := '(' qiec_static_binder (',' qiec_static_binder)* ')'
+qiec_static_binder := IDENT ':' ('Type' | 'Effect' | index_sort)
+index_telescope   := '(' qiec_index_binder (',' qiec_index_binder)* ')'
+qiec_index_binder := IDENT ':' index_sort
 family_decl       := 'family' IDENT [static_telescope] [index_telescope]
                      ':' KIND constructor_decl+
 constructor_decl  := 'constructor' IDENT [static_telescope] ':'

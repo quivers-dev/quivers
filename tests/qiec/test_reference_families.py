@@ -267,6 +267,13 @@ CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
     "InverseGamma": ({"concentration": 3.0, "rate": 2.0}, (0.4, 1.5)),
     "Weibull": ({"scale": 2.0, "concentration": 1.5}, (0.5, 2.5)),
     "Pareto": ({"scale": 1.0, "alpha": 2.5}, (1.5, 4.0)),
+    "SkewNormal": ({"loc": 0.2, "scale": 1.3, "skewness": 0.7}, (-1.0, 0.4, 2.0)),
+    "ShiftedLogNormal": ({"loc": 0.2, "scale": 0.5, "shift": 0.1}, (0.3, 0.8, 2.0)),
+    "Frechet": ({"scale": 1.3, "concentration": 3.0}, (0.5, 1.0, 3.0)),
+    "GeneralizedExtremeValue": (
+        {"loc": 0.2, "scale": 1.3, "concentration": 0.1},
+        (-1.0, 0.4, 3.0),
+    ),
     "GeneralizedPareto": (
         {"loc": -0.5, "scale": 1.3, "concentration": 0.2},
         (0.0, 3.0),

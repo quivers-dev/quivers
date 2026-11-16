@@ -440,7 +440,7 @@ class ClosedBinomial(D.Binomial):
     """
 
     arg_constraints = dict(D.Binomial.arg_constraints) | {
-        "total_count": _constraints.integer_interval(0, _MAX_EXACT_TRIALS)
+        "total_count": _constraints.nonnegative_integer
     }
 
     def __init__(

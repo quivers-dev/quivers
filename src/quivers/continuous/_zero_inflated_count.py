@@ -17,7 +17,6 @@ from quivers.continuous._closed_probability import (
     _log_gamma_increment,
     _negative_binomial_log_mass,
     _check_trial_count_source,
-    _MAX_EXACT_TRIALS,
 )
 from quivers.continuous._zero_truncated_poisson import (
     positive_poisson_mean,
@@ -178,7 +177,7 @@ class _CountBetaBinomial(Distribution):
     """
 
     arg_constraints = {
-        "total_count": constraints.integer_interval(0, _MAX_EXACT_TRIALS),
+        "total_count": constraints.nonnegative_integer,
         "concentration1": constraints.positive,
         "concentration0": constraints.positive,
     }
@@ -485,7 +484,7 @@ class ZeroInflatedBinomial(_InflatedCount):
 
     arg_constraints = {
         "zero_prob": constraints.unit_interval,
-        "total_count": constraints.integer_interval(0, _MAX_EXACT_TRIALS),
+        "total_count": constraints.nonnegative_integer,
         "probs": constraints.unit_interval,
     }
     _count_class = ClosedBinomial
@@ -528,7 +527,7 @@ class ZeroInflatedBetaBinomial(ZeroInflatedBinomial):
 
     arg_constraints = {
         "zero_prob": constraints.unit_interval,
-        "total_count": constraints.integer_interval(0, _MAX_EXACT_TRIALS),
+        "total_count": constraints.nonnegative_integer,
         "concentration1": constraints.positive,
         "concentration0": constraints.positive,
     }

@@ -17,6 +17,7 @@ import math
 import random
 
 from quivers.qiec._onion import onion_cholesky_rows
+from quivers.qiec._gamma_tails import _gamma_interval_log_mass
 from quivers.qiec._count_mixtures import (
     _negative_binomial_log_mass,
     _poisson as _sample_poisson_count,
@@ -3730,6 +3731,9 @@ def _truncated_density(a: Mapping[str, object], value: object) -> float:
     point = finite_value(value, "Truncated")
     if not low <= point <= high:
         return -math.inf
+    if getattr(base, "family", None) == "Gamma":
+        log_mass = _restrict_log_mass_of(base, low, high)
+        return float(base.log_prob(point)) - log_mass  # type: ignore[attr-defined]
     mass = _truncated_mass(base, low, high)
     if mass <= 0.0:
         return -math.inf
@@ -4081,6 +4085,14 @@ def _restrict_log_mass_of(base: object, low: float | None, high: float | None) -
         mass over the integers in the interval, an open upper end summed
         until the tail is negligible.
     """
+    if getattr(base, "family", None) == "Gamma":
+        arguments = getattr(base, "arguments", {})
+        return _gamma_interval_log_mass(
+            _positive_parameter(arguments, "concentration", "Gamma"),
+            _positive_parameter(arguments, "rate", "Gamma"),
+            -math.inf if low is None else low,
+            math.inf if high is None else high,
+        )
     if _base_is_discrete(base):
         start = 0 if low is None else int(math.ceil(low))
         stop = high if high is not None else None

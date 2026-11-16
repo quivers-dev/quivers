@@ -14,7 +14,8 @@ contractions / categories / compositions). Each subsequent segment
 is looked up against the previous binding's *scope view*, a
 ``Mapping[str, ScopedRef]`` derived from its AST shape:
 
-* A ``program lda(α, β) : ...`` exposes its typed parameters and
+* A ``program lda(alpha : Real, beta : Real) : ...`` exposes its static
+  and runtime parameters and
   every step (``sample`` / ``observe`` / ``let`` / ``marginalize`` /
   ``score`` / ``return``) by the names they bind.
 * A ``marginalize z : T <- F [over=G]`` exposes its inner body

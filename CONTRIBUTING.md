@@ -283,6 +283,8 @@ class ProgramDecl(Statement):
     name: str
     params: tuple[str, ...] | None = None
     type_params: tuple[ProgramParam, ...] | None = None
+    binders: tuple[QiecBinder, ...] = ()
+    value_parameters: tuple[QiecValueParameter, ...] = ()
     domain: ObjectExpr
     codomain: ObjectExpr
     options: tuple[OptionEntry, ...] = ()
@@ -294,6 +296,12 @@ class ProgramDecl(Statement):
     col: int = 0
     kind: Literal["program_decl"] = "program_decl"
 ```
+
+`binders` holds the shared static telescope, and `value_parameters` holds
+typed runtime inputs. `type_params` retains program-specific object and
+morphism specialization metadata plus scalar partial-application metadata.
+Bare names in `params` identify domain projections. Runtime input annotations
+perform no draw or score; their types are checked independently of those effects.
 
 ### 3. Compilation (`dsl/compiler/`)
 

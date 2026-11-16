@@ -131,6 +131,28 @@ constraint satisfies a runtime `Nat` formal. A computed or sampled `Int` does
 not establish the restriction; without a refinement proof mechanism, the
 checker conservatively refuses that actual argument.
 
+The common rule across declarations concerns the stage of a binding,
+rather than one universal interpretation of parentheses. A `define` or
+`program` static telescope extends $\Delta$; its value telescope extends
+$\Gamma_v$. Rule and schema brackets instead bind static pattern variables,
+whose substitution fixes a morphism's types before its arguments are used.
+In `family Vec[A : Type](n : Nat) : Type`, both `A` and `n` belong to
+static information: `n` is an index that constructors and case analysis
+may refine. Constructor fields are values. Likewise, an effect interface's
+type and index parameters are static, while operation arguments and resumed
+values are runtime terms. Contraction inputs and encoder attachments supply
+components under their own elaboration rules; they do not quantify new
+index variables merely because their names occur in a header.
+
+Distribution parameter names also bind no static indices. In
+`Frechet(scale=s, concentration=nu)`, `nu` is a runtime real parameter,
+even though it changes the response's tail and moment domains. An
+annotation `(nu : Real)` checks its carrier; family validation checks the
+admissible parameter range. Inferring a carrier or axis from use does not
+infer whether a real parameter denotes a mean, a log-location, or a scale.
+The selected family and any explicit regression parameter map determine
+that interpretation. None of these declarations alone extends an effect row.
+
 ### 3.1 Program steps
 
 The main rules are
@@ -219,7 +241,8 @@ telescopes. Run-time parameters, in parentheses on a program or computation, are
 values passed when it runs. Family declarations use parentheses for refinable
 static indices instead; punctuation is interpreted with its declaration form.
 In a telescope
-such as `[A : Type](xs : Vec[A](n))`, the element type `A` is in scope when `xs` is checked.
+such as `[A : Type, n : Nat](xs : Vec[A](n))`, both the element type `A`
+and index `n` are in scope when `xs` is checked.
 
 | Kind | Inhabitants |
 | --- | --- |

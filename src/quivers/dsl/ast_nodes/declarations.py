@@ -616,11 +616,11 @@ class LossDecl(Statement):
 
 
 class ProgramParam(dx.TaggedUnion, discriminator="kind"):
-    """Sum of typed-program-parameter variants (parametric programs)."""
+    """Program-specific specialization and scalar-application metadata."""
 
 
 class ObjectParam(ProgramParam):
-    """Object-typed program parameter: ``G : FinSet`` / ``Space`` / ``Object``."""
+    """Static object parameter: ``G : FinSet`` / ``Space`` / ``Object``."""
 
     name: str
     universe: Literal["FinSet", "Space", "Object"]
@@ -630,7 +630,11 @@ class ObjectParam(ProgramParam):
 
 
 class ScalarParam(ProgramParam):
-    """Scalar-typed program parameter: ``s : Real`` / ``Nat``."""
+    """Runtime scalar metadata for ``s : Real`` or ``s : Nat``.
+
+    The checked runtime declaration is recorded in ``value_parameters``;
+    this metadata also supports named scalar partial application.
+    """
 
     name: str
     scalar_kind: Literal["Real", "Nat"]
@@ -640,7 +644,7 @@ class ScalarParam(ProgramParam):
 
 
 class MorphismParam(ProgramParam):
-    """Morphism-typed program parameter: ``f : Mor[A, B]``."""
+    """Static morphism parameter: ``f : Mor[A, B]``."""
 
     name: str
     domain: ObjectExpr

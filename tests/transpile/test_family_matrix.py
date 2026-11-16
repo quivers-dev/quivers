@@ -120,10 +120,11 @@ _EXPECTED_REFUSALS: dict[tuple[str, str], str] = {
     # its joint without an additional host-bound density carrier.
     ("bugs", "betabinomial"): "family:BetaBinomial",
     ("bugs", "mixturenormal"): "family:MixtureNormal:no-free-density-term",
-    # GeneralizedPareto's shape-dependent interval reaches these storage
-    # checks before either backend's unsupported-family check.
+    # Shape-dependent intervals can reach storage checks before the
+    # backend's unsupported-family check.
     ("gen", "generalizedpareto"): "support:_Interval: no Gen.jl storage-type rule",
     ("stan", "generalizedpareto"): "declare:unsupported-support:_Interval",
+    ("stan", "generalizedextremevalue"): "declare:unsupported-support:_Interval",
     # The checked canonical families retain distribution-valued arguments.
     # All current external plans reject those arguments explicitly; family
     # name metadata alone does not imply support for this composition.

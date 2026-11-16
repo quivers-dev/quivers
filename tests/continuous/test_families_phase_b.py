@@ -391,6 +391,10 @@ class TestFamilyMetaWiring:
             "ZeroInflatedBinomial",
             "ZeroInflatedBetaBinomial",
             "HurdleNegativeBinomial",
+            "SkewNormal",
+            "ShiftedLogNormal",
+            "Frechet",
+            "GeneralizedExtremeValue",
         }
         assert added <= FAMILY_META.keys()
         for family in added:
@@ -398,4 +402,4 @@ class TestFamilyMetaWiring:
             assert meta.distribution_class.__name__ == family
             assert meta.quivers_class.__name__ == f"Conditional{family}"
         assert "GP" in FAMILY_META
-        assert len(FAMILY_META) == 70
+        assert len(FAMILY_META) == 74

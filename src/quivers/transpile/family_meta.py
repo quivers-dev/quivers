@@ -31,6 +31,12 @@ from quivers.continuous._zero_inflated_count import (
     HurdleNegativeBinomial,
 )
 from quivers.continuous._generalized_pareto import GeneralizedPareto
+from quivers.continuous._shape_families import (
+    ShiftedLogNormal,
+    Frechet,
+    GeneralizedExtremeValue,
+)
+from quivers.continuous._skew_normal import SkewNormal
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
 from quivers.continuous._response_time import ExGaussian, InverseGaussian
@@ -55,6 +61,10 @@ from quivers.continuous.families import (
     ConditionalFisherSnedecor,
     ConditionalGamma,
     ConditionalGeneralizedPareto,
+    ConditionalSkewNormal,
+    ConditionalShiftedLogNormal,
+    ConditionalFrechet,
+    ConditionalGeneralizedExtremeValue,
     ConditionalGaussianProcess,
     ConditionalGeometric,
     ConditionalGumbel,
@@ -1861,5 +1871,30 @@ FAMILY_META["GeneralizedPareto"] = FamilyMeta(
     qvr_name="GeneralizedPareto",
     distribution_class=GeneralizedPareto,
     quivers_class=ConditionalGeneralizedPareto,
+    target_names={},
+)
+
+FAMILY_META["SkewNormal"] = FamilyMeta(
+    qvr_name="SkewNormal",
+    distribution_class=SkewNormal,
+    quivers_class=ConditionalSkewNormal,
+    target_names={},
+)
+FAMILY_META["ShiftedLogNormal"] = FamilyMeta(
+    qvr_name="ShiftedLogNormal",
+    distribution_class=ShiftedLogNormal,
+    quivers_class=ConditionalShiftedLogNormal,
+    target_names={},
+)
+FAMILY_META["Frechet"] = FamilyMeta(
+    qvr_name="Frechet",
+    distribution_class=Frechet,
+    quivers_class=ConditionalFrechet,
+    target_names={},
+)
+FAMILY_META["GeneralizedExtremeValue"] = FamilyMeta(
+    qvr_name="GeneralizedExtremeValue",
+    distribution_class=GeneralizedExtremeValue,
+    quivers_class=ConditionalGeneralizedExtremeValue,
     target_names={},
 )
