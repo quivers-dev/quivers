@@ -3680,11 +3680,13 @@ class ConditionalHorseshoe(ContinuousMorphism):
 
     .. code-block:: text
 
-       tau ~ HalfCauchy(scale)
+       tau = scale                       positive learnable global parameter
        lambda_d ~ HalfCauchy(1)            for d = 1, ..., D
-       beta_d | tau, lambda_d ~ Normal(0, (tau * lambda_d)^2)
+       beta_d | tau, lambda_d ~ Normal(0, tau * lambda_d)
 
-    The marginal density of ``beta_d`` after integrating the local
+    The global scale is a module parameter; it is not a sampled hyperprior.
+    Formula ``RegularizedHorseshoe`` priors instead emit explicit global,
+    local, and slab latent sites. The marginal density of ``beta_d`` after integrating the local
     scale ``lambda_d`` has no closed form; this implementation uses a
     16-point Gauss-Legendre quadrature after mapping the half-line
     ``lambda in (0, inf)`` to ``t in (0, 1)`` via the change of

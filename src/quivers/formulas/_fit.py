@@ -51,6 +51,7 @@ from quivers.formulas._predictor_graph import (
 
 from quivers.formulas._prediction import FormulaPredictionPlan
 from quivers.formulas._response import count_totals, response_tensor
+from quivers.formulas._priors import PriorInput, PriorSet, normalize_priors
 from quivers.formulas._response_modifiers import (
     ResponseDraws,
     ExpectationOptions,
@@ -140,7 +141,9 @@ class BayesianFit(ValueModel):
     fixed_prior: str = "Normal(0.0, 5.0)"
     random_scale_prior: str = "HalfNormal(1.0)"
     correlation_prior: str = "LKJCholesky(1.0)"
-    priors: dict[str, str] = dx.field(default_factory=dict)
+    priors: PriorSet = dx.field(
+        default_factory=PriorSet, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     predictor: nn.Module | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -881,25 +884,9 @@ class BayesianFit(ValueModel):
                         )
                     value = distribution.probs
                 elif self.family.ordinal is not None:
-                    from quivers.continuous._ordinal import OrdinalDistribution
+                    from quivers.formulas._posterior import category_probabilities
 
-                    if isinstance(distribution, OrdinalDistribution):
-                        yield row_binding(
-                            distribution.category_probs(), rows, categories
-                        )
-                        continue
-                    codes = torch.arange(
-                        categories, device=recorded.sites[response].value.device
-                    )
-                    value = (
-                        distribution.log_prob(
-                            codes.reshape(
-                                categories, *([1] * len(distribution.batch_shape))
-                            )
-                        )
-                        .exp()
-                        .movedim(0, -1)
-                    )
+                    value = category_probabilities(distribution, categories)
                 else:
                     value = response_mean(distribution, mc_samples)
                 if not torch.isfinite(value).all():
@@ -912,6 +899,44 @@ class BayesianFit(ValueModel):
 
         with response_rng(seed + 2, (*draws.values(), *context.observations.values())):
             return collect_draws(values(), shape)
+
+    def bayes_r2(
+        self,
+        *,
+        method: Literal["auto", "model", "residual"] = "auto",
+        observed: torch.Tensor | None = None,
+        **options: Unpack[ExpectationOptions],
+    ) -> torch.Tensor:
+        """Compute per-draw explained variance on the response scale.
+
+        Parameters
+        ----------
+        method : {"auto", "model", "residual"}
+            Model-variance ratios use native conditional means and variances;
+            residual ratios use actual minus expected responses. Auto selects
+            model variances for ordinary Gaussian and Bernoulli responses,
+            and residual variances otherwise. Explicit observations select
+            residual variances under auto.
+        observed : torch.Tensor or None
+            Explicit actual responses on row/event axes for the residual
+            method. Otherwise use retained training responses or evaluate
+            their fitted transform in new_data. Censoring bounds cannot stand
+            in for actual responses.
+        **options
+            Shared posterior expectation options, including new_data, group
+            policies, trials, draw counts, and seed. Model variances require
+            analytic native moments; mc_samples applies to residual means.
+
+        Returns
+        -------
+        torch.Tensor
+            Ratios on chain, draw, and event axes. Ordinal residual ratios
+            use ordered integer scores. Unordered categories require a
+            separately specified response metric. Zero total variance is NaN.
+        """
+        from quivers.formulas._r_squared import formula_r2
+
+        return formula_r2(self, method, observed, options)
 
     def posterior_choice_probs(
         self, **options: Unpack[ExpectationOptions]
@@ -1433,7 +1458,7 @@ def fit(
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     correlation_prior: str = "LKJCholesky(1.0)",
-    priors: Mapping[str, str] | None = None,
+    priors: PriorInput | None = None,
     guide: type | None = None,
     initial_values: Mapping[str, torch.Tensor | float] | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
@@ -1509,8 +1534,9 @@ def fit(
     correlation_prior : str
         Default prior for correlated group blocks, in LKJ Cholesky form.
         Explicit shared IDs join coefficients across distributional formulas.
-    priors : Mapping[str, str] or None
-        Per-parameter priors that override the defaults.
+    priors : PriorInput or None
+        Named overrides or typed selectors, including sampled shrinkage
+        hierarchies. Unknown, unused, or ambiguous rules raise ValueError.
     guide : type or None
         The SVI guide class; `AutoNormalGuide` when omitted.
     initial_values : Mapping[str, torch.Tensor or float] or None
@@ -1787,7 +1813,7 @@ def fit(
             fixed_prior=fixed_prior,
             random_scale_prior=random_scale_prior,
             correlation_prior=correlation_prior,
-            priors=dict(priors or {}),
+            priors=normalize_priors(priors),
             predictor=predictor,
             predictor_data=predictor_data,
             predictor_name=predictor_name,
@@ -1815,7 +1841,7 @@ def formula_to_qvr(
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     correlation_prior: str = "LKJCholesky(1.0)",
-    priors: Mapping[str, str] | None = None,
+    priors: PriorInput | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     binomial_trials: int | str | None = None,
     thresholds_by: str | None = None,
@@ -1878,7 +1904,7 @@ def get_prior(
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     correlation_prior: str = "LKJCholesky(1.0)",
-    priors: Mapping[str, str] | None = None,
+    priors: PriorInput | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     binomial_trials: int | str | None = None,
     thresholds_by: str | None = None,
@@ -1913,8 +1939,9 @@ def get_prior(
         Auxiliary parameters held constant; these have no prior entries.
     fixed_prior, random_scale_prior, correlation_prior : str
         Default coefficient, group-scale, and LKJ Cholesky priors.
-    priors : Mapping[str, str] or None
-        Named overrides. Unknown or unused names raise ``ValueError``.
+    priors : PriorInput or None
+        Named overrides or typed selectors, including sampled shrinkage
+        hierarchies. Unknown, unused, or ambiguous rules raise ValueError.
     reparameterize : {"centered", "noncentered"}
         Group parameterization; its conditional draws are not overrideable.
     binomial_trials : int or str
@@ -1985,7 +2012,7 @@ def _formula_lens(
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     correlation_prior: str = "LKJCholesky(1.0)",
-    priors: Mapping[str, str] | None = None,
+    priors: PriorInput | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     binomial_trials: int | str | None = None,
     thresholds_by: str | None = None,
@@ -2028,7 +2055,7 @@ def _prepare_formula(
     fixed_prior: str = "Normal(0.0, 5.0)",
     random_scale_prior: str = "HalfNormal(1.0)",
     correlation_prior: str = "LKJCholesky(1.0)",
-    priors: Mapping[str, str] | None = None,
+    priors: PriorInput | None = None,
     reparameterize: Literal["centered", "noncentered"] = "noncentered",
     binomial_trials: int | str | None = None,
     thresholds_by: str | None = None,

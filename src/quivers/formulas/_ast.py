@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from quivers.dsl.ast_nodes import (
     LetStep,
+    Module,
+    ObjectDecl,
+    TypeFromExpr,
+    DiscreteConstructor,
     LetExprNode,
     LetExprVar,
     LetExprLiteral,
@@ -219,3 +223,41 @@ def _real_tensor_literal(values):
 
 
 __all__ = []
+
+
+def finite_object_sizes(module: Module) -> dict[str, int]:
+    """Read explicit finite extents without identifying distinct nominal axes.
+
+    Parameters
+    ----------
+    module : Module
+        Formula-emitted literal finite object declarations.
+
+    Returns
+    -------
+    dict[str, int]
+        Original object names and their declared cardinalities.
+    """
+    sizes = {}
+    for statement in module.statements:
+        if not isinstance(statement, ObjectDecl) or not isinstance(
+            statement.init, TypeFromExpr
+        ):
+            continue
+        expression = statement.init.expr
+        if (
+            isinstance(expression, DiscreteConstructor)
+            and expression.constructor == "FinSet"
+            and len(expression.args) == 1
+        ):
+            value = expression.args[0]
+        elif isinstance(expression, TypeName):
+            value = expression.name
+        else:
+            continue
+        try:
+            extent = int(value)
+        except TypeError, ValueError:
+            continue
+        sizes.update((name, extent) for name in statement.names)
+    return sizes

@@ -1821,3 +1821,35 @@ potential prevents an ancestral interpretation, so the independent API refuses
 it; explicitly selected inference-based prior-only sampling retains that
 potential. The `PriorDraws` record distinguishes independent samples from MCMC
 chains without introducing a second prediction or likelihood calculus.
+
+### Formula prior selection and sampled shrinkage
+
+A formula prior selector denotes a set of retained parameter roles, rather
+than a predicate over generated identifier strings. Resolution produces one
+rule per target: strict selector refinement and exact-site precedence must
+leave a unique winner. Empty, conflicting, or entirely shadowed rules are
+errors. The target retains its nominal coefficient axes; equal cardinalities
+do not identify response, group, and coefficient coordinates.
+
+For a regularized horseshoe block with selected coordinate index $j$, the
+emitted raw global scale $g$, local scales $\lambda_j$, and slab variable $h$
+have proper half-Student-$t$, half-Student-$t$, and inverse-Gamma priors.
+Writing $\tau=ag$ and $c^2=s_{\mathrm{slab}}^2h$, the coefficient scale is
+
+$$s_j=\tau\lambda_j\sqrt{\frac{c^2}{c^2+\tau^2\lambda_j^2}}.$$
+
+Here $a$ is a retained scalar residual scale for eligible autoscaled targets,
+and one otherwise. The implementation evaluates this expression in the log
+domain. For an R2D2 block, $R^2$ has a Beta prior and $\phi$ a Dirichlet prior;
+$s_j=a\sqrt{\phi_j R^2/(1-R^2)}$. One selected coordinate has $\phi_1=1$.
+Population coefficients use Normal kernels and group-scale coefficients use
+positive half-Normal kernels. Existing design-dependent conditional bounds
+are retained. A stable dependency order places each hyperparameter and scale
+before its consumers without changing latent names.
+
+These are joint prior laws over explicit latent sites, so the same program
+supplies fitting, independent prior draws, and prediction replay. Bounds on
+an ordinary selected prior use normalized measure restriction; they do not
+silently discard prior mass. The sampled global coordinate is dimensionless
+when residual autoscaling is enabled, making that dependency explicit in the
+coefficient kernel.

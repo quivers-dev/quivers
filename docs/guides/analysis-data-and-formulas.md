@@ -1785,6 +1785,51 @@ also refused by `posterior_epred`.
 `posterior_predict` can still sample these families because it does not require
 a response expectation.
 
+### Regression variance ratios
+
+`result.bayes_r2()` reports a Bayesian coefficient of determination (R²) for
+each retained chain and draw. It compares row variation in expected responses
+with unexplained variation. `method="model"` uses each draw's average conditional
+response variance; `method="residual"` instead uses the sample variance of actual
+minus expected responses. These quantities can differ at the same draw.
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+regression = fit(
+    "y ~ x",
+    data=pd.DataFrame({"y": [0.2, 0.7, -0.3, 0.5], "x": [-1., 0., 1., 2.]}),
+    fixed_parameters={"sigma": 0.7},
+    method="svi", num_steps=2, seed=2,
+)
+model_r2 = regression.bayes_r2(method="model", num_samples=5, seed=7)
+residual_r2 = regression.bayes_r2(method="residual", num_samples=5, seed=7)
+assert model_r2.shape == residual_r2.shape == (1, 5)
+```
+
+The default `method="auto"` uses model variances for ordinary Gaussian and
+Bernoulli responses and residual variances otherwise. Supplying `observed`
+selects the residual definition under auto. Model variances use the native
+response law, including row-specific trials, auxiliary predictors, known
+standard errors, and any available conditional truncation moments. A Wiener
+model uses positive response-time moments, including nondecision delay.
+Ordinal models use ordered scores `0..K-1` in `category_labels` order;
+unordered categories require an explicitly chosen metric through the
+[pure diagnostic](../api/diagnostics/regression.md).
+
+All ordinary prediction options apply, including `new_data`, selected varying
+effects, new-group policies, and draw counts. The model definition needs no
+response columns in new data. The residual definition evaluates the retained
+response transform on those rows, or accepts a tensor through `observed` in
+that transformed measurement scale. Recorded censoring bounds do not supply
+actual training responses; provide their actual values explicitly. Likelihood
+weights affect the fitted posterior but do not reweight either diagnostic's
+row variances. Constant predictions with positive unexplained variance give
+zero; zero total variation gives NaN. Each vector event coordinate receives its
+own ratio. Training calculations reuse the compiled model and each requested
+posterior draw once.
+
 ### Raw likelihoods and retained analysis
 
 `result.log_likelihood(num_samples=100, seed=7)` returns a mapping from
@@ -1970,3 +2015,88 @@ available.
   frontend emits source for.
 - [Hierarchical Programs](programs-hierarchical.md): the program
   representation that random-effects formulas compile to.
+
+## Prior selectors and shared shrinkage
+
+`PriorSpec` assigns a prior through formula roles and authored labels. Its
+`class_="b"` default selects population slopes; `class_="Intercept"`, `"sd"`,
+`"cor"`, or an auxiliary parameter name selects the corresponding role.
+`coef`, `group`, `dpar`, and `nlpar` narrow the selection to an expanded design
+column, grouping factor, distributional parameter, or nonlinear leaf.
+Thus a selector follows the design metadata even when a generated QVR name
+contains an escaped column name or a distributional prefix.
+
+```python
+import pandas as pd
+from quivers.formulas import PriorSpec, RegularizedHorseshoe, fit, get_prior
+
+prior_data = pd.DataFrame({
+    "y": [0.1, 0.4, -0.2, 0.5],
+    "x": [-1.0, 0.0, 1.0, 2.0],
+    "z": [0.5, -0.5, 0.2, 0.0],
+    "g": ["a", "a", "b", "b"],
+})
+prior_rules = (
+    PriorSpec(distribution="Normal(0, 1)")
+    + PriorSpec(distribution="Normal(0.2, 0.3)", coef="x", dpar="mu")
+    + PriorSpec(distribution="HalfNormal(0.5)", class_="sd", group="g")
+)
+effective = get_prior("y ~ x + z + (1 || g)", data=prior_data, priors=prior_rules)
+assert effective["beta_x"] == "Normal(loc=0.2, scale=0.3)"
+assert effective["sigma_g_Intercept"] == "HalfNormal(scale=0.5)"
+
+shrinkage = PriorSpec(
+    distribution=RegularizedHorseshoe(par_ratio=0.5), block="slopes"
+)
+shrunken = fit(
+    "y ~ x + z", data=prior_data, priors=shrinkage,
+    fixed_parameters={"sigma": 0.7}, method="svi", num_steps=2, seed=18,
+)
+new_mean = shrunken.posterior_epred(
+    new_data=pd.DataFrame({"x": [0.0, 1.0], "z": [0.5, -0.5]}),
+    num_samples=2, seed=19,
+)
+assert new_mean.shape == (1, 2, 2)
+```
+
+A strict refinement wins over a broader selector. An exact `site` selector
+wins over selectors without a site; legacy dictionaries use this same rule.
+Incomparable selectors that overlap, selectors matching no target, and rules
+that are entirely shadowed raise an error before fitting. `lower` and `upper`
+intersect an ordinary prior with the target domain and emit a normalized
+restriction. Explicit priors retain their supplied scales; only default
+population priors receive design-column autoscaling.
+
+`RegularizedHorseshoe` samples global, local, and slab variables. `R2D2`
+instead samples a Beta explained-variance fraction and a Dirichlet allocation
+across the selected coordinates. Both retain the named coefficient sites, so
+coefficient extraction, prior draws, likelihoods, and prediction use the same
+model. To share one hierarchy between population slopes and group scales,
+compose two selectors with the same `block` and identical hierarchy settings.
+The group-scale kernels remain positive, and existing conditional constraints
+remain part of their normalized laws. Shrinkage applies to `b` and `sd`;
+correlation and auxiliary targets require an ordinary distribution prior.
+
+A vector coefficient contributes one coordinate per retained free component,
+in the formula's component order; a reference component contributes none.
+A scalar `R2D2.cons_D2` broadcasts across these coordinates, while a tuple must
+match their total count. A one-coordinate allocation is deterministically one.
+With `autoscale=True`, eligible location and nonlinear coefficients multiply
+their hierarchy scales by a scalar residual `sigma`, when present.
+Distributional coefficients do not receive this multiplication.
+`RegularizedHorseshoe.par_ratio` uses the training row count and is retained
+when prediction changes the number of rows. As with other shrinkage priors,
+predictors on comparable scales make a common global scale easier to interpret.
+
+`get_prior` reports emitted conditional calls and hierarchy hyperpriors.
+A conditional call may reference a deterministic scale binding; it describes
+the generated program rather than serving as an independent reconstruction
+recipe. Retain `fit.priors`, the immutable authored `PriorSet`, to reuse the
+specification. At the lens boundary, `FormulaData.prior_targets` retains the
+resolved roles, labels, and nominal axes without inferring them from site names.
+
+These hierarchies follow the released brms
+[horseshoe and R2D2 definitions](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/priors.R),
+using existing QVR distribution primitives. They differ from the native
+`Horseshoe` marginal kernel, whose global scale is a learnable module parameter
+and whose local scales are integrated numerically.

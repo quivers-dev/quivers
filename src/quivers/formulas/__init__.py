@@ -60,6 +60,16 @@ from quivers.formulas._predictor_graph import (
     ComponentExpression,
     PredictorGraph,
 )
+from quivers.formulas._priors import (
+    PriorSpec,
+    PriorSet,
+    PriorTarget,
+    PriorInput,
+    PriorDistribution,
+    RegularizedHorseshoe,
+    R2D2,
+    normalize_priors,
+)
 from quivers.formulas._fit import BayesianFit, fit, formula_to_qvr, get_prior
 from quivers.formulas._response_modifiers import (
     ResponseDraws,
@@ -92,6 +102,14 @@ __all__ = [
     "Family",
     "links",
     "families",
+    "PriorSpec",
+    "PriorSet",
+    "PriorTarget",
+    "PriorInput",
+    "PriorDistribution",
+    "RegularizedHorseshoe",
+    "R2D2",
+    "normalize_priors",
     # compile
     "FormulaToQVRModule",
     "GroupBlockLayout",

@@ -44,6 +44,7 @@ from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._priors import PriorTarget
 
 
 #: R-style transforms wired into formulae's evaluation namespace.
@@ -586,6 +587,9 @@ class FormulaData(ValueModel):
     group_layouts : tuple[GroupBlockLayout, ...]
         Immutable coordinate layouts from this forward pass, independent of
         subsequent uses of the configured lens.
+    prior_targets : tuple[PriorTarget, ...]
+        Immutable parameter roles, authored labels, and nominal coefficient
+        axes used to resolve the matching forward pass's prior rules.
     random_terms : tuple[RandomTerm, ...]
         Original slope-column data and correlation identities, matched to
         the group/slope structure decoded from the emitted module.
@@ -613,6 +617,9 @@ class FormulaData(ValueModel):
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
     group_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    prior_targets: tuple[PriorTarget, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     offsets: tuple[FixedColumn, ...] = dx.field(

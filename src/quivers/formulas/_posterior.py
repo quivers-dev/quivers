@@ -337,6 +337,38 @@ def response_rng(seed: int, tensors: Iterable[torch.Tensor]) -> Iterator[None]:
         yield
 
 
+def category_probabilities(distribution: Distribution, categories: int) -> torch.Tensor:
+    """Read ordered category probabilities through the existing native law.
+
+    Parameters
+    ----------
+    distribution : torch.distributions.Distribution
+        Native discrete response with zero-based category codes.
+    categories : int
+        Retained category extent.
+
+    Returns
+    -------
+    torch.Tensor
+        Probabilities on batch axes followed by the category axis.
+    """
+    from quivers.continuous._ordinal import OrdinalDistribution
+
+    if isinstance(distribution, OrdinalDistribution):
+        return distribution.category_probs()
+    from quivers.continuous._interval import _reference
+
+    reference = _reference(distribution)
+    codes = torch.arange(categories, device=reference.device)
+    return (
+        distribution.log_prob(
+            codes.reshape(categories, *([1] * len(distribution.batch_shape)))
+        )
+        .exp()
+        .movedim(0, -1)
+    )
+
+
 def response_mean(
     distribution: Distribution, mc_samples: int | None = None
 ) -> torch.Tensor:

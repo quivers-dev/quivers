@@ -57,3 +57,27 @@ regression; nonlinear compilation does not introduce a second group emitter.
 ::: quivers.formulas.GroupMemberLayout
 
 ::: quivers.formulas.GroupBlockLayout
+
+## Typed prior plans
+
+`user_priors` accepts an exact-name mapping, `PriorSpec`, `PriorSet`, or a
+sequence of specs. The compiler resolves selectors against one immutable
+`PriorTarget` catalogue built from the same design and group layouts as the
+model. `prior_targets` and `FormulaData.prior_targets` expose that catalogue;
+`prior_set` retains the authored specification. Ordinary priors use the existing
+compositional distribution parser, including normalized restrictions.
+Sampled horseshoe and R2D2 hierarchies add hyperprior sites while preserving
+coefficient binders and conditional group geometry. See the
+[prior workflow](../../guides/analysis-data-and-formulas.md#prior-selectors-and-shared-shrinkage).
+
+::: quivers.formulas.PriorSpec
+
+::: quivers.formulas.PriorSet
+
+::: quivers.formulas.PriorTarget
+
+::: quivers.formulas.RegularizedHorseshoe
+
+::: quivers.formulas.R2D2
+
+::: quivers.formulas.normalize_priors

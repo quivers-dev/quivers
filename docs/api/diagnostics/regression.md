@@ -3,7 +3,9 @@
 The Bayesian coefficient of determination (R²) compares variation in conditional
 response means with unexplained variation at each posterior draw. The pure
 `bayesian_r2` function accepts moments from source models, formula models, or
-another retained prediction procedure. It preserves chain, draw, and event
+another retained prediction procedure. Formula fits expose the same calculation
+through [`BayesianFit.bayes_r2`](../formulas/fit.md), using their retained
+prediction and response transforms. It preserves chain, draw, and event
 coordinates while reducing the observation-row axis.
 
 Supply either `observed` responses or conditional `residual_variance`. With

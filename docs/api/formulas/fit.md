@@ -60,6 +60,19 @@ describes shapes, labels, link scales, and expectations.
 The [new-row workflow](../../guides/analysis-data-and-formulas.md#predictions-on-new-rows)
 gives an executable example and the retained evaluator's serialization boundary.
 
+`BayesianFit.bayes_r2` reuses these prediction bindings to report per-draw
+regression variance ratios on the response scale. `method="model"` uses average
+native conditional variance; `method="residual"` uses actual-minus-expected
+response variance. Auto uses model variances for ordinary Gaussian/Bernoulli
+responses and residual variances otherwise; explicit observations select the
+residual definition. New-data residual calculations evaluate the fitted response
+transform or accept `observed` directly. Censoring bounds cannot substitute for
+actual responses. Ordered categories use their retained integer scores, while
+unordered categories require a chosen metric. See
+[regression variance ratios](../../guides/analysis-data-and-formulas.md#regression-variance-ratios)
+for the executable workflow and [the pure diagnostic](../diagnostics/regression.md)
+for scaling, event axes, and degenerate cases.
+
 `fit`, `formula_to_qvr`, and `get_prior` accept `weights="column"` for
 observation-only likelihood weights. The column is retained on the parsed
 formula; posterior predictors use the unweighted response law at each draw.
