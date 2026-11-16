@@ -14,6 +14,35 @@ priors, encodings, and existing prediction/likelihood methods. Independent
 samples have no MCMC convergence statistics. See
 [prior-only fitting](../../guides/analysis-fitting-and-diagnostics.md#prior-only-fitting-and-independent-prior-draws)
 for seed and factor-conditioned sampling semantics.
+`BayesianFit.evidence(sampler)` applies the existing
+[`SMC` driver](../inference/mcmc.md#quivers.inference.smc.SMC) to the retained program and training data,
+without recompilation or conversion of the fitted posterior. It returns
+`SMCResult`, including particles, the temperature ladder, and `log_evidence`.
+For instance:
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+from quivers.inference import SMC
+from quivers.inference.mcmc import MetropolisKernel, RandomWalkProposal
+
+fitted = fit(
+    "y ~ 1", data=pd.DataFrame({"y": [0.2, 0.7, 1.1]}),
+    fixed_parameters={"sigma": 1.0}, method="svi", num_steps=1, seed=7,
+)
+evidence = fitted.evidence(SMC(
+    MetropolisKernel(RandomWalkProposal(0.5)), num_particles=128,
+    num_mcmc_steps=2, num_pilot_steps=0, seed=11,
+))
+assert evidence.num_particles == 128
+```
+
+This is a separate inference run whose budget and seed belong to `sampler`.
+Its log normalizer is ordinary marginal data evidence when the retained prior
+and likelihood form a normalized sampling model. Non-unit response weights
+instead yield the powered target's log normalizer. SMC retains its existing
+refusals for unknown prior mass, opaque joint overrides, and subsampled
+observations; the adapter does not bypass them.
 `fixed_parameters={"quantile": 0.9}` performs asymmetric Laplace quantile regression
 at a specified quantile, and other auxiliary parameters can likewise be held fixed.
 All three entry points accept

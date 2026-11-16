@@ -26,6 +26,8 @@ from quivers.inference import (
     LatentRegistry,
     MCMC,
     MCMCResult,
+    SMC,
+    SMCResult,
     Predictive,
     Trace,
     trace,
@@ -720,6 +722,44 @@ class ModelFit(ValueModel):
     )
 
     losses: tuple[float, ...] = ()
+
+    def evidence(self, sampler: SMC) -> SMCResult:
+        """Estimate the fitted target's normalizing constant with existing SMC.
+
+        Parameters
+        ----------
+        sampler : SMC
+            Configured likelihood-tempered driver, including its particle
+            budget, rejuvenation kernel, and random stream.
+
+        Returns
+        -------
+        SMCResult
+            Independent particles and the estimated log normalizing constant.
+            This is ordinary data evidence only for a normalized prior and
+            likelihood. Observation weights instead define a powered target.
+
+        Raises
+        ------
+        TypeError
+            If the retained program has no tensor executor.
+        ValueError
+            If SMC cannot partition the target, normalize its prior, or use
+            an exact likelihood without observation subsampling.
+        RuntimeError
+            If no temperature step meets the driver's ESS requirement.
+
+        Notes
+        -----
+        The retained program, input, and data are reused. The fitted posterior
+        is neither sampled nor modified; the driver's own guards and random
+        stream govern this separate computation.
+        """
+        return sampler.run(
+            self.model.require_tensor_program(),
+            self.model.input,
+            self.model.tensor_data(),
+        )
 
     @property
     def samples(self) -> dict[str, torch.Tensor]:

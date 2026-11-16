@@ -66,6 +66,8 @@ from quivers.inference import (
     AutoNormalGuide,
     PriorDraws,
     PriorMode,
+    SMC,
+    SMCResult,
 )
 from quivers.inference._posterior import draw_count
 from quivers.inference.guides.base import Guide
@@ -163,6 +165,38 @@ class BayesianFit(ValueModel):
     prediction_plan: FormulaPredictionPlan | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+
+    def evidence(self, sampler: SMC) -> SMCResult:
+        """Estimate the retained formula target's normalizing constant with SMC.
+
+        Parameters
+        ----------
+        sampler : SMC
+            Configured likelihood-tempered driver, including its particle
+            budget, rejuvenation kernel, and random stream.
+
+        Returns
+        -------
+        SMCResult
+            Independent particles and the estimated log normalizing constant.
+            Ordinary data evidence requires a normalized prior and likelihood;
+            response weights define a powered target's normalizer instead.
+
+        Raises
+        ------
+        ValueError
+            If SMC cannot partition the target, normalize its prior, or use
+            an exact likelihood without observation subsampling.
+        RuntimeError
+            If no temperature step meets the driver's ESS requirement.
+
+        Notes
+        -----
+        The compiled program, retained designs, fixed parameters, and observed
+        tensors are reused without recompilation. The fitted posterior is
+        neither sampled nor modified. Seeded drivers restore the caller's RNG.
+        """
+        return sampler.run(self.program, torch.zeros(1, 1), dict(self.observations))
 
     def prior_draws(
         self,
