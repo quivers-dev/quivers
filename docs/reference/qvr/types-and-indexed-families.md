@@ -253,6 +253,9 @@ and so is `in`, which is a keyword only between a factor's binders and its body.
 List literals build tensors. `[1, 2, 3]` has integer elements, `[1.0, 2.0, 3.0]` has real
 elements, and nested lists add dimensions. A distribution family application builds a `Sampleable`
 value, `site("x")` builds a typed site, and `log_prob(distribution, value)` returns a `LogWeight`.
+`log_mass(distribution)` returns its total log mass without introducing
+a scoring effect; raw restrictions retain their mass until explicitly
+normalized ([mass queries](computations.md#built-in-values-and-distributions)).
 
 ## Common failures
 

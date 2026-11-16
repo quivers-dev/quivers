@@ -15,6 +15,7 @@ from numbers import Integral, Real as RealNumber
 from typing import Literal, cast
 import didactic.api as dx
 import torch
+from torch.distributions.distribution import Distribution as TorchDistribution
 from torch.distributions import constraints as _constraints
 from quivers.continuous._closed_probability import _count_log
 from quivers.continuous.param_transforms import _validate_parameter
@@ -25,8 +26,6 @@ from quivers.continuous.deterministic import (
 from quivers.continuous.family_spec import (
     FAMILY_REGISTRY,
     FamilySpec,
-    build_torch_distribution,
-    clamp_param,
 )
 from quivers.continuous.morphisms import (
     AnySpace,
@@ -156,8 +155,12 @@ from quivers.dsl.compiler._deduction_terms import (
     atom_term,
     variable_term,
 )
-from quivers.dsl.compiler._call_lowering import lower_calls
-from quivers.transpile._pure_calls import LOG_PROB_CALL
+from quivers.dsl.compiler._call_lowering import lower_calls, has_structural_lets
+from quivers.transpile._pure_calls import (
+    LOG_PROB_CALL,
+    LOG_MASS_CALL,
+    DISTRIBUTION_CALL,
+)
 from quivers.dsl.compiler.sugar import desugar_step
 from quivers.dsl.composite_lets import (
     expand_program_scans,
@@ -1046,6 +1049,7 @@ def _project_nested_aggregates(
 # let position.
 type LetValue = (
     torch.Tensor
+    | TorchDistribution
     | int
     | float
     | bool
@@ -1120,23 +1124,19 @@ _LET_SPECIAL_CALLS: frozenset[str] = frozenset(
         "compose",
         "cholesky_quad_form",
         LOG_PROB_CALL,
+        LOG_MASS_CALL,
+        DISTRIBUTION_CALL,
     }
 )
 
 
 def _family_log_prob(arguments: list[LetValue]) -> torch.Tensor:
-    """Evaluate ``$log_prob("Family", value, "parameter", argument, ...)``.
-
-    A called computation's ``score.add(log_prob(D, v))`` lowers to this
-    internal let call: the family's log density at the value, entrywise,
-    under the parameters given by name, each clamped as an inline draw
-    from the family clamps it.
+    """Evaluate a checked raw distribution's log density.
 
     Parameters
     ----------
     arguments : list[LetValue]
-        The family's name, the value, then each parameter's name and
-        value.
+        Native distribution, observation, and retained batch rank.
 
     Returns
     -------
@@ -1146,25 +1146,32 @@ def _family_log_prob(arguments: list[LetValue]) -> torch.Tensor:
     Raises
     ------
     CompileError
-        If the family is not registered or a parameter is not one of
-        its parameters.
+        If the query's distribution or retained batch rank is invalid.
     """
-    family, value, *pairs = arguments
-    spec = FAMILY_REGISTRY.get(str(family))
-    if spec is None:
-        raise CompileError(f"no registered family {family!r} to score under")
-    parameters: dict[str, torch.Tensor] = {}
-    for position in range(0, len(pairs), 2):
-        name = str(pairs[position])
-        tensor = torch.as_tensor(pairs[position + 1], dtype=torch.get_default_dtype())
-        try:
-            parameters[name] = clamp_param(spec, name, tensor)
-        except KeyError as error:
-            raise CompileError(
-                f"family {spec.name!r} has no parameter {name!r} to score under"
-            ) from error
-    observed = torch.as_tensor(value, dtype=torch.get_default_dtype())
-    return build_torch_distribution(spec, parameters).log_prob(observed)
+    distribution, value, retained = arguments
+    if not isinstance(distribution, TorchDistribution):
+        raise CompileError("log_prob requires a native distribution value")
+    if (
+        isinstance(retained, torch.Tensor)
+        and retained.ndim == 0
+        and not retained.is_floating_point()
+        and retained.dtype != torch.bool
+    ):
+        retained = int(retained)
+    density = distribution.log_prob(torch.as_tensor(value))
+    if (
+        isinstance(retained, bool)
+        or not isinstance(retained, int)
+        or not 0 <= retained <= density.ndim
+    ):
+        raise CompileError(
+            "log_prob retained axes must be within the density batch rank"
+        )
+    return (
+        density.sum(tuple(range(retained, density.ndim)))
+        if density.ndim > retained
+        else density
+    )
 
 
 def _grouped_data_dependencies(
@@ -2894,7 +2901,7 @@ class _ProgramsMixin:
         tuple[ProgramStep, ...]
             The steps with every lowerable call lowered.
         """
-        if not _calls_a_computation(steps):
+        if not _calls_a_computation(steps) and not has_structural_lets(steps):
             return steps
         module = self.qiec_module
         if module is None or module.gap:
@@ -6919,7 +6926,13 @@ class _ProgramsMixin:
             return None
         extents = list(
             dict.fromkeys(
-                int(w) for kind, w in spec if kind == "var" and w is not None and w > 1
+                int(w)
+                for (kind, w), rank in zip(
+                    spec,
+                    getattr(morph, "_param_event_ranks", (0,) * len(spec)),
+                    strict=True,
+                )
+                if rank == 0 and kind == "var" and w is not None and w > 1
             )
         )
         if not extents:
@@ -8160,6 +8173,23 @@ class _ProgramsMixin:
                 # Higher-order combinators come first; they consume
                 # raw closure args without eager evaluation of the
                 # lambda body.
+                if func_name == DISTRIBUTION_CALL:
+                    from quivers.continuous.inline import _raw_distribution_value
+
+                    family, event, plate, *pairs = [fn(env) for fn in arg_fns]
+                    values = {
+                        str(pairs[i]): pairs[i + 1] for i in range(0, len(pairs), 2)
+                    }
+                    return _raw_distribution_value(
+                        str(family),
+                        values,
+                        tuple(int(v) for v in event),
+                        tuple(int(v) for v in plate),
+                    )
+                if func_name == LOG_MASS_CALL:
+                    from quivers.continuous._measure_queries import log_mass
+
+                    return log_mass(arg_fns[0](env), batch_axes=int(arg_fns[1](env)))
                 if func_name == LOG_PROB_CALL:
                     return _family_log_prob([fn(env) for fn in arg_fns])
                 if func_name == "length":

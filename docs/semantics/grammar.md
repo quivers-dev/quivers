@@ -665,7 +665,10 @@ list literal `[a, b, c]` is a `Tensor` whose leading dimension is its number of 
 share one type, so `[[1.0, 2.0], [3.0, 4.0]]` is a `Tensor[Real]([2, 2])`, and a numeric list with any
 fractional entry is real. Applying a distribution family, `Normal(mu, 1.0)` or `Dirichlet([1.0, 2.0])`,
 fills the family's parameters in registry order and builds a `Sampleable`. `site("x")` is a `Site` at the
-type its position expects, and `log_prob(d, x)` is the `LogWeight` of `d` at `x`. `if COND then ... else
+type its position expects, and `log_prob(d, x)` is the `LogWeight` of `d` at `x`.
+`log_mass(d)` is a pure structural query returning its total `LogWeight`;
+its argument has type `Sampleable[A]` for any checked outcome type `A`.
+`if COND then ... else
 ...` branches on a Boolean in a computation, so the untaken branch is never entered, and a recursive
 computation can stop.
 

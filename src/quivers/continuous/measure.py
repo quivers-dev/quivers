@@ -17,12 +17,18 @@ from abc import ABC, abstractmethod
 
 import torch
 from torch import Tensor
-from torch.distributions import constraints as _constraints
+from torch.distributions import constraints as _constraints, biject_to, transform_to
 from torch.distributions.distribution import Distribution
 
 from quivers.continuous.bijectors import Bijector
 from quivers.continuous._truncated_normal import TruncatedNormal
-from quivers.continuous._interval import _reference, log_interval_mass
+from quivers.continuous._measure_queries import log_mass as _native_log_mass
+from quivers.continuous._interval import (
+    _closed_flag,
+    _endpoint_tails,
+    _reference,
+    log_interval_mass,
+)
 
 
 _NEG_INF = float("-inf")
@@ -54,8 +60,117 @@ class Measure(Distribution, ABC):
         """
 
     def log_prob_normalized(self, value: Tensor) -> Tensor:
-        """Log-density of the renormalised probability measure."""
+        """Log-density of the renormalised probability measure.
+
+        Parameters
+        ----------
+        value : Tensor
+            Evaluation points, broadcast against the distribution batch.
+
+        Returns
+        -------
+        Tensor
+            Log density after subtracting the raw total log mass."""
         return self.log_prob(value) - self.log_normalizer()
+
+    def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
+        """Read a raw event mass supplied by the concrete measure algebra.
+
+        Parameters
+        ----------
+        low, high : Tensor or float or None
+            Optional scalar bounds.
+        lower_closed, upper_closed : bool or Tensor
+            Whether each endpoint belongs to the event.
+
+        Returns
+        -------
+        Tensor
+            Raw log event mass.
+
+        Raises
+        ------
+        NotImplementedError
+            If a custom measure has no interval integration capability.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement interval event masses"
+        )
+
+    def log_cdf(self, value: Tensor) -> Tensor:
+        """Read raw log mass on the closed lower half-line.
+
+        Parameters
+        ----------
+        value : Tensor
+            Scalar cutoffs, broadcast against the measure batch.
+
+        Returns
+        -------
+        Tensor
+            Log mass on ``(-inf,value]``; a normalized measure has an ordinary log CDF.
+        """
+        return self.log_interval_mass(None, value)
+
+    def log_survival_function(self, value: Tensor) -> Tensor:
+        """Read raw log mass on the open upper half-line.
+
+        Parameters
+        ----------
+        value : Tensor
+            Scalar cutoffs, broadcast against the measure batch.
+
+        Returns
+        -------
+        Tensor
+            Log mass on ``(value,inf)``.
+        """
+        return self.log_interval_mass(value, None, lower_closed=False)
+
+    def log_cdf_left(self, value: Tensor) -> Tensor:
+        """Read raw log mass strictly below a cutoff.
+
+        Parameters
+        ----------
+        value : Tensor
+            Scalar cutoffs, broadcast against the measure batch.
+
+        Returns
+        -------
+        Tensor
+            Log mass on ``(-inf,value)``.
+        """
+        return self.log_interval_mass(None, value, upper_closed=False)
+
+    def log_survival_function_left(self, value: Tensor) -> Tensor:
+        """Read raw log mass at or above a cutoff.
+
+        Parameters
+        ----------
+        value : Tensor
+            Scalar cutoffs, broadcast against the measure batch.
+
+        Returns
+        -------
+        Tensor
+            Log mass on ``[value,inf)``.
+        """
+        return self.log_interval_mass(value, None)
+
+    def cdf(self, value: Tensor) -> Tensor:
+        """Read raw lower-half-line mass from the same interval operation.
+
+        Parameters
+        ----------
+        value : Tensor
+            Scalar cutoffs, broadcast against the measure batch.
+
+        Returns
+        -------
+        Tensor
+            CDF for a normalized measure; raw cumulative mass otherwise.
+        """
+        return self.log_cdf(value).exp()
 
 
 class PointMass(Measure):
@@ -69,7 +184,13 @@ class PointMass(Measure):
     In a [`Mixture`][quivers.continuous.measure.Mixture] alongside
     a non-degenerate component, `PointMass` is the structural-zero
     spike that yields zero-inflation and hurdle factorisations.
-    """
+
+    Parameters
+    ----------
+    value : Tensor or float
+        Retained location of the atom.
+    validate_args : bool or None
+        Optional Torch argument-validation policy."""
 
     arg_constraints: dict = {}
     has_rsample = False
@@ -88,18 +209,122 @@ class PointMass(Measure):
 
     @_constraints.dependent_property
     def support(self) -> _constraints.Constraint:
+        """Constraint describing valid response values.
+
+        Returns
+        -------
+        _constraints.Constraint
+            Constraint describing valid response values."""
         return _constraints.real
 
     @property
     def mean(self) -> Tensor:
+        """Expected response under the probability law.
+
+        Returns
+        -------
+        Tensor
+            Expected response under the probability law."""
         return self.value
 
     @property
     def variance(self) -> Tensor:
+        """Response variance under the probability law.
+
+        Returns
+        -------
+        Tensor
+            Response variance under the probability law."""
         return torch.zeros_like(self.value)
 
     def log_normalizer(self) -> Tensor:
-        return torch.zeros(self.batch_shape) if self.batch_shape else torch.tensor(0.0)
+        """Log of the raw total mass, one value per batch entry.
+
+        Returns
+        -------
+        Tensor
+            Log of the raw total mass, one value per batch entry."""
+        return torch.zeros_like(_reference(self))
+
+    def expand(self, batch_shape, _instance=None):
+        """Broadcast the retained atom over a new batch shape.
+
+        Parameters
+        ----------
+        batch_shape : object
+            Requested broadcast batch shape.
+        _instance : object
+            Unused Torch expansion instance.
+
+        Returns
+        -------
+        object
+            Distribution with the requested batch shape and retained construction."""
+        return PointMass(self.value.expand(batch_shape))
+
+    def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
+        """Keep the atom exactly when both interval bounds admit its value.
+
+        Parameters
+        ----------
+        low, high : Tensor or float or None
+            Optional event bounds.
+        lower_closed, upper_closed : bool or Tensor
+            Endpoint membership.
+
+        Returns
+        -------
+        Tensor
+            Zero at included atoms and negative infinity elsewhere.
+
+        Raises
+        ------
+        ValueError
+            If an endpoint is NaN.
+        """
+        low = -torch.inf if low is None else low
+        high = torch.inf if high is None else high
+        low, high = torch.broadcast_tensors(
+            torch.as_tensor(low, device=self.value.device, dtype=torch.float64),
+            torch.as_tensor(high, device=self.value.device, dtype=torch.float64),
+        )
+        if bool((low.isnan() | high.isnan()).any()):
+            raise ValueError("point-mass interval endpoints must not be NaN")
+        lower_closed = torch.as_tensor(
+            _closed_flag(lower_closed, "lower_closed"), device=self.value.device
+        )
+        upper_closed = torch.as_tensor(
+            _closed_flag(upper_closed, "upper_closed"), device=self.value.device
+        )
+        atom = self.value.double()
+        inside = ((atom > low) | ((atom == low) & lower_closed)) & (
+            (atom < high) | ((atom == high) & upper_closed)
+        )
+        return torch.where(
+            inside, torch.zeros_like(inside, dtype=_reference(self).dtype), -torch.inf
+        )
+
+    def icdf(self, value: Tensor) -> Tensor:
+        """Return the atom at every valid probability.
+
+        Parameters
+        ----------
+        value : Tensor
+            Evaluation points, broadcast against the distribution batch.
+
+        Returns
+        -------
+        Tensor
+            Response quantiles at the requested probabilities.
+
+        Raises
+        ------
+        ValueError
+            If a probability is NaN or lies outside [0,1]."""
+        point = torch.as_tensor(value, device=self.value.device)
+        if not bool(((point >= 0) & (point <= 1)).all()):
+            raise ValueError("point-mass quantiles require probabilities in [0,1]")
+        return self.value.expand(torch.broadcast_shapes(point.shape, self.batch_shape))
 
     def log_prob(self, value: Tensor) -> Tensor:
         """The log mass at a point: zero at the atom, ``-inf`` elsewhere.
@@ -129,11 +354,23 @@ class PointMass(Measure):
             torch.broadcast_shapes(value_b.shape, self.value.shape),
             _NEG_INF,
             dtype=dtype,
+            device=match.device,
         )
         out = torch.where(match, torch.zeros_like(out), out)
         return out
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
+        """Draws from the normalized law with leading sample dimensions.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+
+        Returns
+        -------
+        Tensor
+            Draws from the normalized law with leading sample dimensions."""
         shape = torch.Size(sample_shape) + self.batch_shape
         return self.value.expand(shape) if shape else self.value
 
@@ -162,6 +399,147 @@ def _normal_interval(
     return TruncatedNormal(base.loc, base.scale, lower, upper)
 
 
+def _intersection_bound(first, second, first_closed, second_closed, *, lower):
+    """Intersect one lower or upper endpoint, retaining atoms at equal bounds.
+
+    Parameters
+    ----------
+    first : object
+        First optional endpoint.
+    second : object
+        Second optional endpoint.
+    first_closed : object
+        Membership policy of the first endpoint.
+    second_closed : object
+        Membership policy of the second endpoint.
+    lower : object
+        Whether the intersection concerns lower bounds.
+
+    Returns
+    -------
+    object
+        Intersection endpoint and its membership policy."""
+    if first is None:
+        return second, second_closed
+    if second is None:
+        return first, first_closed
+    first, second = torch.broadcast_tensors(first, second)
+    left = torch.as_tensor(first_closed, device=first.device)
+    right = torch.as_tensor(second_closed, device=first.device)
+    select_first = first > second if lower else first < second
+    value = torch.maximum(first, second) if lower else torch.minimum(first, second)
+    closed = torch.where(
+        first == second, left & right, torch.where(select_first, left, right)
+    )
+    return value, closed
+
+
+class _RestrictedSupport(_constraints.Constraint):
+    """Intersect a base support with exact interval endpoint membership.
+
+    Parameters
+    ----------
+    restriction : Restrict
+        Retained base law, bounds, and endpoint policies.
+    """
+
+    def __init__(self, restriction):
+        self.restriction = restriction
+        self.base = restriction.base.support
+        self.is_discrete = self.base.is_discrete
+        self.event_dim = self.base.event_dim
+        lower = restriction.low
+        upper = restriction.high
+        base_lower = getattr(self.base, "lower_bound", None)
+        base_upper = getattr(self.base, "upper_bound", None)
+        if base_lower is not None:
+            lower = (
+                base_lower
+                if lower is None
+                else torch.maximum(
+                    lower, torch.as_tensor(base_lower, device=lower.device)
+                )
+            )
+        if base_upper is not None:
+            upper = (
+                base_upper
+                if upper is None
+                else torch.minimum(
+                    upper, torch.as_tensor(base_upper, device=upper.device)
+                )
+            )
+        self.bounds = (
+            _constraints.interval(lower, upper)
+            if lower is not None and upper is not None
+            else _constraints.greater_than(lower)
+            if lower is not None
+            else _constraints.less_than(upper)
+            if upper is not None
+            else self.base
+        )
+
+    def check(self, value: Tensor) -> Tensor:
+        """Require both base support and the requested endpoint memberships.
+
+        Parameters
+        ----------
+        value : Tensor
+            Candidate scalar or event values.
+
+        Returns
+        -------
+        Tensor
+            Validity mask with intrinsic event dimensions reduced.
+        """
+        inside = self.restriction._inside(value)
+        if self.event_dim:
+            inside = inside.all(tuple(range(inside.ndim - self.event_dim, inside.ndim)))
+        return self.base.check(value) & inside
+
+
+@biject_to.register(_RestrictedSupport)
+def _biject_restricted(support):
+    """Reuse the existing scalar interval transform for a restricted support.
+
+    Parameters
+    ----------
+    support : _RestrictedSupport
+        Exact support with a scalar bounding interval.
+
+    Returns
+    -------
+    Transform
+        The existing Torch interval bijection.
+
+    Raises
+    ------
+    NotImplementedError
+        If the support is discrete or has coupled event constraints.
+    """
+    if support.is_discrete or support.event_dim:
+        raise NotImplementedError(
+            "restricted support has no continuous scalar interval bijection"
+        )
+    return biject_to(support.bounds)
+
+
+@transform_to.register(_RestrictedSupport)
+def _transform_restricted(support):
+    """Use the same bounded coordinate map for optimizer transforms.
+
+    Parameters
+    ----------
+    support : _RestrictedSupport
+        Retained restricted support.
+
+    Returns
+    -------
+    Transform
+        The existing scalar interval transform.
+    """
+    return _biject_restricted(support)
+
+
 class Restrict(Measure):
     """Restriction of a base distribution to a sub-interval.
 
@@ -181,7 +559,17 @@ class Restrict(Measure):
     Normal interval masses use log-CDF differences with tail reflection.
     Other continuous bases use their CDF difference, and discrete bases
     use interval probabilities that include both endpoints.
-    """
+
+    Parameters
+    ----------
+    base : Distribution
+        Underlying distribution or raw measure.
+    low, high : Tensor or float or None
+        Optional interval endpoints; omitted sides are unbounded.
+    validate_args : bool or None
+        Optional Torch argument-validation policy.
+    lower_closed, upper_closed : bool or Tensor
+        Endpoint membership, closed by default; Boolean tensors may vary by batch row."""
 
     arg_constraints: dict = {}
     has_rsample = False
@@ -192,6 +580,9 @@ class Restrict(Measure):
         low: Tensor | float | None = None,
         high: Tensor | float | None = None,
         validate_args: bool | None = None,
+        *,
+        lower_closed: bool | Tensor = True,
+        upper_closed: bool | Tensor = True,
     ) -> None:
         if low is None and high is None:
             raise ValueError(
@@ -199,6 +590,8 @@ class Restrict(Measure):
                 "supplied; an unrestricted base is just the base "
                 "distribution itself."
             )
+        self.lower_closed = _closed_flag(lower_closed, "lower_closed")
+        self.upper_closed = _closed_flag(upper_closed, "upper_closed")
         self.base = base
         try:
             reference = _reference(base)
@@ -214,40 +607,57 @@ class Restrict(Measure):
             if high is not None
             else None
         )
+        if not base.event_shape:
+            shape = torch.broadcast_shapes(
+                base.batch_shape,
+                *(
+                    value.shape
+                    for value in (
+                        self.low,
+                        self.high,
+                        self.lower_closed,
+                        self.upper_closed,
+                    )
+                    if isinstance(value, Tensor)
+                ),
+            )
+            if shape != base.batch_shape:
+                self.base = base.expand(shape)
         super().__init__(
-            batch_shape=base.batch_shape,
-            event_shape=base.event_shape,
+            batch_shape=self.base.batch_shape,
+            event_shape=self.base.event_shape,
             validate_args=validate_args,
         )
 
     @_constraints.dependent_property
     def support(self) -> _constraints.Constraint:
-        if self.low is not None and self.high is not None:
-            return _constraints.interval(self.low, self.high)
-        if self.low is not None:
-            return _constraints.greater_than(self.low)
-        if self.high is not None:
-            return _constraints.less_than(self.high)
-        return self.base.support
+        """Intersect the base support with the exact interval event.
+
+        Returns
+        -------
+        Constraint
+            Includes closed endpoint atoms and excludes open endpoints.
+        """
+        return _RestrictedSupport(self)
 
     def log_normalizer(self) -> Tensor:
-        # Try the base's closed-form CDF; fall back to a discrete-base
-        # pmf-sum for bases that PyTorch ships without `cdf` (Poisson,
-        # Geometric, NegativeBinomial).
-        #
-        # Continuous interpretation: `low` and `high` are inclusive
-        # endpoints of an interval; the mass on `[low, high]` is
-        # `cdf(high) - cdf(low)`, with one-sided cases using the
-        # complement of the missing endpoint.
-        #
-        # The discrete fallback uses an INTEGER interpretation where
-        # the support `{low, low+1, ..., high}` includes both
-        # endpoints; the survival uses `1 - cdf(low - 1)` so the mass
-        # at `low` is included.
-        if isinstance(self.base, torch.distributions.Normal):
-            return _normal_interval(self.base, self.low, self.high).log_normalizer()
+        # All base families share endpoint-aware event masses. Internal
+        # tail arithmetic remains wide; the public normalizer retains
+        # the base's dtype and device.
+        """Log of the raw total mass, one value per batch entry.
+
+        Returns
+        -------
+        Tensor
+            Log of the raw total mass, one value per batch entry."""
         try:
-            return log_interval_mass(self.base, self.low, self.high)
+            return log_interval_mass(
+                self.base,
+                self.low,
+                self.high,
+                lower_closed=self.lower_closed,
+                upper_closed=self.upper_closed,
+            ).to(_reference(self.base))
         except NotImplementedError:
             symmetric = _symmetric_fold_log_normalizer(
                 self.base,
@@ -256,21 +666,95 @@ class Restrict(Measure):
             )
             if symmetric is not None:
                 return symmetric
-            return _discrete_restriction_log_normalizer(
-                self.base,
-                self.low,
-                self.high,
-            )
+            raise
+
+    def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
+        """Query the raw mass of an intersection without normalizing twice.
+
+        Parameters
+        ----------
+        low : object
+            Lower event bound; None leaves that side unbounded.
+        high : object
+            Upper event bound; None leaves that side unbounded.
+        lower_closed : object
+            Whether the lower endpoint belongs to the event.
+        upper_closed : object
+            Whether the upper endpoint belongs to the event.
+
+        Returns
+        -------
+        object
+            Raw log mass on the requested interval, retaining independent batch axes."""
+        reference = _reference(self.base)
+        low = (
+            None
+            if low is None
+            else torch.as_tensor(low, dtype=torch.float64, device=reference.device)
+        )
+        high = (
+            None
+            if high is None
+            else torch.as_tensor(high, dtype=torch.float64, device=reference.device)
+        )
+        low, lower_closed = _intersection_bound(
+            self.low, low, self.lower_closed, lower_closed, lower=True
+        )
+        high, upper_closed = _intersection_bound(
+            self.high, high, self.upper_closed, upper_closed, lower=False
+        )
+        return log_interval_mass(
+            self.base, low, high, lower_closed=lower_closed, upper_closed=upper_closed
+        )
+
+    def expand(self, batch_shape, _instance=None):
+        """Broadcast the retained restriction without changing endpoint semantics.
+
+        Parameters
+        ----------
+        batch_shape : object
+            Requested broadcast batch shape.
+        _instance : object
+            Unused Torch expansion instance.
+
+        Returns
+        -------
+        object
+            Distribution with the requested batch shape and retained construction."""
+        return Restrict(
+            self.base.expand(batch_shape),
+            self.low,
+            self.high,
+            lower_closed=self.lower_closed,
+            upper_closed=self.upper_closed,
+        )
 
     def log_prob(self, value: Tensor) -> Tensor:
+        """Raw log density or mass at the evaluation points.
+
+        Parameters
+        ----------
+        value : Tensor
+            Evaluation points, broadcast against the distribution batch.
+
+        Returns
+        -------
+        Tensor
+            Raw log density or mass at the evaluation points."""
         value_b = torch.as_tensor(value)
         base_lp = self.base.log_prob(value_b)
         out = base_lp.clone()
         if self.low is not None:
-            below = value_b < self.low
+            below = (value_b < self.low) | (
+                (value_b == self.low)
+                & ~torch.as_tensor(self.lower_closed, device=value_b.device)
+            )
             out = torch.where(below, torch.full_like(out, _NEG_INF), out)
         if self.high is not None:
-            above = value_b > self.high
+            above = (value_b > self.high) | (
+                (value_b == self.high)
+                & ~torch.as_tensor(self.upper_closed, device=value_b.device)
+            )
             out = torch.where(above, torch.full_like(out, _NEG_INF), out)
         return out
 
@@ -298,16 +782,49 @@ class Restrict(Measure):
 
         Raises
         ------
+        ValueError
+            If the restricted measure has zero or nonfinite total mass.
         RuntimeError
             If rejection leaves an entry outside the interval after
             `_REJECTION_ROUNDS` redraws, which happens only when the
             interval holds a vanishing share of the base's mass.
         """
+        return self._sample_active(
+            sample_shape,
+            torch.ones(
+                self.batch_shape, dtype=torch.bool, device=_reference(self.base).device
+            ),
+        )
+
+    def _sample_active(self, sample_shape: torch.Size, active: Tensor) -> Tensor:
+        """Sample retained batch entries without requiring unused entries to have mass.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+        active : Tensor
+            Boolean batch mask selecting entries whose draws are required.
+
+        Returns
+        -------
+        Tensor
+            Normalized draws; unselected batch entries carry unused placeholders.
+
+        Raises
+        ------
+        ValueError
+            If an active batch entry has zero or nonfinite mass."""
         with torch.no_grad():
-            inverted = self._sample_by_inversion(sample_shape)
+            mass = self.log_normalizer()
+            if not bool((~active | torch.isfinite(mass)).all()):
+                raise ValueError(
+                    "Restrict sampling requires finite positive mass on every active batch entry"
+                )
+            inverted = self._sample_by_inversion(sample_shape, active)
             if inverted is not None:
                 return inverted
-            return self._sample_by_rejection(sample_shape)
+            return self._sample_by_rejection(sample_shape, active)
 
     def _inside(self, draws: Tensor) -> Tensor:
         """Which entries of ``draws`` lie in the interval.
@@ -324,12 +841,20 @@ class Restrict(Measure):
         """
         ok = torch.ones_like(draws, dtype=torch.bool)
         if self.low is not None:
-            ok &= draws >= self.low
+            ok &= (draws > self.low) | (
+                (draws == self.low)
+                & torch.as_tensor(self.lower_closed, device=draws.device)
+            )
         if self.high is not None:
-            ok &= draws <= self.high
+            ok &= (draws < self.high) | (
+                (draws == self.high)
+                & torch.as_tensor(self.upper_closed, device=draws.device)
+            )
         return ok
 
-    def _sample_by_inversion(self, sample_shape: torch.Size) -> Tensor | None:
+    def _sample_by_inversion(
+        self, sample_shape: torch.Size, active: Tensor
+    ) -> Tensor | None:
         """Draw by inverting the base's CDF over the interval.
 
         Parameters
@@ -345,7 +870,13 @@ class Restrict(Measure):
             give the conditioned mass function).
         """
         if isinstance(self.base, torch.distributions.Normal):
-            return _normal_interval(self.base, self.low, self.high).sample(sample_shape)
+            low = self.low if self.low is not None else -torch.inf
+            high = self.high if self.high is not None else torch.inf
+            return _normal_interval(
+                self.base,
+                torch.where(active, low, -torch.inf),
+                torch.where(active, high, torch.inf),
+            ).sample(sample_shape)
         if getattr(self.base.support, "is_discrete", False):
             return None
         # The CDF values and the inversion run in double precision: an
@@ -358,13 +889,25 @@ class Restrict(Measure):
             lower = (
                 zero
                 if self.low is None
-                else self.base.cdf(self.low.to(device=reference.device, dtype=wide))
+                else _endpoint_tails(
+                    self.base,
+                    self.low.to(device=reference.device, dtype=wide),
+                    self.lower_closed,
+                )[0].exp()
             )
             upper = (
                 zero + 1.0
                 if self.high is None
-                else self.base.cdf(self.high.to(device=reference.device, dtype=wide))
+                else _endpoint_tails(
+                    self.base,
+                    self.high.to(device=reference.device, dtype=wide),
+                    not self.upper_closed
+                    if isinstance(self.upper_closed, bool)
+                    else ~self.upper_closed,
+                )[0].exp()
             )
+            lower = torch.where(active, lower, 0.0)
+            upper = torch.where(active, upper, 1.0)
             if not bool(
                 (torch.isfinite(lower) & torch.isfinite(upper) & (upper > lower)).all()
             ):
@@ -377,11 +920,11 @@ class Restrict(Measure):
             draws = self.base.icdf(probability)
         except NotImplementedError:
             return None
-        if not bool((torch.isfinite(draws) & self._inside(draws)).all()):
+        if not bool((~active | (torch.isfinite(draws) & self._inside(draws))).all()):
             return None
         return draws.to(reference)
 
-    def _sample_by_rejection(self, sample_shape: torch.Size) -> Tensor:
+    def _sample_by_rejection(self, sample_shape: torch.Size, active: Tensor) -> Tensor:
         """Draw by redrawing each entry outside the interval.
 
         Parameters
@@ -399,14 +942,14 @@ class Restrict(Measure):
         RuntimeError
             If an entry stays outside after `_REJECTION_ROUNDS` redraws.
         """
-        draws = self.base.sample(sample_shape)
-        ok = self._inside(draws)
+        draws = _sample_active(self.base, sample_shape, active)
+        ok = self._inside(draws) | ~active
         for _ in range(_REJECTION_ROUNDS):
             if bool(ok.all()):
                 return draws
-            fresh = self.base.sample(sample_shape)
+            fresh = _sample_active(self.base, sample_shape, active)
             draws = torch.where(ok, draws, fresh)
-            ok = self._inside(draws)
+            ok = self._inside(draws) | ~active
         if bool(ok.all()):
             return draws
         raise RuntimeError(
@@ -432,7 +975,15 @@ class Pushforward(Measure):
     Does not commute with [`Restrict`][quivers.continuous.measure.Restrict]
     in general; the compiler's rewrite pass handles the cases that
     do (monotone bijectors with interval restrictions).
-    """
+
+    Parameters
+    ----------
+    base : Distribution
+        Underlying distribution or raw measure.
+    bijector : Bijector
+        Invertible measurable coordinate transformation.
+    validate_args : bool or None
+        Optional Torch argument-validation policy."""
 
     arg_constraints: dict = {}
     has_rsample = False
@@ -453,20 +1004,87 @@ class Pushforward(Measure):
 
     @_constraints.dependent_property
     def support(self) -> _constraints.Constraint:
+        """Constraint describing valid response values.
+
+        Returns
+        -------
+        _constraints.Constraint
+            Constraint describing valid response values."""
         return _constraints.real
 
     def log_normalizer(self) -> Tensor:
-        if isinstance(self.base, Measure):
-            return self.base.log_normalizer()
-        return torch.zeros(self.batch_shape) if self.batch_shape else torch.tensor(0.0)
+        """Preserve the base measure's raw mass under the bijection.
+
+        Returns
+        -------
+        Tensor
+            Log total mass on the retained batch axes.
+        """
+        return _native_log_mass(self.base, batch_axes=len(self.base.batch_shape))
+
+    def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
+        """Pull an interval back through the bijector's scalar capability.
+
+        Parameters
+        ----------
+        low : object
+            Lower event bound; None leaves that side unbounded.
+        high : object
+            Upper event bound; None leaves that side unbounded.
+        lower_closed : object
+            Whether the lower endpoint belongs to the event.
+        upper_closed : object
+            Whether the upper endpoint belongs to the event.
+
+        Returns
+        -------
+        object
+            Raw log mass on the requested interval, retaining independent batch axes."""
+        reference = _reference(self.base)
+        low = torch.as_tensor(
+            -torch.inf if low is None else low,
+            dtype=torch.float64,
+            device=reference.device,
+        )
+        high = torch.as_tensor(
+            torch.inf if high is None else high,
+            dtype=torch.float64,
+            device=reference.device,
+        )
+        low, high = self.bijector._interval_preimage(low, high)
+        return log_interval_mass(
+            self.base, low, high, lower_closed=lower_closed, upper_closed=upper_closed
+        )
 
     def log_prob(self, value: Tensor) -> Tensor:
+        """Raw log density or mass at the evaluation points.
+
+        Parameters
+        ----------
+        value : Tensor
+            Evaluation points, broadcast against the distribution batch.
+
+        Returns
+        -------
+        Tensor
+            Raw log density or mass at the evaluation points."""
         x = self.bijector.inverse(value)
         base_lp = self.base.log_prob(x)
         log_det = self.bijector.inverse_log_det_jacobian(value)
         return base_lp + log_det
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
+        """Draws from the normalized law with leading sample dimensions.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+
+        Returns
+        -------
+        Tensor
+            Draws from the normalized law with leading sample dimensions."""
         x = self.base.sample(sample_shape)
         return self.bijector.forward(x)
 
@@ -495,7 +1113,15 @@ class Mixture(Measure):
     [PyMC issue #5533](https://github.com/pymc-devs/pymc/issues/5533)
     documents how nested-mixture composition breaks in production
     PPLs; the operator algebra closes the gap.
-    """
+
+    Parameters
+    ----------
+    weights : Tensor
+        Nonnegative raw component weights on the last axis.
+    components : list[Distribution]
+        Laws with the same event shape and broadcastable batches.
+    validate_args : bool or None
+        Optional Torch argument-validation policy."""
 
     arg_constraints: dict = {}
     has_rsample = False
@@ -508,6 +1134,17 @@ class Mixture(Measure):
     ) -> None:
         if not components:
             raise ValueError("Mixture: components list must be non-empty")
+        if not weights.ndim or not bool(
+            (torch.isfinite(weights) & (weights >= 0)).all()
+        ):
+            raise ValueError(
+                "Mixture weights must be finite nonnegative values with a component axis"
+            )
+        if any(
+            component.event_shape != components[0].event_shape
+            for component in components[1:]
+        ):
+            raise ValueError("Mixture components must have the same event shape")
         if weights.shape[-1] != len(components):
             raise ValueError(
                 f"Mixture: weights last-dim {weights.shape[-1]} must "
@@ -527,10 +1164,22 @@ class Mixture(Measure):
 
     @property
     def num_components(self) -> int:
+        """Number of retained mixture components.
+
+        Returns
+        -------
+        int
+            Number of retained mixture components."""
         return self._num_components
 
     @_constraints.dependent_property
     def support(self) -> _constraints.Constraint:
+        """Constraint describing valid response values.
+
+        Returns
+        -------
+        _constraints.Constraint
+            Constraint describing valid response values."""
         return _constraints.real
 
     def _log_weights(self) -> Tensor:
@@ -552,67 +1201,171 @@ class Mixture(Measure):
             positive, torch.log(safe), torch.full_like(self.weights, -torch.inf)
         )
 
+    def _component_logits(self) -> Tensor:
+        """Combine weights and raw component masses for scoring and selection.
+
+        Returns
+        -------
+        Tensor
+            Log weight times raw component mass, stacked along the component axis."""
+        terms = [
+            weight + _native_log_mass(component, batch_axes=len(component.batch_shape))
+            for weight, component in zip(
+                self._log_weights().unbind(-1), self.components, strict=True
+            )
+        ]
+        return torch.stack(torch.broadcast_tensors(*terms), dim=-1)
+
     def log_normalizer(self) -> Tensor:
-        log_w = self._log_weights()
-        component_norms = []
-        for c in self.components:
-            if isinstance(c, Measure):
-                component_norms.append(c.log_normalizer())
-            else:
-                component_norms.append(
-                    torch.zeros(c.batch_shape) if c.batch_shape else torch.tensor(0.0)
-                )
-        stacked = torch.stack(
-            [
-                lw + zn
-                for lw, zn in zip(
-                    log_w.unbind(dim=-1),
-                    component_norms,
-                    strict=False,
-                )
-            ],
-            dim=-1,
+        """Log of the raw total mass, one value per batch entry.
+
+        Returns
+        -------
+        Tensor
+            Log of the raw total mass, one value per batch entry."""
+        return torch.logsumexp(self._component_logits(), dim=-1)
+
+    def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
+        """Add raw component event masses, including any point atoms.
+
+        Parameters
+        ----------
+        low : object
+            Lower event bound; None leaves that side unbounded.
+        high : object
+            Upper event bound; None leaves that side unbounded.
+        lower_closed : object
+            Whether the lower endpoint belongs to the event.
+        upper_closed : object
+            Whether the upper endpoint belongs to the event.
+
+        Returns
+        -------
+        object
+            Raw log mass on the requested interval, retaining independent batch axes."""
+        terms = [
+            weight
+            + log_interval_mass(
+                component,
+                low,
+                high,
+                lower_closed=lower_closed,
+                upper_closed=upper_closed,
+            )
+            for weight, component in zip(
+                self._log_weights().unbind(-1), self.components, strict=True
+            )
+        ]
+        return torch.logsumexp(
+            torch.stack(torch.broadcast_tensors(*terms), dim=-1), dim=-1
         )
-        return torch.logsumexp(stacked, dim=-1)
+
+    def expand(self, batch_shape, _instance=None):
+        """Broadcast the common mixture batch and its component weights.
+
+        Parameters
+        ----------
+        batch_shape : object
+            Requested broadcast batch shape.
+        _instance : object
+            Unused Torch expansion instance.
+
+        Returns
+        -------
+        object
+            Distribution with the requested batch shape and retained construction."""
+        return Mixture(
+            self.weights.expand(*batch_shape, self._num_components),
+            [component.expand(batch_shape) for component in self.components],
+        )
 
     def log_prob(self, value: Tensor) -> Tensor:
-        log_w = self._log_weights()
-        component_lps = [c.log_prob(value) for c in self.components]
-        stacked = torch.stack(
-            [
-                lw + lp
-                for lw, lp in zip(
-                    log_w.unbind(dim=-1),
-                    component_lps,
-                    strict=False,
-                )
-            ],
-            dim=-1,
+        """Raw log density or mass at the evaluation points.
+
+        Parameters
+        ----------
+        value : Tensor
+            Evaluation points, broadcast against the distribution batch.
+
+        Returns
+        -------
+        Tensor
+            Raw log density or mass at the evaluation points."""
+        terms = [
+            weight + component.log_prob(value)
+            for weight, component in zip(
+                self._log_weights().unbind(-1), self.components, strict=True
+            )
+        ]
+        return torch.logsumexp(
+            torch.stack(torch.broadcast_tensors(*terms), dim=-1), dim=-1
         )
-        return torch.logsumexp(stacked, dim=-1)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
-        cat = torch.distributions.Categorical(probs=self.weights)
-        idx = cat.sample(sample_shape)
-        # Components may carry smaller batch shapes than the mixture (a
-        # `PointMass` spike has none), so every draw is broadcast to the
-        # mixture's full sample shape before one is selected per entry.
-        shape = torch.Size(sample_shape) + self.batch_shape + self.event_shape
-        draws = [c.sample(sample_shape).expand(shape) for c in self.components]
-        stacked = torch.stack(draws, dim=-1)
-        return stacked.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
+        """Draws from the normalized law with leading sample dimensions.
 
-    def cdf(self, value: Tensor) -> Tensor:
-        """Cumulative distribution function: the weighted sum of
-        component CDFs. Required for `Restrict(Mixture, ...)` to
-        compute its log-normaliser without falling through to the
-        discrete-base fallback.
-        """
-        per_component = []
-        for c in self.components:
-            per_component.append(c.cdf(value))
-        stacked = torch.stack(per_component, dim=-1)
-        return (self.weights * stacked).sum(dim=-1)
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+
+        Returns
+        -------
+        Tensor
+            Draws from the normalized law with leading sample dimensions."""
+        active = torch.ones(
+            self.batch_shape, dtype=torch.bool, device=self.weights.device
+        )
+        return self._sample_active(sample_shape, active)
+
+    def _sample_active(self, sample_shape: torch.Size, active: Tensor) -> Tensor:
+        """Select components by their weighted masses before sampling active rows.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+        active : Tensor
+            Boolean batch mask selecting entries whose draws are required.
+
+        Returns
+        -------
+        Tensor
+            Normalized draws; unselected batch entries carry unused placeholders.
+
+        Raises
+        ------
+        ValueError
+            If an active batch entry has zero or nonfinite mass."""
+        logits = self._component_logits()
+        if not bool((~active | torch.isfinite(torch.logsumexp(logits, -1))).all()):
+            raise ValueError(
+                "Mixture sampling requires finite positive mass on every active batch entry"
+            )
+        logits = torch.where(active.unsqueeze(-1), logits, torch.zeros_like(logits))
+        idx = torch.distributions.Categorical(logits=logits).sample(sample_shape)
+        shape = torch.Size(sample_shape) + self.batch_shape + self.event_shape
+        result = self.weights.new_zeros(shape)
+        for index, component in enumerate(self.components):
+            selected = (idx == index) & active
+            selected_batch = (
+                selected.any(tuple(range(len(sample_shape))))
+                if sample_shape
+                else selected
+            )
+            if not bool(selected_batch.any()):
+                continue
+            draws = _sample_active(
+                component.expand(self.batch_shape)
+                if component.batch_shape != self.batch_shape
+                else component,
+                sample_shape,
+                selected_batch,
+            )
+            for _ in self.event_shape:
+                selected = selected.unsqueeze(-1)
+            result = torch.where(selected, draws, result)
+        return result
 
     def flatten(self) -> Mixture:
         """Apply the Giry-monad-multiplication associativity rule:
@@ -620,7 +1373,11 @@ class Mixture(Measure):
         with weights scaled by the outer weight. Returns a flat
         `Mixture` whose components are not themselves `Mixture`
         instances.
-        """
+
+        Returns
+        -------
+        Mixture
+            Equivalent mixture with nested component weights multiplied."""
         flat_weights_parts = []
         flat_components: list[Distribution] = []
         for k, comp in enumerate(self.components):
@@ -644,51 +1401,62 @@ class Mixture(Measure):
         Functoriality of the Giry monad on measurable isomorphisms;
         the per-component pushforward is the canonical shape the
         renderer prefers.
-        """
+
+        Parameters
+        ----------
+        bijector : object
+            Measurable invertible coordinate transformation.
+
+        Returns
+        -------
+        Mixture
+            Mixture obtained by applying the bijector to each component."""
         new_components = [Pushforward(c, bijector) for c in self.components]
         return Mixture(self.weights, new_components)
 
-    def restrict_to(self, low=None, high=None) -> Mixture:
-        """Restrict every component to the same subset, with the
-        per-component reweighting that the non-commutation of
-        Restrict and Mixture requires:
+    def restrict_to(
+        self, low=None, high=None, *, lower_closed=True, upper_closed=True
+    ) -> Mixture:
+        """Condition the raw mixture on an endpoint-aware interval.
 
-        $$\\mathrm{Restrict}\\!\\left(\\sum_k \\pi_k\\,\\mu_k,\\; S\\right)
-          = \\sum_k \\frac{\\pi_k\\,\\mu_k(S)}{\\sum_j \\pi_j\\,\\mu_j(S)}\\,
-            \\mathrm{Restrict}(\\mu_k, S).$$
+        Components retain their restricted raw measures. Dividing each
+        original weight by the common event mass normalizes their sum;
+        component selection then uses the same weighted masses as every
+        other mixture. Zero-mass components need no separate normalization.
 
-        Returns a `Mixture` whose components are each
-        `Restrict(component, low, high)` and whose weights are the
-        form weighted by each component's mass on the subset. This
-        is the ordinary conditional probability rule: multiply each
-        prior mixture weight by the probability of the subset under
-        that component, then normalize the resulting weights. The
-        total mass of the subset must be positive.
+        Parameters
+        ----------
+        low, high : Tensor or float or None
+            Optional event bounds.
+        lower_closed, upper_closed : bool or Tensor
+            Endpoint membership, closed by default.
+
+        Returns
+        -------
+        Mixture
+            A probability measure on the requested event. Its retained
+            component weights multiply raw restricted measures.
+
+        Raises
+        ------
+        ValueError
+            If the event has zero or nonfinite mass on any batch entry.
         """
-        restricted_raw = [Restrict(c, low=low, high=high) for c in self.components]
-        log_w = self._log_weights()
-        log_masses = [r.log_normalizer() for r in restricted_raw]
-        stacked = torch.stack(
-            [
-                lw + lm
-                for lw, lm in zip(
-                    log_w.unbind(dim=-1),
-                    log_masses,
-                    strict=False,
-                )
-            ],
-            dim=-1,
-        )
-        log_denom = torch.logsumexp(stacked, dim=-1, keepdim=True)
-        new_log_weights = stacked - log_denom
-        new_weights = torch.exp(new_log_weights)
-        # Components are NORMALIZED truncations so the Mixture's
-        # weighted sum of per-component densities equals the
-        # conditional density of the original mixture restricted to
-        # `S`. Using unnormalised `Restrict` here would double-count
-        # the per-component truncation mass.
-        normalized_components = [Normalize(r) for r in restricted_raw]
-        return Mixture(new_weights, normalized_components)
+        components = [
+            Restrict(
+                component,
+                low,
+                high,
+                lower_closed=lower_closed,
+                upper_closed=upper_closed,
+            )
+            for component in self.components
+        ]
+        raw = Mixture(self.weights, components)
+        mass = raw.log_normalizer()
+        if not bool(torch.isfinite(mass).all()):
+            raise ValueError("Mixture restriction requires finite positive event mass")
+        return Mixture(torch.exp(self._log_weights() - mass.unsqueeze(-1)), components)
 
     def lift_point_masses(self) -> Mixture:
         """Surface the `PointMass` components as a Bernoulli-style
@@ -704,7 +1472,11 @@ class Mixture(Measure):
         factorisation the renderers expect. For Mixtures with
         multiple `PointMass` components at distinct values, returns a
         canonical form with the point masses ordered first.
-        """
+
+        Returns
+        -------
+        Mixture
+            Equivalent mixture with atomic components placed first."""
         point_masses = []
         rest = []
         point_mass_weights = []
@@ -732,7 +1504,15 @@ class Independent(Measure):
     The log-density sums `base.log_prob(value)` over the
     reinterpreted dims; the log-normaliser sums in the same
     direction when `base` is itself a sub-measure.
-    """
+
+    Parameters
+    ----------
+    base : Distribution
+        Independent coordinate laws or raw measures.
+    reinterpreted_batch_ndims : int
+        Number of trailing batch axes forming one event.
+    validate_args : bool or None
+        Optional Torch argument-validation policy."""
 
     arg_constraints: dict = {}
     has_rsample = False
@@ -762,20 +1542,78 @@ class Independent(Measure):
 
     @_constraints.dependent_property
     def support(self) -> _constraints.Constraint:
+        """Constraint describing valid response values.
+
+        Returns
+        -------
+        _constraints.Constraint
+            Constraint describing valid response values."""
         return self._inner.support
 
     def log_normalizer(self) -> Tensor:
-        if isinstance(self.base, Measure):
-            inner = self.base.log_normalizer()
-            for _ in range(self.reinterpreted_batch_ndims):
-                inner = inner.sum(dim=-1)
-            return inner
-        return torch.zeros(self.batch_shape) if self.batch_shape else torch.tensor(0.0)
+        """Reduce raw mass over the newly declared independent event axes.
+
+        Returns
+        -------
+        Tensor
+            Log total mass with only independent batch axes retained.
+        """
+        inner = _native_log_mass(self.base, batch_axes=len(self.base.batch_shape))
+        return inner.sum(
+            tuple(range(inner.ndim - self.reinterpreted_batch_ndims, inner.ndim))
+        )
+
+    def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
+        """Multiply independent coordinate event masses by adding their logarithms.
+
+        Parameters
+        ----------
+        low : object
+            Lower event bound; None leaves that side unbounded.
+        high : object
+            Upper event bound; None leaves that side unbounded.
+        lower_closed : object
+            Whether the lower endpoint belongs to the event.
+        upper_closed : object
+            Whether the upper endpoint belongs to the event.
+
+        Returns
+        -------
+        object
+            Raw log mass on the requested interval, retaining independent batch axes."""
+        mass = log_interval_mass(
+            self.base, low, high, lower_closed=lower_closed, upper_closed=upper_closed
+        )
+        return mass.sum(
+            tuple(range(mass.ndim - self.reinterpreted_batch_ndims, mass.ndim))
+        )
 
     def log_prob(self, value: Tensor) -> Tensor:
+        """Raw log density or mass at the evaluation points.
+
+        Parameters
+        ----------
+        value : Tensor
+            Evaluation points, broadcast against the distribution batch.
+
+        Returns
+        -------
+        Tensor
+            Raw log density or mass at the evaluation points."""
         return self._inner.log_prob(value)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
+        """Draws from the normalized law with leading sample dimensions.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+
+        Returns
+        -------
+        Tensor
+            Draws from the normalized law with leading sample dimensions."""
         return self._inner.sample(sample_shape)
 
 
@@ -787,6 +1625,18 @@ class Normalize(Measure):
     so downstream code can rely on `log_normalizer() == 0`. Use at
     the observe / sample boundary or whenever a probability measure
     is required (e.g. before sampling).
+
+    Parameters
+    ----------
+    base : Distribution
+        Raw measure with finite positive total mass on every batch entry.
+    validate_args : bool or None
+        Optional Torch argument-validation policy.
+
+    Raises
+    ------
+    ValueError
+        If any base batch entry has zero or nonfinite total mass.
     """
 
     arg_constraints: dict = {}
@@ -798,12 +1648,11 @@ class Normalize(Measure):
         validate_args: bool | None = None,
     ) -> None:
         self.base = base
-        if isinstance(base, Measure):
-            self._base_log_normalizer = base.log_normalizer()
-        else:
-            self._base_log_normalizer = (
-                torch.zeros(base.batch_shape) if base.batch_shape else torch.tensor(0.0)
-            )
+        self._base_log_normalizer = _native_log_mass(
+            base, batch_axes=len(base.batch_shape)
+        )
+        if not bool(torch.isfinite(self._base_log_normalizer).all()):
+            raise ValueError("Normalize requires a finite positive measure mass")
         super().__init__(
             batch_shape=base.batch_shape,
             event_shape=base.event_shape,
@@ -812,16 +1661,128 @@ class Normalize(Measure):
 
     @_constraints.dependent_property
     def support(self) -> _constraints.Constraint:
+        """Constraint describing valid response values.
+
+        Returns
+        -------
+        _constraints.Constraint
+            Constraint describing valid response values."""
         return self.base.support
 
     def log_normalizer(self) -> Tensor:
-        return torch.zeros(self.batch_shape) if self.batch_shape else torch.tensor(0.0)
+        """Log of the raw total mass, one value per batch entry.
+
+        Returns
+        -------
+        Tensor
+            Log of the raw total mass, one value per batch entry."""
+        return torch.zeros_like(self._base_log_normalizer)
+
+    def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
+        """Normalize the same base event mass by the retained total mass.
+
+        Parameters
+        ----------
+        low : object
+            Lower event bound; None leaves that side unbounded.
+        high : object
+            Upper event bound; None leaves that side unbounded.
+        lower_closed : object
+            Whether the lower endpoint belongs to the event.
+        upper_closed : object
+            Whether the upper endpoint belongs to the event.
+
+        Returns
+        -------
+        object
+            Raw log mass on the requested interval, retaining independent batch axes."""
+        return (
+            log_interval_mass(
+                self.base,
+                low,
+                high,
+                lower_closed=lower_closed,
+                upper_closed=upper_closed,
+            )
+            - self._base_log_normalizer
+        )
+
+    def expand(self, batch_shape, _instance=None):
+        """Broadcast a normalized measure through its underlying construction.
+
+        Parameters
+        ----------
+        batch_shape : object
+            Requested broadcast batch shape.
+        _instance : object
+            Unused Torch expansion instance.
+
+        Returns
+        -------
+        object
+            Distribution with the requested batch shape and retained construction."""
+        return Normalize(self.base.expand(batch_shape))
 
     def log_prob(self, value: Tensor) -> Tensor:
+        """Raw log density or mass at the evaluation points.
+
+        Parameters
+        ----------
+        value : Tensor
+            Evaluation points, broadcast against the distribution batch.
+
+        Returns
+        -------
+        Tensor
+            Raw log density or mass at the evaluation points."""
         return self.base.log_prob(value) - self._base_log_normalizer
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
+        """Draws from the normalized law with leading sample dimensions.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+
+        Returns
+        -------
+        Tensor
+            Draws from the normalized law with leading sample dimensions."""
         return self.base.sample(sample_shape)
+
+
+def _sample_active(
+    distribution: Distribution, sample_shape: torch.Size, active: Tensor
+) -> Tensor:
+    """Propagate active batch entries through measure compositions.
+
+    Unselected mixture entries need no draw and may legitimately have
+    zero mass. Ordinary probability distributions can sample their full
+    batch; restrictions and mixtures propagate the retained entry mask.
+
+    Parameters
+    ----------
+    distribution : Distribution
+        Native distribution or raw measure.
+    sample_shape : torch.Size
+        Leading independent sampling dimensions.
+    active : Tensor
+        Boolean batch mask selecting entries whose draws are required.
+
+    Returns
+    -------
+    Tensor
+        Normalized draws; unselected batch entries carry unused placeholders."""
+    if isinstance(distribution, Normalize):
+        return _sample_active(distribution.base, sample_shape, active)
+    if isinstance(distribution, (Restrict, Mixture)):
+        return distribution._sample_active(sample_shape, active)
+    if isinstance(distribution, Pushforward):
+        return distribution.bijector.forward(
+            _sample_active(distribution.base, sample_shape, active)
+        )
+    return distribution.sample(sample_shape)
 
 
 def _symmetric_fold_log_normalizer(
@@ -847,7 +1808,20 @@ def _symmetric_fold_log_normalizer(
     finite cut equals `loc` elementwise, and the base has a known
     symmetric location family; returns `None` otherwise so the caller can
     fall through to the discrete pmf-sum path.
-    """
+
+    Parameters
+    ----------
+    base : Distribution
+        Underlying distribution or raw measure.
+    low : Tensor | None
+        Lower event bound; None leaves that side unbounded.
+    high : Tensor | None
+        Upper event bound; None leaves that side unbounded.
+
+    Returns
+    -------
+    Tensor | None
+        Log half-mass when a fixed symmetry center certifies it, otherwise None."""
     one_sided = (low is None) != (high is None)
     if not one_sided:
         return None
@@ -877,69 +1851,6 @@ def _symmetric_fold_log_normalizer(
     return torch.full_like(loc, -math.log(2.0))
 
 
-def _discrete_restriction_log_normalizer(
-    base: Distribution,
-    low: Tensor | None,
-    high: Tensor | None,
-) -> Tensor:
-    """Fallback log-normaliser for discrete bases without a closed-form
-    `cdf` method (PyTorch's `Poisson`, `Geometric`, `NegativeBinomial`
-    fall here). Sums the pmf over the inclusive integer range
-    `[low, high]`; for one-sided cases, the complement uses
-    `expm1` / closed forms when the base supplies them analytically.
-    """
-    if isinstance(base, torch.distributions.Poisson):
-        rate = base.rate
-        if low is not None and high is None:
-            low_int = int(low.item()) if isinstance(low, Tensor) else int(low)
-            if low_int <= 0:
-                return torch.zeros_like(rate)
-            if low_int == 1:
-                surv = -torch.expm1(-rate)
-                return torch.log(surv.clamp_min(torch.finfo(surv.dtype).tiny))
-            cum = torch.zeros_like(rate)
-            for k in range(low_int):
-                cum = cum + torch.exp(
-                    -rate
-                    + k * torch.log(rate)
-                    - torch.lgamma(
-                        torch.tensor(k + 1, dtype=rate.dtype),
-                    )
-                )
-            surv = (1.0 - cum).clamp_min(torch.finfo(rate.dtype).tiny)
-            return torch.log(surv)
-        if low is None and high is not None:
-            high_int = int(high.item()) if isinstance(high, Tensor) else int(high)
-            cum = torch.zeros_like(rate)
-            for k in range(high_int + 1):
-                cum = cum + torch.exp(
-                    -rate
-                    + k * torch.log(rate)
-                    - torch.lgamma(
-                        torch.tensor(k + 1, dtype=rate.dtype),
-                    )
-                )
-            return torch.log(cum.clamp_min(torch.finfo(rate.dtype).tiny))
-        low_int = int(low.item()) if isinstance(low, Tensor) else int(low)
-        high_int = int(high.item()) if isinstance(high, Tensor) else int(high)
-        cum = torch.zeros_like(rate)
-        for k in range(low_int, high_int + 1):
-            cum = cum + torch.exp(
-                -rate
-                + k * torch.log(rate)
-                - torch.lgamma(
-                    torch.tensor(k + 1, dtype=rate.dtype),
-                )
-            )
-        return torch.log(cum.clamp_min(torch.finfo(rate.dtype).tiny))
-    raise NotImplementedError(
-        f"Restrict.log_normalizer: no closed-form fallback for "
-        f"discrete base {type(base).__name__!r}; supply a base with "
-        "a `cdf` method or extend "
-        "`_discrete_restriction_log_normalizer` with the case."
-    )
-
-
 def normalize_at_boundary(d: Distribution) -> Distribution:
     """Lift `d` to a probability measure if it is a sub-measure
     with non-zero log-normaliser; otherwise return `d` unchanged.
@@ -947,7 +1858,16 @@ def normalize_at_boundary(d: Distribution) -> Distribution:
     Called by the inline / observe path to enforce the
     "renormalise at the observe / sample boundary" invariant the
     sub-Giry algebra relies on.
-    """
+
+    Parameters
+    ----------
+    d : Distribution
+        Native distribution or measure to normalize at an execution boundary.
+
+    Returns
+    -------
+    Distribution
+        Probability law, with explicit normalization when required."""
     if isinstance(d, Measure):
         norm = d.log_normalizer()
         if isinstance(norm, Tensor):

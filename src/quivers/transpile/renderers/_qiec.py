@@ -91,6 +91,7 @@ from quivers.transpile.qiec_ir import (
     IRQiecGather,
     IRQiecKernelMatrix,
     IRQiecLogDensity,
+    IRQiecLogMass,
     IRQiecSegmentSum,
     IRQiecWeightSum,
     IRQiecShapeIndex,
@@ -1461,6 +1462,8 @@ def _free_runtime_capture(
         elif isinstance(item, IRQiecDistributionValue):
             for argument in item.arguments:
                 value(argument.value, locally_bound)
+        elif isinstance(item, IRQiecLogMass):
+            value(item.sampleable, locally_bound)
         elif isinstance(item, IRQiecLogDensity):
             value(item.sampleable, locally_bound)
             value(item.value, locally_bound)
@@ -1551,6 +1554,8 @@ def qiec_families_used(ir: IRProgram) -> frozenset[str]:
             found.add(item.name)
             for argument in item.arguments:
                 value(argument.value)
+        elif isinstance(item, IRQiecLogMass):
+            value(item.sampleable)
         elif isinstance(item, IRQiecLogDensity):
             value(item.sampleable)
             value(item.value)
@@ -1759,6 +1764,27 @@ def _spelled(
     return spell_distribution(
         target, node.name, arguments, _event_shape(node.result_type)
     ).expression
+
+
+def _mass_shape(node: IRQiecLogMass) -> tuple[int, ...]:
+    """Read independent replication axes from a checked mass construction.
+
+    Parameters
+    ----------
+    node : IRQiecLogMass
+        Checked query; nonempty retained axes require a construction.
+
+    Returns
+    -------
+    tuple[int, ...]
+        Declared batch and independent event axes, excluding intrinsic events.
+    """
+    if not isinstance(node.sampleable, IRQiecDistributionValue):
+        return ()
+    return tuple(
+        _extent_literal(axis.size)
+        for axis in (*node.sampleable.plate.batch, *node.sampleable.plate.event)
+    )
 
 
 def _branch_static(rendered: str, identifier: str) -> str:
@@ -2015,6 +2041,8 @@ def _python_value(target: str, node: IRQiecValue) -> str:
         return f"({items},)" if len(node.items) == 1 else f"({items})"
     if isinstance(node, IRQiecDistributionValue):
         return _spelled(target, node, lambda item: _python_value(target, item))
+    if isinstance(node, IRQiecLogMass):
+        return f"_qvr_qiec_log_mass({_python_value(target, node.sampleable)}, {len(node.batch)}, {_mass_shape(node)!r})"
     if isinstance(node, IRQiecLogDensity):
         return (
             f"_qvr_qiec_log_density({_python_value(target, node.sampleable)}, "
@@ -2265,6 +2293,14 @@ def _julia_value(target: str, node: IRQiecValue) -> str:
         return f"({items},)" if len(node.items) == 1 else f"({items})"
     if isinstance(node, IRQiecDistributionValue):
         return _spelled(target, node, lambda item: _julia_value(target, item))
+    if isinstance(node, IRQiecLogMass):
+        shape = (
+            "("
+            + ", ".join(str(size) for size in _mass_shape(node))
+            + ("," if _mass_shape(node) else "")
+            + ")"
+        )
+        return f"_qvr_qiec_log_mass({_julia_value(target, node.sampleable)}, {len(node.batch)}, {shape})"
     if isinstance(node, IRQiecLogDensity):
         return (
             f"_qvr_qiec_log_density({_julia_value(target, node.sampleable)}, "
@@ -2584,6 +2620,8 @@ def _javascript_value(target: str, node: IRQiecValue) -> str:
         return f"Object.freeze([{items}])"
     if isinstance(node, IRQiecDistributionValue):
         return _spelled(target, node, lambda item: _javascript_value(target, item))
+    if isinstance(node, IRQiecLogMass):
+        return f"_qvr_qiec_log_mass({_javascript_value(target, node.sampleable)}, {len(node.batch)}, {list(_mass_shape(node))!r})"
     if isinstance(node, IRQiecLogDensity):
         return (
             f"_qvr_qiec_log_density({_javascript_value(target, node.sampleable)}, "
@@ -2833,6 +2871,9 @@ def _scheme_value(target: str, node: IRQiecValue) -> str:
         return f"(_qvr-qiec-tuple (list {items}))"
     if isinstance(node, IRQiecDistributionValue):
         return _spelled(target, node, lambda item: _scheme_value(target, item))
+    if isinstance(node, IRQiecLogMass):
+        shape = "(list " + " ".join(str(size) for size in _mass_shape(node)) + ")"
+        return f"(_qvr-qiec-log-mass {_scheme_value(target, node.sampleable)} {len(node.batch)} {shape})"
     if isinstance(node, IRQiecLogDensity):
         return (
             f"(_qvr-qiec-log-density {_scheme_value(target, node.sampleable)} "

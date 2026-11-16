@@ -337,7 +337,7 @@ def response_rng(seed: int, tensors: Iterable[torch.Tensor]) -> Iterator[None]:
 def response_mean(
     distribution: Distribution, mc_samples: int | None = None
 ) -> torch.Tensor:
-    """Read a native expectation or explicitly approximate a bounded mean.
+    """Read a native expectation or explicitly approximate a certified finite mean.
 
     Parameters
     ----------
@@ -354,9 +354,10 @@ def response_mean(
     Raises
     ------
     ValueError
-        If an explicit Monte Carlo budget is not a positive integer.
+        If the Monte Carlo budget is invalid, draws are nonfinite, or the
+        sample average exceeds numerical capacity.
     TypeError
-        If no analytic expectation exists and bounded-mean approximation
+        If no analytic expectation exists and finite-mean approximation
         was not requested or cannot establish a finite mean.
     """
     if mc_samples is not None and (
@@ -379,9 +380,10 @@ def response_mean(
                 torch.isfinite(torch.as_tensor(support.lower_bound)).all()
                 and torch.isfinite(torch.as_tensor(support.upper_bound)).all()
             )
-        if mc_samples is None or not bounded:
+        finite = bounded or 1 in getattr(distribution, "finite_moment_orders", ())
+        if mc_samples is None or not finite:
             raise TypeError(
-                "no analytic response expectation; bounded response laws permit an explicit mc_samples budget"
+                "no analytic response expectation; bounded or certified finite-mean response laws permit an explicit mc_samples budget"
             ) from error
     else:
         if not torch.isfinite(result).all():
@@ -390,13 +392,26 @@ def response_mean(
             )
         return result
     total = None
+    scale = None
     for start in range(0, mc_samples, 64):
         size = min(64, mc_samples - start)
         values = distribution.sample((size,))
-        part = values.to(torch.float64).sum(0)
-        total = part if total is None else total + part
-    assert total is not None
-    return total / mc_samples
+        if not torch.isfinite(values).all():
+            raise ValueError(
+                "Monte Carlo response expectation produced nonfinite draws"
+            )
+        values = values.to(torch.float64)
+        part_scale = values.abs().amax(0)
+        next_scale = part_scale if scale is None else torch.maximum(scale, part_scale)
+        divisor = torch.where(next_scale > 0, next_scale, torch.ones_like(next_scale))
+        part = (values / divisor).sum(0)
+        total = part if total is None else total * (scale / divisor) + part
+        scale = next_scale
+    assert total is not None and scale is not None
+    result = (total / mc_samples) * scale
+    if not torch.isfinite(result).all():
+        raise ValueError("Monte Carlo response expectation exceeded numerical capacity")
+    return result
 
 
 def row_binding(

@@ -13,6 +13,16 @@
       (else value))))
 (define (_qvr-qiec-log-density distribution value)
   (dist-score distribution (_qvr-qiec-array value)))
+(define (_qvr-qiec-log-mass distribution retained shape)
+  ;; Every mapped Church distribution is normalized. A raw measure
+  ;; needs its own checked mapping before this adapter can consume it.
+  (if (or (< retained 0) (> retained (length shape)) (not (integer? retained)))
+      (error "log_mass retained axes must be within the batch rank")
+      (let build ((axis 0) (sizes shape))
+        (if (= axis retained)
+            0
+            (map (lambda (unused) (build (+ axis 1) (cdr sizes)))
+                 (iota (car sizes)))))))
 ;; Site labels a helper's draws and scores carry, counted so the n-th
 ;; occurrence of a label in one run of the model is "<label>@<n>", as
 ;; the reference machine replays them.

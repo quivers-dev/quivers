@@ -59,6 +59,8 @@ _INLINE_SAMPLE: dict[str, str] = {
 # Observations exercise their family directly without requiring a
 # discrete latent, which would independently prevent Stan compilation.
 _INLINE_OBSERVE: dict[str, str] = {
+    "BernsteinHazard": "breaks=[0.0, 1.0], controls=[[1.0]], rate=1.0",
+    "ExtendedBeta": "mu=0.3, phi=4.0, kappa=0.2",
     "BetaBinomial": "total_count=4.0, concentration1=2.0, concentration0=2.0",
     "Binomial": "total_count=4.0, probs=0.5",
     "COMPoisson": "rate=2.0, dispersion=1.3",

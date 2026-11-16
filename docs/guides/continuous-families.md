@@ -62,6 +62,96 @@ checked-reference execution support these kernels; the
 [native API](../api/continuous/families.md#vector-count-events) gives the
 constructors and conditional learned-parameter variants.
 
+### Positive-time spline hazards
+
+A baseline hazard describes how event risk changes with elapsed time.
+`BernsteinHazard` retains positive polynomial pieces and their integrals;
+a proportional rate scales the hazard, rather than the expected event time.
+Its finite-interval baseline integral is one, separating shape from overall
+rate. After the upper boundary, the positive endpoint hazard continues
+constantly, so the distribution includes events beyond the fitted interval.
+
+The typed source interface separates structural table dimensions from
+observation dimensions:
+
+```qvr
+program event_times[n : Nat, s : Nat, k : Nat](
+    breaks : Tensor[Real]([nat_add(s, 1)]),
+    controls : Tensor[Real]([s, k]),
+    log_rate : Tensor[Real]([n]),
+    time : Tensor[Real]([n]),
+) : n -> n
+    observe time : n <- BernsteinHazard(breaks=breaks, controls=controls, log_rate=log_rate) [iid_over=n]
+    return time
+export event_times
+```
+
+The sample is scalar even though its baseline contains a matrix. The same
+shape contract checks `s + 1` boundaries against `s` coefficient rows at
+compilation and data binding. Declaring the tables adds no effects;
+`observe` supplies the likelihood role.
+
+`MSplineBasis` constructs normalized M-splines and integrated I-splines
+from retained knots. `CoxPH` combines them with simplex weights and uses
+the same Bernstein hazard kernel:
+
+```python
+import torch
+from quivers.continuous import CoxPH, cox_spline_basis
+
+basis = cox_spline_basis(
+    event_times=[0.2, 0.5, 0.8, 1.4],
+    observed_times=[0.2, 0.5, 0.8, 1.4, 2.0],
+    df=5, degree=3,
+)
+weights = torch.full((basis.size,), 1 / basis.size, dtype=torch.float64)
+event_law = CoxPH(basis, weights, log_rate=0.2)
+assert event_law.cdf(torch.inf).item() == 1.0
+assert event_law.icdf(0.9).item() > 0
+```
+
+The knot factory uses event-time quantiles for interior knots and all
+follow-up times for the upper boundary, including censored follow-up.
+It retains zero as the lower boundary and extends the upper boundary by
+one fiftieth of the follow-up span, using the maximum follow-up when
+that span is zero. Repeated quantiles or missing events
+cannot silently change the requested basis dimension; provide an explicit
+basis when those data do not determine distinct knots. Prediction retains
+the fitted knots rather than rebuilding them from new responses.
+
+The constant tail is an explicit model policy. Its positive hazard avoids
+a leftover probability mass at infinity. Native and reference kernels
+share the polynomial structure and bounded inverse policy; failures of
+floating-point capacity or the iteration budget raise explicitly. The
+[native API](../api/continuous/families.md#bernstein-and-spline-baseline-hazards)
+gives rate-only conditional models, tensor shapes, and sampling behavior.
+
+### Censored extended Beta responses
+
+`ExtendedBeta(mu, phi, kappa)` extends a Beta component's support to
+`[-kappa, 1+kappa]` and censors observations at zero and one. The component
+mean `mu` lies strictly between zero and one, precision `phi` is positive,
+and extension `kappa` is nonnegative. Endpoint scores are exact censored
+tail probabilities; scores inside the interval are affine Beta densities.
+
+```python
+import torch
+from quivers.continuous import ExtendedBeta
+
+bounded = ExtendedBeta(mu=0.3, phi=4.0, kappa=0.2)
+scores = bounded.log_prob(torch.tensor([0.0, 0.3, 1.0], dtype=torch.float64))
+assert scores.shape == (3,)
+assert bounded.mean.item() != 0.3
+assert bounded.sample((5,)).shape == (5,)
+```
+
+The native and checked-reference families share the same parameterization.
+The [formula interface](analysis-data-and-formulas.md#censored-extended-beta-regression)
+calls it `xbeta`, retaining log-linked precision and extension predictors.
+Its observed mean accounts for both boundary atoms. Deterministic moment
+evaluation and pathwise sampling have explicit numerical-capacity checks;
+see the [native API](../api/continuous/families.md#censored-extended-beta-responses).
+
 ### Simplex events with correlated log ratios
 
 An additive log-ratio Normal models a whole composition using correlated

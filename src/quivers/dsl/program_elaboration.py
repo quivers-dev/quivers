@@ -331,6 +331,7 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     "Cauchy": (("loc", "identity"), ("scale", "softplus")),
     "Laplace": (("loc", "identity"), ("scale", "softplus")),
     "COMPoisson": (("rate", "softplus"), ("dispersion", "softplus")),
+    "ExtendedBeta": (("mu", "sigmoid"), ("phi", "softplus"), ("kappa", "softplus")),
     "DiscreteWeibull": (("probs", "sigmoid"), ("concentration", "softplus")),
     "Wiener": (
         ("boundary", "softplus"),
@@ -1066,7 +1067,7 @@ def _unknown_call(expr: LetExprNode, macros: Mapping[str, object]) -> str | None
             and node.func not in FAMILIES
             and node.func not in macros
             and node.func not in _CHART_BUILTINS
-            and node.func not in ("site", "log_prob")
+            and node.func != "site"
         ):
             return node.func
     return None
@@ -7983,14 +7984,6 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             and not self._provisional_event(record, step)
             else None
         )
-        if declared is not None:
-            pairs_event = family_shape_equations(patterns, event_shape, {}, declared)
-            if not self._unify_extents(pairs_event, scope, state):
-                self._fail(
-                    step,
-                    f"family {record.name!r} has incompatible event extents",
-                    code="qiec-program",
-                )
         values: dict[int, Value] = {}
         tied: list[int] = []
         for position, (parameter, argument) in enumerate(pairs):
@@ -7999,16 +7992,77 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 continue
             value = self._draw_argument(argument, parameter, plate, scope, state, step)
             values[position] = value
-            actual = self._family_argument_shapes(
-                record, [(parameter.name, value)], scope, step
-            )
-            equations = family_shape_equations(patterns, event_shape, actual)
-            if not self._unify_extents(equations, scope, state):
-                self._fail(
-                    step,
-                    f"parameter {parameter.name!r} of family {record.name!r} has incompatible event extents",
-                    code="qiec-program",
+        actual = self._family_argument_shapes(
+            record,
+            [(pairs[position][0].name, value) for position, value in values.items()],
+            scope,
+            step,
+        )
+        equations = family_shape_equations(patterns, event_shape, actual, declared)
+        if not self._unify_extents(equations, scope, state):
+            # Preserve both-use diagnostics after a conflicting joint solve.
+            # The same Nat solver projects only declared event evidence here;
+            # this projection explains the failure and does not change scope.
+            if declared is not None:
+                try:
+                    anchor = infer_index_extents(
+                        [
+                            (pattern, int(axis.value))
+                            for pattern, axis in zip(event_shape, declared, strict=True)
+                            if isinstance(axis, IndexLiteral)
+                        ]
+                    )
+                except ValueError, TypeError:
+                    anchor = {}
+                substitution = StaticSubstitution(
+                    types=(),
+                    indices=tuple(
+                        (name, IndexLiteral(value=size, sort=NAT))
+                        for name, size in anchor.items()
+                    ),
+                    effects=(),
                 )
+                event_names = _index_variables_in(event_shape)
+                for parameter, argument in pairs:
+                    for pattern, found in zip(
+                        patterns[parameter.name],
+                        actual.get(parameter.name, ()),
+                        strict=False,
+                    ):
+                        wanted = substitute_index(pattern, substitution)
+                        if (
+                            isinstance(found, IndexLiteral)
+                            and isinstance(wanted, IndexLiteral)
+                            and found != wanted
+                            and _index_variables_in((pattern,)) & event_names
+                        ):
+                            names = (
+                                _argument_names(argument)
+                                if isinstance(
+                                    argument,
+                                    DrawArgName
+                                    | DrawArgNamed
+                                    | DrawArgIndex
+                                    | DrawArgList
+                                    | DrawArgDist
+                                    | DrawArgScalar,
+                                )
+                                else [argument]
+                                if isinstance(argument, str)
+                                else []
+                            )
+                            source = names[0] if names else parameter.name
+                            self._fail(
+                                step,
+                                f"{record.name} reads its {parameter.name!r} from {source!r}, an axis of extent "
+                                f"{render_static(found)}, but the sample's axis it spans has extent {render_static(wanted)}",
+                                code="qiec-program",
+                            )
+            self._fail(
+                step,
+                f"family {record.name!r} has incompatible or underdetermined parameter/event extents",
+                code="qiec-program",
+            )
         for position in tied:
             parameter, argument = pairs[position]
             extents = tuple(
@@ -8088,7 +8142,22 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         state: _ProgramState,
         hints: Mapping[str, str] | None = None,
     ) -> tuple[dict[str, tuple[IndexTerm, ...]], tuple[IndexTerm, ...]]:
-        """Freshen one local shape telescope into the existing extent scope."""
+        """Freshen one local shape telescope into the existing extent scope.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            Family carrying the shared dependent shape contract.
+        state : _ProgramState
+            Existing program extent scope and solutions.
+        hints : Mapping[str, str] or None
+            Preferred names for dimensions inferred from free arguments.
+
+        Returns
+        -------
+        tuple[dict[str, tuple[IndexTerm, ...]], tuple[IndexTerm, ...]]
+            Fresh parameter and sample-event patterns.
+        """
         indices = {}
         for binder in record.effective_shape_signature.telescope:
             name = (hints or {}).get(
@@ -8106,7 +8175,24 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         scope: _Scope,
         node: object,
     ) -> dict[str, tuple[IndexTerm, ...]]:
-        """Read intrinsic parameter dimensions while excluding plate prefixes."""
+        """Read intrinsic parameter dimensions while excluding plate prefixes.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            Family declaring each parameter's rank.
+        arguments : Sequence[tuple[str, Value]]
+            Named arguments whose types are already available.
+        scope : _Scope
+            Value typing scope.
+        node : object
+            Source node for a typing diagnostic.
+
+        Returns
+        -------
+        dict[str, tuple[IndexTerm, ...]]
+            Intrinsic dimensions; scalar broadcasts supply no shape evidence.
+        """
         result = {}
         for name, value in arguments:
             parameter = record.parameter(name)
@@ -8319,6 +8405,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         constraint = parameter.constraint
         if constraint == "transform":
             return self._transform_chain(argument, node)
+        if constraint == "boolean":
+            text = argument.text if isinstance(argument, DrawArgName) else argument
+            if isinstance(text, str) and text in {"true", "false"}:
+                return LiteralValue(value=text == "true", type=BOOL)
         if isinstance(argument, _Spread):
             # A single literal spread over a vector parameter is the
             # same number at every position of the vector.
@@ -8607,9 +8697,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
 
         An open extent a free name's typing introduced equals whatever it
         meets: a declared object's size, a literal, or another extent.
-        Two extents neither of which is open, such as two different
-        literals, do not unify. Each fix is applied to every name bound
-        so far, so later uses read the fixed types.
+        Exact ground equations are solved jointly by the shared Nat solver;
+        symbolic aliases use capture-safe cancellation. Only open extents can
+        be fixed. Each substitution retypes names already bound in the scope.
 
         Parameters
         ----------
@@ -8627,26 +8717,33 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             Whether every pair unifies. Fixes found before a pair that
             does not unify are kept.
         """
-        changed = False
-        unified = True
-        for left, right in pairs:
-            left = self._resolved_extent(left, state)
-            right = self._resolved_extent(right, state)
-            if left == right:
-                continue
-            solved = None
-            for name in sorted(_index_variables_in((left, right)) & state.open_extents):
-                variable = IndexVariable(name=name, sort=NAT)
-                term = solve_index_equation(left, right, variable)
-                if term is not None:
-                    solved = variable, term
-                    break
-            if solved is None:
-                unified = False
-                continue
-            variable, term = solved
+        resolved = [
+            (self._resolved_extent(left, state), self._resolved_extent(right, state))
+            for left, right in pairs
+        ]
+        ground = []
+        for left, right in resolved:
+            if isinstance(left, IndexLiteral):
+                left, right = right, left
+            if (
+                isinstance(right, IndexLiteral)
+                and right.sort == NAT
+                and _index_variables_in((left,)) <= state.open_extents
+            ):
+                ground.append((left, int(right.value)))
+        try:
+            inferred = infer_index_extents(ground)
+        except ValueError, TypeError:
+            return False
+        changed = bool(inferred)
+        if inferred:
             fixed = StaticSubstitution(
-                types=(), indices=((variable.name, term),), effects=()
+                types=(),
+                indices=tuple(
+                    (name, IndexLiteral(value=value, sort=NAT))
+                    for name, value in inferred.items()
+                ),
+                effects=(),
             )
             state.extent_solution.update(
                 {
@@ -8654,11 +8751,47 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     for name, value in state.extent_solution.items()
                 }
             )
-            state.extent_solution[variable.name] = term
-            changed = True
+            state.extent_solution.update(dict(fixed.indices))
+        # Ground evidence can determine several open variables jointly. The
+        # existing symbolic cancellation then handles aliases and caller axes;
+        # revisit earlier equations after later aliases become known.
+        while True:
+            progressed = False
+            unresolved = False
+            for left, right in resolved:
+                left = self._resolved_extent(left, state)
+                right = self._resolved_extent(right, state)
+                if left == right:
+                    continue
+                solved = None
+                for name in sorted(
+                    _index_variables_in((left, right)) & state.open_extents
+                ):
+                    variable = IndexVariable(name=name, sort=NAT)
+                    term = solve_index_equation(left, right, variable)
+                    if term is not None:
+                        solved = variable, term
+                        break
+                if solved is None:
+                    unresolved = True
+                    continue
+                variable, term = solved
+                fixed = StaticSubstitution(
+                    types=(), indices=((variable.name, term),), effects=()
+                )
+                state.extent_solution.update(
+                    {
+                        name: substitute_index(value, fixed)
+                        for name, value in state.extent_solution.items()
+                    }
+                )
+                state.extent_solution[variable.name] = term
+                progressed = changed = True
+            if not progressed:
+                break
         if changed:
             self._apply_extent_solution(scope, state)
-        return unified
+        return not unresolved
 
     def _unify_types(
         self: _Elaborator,
@@ -11073,7 +11206,8 @@ def _draw_dependencies(step: SampleStep) -> set[str]:
         if isinstance(argument, DrawArgNamed):
             visit(argument.value)
         elif isinstance(argument, DrawArgName):
-            names.add(argument.text)
+            if argument.text not in {"true", "false"}:
+                names.add(argument.text)
         elif isinstance(argument, DrawArgIndex):
             names.add(argument.name)
             names.update(argument.indices)

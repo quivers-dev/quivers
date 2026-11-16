@@ -34,11 +34,50 @@ of measurable isomorphisms.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import math
 from collections.abc import Mapping
 from types import MappingProxyType
 
 import torch
 from torch import Tensor
+
+
+def _extended_map(
+    value: Tensor, mapping, bounds: tuple[float, float], image: tuple[float, float]
+) -> Tensor:
+    """Extend an increasing scalar map constantly beyond its domain.
+
+    Parameters
+    ----------
+    value : Tensor
+        Evaluation points.
+    mapping : callable
+        Interior increasing map.
+    bounds : tuple[float, float]
+        Domain bounds of that map.
+    image : tuple[float, float]
+        Corresponding image endpoints, including finite limits.
+
+    Returns
+    -------
+    Tensor
+        Mapped points, with the image limits beyond either domain boundary.
+    """
+    if bool(value.isnan().any()):
+        raise ValueError("scalar interval bounds must not be NaN")
+    low, high = bounds
+    inside = (value > low) & (value < high) & torch.isfinite(value)
+    anchor = (
+        (low + high) / 2
+        if math.isfinite(low) and math.isfinite(high)
+        else low + 1
+        if math.isfinite(low)
+        else high - 1
+        if math.isfinite(high)
+        else 0.0
+    )
+    mapped = mapping(torch.where(inside, value, anchor))
+    return torch.where(inside, mapped, torch.where(value <= low, image[0], image[1]))
 
 
 class Bijector(ABC):
@@ -48,6 +87,63 @@ class Bijector(ABC):
     Implementations override the four primitive methods; the
     `__call__`, `Compose`, and `inv` helpers compose them.
     """
+
+    _domain_bounds: tuple[float, float] | None = None
+    _image_bounds: tuple[float, float] | None = None
+
+    def _interval_preimage(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Pull back scalar bounds through a known increasing bijection.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Bounds in the codomain, including extended-real endpoints.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Extended-real bounds in the domain.
+
+        Raises
+        ------
+        NotImplementedError
+            If the bijector has no scalar interval capability.
+        """
+        if self._image_bounds is None or self._domain_bounds is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} does not declare a scalar interval preimage"
+            )
+        return (
+            _extended_map(low, self.inverse, self._image_bounds, self._domain_bounds),
+            _extended_map(high, self.inverse, self._image_bounds, self._domain_bounds),
+        )
+
+    def _interval_image(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Map scalar bounds through a known increasing bijection.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Bounds in the domain, including extended-real endpoints.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Bounds in the image.
+
+        Raises
+        ------
+        NotImplementedError
+            If no scalar domain contract is declared.
+        """
+        if self._domain_bounds is None or self._image_bounds is None:
+            raise NotImplementedError(
+                "interval images require a scalar domain contract"
+            )
+        return (
+            _extended_map(low, self.forward, self._domain_bounds, self._image_bounds),
+            _extended_map(high, self.forward, self._domain_bounds, self._image_bounds),
+        )
 
     @abstractmethod
     def forward(self, x: Tensor) -> Tensor: ...
@@ -83,6 +179,41 @@ class InverseBijector(Bijector):
     def __init__(self, base: Bijector) -> None:
         self.base = base
 
+    def _interval_preimage(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Use the base forward map when pulling back its inverse.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Bounds in the base domain.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Bounds in the base image.
+
+        Raises
+        ------
+        NotImplementedError
+            If the base lacks an explicit scalar domain contract.
+        """
+        return self.base._interval_image(low, high)
+
+    def _interval_image(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Use the original preimage as the inverse bijector's image.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Scalar bounds in the inverse domain.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Bounds in the inverse image.
+        """
+        return self.base._interval_preimage(low, high)
+
     def forward(self, x: Tensor) -> Tensor:
         return self.base.inverse(x)
 
@@ -105,6 +236,36 @@ class ComposeBijector(Bijector):
     def __init__(self, outer: Bijector, inner: Bijector) -> None:
         self.outer = outer
         self.inner = inner
+
+    def _interval_preimage(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Compose the same interval capability as the underlying scalar maps.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Bounds in the final image.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Bounds in the original domain.
+        """
+        return self.inner._interval_preimage(*self.outer._interval_preimage(low, high))
+
+    def _interval_image(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Compose images in the same order as the underlying forward maps.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Scalar bounds in the original domain.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Bounds in the final image.
+        """
+        return self.outer._interval_image(*self.inner._interval_image(low, high))
 
     def forward(self, x: Tensor) -> Tensor:
         return self.outer.forward(self.inner.forward(x))
@@ -130,6 +291,9 @@ class IdentityBijector(Bijector):
     and as the trivial pushforward.
     """
 
+    _domain_bounds = (-math.inf, math.inf)
+    _image_bounds = (-math.inf, math.inf)
+
     def forward(self, x: Tensor) -> Tensor:
         return x
 
@@ -147,6 +311,9 @@ class ExpBijector(Bijector):
     """The exponential map $f(x) = e^x$ from $\\mathbb{R}$ to
     $(0, \\infty)$. Jacobian log-determinant is $x$.
     """
+
+    _domain_bounds = (-math.inf, math.inf)
+    _image_bounds = (0.0, math.inf)
 
     def forward(self, x: Tensor) -> Tensor:
         return torch.exp(x)
@@ -166,6 +333,9 @@ class LogBijector(Bijector):
     $\\mathbb{R}$. Inverse of [`ExpBijector`][quivers.continuous.bijectors.ExpBijector];
     Jacobian log-determinant is $-\\log x$.
     """
+
+    _domain_bounds = (0.0, math.inf)
+    _image_bounds = (-math.inf, math.inf)
 
     def forward(self, x: Tensor) -> Tensor:
         return torch.log(x)
@@ -189,6 +359,9 @@ class SigmoidBijector(Bijector):
     is stable in both tails.
     """
 
+    _domain_bounds = (-math.inf, math.inf)
+    _image_bounds = (0.0, 1.0)
+
     def forward(self, x: Tensor) -> Tensor:
         return torch.sigmoid(x)
 
@@ -206,6 +379,9 @@ class LogitBijector(Bijector):
     """The logit $f(x) = \\log(x / (1 - x))$ from $(0, 1)$ to
     $\\mathbb{R}$. Inverse of [`SigmoidBijector`][quivers.continuous.bijectors.SigmoidBijector].
     """
+
+    _domain_bounds = (0.0, 1.0)
+    _image_bounds = (-math.inf, math.inf)
 
     def forward(self, x: Tensor) -> Tensor:
         return torch.logit(x)
@@ -234,6 +410,9 @@ class SoftplusBijector(Bijector):
     $\\log|df^{-1}/dy| = -\\log(1 - e^{-y}) = -\\log(-\\mathrm{expm1}(-y))$.
     """
 
+    _domain_bounds = (-math.inf, math.inf)
+    _image_bounds = (0.0, math.inf)
+
     def forward(self, x: Tensor) -> Tensor:
         return torch.nn.functional.softplus(x)
 
@@ -252,6 +431,9 @@ class AffineBijector(Bijector):
     `scale` must be strictly positive; the Jacobian log-determinant
     is $\\log\\,\\text{scale}$, broadcast to the input shape.
     """
+
+    _domain_bounds = (-math.inf, math.inf)
+    _image_bounds = (-math.inf, math.inf)
 
     def __init__(
         self,

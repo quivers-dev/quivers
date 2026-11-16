@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 47 programs of the [examples gallery](examples/index.md) and for 147 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 47 programs of the [examples gallery](examples/index.md) and for 151 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 14 / 47          | 73 / 147   |
-| [church](semantics/transpile-correctness/church.md)   | 16 / 47          | 95 / 147   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 23 / 47          | 110 / 147  |
-| [gen](semantics/transpile-correctness/gen.md)         | 21 / 47          | 99 / 147   |
-| [jags](semantics/transpile-correctness/jags.md)       | 20 / 47          | 83 / 147   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 24 / 47          | 125 / 147  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 23 / 47          | 111 / 147  |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 24 / 47          | 127 / 147  |
-| [stan](semantics/transpile-correctness/stan.md)       | 23 / 47          | 99 / 147   |
-| [turing](semantics/transpile-correctness/turing.md)   | 21 / 47          | 103 / 147  |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 23 / 47          | 104 / 147  |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 14 / 47          | 73 / 151   |
+| [church](semantics/transpile-correctness/church.md)   | 16 / 47          | 95 / 151   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 23 / 47          | 110 / 151  |
+| [gen](semantics/transpile-correctness/gen.md)         | 21 / 47          | 99 / 151   |
+| [jags](semantics/transpile-correctness/jags.md)       | 20 / 47          | 83 / 151   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 24 / 47          | 125 / 151  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 23 / 47          | 111 / 151  |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 24 / 47          | 127 / 151  |
+| [stan](semantics/transpile-correctness/stan.md)       | 23 / 47          | 99 / 151   |
+| [turing](semantics/transpile-correctness/turing.md)   | 21 / 47          | 103 / 151  |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 23 / 47          | 104 / 151  |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -161,15 +161,19 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/marginalize_per_group_prior_shared_class` | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_shared_prior_scalar_let`      | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/marginalize_step`                         | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_alr_reference`                    | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/observe_bernoulli_logits`                 | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_bernoulli_logits_rows`            | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
 | `steps/observe_binomial_logits`                  | no   | no     | yes     | no  | no   | yes     | yes  | yes  | yes  | yes    | no     |
 | `steps/observe_class_code`                       | no   | yes    | yes     | yes | yes  | yes     | yes  | yes  | yes  | yes    | yes    |
+| `steps/observe_com_poisson_log_rate`             | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/observe_continuous_bernoulli_logits`      | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/observe_dirichlet_multinomial`            | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/observe_gather_event_vector`              | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | yes    | yes    |
 | `steps/observe_gather_matrix_row`                | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
 | `steps/observe_geometric_logits`                 | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_logits_data`                      | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_multinomial_logits`               | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/observe_mvn_host_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_mvn_lkj_factor`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_negative_binomial_logits`         | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
@@ -811,7 +815,7 @@ Every backend reports it in the same words. `bugs` on `stochastic_volatility` re
 
 ### Refused everywhere, for unrelated reasons
 
-No backend renders `steps/observe_continuous_bernoulli_logits`, and no kind is reported by all of them, so the refusals are per-target limits that happen to overlap. Section 3 carries each backend's own reason.
+No backend renders `steps/observe_alr_reference`, `steps/observe_com_poisson_log_rate`, `steps/observe_continuous_bernoulli_logits`, `steps/observe_dirichlet_multinomial`, `steps/observe_multinomial_logits`, and no kind is reported by all of them, so the refusals are per-target limits that happen to overlap. Section 3 carries each backend's own reason.
 
 ## 3. What each backend alone refuses
 

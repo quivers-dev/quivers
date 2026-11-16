@@ -38,7 +38,8 @@ from quivers.qiec.canonical import (
     tensor_type,
 )
 from quivers.qiec.builtins import BUILTIN_EFFECTS
-from quivers.qiec.families import FAMILIES, DistributionFamily
+from quivers.qiec.families import FAMILIES
+from quivers.qiec.checking import _plated_sample_type
 from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.effects import render_row
 from quivers.qiec.types import render_static
@@ -75,6 +76,7 @@ from quivers.qiec import (
     ResumptionType,
     DistributionValue,
     LogDensity,
+    LogMass,
     SiteValue,
     If,
     PrimitiveApplication,
@@ -3241,6 +3243,10 @@ class _Elaborator(
                 return self._lower_log_density(
                     authored, scope, context, static_bindings, path
                 )
+            if authored.func == "log_mass":
+                return self._lower_log_mass(
+                    authored, scope, context, static_bindings, path
+                )
             macro = self._lambda_macros.get(authored.func)
             if macro is not None:
                 return self._lower_macro_application(
@@ -3337,7 +3343,20 @@ class _Elaborator(
         authored: surface.LetExprCall,
         position: int,
     ) -> surface.LetExprLambda:
-        """Resolve one inline or locally named lambda argument."""
+        """Resolve one inline or locally named lambda argument.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            Source application, retained for diagnostics.
+        position : int
+            Zero-based argument position containing the lambda.
+
+        Returns
+        -------
+        surface.LetExprLambda
+            Inline lambda or the body of a resolved local lambda binding.
+        """
         if position >= len(authored.args):
             self._fail(
                 authored,
@@ -3362,7 +3381,20 @@ class _Elaborator(
         source: surface.LetExprNode,
         index: surface.LetExprNode,
     ) -> surface.LetExprIndex:
-        """Build the source expression selecting one leading-axis item."""
+        """Build the source expression selecting one leading-axis item.
+
+        Parameters
+        ----------
+        source : surface.LetExprNode
+            Source collection expression.
+        index : surface.LetExprNode
+            Leading-axis index expression.
+
+        Returns
+        -------
+        surface.LetExprIndex
+            Selection preserving the source expression location.
+        """
         return surface.LetExprIndex(
             array=source,
             indices=(index,),
@@ -3375,7 +3407,20 @@ class _Elaborator(
         context: CheckContext,
         path: tuple[str | int, ...],
     ) -> str:
-        """Choose a deterministic comprehension index absent from ``context``."""
+        """Choose a deterministic comprehension index absent from ``context``.
+
+        Parameters
+        ----------
+        context : CheckContext
+            Value typing context.
+        path : tuple[str | int, ...]
+            Structural declaration path used to name local binders.
+
+        Returns
+        -------
+        str
+            Deterministic index name absent from the current value context.
+        """
         stem = "_".join(str(item) for item in path if isinstance(item, str))
         base = f"__{stem or 'collection'}_index"
         occupied = {local.name for local in context.locals}
@@ -3571,7 +3616,28 @@ class _Elaborator(
         path: tuple[str | int, ...],
         expected: TypeExpr | None,
     ) -> Value:
-        """Lower the checked pure collection operations."""
+        """Lower the checked pure collection operations.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            Source application, retained for diagnostics.
+        scope : Telescope
+            Static telescope in scope.
+        context : CheckContext
+            Value typing context.
+        static_bindings : Mapping[str, StaticArgument] or None
+            Bindings from an enclosing static refinement.
+        path : tuple[str | int, ...]
+            Structural declaration path used to name local binders.
+        expected : TypeExpr or None
+            Optional expected result type.
+
+        Returns
+        -------
+        Value
+            Checked collection value expressed in existing QIEC terms.
+        """
         if authored.func == "map":
             return self._lower_map(authored, scope, context, static_bindings, path)
         if authored.func == "length":
@@ -4109,7 +4175,8 @@ class _Elaborator(
             zip(record.parameters, authored.args, strict=False)
         ):
             numeric = (
-                parameter.constraint not in ("boolean", "sampleable", "transform")
+                parameter.constraint
+                not in ("boolean", "sampleable", "transform", "numeric")
                 and "integer" not in parameter.constraint
             )
             if parameter.rank > 0 and isinstance(argument, surface.LetExprList):
@@ -4132,88 +4199,33 @@ class _Elaborator(
                     REAL if numeric and parameter.rank == 0 else None,
                 )
             arguments.append((parameter.name, value))
-        if record.event_rank == 0:
-            result_type: TypeExpr = sampleable_type(record.element)
-        else:
-            result_type = sampleable_type(
-                self._event_type(record, arguments, context, authored, expected)
-            )
+        # Use the same sample-carrier and dependent-shape rules as the kernel.
         value = DistributionValue(
             family=record.id,
             name=record.name,
             arguments=tuple(arguments),
-            result_type=result_type,
+            result_type=expected or sampleable_type(record.element),
             origin=self._origin(authored, path, "distribution"),
         )
+        argument_types = {
+            name: self._value_type(argument, context, authored)
+            for name, argument in arguments
+        }
+        try:
+            result_type = _plated_sample_type(value, record, argument_types)
+        except KernelError as error:
+            if not record.event_sources and expected is None and record.event_rank:
+                self._fail(
+                    authored,
+                    f"family {record.name!r} samples a rank-{record.event_rank} tensor "
+                    "whose shape no parameter carries; annotate the position with its "
+                    "Sampleable[Tensor[...]] type",
+                    code="qiec-distribution",
+                )
+            self._fail(authored, str(error), code="qiec-distribution")
+        value = value.with_(result_type=result_type)
         self._value_type(value, context, authored)
         return value
-
-    def _event_type(
-        self,
-        record: DistributionFamily,
-        arguments: Sequence[tuple[str, Value]],
-        context: CheckContext,
-        authored: surface.LetExprCall,
-        expected: TypeExpr | None,
-    ) -> TypeExpr:
-        """The sample type of a family whose events are tensors.
-
-        Parameters
-        ----------
-        record : DistributionFamily
-            The family, with a positive event rank.
-        arguments : Sequence[tuple[str, Value]]
-            The lowered parameters.
-        context : CheckContext
-            Value bindings in scope.
-        authored : surface.LetExprCall
-            The application, for diagnostics.
-        expected : TypeExpr or None
-            The ``Sampleable`` type the position calls for, when fixed.
-
-        Returns
-        -------
-        TypeExpr
-            ``Tensor[E](event)``: the event shape is the trailing
-            dimensions of the parameter the registry names as its source,
-            or, for a family whose event shape no parameter carries, the
-            shape the expected type spells.
-
-        Raises
-        ------
-        QiecDiagnosticError
-            If neither a source parameter nor the expected type fixes
-            the event shape.
-        """
-        supplied = record.event_argument(arguments)
-        if supplied is not None:
-            shape = tensor_shape(self._value_type(supplied[1], context, authored))
-            if shape is not None and len(shape[1]) >= record.event_rank:
-                event = shape[1][len(shape[1]) - record.event_rank :]
-                return tensor_type(record.element, event)
-        sampled = sampled_element(expected) if expected is not None else None
-        expected_shape = tensor_shape(sampled) if sampled is not None else None
-        if (
-            expected_shape is not None
-            and expected_shape[0] == record.element
-            and len(expected_shape[1]) == record.event_rank
-        ):
-            return tensor_type(record.element, expected_shape[1])
-        if record.event_sources:
-            self._fail(
-                authored,
-                f"family {record.name!r} needs parameter "
-                f"{' or '.join(repr(name) for name in record.event_sources)} as a "
-                "Tensor to fix its event shape",
-                code="qiec-distribution",
-            )
-        self._fail(
-            authored,
-            f"family {record.name!r} samples a rank-{record.event_rank} tensor "
-            "whose shape no parameter carries; annotate the position with its "
-            "Sampleable[Tensor[...]] type",
-            code="qiec-distribution",
-        )
 
     def _lower_site(
         self, authored: surface.LetExprCall, expected: TypeExpr | None
@@ -4310,6 +4322,52 @@ class _Elaborator(
             sampleable=sampleable,
             value=point,
             origin=self._origin(authored, path, "log-density"),
+        )
+        self._value_type(value, context, authored)
+        return value
+
+    def _lower_log_mass(
+        self,
+        authored: surface.LetExprCall,
+        scope: Telescope,
+        context: CheckContext,
+        static_bindings: Mapping[str, StaticArgument] | None,
+        path: tuple[str | int, ...],
+    ) -> LogMass:
+        """Lower a pure measure-mass query using the existing family values.
+
+        Parameters
+        ----------
+        authored : surface.LetExprCall
+            The source log_mass application.
+        scope : Telescope
+            Static declarations in scope.
+        context : CheckContext
+            Value bindings in scope.
+        static_bindings : Mapping[str, StaticArgument] or None
+            Enclosing static refinements.
+        path : tuple[str or int, ...]
+            Structural source path.
+
+        Returns
+        -------
+        LogMass
+            A total log weight over the supplied measure.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If arity, family construction, or sampleable type is invalid.
+        """
+        if len(authored.args) != 1:
+            self._fail(
+                authored, "log_mass takes one distribution", code="qiec-distribution"
+            )
+        sampleable = self._lower_value(
+            authored.args[0], scope, context, static_bindings, (*path, 0)
+        )
+        value = LogMass(
+            sampleable=sampleable, origin=self._origin(authored, path, "log-mass")
         )
         self._value_type(value, context, authored)
         return value
@@ -5002,6 +5060,18 @@ class _Elaborator(
         }
 
         def fresh(role: str) -> Local:
+            """Allocate a fresh integer binder for one local comprehension.
+
+            Parameters
+            ----------
+            role : str
+                Binder role within the enclosing operation.
+
+            Returns
+            -------
+            Local
+                Fresh integer local absent from the occupied names.
+            """
             name = f"__{stem}_{role}"
             suffix = 0
             while name in taken:
@@ -5140,6 +5210,18 @@ class _Elaborator(
         }
 
         def fresh(role: str) -> Local:
+            """Allocate a fresh integer binder for one local comprehension.
+
+            Parameters
+            ----------
+            role : str
+                Binder role within the enclosing operation.
+
+            Returns
+            -------
+            Local
+                Fresh integer local absent from the occupied names.
+            """
             local_name = f"__{stem}_{role}"
             suffix = 0
             while local_name in taken:
@@ -5153,6 +5235,20 @@ class _Elaborator(
         ) -> Value:
             # A tensor of the argument's shape whose entry at a row and
             # position is `entry(row, row binders, position)`.
+            """Build a tensor from an entry expression over rows and positions.
+
+            Parameters
+            ----------
+            role : str
+                Local naming role.
+            entry : Callable[[Value, tuple[Var, ...], Var], Value]
+                Entry builder receiving the row, row indices, and final-axis position.
+
+            Returns
+            -------
+            Value
+                Comprehension with the original tensor shape.
+            """
             lead = [fresh(f"{role}_row{axis}") for axis in range(len(leading))]
             position = fresh(f"{role}_entry")
             row: Value = source
@@ -5184,6 +5280,20 @@ class _Elaborator(
         def at_row(statistic: Value, rows: tuple[Var, ...]) -> Value:
             # The statistic of one row: a number for a vector argument,
             # else an entry of the tensor over the leading axes.
+            """Select the statistic at one tuple of row indices.
+
+            Parameters
+            ----------
+            statistic : Value
+                Scalar or leading-axis statistic tensor.
+            rows : tuple[Var, ...]
+                Indices selecting one row.
+
+            Returns
+            -------
+            Value
+                Scalar statistic of that row.
+            """
             value = statistic
             for axis, row in enumerate(rows):
                 rest = leading[axis + 1 :]
@@ -5195,10 +5305,38 @@ class _Elaborator(
             return value
 
         def mul(left: Value, right: Value, role: str) -> Value:
+            """Lower one checked scalar multiplication.
+
+            Parameters
+            ----------
+            left, right : Value
+                Real scalar operands.
+            role : str
+                Structural path role for this multiplication.
+
+            Returns
+            -------
+            Value
+                Checked multiplication value.
+            """
             return self._primitive("mul_real", (left, right), authored, (*path, role))
 
         def statistic(role: str, rows_of: Value) -> Local:
             # The mean of each row of `rows_of`, bound once.
+            """Bind each row mean once for subsequent normalization.
+
+            Parameters
+            ----------
+            role : str
+                Local statistic naming role.
+            rows_of : Value
+                Tensor whose final axis is averaged.
+
+            Returns
+            -------
+            Local
+                Bound row-statistic local.
+            """
             local = self._shared_local(
                 f"{name}_{role}",
                 REAL if not leading else tensor_type(REAL, leading),
@@ -6167,6 +6305,24 @@ class _Elaborator(
         and every transpiler continue to consume the existing checked core.
         A source other than a variable or literal is bound once ahead of
         the calls, and each call reads its item from that binding.
+
+        Parameters
+        ----------
+        authored : surface.QiecCallComputation
+            Source traversal computation.
+        scope : Telescope
+            Static telescope in scope.
+        context : CheckContext
+            Value typing context.
+        path : tuple[str | int, ...]
+            Structural declaration path used to name local binders.
+        static_bindings : Mapping[str, StaticArgument] or None
+            Bindings from an enclosing static refinement.
+
+        Returns
+        -------
+        Computation
+            Sequenced checked calls preserving effects and source provenance.
         """
         if authored.static_arguments:
             self._fail(

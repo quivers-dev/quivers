@@ -557,13 +557,13 @@ class BayesianFit(ValueModel):
             raise ValueError(
                 "ordinal probabilities depend on thresholds; use posterior_epred"
             )
-        com_log_rate = (
-            self.family.name == "com_poisson"
+        retained_log_rate = (
+            (self.family.name == "com_poisson" or self.family.baseline is not None)
             and self.family.location_link.name == "log"
             and parameter == "mu"
         )
         binding = (
-            ("mu" if transform and not com_log_rate else "eta")
+            ("mu" if transform and not retained_log_rate else "eta")
             if parameter == "mu"
             else (parameter if transform else f"dpar_{parameter}_eta")
         )
@@ -602,7 +602,7 @@ class BayesianFit(ValueModel):
         def values():
             for recorded in replay(self, draws, shape, context=context):
                 value = recorded.sites[binding].value
-                if com_log_rate and transform:
+                if retained_log_rate and transform:
                     value = value.exp()
                 if category_specific:
                     proportional = row_binding(value, rows).unsqueeze(-1)
@@ -670,9 +670,10 @@ class BayesianFit(ValueModel):
         num_samples : int or None
             Draw count under the convention of `draws`.
         mc_samples : int or None
-            Explicit Monte Carlo budget for bounded response laws without a
-            closed mean. Sampling uses chunks of at most 64; None requires an
-            analytic expectation. Logistic normal responses require a budget.
+            Explicit Monte Carlo budget for bounded or certified finite-mean
+            response laws without a closed mean. Sampling uses chunks of at most
+            64; None requires an analytic expectation. Logistic-normal and Cox
+            response means require a budget.
         component : {"response", "decision"}
             Wiener response means are positive reaction times, including delay.
             Decision returns lower/upper probabilities for a decision response.

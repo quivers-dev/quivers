@@ -33,6 +33,35 @@ def _qvr_qiec_log_density(distribution, value):
     return distribution.log_prob(_qvr_qiec_array(value))
 
 
+def _qvr_qiec_log_mass(distribution, retained=0, shape=()):
+    # Query raw measures through their own normalizer. Host probability
+    # distributions are normalized by definition; never estimate at a point.
+    normalizer = getattr(distribution, "log_normalizer", None)
+    if callable(normalizer):
+        mass = torch.as_tensor(normalizer())
+    else:
+        parameters = [
+            value
+            for name in distribution.arg_constraints
+            if isinstance(value := distribution.__dict__.get(name), torch.Tensor)
+        ]
+        anchor = sum(
+            torch.where(torch.isfinite(point), point, 0) * 0
+            for value in parameters
+            for point in (value[(0,) * value.ndim] if value.numel() else value.sum(),)
+        )
+        mass = torch.as_tensor(anchor)
+    shape = tuple(shape) or tuple(distribution.batch_shape)
+    mass = mass.expand(shape)
+    if (
+        isinstance(retained, bool)
+        or not isinstance(retained, int)
+        or not 0 <= retained <= mass.ndim
+    ):
+        raise ValueError("log_mass retained axes must be within the batch rank")
+    return mass.sum(tuple(range(retained, mass.ndim))) if mass.ndim > retained else mass
+
+
 def _qvr_qiec_site_names():
     # Site labels a helper's draws and scores carry, counted so the n-th
     # occurrence of a label in one run of the model is "<label>@<n>", as

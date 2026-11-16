@@ -1452,8 +1452,8 @@ _FAMILY_SUPPORTS: dict[str, _constraints.Constraint] = {
 
 _OPERATOR_PARAM_NAMES: dict[str, tuple[str, ...]] = {
     "PointMass": ("value",),
-    "Restrict": ("base", "low", "high"),
-    "Truncate": ("base", "low", "high"),
+    "Restrict": ("base", "low", "high", "lower_closed", "upper_closed"),
+    "Truncate": ("base", "low", "high", "lower_closed", "upper_closed"),
     "Pushforward": ("base", "bijector"),
     "Mixture": ("weights", "components"),
     "Independent": ("base", "reinterpreted_batch_ndims"),
@@ -2019,6 +2019,8 @@ def _unwrap_draw_arg(arg):
     round-trip unchanged; the operator dispatch above handles them.
     """
     if isinstance(arg, DrawArgName):
+        if arg.text in {"true", "false"}:
+            return arg.text == "true"
         return arg.text
     if isinstance(arg, DrawArgScalar):
         return arg.value
@@ -2136,11 +2138,17 @@ def _eval_draw_arg_value(
     must be resolved at trace time, which the operator dispatch
     handles by raising for the current implementation).
     """
+    if isinstance(arg, D.Distribution | torch.Tensor):
+        return arg
+    if isinstance(arg, tuple | list):
+        return [_eval_draw_arg_value(item, variable_types) for item in arg]
     if isinstance(arg, DrawArgNamed):
         return _eval_draw_arg_value(arg.value, variable_types)
     if isinstance(arg, DrawArgScalar):
         return arg.value
     if isinstance(arg, DrawArgName):
+        if arg.text in {"true", "false"}:
+            return arg.text == "true"
         return arg.text
     if isinstance(arg, DrawArgList):
         return [_eval_draw_arg_value(item, variable_types) for item in arg.items]
@@ -2273,9 +2281,9 @@ def _build_operator_value(
             raise ValueError(f"PointMass: expected 1 arg, got {len(evaluated)}")
         return _MeasurePointMass(torch.as_tensor(evaluated[0]))
     if family in ("Restrict", "Truncate"):
-        if len(evaluated) < 2 or len(evaluated) > 3:
+        if len(evaluated) < 2 or len(evaluated) > 5:
             raise ValueError(
-                f"{family}: expected (base[, low, high]), got {len(evaluated)} args"
+                f"{family}: expected base, bounds, and optional endpoint flags, got {len(evaluated)} args"
             )
         base = evaluated[0]
         if not hasattr(base, "log_prob"):
@@ -2287,7 +2295,13 @@ def _build_operator_value(
         high = named.get("high")
         low_t = torch.as_tensor(low) if low is not None else None
         high_t = torch.as_tensor(high) if high is not None else None
-        return _MeasureRestrict(base, low=low_t, high=high_t)
+        return _MeasureRestrict(
+            base,
+            low=low_t,
+            high=high_t,
+            lower_closed=named.get("lower_closed", True),
+            upper_closed=named.get("upper_closed", True),
+        )
     if family == "Pushforward":
         if len(evaluated) != 2:
             raise ValueError(
@@ -2313,7 +2327,7 @@ def _build_operator_value(
                 f"Mixture: expected (weights, components), got {len(evaluated)} args"
             )
         weights_raw, components_raw = evaluated
-        weights = torch.as_tensor(weights_raw, dtype=torch.float32)
+        weights = torch.as_tensor(weights_raw)
         if not isinstance(components_raw, list):
             raise ValueError("Mixture: components must be a list literal")
         return _MeasureMixture(weights, components_raw)
@@ -2408,6 +2422,113 @@ def _gathered_width(arg: Indexed, extents: tuple[int, ...]) -> int:
             f"axes of a value with {len(extents)}"
         )
     return math.prod(extents[len(arg.indices) :])
+
+
+def _raw_distribution_value(
+    family: str,
+    arguments: Mapping[str, object],
+    event_shape: tuple[int, ...] = (),
+    plate_shape: tuple[int, ...] = (),
+) -> D.Distribution:
+    """Construct a checked distribution value before boundary normalization.
+
+    Parameters
+    ----------
+    family : str
+        Nominal family identity from the checked semantic registry.
+    arguments : Mapping[str, object]
+        Named parameters, retaining tensors and their gradients.
+    event_shape : tuple[int, ...]
+        Intrinsic event dimensions supplied by checked shape elaboration.
+    plate_shape : tuple[int, ...]
+        Declared independent replication axes before intrinsic event axes.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        Raw probability distribution or unnormalized Measure.
+
+    Raises
+    ------
+    ValueError
+        If no existing native constructor accepts the checked parameters.
+    """
+    values = dict(arguments)
+    if plate_shape:
+        from quivers.qiec.families import family as semantic_family
+
+        record = semantic_family(family)
+        ranks = {parameter.name: parameter.rank for parameter in record.parameters}
+        for name, value in tuple(values.items()):
+            if isinstance(value, D.Distribution):
+                continue
+            if isinstance(value, list | tuple) and any(
+                isinstance(item, D.Distribution) for item in value
+            ):
+                continue
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int | float | torch.Tensor | list | tuple):
+                tensor = torch.as_tensor(value)
+                rank = ranks.get(name, 0)
+                intrinsic = tuple(tensor.shape[-rank:]) if rank else ()
+                values[name] = tensor.expand(*plate_shape, *intrinsic)
+    if family == "Truncated":
+        # The normalized source wrapper is the existing restriction algebra;
+        # keep raw Restrict itself unnormalized at query sites.
+        return _MeasureNormalize(
+            _MeasureRestrict(values["base"], low=values["low"], high=values["high"])
+        )
+    if family in _OPERATOR_FAMILIES:
+        return _build_operator_value(
+            family,
+            tuple(values.values()),
+            {},
+            bound=True,
+            parameter_names=tuple(values),
+        )
+    spec = FAMILY_REGISTRY.get(family)
+    if spec is not None:
+        return spec.dist_class(
+            **{
+                name: torch.as_tensor(value)
+                if isinstance(value, list | tuple)
+                else value
+                for name, value in values.items()
+            }
+        )
+    if family in _DIM_DEPENDENT_FAMILIES:
+        if not event_shape:
+            raise ValueError(f"{family} requires its checked intrinsic event shape")
+        builder = _dim_dependent_builder(
+            family, Euclidean(name="_measure_event", dim=event_shape[-1])
+        )
+        return builder([torch.as_tensor(value) for value in values.values()])
+    selected = next(
+        (
+            key
+            for key in _ALTERNATIVE_BUILDERS
+            if key[0] == family and set(key[1]) == set(values)
+        ),
+        None,
+    )
+    if selected is not None:
+        return _ALTERNATIVE_BUILDERS[selected](
+            [torch.as_tensor(values[name]) for name in selected[1]]
+        )
+    existing = _FAMILY_BUILDERS.get(family)
+    if existing is None:
+        raise ValueError(f"{family} has no native distribution-value constructor")
+    names, builder, _ = existing
+    if set(names) != set(values):
+        # The semantic spelling eta names the native ordered-logit predictor.
+        if family == "OrderedLogistic" and "eta" in values:
+            values["predictor"] = values.pop("eta")
+        if set(names) != set(values):
+            raise ValueError(
+                f"{family} has no native constructor for parameters {tuple(arguments)}"
+            )
+    return builder([torch.as_tensor(values[name]) for name in names])
 
 
 def make_inline_distribution(

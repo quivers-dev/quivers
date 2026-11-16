@@ -128,6 +128,16 @@ priors remain unchanged. Explicit `initial_values` override the automatic
 entries and can also set group sites. A custom SVI guide used with this
 automatic initialization must also accept the mapping.
 
+## Hazard rate and expected event time
+
+For a `cox` fit, `posterior_linpred(transform=True)` returns the positive
+hazard multiplier. `posterior_predict` draws positive event times from
+the retained spline baseline and its explicit constant-hazard tail.
+`posterior_epred(mc_samples=...)` approximates expected event time using
+the shared finite-mean sampler; omitting the budget fails explicitly.
+The fitted knots and coefficient table are retained on new predictor rows.
+See the [Cox example](../../guides/analysis-data-and-formulas.md#spline-proportional-hazards).
+
 ## Trial counts
 
 Trial-count families use `binomial_trials` for either one common count or a

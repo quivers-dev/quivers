@@ -71,16 +71,15 @@ from quivers.dsl.ast_nodes import (
     ExprIdent,
     LetExprBinOp,
     LetExprCall,
-    LetExprFactor,
     LetExprIndex,
     LetExprLiteral,
     LetExprNode,
     LetExprVar,
-    LetFactorBinder,
-    LetFactorCase,
     LetStep,
     DiscreteConstructor,
     DrawArgNamed,
+    DrawArg,
+    DrawArgList,
     DrawArgDist,
     DrawArgScalar,
     Module,
@@ -104,6 +103,17 @@ from quivers.dsl.ast_nodes import (
 from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.family_schemas import family_parameter_names
 from quivers.formulas.family import Family
+from quivers.formulas._ast import (
+    _let,
+    _var,
+    _add,
+    _mul,
+    _sub,
+    _div,
+    _call,
+    _index,
+    _factor,
+)
 from quivers.formulas.formula import (
     FixedColumn,
     Formula,
@@ -257,7 +267,7 @@ def _draw(
 
 def _auxiliary_draw(var: str, prior: str, *, lower: float | None = None) -> SampleStep:
     """Parse one prior call, retaining the compositional measure algebra."""
-    if "(" not in prior.partition("(")[2]:
+    if "(" not in prior.partition("(")[2] and "[" not in prior:
         family, arguments = _parse_prior_call(prior)
         step = _draw(var, family, arguments)
         assert isinstance(step, SampleStep)
@@ -281,6 +291,59 @@ def _auxiliary_draw(var: str, prior: str, *, lower: float | None = None) -> Samp
             raise ValueError(
                 "an auxiliary prior must contain a single distribution call"
             )
+
+        def named_arguments(
+            family: str, arguments: tuple[DrawArg, ...]
+        ) -> tuple[DrawArg, ...]:
+            """Translate formula-prior positions to canonical named draw arguments.
+
+            Parameters
+            ----------
+            family : str
+                Family named by this prior node.
+            arguments : tuple[DrawArg, ...]
+                Parsed positional or named prior arguments.
+
+            Returns
+            -------
+            tuple[DrawArg, ...]
+                Named arguments with nested distributions translated recursively.
+
+            Raises
+            ------
+            ValueError
+                If a positional prior argument names no canonical parameter.
+            """
+            parameters = family_parameter_names(family) or ()
+            result = []
+            for position, argument in enumerate(arguments):
+                name = (
+                    argument.parameter if isinstance(argument, DrawArgNamed) else None
+                )
+                value = (
+                    argument.value if isinstance(argument, DrawArgNamed) else argument
+                )
+                if isinstance(value, DrawArgDist):
+                    value = value.with_(args=named_arguments(value.family, value.args))
+                if isinstance(value, DrawArgList):
+                    value = value.with_(
+                        items=tuple(
+                            item.with_(args=named_arguments(item.family, item.args))
+                            if isinstance(item, DrawArgDist)
+                            else item
+                            for item in value.items
+                        )
+                    )
+                if name is None:
+                    if position >= len(parameters):
+                        raise ValueError(
+                            f"prior family {family!r} has no positional parameter {position}"
+                        )
+                    name = parameters[position]
+                result.append(DrawArgNamed(parameter=name, value=value))
+            return tuple(result)
+
+        step = step.with_(args=named_arguments(step.morphism, step.args or ()))
     if lower is not None:
         if step.morphism == "Restrict":
             cuts = [
@@ -309,59 +372,6 @@ def _auxiliary_draw(var: str, prior: str, *, lower: float | None = None) -> Samp
                 ),
             )
     return step
-
-
-def _let(name: str, value: LetExprNode) -> LetStep:
-    return LetStep(name=name, value=value)
-
-
-def _var(name: str) -> LetExprVar:
-    return LetExprVar(name=name)
-
-
-def _add(*terms: LetExprNode) -> LetExprNode:
-    if not terms:
-        return LetExprLiteral(value=0.0)
-    out = terms[0]
-    for t in terms[1:]:
-        out = LetExprBinOp(op="+", left=out, right=t)
-    return out
-
-
-def _mul(left: LetExprNode, right: LetExprNode) -> LetExprNode:
-    return LetExprBinOp(op="*", left=left, right=right)
-
-
-def _sub(left: LetExprNode, right: LetExprNode) -> LetExprNode:
-    return LetExprBinOp(op="-", left=left, right=right)
-
-
-def _div(left: LetExprNode, right: LetExprNode) -> LetExprNode:
-    return LetExprBinOp(op="/", left=left, right=right)
-
-
-def _call(name: str, *args: LetExprNode) -> LetExprCall:
-    return LetExprCall(func=name, args=tuple(args))
-
-
-def _index(name: str, *indices: LetExprNode) -> LetExprIndex:
-    return LetExprIndex(array=_var(name), indices=tuple(indices))
-
-
-def _factor(
-    binders: tuple[tuple[str, str], ...],
-    *,
-    body: LetExprNode | None = None,
-    cases: tuple[tuple[int, LetExprNode], ...] = (),
-) -> LetExprFactor:
-    return LetExprFactor(
-        binders=tuple(
-            LetFactorBinder(var=name, index=TypeName(name=index))
-            for name, index in binders
-        ),
-        body=body,
-        cases=tuple(LetFactorCase(label=label, value=value) for label, value in cases),
-    )
 
 
 def _helmert_contrast(cardinality: int) -> np.ndarray:
@@ -1221,6 +1231,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     "cutpoints_raw",
                 }
             )
+        if self._family.baseline is not None:
+            names.add("sbhaz")
         if self._family.name == "mixture":
             names.update(("mixture_logit", "mixture_offset", "mixture_scale"))
         if (
@@ -3830,6 +3842,18 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             self._append_finite_object(statements, qgroup, size)
 
         program_steps: list[ProgramStep] = []
+        if self._family.baseline is not None:
+            from quivers.formulas._survival import baseline_steps
+
+            basis = self._family.baseline.resolve(formula)
+            baseline_objects, baseline_draws = baseline_steps(
+                basis,
+                prior=_auxiliary_draw("sbhaz", self._user_priors["sbhaz"])
+                if "sbhaz" in self._user_priors
+                else None,
+            )
+            statements.extend(baseline_objects)
+            program_steps.extend(baseline_draws)
         if self._family.response is not None:
             count = self._category_count(formula, family=self._family.name)
             width = len(
@@ -3935,14 +3959,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         program_steps.extend(cutpoint_steps)
 
         program_steps.append(_let("eta", eta_expr))
-        com_log_rate = (
-            self._family.name == "com_poisson"
-            and self._family.location_link.name == "log"
-        )
+        retained_log_rate = (
+            self._family.name == "com_poisson" or self._family.baseline is not None
+        ) and self._family.location_link.name == "log"
         # A COM log-rate remains useful even when exp(eta) overflows. Its
         # inverse-link prediction is evaluated on request, not as an unused
         # part of every density or native response-mean computation.
-        if not com_log_rate:
+        if not retained_log_rate:
             _append_link(
                 program_steps,
                 "mu",
@@ -3952,7 +3975,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 else self._family.location_link.name,
             )
 
-        if self._family.ordinal is not None:
+        if self._family.baseline is not None:
+            obs_args = ("baseline_breaks", "baseline_controls", "mu")
+        elif self._family.ordinal is not None:
             assert cutpoints_name is not None
             if (
                 self._family.ordinal.kind == "cumulative"
@@ -4220,7 +4245,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         else:
             obs_args = (
                 ("eta", "shape")
-                if com_log_rate
+                if retained_log_rate
                 else ("mu",) + tuple(self._family.extra_observe_args)
             )
         observation = _draw(
@@ -4233,7 +4258,22 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             if formula.modifiers.weights is not None
             else None,
         )
-        if com_log_rate:
+        if self._family.baseline is not None:
+            observation = observation.with_(
+                args=(
+                    DrawArgNamed(
+                        parameter="breaks", value=_to_draw_arg("baseline_breaks")
+                    ),
+                    DrawArgNamed(
+                        parameter="controls", value=_to_draw_arg("baseline_controls")
+                    ),
+                    DrawArgNamed(
+                        parameter="log_rate" if retained_log_rate else "rate",
+                        value=_to_draw_arg("eta" if retained_log_rate else "mu"),
+                    ),
+                ),
+            )
+        elif retained_log_rate:
             observation = observation.with_(
                 args=(
                     DrawArgNamed(parameter="log_rate", value=_to_draw_arg("eta")),

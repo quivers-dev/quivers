@@ -1065,6 +1065,7 @@ _FAMILY_ARG_NAMES: dict[str, tuple[str, ...]] = {
     "InverseGaussian": ("mu", "shape"),
     "LogNormal": ("loc", "scale"),
     "Beta": ("concentration1", "concentration0"),
+    "ExtendedBeta": ("mu", "phi", "kappa"),
     "Bernoulli": ("probs",),
     "Gamma": ("concentration", "rate"),
     "InverseGamma": ("concentration", "rate"),
@@ -1143,6 +1144,7 @@ _assert_family_arg_names_match_torch()
 # resolver-side use (the expansion pass does in-chain substitution,
 # this fallback is for standalone kernels).
 _FAMILY_DEFAULT_ARGS: dict[str, tuple[str | int | float, ...]] = {
+    "ExtendedBeta": (0.5, 2.0, 0.1),
     "Normal": (0.0, 1.0),
     "HalfNormal": (1.0,),
     "Cauchy": (0.0, 1.0),

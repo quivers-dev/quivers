@@ -51,6 +51,7 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     LogDensity,
+    LogMass,
     NewInstance,
     Perform,
     PrimitiveApplication,
@@ -2303,6 +2304,16 @@ class Evaluator:
                 },
                 natural=natural,
             )
+        if isinstance(value, LogMass):
+            sampleable = self._value(value.sampleable, environment)
+            if not isinstance(sampleable, RuntimeDistribution):
+                raise EvaluationError(
+                    "log_mass was given a runtime value with no measure mass"
+                )
+            try:
+                return sampleable.log_mass(batch_axes=len(value.batch))
+            except (ArithmeticError, ValueError) as error:
+                raise EvaluationError(f"log_mass failed: {error}") from error
         if isinstance(value, LogDensity):
             sampleable = self._value(value.sampleable, environment)
             if not isinstance(sampleable, RuntimeDistribution):

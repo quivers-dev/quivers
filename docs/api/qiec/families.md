@@ -9,7 +9,10 @@ The [support table](../../transpile-support.md) lists which families each target
 `FamilyShapeSignature` binds local Nat indices and relates each parameter's
 intrinsic dimensions to the sample event shape. Leading plate dimensions
 remain separate. Source elaboration and kernel checking instantiate this
-same contract; the concrete-dimension helper uses the shared exact Nat solver.
+same contract, including ordinary `define` computations that construct a
+family value. Typed and literal arguments contribute equations jointly,
+so coupled extent inference does not depend on parameter order. The
+concrete-dimension helper uses the shared exact Nat solver.
 Legacy event-dimension metadata is translated into this representation once.
 It does not introduce another checking path.
 

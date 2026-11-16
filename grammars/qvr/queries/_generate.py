@@ -21,6 +21,7 @@ keyword / operator / builtin lists at the top are derived.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -274,6 +275,40 @@ def render() -> str:
     return "\n".join([HEADER, *keyword_lines, "", NODE_PATTERNS])
 
 
+def sync_textmate() -> None:
+    """Generate checked identifier vocabularies in the existing TextMate template.
+
+    The structural TextMate patterns remain curated. Distribution families
+    and checked pure builtins use the same registries as Tree-sitter, the
+    language server, and the REPL. Legacy combinators keep their existing
+    TextMate classification when their grammar rule is not an expression head.
+    """
+    path = REPO_ROOT / "editors/vscode-qvr/syntaxes/qvr.tmLanguage.json"
+    if not path.is_file():
+        return
+    grammar = json.loads(path.read_text(encoding="utf-8"))
+    repository = grammar["repository"]
+    combinators = {
+        "ccg",
+        "change_base",
+        "curry_left",
+        "curry_right",
+        "dagger",
+        "freeze",
+        "lambek",
+        "trace",
+        "traverse",
+    }
+    for name, vocabulary in (
+        ("distribution-family", set(DISTRIBUTION_FAMILIES)),
+        ("builtin-function", set(BUILTIN_FUNCTIONS) | set(PURE_BUILTINS) | combinators),
+    ):
+        repository[name]["match"] = (
+            r"\b(?:" + "|".join(re.escape(word) for word in sorted(vocabulary)) + r")\b"
+        )
+    path.write_text(json.dumps(grammar, indent=2) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     out = THIS_DIR / "highlights.scm"
     out.write_text(render(), encoding="utf-8")
@@ -287,6 +322,7 @@ def main() -> int:
     )
     if mirror.is_file():
         mirror.write_text(render(), encoding="utf-8")
+    sync_textmate()
     return 0
 
 

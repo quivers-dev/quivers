@@ -221,6 +221,86 @@ Carlo average approximates that inner mean; applying softmax to the Normal
 location does not compute it. The approximation adds simulation error and
 does not change the model's kernel, priors, or observation effects.
 
+#### Normalized polynomial baseline hazards
+
+Let $0=b_0<\cdots<b_s=\tau$ and let $c_{ij}>0$ be Bernstein
+coefficients for interval $i$, with polynomial degree $k-1$. These
+structural parameters have types $[s+1]$ and $[s,k]$; they do not add
+sample-event axes. Define the baseline hazard on each interval by
+
+$$
+h_0(t)=\sum_{j=0}^{k-1}c_{ij}{k-1\choose j}
+       u^j(1-u)^{k-1-j},\qquad
+u=\frac{t-b_i}{b_{i+1}-b_i}.
+$$
+
+The normalization constraint is
+$\sum_i(b_{i+1}-b_i)\sum_j c_{ij}/k=1$. It identifies baseline
+shape separately from a positive proportional rate $\lambda$. For
+$t>\tau$, set $h_0(t)=h_0(\tau)$ and
+$H_0(t)=1+h_0(\tau)(t-\tau)$. The resulting kernel has
+
+$$
+S(t)=\exp[-\lambda H_0(t)],\qquad
+f(t)=\lambda h_0(t)\exp[-\lambda H_0(t)],\quad t\geq0.
+$$
+
+Since the endpoint hazard is positive, $S(t)\to0$; no probability mass
+is discarded beyond the fitted interval. `log_rate` denotes
+$\log\lambda$, a runtime value rather than a static extent. Normalized
+M-splines with simplex weights supply one reusable construction of the
+coefficient table. The spline basis retains its knots, degree, and tail
+policy; it introduces no second probability law or likelihood reduction.
+
+The native and reference kernels integrate Bernstein pieces directly.
+They invert the cumulative hazard by a bounded safeguarded solve on the
+retained interval and an analytic tail inverse. Ordinary floating-point
+capacity and convergence limits remain executor obligations, separate
+from this normalized denotation. Arbitrary polynomial pieces can have
+hazard jumps at knots; a spline construction supplies its own continuity.
+
+The formula translation uses simplex weights $w_j>0$, $\sum_jw_j=1$,
+and normalized M-spline basis functions $M_j$ to construct
+$h_0(t)=\sum_jw_jM_j(t)$. Its default prior is
+$w\sim\operatorname{Dirichlet}(1,\ldots,1)$. The emitted `factor`/`sum`
+contraction produces the same Bernstein coefficient table used by the
+source family; it introduces no separate likelihood implementation.
+The intercept remains an unrestricted log-rate coordinate rather than
+an additional baseline-scale parameter.
+
+A positive constant tail establishes finite first and second moments.
+The native law records this fact through its immutable
+`finite_moment_orders` certificate, independently of whether a closed
+moment formula is implemented. An explicit Monte Carlo expectation may
+use this certificate or bounded support, while an available analytic
+expectation takes precedence. This numerical request does not change
+the response law or introduce another observation effect.
+
+#### Censored extended Beta measures
+
+For `ExtendedBeta(mu, phi, kappa)`, let $a=\mu\phi$,
+$b=(1-\mu)\phi$, $s=1+2\kappa$, and
+$Y=\min(1,\max(0,sX-\kappa))$ for $X\sim\operatorname{Beta}(a,b)$.
+The parameters satisfy $0<\mu<1$, $\phi>0$, and $\kappa\geq0$.
+Relative to Lebesgue measure on $(0,1)$ together with counting measure
+on the two endpoints, its density is
+
+$$
+p_Y(y)=
+\begin{cases}
+I_{\kappa/s}(a,b), & y=0,\\
+s^{-1}p_X((y+\kappa)/s), & 0<y<1,\\
+I_{\kappa/s}(b,a), & y=1.
+\end{cases}
+$$
+
+The endpoint masses are induced by censoring; they are not independent
+inflation parameters. At $\kappa=0$ both masses vanish. The observable
+mean is the mean of this full mixed measure, whereas $\mu$ remains the
+mean of its uncensored Beta component. The implementation retains both
+endpoint coordinates to evaluate small tail masses, and uses the shared
+censoring left-CDF contract when integrating intervals that include an atom.
+
 #### COM-Poisson normalization
 
 For rate $\lambda\geq0$ and dispersion $\nu>0$, `COMPoisson` has counting-measure density

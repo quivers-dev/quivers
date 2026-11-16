@@ -147,6 +147,10 @@ distinguishes this arithmetic from user-defined index constructors.
 Distribution shape signatures use the same dependent context. Their local
 Nat telescope quantifies parameter and sample-event dimensions; each
 application freshens those binders before collecting exact shape equations.
+Known parameter shapes and any declared event shape are checked jointly;
+for instance, $n+m=5$ and $n+2m=8$ determine $n=2,m=3$ without requiring
+either equation to determine one variable alone. Source programs, pure
+computation constructors, and kernel checking use the same signature.
 For instance, an additive log-ratio normal with Gaussian coordinate extent
 $d$ takes a location tensor of shape $[d]$ and a Cholesky tensor of shape
 $[d,d]$, and returns an event of shape $[d+1]$. The optional reference
@@ -203,6 +207,26 @@ boundary: eager evaluation of both branches would change its semantics.
 An executor that cannot preserve symbolic branching must refuse it.
 
 ### 3.1 Program steps
+
+A mass query has a polymorphic structural rule, rather than a
+monomorphic scalar-primitive signature:
+
+$$
+\frac{\Gamma;\Phi\vdash d : \mathrm{Sampleable}[T]}
+     {\Gamma;\Phi\vdash \operatorname{log\_mass}(d) : \mathrm{LogWeight}}.
+$$
+
+For a measure $\mu_d$, its denotation is $\log \mu_d(\Omega)$, with
+$\log 0=-\infty$. This operation introduces no effect. The `LogMass`
+core node records its source origin and any retained batch axes; with
+retained dimensions $\bar b$, the result is
+$\mathrm{Tensor}[\mathrm{LogWeight}](\bar b)$, summing the log masses
+of independent event factors within each batch. A nonempty retained
+batch must match the distribution construction's declared batch axes.
+Intrinsic family event axes are interpreted by the distribution itself.
+Restriction preserves raw measure mass; normalization changes that
+mass to one. Neither operation may infer a normalizer from the density
+at an arbitrary outcome.
 
 The main rules are
 

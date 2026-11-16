@@ -186,6 +186,41 @@ to total mass one, `Transformed` (or `Pushforward`) takes the
 [pushforward](https://en.wikipedia.org/wiki/Pushforward_measure) along a bijection, and
 `Independent` reinterprets batch axes as event axes.
 
+`log_mass(d)` returns the total log mass of a `Sampleable` value as a
+`LogWeight`. This **mass query** is pure: returning a mass does not score
+the model. `log_prob(d, x)` instead reads the density or probability mass
+at the supplied outcome. Both queries use the same distribution value;
+in particular, querying a raw restriction preserves its normalizer.
+
+<!-- compile: qiec -->
+```qvr
+define restricted_mass() : LogWeight !{} =
+    let restricted = Restrict(Uniform(0.0, 1.0), 0.2, 0.7)
+    return log_mass(restricted)
+
+define probability_mass() : LogWeight !{} =
+    return log_mass(Normalize(Restrict(Uniform(0.0, 1.0), 0.2, 0.7)))
+```
+
+The first computation returns `log(0.5)`; the second returns zero.
+Ordinary probability distributions also have zero log mass. Empty
+restrictions have negative infinite log mass. Bounds are inclusive by
+default. The optional fourth and fifth positional arguments of a pure
+`Restrict` expression set `lower_closed` and `upper_closed`: for instance,
+`Restrict(PointMass(0.0), 0.0, 0.0, false, true)` excludes the atom and
+has zero mass. Endpoint policy matters for discrete and mixed laws as
+well as for point masses. Named arguments remain the syntax of draw
+statements; pure expression calls take positional arguments.
+
+The checked core also represents mass queries retaining declared batch
+axes. It sums independent event axes and preserves intrinsic vector or
+matrix events according to the family's checked shape. The reference
+machine and native compiler share these distinctions. External targets
+check mass-query capability and family mappings separately: the eight
+dynamic targets query mapped probability distributions, while a raw
+measure without a target mapping is explicitly refused. Stan, BUGS,
+and JAGS currently refuse mass queries.
+
 The reference machine implements every family in the
 [distribution family registry](../../api/qiec/families.md). Parameter order and support follow the
 [continuous family reference](../../guides/continuous-families.md), and each target renderer

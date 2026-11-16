@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 import math
 import random
 from types import MappingProxyType
-from typing import Protocol
+from typing import Literal, Protocol, overload
 
 import didactic.api as dx
 
@@ -31,6 +31,14 @@ from quivers.qiec._sampling import (
     _trial_count,
 )
 from quivers.qiec._wiener import density as _wiener_density, sample as _wiener_sample
+from quivers.qiec._extended_beta import (
+    density as _extended_beta_density,
+    sample as _extended_beta_sample,
+)
+from quivers.qiec._bernstein_hazard import (
+    density as _bernstein_density,
+    sample as _bernstein_sample,
+)
 from quivers.qiec._com_poisson import (
     density as _com_poisson_density,
     sample as _com_poisson_sample,
@@ -428,23 +436,91 @@ class RuntimeDistribution(QiecModel):
             shape,
         )
 
-    def log_mass(self) -> float:
-        """The log of the distribution's total mass through the installed backend.
+    @overload
+    def log_mass(self, batch_axes: Literal[0] = 0) -> float:
+        """Query the scalar total mass.
+
+        Parameters
+        ----------
+        batch_axes : Literal[0]
+            Reduce every independent axis.
 
         Returns
         -------
         float
+            Total log mass.
+        """
+
+    @overload
+    def log_mass(self, batch_axes: int) -> object:
+        """Query mass with a retained batch prefix.
+
+        Parameters
+        ----------
+        batch_axes : int
+            Number of leading batch axes to retain.
+
+        Returns
+        -------
+        object
+            Nested log weights on the retained axes.
+        """
+
+    def log_mass(self, batch_axes: int = 0) -> object:
+        """The log of the distribution's total mass through the installed backend.
+
+        Parameters
+        ----------
+        batch_axes : int
+            Number of leading independent batch axes retained in the result.
+            The default totals the entire product measure.
+
+        Returns
+        -------
+        float or nested tuple
             Zero for a probability measure; over a plate, the sum of the
             masses at every position, since the plate's draw is their
-            product.
+            product. Requested batch axes remain separate; event axes sum.
+
+        Raises
+        ------
+        DistributionError
+            If the retained rank is not an integer in the batch rank's range.
         """
+        if (
+            isinstance(batch_axes, bool)
+            or not isinstance(batch_axes, int)
+            or not 0 <= batch_axes <= len(self.batch)
+        ):
+            raise DistributionError(
+                "log_mass retained axes must be an integer within the batch rank"
+            )
         if not self.plated:
             return _backend.log_mass(self.family, self._at(()))
         shape = (*self.batch, *self.event)
-        return math.fsum(
-            _backend.log_mass(self.family, self._at(position))
-            for position in _positions(shape)
-        )
+
+        def total(prefix: tuple[int, ...]) -> float:
+            """Sum independent log masses under one retained position.
+
+            Parameters
+            ----------
+            prefix : tuple[int, ...]
+                Position in retained batch axes.
+
+            Returns
+            -------
+            float
+                Log mass of the remaining independent product.
+            """
+            return math.fsum(
+                _backend.log_mass(self.family, self._at((*prefix, *position)))
+                for position in _positions(shape[batch_axes:])
+            )
+
+        if not batch_axes:
+            return total(())
+        kept = shape[:batch_axes]
+        return _nest({position: total(position) for position in _positions(kept)}, kept)
 
     def log_prob(self, value: object, keep_batch: bool = False) -> object:
         """Evaluate the log density at a value through the installed backend.
@@ -2126,6 +2202,8 @@ _SAMPLERS: Mapping[str, Sampler] = MappingProxyType(
         "Geometric": _geometric_sample,
         "Laplace": _laplace_sample,
         "COMPoisson": _com_poisson_sample,
+        "BernsteinHazard": _bernstein_sample,
+        "ExtendedBeta": _extended_beta_sample,
         "Wiener": _wiener_sample,
         "DiscreteWeibull": _discrete_weibull_sample,
         "ZeroInflatedAsymmetricLaplace": _zero_inflated_asymmetric_laplace_sample,
@@ -2165,6 +2243,8 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
         "Geometric": _geometric_density,
         "Laplace": _laplace_density,
         "COMPoisson": _com_poisson_density,
+        "BernsteinHazard": _bernstein_density,
+        "ExtendedBeta": _extended_beta_density,
         "Wiener": _wiener_density,
         "DiscreteWeibull": _discrete_weibull_density,
         "ZeroInflatedAsymmetricLaplace": _zero_inflated_asymmetric_laplace_density,

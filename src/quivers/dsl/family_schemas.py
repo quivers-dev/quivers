@@ -12,12 +12,14 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
     "Normal": ("loc", "scale"),
     "LogitNormal": ("mu", "sigma"),
     "Beta": ("concentration1", "concentration0"),
+    "ExtendedBeta": ("mu", "phi", "kappa"),
     "TruncatedNormal": ("mu", "sigma", "low", "high"),
     "Dirichlet": ("concentration",),
     "Multinomial": ("total_count", "probs"),
     "DirichletMultinomial": ("total_count", "concentration"),
     "Cauchy": ("loc", "scale"),
     "Laplace": ("loc", "scale"),
+    "BernsteinHazard": ("breaks", "controls", "rate"),
     "COMPoisson": ("rate", "dispersion"),
     "DiscreteWeibull": ("probs", "concentration"),
     "Wiener": ("boundary", "ndt", "bias", "drift"),
@@ -103,6 +105,10 @@ _ALTERNATIVE_SCHEMAS: dict[str, tuple[tuple[str, ...], ...]] = {
     "AdditiveLogRatioNormal": (
         ("loc", "scale_tril"),
         ("loc", "scale_tril", "reference"),
+    ),
+    "BernsteinHazard": (
+        ("breaks", "controls", "rate"),
+        ("breaks", "controls", "log_rate"),
     ),
     "COMPoisson": (("rate", "dispersion"), ("log_rate", "dispersion")),
     "Categorical": (("probs",), ("logits",)),
@@ -190,6 +196,20 @@ def family_parameterizations(
     """
     alternatives = _ALTERNATIVE_SCHEMAS.get(family)
     if alternatives is not None:
+        if family in ("Restrict", "Truncate"):
+            # Endpoint policies are independent optional Boolean arguments.
+            # Retain the legacy positional schema and accept every explicit
+            # subset without inventing a second operator construction path.
+            return tuple(
+                (*schema, *flags)
+                for schema in alternatives
+                for flags in (
+                    (),
+                    ("lower_closed",),
+                    ("upper_closed",),
+                    ("lower_closed", "upper_closed"),
+                )
+            )
         return alternatives
     parameters = _FAMILY_PARAMETERS.get(family, canonical)
     return (parameters,) if parameters else ()

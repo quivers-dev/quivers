@@ -15,6 +15,7 @@ from torch.distributions import (
     Normal,
     Poisson,
     TransformedDistribution,
+    Uniform,
 )
 
 from quivers.continuous._ordered import _log1mexp
@@ -27,6 +28,21 @@ class _PoissonTails(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, rate: Tensor, count: Tensor) -> tuple[Tensor, Tensor]:
+        """Poisson CDF and strict survival probabilities.
+
+        Parameters
+        ----------
+        ctx : object
+            Autograd context retaining inputs for differentiation.
+        rate : Tensor
+            Nonnegative Poisson rate.
+        count : Tensor
+            Nonnegative integer cutoff.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Poisson CDF and strict survival probabilities."""
         ctx.save_for_backward(rate, count)
         return (
             torch.special.gammaincc(count + 1, rate),
@@ -35,6 +51,19 @@ class _PoissonTails(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, *grad_outputs: Tensor):
+        """Rate cotangent and no count cotangent.
+
+        Parameters
+        ----------
+        ctx : object
+            Autograd context retaining inputs for differentiation.
+        grad_outputs : object
+            Cotangents of the CDF and survival outputs.
+
+        Returns
+        -------
+        object
+            Rate cotangent and no count cotangent."""
         cdf_gradient, sf_gradient = grad_outputs
         rate, count = ctx.saved_tensors
         positive = rate > 0
@@ -51,16 +80,42 @@ class _PoissonTails(torch.autograd.Function):
 
 
 def _log_probability(probability: Tensor) -> Tensor:
-    """Take log without leaking inactive zero-probability derivatives."""
+    """Take log without leaking inactive zero-probability derivatives.
+
+    Parameters
+    ----------
+    probability : Tensor
+        Probability values, including exact support endpoints.
+
+    Returns
+    -------
+    Tensor
+        Log probabilities with exact negative infinity at zero."""
     positive = probability > 0
     safe = torch.where(positive, probability, 1.0)
     return torch.where(positive, safe.log(), -torch.inf)
 
 
 def _reference(base: Distribution) -> Tensor:
-    """Find a parameter carrying the base's floating dtype and device."""
+    """Find a parameter carrying the base's floating dtype and device.
+
+    Parameters
+    ----------
+    base : Distribution
+        Underlying distribution or raw measure.
+
+    Returns
+    -------
+    Tensor
+        Floating parameter carrying the distribution dtype and device.
+
+    Raises
+    ------
+    NotImplementedError
+        If no floating or integer parameter supplies dtype and device."""
     pending = [base]
     visited: set[int] = set()
+    integer_reference: Tensor | None = None
     while pending:
         current = pending.pop()
         if id(current) in visited:
@@ -70,6 +125,8 @@ def _reference(base: Distribution) -> Tensor:
         for value in values:
             if isinstance(value, Tensor) and value.is_floating_point():
                 return value
+            if isinstance(value, Tensor) and integer_reference is None:
+                integer_reference = value
         pending.extend(
             value
             for value in (
@@ -79,13 +136,27 @@ def _reference(base: Distribution) -> Tensor:
             )
             if isinstance(value, Distribution)
         )
+    if integer_reference is not None:
+        return integer_reference.to(dtype=torch.get_default_dtype())
     raise NotImplementedError(
         f"{type(base).__name__} does not expose a floating distribution parameter"
     )
 
 
 def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
-    """Return log CDF and log survival, without Monte Carlo estimation."""
+    """Return log CDF and log survival, without Monte Carlo estimation.
+
+    Parameters
+    ----------
+    base : Distribution
+        Underlying distribution or raw measure.
+    value : Tensor
+        Evaluation points, broadcast against the distribution batch.
+
+    Returns
+    -------
+    tuple[Tensor, Tensor]
+        Log lower and strict upper tail masses."""
     log_cdf = getattr(base, "log_cdf", None)
     log_sf = getattr(base, "log_survival_function", None)
     if callable(log_cdf) and callable(log_sf):
@@ -110,6 +181,18 @@ def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
         for transform in reversed(base.transforms):
             inverse = cast(Tensor, transform.inv(inverse))
         return _log_tails(base.base_dist, inverse)
+    if isinstance(base, Uniform):
+        lower, upper = base.low.double(), base.high.double()
+        point = value.double()
+        inside = (point > lower) & (point < upper)
+        safe = torch.where(inside, point, lower + (upper - lower) / 2)
+        width = (upper - lower).log()
+        cdf = (safe - lower).log() - width
+        sf = (upper - safe).log() - width
+        return (
+            torch.where(inside, cdf, torch.where(point <= lower, -torch.inf, 0.0)),
+            torch.where(inside, sf, torch.where(point <= lower, 0.0, -torch.inf)),
+        )
     if isinstance(base, Exponential):
         exponent = -base.rate * value.clamp_min(0)
         return _log1mexp(exponent), exponent
@@ -120,7 +203,7 @@ def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
             base.concentration, base.rate.double() * value.double().clamp_min(0)
         )
     if isinstance(base, Poisson):
-        nonnegative = value >= 0
+        nonnegative = (value >= 0) & torch.isfinite(value)
         count = torch.where(nonnegative, value.floor(), 0.0)
         cdf, sf = _PoissonTails.apply(base.rate, count)
         # Out-of-support arguments must not introduce log(0) derivatives
@@ -128,15 +211,35 @@ def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
         cdf = torch.where(nonnegative, cdf, 1.0)
         sf = torch.where(nonnegative, sf, 1.0)
         return (
-            torch.where(nonnegative, _log_probability(cdf), -torch.inf),
-            torch.where(nonnegative, _log_probability(sf), 0.0),
+            torch.where(
+                value == torch.inf,
+                0.0,
+                torch.where(nonnegative, _log_probability(cdf), -torch.inf),
+            ),
+            torch.where(
+                value == torch.inf,
+                -torch.inf,
+                torch.where(nonnegative, _log_probability(sf), 0.0),
+            ),
         )
     probability = base.cdf(value)
     return _log_probability(probability), _log_probability(1 - probability)
 
 
 def _log_difference(larger: Tensor, smaller: Tensor) -> Tensor:
-    """Subtract probabilities in log space, preserving zero mass."""
+    """Subtract probabilities in log space, preserving zero mass.
+
+    Parameters
+    ----------
+    larger : Tensor
+        Log mass of the containing event.
+    smaller : Tensor
+        Log mass of the nested event to subtract.
+
+    Returns
+    -------
+    Tensor
+        Log of the positive mass difference, or negative infinity."""
     positive = torch.isfinite(larger) & (smaller < larger)
     safe_larger = torch.where(positive, larger, 0.0)
     safe_smaller = torch.where(positive, smaller, -1.0)
@@ -144,10 +247,99 @@ def _log_difference(larger: Tensor, smaller: Tensor) -> Tensor:
     return torch.where(positive, result, -torch.inf)
 
 
+def _log_tails_left(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
+    """Return log probabilities of ``Y < value`` and ``Y >= value``.
+
+    Parameters
+    ----------
+    base : Distribution
+        Underlying distribution or raw measure.
+    value : Tensor
+        Evaluation points, broadcast against the distribution batch.
+
+    Returns
+    -------
+    tuple[Tensor, Tensor]
+        Log masses strictly below and at or above the cutoff."""
+    log_cdf = getattr(base, "log_cdf_left", None)
+    log_sf = getattr(base, "log_survival_function_left", None)
+    if callable(log_cdf) and callable(log_sf):
+        return cast(Callable[[Tensor], Tensor], log_cdf)(value), cast(
+            Callable[[Tensor], Tensor], log_sf
+        )(value)
+    if getattr(base.support, "is_discrete", False):
+        return _log_tails(base, value.ceil() - 1)
+    return _log_tails(base, value)
+
+
+def _closed_flag(value: bool | Tensor, name: str) -> bool | Tensor:
+    """Validate scalar or batched Boolean interval endpoint metadata.
+
+    Parameters
+    ----------
+    value : bool | Tensor
+        Evaluation points, broadcast against the distribution batch.
+    name : str
+        Parameter name used in a diagnostic.
+
+    Returns
+    -------
+    bool | Tensor
+        Validated Boolean scalar or tensor endpoint policy.
+
+    Raises
+    ------
+    TypeError
+        If the policy is neither Boolean nor a Boolean tensor."""
+    if type(value) is bool or isinstance(value, Tensor) and value.dtype == torch.bool:
+        return value
+    raise TypeError(f"{name} must be a bool or a Boolean tensor")
+
+
+def _endpoint_tails(
+    base: Distribution, value: Tensor, left: bool | Tensor
+) -> tuple[Tensor, Tensor]:
+    """Select one-sided limits while preserving explicit row endpoint flags.
+
+    Parameters
+    ----------
+    base : Distribution
+        Underlying distribution or raw measure.
+    value : Tensor
+        Evaluation points, broadcast against the distribution batch.
+    left : bool | Tensor
+        Whether to select the CDF left limit.
+
+    Returns
+    -------
+    tuple[Tensor, Tensor]
+        Selected log CDF and survival limits."""
+    if isinstance(left, bool):
+        return _log_tails_left(base, value) if left else _log_tails(base, value)
+    left_cdf, left_sf = _log_tails_left(base, value)
+    right_cdf, right_sf = _log_tails(base, value)
+    flag = left.to(value.device)
+    return torch.where(flag, left_cdf, right_cdf), torch.where(flag, left_sf, right_sf)
+
+
 def _narrow_interval(
     base: Distribution, lower: Tensor, upper: Tensor
 ) -> tuple[Tensor, Tensor] | None:
-    """Integrate a locally flat density without subtracting rounded tails."""
+    """Integrate a locally flat density without subtracting rounded tails.
+
+    Parameters
+    ----------
+    base : Distribution
+        Underlying distribution or raw measure.
+    lower : Tensor
+        Whether the intersection concerns lower bounds.
+    upper : Tensor
+        Input to the retained distribution calculation.
+
+    Returns
+    -------
+    tuple[Tensor, Tensor] | None
+        Local quadrature mask and log masses, or None when no local rule applies."""
     width = upper - lower
     if isinstance(base, Gamma):
         shape, rate = base.concentration.double(), base.rate.double()
@@ -199,15 +391,47 @@ def _narrow_interval(
 
 
 def log_interval_mass(
-    base: Distribution, low: Tensor | float | None, high: Tensor | float | None
+    base: Distribution,
+    low: Tensor | float | None,
+    high: Tensor | float | None,
+    *,
+    lower_closed: bool | Tensor = True,
+    upper_closed: bool | Tensor = True,
 ) -> Tensor:
-    """Log mass of an inclusive interval for a scalar-event distribution.
+    """Log mass of a scalar interval with explicit endpoint membership.
 
     Independent event coordinates can sum these log masses. A coupled
     event requires a rectangle probability and is deliberately refused.
     Specialized log-tail methods avoid cancellation; the generic CDF
     path retains exact zero probabilities rather than flooring them.
-    """
+
+    Parameters
+    ----------
+    base : Distribution
+        Underlying distribution or raw measure.
+    low : Tensor | float | None
+        Lower event bound; None leaves that side unbounded.
+    high : Tensor | float | None
+        Upper event bound; None leaves that side unbounded.
+    lower_closed : bool | Tensor
+        Whether the lower endpoint belongs to the event.
+    upper_closed : bool | Tensor
+        Whether the upper endpoint belongs to the event.
+
+    Returns
+    -------
+    Tensor
+        Raw log mass on the requested interval, retaining independent batch axes.
+
+    Raises
+    ------
+    NotImplementedError, ValueError
+        If an endpoint is NaN or the base lacks the required interval capability."""
+    lower_closed = _closed_flag(lower_closed, "lower_closed")
+    upper_closed = _closed_flag(upper_closed, "upper_closed")
+    interval = getattr(base, "log_interval_mass", None)
+    if callable(interval):
+        return interval(low, high, lower_closed=lower_closed, upper_closed=upper_closed)
     if base.event_shape:
         raise NotImplementedError(
             "interval normalization requires scalar events; a coupled event "
@@ -224,27 +448,41 @@ def log_interval_mass(
         if high is None
         else torch.as_tensor(high, device=reference.device, dtype=torch.float64)
     )
+    if (
+        lower is not None
+        and bool(lower.isnan().any())
+        or upper is not None
+        and bool(upper.isnan().any())
+    ):
+        raise ValueError("interval endpoints must not be NaN")
     if isinstance(base, Normal):
         lower = reference.new_tensor(-torch.inf) if lower is None else lower
         upper = reference.new_tensor(torch.inf) if upper is None else upper
-        ordinary = TruncatedNormal(base.loc, base.scale, lower, upper).log_normalizer()
+        ordered = lower < upper
+        ordinary = TruncatedNormal(
+            base.loc,
+            base.scale,
+            torch.where(ordered, lower, 0.0),
+            torch.where(ordered, upper, 1.0),
+        ).log_normalizer()
+        ordinary = torch.where(ordered, ordinary, -torch.inf)
         narrow = _narrow_interval(base, lower, upper)
         return (
             ordinary if narrow is None else torch.where(narrow[0], narrow[1], ordinary)
         )
-    if getattr(base.support, "is_discrete", False) and lower is not None:
-        lower = lower.ceil() - 1
     if lower is None and upper is None:
         return torch.zeros(
             base.batch_shape, device=reference.device, dtype=reference.dtype
         )
     if lower is None:
         assert upper is not None
-        return _log_tails(base, upper)[0]
+        left = not upper_closed if isinstance(upper_closed, bool) else ~upper_closed
+        return _endpoint_tails(base, upper, left)[0]
     if upper is None:
-        return _log_tails(base, lower)[1]
-    low_cdf, low_sf = _log_tails(base, lower)
-    high_cdf, high_sf = _log_tails(base, upper)
+        return _endpoint_tails(base, lower, lower_closed)[1]
+    low_cdf, low_sf = _endpoint_tails(base, lower, lower_closed)
+    left = not upper_closed if isinstance(upper_closed, bool) else ~upper_closed
+    high_cdf, high_sf = _endpoint_tails(base, upper, left)
     # Use the side with the smaller cumulative probability: a right-tail
     # interval subtracts survival probabilities, never rounded CDFs near 1.
     use_cdf = high_cdf < low_sf

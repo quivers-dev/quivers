@@ -507,6 +507,7 @@ type QiecBuiltinForm = Literal[
     "collection",
     "unsupported",
     "host-only",
+    "measure-query",
 ]
 
 
@@ -564,6 +565,8 @@ def _eager_arities(implementation: Callable | None) -> frozenset[int]:
 
 
 def _qiec_form(name: str) -> QiecBuiltinForm:
+    if name in {"log_mass", "log_prob"}:
+        return "measure-query"
     if name in _BUILTIN_PRIMITIVES:
         return "primitive"
     if name in _REDUCTIONS:
@@ -580,6 +583,8 @@ def _qiec_form(name: str) -> QiecBuiltinForm:
 
 
 def _qiec_arities(name: str, form: QiecBuiltinForm) -> frozenset[int]:
+    if form == "measure-query":
+        return frozenset({1 if name == "log_mass" else 2})
     if form == "primitive":
         return frozenset(len(signature) for signature in _BUILTIN_PRIMITIVES[name])
     if form in ("reduction", "rowwise"):
@@ -595,6 +600,8 @@ def _qiec_arities(name: str, form: QiecBuiltinForm) -> frozenset[int]:
 
 
 def _shape_rule(name: str, form: QiecBuiltinForm) -> str:
+    if form == "measure-query":
+        return "sampleable-total-mass" if name == "log_mass" else "sampleable-density"
     if form == "primitive":
         return "scalar-lift"
     if form == "reduction":
@@ -612,7 +619,7 @@ def _shape_rule(name: str, form: QiecBuiltinForm) -> str:
     return "eager-native"
 
 
-_BUILTIN_NAMES = frozenset((*EAGER_BUILTINS, *_COLLECTION_BUILTINS))
+_BUILTIN_NAMES = frozenset((*EAGER_BUILTINS, *_COLLECTION_BUILTINS, "log_mass", "log_prob"))
 
 #: The one capability registry consulted by eager execution, checked lowering,
 #: editor completion, and transpiler validation.

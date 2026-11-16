@@ -24,6 +24,26 @@ var _qvr_qiec_score = function(distribution, value) {
 var _qvr_qiec_log_density = function(distribution, value) {
   return _qvr_qiec_score(distribution, _qvr_qiec_array(value));
 };
+var _qvr_qiec_log_mass = function(distribution, retained, shape) {
+  if (typeof retained !== "number" || retained < 0 || retained > shape.length || Math.floor(retained) !== retained) {
+    error("log_mass retained axes must be within the batch rank");
+  }
+  var normalizer = distribution.log_normalizer;
+  var mass = normalizer === undefined ? 0 : normalizer();
+  var rank = function(value) { return Array.isArray(value) ? 1 + (value.length === 0 ? 0 : rank(value[0])) : 0; };
+  var entry = function(value, axis, index) {
+    if (rank(value) !== shape.length - axis) { return value; }
+    if (value.length !== 1 && value.length !== shape[axis]) { error("log_mass normalizer shape differs from its declared axes"); }
+    return value[value.length === 1 ? 0 : index];
+  };
+  var reduce = function(axis, value) {
+    return axis === shape.length ? value : sum(map(function(i) { return reduce(axis + 1, entry(value, axis, i)); }, _.range(shape[axis])));
+  };
+  var build = function(axis, value) {
+    return axis === retained ? reduce(axis, value) : map(function(i) { return build(axis + 1, entry(value, axis, i)); }, _.range(shape[axis]));
+  };
+  return build(0, mass);
+};
 var _qvr_qiec_half = function(base) {
   return {
     qvr: true,

@@ -86,6 +86,7 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     LogDensity,
+    LogMass,
     Perform,
     PrimitiveApplication,
     Projection,
@@ -2515,15 +2516,20 @@ def infer_value(
         registry.validate_type(value.result_type)
         _check_static_variable_scope(value.result_type, context, subject="site type")
         return value.result_type
-    if isinstance(value, LogDensity):
+    if isinstance(value, LogDensity | LogMass):
+        query = "log_prob" if isinstance(value, LogDensity) else "log_mass"
         sampleable = infer_value(value.sampleable, registry, context)
         element = sampled_element(sampleable)
         if element is None:
             raise KernelError(
-                f"log_prob takes a Sampleable, not {sampleable!r}",
+                f"{query} takes a Sampleable, not {sampleable!r}",
                 "qiec-distribution",
             )
-        actual = infer_value(value.value, registry, context)
+        actual = (
+            infer_value(value.value, registry, context)
+            if isinstance(value, LogDensity)
+            else element
+        )
         if actual != element:
             raise KernelError(
                 f"log_prob evaluates a distribution over {render_static(element)} at a value "
@@ -2537,7 +2543,7 @@ def infer_value(
             and value.sampleable.plate.batch == value.batch
         ):
             raise KernelError(
-                "log_prob keeps its weights apart over batch axes only for a "
+                f"{query} keeps its weights apart over batch axes only for a "
                 "construction plated over those axes",
                 "qiec-distribution",
             )

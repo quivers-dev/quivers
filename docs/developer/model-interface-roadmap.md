@@ -8,7 +8,7 @@ alone does not establish parity with another modeling system.
 The implementation supplies checked input schemas, explicit runtime parameters,
 finite extent inference, reusable inference methods, new-data prediction, and raw
 pointwise observation likelihoods. The tables below record
-remaining work against brms and the open enhancement issues as of November 15, 2026.
+remaining work against brms and the open enhancement issues as of November 16, 2026.
 
 ## brms coverage
 
@@ -31,7 +31,7 @@ from the implementation and its tests. Full brms coverage is not established.
 | Capability | QVR evidence and remaining requirements |
 | --- | --- |
 | Data dimensions and external inputs | `Model.schema` retains checked types and roles; `Model.bind` specializes finite extents and validates supplied values. Tested in `tests/modeling/test_model.py`. |
-| Common regression families | `quivers.formulas.families` contains 48 entries, with 17 inverse links and mean/precision conversions for binomial, beta-binomial, gamma, Weibull, and other families. Asymmetric Laplace quantile regression supports a fixed or regressed quantile, with independent SciPy density/CDF/quantile and sampling tests. `tests/test_formula_distributional.py` checks independent likelihood and derivative oracles. ExGaussian uses the response mean and Gaussian/exponential components; inverse Gaussian uses response mean/shape with implicit sample gradients. These have independent density, CDF, derivative, and sampling oracles. Zero-inflated Beta regression reuses the native zero/one mixture with its one-atom probability fixed at zero; atom/interior densities, endpoint derivatives, sampling moments, and response means have independent oracles. Hurdle Gamma and LogNormal responses use a shared exact atom/positive-component implementation, with independent density, derivative, CDF, moment, and sampling oracles and SVI/HMC/NUTS formula checks. The larger native family registry remains a separate interface; the remaining brms families and their interactions need implementation and tests. |
+| Common regression families | `quivers.formulas.families` contains 50 entries, with 17 inverse links and mean/precision conversions for binomial, beta-binomial, gamma, Weibull, and other families. Asymmetric Laplace quantile regression supports a fixed or regressed quantile, with independent SciPy density/CDF/quantile and sampling tests. `tests/test_formula_distributional.py` checks independent likelihood and derivative oracles. ExGaussian uses the response mean and Gaussian/exponential components; inverse Gaussian uses response mean/shape with implicit sample gradients. These have independent density, CDF, derivative, and sampling oracles. Zero-inflated Beta regression reuses the native zero/one mixture with its one-atom probability fixed at zero; atom/interior densities, endpoint derivatives, sampling moments, and response means have independent oracles. Hurdle Gamma and LogNormal responses use a shared exact atom/positive-component implementation, with independent density, derivative, CDF, moment, and sampling oracles and SVI/HMC/NUTS formula checks. The larger native family registry remains a separate interface; the remaining brms families and their interactions need implementation and tests. |
 | Zero-inflated and hurdle counts | Native and formula interfaces add zero-inflated negative-binomial, binomial, and beta-binomial responses plus hurdle negative-binomial responses. `tests/test_formula_count_mixtures.py` checks component-to-regression conversions, likelihood and gradient oracles, fitting, and predictions. Shared `Family.trials_parameter` metadata validates trial counts in `0..2**53` at fitting and new-data prediction; zero trials give a zero response. Native Binomial/BetaBinomial/NB/Poisson and the new mixtures use float64 count parameters, scores, and moments while preserving gradients to original learned heads. The hurdle sampler uses compound-Poisson/logarithmic-count sampling rather than rejection from a vanishing positive event. Native/QIEC reference execution supports all four; all 11 external renderers explicitly refuse them, checked in 44 family/backend cells. The current `hurdle_poisson` auxiliary remains named `zi`; a brms-compatible `hu` naming change is separate work. |
 | Group effects | Single-bar blocks use native LKJ Cholesky correlations; double bars request independence. Shared IDs couple coefficients across location and auxiliary formulas. Scalar responses support centered and noncentered coordinates; categorical blocks couple all non-reference-category coefficients in noncentered coordinates. `tests/test_formula_correlations.py` checks Gaussian covariance densities, derivatives, and SVI/HMC/NUTS execution. Mixed scalar/transition widths and shared auxiliary blocks retain their joint noncentered covariance, checked against native/reference densities and every parameter gradient. New-group prediction supports joint donor and fitted Gaussian/LKJ policies. Supplied group covariance, multi-membership, repeated coefficients across blocks, and prediction with supplied covariance remain work. |
 | Distributional and nonlinear formulas | `distributional={"sigma": "~ z + (1 | g)"}` supplies evaluated auxiliary predictors and parameter-specific links in the formula interface. Design columns and group coding are retained, and shared correlation IDs can span predictors. A nonlinear parameter dependency graph remains work. |
@@ -56,17 +56,20 @@ model; matching a formula's printed text would not establish the same prior.
 The pinned [released family registry](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/family-lists.R)
 and [development family registry](https://github.com/paul-buerkner/brms/blob/f4f906dc0db56fd42b58cdd7d57e76b40f650331/R/family-lists.R)
 each contain 49 named entries plus `custom`; their definitions agree apart
-from trailing whitespace. QVR's 48 formula entries cover 47 of those names
+from trailing whitespace. QVR's 50 formula entries cover all 49 of those names
 after normalizing `student`/`student_t`, `negbinomial`/`negative_binomial`,
 and `inverse.gaussian`/`inverse_gaussian`. Its remaining entry is generic
 mixture composition. This name comparison does not establish equivalent
 parameterizations, links, or fitting behavior.
 
-Two source-registry entries still lack QVR formula frontends: `cox`
-and `xbeta`. The native kernel registry is a separate capability: a
-native distribution does not imply a formula data-preparation or
-prediction workflow. `dirichlet2` is an alternate parameterization,
-rather than a new distribution law.
+The `cox` and `xbeta` formula frontends complete this name inventory.
+`cox` retains an identified normalized spline baseline and a proper
+positive-hazard tail through the generic `BernsteinHazard` law; `xbeta`
+reuses an affine Beta law and censoring atoms. Neither name establishes
+all baseline-group, response-modifier, prior, or workflow behavior.
+The native kernel registry is a separate capability: a native distribution
+does not imply its corresponding formula workflow. `dirichlet2` is an
+alternate parameterization, rather than a new distribution law.
 
 The vector frontends share the categorical compiler's component
 coordinates and the ordinary posterior replay machinery. Multinomial
@@ -133,6 +136,32 @@ gradient, SVI/HMC/NUTS, and new-data prediction checks are in
 `tests/test_formula_reparameterized_families.py`. Discrete Weibull
 expected responses retain explicit tail-certification and work limits;
 its main transformed predictor is a probability rather than a mean.
+
+## Shared implementation paths
+
+The consolidation audit checks both older repository implementations and additions
+on this branch. A new interface should extend the following paths before adding a
+second parser, compiler, fitting loop, or prediction collector.
+
+| Concern | Shared implementation and preserved behavior |
+| --- | --- |
+| Static and runtime declarations | One ordered parameter telescope supplies source elaboration, typed schemas, specialization, and tooling. Display strings do not replace retained QIEC types. |
+| Dependent dimensions | Family signatures collect equations into the existing exact Nat solver. Source and kernel checking share sample-carrier inference; the older independent event-offset and pure-result classifiers have been removed. Conflicting input uses retain both extents in their diagnostic. |
+| Vector and ordinal regressions | Component layouts extend the existing categorical emitter. Scalar, auxiliary, category, and threshold effects use the same correlation blocks and posterior replay machinery. |
+| Formula expressions | Cox and ordinary regression compilation import one set of AST builders. Spline priors use the existing parsed auxiliary-prior path. |
+| Hazard baselines | An immutable M-spline basis contracts into normalized Bernstein controls. Native and reference Cox adapters use the generic hazard law rather than separate density and sampling implementations. |
+| Censored Beta laws | Affine coordinates retain both endpoint distances; censoring supplies the boundary atoms. Beta tails and the existing Dirichlet log-Gamma sampler are shared with the other probability laws. |
+| Density and mass queries | `LogDensity` and `LogMass` use the same checked sampleable values and recursive raw constructors. Native total mass delegates to measure normalizers. A density at a selected point is not used as a mass surrogate. |
+| Restrictions and mixtures | One endpoint-aware event operation handles atoms, nested restrictions, mixtures, and normalization. Mixture sampling selects components by weighted raw mass; conditioning retains restricted components and normalizes their sum once. |
+| Numerical specializations | Closed count laws preserve stable large-count scores and boundary derivatives. They remain numerical specializations of the same measures; replacing them with generic log-mixture arithmetic would lose tested endpoint derivatives. |
+| Observed values | Lexical computed observations use the existing observation handler and latent registry. They add scores without allocating a second latent coordinate. |
+| Editor vocabularies | One generator supplies Tree-sitter and TextMate family/builtin sets. LSP, REPL, and Pygments read the same runtime registries. |
+
+The reference machine retains scalar standard-library arithmetic, while native
+kernels retain Torch arrays and automatic differentiation. Standalone emitted
+runtimes likewise require their host's array operations. These execution boundaries
+share semantic records and numerical recurrences where possible; independent
+oracles check their agreement. Shared names alone do not establish agreement.
 
 ## Open enhancement issues
 

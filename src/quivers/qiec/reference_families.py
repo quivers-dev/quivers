@@ -23,8 +23,6 @@ from quivers.qiec._sampling import (
     _binomial_sample as _sample_binomial_count,
     _trial_count,
 )
-from quivers.qiec._gamma_tails import _gamma_interval_log_mass
-from quivers.qiec._beta_tails import log_beta_interval_mass
 from quivers.qiec._count_mixtures import (
     _negative_binomial_log_mass,
     _poisson as _sample_poisson_count,
@@ -3880,13 +3878,10 @@ def _truncated_density(a: Mapping[str, object], value: object) -> float:
     point = finite_value(value, "Truncated")
     if not low <= point <= high:
         return -math.inf
-    if getattr(base, "family", None) in {"Gamma", "Beta"}:
-        log_mass = _restrict_log_mass_of(base, low, high)
-        return float(base.log_prob(point)) - log_mass  # type: ignore[attr-defined]
-    mass = _truncated_mass(base, low, high)
-    if mass <= 0.0:
-        return -math.inf
-    return float(base.log_prob(point)) - math.log(mass)  # type: ignore[attr-defined]
+    log_mass = _restrict_log_mass_of(base, low, high)
+    return (
+        float(base.log_prob(point)) - log_mass if math.isfinite(log_mass) else -math.inf
+    )  # type: ignore[attr-defined]
 
 
 def _zip_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -4147,11 +4142,17 @@ def _optional_bound(a: Mapping[str, object], name: str, family: str) -> float | 
     """
     if name not in a:
         return None
-    bound = real_parameter(a, name, family)
-    return None if math.isinf(bound) else bound
+    return real_parameter(a, name, family)
 
 
-def _within(point: float, low: float | None, high: float | None) -> bool:
+def _within(
+    point: float,
+    low: float | None,
+    high: float | None,
+    *,
+    lower_closed: bool = True,
+    upper_closed: bool = True,
+) -> bool:
     """Whether a point lies in a closed interval with optional ends.
 
     Parameters
@@ -4168,7 +4169,9 @@ def _within(point: float, low: float | None, high: float | None) -> bool:
     bool
         True when the point is inside.
     """
-    return (low is None or point >= low) and (high is None or point <= high)
+    return (low is None or point > low or lower_closed and point == low) and (
+        high is None or point < high or upper_closed and point == high
+    )
 
 
 def _base_is_discrete(base: object) -> bool:
@@ -4191,7 +4194,14 @@ def _base_is_discrete(base: object) -> bool:
     return FAMILIES[name].discrete
 
 
-def _restrict_log_mass_of(base: object, low: float | None, high: float | None) -> float:
+def _restrict_log_mass_of(
+    base: object,
+    low: float | None,
+    high: float | None,
+    *,
+    lower_closed: bool = True,
+    upper_closed: bool = True,
+) -> float:
     """The log mass a base places on an interval.
 
     Parameters
@@ -4211,40 +4221,11 @@ def _restrict_log_mass_of(base: object, low: float | None, high: float | None) -
         mass over the integers in the interval, an open upper end summed
         until the tail is negligible.
     """
-    if getattr(base, "family", None) == "Beta":
-        arguments = getattr(base, "arguments", {})
-        return log_beta_interval_mass(
-            _positive_parameter(arguments, "concentration1", "Beta"),
-            _positive_parameter(arguments, "concentration0", "Beta"),
-            -math.inf if low is None else low,
-            math.inf if high is None else high,
-        )
-    if getattr(base, "family", None) == "Gamma":
-        arguments = getattr(base, "arguments", {})
-        return _gamma_interval_log_mass(
-            _positive_parameter(arguments, "concentration", "Gamma"),
-            _positive_parameter(arguments, "rate", "Gamma"),
-            -math.inf if low is None else low,
-            math.inf if high is None else high,
-        )
-    if _base_is_discrete(base):
-        start = 0 if low is None else int(math.ceil(low))
-        stop = high if high is not None else None
-        total = 0.0
-        count = start
-        tail = 0
-        while stop is None or count <= stop:
-            mass = math.exp(float(base.log_prob(count)))  # type: ignore[attr-defined]
-            total += mass
-            tail = tail + 1 if mass < 1e-16 * max(total, 1e-300) else 0
-            if stop is None and tail > 50 and count > 50:
-                break
-            count += 1
-        return math.log(total) if total > 0.0 else -math.inf
-    mass = _truncated_mass(
-        base, -math.inf if low is None else low, math.inf if high is None else high
+    from quivers.qiec._interval import log_interval_mass
+
+    return log_interval_mass(
+        base, low, high, lower_closed=lower_closed, upper_closed=upper_closed
     )
-    return math.log(mass) if mass > 0.0 else -math.inf
 
 
 def _restrict_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -4268,12 +4249,24 @@ def _restrict_sample(a: Mapping[str, object], rng: random.Random) -> object:
         If the base places so little mass on the interval that no draw
         lands in it within the attempt budget.
     """
+    from quivers.qiec._interval import _closed
+
     base = _sampleable(a, "base", "Restrict")
     low = _optional_bound(a, "low", "Restrict")
     high = _optional_bound(a, "high", "Restrict")
+    if not math.isfinite(_restrict_log_mass(a)):
+        raise DistributionError(
+            "Restrict sampling requires finite positive interval mass"
+        )
     for _ in range(100_000):
         draw = finite_value(base.sample(rng), "Restrict base")  # type: ignore[attr-defined]
-        if _within(draw, low, high):
+        if _within(
+            draw,
+            low,
+            high,
+            lower_closed=_closed(a, "lower_closed"),
+            upper_closed=_closed(a, "upper_closed"),
+        ):
             return draw
     raise DistributionError("Restrict found no base draw inside its interval")
 
@@ -4295,11 +4288,19 @@ def _restrict_density(a: Mapping[str, object], value: object) -> float:
         the restriction is a sub-probability measure, and ``Normalize``
         divides by its mass.
     """
+    from quivers.qiec._interval import _closed
+
     base = _sampleable(a, "base", "Restrict")
     low = _optional_bound(a, "low", "Restrict")
     high = _optional_bound(a, "high", "Restrict")
     point = finite_value(value, "Restrict")
-    if not _within(point, low, high):
+    if not _within(
+        point,
+        low,
+        high,
+        lower_closed=_closed(a, "lower_closed"),
+        upper_closed=_closed(a, "upper_closed"),
+    ):
         return -math.inf
     return float(base.log_prob(value))  # type: ignore[attr-defined]
 
@@ -4317,11 +4318,15 @@ def _restrict_log_mass(a: Mapping[str, object]) -> float:
     float
         The log mass.
     """
+    from quivers.qiec._interval import _closed
+
     base = _sampleable(a, "base", "Restrict")
-    return _log_mass_of(base) + _restrict_log_mass_of(
+    return _restrict_log_mass_of(
         base,
         _optional_bound(a, "low", "Restrict"),
         _optional_bound(a, "high", "Restrict"),
+        lower_closed=_closed(a, "lower_closed"),
+        upper_closed=_closed(a, "upper_closed"),
     )
 
 

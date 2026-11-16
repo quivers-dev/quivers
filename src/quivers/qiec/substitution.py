@@ -30,6 +30,7 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     LogDensity,
+    LogMass,
     NewInstance,
     Perform,
     PrimitiveApplication,
@@ -662,6 +663,17 @@ def substitute_value(value: Value, substitution: StaticSubstitution) -> Value:
             ),
             body=substitute_value(value.body, substitution),
             result_type=substitute_type(value.result_type, substitution),
+        )
+    if isinstance(value, LogMass):
+        return LogMass(
+            sampleable=substitute_value(value.sampleable, substitution),
+            origin=value.origin,
+            batch=tuple(
+                PlateAxis(
+                    name=axis.name, size=substitute_index(axis.size, substitution)
+                )
+                for axis in value.batch
+            ),
         )
     if isinstance(value, LogDensity):
         return LogDensity(

@@ -1033,6 +1033,27 @@ class IRQiecDistributionValue(IRQiecValue):
     kind: Literal["distribution"] = "distribution"
 
 
+class IRQiecLogMass(IRQiecValue):
+    """Total measure mass, retaining independent batch axes.
+
+    Parameters
+    ----------
+    sampleable
+        The measure queried.
+    origin
+        Query source location.
+    batch
+        Retained batch axes; empty for a scalar total log weight.
+    kind
+        Discriminator, always ``"log_mass"``.
+    """
+
+    sampleable: IRQiecValue
+    origin: IRQiecSourceOrigin
+    batch: tuple[IRQiecPlateAxis, ...] = ()
+    kind: Literal["log_mass"] = "log_mass"
+
+
 class IRQiecLogDensity(IRQiecValue):
     """Evaluation of a distribution's log density at a value.
 
@@ -2294,6 +2315,12 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
             origin=cast(IRQiecSourceOrigin, _convert(value.origin)),
             plate=cast(IRQiecPlateShape, _convert(value.plate)),
         )
+    if isinstance(value, tm.LogMass):
+        return IRQiecLogMass(
+            sampleable=cast(IRQiecValue, _convert(value.sampleable)),
+            origin=cast(IRQiecSourceOrigin, _convert(value.origin)),
+            batch=cast(tuple[IRQiecPlateAxis, ...], _convert(value.batch)),
+        )
     if isinstance(value, tm.LogDensity):
         return IRQiecLogDensity(
             sampleable=cast(IRQiecValue, _convert(value.sampleable)),
@@ -2616,6 +2643,7 @@ type QiecFeature = Literal[
     "distribution",
     "plate",
     "log-density",
+    "log-mass",
     "site",
     "gather",
     "segment-sum",
@@ -2755,6 +2783,7 @@ _GENERIC_RUNTIME = QiecTargetCapabilities(
             "tensor",
             "distribution",
             "log-density",
+            "log-mass",
             "site",
             "special",
             "activation",
@@ -2939,6 +2968,11 @@ def _body_features(node: IRQiecComputation) -> set[QiecFeature]:
                 required.add("plate")
             for argument in item.arguments:
                 value(argument.value)
+        elif isinstance(item, IRQiecLogMass):
+            required.add("log-mass")
+            if item.batch:
+                required.add("plate")
+            value(item.sampleable)
         elif isinstance(item, IRQiecLogDensity):
             required.add("log-density")
             if item.batch:
@@ -3552,6 +3586,7 @@ __all__ = [
     "IRQiecPlateShape",
     "IRQiecDistributionValue",
     "IRQiecLogDensity",
+    "IRQiecLogMass",
     "IRQiecGather",
     "IRQiecWeightSum",
     "IRQiecSegmentSum",

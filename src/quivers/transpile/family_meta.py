@@ -39,6 +39,8 @@ from quivers.continuous._shape_families import (
 from quivers.continuous._skew_normal import SkewNormal
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
 from quivers.continuous._com_poisson import COMPoisson
+from quivers.continuous._bernstein_hazard import BernsteinHazard
+from quivers.continuous.families import ExtendedBeta, ConditionalExtendedBeta
 from quivers.continuous._additive_log_ratio import AdditiveLogRatioNormal
 from quivers.continuous._closed_probability import _ValidatedCategorical
 from quivers.continuous._discrete_weibull import DiscreteWeibull
@@ -52,6 +54,7 @@ from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
 from quivers.continuous.measure import Normalize, PointMass, Restrict
 from quivers.continuous.families import (
     ConditionalAdditiveLogRatioNormal,
+    ConditionalBernsteinHazard,
     ConditionalCOMPoisson,
     ConditionalDiscreteWeibull,
     ConditionalWiener,
@@ -624,6 +627,12 @@ FAMILY_META: dict[str, FamilyMeta] = {
         qvr_name="InverseGaussian",
         distribution_class=InverseGaussian,
         quivers_class=ConditionalInverseGaussian,
+        target_names={},
+    ),
+    "BernsteinHazard": FamilyMeta(
+        qvr_name="BernsteinHazard",
+        distribution_class=BernsteinHazard,
+        quivers_class=ConditionalBernsteinHazard,
         target_names={},
     ),
     "COMPoisson": FamilyMeta(
@@ -1520,6 +1529,12 @@ FAMILY_META: dict[str, FamilyMeta] = {
     "ZeroOneInflatedBeta": FamilyMeta(
         qvr_name="ZeroOneInflatedBeta",
         distribution_class=ZeroOneInflatedBeta,
+        target_names={},
+    ),
+    "ExtendedBeta": FamilyMeta(
+        qvr_name="ExtendedBeta",
+        distribution_class=ExtendedBeta,
+        quivers_class=ConditionalExtendedBeta,
         target_names={},
     ),
     "Restrict": FamilyMeta(

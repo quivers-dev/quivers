@@ -47,6 +47,24 @@ def _qvr_qiec_log_density(distribution, value):
     return distribution.log_prob(_qvr_qiec_point(value))
 
 
+def _qvr_qiec_log_mass(distribution, retained=0, shape=()):
+    normalizer = getattr(distribution, "log_normalizer", None)
+    mass = jnp.asarray(normalizer() if callable(normalizer) else 0.0)
+    shape = tuple(shape) or tuple(distribution.batch_shape)
+    mass = jnp.broadcast_to(mass, shape)
+    if (
+        isinstance(retained, bool)
+        or not isinstance(retained, int)
+        or not 0 <= retained <= mass.ndim
+    ):
+        raise ValueError("log_mass retained axes must be within the batch rank")
+    return (
+        jnp.sum(mass, axis=tuple(range(retained, mass.ndim)))
+        if mass.ndim > retained
+        else mass
+    )
+
+
 def _qvr_qiec_site_names():
     # Site labels a helper's draws and scores carry, counted so the n-th
     # occurrence of a label in one run of the model is "<label>@<n>", as

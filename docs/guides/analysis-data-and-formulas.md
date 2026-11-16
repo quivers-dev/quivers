@@ -340,6 +340,7 @@ value. The built-in families:
 | `logistic_normal` | identity for additive log ratios | coordinate scales `sigma`, LKJ response correlation |
 | `poisson` | log (exp) | none |
 | `com_poisson` | log for the rate, not response mean | `shape ~ Gamma(0.01, 0.01)` |
+| `cox` | log for the proportional hazard rate | normalized spline weights `sbhaz ~ Dirichlet(1)` |
 | `negative_binomial` | log (exp) | `disp ~ Gamma(2.0, 2.0)` |
 | `negbinomial2` | log for response mean | reciprocal shape `sigma ~ Gamma(0.4, 0.3)` |
 | `discrete_weibull` | logit for survival parameter `q` | `shape ~ HalfCauchy(2.0)` |
@@ -361,6 +362,7 @@ value. The built-in families:
 | `hurdle_lognormal` | identity | `sigma` (log-scale), `hu` (zero probability) |
 | `zero_inflated_beta` | logit | `phi` (precision), `zi` (zero probability) |
 | `zero_one_inflated_beta` | logit (sigmoid) | precision `phi` and boundary probabilities `zoi`, `coi` |
+| `xbeta` | logit (sigmoid) | Beta precision `phi` and symmetric extension `kappa`, both with log links |
 | `asym_laplace` | identity for the selected quantile | `sigma ~ HalfCauchy(2.0)`, `quantile ~ Beta(2.0, 2.0)` unless fixed |
 | `zero_inflated_asym_laplace` | identity for the continuous component's selected quantile | `sigma ~ HalfCauchy(2.0)`, `quantile ~ Beta(2.0, 2.0)`, `zi ~ Beta(2.0, 2.0)` |
 | `lognormal` | identity for log-location | `sigma ~ HalfCauchy(2.0)` |
@@ -916,6 +918,97 @@ point mass at zero. Observations equal to one require the
 with its conditional one-atom probability `coi` fixed at zero, so zero-only
 inflation creates no one-atom latent or prior. External backend emission follows
 the native family's capability checks and currently reports unsupported targets.
+
+### Spline proportional hazards
+
+A `cox` regression predicts a positive hazard multiplier, with default
+`mu = exp(eta)`. Its baseline is a normalized mixture of M-splines:
+`sbhaz` supplies positive simplex weights, while the ordinary intercept
+controls the overall hazard rate. Increasing the transformed predictor
+thus increases risk at each time; it does not increase expected event time.
+
+```python
+import pandas as pd
+from quivers.formulas import families, fit
+
+followup = pd.DataFrame({
+    "time": [0.2, 0.5, 0.8, 1.4, 2.0],
+    "exposure": [-1.0, 0.0, 1.0, 0.3, 0.2],
+})
+survival_fit = fit(
+    "time ~ exposure", data=followup,
+    family=families["cox"].with_baseline(df=5, degree=3),
+    method="svi", num_steps=2, seed=14,
+)
+fresh_followup = pd.DataFrame({"exposure": [0.2, -0.1]})
+rates = survival_fit.posterior_linpred(
+    transform=True, new_data=fresh_followup, num_samples=2,
+)
+times = survival_fit.posterior_predict(
+    new_data=fresh_followup, num_samples=2, seed=15,
+)
+mean_times = survival_fit.posterior_epred(
+    new_data=fresh_followup, num_samples=2, mc_samples=64, seed=15,
+)
+assert rates.shape == times.shape == mean_times.shape == (1, 2, 2)
+```
+
+Automatic knots use training event quantiles and the full training follow-up
+span; fresh predictor rows cannot rebuild them. An explicit immutable
+`MSplineBasis` can instead be passed to `with_baseline(basis)`. The generated
+QVR retains one coefficient table and contracts it with `sbhaz`, independently
+of the number of observation rows. `priors={"sbhaz": "Dirichlet(2.0)"}`
+changes every concentration; a vector prior supplies separate concentrations.
+`get_prior` reports the resulting source call.
+
+The baseline's finite-interval integral is one. Beyond the final knot,
+the positive endpoint hazard continues constantly, yielding a normalized
+response law with finite moments and events beyond the training interval.
+This tail policy is part of the model, rather than a fitted-data boundary
+restriction. The [hazard guide](continuous-families.md#positive-time-spline-hazards)
+gives the structural source types and knot policy.
+
+Response sampling uses the retained inverse cumulative hazard. No closed
+response mean is provided, so `posterior_epred` requires an explicit
+`mc_samples` budget and reports a simulation average. The shared collector
+uses chunks of at most 64 and restores the caller's random state. These
+examples contain exact event times and one shared baseline; censoring and
+group-specific baseline policies are separate response-model choices.
+
+### Censored extended Beta regression
+
+The `xbeta` family generates a Beta component with mean `mu` and precision
+`phi`, extends its unit interval by `kappa` on each side, then censors the
+result at zero and one. This mechanism creates both boundary masses from
+the same three component parameters. It may be useful when bounded
+measurements reach their recording limits.
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+bounded = pd.DataFrame({"y": [0.0, 0.3, 1.0, 0.7], "x": [-1.0, 0.0, 1.0, 2.0]})
+bounded_fit = fit(
+    "y ~ x", data=bounded, family="xbeta",
+    fixed_parameters={"phi": 4.0, "kappa": 0.2},
+    method="svi", num_steps=2, seed=9,
+)
+fresh = pd.DataFrame({"x": [-0.5, 1.5]})
+component_means = bounded_fit.posterior_linpred(transform=True, new_data=fresh, num_samples=3)
+response_means = bounded_fit.posterior_epred(new_data=fresh, num_samples=3)
+responses = bounded_fit.posterior_predict(new_data=fresh, num_samples=3, seed=12)
+assert component_means.shape == response_means.shape == responses.shape == (1, 3, 2)
+```
+
+`posterior_linpred(transform=True)` returns the underlying Beta mean;
+`posterior_epred` integrates the censored response, including both atoms.
+It uses bounded deterministic quadrature and raises if its numerical
+budget cannot certify the requested moments. Both `phi` and `kappa` can
+be fixed or regressed using the common `distributional` interface. Setting
+`kappa=0` gives ordinary Beta responses. The default scalar extension prior
+is `Gamma(0.01, 0.01)` on the natural scale. Distributional coefficient
+priors follow QVR's common coefficient rules; they do not reproduce brms's
+default Student-t prior on a log-extension predictor.
 
 ### Quantile regression and fixed auxiliary parameters
 

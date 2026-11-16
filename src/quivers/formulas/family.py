@@ -19,6 +19,9 @@ from typing import Literal, Mapping
 
 import didactic.api as dx
 
+from quivers._splines import MSplineBasis
+from quivers.formulas._survival import BaselineSpec
+
 
 class Link(dx.Model):
     """Inverse-link function bridging a linear predictor on
@@ -206,6 +209,8 @@ class Family(dx.Model):
         Retained ordinal thresholds and transition construction.
     response : ResponseSpec or None
         Joint component coordinate system and reference selection.
+    baseline : BaselineSpec or None
+        Retained normalized spline structure for proportional hazards.
     """
 
     name: str
@@ -216,6 +221,50 @@ class Family(dx.Model):
     trials_parameter: str | None = None
     ordinal: OrdinalSpec | None = None
     response: ResponseSpec | None = None
+    baseline: BaselineSpec | None = None
+
+    def with_baseline(
+        self, basis: MSplineBasis | None = None, *, df: int = 5, degree: int = 3
+    ) -> Family:
+        """Configure a retained normalized baseline for proportional hazards.
+
+        Parameters
+        ----------
+        basis : MSplineBasis or None
+            Explicit immutable knots and tail policy, or automatic training knots.
+        df : int
+            Number of basis components for automatic selection.
+        degree : int
+            Polynomial degree for automatic selection.
+
+        Returns
+        -------
+        Family
+            Independent family retaining the selected baseline structure.
+
+        Raises
+        ------
+        ValueError
+            If this is not a baseline-hazard family or automatic dimensions are invalid.
+        """
+        if self.baseline is None:
+            raise ValueError(
+                "baseline configuration requires a proportional-hazards family"
+            )
+        if basis is not None and not isinstance(basis, MSplineBasis):
+            raise ValueError("basis must be an immutable MSplineBasis")
+        if isinstance(degree, bool) or not isinstance(degree, int) or degree < 0:
+            raise ValueError("baseline degree must be a nonnegative integer")
+        if isinstance(df, bool) or not isinstance(df, int) or df < degree + 1:
+            raise ValueError("baseline df must be an integer at least degree + 1")
+        return self.with_(
+            baseline=BaselineSpec(
+                df=basis.size if basis is not None else df,
+                degree=basis.degree if basis is not None else degree,
+                boundary_knots=basis.boundary_knots if basis is not None else None,
+                interior_knots=basis.interior_knots if basis is not None else (),
+            )
+        )
 
     def with_reference(self, reference: int | str | None) -> Family:
         """Select the reference component of a joint categorical predictor.
@@ -365,6 +414,7 @@ class Family(dx.Model):
             trials_parameter=self.trials_parameter,
             ordinal=ordinal,
             response=self.response,
+            baseline=self.baseline,
             aux_params=tuple(
                 AuxParam(
                     name=aux.name,
@@ -782,6 +832,16 @@ families: Mapping[str, Family] = {
             AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT),
         ),
     ),
+    "xbeta": Family(
+        name="xbeta",
+        location_link=_LOGIT,
+        observe_family="ExtendedBeta",
+        extra_observe_args=("phi", "kappa"),
+        aux_params=(
+            AuxParam(name="phi", prior="HalfCauchy(2.0)", link=_LOG),
+            AuxParam(name="kappa", prior="Gamma(0.01, 0.01)", link=_LOG),
+        ),
+    ),
     "zero_one_inflated_beta": Family(
         name="zero_one_inflated_beta",
         location_link=_LOGIT,
@@ -862,6 +922,12 @@ families: Mapping[str, Family] = {
         extra_observe_args=("kappa",),
         aux_params=(AuxParam(name="kappa", prior="Gamma(2.0, 2.0)", link=_LOG),),
     ),
+    "cox": Family(
+        name="cox",
+        location_link=_LOG,
+        observe_family="BernsteinHazard",
+        baseline=BaselineSpec(),
+    ),
     "mixture": Family(
         name="mixture",
         location_link=_IDENTITY,
@@ -880,6 +946,7 @@ __all__ = [
     "AuxParam",
     "OrdinalSpec",
     "ResponseSpec",
+    "BaselineSpec",
     "Family",
     "links",
     "families",

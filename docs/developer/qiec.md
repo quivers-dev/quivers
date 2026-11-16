@@ -312,7 +312,15 @@ A program's calls of computations are lowered to compiled steps before compilati
   uses to inline such calls (`quivers.transpile._pure_calls`, `inline_call`).
 - A callee whose only requests are the program's `Random` and `Score` runs in place. Its site
   `label` is named `y$label` under the binder `y`, and a log density it scores is evaluated by the
-  internal let call `$log_prob`.
+  internal let call `$log_prob`. Density and total-mass queries construct
+  raw native distributions through the same `$distribution` adapter,
+  reusing the registered family constructors and measure algebra.
+  `$log_mass` delegates to the existing measure normalizer and reduces
+  only unretained independent axes. Neither query normalizes a raw
+  restriction or clamps its parameters. Pure `Sampleable` construction
+  locals are substituted before let hoisting, while their numeric
+  intermediates remain shared; native tensor sites thus do not carry
+  distribution objects.
 - `traverse` maps a pure callee as a comprehension and a drawing callee as one
   [plated](https://en.wikipedia.org/wiki/Plate_notation) draw per site.
 

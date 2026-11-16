@@ -54,8 +54,8 @@ def _log_standard_gamma(shape: float, rng: random.Random) -> float:
     return log_gamma - exponential / shape
 
 
-def _dirichlet_weights(a: Sequence[float], rng: random.Random) -> tuple[float, ...]:
-    """Normalize log-Gamma draws, including shapes below floating underflow.
+def _dirichlet_log_weights(a: Sequence[float], rng: random.Random) -> tuple[float, ...]:
+    """Normalize log-Gamma draws before exponentiating small coordinates.
 
     Parameters
     ----------
@@ -67,7 +67,7 @@ def _dirichlet_weights(a: Sequence[float], rng: random.Random) -> tuple[float, .
     Returns
     -------
     tuple[float, ...]
-        Normalized category probabilities.
+        Normalized category log probabilities.
 
     Raises
     ------
@@ -90,7 +90,25 @@ def _dirichlet_weights(a: Sequence[float], rng: random.Random) -> tuple[float, .
         logs = [v - peak for v in logs]
     weights = [math.exp(v) for v in logs]
     total = sum(weights)
-    return tuple(v / total for v in weights)
+    return tuple(v - math.log(total) for v in logs)
+
+
+def _dirichlet_weights(a: Sequence[float], rng: random.Random) -> tuple[float, ...]:
+    """Draw probabilities through the shared log-Gamma sampler.
+
+    Parameters
+    ----------
+    a : Sequence[float]
+        Nonempty positive finite concentrations.
+    rng : random.Random
+        Host generator retaining the existing Gamma/uniform draw order.
+
+    Returns
+    -------
+    tuple[float, ...]
+        Normalized probabilities.
+    """
+    return tuple(math.exp(v) for v in _dirichlet_log_weights(a, rng))
 
 
 def _trial_count(value: object) -> int:

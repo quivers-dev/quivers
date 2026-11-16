@@ -57,6 +57,25 @@ The [vector guide](../../guides/analysis-data-and-formulas.md#factor-and-vector-
 gives component labels, inferred training totals, new-row trial counts,
 and explicit Monte Carlo expectations for additive log-ratio responses.
 
+## Retained proportional-hazards baselines
+
+`Family.baseline` retains a `BaselineSpec` for `cox` regressions.
+`families["cox"].with_baseline(df=5, degree=3)` selects knots from training
+responses; `with_baseline(basis)` accepts an immutable `MSplineBasis`.
+The specification stores typed knot tuples and dimensions and preserves
+its value through link selection and serialization. The generated program
+retains the actual coefficient table for prediction on fresh rows.
+
+The location parameter is a hazard multiplier, with default log link;
+it is not response mean. Baseline weights have a unit-sum simplex prior
+`sbhaz ~ Dirichlet(1)`, separating shape from rate. A finite positive
+constant tail makes response moments finite, but no closed mean is exposed.
+Use an explicit `posterior_epred(mc_samples=...)` budget. The
+[regression example](../../guides/analysis-data-and-formulas.md#spline-proportional-hazards)
+distinguishes rate, event draws, and expected time.
+
+::: quivers.formulas._survival.BaselineSpec
+
 ## COM-Poisson parameters
 
 `com_poisson` uses log-linked rate `mu=lambda` and log-linked dispersion
@@ -110,6 +129,16 @@ hidden response-dependent rescaling. GEV uses identity-linked `xi` with
 scalar `Normal(0, 0.3)`, rather than the pinned brms shape-prior policy.
 
 ## Other response parameters
+
+`xbeta` uses logit-linked underlying Beta mean `mu`, log-linked precision
+`phi`, and log-linked extension `kappa`. Its native `ExtendedBeta` law
+creates boundary atoms by censoring an affine Beta component; it does not
+add independent inflation parameters. Fixed `kappa=0` recovers ordinary
+Beta responses. Expected responses use the censored law's full mean,
+whereas transformed linear predictions retain the component mean.
+Scalar auxiliary defaults are `HalfCauchy(2)` for precision and
+`Gamma(0.01, 0.01)` for extension; distributional coefficient priors use
+the shared QVR coefficient policy.
 
 `zero_inflated_beta` uses logit mean and zero-probability links plus a log
 precision link. It lowers to native `ZeroOneInflatedBeta` with `coi=0`, retaining

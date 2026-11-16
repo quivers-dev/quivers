@@ -24,6 +24,7 @@ from quivers.qiec._models import QiecModel
 from quivers.dsl.ast_nodes import TypeName
 from quivers.dsl.ast_nodes.let_expressions import (
     LetExprBinOp,
+    LetExprBool,
     LetExprCall,
     LetExprFactor,
     LetExprIndex,
@@ -36,7 +37,7 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetFactorBinder,
 )
 from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS, PRIMITIVE_OPERATORS
-from quivers.qiec.canonical import tensor_shape, tensor_type
+from quivers.qiec.canonical import sampled_element, tensor_shape, tensor_type
 from quivers.qiec.identifiers import SourceOrigin
 from quivers.qiec.module import NamedComputation
 from quivers.qiec.primitives import primitive
@@ -56,6 +57,7 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     LogDensity,
+    LogMass,
     NewInstance,
     Perform,
     PrimitiveApplication,
@@ -73,6 +75,7 @@ from quivers.qiec.types import (
     INT,
     REAL,
     IndexLiteral,
+    IndexSum,
     IndexTerm,
     IndexVariable,
     TypeExpr,
@@ -164,6 +167,8 @@ def replace_locals(value: Value, replacements: Mapping[Local, Value]) -> Value:
 #: ...)``. The ``$`` keeps it apart from every function a source can
 #: call.
 LOG_PROB_CALL = "$log_prob"
+LOG_MASS_CALL = "$log_mass"
+DISTRIBUTION_CALL = "$distribution"
 
 
 #: Primitives that are conversions the target's arithmetic performs on
@@ -340,6 +345,12 @@ class _LetFloater:
             for binding in value.bindings:
                 inner, bound = self.value(binding.value, scope)
                 hoisted.extend(inner)
+                if sampled_element(binding.binder.type) is not None:
+                    # Distribution construction is pure syntax; keep it at
+                    # its consumers instead of transporting a host object
+                    # through tensor-valued deterministic program sites.
+                    scope[binding.binder] = bound
+                    continue
                 local = Local(
                     name=self.fresh(binding.binder.name), type=binding.binder.type
                 )
@@ -543,30 +554,22 @@ def _log_prob_call(
     Returns
     -------
     LetExprNode
-        ``$log_prob("Family", value, "parameter", argument, ...)``,
-        summed over the family's plate when it has one.
+        Raw checked distribution construction, response, and retained batch
+        rank, shared with measure-mass queries.
 
     Raises
     ------
     UnsupportedConstruct
         If the density is not of a family construction.
     """
-    sampleable = density.sampleable
-    if not isinstance(sampleable, DistributionValue):
-        raise UnsupportedConstruct(
-            f"qvr-{RUNTIME_TARGET}", [f"qiec:expression:log_density:{program}"]
-        )
-    arguments: list[LetExprNode] = [
-        LetExprString(value=sampleable.name),
-        _expression(density.value, cards, RUNTIME_TARGET, program),
-    ]
-    for parameter, value in sampleable.arguments:
-        arguments.append(LetExprString(value=parameter))
-        arguments.append(_expression(value, cards, RUNTIME_TARGET, program))
-    call = LetExprCall(func=LOG_PROB_CALL, args=tuple(arguments))
-    if sampleable.plate.batch or sampleable.plate.event:
-        return LetExprCall(func="sum", args=(call,))
-    return call
+    return LetExprCall(
+        func=LOG_PROB_CALL,
+        args=(
+            _expression(density.sampleable, cards, RUNTIME_TARGET, program),
+            _expression(density.value, cards, RUNTIME_TARGET, program),
+            LetExprLiteral(value=len(density.batch), integral=True),
+        ),
+    )
 
 
 def _expression(
@@ -599,6 +602,8 @@ def _expression(
         return LetExprVar(name=value.local.name)
     if isinstance(value, LiteralValue):
         if isinstance(value.value, bool):
+            if target == RUNTIME_TARGET:
+                return LetExprBool(value=value.value)
             return LetExprLiteral(value=int(value.value), integral=True)
         if isinstance(value.value, int | float):
             return LetExprLiteral(
@@ -724,6 +729,58 @@ def _expression(
         return LetExprCall(
             func="sum", args=(_expression(value.value, cards, target, program),)
         )
+    if isinstance(value, DistributionValue) and target == RUNTIME_TARGET:
+        from quivers.qiec.canonical import sampled_element, tensor_shape
+        from quivers.qiec.families import family as semantic_family
+
+        element = sampled_element(value.result_type)
+        split = tensor_shape(element) if element is not None else None
+        rank = semantic_family(value.name).event_rank
+        dimensions = () if split is None or not rank else split[1][-rank:]
+
+        def extent(size: IndexTerm) -> int:
+            if isinstance(size, IndexLiteral) and isinstance(size.value, int):
+                return size.value
+            if isinstance(size, IndexVariable) and size.name in cards:
+                return cards[size.name]
+            if isinstance(size, IndexSum):
+                return sum(extent(term) for term in size.terms)
+            raise UnsupportedConstruct(
+                f"qvr-{target}", [f"qiec:measure-shape:{render_static(size)}:{program}"]
+            )
+
+        event = tuple(extent(size) for size in dimensions)
+        plate = tuple(
+            extent(axis.size) for axis in (*value.plate.batch, *value.plate.event)
+        )
+        arguments: list[LetExprNode] = [
+            LetExprString(value=value.name),
+            LetExprList(
+                items=tuple(LetExprLiteral(value=size, integral=True) for size in event)
+            ),
+            LetExprList(
+                items=tuple(LetExprLiteral(value=size, integral=True) for size in plate)
+            ),
+        ]
+        for name, argument in value.arguments:
+            arguments.extend(
+                (
+                    LetExprString(value=name),
+                    _expression(argument, cards, target, program),
+                )
+            )
+        return LetExprCall(func=DISTRIBUTION_CALL, args=tuple(arguments))
+    if isinstance(value, LogMass) and target == RUNTIME_TARGET:
+        call = LetExprCall(
+            func=LOG_MASS_CALL,
+            args=(
+                _expression(value.sampleable, cards, target, program),
+                LetExprLiteral(value=len(value.batch), integral=True),
+            ),
+        )
+        return call
+    if isinstance(value, LogMass):
+        return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
     if isinstance(value, LogDensity) and target == RUNTIME_TARGET:
         return _log_prob_call(value, cards, program)
     if isinstance(value, LogDensity):

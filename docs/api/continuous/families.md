@@ -65,6 +65,86 @@ is a separate capability from these native interfaces.
 
 ::: quivers.continuous._multinomial
 
+## Bernstein and spline baseline hazards
+
+`BernsteinHazard(breaks, controls, rate=...)` defines a positive-time
+proportional-hazards law. `breaks` has intrinsic shape `[s + 1]` and
+`controls` has shape `[s, k]`; the event itself is scalar. The dependent
+family signature checks this relation independently of observation batch
+axes. Boundaries start at zero and increase strictly. Positive Bernstein
+coefficients integrate to one over the retained interval, within numerical
+simplex tolerance, fixing baseline scale separately from the rate.
+
+After the final boundary, the endpoint hazard continues constantly and
+positively. Survival thus tends to zero; the kernel retains all tail mass.
+Supply exactly one of `rate` and `log_rate`. The latter avoids forming an
+unnecessary exponential. The native implementation evaluates parameters and
+scores in float64, preserving gradients to original learned tensors.
+
+`CoxPH(basis, weights, ...)` contracts an immutable `MSplineBasis` with
+positive simplex weights and delegates to this same kernel. It retains
+knots, degree, and tail policy. `cox_spline_basis` places interior knots
+using event times and sets the upper boundary from all follow-up times;
+new observations reuse the resulting basis. Explicit knots are required
+when the requested distinct event quantiles are unavailable.
+
+`ConditionalBernsteinHazard` learns only the log rate over explicitly
+supplied fixed baseline tables. It validates and copies those tables;
+neural heads do not construct unconstrained knots or coefficients. Source
+programs can pass differentiable controls explicitly instead.
+
+Both kernels provide density, CDF, log tails, inverse CDF, and pathwise
+sampling. The inverse uses a bounded safeguarded solve within the interval
+and an analytic constant-hazard tail; numerical capacity or convergence
+failures raise explicitly. Analytic response moments are unavailable.
+Native and checked-reference execution support the typed source family;
+external family rendering remains an explicit capability check.
+
+::: quivers.continuous._bernstein_hazard
+
+::: quivers.continuous._cox
+
+::: quivers._splines.MSplineBasis
+
+::: quivers._spline_design.cox_spline_basis
+
+## Censored extended Beta responses
+
+`ExtendedBeta(mu, phi, kappa)` starts from
+`X ~ Beta(mu*phi, (1-mu)*phi)` and returns
+`clamp((1+2*kappa)*X-kappa, 0, 1)`. The parameter `mu` is the
+underlying Beta mean; the response mean generally differs. Precision
+`phi` is positive, `0 < mu < 1`, and the extension `kappa` is nonnegative.
+At zero extension the law reduces to an ordinary Beta, with no endpoint
+atoms. Positive extension places the exact censored tail masses at zero
+and one. Scoring an endpoint evaluates its atom mass; interior observations
+use the affine Beta density.
+
+Parameters, scores, moments, and draws use float64. Complementary Beta
+coordinates retain small endpoint distances before subtraction or sampling
+rounding. `log_cdf` includes boundary atoms, while `log_cdf_left` excludes
+them; the two survival methods use complementary strict/inclusive events.
+Pathwise sampling differentiates the affine map and censoring pushforward.
+It requires both Beta concentrations to be at least the square root of
+float64's smallest normal value, keeping shape-gradient denominators
+representable. Ordinary sampling retains the shared log-Gamma underflow
+fallback for smaller shapes.
+A mathematically interior draw that cannot be represented strictly between
+zero and one raises `RuntimeError`, rather than adding numerical atom mass.
+
+Response means and variances use positive adaptive quadrature, bounded by
+`moment_atol=1e-12`, `moment_rtol=1e-10`, and
+`moment_max_panels=4096` per batch row, processed in chunks of at most 64
+rows. Tiny extensions use partial-Beta moment corrections; zero extension
+retains the exact Beta moments and their one-sided first extension
+derivatives. These derivatives do not imply that every second extension
+derivative exists at zero. A failed convergence or interval-resolution
+check raises explicitly. An inverse CDF is unavailable because the shared
+Beta base does not implement one. Native and checked-reference execution
+support this law; external renderers currently refuse it by family name.
+
+::: quivers.continuous._extended_beta
+
 ## Additive log-ratio Normal events
 
 `AdditiveLogRatioNormal(loc, scale_tril, reference=None)` maps a correlated

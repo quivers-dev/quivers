@@ -36,6 +36,11 @@ import torch.distributions as D
 from torch.distributions import constraints as _constraints
 
 from quivers.continuous._com_poisson import COMPoisson
+from quivers.continuous._bernstein_hazard import BernsteinHazard
+from quivers.continuous._extended_beta import ExtendedBeta
+from quivers.continuous._cox import CoxPH
+from quivers._splines import MSplineBasis
+from quivers._spline_design import cox_spline_basis
 from quivers.continuous._additive_log_ratio import AdditiveLogRatioNormal
 from quivers.continuous._multinomial import (
     Multinomial,
@@ -239,6 +244,94 @@ class _IndependentConditional(ContinuousMorphism):
         # back to ``.sample()`` — gradients won't flow through the
         # sample but the distribution still scores log-probabilities.
         return dist.sample(sample_shape)
+
+
+class ConditionalBernsteinHazard(_IndependentConditional):
+    """Learn a proportional log rate over an explicitly fixed baseline.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        Predictor space for the log hazard multiplier.
+    codomain : ContinuousSpace
+        Scalar event-time coordinates, independently repeated when dim > 1.
+    breaks : Tensor or Sequence[float] or None
+        Explicit retained baseline boundaries; required.
+    controls : Tensor or Sequence[Sequence[float]] or None
+        Explicit normalized positive baseline coefficients; required.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-source network widths.
+    param_source : ParamSource or None
+        Reusable source of one log rate per output coordinate.
+    param_source_option : str or None
+        Parameter-source strategy.
+
+    Notes
+    -----
+    The checked baseline is copied into fixed buffers. Knots and controls are
+    never invented by unconstrained neural heads. Source programs can instead
+    pass explicitly computed, differentiable controls to BernsteinHazard.
+    """
+
+    def __init__(
+        self,
+        domain,
+        codomain,
+        *,
+        breaks=None,
+        controls=None,
+        hidden_dim=None,
+        param_source=None,
+        param_source_option=None,
+    ):
+        if breaks is None or controls is None:
+            raise ValueError(
+                "ConditionalBernsteinHazard requires explicit fixed breaks and controls"
+            )
+        baseline = BernsteinHazard(breaks, controls, rate=1.0)
+        if baseline.batch_shape not in (torch.Size(), torch.Size((codomain.dim,))):
+            raise ValueError(
+                "fixed Bernstein baseline batch must be empty or match output coordinates"
+            )
+        super().__init__(
+            domain,
+            codomain,
+            BernsteinHazard,
+            [("log_rate", lambda value: value)],
+            hidden_dim=hidden_dim,
+            param_source=param_source,
+            param_source_option=param_source_option,
+        )
+        self.register_buffer("breaks", baseline.breaks.detach().clone())
+        self.register_buffer("controls", baseline.controls.detach().clone())
+
+    @property
+    def support(self):
+        """Return nonnegative event-time support.
+
+        Returns
+        -------
+        torch.distributions.constraints.Constraint
+            Nonnegative real support.
+        """
+        return _constraints.nonnegative
+
+    def _get_dist(self, x):
+        """Build the shared hazard law with predictor-dependent rates.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Predictor batch.
+
+        Returns
+        -------
+        BernsteinHazard
+            Fixed baseline with one learned log rate per output coordinate.
+        """
+        return BernsteinHazard(
+            self.breaks, self.controls, log_rate=self.param_source(x)
+        )
 
 
 # ============================================================================
@@ -1029,6 +1122,16 @@ ConditionalExGaussian = _make_family(
     "Conditional exponentially modified Gaussian with location, Normal scale, and Exponential rate.",
 )
 """Conditional sum of a Normal and an independent Exponential variable."""
+
+ConditionalExtendedBeta = _make_family(
+    "ConditionalExtendedBeta",
+    ExtendedBeta,
+    [("mu", "sigmoid"), ("phi", "softplus"), ("kappa", "softplus")],
+    "Conditional censored extended Beta with mean, precision, and extension heads.",
+    discrete=False,
+    inline_bounds={"kappa": (0.0, math.inf)},
+)
+"""Conditional extended-Beta component parameters with endpoint censoring atoms."""
 
 ConditionalInverseGaussian = _make_family(
     "ConditionalInverseGaussian",
@@ -3888,6 +3991,22 @@ except AttributeError:
 
 _register_family(
     FamilySpec(
+        name="BernsteinHazard",
+        dist_class=BernsteinHazard,
+        params=(
+            ParamSpec(name="breaks", transform="id", kind="vector"),
+            ParamSpec(name="controls", transform="id"),
+            ParamSpec(name="rate", transform="softplus"),
+        ),
+        support=_constraints.nonnegative,
+        output_kind="independent",
+        conditional_class_override=ConditionalBernsteinHazard,
+    )
+)
+
+
+_register_family(
+    FamilySpec(
         name="Normal",
         dist_class=D.Normal,
         params=(
@@ -4793,6 +4912,8 @@ class Truncated(ContinuousMorphism):
 
 
 __all__ = [
+    "ExtendedBeta",
+    "ConditionalExtendedBeta",
     "SkewNormal",
     "ConditionalSkewNormal",
     "ShiftedLogNormal",
@@ -4820,6 +4941,11 @@ __all__ = [
     "ConditionalDirichletMultinomial",
     "ConditionalCauchy",
     "ConditionalLaplace",
+    "BernsteinHazard",
+    "ConditionalBernsteinHazard",
+    "CoxPH",
+    "MSplineBasis",
+    "cox_spline_basis",
     "COMPoisson",
     "ConditionalCOMPoisson",
     "ConditionalDiscreteWeibull",

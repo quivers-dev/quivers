@@ -13,8 +13,12 @@ from quivers.qiec._beta_tails import beta_fraction
 def _log_front(a: Tensor, b: Tensor, x: Tensor) -> Tensor:
     """Retain the prefactor and its derivatives at concentrated Beta means."""
     large = (a >= 8) & (b >= 8)
-    small = torch.minimum(a, b)
-    other = torch.maximum(a, b)
+    # One coherent orientation retains the full Hessian at a==b. The
+    # averaged subgradients of minimum/maximum would project both shape
+    # derivatives onto the diagonal and discard antisymmetric curvature.
+    first = a <= b
+    small = torch.where(first, a, b)
+    other = torch.where(first, b, a)
     sa, sb = torch.where(large, 1.0, small), torch.where(large, 1.0, other)
     direct = (
         a * x.log()

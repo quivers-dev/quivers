@@ -32,6 +32,41 @@ def _qvr_qiec_log_density(distribution, value):
     return distribution.log_prob(_qvr_qiec_array(value))
 
 
+def _qvr_qiec_log_mass(distribution, retained=0, shape=()):
+    normalizer = getattr(distribution, "log_normalizer", None)
+    if callable(normalizer):
+        mass = tf.convert_to_tensor(normalizer())
+    else:
+        parameters = [
+            value
+            for value in distribution.parameters.values()
+            if tf.is_tensor(value) and value.dtype.is_floating
+        ]
+        mass = (
+            tf.add_n(
+                [
+                    tf.reduce_sum(tf.where(tf.math.is_finite(value), value, 0)) * 0
+                    for value in parameters
+                ]
+            )
+            if parameters
+            else tf.constant(0.0)
+        )
+    shape = tuple(shape) or tuple(distribution.batch_shape)
+    mass = tf.broadcast_to(mass, shape)
+    if (
+        isinstance(retained, bool)
+        or not isinstance(retained, int)
+        or not 0 <= retained <= len(shape)
+    ):
+        raise ValueError("log_mass retained axes must be within the batch rank")
+    return (
+        tf.reduce_sum(mass, axis=tuple(range(retained, len(shape))))
+        if len(shape) > retained
+        else mass
+    )
+
+
 def _qvr_qiec_site_names():
     # Site labels a helper's draws and scores carry, counted so the n-th
     # occurrence of a label in one run of the model is "<label>@<n>", as

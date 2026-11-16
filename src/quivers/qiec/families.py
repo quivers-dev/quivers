@@ -605,6 +605,46 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
+        name="BernsteinHazard",
+        parameters=(
+            FamilyParameter(
+                name="breaks", constraint="real", rank=1, scalar_broadcast=False
+            ),
+            FamilyParameter(
+                name="controls", constraint="positive", rank=2, scalar_broadcast=False
+            ),
+            FamilyParameter(name="rate", constraint="positive", rank=0),
+            FamilyParameter(name="log_rate", constraint="real", rank=0),
+        ),
+        shape_signature=FamilyShapeSignature(
+            telescope=(
+                IndexBinder(name="segments", sort=NAT),
+                IndexBinder(name="controls", sort=NAT),
+            ),
+            parameter_shapes=(
+                ("breaks", (shift_index(IndexVariable(name="segments", sort=NAT), 1),)),
+                (
+                    "controls",
+                    (
+                        IndexVariable(name="segments", sort=NAT),
+                        IndexVariable(name="controls", sort=NAT),
+                    ),
+                ),
+                ("rate", ()),
+                ("log_rate", ()),
+            ),
+            event_shape=(),
+        ),
+        support="nonnegative",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="COMPoisson",
         parameters=(
             FamilyParameter(name="rate", constraint="nonnegative", rank=0),
@@ -1949,11 +1989,29 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
+        name="ExtendedBeta",
+        parameters=(
+            FamilyParameter(name="mu", constraint="unit_interval_open", rank=0),
+            FamilyParameter(name="phi", constraint="positive", rank=0),
+            FamilyParameter(name="kappa", constraint="nonnegative", rank=0),
+        ),
+        support="unit_interval",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="Restrict",
         parameters=(
             FamilyParameter(name="base", constraint="sampleable", rank=0),
             FamilyParameter(name="low", constraint="real", rank=0),
             FamilyParameter(name="high", constraint="real", rank=0),
+            FamilyParameter(name="lower_closed", constraint="boolean", rank=0),
+            FamilyParameter(name="upper_closed", constraint="boolean", rank=0),
         ),
         support="dependent",
         element=REAL,
