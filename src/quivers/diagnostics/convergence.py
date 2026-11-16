@@ -55,7 +55,11 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
-from quivers.diagnostics._numeric import linear_quantile as _linear_quantile
+from quivers.diagnostics._numeric import (
+    empirical_summary,
+    linear_quantile as _linear_quantile,
+    real_samples,
+)
 
 EssMethod = Literal["bulk", "tail", "mean", "sd", "quantile"]
 """The quantity an effective sample size refers to: ``"bulk"``
@@ -88,13 +92,15 @@ class ConvergenceSummary(ValueModel):
     those two have shape ``(len(probs), *event_shape)``. All are
     float64.
 
-    Attributes
+    Parameters
     ----------
     mean : torch.Tensor
-        Posterior mean over all chains and draws.
+        Posterior mean over all chains and draws; NaN for a coordinate
+        with any nonfinite draw.
     sd : torch.Tensor
         Posterior standard deviation over all chains and draws
-        (one degree of freedom subtracted).
+        (one degree of freedom subtracted); NaN for a coordinate with any
+        nonfinite draw.
     probs : tuple[float, ...]
         The probabilities at which ``quantiles`` are taken.
     quantiles : torch.Tensor
@@ -146,7 +152,8 @@ def _as_chains(draws: torch.Tensor) -> torch.Tensor:
     TypeError
         If ``draws`` is not a tensor or holds complex values.
     ValueError
-        If ``draws`` has fewer than two axes, or no chains or draws.
+        If ``draws`` has fewer than two axes, no chains or draws, or an
+        original integer exceeds exact Float64 capacity.
     """
     if not isinstance(draws, torch.Tensor):
         raise TypeError(f"draws must be a torch.Tensor, got {type(draws).__name__}")
@@ -163,8 +170,8 @@ def _as_chains(draws: torch.Tensor) -> torch.Tensor:
         )
     num_coordinates = math.prod(draws.shape[2:])
     return (
-        draws.detach()
-        .to(device="cpu", dtype=torch.float64)
+        real_samples(draws, label="convergence draws", finite=False)
+        .to(device="cpu")
         .reshape(draws.shape[0], draws.shape[1], num_coordinates)
     )
 
@@ -912,33 +919,6 @@ def mcse(
     return _per_coordinate(draws, statistic, min_chains=1)
 
 
-def _pooled_quantiles(draws: torch.Tensor, probs: Sequence[float]) -> torch.Tensor:
-    """Linear-interpolation quantiles of the pooled draws per coordinate.
-
-    Parameters
-    ----------
-    draws : torch.Tensor
-        Draws laid out ``(num_chains, num_draws, *event_shape)``.
-    probs : Sequence[float]
-        Probabilities in ``(0, 1)``.
-
-    Returns
-    -------
-    torch.Tensor
-        Float64, shape ``(len(probs), *event_shape)`` on
-        ``draws.device``; NaN at coordinates with a non-finite draw.
-    """
-    chains = _as_chains(draws)
-    pooled = chains.reshape(-1, chains.shape[2])
-    finite = torch.isfinite(pooled).all(dim=0)
-    sorted_values = torch.sort(pooled, dim=0).values
-    rows = [
-        torch.where(finite, _linear_quantile(sorted_values, p), math.nan) for p in probs
-    ]
-    stacked = torch.stack(rows) if rows else pooled.new_empty((0, pooled.shape[1]))
-    return stacked.reshape(len(probs), *draws.shape[2:]).to(device=draws.device)
-
-
 def summary(
     samples: Mapping[str, torch.Tensor],
     *,
@@ -966,21 +946,25 @@ def summary(
         If a site's draws are not a real tensor.
     ValueError
         If a site's draws have fewer than two axes or no chains or
-        draws, or a probability lies outside ``(0, 1)``.
+        draws, a probability lies outside ``(0, 1)``, or an original
+        integer exceeds exact Float64 capacity.
     """
     levels = tuple(_check_prob(p, "probs") for p in probs)
     summaries: dict[str, ConvergenceSummary] = {}
     for name, draws in samples.items():
         pooled = _as_chains(draws)
         event_shape = draws.shape[2:]
-        mean = pooled.mean(dim=(0, 1)).reshape(event_shape)
-        sd = pooled.reshape(-1, pooled.shape[2]).std(dim=0, unbiased=True)
+        mean, sd, quantiles = empirical_summary(
+            pooled.reshape(-1, pooled.shape[2]), levels
+        )
         mcse_rows = [mcse(draws, method="quantile", prob=p) for p in levels]
         summaries[name] = ConvergenceSummary(
-            mean=mean.to(device=draws.device),
+            mean=mean.reshape(event_shape).to(device=draws.device),
             sd=sd.reshape(event_shape).to(device=draws.device),
             probs=levels,
-            quantiles=_pooled_quantiles(draws, levels),
+            quantiles=quantiles.reshape(len(levels), *event_shape).to(
+                device=draws.device
+            ),
             r_hat=rhat(draws),
             ess_bulk=ess(draws, method="bulk"),
             ess_tail=ess(draws, method="tail"),

@@ -9,7 +9,12 @@ are held by identity, so callers own their storage.
 `summary` returns means, sample standard deviations, and requested quantiles on
 each latent site's event coordinates. Recorded MCMC chains also supply a
 `ConvergenceSummary`; variational draws supply `None`. Their one pseudo-chain
-records array shape, without asserting MCMC convergence.
+records array shape, without asserting MCMC convergence. Original integer
+capacity is checked before Float64 conversion. A coordinate containing a
+nonfinite draw has NaN mean, SD, and quantiles; draws are not deleted, and
+valid coordinates remain independent of that failure. The same scaled
+arithmetic and type-7 quantile kernel serve recorded-chain and retained
+uncertainty summaries.
 
 ## Joint covariance and correlation
 

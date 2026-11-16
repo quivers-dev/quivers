@@ -10,8 +10,10 @@ import torch
 from quivers._count_capacity import _MAX_EXACT_COUNT
 
 
-def real_samples(values: torch.Tensor, *, label: str) -> torch.Tensor:
-    """Detach finite real samples, preserving original integer capacity checks.
+def real_samples(
+    values: torch.Tensor, *, label: str, finite: bool = True
+) -> torch.Tensor:
+    """Detach real samples with shared integer and optional finiteness checks.
 
     Parameters
     ----------
@@ -19,6 +21,9 @@ def real_samples(values: torch.Tensor, *, label: str) -> torch.Tensor:
         Real samples of arbitrary shape, including Boolean or integer draws.
     label : str
         Diagnostic name used in validation errors.
+    finite : bool
+        Require finite values. Summary diagnostics may instead retain invalid
+        coordinates and report NaN without deleting any draws.
 
     Returns
     -------
@@ -30,8 +35,9 @@ def real_samples(values: torch.Tensor, *, label: str) -> torch.Tensor:
     TypeError
         If values are not a real tensor.
     ValueError
-        If values are nonfinite or an original integer exceeds the exact
-        Float64 range. Missing values are not deleted or imputed.
+        If finiteness is required and values are nonfinite, or an original
+        integer exceeds the exact Float64 range. Missing values are not
+        deleted or imputed.
     """
     if not isinstance(values, torch.Tensor) or values.is_complex():
         raise TypeError(f"{label} requires a real sample tensor")
@@ -44,7 +50,7 @@ def real_samples(values: torch.Tensor, *, label: str) -> torch.Tensor:
         ):
             raise ValueError(f"{label} integer inputs must lie within +/-2**53")
     result = values.to(dtype=torch.float64)
-    if not bool(torch.isfinite(result).all()):
+    if finite and not bool(torch.isfinite(result).all()):
         raise ValueError(
             f"{label} requires finite samples; missing values are not deleted"
         )
@@ -132,6 +138,8 @@ def empirical_summary(
     tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         Location, dispersion, and quantiles on the remaining event axes.
         One draw has undefined sample standard deviation, represented by NaN.
+        A coordinate with any nonfinite draw returns NaN for every summary,
+        without deleting or imputing draws.
     """
     anchor = pooled[0]
     deltas = pooled - anchor
@@ -161,7 +169,12 @@ def empirical_summary(
         if ordered is not None and levels
         else pooled.new_empty((0, *pooled.shape[1:]))
     )
-    return estimate, dispersion, quantiles
+    finite = torch.isfinite(pooled).all(0)
+    return (
+        torch.where(finite, estimate, torch.nan),
+        torch.where(finite, dispersion, torch.nan),
+        torch.where(finite, quantiles, torch.nan),
+    )
 
 
 __all__: list[str] = []

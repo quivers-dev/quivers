@@ -11,7 +11,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
-from quivers.diagnostics._numeric import empirical_summary, probabilities
+from quivers.diagnostics._numeric import empirical_summary, probabilities, real_samples
 from quivers.diagnostics.convergence import (
     ConvergenceSummary,
     summary as convergence_summary,
@@ -31,7 +31,21 @@ else:
 def _sample_stats(
     posterior: MCMCResult | PriorDraws | Guide, count: int
 ) -> dict[str, torch.Tensor]:
-    """Retain recorded sampler statistics on the selected draw window."""
+    """Retain recorded sampler statistics on the selected draw window.
+
+    Parameters
+    ----------
+    posterior : MCMCResult, PriorDraws, or Guide
+        Recorded sampler output or a draw source without sampler statistics.
+    count : int
+        Number of leading draws to retain from every recorded chain.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        Recorded log densities and sampler statistics, or an empty mapping
+        for independent prior and variational draws.
+    """
     from quivers.inference.mcmc.driver import MCMCResult
 
     if not isinstance(posterior, MCMCResult):
@@ -45,7 +59,7 @@ def _sample_stats(
 class PosteriorSummary(ValueModel):
     """Pooled uncertainty summaries, with MCMC diagnostics when applicable.
 
-    Attributes
+    Parameters
     ----------
     mean, sd : torch.Tensor
         Mean and sample standard deviation on the site's event coordinates.
@@ -115,7 +129,7 @@ class PosteriorCovariance(ValueModel):
 class WAICResult(ValueModel):
     """Pointwise WAIC estimates using sample log-likelihood variances.
 
-    Attributes
+    Parameters
     ----------
     elpd_waic, p_waic, waic : float
         Expected log predictive density, effective parameter count, and
@@ -144,12 +158,24 @@ class WAICResult(ValueModel):
 
     @property
     def se_waic(self) -> float:
-        """Standard error of the deviance-scale WAIC estimate."""
+        """Standard error of the deviance-scale WAIC estimate.
+
+        Returns
+        -------
+        float
+            Twice the ELPD-scale standard error.
+        """
         return 2 * self.se
 
     @property
     def waic_i(self) -> torch.Tensor:
-        """Deviance-scale contributions on the original observation axes."""
+        """Deviance-scale contributions on the original observation axes.
+
+        Returns
+        -------
+        torch.Tensor
+            Negative twice each retained pointwise ELPD estimate.
+        """
         return -2 * self.elpd_i
 
 
@@ -214,7 +240,7 @@ def waic(log_likelihood: torch.Tensor) -> WAICResult:
 class PosteriorAnalysis(ValueModel):
     """A reusable tensor posterior and its raw observation likelihoods.
 
-    Attributes
+    Parameters
     ----------
     samples : Mapping[str, torch.Tensor]
         Constrained draws with chain and draw axes.
@@ -228,6 +254,8 @@ class PosteriorAnalysis(ValueModel):
         Provenance of the draws. Variational and independent prior layout
         axes never supply MCMC convergence diagnostics.
 
+    Notes
+    -----
     Methods consume these retained tensors without replaying the model.
     Tensor mappings are held by identity; callers own their storage.
     """
@@ -247,7 +275,15 @@ class PosteriorAnalysis(ValueModel):
     kind: Literal["mcmc", "variational", "prior"] = "mcmc"
 
     def _validate_axes(self) -> None:
-        """Check that posterior and likelihood groups share chain/draw axes."""
+        """Check that posterior and likelihood groups share chain/draw axes.
+
+        Raises
+        ------
+        ValueError
+            If sample axes are empty or disagree, observation scores use
+            different sample axes, or non-MCMC draws claim sampler statistics
+            or multiple independent layout axes.
+        """
         shape = None
         for values in self.samples.values():
             if (
@@ -298,7 +334,16 @@ class PosteriorAnalysis(ValueModel):
         Returns
         -------
         dict[str, PosteriorSummary]
-            Float64 summaries on each site's event axes.
+            Float64 summaries on each site's event axes. Any coordinate with
+            a nonfinite draw has NaN location, dispersion, and quantiles;
+            no draws are deleted. Original integer capacity is checked before
+            conversion, including independent prior draws.
+
+        Raises
+        ------
+        ValueError
+            If sample axes or quantile probabilities are invalid, or an original
+            integer exceeds exact Float64 capacity.
         """
         self._validate_axes()
         levels = probabilities(probs)
@@ -321,7 +366,9 @@ class PosteriorAnalysis(ValueModel):
                 d = diagnostics[name]
                 mean, sd, quantiles = d.mean, d.sd, d.quantiles
             else:
-                pooled = values.detach().double().flatten(0, 1)
+                pooled = real_samples(
+                    values, label=f"summary {name!r}", finite=False
+                ).flatten(0, 1)
                 mean, sd, quantiles = empirical_summary(pooled, levels)
             result[name] = PosteriorSummary(
                 mean=mean,
@@ -464,7 +511,23 @@ class PosteriorAnalysis(ValueModel):
         )
 
     def _likelihood_name(self, var_name: str | None) -> str:
-        """Select one observation variable without silently adding score units."""
+        """Select one observation variable without silently adding score units.
+
+        Parameters
+        ----------
+        var_name : str or None
+            Original observation name, optional for exactly one score variable.
+
+        Returns
+        -------
+        str
+            The selected key in the retained log-likelihood mapping.
+
+        Raises
+        ------
+        ValueError
+            If no unique variable can be inferred or the requested key is absent.
+        """
         if var_name is None:
             if len(self.log_likelihood) != 1:
                 raise ValueError(
