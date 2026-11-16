@@ -2403,6 +2403,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
             )
         self._refuse_kernel_arguments()
+        from quivers.dsl.latent_weights import latent_weight_layout
+
+        self._program_latent_weight_names = frozenset(
+            site
+            for layers in latent_weight_layout(expanded, LATENT_WEIGHT_HEADS).values()
+            for weight, bias, _, _ in layers
+            for site in (weight, bias)
+        )
         self._program_lets = build_let_table(expanded)
         self._program_declarations = {
             declaration.name: declaration
@@ -3148,7 +3156,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"here but as {self._render(existing.type)} elsewhere",
                     code="qiec-program",
                 )
-            if role in {"weight", "bias"}:
+            if role in {"weight", "bias"} and name not in self._program_latent_weight_names:
                 previous = next(
                     (value for key, value in state.parameters if key == name), None
                 )
