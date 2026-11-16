@@ -111,6 +111,9 @@ def _qvr_interval_upper(lower, upper):
     lower, upper = tf.convert_to_tensor(lower), tf.convert_to_tensor(upper)
     if not lower.dtype.is_floating:
         raise ValueError("interval_upper requires real endpoints")
+    upper = tf.broadcast_to(
+        upper, tf.broadcast_dynamic_shape(tf.shape(lower), tf.shape(upper))
+    )
     return _qvr_probability_check(
         upper,
         ~tf.math.is_nan(lower) & tf.math.is_finite(upper) & (upper > lower),

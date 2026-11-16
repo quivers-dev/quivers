@@ -105,7 +105,16 @@ def _qvr_interval_upper(lower, upper):
     ValueError
         If the endpoint carrier or active interval is invalid.
     """
-    lower, upper = torch.as_tensor(lower), torch.as_tensor(upper)
+    reference = next(
+        (value for value in (lower, upper) if isinstance(value, torch.Tensor)), None
+    )
+    device = None if reference is None else reference.device
+    lower, upper = (
+        torch.as_tensor(
+            value, dtype=torch.float64 if type(value) is float else None, device=device
+        )
+        for value in (lower, upper)
+    )
     if (
         not lower.is_floating_point()
         or not upper.is_floating_point()
@@ -114,4 +123,5 @@ def _qvr_interval_upper(lower, upper):
         raise ValueError(
             "interval_upper requires a finite upper endpoint greater than its lower endpoint"
         )
-    return upper
+    shape = torch.broadcast_shapes(lower.shape, upper.shape)
+    return upper if upper.shape == shape else upper.expand(shape)

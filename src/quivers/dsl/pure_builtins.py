@@ -127,7 +127,12 @@ def _eager_interval_upper(
     reference = lower if isinstance(lower, torch.Tensor) else upper
     assert isinstance(reference, torch.Tensor)
     endpoints = tuple(
-        torch.as_tensor(value, device=reference.device) for value in (lower, upper)
+        torch.as_tensor(
+            value,
+            dtype=torch.float64 if type(value) is float else None,
+            device=reference.device,
+        )
+        for value in (lower, upper)
     )
     if any(
         value.dtype == torch.bool or not value.is_floating_point()
@@ -139,7 +144,8 @@ def _eager_interval_upper(
         raise ValueError(
             "interval_upper requires a finite upper endpoint greater than its lower endpoint"
         )
-    return high
+    shape = torch.broadcast_shapes(low.shape, high.shape)
+    return high if high.shape == shape else high.expand(shape)
 
 
 def _eager_positive_parameter(value: torch.Tensor | float) -> torch.Tensor | float:
@@ -625,6 +631,12 @@ _COLLECTION_ARITIES: Mapping[str, frozenset[int]] = {
     "logsumexp_over": frozenset({2}),
     "filter": frozenset({2}),
 }
+#: Structural queries use checked sampleable arguments rather than direct
+#: tensor-call implementations. Their arity and result layout stay together.
+_MEASURE_QUERIES: Mapping[str, tuple[int, str]] = {
+    "log_mass": (1, "sampleable-total-mass"),
+    "log_prob": (2, "sampleable-density"),
+}
 _RANDOM_EAGER_BUILTINS = frozenset({"alpha_dropout", "dropout", "rrelu"})
 
 
@@ -643,7 +655,7 @@ def _eager_arities(implementation: Callable | None) -> frozenset[int]:
 
 
 def _qiec_form(name: str) -> QiecBuiltinForm:
-    if name in {"log_mass", "log_prob"}:
+    if name in _MEASURE_QUERIES:
         return "measure-query"
     if name in _BUILTIN_PRIMITIVES:
         return "primitive"
@@ -662,7 +674,7 @@ def _qiec_form(name: str) -> QiecBuiltinForm:
 
 def _qiec_arities(name: str, form: QiecBuiltinForm) -> frozenset[int]:
     if form == "measure-query":
-        return frozenset({1 if name == "log_mass" else 2})
+        return frozenset({_MEASURE_QUERIES[name][0]})
     if form == "primitive":
         return frozenset(len(signature) for signature in _BUILTIN_PRIMITIVES[name])
     if form in ("reduction", "rowwise"):
@@ -679,7 +691,7 @@ def _qiec_arities(name: str, form: QiecBuiltinForm) -> frozenset[int]:
 
 def _shape_rule(name: str, form: QiecBuiltinForm) -> str:
     if form == "measure-query":
-        return "sampleable-total-mass" if name == "log_mass" else "sampleable-density"
+        return _MEASURE_QUERIES[name][1]
     if form == "primitive":
         return "scalar-lift"
     if form == "reduction":
@@ -697,9 +709,7 @@ def _shape_rule(name: str, form: QiecBuiltinForm) -> str:
     return "eager-native"
 
 
-_BUILTIN_NAMES = frozenset(
-    (*EAGER_BUILTINS, *_COLLECTION_BUILTINS, "log_mass", "log_prob")
-)
+_BUILTIN_NAMES = frozenset((*EAGER_BUILTINS, *_COLLECTION_BUILTINS, *_MEASURE_QUERIES))
 
 #: The one capability registry consulted by eager execution, checked lowering,
 #: editor completion, and transpiler validation.

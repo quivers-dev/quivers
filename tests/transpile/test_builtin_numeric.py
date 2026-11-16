@@ -66,6 +66,7 @@ _UNARY: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "log": torch.log,
     "log_probability": torch.log,
     "positive_parameter": lambda x: x,
+    "observation_status": lambda x: (x > 1.0).to(x.dtype),
     "log1mexp": lambda x: torch.log(-torch.expm1(x)),
     "log_ndtr": torch.special.log_ndtr,
     "log10": torch.log10,
@@ -98,6 +99,7 @@ _BINARY: dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
     "max": torch.maximum,
     "min": torch.minimum,
     "pow": torch.pow,
+    "interval_upper": lambda x, upper: torch.broadcast_tensors(x, upper)[1],
 }
 
 #: Each three-argument pointwise builtin's independent ``torch`` meaning,
@@ -115,7 +117,13 @@ _THRESHOLD = 0.43
 #: operand a tenth of an observation (within 0.07), so every argument
 #: stays inside the domain. ``round`` sits on a tie, which a target
 #: rounding half up or away from zero gets wrong.
-_ARGUMENT: dict[str, float] = {"acosh": 1.5, "round": 2.5, "pow": 0.6, "log1mexp": -1.0}
+_ARGUMENT: dict[str, float] = {
+    "acosh": 1.5,
+    "round": 2.5,
+    "pow": 0.6,
+    "log1mexp": -1.0,
+    "observation_status": 1.0,
+}
 _DEFAULT_ARGUMENT = 0.4
 _EXPONENT = 1.5
 
@@ -177,6 +185,8 @@ def _application(name: str, shift: str) -> str:
         The call.
     """
     argument = f"{shift}{_argument(name)}"
+    if name == "observation_status":
+        return f"real(observation_status(select({argument} > 1.0, 1, 0)))"
     if name in _TERNARY:
         return f"{name}({argument} > {_THRESHOLD}, {argument}, 1.0 - ({argument}))"
     return (

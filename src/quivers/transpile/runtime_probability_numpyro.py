@@ -109,6 +109,7 @@ def _qvr_interval_upper(lower, upper):
     lower, upper = jnp.asarray(lower), jnp.asarray(upper)
     if not jnp.issubdtype(lower.dtype, jnp.floating):
         raise ValueError("interval_upper requires real endpoints")
+    upper = jnp.broadcast_to(upper, jnp.broadcast_shapes(lower.shape, upper.shape))
     return _qvr_probability_check(
         upper,
         ~jnp.isnan(lower) & jnp.isfinite(upper) & (upper > lower),

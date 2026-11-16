@@ -117,6 +117,7 @@ def _qvr_interval_upper(lower, upper):
     lower, upper = pt.as_tensor_variable(lower), pt.as_tensor_variable(upper)
     if not lower.dtype.startswith("float"):
         raise ValueError("interval_upper requires real endpoints")
+    upper = pt.broadcast_arrays(lower, upper)[1]
     return _qvr_probability_check(
         upper,
         ~pt.isnan(lower) & ~pt.isnan(upper) & ~pt.isinf(upper) & (upper > lower),

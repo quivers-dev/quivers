@@ -126,6 +126,43 @@ def test_torch_event_validator_domains_broadcasting_and_derivatives():
             upper(low_value, high_value)
 
 
+@pytest.mark.parametrize("generated", [False, True])
+def test_interval_upper_lifts_scalar_endpoint_over_every_query_axis(generated):
+    from quivers.dsl.pure_builtins import _eager_interval_upper
+
+    operation = (
+        _helpers("pyro")["_qvr_interval_upper"] if generated else _eager_interval_upper
+    )
+    lower = torch.tensor(
+        [[-1.0], [0.0], [1.0]], dtype=torch.float64, requires_grad=True
+    )
+    upper = torch.tensor([1.5, 2.0], dtype=torch.float64, requires_grad=True)
+    result = operation(lower, upper)
+    torch.testing.assert_close(result, upper.expand(3, 2))
+    assert result.dtype == upper.dtype
+    # Validation constrains the domain; it contributes no derivative term.
+    derivative = torch.autograd.grad(result.sum(), upper)[0]
+    torch.testing.assert_close(derivative, torch.full_like(upper, 3.0))
+    literal = operation(lower, 1.3)
+    torch.testing.assert_close(literal, torch.full_like(lower, 1.3))
+
+
+def test_pymc_interval_upper_lifts_scalar_upper_with_correct_derivative():
+    import numpy as np
+    import pymc
+    import pytensor
+    import pytensor.tensor as pt
+
+    namespace = _helpers("pymc")
+    namespace["pymc"] = pymc
+    lower, upper = pt.dvector("lower"), pt.dscalar("upper")
+    result = namespace["_qvr_interval_upper"](lower, upper)
+    function = pytensor.function([lower, upper], [result, pt.grad(result.sum(), upper)])
+    value, derivative = function(np.array([-1.0, 0.0, 1.0]), 1.3)
+    np.testing.assert_array_equal(value, np.full(3, 1.3))
+    assert derivative == 3.0
+
+
 def test_pymc_event_validators_preserve_integer_carriers_and_real_gradients():
     import pymc
     import pytensor
