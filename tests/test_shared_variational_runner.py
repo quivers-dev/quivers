@@ -65,13 +65,32 @@ def test_nonfinite_objective_is_rejected_before_optimizer_mutates_parameters():
     assert not optimizer.state
 
 
-@pytest.mark.parametrize("invalid", [True, 0, -1, 1.5])
+@pytest.mark.parametrize("invalid", [True, False, -1, 1.5])
 def test_shared_runner_validates_iteration_budget(invalid):
     program = loads(SOURCE).morphism
     guide = AutoNormalGuide(program, observed_names={"y"})
     svi = SVI(program, guide, torch.optim.Adam(guide.parameters()), ELBO())
-    with pytest.raises(ValueError, match="positive integer"):
+    with pytest.raises(ValueError, match="nonnegative integer"):
         svi.run(torch.zeros(1, 1), {"y": torch.zeros(1)}, num_steps=invalid)
+
+
+def test_zero_step_runner_preserves_initialization_without_reading_bindings():
+    program = loads(SOURCE).morphism
+    guide = AutoNormalGuide(program, observed_names={"y"})
+    svi = SVI(program, guide, torch.optim.Adam(guide.parameters()), ELBO())
+    parameters = [value.detach().clone() for value in guide.parameters()]
+    state = torch.random.get_rng_state().clone()
+
+    def forbidden(*args):
+        raise AssertionError(
+            "zero optimization steps must not execute callbacks or bindings"
+        )
+
+    assert svi.run(torch.zeros(1, 1), forbidden, num_steps=0, callback=forbidden) == ()
+    assert torch.equal(torch.random.get_rng_state(), state)
+    for actual, expected in zip(guide.parameters(), parameters, strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert not svi.optim.state
 
 
 def test_source_and_formula_fits_retain_finite_loss_history_and_seeded_draws():

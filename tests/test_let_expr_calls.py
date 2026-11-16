@@ -76,6 +76,10 @@ class TestBuiltinPrimitives:
     )
     def test_unary_builtin_runs(self, name):
         x = torch.randn(4, 8).abs() + 0.5
+        if name == "log1mexp":
+            x = -x
+        elif name == "log_probability":
+            x = x.sigmoid()
         fn = _compile(_call(name, _var("x")))
         out = fn({"x": x})
         # min/max/argmin/argmax etc collapse the last axis; sum/mean

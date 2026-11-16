@@ -63,7 +63,7 @@ class VariationalMethod(ValueModel):
     Parameters
     ----------
     num_steps : int
-        Positive optimization step budget.
+        Nonnegative optimization step budget; zero retains the initialized guide.
     learning_rate : float
         Positive Adam learning rate, used when no optimizer factory is given.
     seed : int
@@ -116,11 +116,13 @@ class VariationalMethod(ValueModel):
             If a budget or rate is invalid, or an objective returns a nonfinite loss.
         """
         if (
-            self.num_steps < 1
+            self.num_steps < 0
             or not math.isfinite(self.learning_rate)
             or self.learning_rate <= 0
         ):
-            raise ValueError("num_steps and learning_rate must be positive and finite")
+            raise ValueError(
+                "num_steps must be nonnegative and learning_rate must be positive and finite"
+            )
         program = model.require_tensor_program()
         with torch.random.fork_rng(devices=[]):
             torch.random.default_generator.manual_seed(self.seed)

@@ -102,7 +102,8 @@ class SVI:
             Fixed bindings, or a step-indexed supplier that recomputes
             differentiable predictors for the current parameter values.
         num_steps : int
-            Positive optimization budget.
+            Nonnegative optimization budget. Zero retains initialization
+            without evaluating the objective or updating parameters.
         callback : Callable[[int, float], None] or None
             Receives each zero-based step index and its scalar loss.
 
@@ -119,9 +120,9 @@ class SVI:
         if (
             isinstance(num_steps, bool)
             or not isinstance(num_steps, int)
-            or num_steps < 1
+            or num_steps < 0
         ):
-            raise ValueError("num_steps must be a positive integer")
+            raise ValueError("num_steps must be a nonnegative integer")
         losses: list[float] = []
         for index in range(num_steps):
             bindings = observations(index) if callable(observations) else observations
