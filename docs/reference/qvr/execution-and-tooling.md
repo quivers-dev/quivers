@@ -292,7 +292,7 @@ Three identifiers name three formats, and each can change without the others:
 | --- | --- |
 | `qvr-source/v0.22` | the source grammar and its elaboration to QIEC |
 | `qiec-core/v1alpha1` | the typed core that checked modules are written in |
-| `qiec-json/v1` | the deterministic JSON serialization of a checked module |
+| `qiec-json/v2` | the deterministic JSON serialization of a checked module |
 
 New syntax that elaborates to existing core terms changes the first identifier and not the second,
 and a new serialization changes the third without changing how `.qvr` files parse. Code that

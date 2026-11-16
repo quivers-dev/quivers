@@ -136,11 +136,10 @@ the same UTF-8 bytes.
 Version 2 records compilation-local custom distribution contracts on the module.
 The contracts reuse the checked family parameter and dependent-shape records;
 native factories remain runtime bindings and never enter the wire graph. This
-metadata extension preserves the existing ABI and stable identifiers. A reader
-accepts a version 1 module by supplying its one known missing field,
-`distribution_families=()`. Other missing fields, unknown fields, future wire
-versions, and incompatible ABIs remain errors; decoding never invents a native
-implementation from a family name.
+metadata extension preserves the existing ABI and stable identifiers. Readers require version 2 and every declared field. Older or future wire
+versions, missing or unknown fields, and incompatible ABIs are errors. Regenerate
+checked JSON from its authored source when upgrading; decoding never supplies
+missing contracts or invents a native implementation from a family name.
 
 The format and ABI identifiers belong to the serialized format. An authored effect
 declaration contains only its name, its static telescope, and its operation signatures.

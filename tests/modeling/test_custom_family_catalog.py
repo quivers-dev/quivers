@@ -256,7 +256,7 @@ export p
     torch.testing.assert_close(actual, torch.tensor(expected))
 
 
-def test_custom_contract_wire_roundtrip_and_only_known_legacy_default():
+def test_custom_contract_wire_roundtrip_and_strict_versioned_fields():
     module = lower_qvr_to_qiec(parse(SOURCE), families=_catalog())
     encoded = dumps(module)
     restored = loads(encoded)
@@ -268,13 +268,17 @@ def test_custom_contract_wire_roundtrip_and_only_known_legacy_default():
     )
     envelope = to_data(ordinary)
     envelope["$schema"] = "qiec-json/v1"
-    with pytest.raises(SerializationError, match="cannot declare"):
+    with pytest.raises(SerializationError, match="wire format"):
         from_data(envelope)
     root = envelope["root"]
     root["fields"] = [
         item for item in root["fields"] if item["name"] != "distribution_families"
     ]
-    assert from_data(envelope) == ordinary
+    with pytest.raises(SerializationError, match="wire format"):
+        from_data(envelope)
+    envelope["$schema"] = "qiec-json/v2"
+    with pytest.raises(SerializationError, match="fields"):
+        from_data(envelope)
     root["fields"] = [item for item in root["fields"] if item["name"] != "entries"]
     with pytest.raises(SerializationError, match="fields"):
         from_data(envelope)

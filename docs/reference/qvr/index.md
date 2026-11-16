@@ -186,7 +186,7 @@ flowchart TB
     subgraph CORE["Checked interchange boundary"]
         direction LR
         A -->|elaborate + check| Q["QIEC module<br/><small>qiec-core/v1alpha1</small>"]
-        Q -->|serialize| J["qiec-json/v1"]
+        Q -->|serialize| J["qiec-json/v2"]
     end
     subgraph CONSUMERS["Consumers"]
         direction LR

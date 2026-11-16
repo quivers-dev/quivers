@@ -411,7 +411,7 @@ def _exact_keys(value: dict[str, JsonValue], expected: set[str], subject: str) -
         )
 
 
-def _decode(value: JsonValue, *, legacy: bool = False) -> object:
+def _decode(value: JsonValue) -> object:
     """Decode one value from the wire form.
 
     Parameters
@@ -457,7 +457,7 @@ def _decode(value: JsonValue, *, legacy: bool = False) -> object:
         items = value["$tuple"]
         if not isinstance(items, list):
             raise SerializationError("$tuple must contain an array")
-        return tuple(_decode(item, legacy=legacy) for item in items)
+        return tuple(_decode(item) for item in items)
 
     if "$id" in value:
         _exact_keys(value, {"$id", "value"}, "identifier")
@@ -494,14 +494,6 @@ def _decode(value: JsonValue, *, legacy: bool = False) -> object:
         if not isinstance(encoded_fields, list):
             raise SerializationError("kernel node fields must be an array")
         class_ = _NODES[tag]
-        if legacy and class_ in (
-            DistributionFamily,
-            FamilyParameter,
-            FamilyShapeSignature,
-        ):
-            raise SerializationError(
-                "custom distribution metadata requires qiec-json/v2"
-            )
         class_fields = class_.__field_specs__
         expected_names = list(class_fields)
         actual_names: list[str] = []
@@ -516,17 +508,7 @@ def _decode(value: JsonValue, *, legacy: bool = False) -> object:
             if name in arguments:
                 raise SerializationError(f"duplicate kernel field {name!r}")
             actual_names.append(name)
-            arguments[name] = _decode(encoded_field["value"], legacy=legacy)
-        if legacy and class_ is QiecModule:
-            if "distribution_families" in arguments:
-                raise SerializationError(
-                    "qiec-json/v1 cannot declare custom distribution contracts"
-                )
-            # v1 never carried custom contracts. Add precisely its known empty
-            # extension, retaining strict field validation for everything else.
-            position = expected_names.index("distribution_families")
-            actual_names.insert(position, "distribution_families")
-            arguments["distribution_families"] = ()
+            arguments[name] = _decode(encoded_field["value"])
         if actual_names != expected_names:
             raise SerializationError(
                 f"fields for {tag!r} must be {expected_names!r}, got {actual_names!r}"
@@ -617,13 +599,13 @@ def from_data(data: object) -> object:
         raise SerializationError("QIEC wire envelope must be an object")
     typed = cast(dict[str, JsonValue], data)
     _exact_keys(typed, {"$schema", "abi", "root"}, "QIEC wire envelope")
-    if typed["$schema"] not in (QIEC_WIRE_FORMAT, "qiec-json/v1"):
+    if typed["$schema"] != QIEC_WIRE_FORMAT:
         raise SerializationError(f"unsupported QIEC wire format {typed['$schema']!r}")
     if typed["abi"] != QIEC_ABI:
         raise SerializationError(
             f"QIEC ABI mismatch: expected {QIEC_ABI!r}, got {typed['abi']!r}"
         )
-    return _decode(typed["root"], legacy=typed["$schema"] == "qiec-json/v1")
+    return _decode(typed["root"])
 
 
 def dumps(value: object) -> str:
