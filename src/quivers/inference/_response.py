@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import torch
 from torch.distributions import Distribution, constraints
 
+from quivers._rng import seeded_rng
 from quivers.inference.trace import Trace
 
 
@@ -50,20 +51,14 @@ def response_rng(seed: int, tensors: Iterable[torch.Tensor]) -> Iterator[None]:
     seed : int
         Independent response stream seed.
     tensors : Iterable[torch.Tensor]
-        Native posterior/data tensors identifying active CUDA devices.
+        Native posterior/data tensors identifying participating devices.
 
     Yields
     ------
     None
         Seeded context restoring each caller RNG on exit.
     """
-    devices = sorted(
-        {tensor.device.index for tensor in tensors if tensor.device.type == "cuda"}
-    )
-    with torch.random.fork_rng(devices=devices):
-        torch.random.default_generator.manual_seed(seed % 2**64)
-        for device in devices:
-            torch.cuda.default_generators[device].manual_seed(seed % 2**64)
+    with seeded_rng(seed, devices=(tensor.device for tensor in tensors)):
         yield
 
 

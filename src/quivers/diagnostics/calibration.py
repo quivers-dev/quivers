@@ -32,15 +32,15 @@ converts an `SBCResult` for ArviZ's PIT-ECDF plots.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable, Iterable, Mapping
 from fractions import Fraction
 import math
-from typing import Literal, Protocol, cast
+from typing import Literal
 
 import didactic.api as dx
 import torch
 
+from quivers._rng import seeded_rng as _seeded_rng
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.programs import MonadicProgram
 from quivers.diagnostics.convergence import _beta_ppf, ess
@@ -71,81 +71,6 @@ of each chain."""
 
 _INT64_MAX = 2**63 - 1
 _REFERENCE_CHUNK = 1024
-
-
-class _RngBackend(Protocol):
-    """The device-state operations used by a seeded calibration scope."""
-
-    def device_count(self) -> int:
-        """Return the number of available devices.
-
-        Returns
-        -------
-        int
-            Devices whose random state can be saved and restored.
-        """
-        ...
-
-    def set_rng_state(self, state: torch.Tensor, device: int) -> None:
-        """Set one device's generator state.
-
-        Parameters
-        ----------
-        state : torch.Tensor
-            State produced by a generator for this backend.
-        device : int
-            Index of the device whose state is set.
-        """
-        ...
-
-
-@contextmanager
-def _seeded_rng(seed: int) -> Iterator[None]:
-    """Isolate CPU and available accelerator random streams.
-
-    Local generators provide seeded states for the global generators used
-    by distribution samplers and fitting callbacks. Every modified state
-    is restored on exit, including when a callback raises.
-
-    Parameters
-    ----------
-    seed : int
-        Seed used independently on CPU and each available device.
-
-    Yields
-    ------
-    None
-        A scope in which global draws use the explicit seed.
-
-    Raises
-    ------
-    RuntimeError
-        If an available backend cannot construct or restore a generator.
-    """
-    backend_names = dict.fromkeys(
-        ("cuda", "mps", "xpu", "mtia", torch._C._get_privateuse1_backend_name())
-    )
-    with ExitStack() as stack:
-        stack.enter_context(torch.random.fork_rng(devices=[]))
-        backends: list[tuple[str, _RngBackend, range]] = []
-        for name in backend_names:
-            module = getattr(torch, name, None)
-            if module is None:
-                continue
-            backend = cast(_RngBackend, module)
-            devices = range(backend.device_count())
-            if not devices:
-                continue
-            stack.enter_context(
-                torch.random.fork_rng(devices=devices, device_type=name)
-            )
-            backends.append((name, backend, devices))
-        torch.set_rng_state(torch.Generator(device="cpu").manual_seed(seed).get_state())
-        for name, backend, devices in backends:
-            for index in devices:
-                generator = torch.Generator(device=torch.device(name, index))
-                backend.set_rng_state(generator.manual_seed(seed).get_state(), index)
-        yield
 
 
 class SBCResult(ValueModel):

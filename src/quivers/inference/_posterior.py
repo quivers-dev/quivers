@@ -3,6 +3,7 @@
 import math
 from collections.abc import Iterable, Mapping
 from contextlib import nullcontext
+from itertools import chain
 
 import torch
 
@@ -57,7 +58,8 @@ def constrained_draws(
     num_samples : int or None
         Maximum draws per recorded chain, or fresh guide draws.
     seed : int or None
-        Isolated CPU seed, or the caller's current random stream.
+        Isolated seed for CPU and participating device streams, or None to
+        use the caller's current random streams.
     registry : LatentRegistry or None
         Expected latent layout. Defaults to the guide's own registry;
         recorded chains otherwise retain their declared event shapes.
@@ -77,14 +79,18 @@ def constrained_draws(
     if isinstance(posterior, (MCMCResult, PriorDraws)):
         result = {name: value[:, :count] for name, value in posterior.samples.items()}
     else:
+        from quivers.inference._response import response_rng
+
         registry = posterior.registry if registry is None else registry
         context = (
-            torch.random.fork_rng(devices=[]) if seed is not None else nullcontext()
+            response_rng(
+                seed, chain((input,), posterior.parameters(), posterior.buffers())
+            )
+            if seed is not None
+            else nullcontext()
         )
         result: dict[str, torch.Tensor] = {}
         with context, torch.no_grad():
-            if seed is not None:
-                torch.random.default_generator.manual_seed(seed)
             for draw in range(count):
                 sample = posterior.rsample(input)
                 if set(sample) != set(registry.names):
