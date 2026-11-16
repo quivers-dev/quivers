@@ -219,7 +219,8 @@ over all 400 rows. No branch indicator is sampled. Its posterior means should me
 same recovery tolerances and agree with the SVI means within 0.2 for the rate
 coefficients and 0.6 for the structural-zero coefficients.
 
-Four chains each use 500 warmup iterations and 1,000 retained draws.
+Four chains each use 1,000 warmup iterations and 2,000 retained draws.
+A dense mass matrix adapts to correlations between the zero and rate coefficients.
 Before comparing means, the example checks rank-normalized
 split $\hat R < 1.01$ and bulk and tail effective sample sizes above 400 for
 every coefficient [@vehtari2021rhat]. These
@@ -230,8 +231,8 @@ closed form at the generating coefficients.
 ```python
 from quivers.inference import MCMC, NUTSKernel
 
-kernel = NUTSKernel(step_size=0.05, max_tree_depth=8, target_accept=0.9)
-mc = MCMC(kernel, num_warmup=500, num_samples=1000, num_chains=4, seed=2)
+kernel = NUTSKernel(step_size=0.05, max_tree_depth=8, target_accept=0.9, mass_matrix="dense")
+mc = MCMC(kernel, num_warmup=1000, num_samples=2000, num_chains=4, seed=2)
 result = mc.run(model, x_in, observations)
 
 for k in truth:

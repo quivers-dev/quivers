@@ -437,6 +437,8 @@ jobs:
             test: tests/test_deduction_multiple_context_free.py::test_the_cross_serial_grammar_scores_one_derivation_on_both_evaluators
           - shard: transformer
             test: tests/test_gallery_sweep.py::test_gallery_try_it_blocks_execute[transformer-lm.md]
+          - shard: zip
+            test: tests/test_gallery_sweep.py::test_gallery_try_it_blocks_execute[zip-regression.md]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -468,6 +470,7 @@ jobs:
           python -m pytest tests/ -m slow -v
           --deselect 'tests/test_deduction_multiple_context_free.py::test_the_cross_serial_grammar_scores_one_derivation_on_both_evaluators'
           --deselect 'tests/test_gallery_sweep.py::test_gallery_try_it_blocks_execute[transformer-lm.md]'
+          --deselect 'tests/test_gallery_sweep.py::test_gallery_try_it_blocks_execute[zip-regression.md]'
           --splits 6 --group ${{ matrix.shard }}
           --splitting-algorithm least_duration
           --store-durations --durations-path .test_durations
