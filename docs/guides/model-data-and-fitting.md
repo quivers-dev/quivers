@@ -166,6 +166,38 @@ instance when several methods should use the same initialized model. A method's
 `run(bound)` can also return its own result type: messages, optimization bounds,
 and certificates need not be converted into posterior draws.
 
+`SMCMethod` supplies a concrete instance of this result contract. It runs the
+existing likelihood-tempered sampler and returns `SMCResult` directly:
+
+<!-- python: skip -->
+```python
+from quivers.inference import SMC
+from quivers.inference.mcmc import MetropolisKernel, RandomWalkProposal
+from quivers.modeling import SMCMethod
+
+particles = bound.infer(SMCMethod(sampler=SMC(
+    MetropolisKernel(RandomWalkProposal(0.5)),
+    num_particles=256, num_mcmc_steps=2, num_pilot_steps=0, seed=7,
+)))
+print(particles.log_evidence)
+print(particles.temperatures, particles.ess, particles.acceptance)
+```
+
+The result retains particles and the sampler's normalizing-constant estimate,
+temperature ladder, weight ESS, acceptance, and evaluation count. These are
+SMC diagnostics; the particles do not supply recorded-chain convergence
+diagnostics. A data-evidence interpretation requires the declared prior and
+likelihood to define that comparison. Observation weights define likelihood
+powers, so their normalizing constant need not be an ordinary data probability.
+The driver's checks for normalized priors, exact likelihoods, and typed score
+roles apply through this adapter as well. See the
+[SMC API](../api/inference/mcmc.md#quivers.inference.smc.SMC).
+
+An existing fit can run the same driver with `fit.evidence(sampler)`. This method
+reuses its retained checked program and data, including externally bound prior
+parameters. It neither recompiles the source nor draws from the fitted posterior
+or variational guide; the SMC prior and likelihood define the target.
+
 Scanned observations use their checked sequence shape in `bound.data`; fitting
 adds the one-run axis expected by the tensor executor through a view. Custom
 tensor methods and guide factories can obtain these values with

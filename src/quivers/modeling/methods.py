@@ -1,4 +1,4 @@
-"""Reusable sampling and variational fitting components for bound QVR models."""
+"""Reusable inference components for bound QVR models."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from quivers.inference import (
     MCMC,
     NUTSKernel,
     Objective,
+    SMC,
+    SMCResult,
     SVI,
 )
 from quivers.modeling.model import BoundModel, ModelFit
@@ -55,6 +57,56 @@ class MCMCMethod(ValueModel):
             Posterior draws and the original data binding.
         """
         return model.sample(self.sampler)
+
+
+class SMCMethod(ValueModel):
+    """Apply likelihood-tempered SMC to a checked data binding.
+
+    Parameters
+    ----------
+    sampler : SMC
+        Existing driver with explicit particle, rejuvenation, adaptation, and
+        random-stream settings, held by identity. The default uses NUTS
+        rejuvenation, 1024 particles, and seed zero.
+
+    Notes
+    -----
+    The result retains the driver's particles, temperature ladder, weight ESS,
+    acceptance, evaluation count, and estimated log normalizing constant.
+    Particles are not recorded MCMC chains. A data-evidence interpretation
+    requires the declared prior and likelihood to define that comparison.
+    """
+
+    sampler: SMC = dx.field(
+        default_factory=lambda: SMC(NUTSKernel(), seed=0),
+        opaque=True,
+        extras=OPAQUE_BY_IDENTITY,
+    )
+
+    def run(self, model: BoundModel) -> SMCResult:
+        """Run the existing sampler without converting its result.
+
+        Parameters
+        ----------
+        model : BoundModel
+            Checked program, validated data, and one-run input.
+
+        Returns
+        -------
+        SMCResult
+            Equally weighted particles and the driver's evidence diagnostics.
+
+        Raises
+        ------
+        TypeError
+            If the entry has no tensor executor.
+        ValueError
+            If the driver cannot partition the target, normalize its prior,
+            or use an exact likelihood without observation subsampling.
+        """
+        return self.sampler.run(
+            model.require_tensor_program(), model.input, model.tensor_data()
+        )
 
 
 class VariationalMethod(ValueModel):
@@ -150,4 +202,4 @@ class VariationalMethod(ValueModel):
         return ModelFit(model=model, posterior=guide, losses=tuple(losses))
 
 
-__all__ = ["MCMCMethod", "VariationalMethod"]
+__all__ = ["MCMCMethod", "SMCMethod", "VariationalMethod"]
