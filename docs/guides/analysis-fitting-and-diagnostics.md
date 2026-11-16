@@ -88,6 +88,15 @@ asks whether replicated means tend to fall above or below the observed mean, and
 near one half can coexist with a poor fit to the variance, so the statistics should be
 the features the model is meant to explain.
 
+Both source and formula fits expose `analysis(num_samples=100, seed=7)`.
+The returned object retains posterior draws and raw response likelihoods for
+`summary`, `waic`, `loo`, and `to_datatree`, without replaying the model for
+each operation. Recorded MCMC chains supply convergence diagnostics;
+variational draws supply uncertainty summaries without convergence claims.
+The [executable workflow](analysis-data-and-formulas.md#raw-likelihoods-and-retained-analysis)
+shows the shared interface. Lower-level samplers can use the adapters below
+when they need custom coordinates or predictive groups.
+
 The [diagnostics adapter](../api/diagnostics/index.md) converts quivers' inference
 records for [ArviZ](https://python.arviz.org/) and returns an
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)

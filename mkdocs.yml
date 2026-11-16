@@ -411,6 +411,7 @@ nav:
       - Column Encoding: api/data/encoding.md
     - Diagnostics:
       - Overview: api/diagnostics/index.md
+      - Shared Posterior Analysis: api/diagnostics/posterior.md
       - Convergence Diagnostics: api/diagnostics/convergence.md
       - Simulation-Based Calibration: api/diagnostics/calibration.md
       - ArviZ DataTree Adapter: api/diagnostics/arviz_io.md

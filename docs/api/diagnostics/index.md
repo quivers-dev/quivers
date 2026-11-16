@@ -11,4 +11,9 @@ records of quivers into `xarray.DataTree` objects for the ArviZ functions that a
 including `plot_trace`, `plot_forest`, `plot_ppc`, `loo`, `compare`, and `hdi`, and need the
 `diagnostics` extra.
 
+[Shared posterior analysis](posterior.md) retains draws and raw response scores
+from either source or formula fits. Its uncertainty summaries and empirical WAIC
+need only PyTorch; MCMC convergence diagnostics require recorded chains.
+DataTree conversion and PSIS-LOO use the optional ArviZ dependency.
+
 ::: quivers.diagnostics

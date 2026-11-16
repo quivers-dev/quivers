@@ -227,6 +227,23 @@ An observation hidden inside exact marginalization requires a corresponding
 marginal-likelihood observer. The current method refuses that case rather
 than assigning the whole marginalized joint to individual observations.
 
+### Reuse posterior analysis
+
+`fit.analysis(num_samples=100, seed=7)` retains constrained draws, raw pointwise
+likelihoods on the original binding, observed responses, and recorded sampler
+statistics in a `PosteriorAnalysis`. Formula fits expose the same method.
+Its `summary()`, `waic(var_name="y")`, `to_datatree()`, and
+`loo(var_name="y")` methods reuse retained tensors without replaying the model.
+Select `var_name` explicitly when the program has multiple response variables;
+the interface does not combine unrelated observation units.
+
+Variational analysis draws from the guide once and reports uncertainty without
+MCMC convergence diagnostics. Recorded MCMC chains retain their diagnostics.
+See the [executable workflow](analysis-data-and-formulas.md#raw-likelihoods-and-retained-analysis)
+and [API contracts](../api/diagnostics/posterior.md). The retained tensor mappings
+use identity semantics: callers own their storage and should avoid mutating it
+while reusing an analysis.
+
 ## Infer only dimensions determined by data
 
 A supplied tensor's checked shape provides exact extent evidence. If `x` and `y`

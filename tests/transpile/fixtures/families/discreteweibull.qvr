@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the DiscreteWeibull family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program discreteweibull_fixture : Obs -> Obs
+    observe y : Obs <- DiscreteWeibull(probs=0.4, concentration=1.3)
+    return y
+export discreteweibull_fixture

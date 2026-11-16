@@ -186,12 +186,41 @@ links: Mapping[str, Link] = {
         name="softplus",
         inverse_expr="0.5 * {eta} + 0.5 * abs({eta}) + log1p(exp(-abs({eta})))",
     ),
+    "squareplus": Link(
+        name="squareplus", inverse_expr="({eta} + sqrt(({eta}) ** 2.0 + 4.0)) / 2.0"
+    ),
+    "softit": Link(
+        name="softit", inverse_expr="log1p(exp({eta})) / (1.0 + log1p(exp({eta})))"
+    ),
     "tan_half": Link(name="tan_half", inverse_expr="2.0 * atan({eta})"),
 }
 """The built-in inverse links, keyed by link name."""
 
 
 families: Mapping[str, Family] = {
+    "discrete_weibull": Family(
+        name="discrete_weibull",
+        location_link=_LOGIT,
+        observe_family="DiscreteWeibull",
+        extra_observe_args=("shape",),
+        aux_params=(AuxParam(name="shape", prior="HalfCauchy(2.0)", link=_LOG),),
+    ),
+    "zero_inflated_asym_laplace": Family(
+        name="zero_inflated_asym_laplace",
+        location_link=_IDENTITY,
+        observe_family="ZeroInflatedAsymmetricLaplace",
+        aux_params=(
+            AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
+            AuxParam(name="quantile", prior="Beta(2.0, 2.0)", link=_LOGIT),
+            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT),
+        ),
+    ),
+    "negbinomial2": Family(
+        name="negbinomial2",
+        location_link=_LOG,
+        observe_family="NegativeBinomial",
+        aux_params=(AuxParam(name="sigma", prior="Gamma(0.4, 0.3)", link=_LOG),),
+    ),
     "skew_normal": Family(
         name="skew_normal",
         location_link=_IDENTITY,

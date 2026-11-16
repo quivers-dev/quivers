@@ -30,12 +30,15 @@ import importlib.abc
 import sys
 class BlockOptional(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'numpy', 'scipy', 'pandas'}:
+        if fullname.split('.')[0] in {'numpy', 'scipy', 'pandas', 'xarray', 'arviz'}:
             raise ModuleNotFoundError(fullname)
 sys.meta_path.insert(0, BlockOptional())
 import quivers
 import torch
 from quivers.continuous import SkewNormal
+from quivers.modeling import ModelFit
+from quivers.diagnostics import PosteriorAnalysis, waic
+assert waic(torch.full((1, 2, 1), -1.)).elpd_waic == -1.
 law = SkewNormal(torch.tensor(0.), torch.tensor(1.), torch.tensor(2.))
 assert torch.isfinite(law.log_cdf(torch.tensor(-1.)))
 assert torch.isfinite(law.log_survival_function(torch.tensor(1.)))

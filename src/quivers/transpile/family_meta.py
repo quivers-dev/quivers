@@ -38,11 +38,17 @@ from quivers.continuous._shape_families import (
 )
 from quivers.continuous._skew_normal import SkewNormal
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
+from quivers.continuous._discrete_weibull import DiscreteWeibull
+from quivers.continuous._zero_inflated_asymmetric_laplace import (
+    ZeroInflatedAsymmetricLaplace,
+)
 from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
 from quivers.continuous._response_time import ExGaussian, InverseGaussian
 from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
 from quivers.continuous.measure import Normalize, PointMass, Restrict
 from quivers.continuous.families import (
+    ConditionalDiscreteWeibull,
+    ConditionalZeroInflatedAsymmetricLaplace,
     ConditionalAsymmetricLaplace,
     ConditionalExGaussian,
     ConditionalHurdleGamma,
@@ -666,6 +672,18 @@ FAMILY_META: dict[str, FamilyMeta] = {
         qvr_name="InverseGaussian",
         distribution_class=InverseGaussian,
         quivers_class=ConditionalInverseGaussian,
+        target_names={},
+    ),
+    "DiscreteWeibull": FamilyMeta(
+        qvr_name="DiscreteWeibull",
+        distribution_class=DiscreteWeibull,
+        quivers_class=ConditionalDiscreteWeibull,
+        target_names={},
+    ),
+    "ZeroInflatedAsymmetricLaplace": FamilyMeta(
+        qvr_name="ZeroInflatedAsymmetricLaplace",
+        distribution_class=ZeroInflatedAsymmetricLaplace,
+        quivers_class=ConditionalZeroInflatedAsymmetricLaplace,
         target_names={},
     ),
     "AsymmetricLaplace": FamilyMeta(

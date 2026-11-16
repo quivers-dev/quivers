@@ -44,6 +44,9 @@ from quivers.qiec import (
 )
 
 
+from quivers.diagnostics.posterior import PosteriorAnalysis
+
+
 class ModelSchema(ValueModel):
     """The checked input contract of one QVR program.
 
@@ -800,63 +803,89 @@ class ModelFit(ValueModel):
             first = next(iter(draws.values()))
             chains, available = first.shape[:2]
             count = available if num_samples is None else min(available, num_samples)
-            collected: dict[str, torch.Tensor] = {}
+            from quivers.inference._likelihood import collect_log_likelihood
+
             values = bound.tensor_data()
-            for chain in range(chains):
-                for draw in range(count):
-                    latents = {
-                        name: samples[chain, draw] for name, samples in draws.items()
-                    }
-                    recorded = trace(
-                        bound.require_tensor_program(),
-                        bound.input,
-                        {**values, **latents},
-                    )
-                    current: dict[str, list[torch.Tensor]] = {}
-                    for name, site in recorded.sites.items():
-                        base, separator, position = name.rpartition("@")
-                        observed_name = (
-                            base if separator and position.isdigit() else name
+
+            def traces():
+                for chain in range(chains):
+                    for draw in range(count):
+                        latents = {
+                            name: samples[chain, draw]
+                            for name, samples in draws.items()
+                        }
+                        yield trace(
+                            bound.require_tensor_program(),
+                            bound.input,
+                            {**values, **latents},
                         )
-                        if observed_name not in observations or site.sampleable is None:
-                            continue
-                        sampleable = site.sampleable
-                        raw_pointwise = getattr(
-                            sampleable, "raw_log_prob_pointwise", None
+
+            return collect_log_likelihood(traces(), observations, (chains, count))
+
+    def analysis(
+        self, *, num_samples: int | None = None, seed: int = 0
+    ) -> PosteriorAnalysis:
+        """Prepare reusable tensor posterior analysis on the fitted data.
+
+        Parameters
+        ----------
+        num_samples : int or None
+            Maximum recorded draws per chain, or fresh variational draws.
+        seed : int
+            Guide sampling seed; the caller's CPU RNG is preserved.
+
+        Returns
+        -------
+        quivers.diagnostics.PosteriorAnalysis
+            Posterior draws, raw observation scores, observed responses,
+            and recorded sampler statistics on their original axes.
+
+        Raises
+        ------
+        TypeError
+            If a hidden observation needs a marginal-likelihood observer.
+        ValueError
+            If fitted response data are missing or the draw count is invalid.
+        """
+        from quivers.diagnostics.posterior import PosteriorAnalysis, _sample_stats
+        from quivers.inference._likelihood import collect_log_likelihood
+        from quivers.inference._posterior import draw_count
+
+        shape = draw_count(self.posterior, num_samples)
+        bound = self.model
+        observations = set(bound.schema.observations)
+        if missing := observations - set(bound.data):
+            raise ValueError(f"log likelihood requires observations: {sorted(missing)}")
+        with torch.random.fork_rng(devices=[]), torch.no_grad():
+            torch.random.default_generator.manual_seed(seed)
+            samples = {
+                name: value[:, : shape[1]]
+                for name, value in self.draws(num_samples=shape[1]).items()
+            }
+            values = bound.tensor_data()
+            program = bound.require_tensor_program()
+
+            def traces():
+                for chain in range(shape[0]):
+                    for draw in range(shape[1]):
+                        yield trace(
+                            program,
+                            bound.input,
+                            values
+                            | {
+                                name: value[chain, draw]
+                                for name, value in samples.items()
+                            },
                         )
-                        pointwise = getattr(
-                            sampleable.morphism, "log_prob_pointwise", None
-                        )
-                        density = (
-                            raw_pointwise(site.value)
-                            if callable(raw_pointwise)
-                            else pointwise(sampleable.input, site.value)
-                            if callable(pointwise)
-                            else sampleable.log_prob(site.value)
-                        )
-                        current.setdefault(observed_name, []).append(
-                            density.reshape(1) if density.ndim == 0 else density
-                        )
-                    if missing := observations - set(current):
-                        raise TypeError(
-                            f"observations {sorted(missing)} require a marginal-likelihood observer"
-                        )
-                    for name, densities in current.items():
-                        density = (
-                            densities[0]
-                            if len(densities) == 1
-                            else torch.stack(densities)
-                        )
-                        if name not in collected:
-                            collected[name] = density.new_empty(
-                                chains, count, *density.shape
-                            )
-                        elif collected[name].shape[2:] != density.shape:
-                            raise ValueError(
-                                f"observation {name!r} changes shape between posterior draws"
-                            )
-                        collected[name][chain, draw].copy_(density)
-            return collected
+
+            likelihood = collect_log_likelihood(traces(), observations, shape)
+        return PosteriorAnalysis(
+            samples=samples,
+            log_likelihood=likelihood,
+            observed_data={name: values[name] for name in observations},
+            sample_stats=_sample_stats(self.posterior, shape[1]),
+            kind="mcmc" if isinstance(self.posterior, MCMCResult) else "variational",
+        )
 
     def summary(self) -> dict[str, ConvergenceSummary]:
         """Summarize MCMC chains with the package's convergence estimators.

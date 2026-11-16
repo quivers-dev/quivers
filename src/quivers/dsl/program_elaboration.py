@@ -323,6 +323,13 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     "LogitNormal": (("loc", "identity"), ("scale", "exp_floor")),
     "Cauchy": (("loc", "identity"), ("scale", "softplus")),
     "Laplace": (("loc", "identity"), ("scale", "softplus")),
+    "DiscreteWeibull": (("probs", "sigmoid"), ("concentration", "softplus")),
+    "ZeroInflatedAsymmetricLaplace": (
+        ("zero_prob", "sigmoid"),
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("quantile", "sigmoid"),
+    ),
     "AsymmetricLaplace": (
         ("loc", "identity"),
         ("scale", "softplus"),

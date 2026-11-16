@@ -165,6 +165,8 @@ def test_invalid_distributional_formulas_fail_before_inference(
         "logm1",
         "softplus",
         "tan_half",
+        "squareplus",
+        "softit",
     ],
 )
 def test_link_density_and_autograd_agree_with_independent_functions(data, link):
@@ -189,6 +191,10 @@ def test_link_density_and_autograd_agree_with_independent_functions(data, link):
         "logm1": lambda x: 1 + torch.exp(x),
         "softplus": torch.nn.functional.softplus,
         "tan_half": lambda x: 2 * torch.atan(x),
+        "squareplus": lambda x: (x + torch.sqrt(x * x + 4)) / 2,
+        "softit": lambda x: (
+            torch.nn.functional.softplus(x) / (1 + torch.nn.functional.softplus(x))
+        ),
     }
     response = torch.tensor(data.y.to_numpy(), dtype=torch.float32)
     recorded = trace(

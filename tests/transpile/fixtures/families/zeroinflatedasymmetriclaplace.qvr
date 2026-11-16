@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the ZeroInflatedAsymmetricLaplace family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program zeroinflatedasymmetriclaplace_fixture : Obs -> Obs
+    observe y : Obs <- ZeroInflatedAsymmetricLaplace(zero_prob=0.2, loc=0.1, scale=0.7, quantile=0.35)
+    return y
+export zeroinflatedasymmetriclaplace_fixture

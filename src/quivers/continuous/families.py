@@ -35,6 +35,10 @@ import torch.nn.functional as F
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 
+from quivers.continuous._discrete_weibull import DiscreteWeibull
+from quivers.continuous._zero_inflated_asymmetric_laplace import (
+    ZeroInflatedAsymmetricLaplace,
+)
 from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
 from quivers.continuous._shape_families import (
     ShiftedLogNormal,
@@ -783,6 +787,29 @@ ConditionalLaplace = _make_family(
     "Conditional Laplace(loc(x), scale(x)). Sharp peak, heavier tails than normal.",
 )
 """Conditional Laplace(loc(x), scale(x)). Sharp peak, heavier tails than normal."""
+
+ConditionalDiscreteWeibull = _make_family(
+    "ConditionalDiscreteWeibull",
+    DiscreteWeibull,
+    [("probs", "sigmoid"), ("concentration", "softplus")],
+    "Conditional discrete Weibull survival probability and positive power.",
+    discrete=True,
+)
+"""Conditional discrete Weibull count law."""
+
+ConditionalZeroInflatedAsymmetricLaplace = _make_family(
+    "ConditionalZeroInflatedAsymmetricLaplace",
+    ZeroInflatedAsymmetricLaplace,
+    [
+        ("zero_prob", "sigmoid"),
+        ("loc", "id"),
+        ("scale", "softplus"),
+        ("quantile", "sigmoid"),
+    ],
+    "Conditional structural zero and asymmetric Laplace quantile response.",
+    discrete=False,
+)
+"""Conditional zero atom and asymmetric Laplace continuous component."""
 
 ConditionalAsymmetricLaplace = _make_family(
     "ConditionalAsymmetricLaplace",
@@ -4549,6 +4576,10 @@ __all__ = [
     "ConditionalDirichlet",
     "ConditionalCauchy",
     "ConditionalLaplace",
+    "ConditionalDiscreteWeibull",
+    "ConditionalZeroInflatedAsymmetricLaplace",
+    "DiscreteWeibull",
+    "ZeroInflatedAsymmetricLaplace",
     "ConditionalAsymmetricLaplace",
     "ConditionalExGaussian",
     "ConditionalHurdleGamma",

@@ -16,6 +16,8 @@ _FAMILY_PARAMETERS: dict[str, tuple[str, ...]] = {
     "Dirichlet": ("concentration",),
     "Cauchy": ("loc", "scale"),
     "Laplace": ("loc", "scale"),
+    "DiscreteWeibull": ("probs", "concentration"),
+    "ZeroInflatedAsymmetricLaplace": ("zero_prob", "loc", "scale", "quantile"),
     "AsymmetricLaplace": ("loc", "scale", "quantile"),
     "ExGaussian": ("loc", "scale", "rate"),
     "HurdleGamma": ("zero_prob", "concentration", "rate"),

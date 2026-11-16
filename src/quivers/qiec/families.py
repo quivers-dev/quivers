@@ -474,6 +474,38 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
+        name="DiscreteWeibull",
+        parameters=(
+            FamilyParameter(name="probs", constraint="unit_interval_half_open", rank=0),
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="ZeroInflatedAsymmetricLaplace",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="quantile", constraint="unit_interval_open", rank=0),
+        ),
+        support="real",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="AsymmetricLaplace",
         parameters=(
             FamilyParameter(name="loc", constraint="real", rank=0),

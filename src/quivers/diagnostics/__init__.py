@@ -51,6 +51,12 @@ if TYPE_CHECKING:
         to_datatree_from_sbc,
         to_datatree_from_svi,
     )
+    from quivers.diagnostics.posterior import (
+        PosteriorAnalysis,
+        PosteriorSummary,
+        WAICResult,
+        waic,
+    )
     from quivers.diagnostics.comparison import compare, loo
     from quivers.diagnostics.predictive_checks import (
         STATISTICS,
@@ -70,6 +76,10 @@ if TYPE_CHECKING:
     )
 
 _LAZY_EXPORTS: dict[str, str] = {
+    "PosteriorAnalysis": "quivers.diagnostics.posterior",
+    "PosteriorSummary": "quivers.diagnostics.posterior",
+    "WAICResult": "quivers.diagnostics.posterior",
+    "waic": "quivers.diagnostics.posterior",
     "sbc": "quivers.diagnostics.calibration",
     "sbc_ranks": "quivers.diagnostics.calibration",
     "sbc_uniformity": "quivers.diagnostics.calibration",
@@ -129,6 +139,10 @@ def __getattr__(name: str) -> _LazyExport:
 
 
 __all__ = [
+    "PosteriorAnalysis",
+    "PosteriorSummary",
+    "WAICResult",
+    "waic",
     "rhat",
     "ess",
     "mcse",

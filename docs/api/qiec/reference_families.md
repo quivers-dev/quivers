@@ -28,4 +28,13 @@ samplers, independently checked against their native laws. Their
 distinguish native location/scale parameters from regression means.
 All 11 external renderers currently refuse these four families explicitly.
 
+`DiscreteWeibull` and `ZeroInflatedAsymmetricLaplace` also have native
+and checked-reference implementations, with nonnegative count and mixed
+zero-atom/real supports, respectively. Their
+[formal definitions](../../semantics/programs.md#discrete-weibull-counts)
+distinguish a survival parameter from a response mean and an atom's mass
+from a continuous density. Both are explicitly refused by all 11
+external renderers. The formula-only `negbinomial2` parameterization
+reuses the existing `NegativeBinomial` reference kernel.
+
 ::: quivers.qiec.reference_families

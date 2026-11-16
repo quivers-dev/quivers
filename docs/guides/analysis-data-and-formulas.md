@@ -335,6 +335,8 @@ value. The built-in families:
 | `categorical` | reference-category multinomial logit | one coefficient and random effect per non-reference category |
 | `poisson` | log (exp) | none |
 | `negative_binomial` | log (exp) | `disp ~ Gamma(2.0, 2.0)` |
+| `negbinomial2` | log for response mean | reciprocal shape `sigma ~ Gamma(0.4, 0.3)` |
+| `discrete_weibull` | logit for survival parameter `q` | `shape ~ HalfCauchy(2.0)` |
 | `gamma` | log (exp) | `shape ~ Gamma(2.0, 2.0)` |
 | `beta` | logit (sigmoid) | `phi ~ HalfCauchy(2.0)` |
 | `student_t` | identity | `nu ~ Gamma(2.0, 0.1)`, `sigma ~ HalfCauchy(2.0)` |
@@ -350,7 +352,12 @@ value. The built-in families:
 | `zero_inflated_beta` | logit | `phi` (precision), `zi` (zero probability) |
 | `zero_one_inflated_beta` | logit (sigmoid) | precision `phi` and boundary probabilities `zoi`, `coi` |
 | `asym_laplace` | identity for the selected quantile | `sigma ~ HalfCauchy(2.0)`, `quantile ~ Beta(2.0, 2.0)` unless fixed |
+| `zero_inflated_asym_laplace` | identity for the continuous component's selected quantile | `sigma ~ HalfCauchy(2.0)`, `quantile ~ Beta(2.0, 2.0)`, `zi ~ Beta(2.0, 2.0)` |
 | `lognormal` | identity for log-location | `sigma ~ HalfCauchy(2.0)` |
+| `skew_normal` | identity for response mean | response SD `sigma ~ HalfCauchy(2.0)`, skewness `alpha ~ Normal(0, 4)` |
+| `shifted_lognormal` | identity for log-location | `sigma ~ HalfCauchy(2.0)`, `ndt ~ Uniform(0, min(response))` |
+| `frechet` | log for response mean | `nu ~ Gamma(2, 0.1)` conditioned on `nu > 1` |
+| `gen_extreme_value` | identity for location | `sigma ~ HalfCauchy(2.0)`, `xi ~ Normal(0, 0.3)` |
 | `exgaussian` | identity for the response mean | Normal scale `sigma`, Exponential mean `beta` |
 | `inverse_gaussian` | log for the response mean | `shape ~ Gamma(2.0, 2.0)` |
 | `exponential` | log for mean | none |
@@ -362,6 +369,64 @@ value. The built-in families:
 A new family is a [`Family`](../api/formulas/family.md#quivers.formulas.family.Family)
 value with its own observation family and link. The table's priors on auxiliary
 parameters are the library's defaults.
+
+### Count dispersion and a zero atom at a quantile
+
+`discrete_weibull` predicts the survival parameter `q` through a logit
+link and uses a positive `shape`, whose distributional link is log.
+Its count probabilities are `q**(k**shape) - q**((k+1)**shape)`.
+The parameter called `mu` in the formula interface is thus a probability,
+not the response mean. `posterior_linpred(transform=True)` returns this
+parameter; `posterior_epred` evaluates the response mean's infinite
+tail sum. A bounded numerical calculation must certify its omitted tail
+or refuse the requested moment.
+
+`negbinomial2` instead predicts a response mean with a log link. Its
+positive `sigma` is reciprocal shape, giving variance
+`mu + sigma * mu**2`. It is not a response standard deviation. The
+frontend reuses `NegativeBinomial(total_count=1/sigma, probs=mu/(mu+1/sigma))`.
+The scalar default `Gamma(0.4, 0.3)` is a prior on `sigma` itself,
+following the [pinned brms family definition](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/family-lists.R).
+It does not match the prior induced by the existing `negative_binomial`
+family's `disp ~ Gamma(2, 2)`. A distributional `sigma` predictor uses
+the log link and priors on its coefficients.
+
+`zero_inflated_asym_laplace` models a continuous quantile with an added
+atom at zero. Its `mu` is the `quantile` parameter's quantile of the
+continuous component; adding the atom changes the whole response's
+quantiles. `sigma` has a log link, while `quantile` and `zi` have
+logit links. At zero the observation log score is `log(zi)`; elsewhere
+it is `log(1-zi)` plus the asymmetric Laplace log density. Its expected
+response is `(1-zi) * (mu + sigma*(1-2*quantile)/(quantile*(1-quantile)))`.
+The exact atom remains part of predictive draws and raw pointwise
+likelihoods.
+
+All three use the existing `fixed_parameters` and `distributional`
+interfaces. For instance, the following source keeps the component's
+quantile fixed while regressing its scale and zero probability:
+
+```python
+import pandas as pd
+from quivers.formulas import formula_to_qvr
+
+quantile_data = pd.DataFrame({
+    "response": [0.0, -0.2, 0.4, 0.0],
+    "x": [-1.0, 0.0, 1.0, 2.0],
+    "z": [0.2, -0.3, 0.1, 0.5],
+})
+quantile_source = formula_to_qvr(
+    "response ~ x",
+    data=quantile_data,
+    family="zero_inflated_asym_laplace",
+    fixed_parameters={"quantile": 0.35},
+    distributional={"sigma": "~ z", "zi": "~ x"},
+)
+```
+
+The [formal kernels](../semantics/programs.md#discrete-weibull-counts)
+distinguish the count law, mixed atom/density law, and reciprocal
+dispersion map. Their parameters remain runtime values; these family
+names add no new program-header syntax.
 
 ### Skew, shifted, and extreme-value regressions
 
@@ -727,12 +792,33 @@ parameter names for other predictors. For instance,
 `families["bernoulli"].with_links(mu="probit")` chooses probit regression.
 The link registry includes `identity`, `logit`, `log`, `softmax`, `inverse`,
 `probit`, `probit_approx`, `cloglog`, `cauchit`, `sqrt`, `inverse_square`, `logm1`,
-`log1p`, `softplus`, and `tan_half`. Link names describe the forward link;
+`log1p`, `softplus`, `squareplus`, `softit`, and `tan_half`. Link names describe the forward link;
 the compiler emits its inverse. `sqrt` thus squares the predictor, while
 `inverse_square` emits its reciprocal square root. Positive and probability
 parameters must still lie in their distribution's support. Categorical models
 require softmax; cumulative ordinal models support logit and probit, which select
 `OrderedLogistic` and `OrderedProbit` respectively.
+
+`squareplus` maps a real predictor to a positive parameter through
+`(eta + sqrt(eta**2 + 4)) / 2`. `softit` maps it to a probability
+through `softplus(eta) / (1 + softplus(eta))`. These are the
+[released brms inverse links](../semantics/programs.md#inverse-links-as-value-maps).
+The compiler stages shared intermediate values and uses equivalent
+forms that avoid cancellation and overflow in large finite predictors.
+Their value and first/second derivative checks include the origin and
+tail regimes in `tests/test_formula_link_tails.py`.
+
+```python
+from quivers.formulas import families
+
+positive_scale = families["gaussian"].with_links(sigma="squareplus")
+softit_bernoulli = families["bernoulli"].with_links(mu="softit")
+```
+
+Use `positive_scale` with a distributional scale predictor such as
+`distributional={"sigma": "~ z"}`. A scalar scale prior is unchanged
+when no scale predictor is supplied. Link selection changes the
+deterministic value map, without introducing a new program-header form.
 
 For binomial, beta-binomial, and their zero-inflated variants,
 `binomial_trials` is either one common nonnegative integer or the name of a
@@ -1038,6 +1124,50 @@ mean, raise an error. Circular responses require an angular convention and are
 also refused by `posterior_epred`.
 `posterior_predict` can still sample these families because it does not require
 a response expectation.
+
+### Raw likelihoods and retained analysis
+
+`result.log_likelihood(num_samples=100, seed=7)` returns a mapping from
+response names to raw conditional log densities with shape `(chain, draw, row)`.
+These scores exclude priors and likelihood weights, including for rows with
+zero fitting weight. One multivariate event is one score unit; its event
+coordinates are reduced together. An observation hidden by exact marginalization
+requires a corresponding likelihood observer and otherwise raises an error.
+
+`analysis` retains those scores together with the same posterior draws, observed
+responses, and recorded sampler statistics. Subsequent summaries, WAIC, and
+ArviZ conversion reuse these tensors. A variational guide is sampled once per
+`analysis` request, and the requested seed preserves the caller's CPU random
+state:
+
+```python
+import pandas as pd
+
+from quivers.formulas import fit
+
+result = fit(
+    "y ~ x",
+    data=pd.DataFrame({"y": [0.2, 0.7, -0.3, 0.5], "x": [-1., 0., 1., 2.]}),
+    fixed_parameters={"sigma": 0.7},
+    method="svi", num_steps=10, seed=2,
+)
+analysis = result.analysis(num_samples=32, seed=7)
+assert analysis.log_likelihood["y"].shape == (1, 32, 4)
+uncertainty = analysis.summary(probs=(0.1, 0.5, 0.9))
+assert uncertainty["intercept"].convergence is None
+criterion = analysis.waic(var_name="y")
+assert criterion.num_samples == 32
+```
+
+The single variational pseudo-chain supplies uncertainty summaries, with no
+MCMC convergence diagnostic. An MCMC fit retains its recorded chains and attaches
+convergence summaries. `analysis.to_datatree()` and `analysis.loo(var_name="y")`
+use the optional `diagnostics` extra. PSIS-LOO results expose `elpd`, `elpd_i`,
+and `pareto_k`; inspect unstable importance weights before interpreting predictive
+comparisons. Variational LOO uses relative efficiency one, which does not correct
+variational approximation error. The
+[shared analysis API](../api/diagnostics/posterior.md) specifies the empirical
+WAIC convention and observation-unit requirements.
 
 ### Predictions on new rows
 

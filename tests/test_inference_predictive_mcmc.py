@@ -253,6 +253,11 @@ _DISCRETE_ARGUMENTS: dict[str, tuple[str, str | None, list[float]]] = {
         "zero_prob=0.2, total_count=5.0, concentration1=2.0, concentration0=1.0",
         [0, 2, 0, 3, 0, 1],
     ),
+    "DiscreteWeibull": (
+        "probs=q, concentration=r",
+        "probs=0.4, concentration=1.3",
+        [0, 2, 0, 3, 0, 1],
+    ),
     "OrderedLogistic": ("predictor=a, cutpoints=cuts", None, [0, 1, 2, 1, 0, 2]),
     "OrderedProbit": (
         "eta=a, cutpoints=cuts",

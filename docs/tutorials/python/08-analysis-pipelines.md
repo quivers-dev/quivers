@@ -369,43 +369,29 @@ res_intercept = fit(
 )
 ```
 
-PSIS-LOO needs the log likelihood of each observation under each posterior draw [@vehtari2017loo]:
+PSIS-LOO needs the log likelihood of each observation under each posterior draw
+[@vehtari2017loo]. `analysis` retains these raw response scores together with the
+draws, so the likelihood calculation uses the model's checked response family:
 
 ```python
-y_obs = torch.as_tensor(y, dtype=torch.float32)
-x_t = torch.as_tensor(x, dtype=torch.float32)
-
-def per_row_log_lik(res, y_obs, x_t):
-    samples = res.posterior.samples
-    ic = samples["intercept"]                         # (chain, draw)
-    bx = samples.get("beta_x", torch.zeros_like(ic))  # zero if intercept-only
-    logits = ic[..., None] + bx[..., None] * x_t
-    p = torch.sigmoid(logits)
-    return y_obs * torch.log(p + 1e-12) + (1 - y_obs) * torch.log(1 - p + 1e-12)
-
-ll_with_x = per_row_log_lik(res_with_x, y_obs, x_t)
-ll_intercept = per_row_log_lik(res_intercept, y_obs, x_t)
+analysis_with_x = res_with_x.analysis()
+analysis_intercept = res_intercept.analysis()
+y_obs = analysis_with_x.observed_data["y"]
+ll_with_x = analysis_with_x.log_likelihood["y"]
+ll_intercept = analysis_intercept.log_likelihood["y"]
 ```
 
 Convert each posterior to a `DataTree` with an observed data group and a log likelihood group:
 
 ```python
-idata_with_x = to_datatree(
-    res_with_x.posterior,
-    observed_data={"y": y_obs},
-    log_likelihood={"y": ll_with_x},
-)
-idata_intercept = to_datatree(
-    res_intercept.posterior,
-    observed_data={"y": y_obs},
-    log_likelihood={"y": ll_intercept},
-)
+idata_with_x = analysis_with_x.to_datatree()
+idata_intercept = analysis_intercept.to_datatree()
 ```
 
 [`compare`](../../api/diagnostics/comparison.md) ranks the fits by PSIS-LOO and computes stacking weights [@yao2018stacking]:
 
 ```python
-table = compare({"with_x": idata_with_x, "intercept_only": idata_intercept}, round_to=2)
+table = compare({"with_x": analysis_with_x, "intercept_only": analysis_intercept}, round_to=2)
 print(table.to_string())
 ```
 

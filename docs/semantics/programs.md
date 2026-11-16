@@ -102,6 +102,33 @@ A draw may name the components of a product value: `sample (v_1, ..., v_m) <- F(
 $\llbracket \mathrm{cod}(F) \rrbracket = K_1 \times \cdots \times K_m$ and has the same denotation as
 the draw of one value $v$, with $v_i$ the $i$-th projection of $v$.
 
+#### Inverse links as value maps
+
+An inverse link maps a real predictor to a response parameter before
+the observation kernel is constructed. For a positive parameter, the
+squareplus inverse link is
+
+$$
+g^{-1}(\eta)=\frac{\eta+\sqrt{\eta^2+4}}{2},
+\qquad g(x)=x-\frac1x,\quad x>0.
+$$
+
+For a probability parameter, write $L(\eta)=\log(1+\exp\eta)$.
+The softit inverse link is
+
+$$
+h^{-1}(\eta)=\frac{L(\eta)}{1+L(\eta)},
+\qquad h(p)=\log\!\left(\exp\frac{p}{1-p}-1\right),\quad 0<p<1.
+$$
+
+These maps follow the released brms definitions of
+[squareplus](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/inst/chunks/fun_squareplus.stan)
+and [softit](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/inst/chunks/fun_softit.stan).
+Their application is a deterministic computation on runtime values:
+it introduces neither a static index nor a likelihood factor.
+Numerical evaluation must separately respect cancellation and overflow
+in these mathematical expressions.
+
 #### Scalar response kernels and regression parameters
 
 A regression parameter need not occupy the same slot as a native family
@@ -206,6 +233,89 @@ Shape and rate derivatives propagate through converged recurrences;
 failure to converge within 512 iterations raises explicitly. This
 algorithm does not assert uniform numerical accuracy or convergence
 over all parameter regimes.
+
+#### Discrete Weibull counts
+
+The discrete Weibull law uses counting measure on the nonnegative integers.
+For `DiscreteWeibull(probs=q, concentration=b)`, with $0\leq q<1$
+and $b>0$, its mass is
+
+$$
+p(k)=q^{k^b}-q^{(k+1)^b},\qquad k=0,1,\ldots.
+$$
+
+At $q=0$ this is a point mass at zero; $q=1$ supplies no proper
+probability law on finite counts. For $q>0$, the CDF at $y\geq0$
+is $1-q^{(\lfloor y\rfloor+1)^b}$, and its strict survival probability
+is $q^{(\lfloor y\rfloor+1)^b}$. Its moments satisfy
+
+$$
+\mathbb E[Y]=\sum_{k=1}^\infty q^{k^b},\qquad
+\mathbb E[Y^2]=\sum_{k=1}^\infty(2k-1)q^{k^b}.
+$$
+
+Both sums are finite for the admitted parameters. The formula family's
+main parameter `mu` denotes $q$, following the
+[pinned brms parameterization](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/inst/chunks/fun_discrete_weibull.stan);
+it is not the response mean. A transformed linear predictor and an
+expected response thus answer different questions. Numerical moment
+evaluation must check its remainder and resource limits rather
+than identify a partial sum with this infinite sum.
+
+#### A zero atom with asymmetric Laplace responses
+
+Let $K_{\ell,s,\tau}$ be an asymmetric Laplace law, where $\ell$
+is its $\tau$-quantile, $s>0$, and $0<\tau<1$. Its density is
+$f(y)=\tau(1-\tau)\exp(-\rho_\tau((y-\ell)/s))/s$,
+with $\rho_\tau(u)=u(\tau-\mathbf1_{u<0})$.
+The zero-inflated law is the probability kernel
+
+$$
+K_{\omega,\ell,s,\tau}=\omega\delta_0+(1-\omega)K_{\ell,s,\tau},
+\qquad 0\leq\omega\leq1.
+$$
+
+Its density with respect to Lebesgue measure plus $\delta_0$ is
+$\omega$ at zero and $(1-\omega)f(y)$ elsewhere. In particular,
+the continuous component's density at zero is not added to the atom's
+probability. This agrees with the pinned
+[brms scoring definition](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/inst/chunks/fun_zero_inflated_asym_laplace.stan).
+
+Writing $F$ for the continuous component's CDF gives
+
+$$
+F_{\mathrm{ZI}}(y)=(1-\omega)F(y)+\omega\mathbf1_{y\geq0},
+\qquad
+\Pr(Y>y)=(1-\omega)(1-F(y))+\omega\mathbf1_{y<0}.
+$$
+
+The strict survival function thus excludes the atom at zero. The
+released brms chunk's zero-boundary `lccdf` branch includes the atom;
+the strict convention here complements the CDF at that boundary.
+The response mean is $(1-\omega)m$, where
+$m=\ell+s(1-2\tau)/(\tau(1-\tau))$ is the component mean.
+The formula's location parameter remains the component quantile;
+adding the atom does not make it a quantile of the whole response law.
+All distribution parameters remain runtime values, while a static
+extent governs only the number and arrangement of responses.
+
+#### Negative-binomial dispersion parameters
+
+An alternate parameterization does not require a different native
+kernel. For a negative-binomial response with mean $\mu>0$ and
+shape $r>0$, the variance is $\mu+\mu^2/r$. The
+`negbinomial2` parameterization sets $\sigma=1/r$, giving
+$\operatorname{Var}(Y)=\mu+\sigma\mu^2$. It thus supplies
+`total_count=1/sigma` and `probs=mu/(mu + 1/sigma)` to the existing
+native `NegativeBinomial` constructor. This is the
+[pinned brms transformation](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/stan-likelihood.R).
+
+Equivalent conditional laws do not identify the same prior measure.
+Transforming a prior on $r$ into one on $\sigma$ requires the
+Jacobian $1/\sigma^2$. Choosing a new prior directly on $\sigma$
+instead defines a different model, even when both frontends compile
+to the same native family. The deterministic likelihood parameter map
+itself contributes no Jacobian score.
 
 #### Zero-inflated and hurdle count kernels
 
@@ -933,6 +1043,47 @@ posterior or its expectations. The module [`quivers.inference`](../api/inference
 log joint density of a run to fit a variational family [@blei2017variational; @hoffman2013svi] or to
 sample with [Hamiltonian Monte Carlo](https://en.wikipedia.org/wiki/Hamiltonian_Monte_Carlo) and the
 No-U-Turn Sampler (NUTS) [@neal2011mcmc; @hoffman2014nuts].
+
+### 6.1 Observation likelihoods and posterior analysis
+
+For posterior draw $\theta_s$ and observation unit $i$, the extracted score is
+$\ell_{si}=\log p(y_i\mid\theta_s,x_i)$. This is the raw response density;
+it excludes the prior and any fitting weight. A fitting weight can change the
+posterior distribution of $\theta_s$ without changing this conditional score.
+Coordinates of one multivariate event are reduced together, while independent
+observation axes remain separate. A marginalized joint density does not determine
+pointwise response scores without a corresponding likelihood observer.
+
+`ModelFit.analysis` and `BayesianFit.analysis` retain draws and these raw scores
+for reuse. An MCMC analysis retains recorded chains and their sampler statistics.
+A variational analysis draws once from the fitted guide and uses one array
+pseudo-chain, which supplies no MCMC convergence evidence. Neither operation
+changes the program's denotation or introduces a language effect.
+
+For $S\geq2$ pooled draws with finite scores, the empirical WAIC estimator uses
+
+$$
+v_i=\frac{1}{S-1}\sum_s(\ell_{si}-\bar\ell_i)^2,
+\qquad
+\widehat{\operatorname{elpd}}_i
+=\log\left(\frac1S\sum_s e^{\ell_{si}}\right)-v_i.
+$$
+
+Then `elpd_waic` sums the pointwise estimates, `p_waic` sums $v_i$, and
+`waic` is $-2\widehat{\operatorname{elpd}}$. The sample-variance convention
+matches [loo](https://github.com/stan-dev/loo/blob/master/R/waic.R).
+For $N>1$ observation units, the reported ELPD standard error is
+$\sqrt{N\operatorname{Var}_{N-1}(\widehat{\operatorname{elpd}}_i)}$;
+it is undefined for one unit. A variance $v_i>0.4$ raises the
+[WAIC diagnostic](https://mc-stan.org/loo/reference/waic.html).
+These are finite-sample predictive estimates, with uncertainty determined by
+the chosen observation units.
+
+PSIS-LOO reweights retained posterior draws and reports importance-weight
+diagnostics [@vehtari2017loo]. For variational draws, relative efficiency one
+does not repair approximation error. Exact leave-one-out refits, K-fold
+validation, and alternative marginalization policies remain separate workflows.
+Multiple response variables require explicit selection before comparison.
 
 ## 7. Wrappers that place priors on parameters {#7-bayesian-lifts}
 

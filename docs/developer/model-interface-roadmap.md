@@ -31,7 +31,7 @@ from the implementation and its tests. Full brms coverage is not established.
 | Capability | QVR evidence and remaining requirements |
 | --- | --- |
 | Data dimensions and external inputs | `Model.schema` retains checked types and roles; `Model.bind` specializes finite extents and validates supplied values. Tested in `tests/modeling/test_model.py`. |
-| Common regression families | `quivers.formulas.families` contains 34 entries, with 15 inverse links and mean/precision conversions for binomial, beta-binomial, gamma, Weibull, and other families. Asymmetric Laplace quantile regression supports a fixed or regressed quantile, with independent SciPy density/CDF/quantile and sampling tests. `tests/test_formula_distributional.py` checks independent likelihood and derivative oracles. ExGaussian uses the response mean and Gaussian/exponential components; inverse Gaussian uses response mean/shape with implicit sample gradients. These have independent density, CDF, derivative, and sampling oracles. Zero-inflated Beta regression reuses the native zero/one mixture with its one-atom probability fixed at zero; atom/interior densities, endpoint derivatives, sampling moments, and response means have independent oracles. Hurdle Gamma and LogNormal responses use a shared exact atom/positive-component implementation, with independent density, derivative, CDF, moment, and sampling oracles and SVI/HMC/NUTS formula checks. The larger native family registry remains a separate interface; the remaining brms families and their interactions need implementation and tests. |
+| Common regression families | `quivers.formulas.families` contains 37 entries, with 17 inverse links and mean/precision conversions for binomial, beta-binomial, gamma, Weibull, and other families. Asymmetric Laplace quantile regression supports a fixed or regressed quantile, with independent SciPy density/CDF/quantile and sampling tests. `tests/test_formula_distributional.py` checks independent likelihood and derivative oracles. ExGaussian uses the response mean and Gaussian/exponential components; inverse Gaussian uses response mean/shape with implicit sample gradients. These have independent density, CDF, derivative, and sampling oracles. Zero-inflated Beta regression reuses the native zero/one mixture with its one-atom probability fixed at zero; atom/interior densities, endpoint derivatives, sampling moments, and response means have independent oracles. Hurdle Gamma and LogNormal responses use a shared exact atom/positive-component implementation, with independent density, derivative, CDF, moment, and sampling oracles and SVI/HMC/NUTS formula checks. The larger native family registry remains a separate interface; the remaining brms families and their interactions need implementation and tests. |
 | Zero-inflated and hurdle counts | Native and formula interfaces add zero-inflated negative-binomial, binomial, and beta-binomial responses plus hurdle negative-binomial responses. `tests/test_formula_count_mixtures.py` checks component-to-regression conversions, likelihood and gradient oracles, fitting, and predictions. Shared `Family.trials_parameter` metadata validates trial counts in `0..2**53` at fitting and new-data prediction; zero trials give a zero response. Native Binomial/BetaBinomial/NB/Poisson and the new mixtures use float64 count parameters, scores, and moments while preserving gradients to original learned heads. The hurdle sampler uses compound-Poisson/logarithmic-count sampling rather than rejection from a vanishing positive event. Native/QIEC reference execution supports all four; all 11 external renderers explicitly refuse them, checked in 44 family/backend cells. The current `hurdle_poisson` auxiliary remains named `zi`; a brms-compatible `hu` naming change is separate work. |
 | Group effects | Single-bar blocks use native LKJ Cholesky correlations; double bars request independence. Shared IDs couple coefficients across location and auxiliary formulas. Scalar responses support centered and noncentered coordinates; categorical blocks couple all non-reference-category coefficients in noncentered coordinates. `tests/test_formula_correlations.py` checks Gaussian covariance densities, derivatives, and SVI/HMC/NUTS execution. Supplied group covariance, multi-membership, repeated coefficients across blocks, and prediction with new groups or supplied covariance remain work. |
 | Distributional and nonlinear formulas | `distributional={"sigma": "~ z + (1 | g)"}` supplies evaluated auxiliary predictors and parameter-specific links in the formula interface. Design columns and group coding are retained, and shared correlation IDs can span predictors. A nonlinear parameter dependency graph remains work. |
@@ -43,8 +43,8 @@ from the implementation and its tests. Full brms coverage is not established.
 | Priors | `get_prior` inspects the exact overrideable priors in the formula AST, including column autoscaling, auxiliary coefficients, and shared correlations. Unused overrides fail before fitting; `fixed_parameters` removes known auxiliary parameters from the latent and prior layouts. Class-based selectors, regularized horseshoe and R2D2 workflows, and prior-only fitting need implementations and acceptance tests. |
 | Sampling and variational fitting | Existing MCMC and variational components remain configurable through reusable methods. Every algorithm's objective, stopping condition, initialization, and checkpoint semantics stay visible. This does not establish equivalence to Stan's samplers. |
 | Prediction | `BayesianFit.posterior_linpred`, `posterior_epred`, and `posterior_predict` accept `new_data`, retaining training transforms, contrasts, category labels, and group coding. They preserve chain/draw axes and validate new covariates, offsets, exposures, auxiliary predictors, and per-row trials without response or likelihood-weight columns. Known groups may be reordered or repeated; new groups and categorical levels are refused. Neural fits require explicit new `predictor_data`. `tests/test_formula_new_data.py` checks independent prediction and derivative oracles and retained layouts. `ModelFit.predict` accepts checked tensor bindings with a new row count when the latent layout remains compatible. The brms [prediction contract](https://paulbuerkner.com/brms/reference/posterior_predict.brmsfit.html) additionally covers policies for new groups, selected effects and responses, and further predictive quantities. |
-| Parameter summaries and diagnostics | `BayesianFit.draws` preserves chain/draw axes; `fixed_effects`, `random_effects`, and `coefficients` reconstruct native population/group coefficients with original labels and retained level coding. `tests/test_formula_posterior.py` checks centered, noncentered, shared, and categorical effects. Covariance summaries and a common summary/diagnostic interface remain work. |
-| Model comparison | `ModelFit.log_likelihood` extracts raw pointwise observation densities, and QVR provides ArviZ adapters and comparison functions. Marginal-likelihood observers, observation coordinates, integrated LOO and WAIC, exact refits, K-fold validation, and model weighting require further work. A whole-program joint score is insufficient. |
+| Parameter summaries and diagnostics | `BayesianFit.draws` preserves chain/draw axes; `fixed_effects`, `random_effects`, and `coefficients` reconstruct native population/group coefficients with original labels and retained level coding. `tests/test_formula_posterior.py` checks centered, noncentered, shared, and categorical effects. Both source and formula fits expose retained `PosteriorAnalysis` uncertainty summaries; recorded MCMC chains supply convergence diagnostics, while variational pseudo-chains do not. Covariance summaries remain work. |
+| Model comparison | `ModelFit.log_likelihood` and `BayesianFit.log_likelihood` extract raw pointwise observation densities. Their shared `PosteriorAnalysis` reuses scores for torch-only empirical WAIC, optional ArviZ PSIS-LOO, and ranked model comparison with stacking weights. Compared analyses check response values and predictive score units. Marginal-likelihood observers, richer observation coordinates, exact refits, and K-fold validation require further work. A whole-program joint score is insufficient. |
 | Other post-processing | Hypothesis tests, Bayes factors, marginal likelihoods, R-squared, conditional effects, model updates, and persistent fitted artifacts require their own implementations and tests. |
 | Custom families and backends | Existing family and target registries are extension points. Custom scoring, sampling, prediction, and emitted-target support must each be checked; a registered name proves none of these by itself. |
 
@@ -56,26 +56,27 @@ model; matching a formula's printed text would not establish the same prior.
 The pinned [released family registry](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/family-lists.R)
 and [development family registry](https://github.com/paul-buerkner/brms/blob/f4f906dc0db56fd42b58cdd7d57e76b40f650331/R/family-lists.R)
 each contain 49 named entries plus `custom`; their definitions agree apart
-from trailing whitespace. QVR's 34 formula entries cover 33 of those names
+from trailing whitespace. QVR's 37 formula entries cover 36 of those names
 after normalizing `student`/`student_t`, `negbinomial`/`negative_binomial`,
 and `inverse.gaussian`/`inverse_gaussian`. Its remaining entry is generic
 mixture composition. This name comparison does not establish equivalent
 parameterizations, links, or fitting behavior.
 
-Sixteen source-registry entries still lack QVR formula frontends. Eleven
+Thirteen source-registry entries still lack QVR formula frontends. Eleven
 appear in the website's family catalog: `wiener`, `dirichlet`, `logistic_normal`, `cox`,
 `hurdle_cumulative`, `multinomial`, `dirichlet_multinomial`, `sratio`, `cratio`,
-`acat`, and `xbeta`. Five further entries are present in both pinned source
-registries: `com_poisson`, `discrete_weibull`,
-`zero_inflated_asym_laplace`, `negbinomial2`, and `dirichlet2`.
+`acat`, and `xbeta`. Two further entries are present in both pinned source
+registries: `com_poisson` and `dirichlet2`.
 The released [constructor source](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/families.R)
-marks these five as unexported or not yet officially supported; they are
+marks these two as unexported or not yet officially supported; they are
 not new development-only families. `negbinomial2` and `dirichlet2` are
 alternate parameterizations rather than additional distribution laws.
 
 The released registry also includes `squareplus` and `softit` links,
-which the website's abbreviated link lists do not enumerate. Thus neither
-the family count nor QVR's 15 inverse links establishes full coverage.
+which the website's abbreviated link lists do not enumerate. QVR now
+implements both with stable staged expressions; value and first/second
+derivative tests include the origin and large finite predictors. Neither
+the family count nor QVR's 17 inverse links establishes full coverage.
 Links, thresholds, response modifiers, interactions, and the other
 workflows in the table need separate acceptance tests against each pinned
 baseline. Future audits should compare released and development sources
@@ -92,6 +93,17 @@ them explicitly. The native `Truncated` wrapper now uses deterministic
 interval masses for independent scalar coordinates, while coupled events
 without a joint rectangle-mass operation remain refused. Formula response
 truncation, censoring, and their interactions remain separate work.
+
+Discrete Weibull and zero-inflated asymmetric Laplace now have native
+and checked-reference kernels, with independent source-density and
+formula-prediction checks. Their 22 family/backend cells all refuse
+external rendering explicitly. The formula-only `negbinomial2` frontend
+adds reciprocal dispersion to the existing negative-binomial law, with
+a direct `Gamma(0.4, 0.3)` prior on `sigma`. Formula density, coefficient
+gradient, SVI/HMC/NUTS, and new-data prediction checks are in
+`tests/test_formula_reparameterized_families.py`. Discrete Weibull
+expected responses retain explicit tail-certification and work limits;
+its main transformed predictor is a probability rather than a mean.
 
 ## Open enhancement issues
 

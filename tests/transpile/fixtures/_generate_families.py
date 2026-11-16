@@ -79,6 +79,8 @@ _INLINE_OBSERVE: dict[str, str] = {
     "ShiftedLogNormal": "loc=0.2, scale=0.5, shift=0.1",
     "Frechet": "scale=1.3, concentration=3.0",
     "GeneralizedExtremeValue": "loc=0.2, scale=1.1, concentration=0.1",
+    "DiscreteWeibull": "probs=0.4, concentration=1.3",
+    "ZeroInflatedAsymmetricLaplace": "zero_prob=0.2, loc=0.1, scale=0.7, quantile=0.35",
 }
 
 

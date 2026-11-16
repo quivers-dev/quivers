@@ -20,6 +20,44 @@ at quantile `0.5`, it equals `Laplace(loc, 2 * scale)`.
 
 ::: quivers.continuous._asymmetric_laplace
 
+## Discrete Weibull counts
+
+`DiscreteWeibull(probs, concentration)` has nonnegative integer support,
+with survival `P(Y >= k) = probs**(k**concentration)`. The probability
+lies in `[0, 1)` and the concentration is positive; zero probability
+gives a point mass at zero. `ConditionalDiscreteWeibull` learns these
+native parameters, which are distinct from a response mean.
+
+Parameters, scores, and moments use float64; samples use int64 and
+are non-reparameterized. Finite samples and finite requested quantiles
+above `2**53` are refused before integer conversion. Moment calculation
+uses adaptive sums with survival-integral remainder bounds. Native
+`moment_rtol=1e-10` and `moment_max_terms=262144` control its relative
+tolerance and count-term budget, retained by `expand`. A failure to
+certify the requested tolerance raises explicitly; mathematical moments
+still exist throughout the admitted parameter domain.
+
+::: quivers.continuous._discrete_weibull
+
+## Zero-inflated asymmetric Laplace responses
+
+`ZeroInflatedAsymmetricLaplace(zero_prob, loc, scale, quantile)` has an
+exact atom at zero and a continuous asymmetric Laplace component.
+Its score at zero is `log(zero_prob)`, independently of the component's
+density there. `loc` is the component's selected quantile, with positive
+scale and a quantile strictly between zero and one. Its CDF includes
+the atom at zero; strict survival excludes it there. The
+[formal definition](../../semantics/programs.md#a-zero-atom-with-asymmetric-laplace-responses)
+specifies the mixed dominating measure and response mean.
+
+`ConditionalZeroInflatedAsymmetricLaplace` learns the native parameters.
+The mixture sampler selects its branch before drawing a continuous
+response and supplies no pathwise sampling gradient. Native and
+checked-reference execution support this family and DiscreteWeibull;
+all 11 external renderers explicitly refuse both.
+
+::: quivers.continuous._zero_inflated_asymmetric_laplace
+
 ## Response-time distributions
 
 `ExGaussian(loc, scale, rate)` is the sum of independent Normal and Exponential

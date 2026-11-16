@@ -91,6 +91,14 @@ _COMPOSED_MARKERS: dict[tuple[str, str], tuple[bytes, ...]] = {
     ("turing", "halfstudentt"): (b"truncated", b"TDist", b"0", b"Inf"),
 }
 
+# These renderers report a missing target mapping before family rendering.
+_UNMAPPED_FAMILY_TAGS = {
+    "jags": "family:no-target-name",
+    "numpyro": "family:no-target-name",
+    "stan": "family:no-stan-target",
+    "webppl": "family:no-webppl-target",
+}
+
 
 #: Cells whose measured capability differs from the catalogue's name lookup.
 #:
@@ -125,6 +133,16 @@ _EXPECTED_REFUSALS: dict[tuple[str, str], str] = {
     ("gen", "generalizedpareto"): "support:_Interval: no Gen.jl storage-type rule",
     ("stan", "generalizedpareto"): "declare:unsupported-support:_Interval",
     ("stan", "generalizedextremevalue"): "declare:unsupported-support:_Interval",
+    # These native/reference laws currently have no external implementation.
+    # Pin the named refusal even if future catalogue metadata changes.
+    **{
+        (
+            backend,
+            family.lower(),
+        ): f"{_UNMAPPED_FAMILY_TAGS.get(backend, 'family')}:{family}"
+        for backend in _BACKENDS
+        for family in ("DiscreteWeibull", "ZeroInflatedAsymmetricLaplace")
+    },
     # The checked canonical families retain distribution-valued arguments.
     # All current external plans reject those arguments explicitly; family
     # name metadata alone does not imply support for this composition.

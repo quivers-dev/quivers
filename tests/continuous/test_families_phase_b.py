@@ -395,11 +395,14 @@ class TestFamilyMetaWiring:
             "ShiftedLogNormal",
             "Frechet",
             "GeneralizedExtremeValue",
+            "DiscreteWeibull",
+            "ZeroInflatedAsymmetricLaplace",
         }
         assert added <= FAMILY_META.keys()
         for family in added:
             meta = FAMILY_META[family]
             assert meta.distribution_class.__name__ == family
+            assert meta.quivers_class is not None
             assert meta.quivers_class.__name__ == f"Conditional{family}"
         assert "GP" in FAMILY_META
-        assert len(FAMILY_META) == 74
+        assert len(FAMILY_META) == 76

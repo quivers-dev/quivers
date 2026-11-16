@@ -399,6 +399,66 @@ from quivers.continuous.families import (
 )
 ```
 
+## Discrete Weibull counts and zero-atom quantiles
+
+`DiscreteWeibull(probs=q, concentration=b)` models nonnegative integer
+counts with survival probability `P(Y >= k) = q**(k**b)`. It requires
+`0 <= q < 1` and positive `b`; `q=0` gives a point mass at zero.
+The probability parameter is not a response mean. Its mean is the
+sum of `q**(k**b)` over positive integers, as in the
+[formal count definition](../semantics/programs.md#discrete-weibull-counts).
+
+`ZeroInflatedAsymmetricLaplace(zero_prob, loc, scale, quantile)` combines
+an exact zero atom with a continuous asymmetric Laplace response. The
+atom probability may range from zero to one; `scale` is positive and
+`quantile` lies strictly between zero and one. `loc` is that quantile
+of the continuous component. It need not be the same quantile of the
+whole response distribution after the zero atom is added.
+
+At an exact zero, scoring returns `log(zero_prob)`. At a nonzero
+response it returns `log(1-zero_prob)` plus the component log density.
+The continuous density at zero is not added to the atom probability.
+Its CDF includes the atom at zero; its strict survival probability
+`P(Y > y)` excludes it at `y=0`. These conventions follow the
+[mixed-kernel semantics](../semantics/programs.md#a-zero-atom-with-asymmetric-laplace-responses).
+
+Both declarations below use ordinary runtime values for distribution
+parameters and a static `n` for their common row extent. The typed
+inputs distinguish count from real responses; the observation steps
+give them likelihood roles.
+
+```qvr
+object Out : Real 1
+program count_and_atom[n : Nat](
+    q : Real,
+    shape : Real,
+    zi : Real,
+    location : Real,
+    scale : Real,
+    quantile : Real,
+    counts : Tensor[Int]([n]),
+    residuals : Tensor[Real]([n]),
+) : n -> Out
+    observe counts : n <- DiscreteWeibull(probs=q, concentration=shape)
+    observe residuals : n <- ZeroInflatedAsymmetricLaplace(zero_prob=zi, loc=location, scale=scale, quantile=quantile)
+    return location
+export count_and_atom
+```
+
+Native and checked-reference execution support both families; all 11
+external renderers explicitly refuse them. Both samplers are
+non-reparameterized. Discrete Weibull parameters, scores, and moments
+use float64, while its draws are int64. Finite draws or requested finite
+quantiles above `2**53` are refused; the law is not clipped or redrawn
+to hide an unrepresentable result.
+
+Discrete Weibull moments use adaptive sums and analytic omitted-tail
+bounds. Native `moment_rtol` and `moment_max_terms` control tolerance
+and work, defaulting to `1e-10` and `262144` count terms. If the requested
+remainder bound cannot be established within that budget, moment
+evaluation refuses explicitly. A mathematical finite mean does not
+guarantee that a chosen numerical budget suffices.
+
 ## Truncating an independent response
 
 `Truncated(base, lower=..., upper=...)` restricts a base family to an
@@ -469,6 +529,8 @@ that choice explicit:
 |---|---|---|
 | `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `AsymmetricLaplace`, `ExGaussian`, `InverseGaussian`, `HurdleGamma`, `HurdleLogNormal`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli`, `Horseshoe` | 0 | Scalar; every codomain axis is iid by default |
 | `SkewNormal`, `ShiftedLogNormal`, `Frechet`, `GeneralizedExtremeValue` | 0 | Scalar real response; extent and runtime distribution shape are separate |
+| `DiscreteWeibull` | 0 | Nonnegative integer count; probability and concentration are runtime parameters |
+| `ZeroInflatedAsymmetricLaplace` | 0 | Real response with an exact zero atom and a continuous component |
 | `ZeroInflatedNegativeBinomial`, `ZeroInflatedBinomial`, `ZeroInflatedBetaBinomial`, `HurdleNegativeBinomial` | 0 | Integer count; every codomain axis is iid by default |
 | `MultivariateNormal`, `LowRankMVN`, `Dirichlet`, `OneHotCategorical`, `RelaxedOneHotCategorical`, `LogisticNormal`, `GP` | 1 | Vector; one named event axis carries the joint distribution |
 | `Wishart`, `InverseWishart`, `MatrixNormal`, `LKJCholesky` | 2 | Matrix; two named event axes carry the joint distribution |

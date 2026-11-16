@@ -88,7 +88,15 @@ def test_checked_weight_builtins_are_repl_completion_candidates(name: str) -> No
     )
 
 
-@pytest.mark.parametrize("name", (*COUNT_FAMILIES, *SHAPE_FAMILIES))
+@pytest.mark.parametrize(
+    "name",
+    (
+        *COUNT_FAMILIES,
+        *SHAPE_FAMILIES,
+        "DiscreteWeibull",
+        "ZeroInflatedAsymmetricLaplace",
+    ),
+)
 def test_response_families_are_repl_and_lsp_completion_candidates(name: str) -> None:
     from lsprotocol import types as lsp
 
@@ -200,6 +208,8 @@ _CORPUS = (
     "    observe f : CountRow <- ShiftedLogNormal(loc=0.2, scale=0.5, shift=0.1)\n"
     "    observe g : CountRow <- Frechet(scale=1.3, concentration=3.0)\n"
     "    observe h : CountRow <- GeneralizedExtremeValue(loc=0.2, scale=1.1, concentration=0.1)\n"
+    "    observe i : CountRow <- DiscreteWeibull(probs=0.4, concentration=1.3)\n"
+    "    observe j : CountRow <- ZeroInflatedAsymmetricLaplace(zero_prob=0.2, loc=0.1, scale=0.7, quantile=0.35)\n"
     "    return a\n"
 )
 
@@ -239,6 +249,8 @@ _EXPECTED: dict[tuple[int, str], str] = {
     (34, "ShiftedLogNormal"): "type",
     (35, "Frechet"): "type",
     (36, "GeneralizedExtremeValue"): "type",
+    (37, "DiscreteWeibull"): "type",
+    (38, "ZeroInflatedAsymmetricLaplace"): "type",
 }
 
 #: The tree-sitter capture names and Pygments token families that stand

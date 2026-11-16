@@ -254,6 +254,11 @@ def _component(loc: Sequence[float], scale: Sequence[float]) -> RuntimeDistribut
 
 
 CASES: dict[str, tuple[dict[str, object], tuple[object, ...]]] = {
+    "DiscreteWeibull": ({"probs": 0.4, "concentration": 1.3}, (0.0, 1.0, 4.0)),
+    "ZeroInflatedAsymmetricLaplace": (
+        {"zero_prob": 0.3, "loc": 0.1, "scale": 0.7, "quantile": 0.4},
+        (-2.0, 0.0, 2.0),
+    ),
     "LogitNormal": ({"loc": 0.3, "scale": 0.8}, (0.2, 0.75)),
     "LogGamma": ({"concentration": 0.5, "rate": 2.0}, (-3.0, 0.4)),
     "LogitBeta": ({"concentration1": 0.5, "concentration0": 2.0}, (-4.0, 1.5)),

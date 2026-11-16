@@ -37,6 +37,18 @@ observation-only likelihood weights. The column is retained on the parsed
 formula; posterior predictors use the unweighted response law at each draw.
 See [likelihood weights](../../guides/analysis-data-and-formulas.md#likelihood-weights).
 
+## Likelihoods and analysis
+
+`BayesianFit.log_likelihood(num_samples=100, seed=7)` returns raw response log
+densities on training rows, with chain and draw axes followed by the observation
+axis. These scores exclude fitting weights and priors. `analysis` retains the
+same posterior draws and scores for summaries, empirical WAIC, DataTree
+conversion, and PSIS-LOO. It samples a variational guide once per request and
+never treats its pseudo-chain as recorded MCMC output.
+The [executable workflow](../../guides/analysis-data-and-formulas.md#raw-likelihoods-and-retained-analysis)
+and [shared API](../diagnostics/posterior.md) describe score units, optional
+ArviZ dependencies, and the distinction between uncertainty and convergence.
+
 ## Named initial values
 
 `fit(..., initial_values={...})` initializes latent sites by their generated

@@ -1395,6 +1395,188 @@ def _asymmetric_laplace_density(a: Mapping[str, object], value: object) -> float
     return math.log(quantile) + math.log1p(-quantile) - math.log(scale) - loss
 
 
+def _discrete_weibull_parameters(a: Mapping[str, object]) -> tuple[float, float]:
+    """Read a proper count survival parameter and positive Weibull power.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Survival probability and concentration.
+
+    Returns
+    -------
+    tuple[float, float]
+        Validated survival parameter and positive power.
+
+    Raises
+    ------
+    DistributionError
+        If parameters do not define a proper discrete Weibull law.
+    """
+    q = _real(a, "probs", "DiscreteWeibull")
+    power = _real(a, "concentration", "DiscreteWeibull")
+    if not 0 <= q < 1 or not math.isfinite(power) or power <= 0:
+        raise DistributionError(
+            "DiscreteWeibull requires 0 <= probs < 1 and finite positive concentration"
+        )
+    return q, power
+
+
+def _discrete_weibull_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw a count by a constant-work exponential transform.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Survival probability and concentration.
+    rng : random.Random
+        Local random generator.
+
+    Returns
+    -------
+    object
+        Nonnegative integer draw.
+
+    Raises
+    ------
+    DistributionError
+        If the sampled count exceeds exact Float64 capacity.
+    """
+    q, power = _discrete_weibull_parameters(a)
+    if q == 0:
+        return 0
+    exponential = rng.expovariate(1)
+    if exponential == 0:
+        return 0
+    log_count = (math.log(exponential) - math.log(-math.log(q))) / power
+    if log_count > math.log(2**53):
+        raise DistributionError(
+            "DiscreteWeibull sampling exceeds exact Float64 count capacity 2**53"
+        )
+    return int(math.floor(math.exp(log_count)))
+
+
+def _discrete_weibull_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate a count mass through a stable adjacent-power increment.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Survival probability and concentration.
+    value : object
+        Candidate integer response.
+
+    Returns
+    -------
+    float
+        Log mass, negative infinity outside the integer support.
+    """
+    q, power = _discrete_weibull_parameters(a)
+    point = _finite_value(value, "DiscreteWeibull")
+    if point < 0 or point != math.floor(point):
+        return -math.inf
+    if point == 0:
+        return math.log1p(-q)
+    if q == 0:
+        return -math.inf
+    log_magnitude = math.log(-math.log(q)) + power * math.log(point)
+    if log_magnitude > 709.782712893384:
+        return -math.inf
+    increment = power * math.log1p(1 / point)
+    log_increment = (
+        increment
+        if increment > 40
+        else math.log(math.expm1(increment))
+        if increment > 0
+        else math.log(power) + math.log(math.log1p(1 / point))
+    )
+    log_difference = log_magnitude + log_increment
+    if log_difference > math.log(40):
+        factor = 0.0
+    elif log_difference < -20:
+        difference = math.exp(log_difference)
+        factor = log_difference + math.log1p(
+            -difference / 2 + difference * difference / 6
+        )
+    else:
+        factor = math.log(-math.expm1(-math.exp(log_difference)))
+    return -math.exp(log_magnitude) + factor
+
+
+def _zero_inflated_asymmetric_laplace_probability(a: Mapping[str, object]) -> float:
+    """Validate the structural zero probability and continuous component.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Structural probability and asymmetric Laplace parameters.
+
+    Returns
+    -------
+    float
+        Closed-unit-interval zero probability.
+
+    Raises
+    ------
+    DistributionError
+        If a mixture or component parameter is invalid.
+    """
+    _asymmetric_laplace_parameters(a)
+    probability = _real(a, "zero_prob", "ZeroInflatedAsymmetricLaplace")
+    if not 0 <= probability <= 1:
+        raise DistributionError(
+            "ZeroInflatedAsymmetricLaplace requires zero_prob in [0,1]"
+        )
+    return probability
+
+
+def _zero_inflated_asymmetric_laplace_sample(
+    a: Mapping[str, object], rng: random.Random
+) -> object:
+    """Select the structural atom before drawing its continuous component.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Structural probability and asymmetric Laplace parameters.
+    rng : random.Random
+        Local random generator.
+
+    Returns
+    -------
+    object
+        Exact zero or a continuous asymmetric Laplace response.
+    """
+    probability = _zero_inflated_asymmetric_laplace_probability(a)
+    return 0.0 if rng.random() < probability else _asymmetric_laplace_sample(a, rng)
+
+
+def _zero_inflated_asymmetric_laplace_density(
+    a: Mapping[str, object], value: object
+) -> float:
+    """Score an atomic zero or a continuous asymmetric Laplace density.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Structural probability and asymmetric Laplace parameters.
+    value : object
+        Real response.
+
+    Returns
+    -------
+    float
+        Log atom mass at zero, weighted component log density elsewhere.
+    """
+    probability = _zero_inflated_asymmetric_laplace_probability(a)
+    point = _finite_value(value, "ZeroInflatedAsymmetricLaplace")
+    if point == 0:
+        return math.log(probability) if probability > 0 else -math.inf
+    if probability == 1:
+        return -math.inf
+    return math.log1p(-probability) + _asymmetric_laplace_density(a, point)
+
+
 def _laplace_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``Laplace``.
 
@@ -1936,6 +2118,8 @@ _SAMPLERS: Mapping[str, Sampler] = MappingProxyType(
         "Binomial": _binomial_sample,
         "Geometric": _geometric_sample,
         "Laplace": _laplace_sample,
+        "DiscreteWeibull": _discrete_weibull_sample,
+        "ZeroInflatedAsymmetricLaplace": _zero_inflated_asymmetric_laplace_sample,
         "AsymmetricLaplace": _asymmetric_laplace_sample,
         "ExGaussian": _exgaussian_sample,
         "InverseGaussian": _inverse_gaussian_sample,
@@ -1970,6 +2154,8 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
         "Binomial": _binomial_density,
         "Geometric": _geometric_density,
         "Laplace": _laplace_density,
+        "DiscreteWeibull": _discrete_weibull_density,
+        "ZeroInflatedAsymmetricLaplace": _zero_inflated_asymmetric_laplace_density,
         "AsymmetricLaplace": _asymmetric_laplace_density,
         "ExGaussian": _exgaussian_density,
         "InverseGaussian": _inverse_gaussian_density,

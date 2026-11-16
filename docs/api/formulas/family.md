@@ -10,6 +10,37 @@ while `Family.with_links(sigma="softplus")` changes a distributional scale link;
 [link selection](../../guides/analysis-data-and-formulas.md#distributional-regression-and-link-selection)
 gives the supported names and parameterizations.
 
+`squareplus` supplies the positive inverse link
+`(eta + sqrt(eta**2 + 4)) / 2`; `softit` supplies the probability inverse
+link `softplus(eta) / (1 + softplus(eta))`. The compiler uses stable
+equivalent forms and stages shared intermediates. The
+[link guide](../../guides/analysis-data-and-formulas.md#distributional-regression-and-link-selection)
+distinguishes a distributional predictor's link from a scalar auxiliary
+prior, and the [formal definition](../../semantics/programs.md#inverse-links-as-value-maps)
+states their value-map semantics.
+
+## Count and zero-atom parameterizations
+
+`discrete_weibull` uses a logit-linked survival probability, called `mu`
+in the formula interface, and a log-linked positive `shape`. Its scalar
+shape default is `HalfCauchy(2)`. The transformed predictor gives a
+probability; the expected response requires a bounded numerical tail sum.
+
+`negbinomial2` reuses native `NegativeBinomial` with reciprocal shape
+`1/sigma`, mean `mu`, and variance `mu + sigma*mu**2`. Its positive
+`sigma` has scalar default `Gamma(0.4, 0.3)` and a log link when
+regressed. It is a dispersion coefficient, rather than a standard
+deviation or the original `negative_binomial` family's `disp`.
+
+`zero_inflated_asym_laplace` uses identity-linked component quantile
+location, log-linked scale `sigma`, and logit-linked `quantile` and
+`zi`. Their scalar defaults are `HalfCauchy(2)`, `Beta(2, 2)`, and
+`Beta(2, 2)`, respectively. The response mean and whole-response
+quantiles include the zero atom. The
+[regression guide](../../guides/analysis-data-and-formulas.md#count-dispersion-and-a-zero-atom-at-a-quantile)
+gives scoring conventions, parameter maps, and fixed or distributional
+parameter examples.
+
 ## Skew, shifted, and extreme-value parameters
 
 `skew_normal` uses response mean and standard deviation, converting them

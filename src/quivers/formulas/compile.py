@@ -424,19 +424,70 @@ def _apply_link(eta: LetExprNode, link_name: str) -> LetExprNode:
     if link_name == "logm1":
         return _add(LetExprLiteral(value=1.0), _call("exp", eta))
     if link_name == "softplus":
-        return _add(
+        nonnegative = LetExprBinOp(op=">=", left=eta, right=LetExprLiteral(value=0.0))
+        zero = LetExprLiteral(value=0.0)
+        positive = _call("select", nonnegative, eta, zero)
+        negative = _call("select", nonnegative, zero, eta)
+        return _call(
+            "select",
+            nonnegative,
             _add(
-                _mul(LetExprLiteral(value=0.5), eta),
-                _mul(LetExprLiteral(value=0.5), _call("abs", eta)),
+                eta,
+                _call(
+                    "log1p", _call("exp", _mul(LetExprLiteral(value=-1.0), positive))
+                ),
             ),
-            _call(
-                "log1p",
-                _call("exp", _mul(LetExprLiteral(value=-1.0), _call("abs", eta))),
-            ),
+            _call("log1p", _call("exp", negative)),
         )
     if link_name == "tan_half":
         return _mul(LetExprLiteral(value=2.0), _call("atan", eta))
     raise ValueError(f"compile_formula: unsupported link {link_name!r}")
+
+
+def _append_link(
+    steps: list[ProgramStep], name: str, eta: LetExprNode, link_name: str
+) -> None:
+    """Lower inverse links with shared intermediates and safe tail arithmetic."""
+    if link_name == "softit":
+        positive = f"{name}_link_positive"
+        steps.append(_let(positive, _apply_link(eta, "softplus")))
+        value = _var(positive)
+        steps.append(_let(name, _div(value, _add(LetExprLiteral(value=1.0), value))))
+    elif link_name == "squareplus":
+        half, scale, root, magnitude = (
+            f"{name}_link_{suffix}" for suffix in ("half", "scale", "root", "magnitude")
+        )
+        steps.append(_let(half, _mul(LetExprLiteral(value=0.5), eta)))
+        t = _var(half)
+        steps.append(
+            _let(scale, _call("max", LetExprLiteral(value=1.0), _call("abs", t)))
+        )
+        unit = _div(t, _var(scale))
+        reciprocal = _div(LetExprLiteral(value=1.0), _var(scale))
+        steps.append(
+            _let(
+                root,
+                _mul(
+                    _var(scale),
+                    _call("sqrt", _add(_mul(unit, unit), _mul(reciprocal, reciprocal))),
+                ),
+            )
+        )
+        nonnegative = LetExprBinOp(op=">=", left=t, right=LetExprLiteral(value=0.0))
+        # select (rather than abs) retains the right branch's derivative at 0.
+        absolute = _call("select", nonnegative, t, _mul(LetExprLiteral(value=-1.0), t))
+        steps.append(_let(magnitude, _add(_var(root), absolute)))
+        value = _var(magnitude)
+        steps.append(
+            _let(
+                name,
+                _call(
+                    "select", nonnegative, value, _div(LetExprLiteral(value=1.0), value)
+                ),
+            )
+        )
+    else:
+        steps.append(_let(name, _apply_link(eta, link_name)))
 
 
 def _decode_module(module: Module) -> dict:
@@ -2282,9 +2333,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
                 eta_name = f"dpar_{aux.name}_eta"
                 program_steps.append(_let(eta_name, linear_predictor))
-                program_steps.append(
-                    _let(aux.name, _apply_link(_var(eta_name), aux.link.name))
-                )
+                _append_link(program_steps, aux.name, _var(eta_name), aux.link.name)
 
         cutpoints_name: str | None = None
         if self._family.name == "cumulative":
@@ -2293,12 +2342,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
 
         program_steps.append(_let("eta", eta_expr))
-        mu_expr = (
-            _var("eta")
+        _append_link(
+            program_steps,
+            "mu",
+            _var("eta"),
+            "identity"
             if self._family.name == "cumulative"
-            else _apply_link(_var("eta"), self._family.location_link.name)
+            else self._family.location_link.name,
         )
-        program_steps.append(_let("mu", mu_expr))
 
         if self._family.name == "cumulative":
             assert cutpoints_name is not None
@@ -2364,7 +2415,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             obs_args = ("frechet_scale", "nu")
         elif self._family.name == "gen_extreme_value":
             obs_args = ("mu", "sigma", "xi")
+        elif self._family.name == "zero_inflated_asym_laplace":
+            obs_args = ("zi", "mu", "sigma", "quantile")
         elif self._family.name in {
+            "negbinomial2",
             "negative_binomial",
             "zero_inflated_negbinomial",
             "hurdle_negbinomial",
@@ -2373,6 +2427,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             # convention. The formula family is parameterized by mean ``mu``
             # and a concentration, for which probs = mu / (mu + concentration).
             shape = "disp" if self._family.name == "negative_binomial" else "shape"
+            if self._family.name == "negbinomial2":
+                shape = "negative_binomial_shape"
+                program_steps.append(
+                    _let(shape, _div(LetExprLiteral(value=1.0), _var("sigma")))
+                )
             program_steps.append(
                 _let(
                     "negative_binomial_probs",
@@ -2380,7 +2439,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
             )
             obs_args = (shape, "negative_binomial_probs")
-            if self._family.name != "negative_binomial":
+            if self._family.name not in {"negative_binomial", "negbinomial2"}:
                 zero = "hu" if self._family.name == "hurdle_negbinomial" else "zi"
                 obs_args = (zero, *obs_args)
         elif self._family.name == "exgaussian":

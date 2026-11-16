@@ -330,7 +330,9 @@ def test_family_meta_catalog_count_includes_new_response_families() -> None:
         "ShiftedLogNormal",
         "Frechet",
         "GeneralizedExtremeValue",
+        "DiscreteWeibull",
+        "ZeroInflatedAsymmetricLaplace",
     }
     assert added <= FAMILY_META.keys()
     assert "GP" in FAMILY_META
-    assert len(FAMILY_META) == 74
+    assert len(FAMILY_META) == 76

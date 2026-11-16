@@ -9,7 +9,7 @@ import torch
 from torch.distributions import Distribution
 
 from quivers.continuous.plate import VectorisedObserve
-from quivers.inference.guides.base import Guide
+from quivers.inference._posterior import draw_count
 from quivers.inference.mcmc.driver import MCMCResult
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import Trace, trace
@@ -17,46 +17,6 @@ from quivers.inference.trace import Trace, trace
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
     from quivers.formulas._prediction import PredictionContext
-
-
-def draw_count(
-    posterior: MCMCResult | Guide, num_samples: int | None
-) -> tuple[int, int]:
-    """Resolve chain and draw counts without flattening independent chains.
-
-    Parameters
-    ----------
-    posterior : MCMCResult or Guide
-        The retained posterior representation.
-    num_samples : int or None
-        Maximum draws per chain, or fresh guide draws.
-
-    Returns
-    -------
-    tuple[int, int]
-        The chain count and draw count, preserving independent chains.
-
-    Raises
-    ------
-    ValueError
-        If the requested count is invalid or no samples were retained.
-    """
-    if num_samples is not None and (
-        isinstance(num_samples, bool)
-        or not isinstance(num_samples, int)
-        or num_samples < 1
-    ):
-        raise ValueError("num_samples must be a positive integer")
-    if isinstance(posterior, MCMCResult):
-        count = (
-            posterior.num_samples
-            if num_samples is None
-            else min(num_samples, posterior.num_samples)
-        )
-        if count < 1:
-            raise ValueError("the posterior has no retained draws")
-        return posterior.num_chains, count
-    return 1, 100 if num_samples is None else num_samples
 
 
 def posterior_draws(

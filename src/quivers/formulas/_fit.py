@@ -51,6 +51,9 @@ from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
 
 
+from quivers.diagnostics.posterior import PosteriorAnalysis
+
+
 class BayesianFit(ValueModel):
     """A fitted Bayesian regression: the compiled program, the
     parsed formula, the family, the user-supplied data, and the
@@ -488,6 +491,75 @@ class BayesianFit(ValueModel):
                 yield row_binding(value, rows, categories)
 
         return collect_draws(values(), shape)
+
+    def analysis(
+        self, *, num_samples: int | None = None, seed: int = 0
+    ) -> PosteriorAnalysis:
+        """Prepare reusable posterior summaries and predictive comparisons.
+
+        Parameters
+        ----------
+        num_samples : int or None
+            Maximum MCMC draws per chain or fresh variational draw count.
+        seed : int
+            Variational seed; the caller's CPU RNG is preserved.
+
+        Returns
+        -------
+        quivers.diagnostics.PosteriorAnalysis
+            Retained draws, raw training-row likelihoods, response data,
+            and actual sampler statistics. Later analysis reuses these tensors.
+        """
+        from quivers.diagnostics.posterior import PosteriorAnalysis, _sample_stats
+        from quivers.formulas._posterior import draw_count, replay
+        from quivers.inference._likelihood import collect_log_likelihood
+
+        shape = draw_count(self.posterior, num_samples)
+        draws = self.draws(num_samples=num_samples, seed=seed)
+        response = _qvr_name(self.formula.response_name)
+        with torch.no_grad():
+            likelihood = collect_log_likelihood(
+                replay(self, draws, shape), {response}, shape
+            )
+        return PosteriorAnalysis(
+            samples=draws,
+            log_likelihood=likelihood,
+            observed_data={response: self.observations[response]},
+            sample_stats=_sample_stats(self.posterior, shape[1]),
+            kind="mcmc" if isinstance(self.posterior, MCMCResult) else "variational",
+        )
+
+    def log_likelihood(
+        self, *, num_samples: int | None = None, seed: int = 0
+    ) -> dict[str, torch.Tensor]:
+        """Evaluate raw response log likelihoods on the fitted rows.
+
+        Parameters
+        ----------
+        num_samples : int or None
+            Maximum retained draws per chain, or fresh variational draws.
+        seed : int
+            Seed for variational draws; the caller's CPU RNG is preserved.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Response name to raw scores with shape ``(chain, draw, row)``.
+            Likelihood weights are excluded; event coordinates are reduced.
+
+        Raises
+        ------
+        TypeError
+            If a hidden response needs a marginal-likelihood observer.
+        """
+        from quivers.formulas._posterior import draw_count, replay
+        from quivers.inference._likelihood import collect_log_likelihood
+
+        shape = draw_count(self.posterior, num_samples)
+        draws = self.draws(num_samples=num_samples, seed=seed)
+        response = _qvr_name(self.formula.response_name)
+        with torch.no_grad():
+            return collect_log_likelihood(replay(self, draws, shape), {response}, shape)
 
     def posterior_predict(
         self,

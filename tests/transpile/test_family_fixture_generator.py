@@ -132,3 +132,42 @@ def test_shape_family_fixture_native_and_reference_match_independent_scipy(famil
         f"{family.lower()}_fixture", data={"y": tuple(values.tolist())}
     )
     assert reference.log_joint == pytest.approx(expected.sum(), rel=1e-9)
+
+
+@pytest.mark.parametrize("family", ["DiscreteWeibull", "ZeroInflatedAsymmetricLaplace"])
+def test_discrete_and_mixed_fixture_scores_match_independent_probability_laws(family):
+    if family == "DiscreteWeibull":
+        values = (0, 1, 2, 3, 1, 0, 4, 2)
+        expected = []
+        for value in values:
+            log_survival = math.log(0.4) * value**1.3
+            next_log_survival = math.log(0.4) * (value + 1) ** 1.3
+            expected.append(
+                log_survival + math.log(-math.expm1(next_log_survival - log_survival))
+            )
+        observed_values = torch.tensor(values, dtype=torch.long)
+    else:
+        values = (0.0, -1.0, 0.4, 0.0, 1.5, -0.3, 0.1, 2.0)
+        expected = []
+        for value in values:
+            if value == 0:
+                expected.append(math.log(0.2))
+            else:
+                residual = (value - 0.1) / 0.7
+                check_loss = residual * (0.35 if residual >= 0 else -0.65)
+                expected.append(
+                    math.log(0.8) + math.log(0.35 * 0.65 / 0.7) - check_loss
+                )
+        observed_values = torch.tensor(values, dtype=torch.float64)
+    compiled = loads(generator.fixture_sources()[family])
+    program = compiled.morphism
+    assert isinstance(program, MonadicProgram)
+    observed = trace(
+        program, torch.zeros(1, 1, dtype=torch.long), {"y": observed_values}
+    )
+    assert observed.log_joint is not None
+    assert observed.log_joint.sum().item() == pytest.approx(
+        math.fsum(expected), rel=2e-6
+    )
+    reference = compiled.run(f"{family.lower()}_fixture", data={"y": values})
+    assert reference.log_joint == pytest.approx(math.fsum(expected), rel=1e-9)
