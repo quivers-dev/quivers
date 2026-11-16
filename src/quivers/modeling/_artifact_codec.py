@@ -156,8 +156,13 @@ class ArtifactFactory:
     decode: Callable[[object, ArtifactContext | None], object]
 
 
-def _builtin_types() -> dict[str, type]:
+def _builtin_types(formula: bool = False) -> dict[str, type]:
     """Return the closed built-in model constructors, never checkpoint imports.
+
+    Parameters
+    ----------
+    formula : bool
+        Include closed declarative formula records, importing extras only here.
 
     Returns
     -------
@@ -167,10 +172,42 @@ def _builtin_types() -> dict[str, type]:
     from quivers.inference import MCMCResult, PriorDraws
     from quivers.modeling.methods import MCMCMethod, VariationalMethod
 
-    return {
-        cls.__name__: cls
-        for cls in (MCMCResult, PriorDraws, MCMCMethod, VariationalMethod)
-    }
+    constructors = (MCMCResult, PriorDraws, MCMCMethod, VariationalMethod)
+    if formula:
+        from quivers.formulas.family import (
+            Family,
+            Link,
+            AuxParam,
+            OrdinalSpec,
+            ResponseSpec,
+        )
+        from quivers.formulas._survival import BaselineSpec
+        from quivers.formulas._predictor_graph import NonlinearExpression
+        from quivers.formulas._priors import (
+            PriorSpec,
+            PriorSet,
+            RegularizedHorseshoe,
+            R2D2,
+        )
+        from quivers.formulas._group_covariance import GroupCovariance
+        from quivers.formulas._custom_types import CustomFamilySpec
+
+        constructors += (
+            Family,
+            Link,
+            AuxParam,
+            OrdinalSpec,
+            ResponseSpec,
+            BaselineSpec,
+            NonlinearExpression,
+            PriorSpec,
+            PriorSet,
+            RegularizedHorseshoe,
+            R2D2,
+            GroupCovariance,
+            CustomFamilySpec,
+        )
+    return {cls.__name__: cls for cls in constructors}
 
 
 class _Codec:
@@ -182,13 +219,19 @@ class _Codec:
         Explicit extension reconstructors provided by the caller.
     tensors : dict[str, torch.Tensor] or None
         Existing checkpoint tensors when decoding, or a fresh output table.
+    formula : bool
+        Enable declarative formula records and dataframe reconstruction.
+        Source-only artifacts do not import optional formula dependencies.
     """
 
     def __init__(
         self,
         factories: Mapping[str, ArtifactFactory] | None = None,
         tensors: dict[str, torch.Tensor] | None = None,
+        *,
+        formula: bool = False,
     ) -> None:
+        self.formula = formula
         self.factories = dict(factories or {})
         if any(
             not isinstance(name, str)
@@ -249,6 +292,30 @@ class _Codec:
             raise TypeError(
                 "artifact NumPy arrays require real numeric, Boolean, or string values"
             )
+        for name, factory in self.factories.items():
+            if value is factory.value_type:
+                return {"kind": "factory_class", "name": name}
+            if type(value) is factory.value_type:
+                result = {
+                    "kind": "factory",
+                    "name": name,
+                    "config": self.encode(factory.encode(value)),
+                }
+                from quivers.family_catalog import FamilyCatalog
+
+                if isinstance(value, FamilyCatalog):
+                    from quivers.qiec.serialization import dumps
+
+                    result["semantic"] = dumps(value.definitions)
+                if isinstance(value, nn.Module):
+                    result["state"] = self.encode(_module_state(value))
+                return result
+        from quivers.family_catalog import FamilyCatalog
+
+        if isinstance(value, FamilyCatalog):
+            raise TypeError(
+                "custom family catalogs require an explicit ArtifactFactory"
+            )
         if isinstance(value, Mapping):
             return {
                 "kind": "mapping",
@@ -259,24 +326,20 @@ class _Codec:
                 "kind": "tuple" if isinstance(value, tuple) else "list",
                 "items": [self.encode(v) for v in value],
             }
-        for name, factory in self.factories.items():
-            if value is factory.value_type:
-                return {"kind": "factory_class", "name": name}
-            if type(value) is factory.value_type:
-                result = {
-                    "kind": "factory",
-                    "name": name,
-                    "config": self.encode(factory.encode(value)),
-                }
-                if isinstance(value, nn.Module):
-                    result["state"] = self.encode(_module_state(value))
-                return result
+        if self.formula and type(value).__module__.split(".")[0] in {
+            "pandas",
+            "polars",
+            "pyarrow",
+        }:
+            from quivers.formulas._artifact import _encode_frame
+
+            return {"kind": "dataframe", "value": self.encode(_encode_frame(value))}
         from quivers.inference import AutoNormalGuide, ELBO, HMCKernel, MCMC, NUTSKernel
         from quivers.inference.estimators import Reparameterized
 
         if value is AutoNormalGuide:
             return {"kind": "class", "name": "AutoNormalGuide"}
-        if type(value) in _builtin_types().values():
+        if type(value) in _builtin_types(self.formula).values():
             return {
                 "kind": "record",
                 "name": type(value).__name__,
@@ -388,17 +451,34 @@ class _Codec:
             value = factory.decode(self.decode(node["config"], context), context)
             if type(value) is not factory.value_type:
                 raise TypeError(f"factory {name!r} returned the wrong class")
+            from quivers.family_catalog import FamilyCatalog
+
+            if isinstance(value, FamilyCatalog):
+                from quivers.qiec.serialization import dumps
+
+                if dumps(value.definitions) != node.get("semantic"):
+                    raise ValueError(
+                        "artifact catalog factory changed its checked semantic definitions"
+                    )
+            elif "semantic" in node:
+                raise TypeError(
+                    "artifact semantic metadata requires a FamilyCatalog factory"
+                )
             if "state" in node:
                 if not isinstance(value, nn.Module):
                     raise TypeError("artifact module factory must return nn.Module")
                 _restore_module(value, self.decode(node["state"]))
             return value
+        if kind == "dataframe" and self.formula:
+            from quivers.formulas._artifact import _decode_frame
+
+            return _decode_frame(self.decode(node["value"], context))
         from quivers.inference import AutoNormalGuide, ELBO, HMCKernel, MCMC, NUTSKernel
 
         if kind == "class" and node["name"] == "AutoNormalGuide":
             return AutoNormalGuide
-        if kind == "record" and node["name"] in _builtin_types():
-            cls = _builtin_types()[node["name"]]
+        if kind == "record" and node["name"] in _builtin_types(self.formula):
+            cls = _builtin_types(self.formula)[node["name"]]
             fields = self.decode(node["fields"], context)
             if not isinstance(fields, dict) or set(fields) != set(cls.__field_specs__):
                 raise ValueError(

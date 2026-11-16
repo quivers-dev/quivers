@@ -34,10 +34,12 @@ from quivers.continuous.programs import MonadicProgram
 from quivers.diagnostics.cross_validation import FoldPrediction, FoldSplit
 from quivers.dsl import Compiler
 from quivers.dsl.emit import module_to_source
+from quivers.dsl.ast_nodes import Module
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas.family import Family, families
 from quivers.formulas.formula import (
     Formula,
+    FormulaData,
     _formula_and_design,
     _qvr_name,
     formula_from_data,
@@ -89,7 +91,7 @@ class BayesianFit(ValueModel):
     parsed formula, the family, the user-supplied data, and the
     posterior samples.
 
-    Attributes
+    Parameters
     ----------
     formula : Formula
         Parsed formula IR.
@@ -128,6 +130,8 @@ class BayesianFit(ValueModel):
         Live fitted evaluators for new-data prediction. The versioned runtime
         plan is held by identity and explicitly refuses durable serialization.
 
+    Notes
+    -----
     Fits compare by value over the formula, family, and settings, and
     by identity over the live objects: the program, the posterior, the
     observations mapping, the predictor, its data, the prediction plan, and the
@@ -483,13 +487,29 @@ class BayesianFit(ValueModel):
 
     @property
     def qvr_source(self) -> str:
-        """Lazily emit the AST-equivalent ``.qvr`` source for display."""
+        """Lazily emit the AST-equivalent ``.qvr`` source for display.
+
+        Returns
+        -------
+        str
+            Canonical source emitted from the retained formula AST.
+        """
         module, _ = self._formula_lens().forward(self.formula)
         return module_to_source(module)
 
     def dump_qvr(self, path: str | Path) -> Path:
         """Write the AST-equivalent ``.qvr`` source to ``path`` and
         return the resulting `Path`.
+
+        Parameters
+        ----------
+        path : str or Path
+            Destination for canonical QVR source.
+
+        Returns
+        -------
+        Path
+            Written source path.
         """
         out = Path(path)
         out.write_text(self.qvr_source)
@@ -754,6 +774,13 @@ class BayesianFit(ValueModel):
         width = len(self.threshold_labels)
 
         def values():
+            """Yield retained row values through the shared posterior replay.
+
+            Yields
+            ------
+            torch.Tensor
+                One checked row/event value per retained chain and draw.
+            """
             for recorded in replay(self, draws, shape, context=context):
                 if width == 0:
                     yield torch.empty(context.rows, 0)
@@ -929,6 +956,13 @@ class BayesianFit(ValueModel):
             )
 
         def values():
+            """Yield retained row values through the shared posterior replay.
+
+            Yields
+            ------
+            torch.Tensor
+                One checked row/event value per retained chain and draw.
+            """
             for recorded in replay(self, draws, shape, context=context):
                 value = recorded.sites[binding].value
                 if retained_log_rate and transform:
@@ -1071,6 +1105,18 @@ class BayesianFit(ValueModel):
             categories = 2
 
         def values():
+            """Yield retained row values through the shared posterior replay.
+
+            Yields
+            ------
+            torch.Tensor
+                One checked row/event value per retained chain and draw.
+
+            Raises
+            ------
+            TypeError
+                If the selected response has no requested native operation.
+            """
             for recorded in replay(self, draws, shape, context=context):
                 distribution = response_distribution(recorded, response)
                 if component == "decision":
@@ -1524,6 +1570,18 @@ class BayesianFit(ValueModel):
         response = _qvr_name(self.formula.response_name)
 
         def values():
+            """Yield retained row values through the shared posterior replay.
+
+            Yields
+            ------
+            torch.Tensor
+                One checked row/event value per retained chain and draw.
+
+            Raises
+            ------
+            TypeError
+                If the selected response has no requested native operation.
+            """
             for recorded in replay(self, draws, shape, context=context):
                 sampleable = recorded.sites[response].sampleable
                 if sampleable is None:
@@ -1757,6 +1815,11 @@ class BayesianFit(ValueModel):
         -------
         dict[str, dict[str, torch.Tensor]]
             Group names and coefficient labels mapped to per-level draws.
+
+        Raises
+        ------
+        ValueError
+            If retained group-layout metadata is unavailable.
         """
         from quivers.formulas._group_layout import _group_coefficients
 
@@ -1947,6 +2010,11 @@ def fit(
     refit_recipe = capture_recipe(
         fit, data=data, arguments=locals(), snapshot_policy=snapshot_policy
     )
+    from quivers.modeling.refit import _snapshot
+
+    preparation_data = (
+        refit_recipe._data if snapshot_policy == "clone" else _snapshot(data)
+    )
     with torch.random.fork_rng(devices=[]):
         torch.random.set_rng_state(torch.Generator().manual_seed(seed).get_state())
         if method == "svi":
@@ -1973,7 +2041,7 @@ def fit(
         predictor_name = "neural_eta" if predictor is not None else None
         prepared = _prepare_formula(
             formula,
-            data=data,
+            data=preparation_data,
             family=family,
             weights=weights,
             decision=decision,
@@ -1992,205 +2060,47 @@ def fit(
             predictor_name=predictor_name,
             caller="fit",
         )
-        lens, parsed = prepared.lens, prepared.formula
-        family_obj = prepared.family
-        binomial_trials = prepared.binomial_trials
-        parameter_formulas, graph = prepared.distributional, prepared.graph
-        selection = parsed.modifiers.subset
-        if selection is not None and predictor_data is not None:
-            if predictor_data.shape[0] != selection.size:
-                raise ValueError(
-                    "predictor_data must align with the original subset dataframe rows"
-                )
-            predictor_data = predictor_data.index_select(
-                0, torch.tensor(selection.positions, device=predictor_data.device)
-            )
-        if predictor is not None and predictor_data is None:
-            raise ValueError(
-                "fit: predictor_data is required when predictor is supplied"
-            )
-        if predictor is None and predictor_data is not None:
-            raise ValueError("fit: predictor_data requires predictor")
-        if (
-            predictor is not None
-            and method != "svi"
-            and any(parameter.requires_grad for parameter in predictor.parameters())
-        ):
-            raise ValueError(
-                "fit: a trainable external predictor requires method='svi'; "
-                "freeze its parameters before using NUTS or HMC"
-            )
-        module, complement = lens.forward(parsed)
-        compiler = (
-            Compiler(module, families=family_obj.custom.catalog)
-            if family_obj.custom is not None
-            else Compiler(module)
+        native = _prepare_fit(
+            prepared,
+            predictor=predictor,
+            predictor_data=predictor_data,
+            method=method,
+            preparation_data=preparation_data,
         )
-        program_runtime = compiler.compile()
-        morphism = program_runtime.morphism
-        if not isinstance(morphism, MonadicProgram):
-            raise TypeError(
-                f"fit: compiled morphism has type "
-                f"{type(morphism).__name__}, expected MonadicProgram"
-            )
-        program = morphism
-
-        observations: dict[str, torch.Tensor] = {}
-        observations.update(lens.fixed_column_observations(parsed))
-        from quivers.formulas._response_modifiers import response_input_name
-
-        observations[response_input_name(parsed)] = response_tensor(parsed, family_obj)
-        for _, _, predictor_formula in lens._predictor_items(parsed):
-            for group, codes in predictor_formula.group_indices.items():
-                observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
-                    list(codes), dtype=torch.long
-                )
-        if family_obj.trials_parameter is not None:
-            trials = prepared.trials
-            assert trials is not None
-            if parsed.response_layout.event_shape:
-                observations["formula_trials"] = trials
-            if (
-                isinstance(binomial_trials, str)
-                and not parsed.response_layout.event_shape
-            ):
-                observations[_qvr_name(binomial_trials)] = trials
-        if predictor is not None:
-            assert predictor_data is not None
-            assert predictor_name is not None
-            predictor_categories = (
-                len(FormulaToQVRModule._component_labels(parsed))
-                if family_obj.response is not None
-                else None
-            )
-            predictor_reference = (
-                family_obj.response.reference_index(
-                    FormulaToQVRModule._component_labels(parsed)
-                )
-                if family_obj.response is not None
-                else 0
-            )
-            observations[predictor_name] = _predictor_output(
-                predictor,
-                predictor_data,
-                n_obs=parsed.response_values.shape[0],
-                n_categories=predictor_categories,
-                reference=predictor_reference,
-            ).detach()
-        else:
-            predictor_categories = None
-            predictor_reference = 0
-
-        starts: dict[str, torch.Tensor | float] = {}
-        if (
-            family_obj.name in {"shifted_lognormal", "wiener"}
-            and "ndt" in parameter_formulas
-            and next(
-                aux for aux in family_obj.aux_params if aux.name == "ndt"
-            ).link.name
-            == "log"
-        ):
-            shift_formula = parameter_formulas["ndt"]
-            if any(column.is_intercept for column in shift_formula.fixed_columns):
-                # These are initial coordinates, never a model offset.
-                for column in shift_formula.fixed_columns:
-                    name = "dpar_ndt_" + (
-                        "intercept"
-                        if column.is_intercept
-                        else f"beta_{column.qvr_name}"
-                    )
-                    starts[name] = (
-                        math.log(float(np.min(parsed.response_values)) / 4)
-                        if column.is_intercept
-                        else 0.0
-                    )
-        if (
-            family_obj.name == "wiener"
-            and "ndt" not in parameter_formulas
-            and "ndt" not in (fixed_parameters or {})
-        ):
-            starts["ndt"] = float(np.min(parsed.response_values)) / 4
-        starts.update(initial_values or {})
-        from quivers.effects.observation_scoring import observation_scoring
-        from quivers.inference.prior import _ancestral_program, _prior_mode, prior_draws
-
-        mode = _prior_mode(sample_prior)
-        if mode == "yes":
-            from quivers.inference._posterior import sample_count
-
-            sample_count(num_prior_samples)
-            _ancestral_program(program)
-        losses: tuple[float, ...] = ()
-        with observation_scoring(mode != "only"):
-            if method == "svi":
-                posterior, losses = _fit_svi(
-                    program,
-                    observations,
-                    1000 if num_steps is None else num_steps,
-                    learning_rate=learning_rate,
-                    guide_cls=guide,
-                    predictor=predictor,
-                    predictor_data=predictor_data,
-                    predictor_name=predictor_name,
-                    predictor_categories=predictor_categories,
-                    predictor_reference=predictor_reference,
-                    initial_values=starts,
-                )
-            else:
-                posterior = _fit_mcmc(
-                    program,
-                    observations,
-                    sampler=method,
-                    num_warmup=500 if num_warmup is None else num_warmup,
-                    num_samples=1000 if num_samples is None else num_samples,
-                    num_chains=4 if num_chains is None else num_chains,
-                    seed=seed,
-                    initial_values=starts,
-                )
-
-        retained_prior = (
-            prior_draws(
-                program,
-                torch.zeros(1, 1),
-                observations,
-                num_samples=num_prior_samples,
-                seed=(seed + 1) % (2**64) if prior_seed is None else prior_seed,
-            )
-            if mode == "yes"
-            else None
+        result = _run_inference(
+            native.program,
+            native.observations,
+            method=method,
+            num_steps=num_steps,
+            num_warmup=num_warmup,
+            num_samples=num_samples,
+            num_chains=num_chains,
+            learning_rate=learning_rate,
+            seed=seed,
+            guide=guide,
+            sample_prior=sample_prior,
+            num_prior_samples=num_prior_samples,
+            prior_seed=prior_seed,
+            predictor=native.predictor,
+            predictor_data=native.predictor_data,
+            predictor_name=native.predictor_name,
+            predictor_categories=native.predictor_categories,
+            predictor_reference=native.predictor_reference,
+            initial_values=_initial_values(prepared, fixed_parameters, initial_values),
         )
-
-        return BayesianFit(
+        return _assemble_fit(
+            native,
+            result,
             refit_recipe=refit_recipe,
-            formula=parsed,
-            family=family_obj,
-            program=program,
-            posterior=posterior,
-            sample_prior=mode,
-            prior=retained_prior,
-            losses=losses,
-            observations=observations,
             reparameterize=reparameterize,
-            binomial_trials=binomial_trials,
             thresholds_by=thresholds_by,
             mixture_components=mixture_components,
             fixed_prior=fixed_prior,
             random_scale_prior=random_scale_prior,
             correlation_prior=correlation_prior,
-            group_covariances=dict(group_covariances or {}),
-            priors=normalize_priors(priors),
-            predictor=predictor,
-            predictor_data=predictor_data,
-            predictor_name=predictor_name,
-            distributional=parameter_formulas,
-            predictor_graph=graph,
-            fixed_parameters=dict(fixed_parameters or {}),
-            prediction_plan=FormulaPredictionPlan(
-                module=module,
-                designs=prepared.designs,
-                group_layouts=complement.group_layouts,
-                prior_targets=complement.prior_targets,
-            ),
+            group_covariances=group_covariances,
+            priors=priors,
+            fixed_parameters=fixed_parameters,
         )
 
 
@@ -2231,6 +2141,42 @@ def formula_to_qvr(
     ``decision="column"`` or ``rt | dec(column) ~ predictors`` retains a Wiener
     boundary choice alongside positive reaction times. Emitted source visibly
     adapts raw times and Boolean choices to a lossless signed response.
+
+    Parameters
+    ----------
+    formula : str
+        Authored formula over original dataframe rows.
+    data : IntoDataFrame
+        Original training columns, including response modifiers.
+    family : str or Family
+        Checked response law and retained link, threshold, and event choices.
+    weights, decision : str or None
+        Optional existing response-role columns.
+    distributional, nonlinear : Mapping or None
+        Auxiliary designs and checked derived predictor graph.
+    fixed_parameters : Mapping[str, float] or None
+        Bound auxiliary constants.
+    fixed_prior, random_scale_prior, correlation_prior : str
+        Defaults consumed by the existing typed prior catalog.
+    group_covariances : Mapping or None
+        Known group covariance structures.
+    priors : PriorInput or None
+        Typed selectors or existing exact-name overrides.
+    reparameterize : {"centered", "noncentered"}
+        Shared group coordinate policy.
+    binomial_trials : int or str or None
+        Finite-trial count or retained column.
+    thresholds_by : str or None
+        Group with an identified full threshold profile.
+    mixture_components : int
+        Finite-mixture component count.
+    predictor_name : str or None
+        Checked external neural binding.
+
+    Returns
+    -------
+    str
+        Canonical checked source, without fitting a posterior.
     """
     lens, parsed = _formula_lens(
         formula,
@@ -2360,7 +2306,27 @@ def get_prior(
 
 @dataclass(frozen=True, slots=True)
 class _PreparedFormula:
-    """Ephemeral shared preparation, including live fitted design evaluators."""
+    """Ephemeral shared preparation, including live fitted design evaluators.
+
+    Parameters
+    ----------
+    lens : FormulaToQVRModule
+        Existing typed formula compiler.
+    formula : Formula
+        Evaluated response and predictor metadata.
+    family : Family
+        Checked response construction.
+    binomial_trials : int or str or None
+        Resolved trial configuration.
+    designs : dict[str, DesignMatrices]
+        Retained evaluators for each additive predictor.
+    distributional : dict[str, Formula]
+        Auxiliary additive designs.
+    graph : PredictorGraph or None
+        Checked nonlinear dependency graph.
+    trials : torch.Tensor or None
+        Validated finite-trial observations.
+    """
 
     lens: FormulaToQVRModule
     formula: Formula
@@ -2370,6 +2336,459 @@ class _PreparedFormula:
     distributional: dict[str, Formula]
     graph: PredictorGraph | None
     trials: torch.Tensor | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedFit:
+    """Compiled native binding shared by fitting and durable reconstruction.
+
+    Parameters
+    ----------
+    formula : _PreparedFormula
+        Retained formula preparation.
+    module : Module
+        Canonical generated AST.
+    complement : FormulaData
+        Shared group layouts and prior targets.
+    program : MonadicProgram
+        Compiled native program.
+    observations : dict[str, torch.Tensor]
+        Checked original runtime bindings.
+    predictor : nn.Module or None
+        External neural predictor.
+    predictor_data : torch.Tensor or None
+        Included training inputs.
+    predictor_name : str or None
+        Neural observation binding.
+    predictor_categories : int or None
+        Component width for vector heads.
+    predictor_reference : int or None
+        Retained reference component.
+    preparation_data : IntoDataFrame or None
+        One immutable original-row snapshot used to reconstruct designs.
+    """
+
+    formula: _PreparedFormula
+    module: Module
+    complement: FormulaData
+    program: MonadicProgram
+    observations: dict[str, torch.Tensor]
+    predictor: nn.Module | None
+    predictor_data: torch.Tensor | None
+    predictor_name: str | None
+    predictor_categories: int | None
+    predictor_reference: int | None
+    preparation_data: IntoDataFrame | None
+
+
+@dataclass(frozen=True, slots=True)
+class _InferenceResult:
+    """Retained outputs of the existing inference drivers, independent of formula layout.
+
+    Parameters
+    ----------
+    posterior : MCMCResult or PriorDraws or Guide
+        Existing retained posterior representation.
+    losses : tuple[float, ...]
+        SVI losses, empty for MCMC.
+    prior : PriorDraws or MCMCResult or None
+        Independently retained or explicitly conditioned prior result.
+    sample_prior : PriorMode
+        Canonical prior/likelihood scoring policy.
+    """
+
+    posterior: MCMCResult | PriorDraws | Guide
+    losses: tuple[float, ...]
+    prior: PriorDraws | MCMCResult | None
+    sample_prior: PriorMode
+
+
+def _prepare_fit(
+    prepared: _PreparedFormula,
+    *,
+    predictor: nn.Module | None = None,
+    predictor_data: torch.Tensor | None = None,
+    method: Literal["nuts", "hmc", "svi"] = "nuts",
+    predictor_value: torch.Tensor | None = None,
+    preparation_data: IntoDataFrame | None = None,
+) -> _PreparedFit:
+    """Compile and bind a prepared formula without invoking an inference driver.
+
+    Parameters
+    ----------
+    prepared : _PreparedFormula
+        Retained designs and checked compiler configuration.
+    predictor : nn.Module or None
+        Optional external predictor with its current deterministic state.
+    predictor_data : torch.Tensor or None
+        Original input rows, before any retained subset selection.
+    method : {"nuts", "hmc", "svi"}
+        Validate trainable external predictors against the requested driver.
+    predictor_value : torch.Tensor or None
+        Saved checked predictor output for restoration without executing its module.
+
+    preparation_data : IntoDataFrame or None
+        One fit-owned original-row snapshot for exact durable reconstruction.
+
+    Returns
+    -------
+    _PreparedFit
+        Native program, original observations, and shared prediction metadata.
+
+    Raises
+    ------
+    TypeError, ValueError
+        If compilation or the predictor binding violates its declared interface.
+    """
+    lens, parsed = prepared.lens, prepared.formula
+    predictor_name = "neural_eta" if predictor is not None else None
+    family_obj = prepared.family
+    binomial_trials = prepared.binomial_trials
+    selection = parsed.modifiers.subset
+    if selection is not None and predictor_data is not None:
+        if predictor_data.shape[0] != selection.size:
+            raise ValueError(
+                "predictor_data must align with the original subset dataframe rows"
+            )
+        predictor_data = predictor_data.index_select(
+            0, torch.tensor(selection.positions, device=predictor_data.device)
+        )
+    if predictor is not None and predictor_data is None:
+        raise ValueError("fit: predictor_data is required when predictor is supplied")
+    if predictor is None and predictor_data is not None:
+        raise ValueError("fit: predictor_data requires predictor")
+    if (
+        predictor is not None
+        and method != "svi"
+        and any(parameter.requires_grad for parameter in predictor.parameters())
+    ):
+        raise ValueError(
+            "fit: a trainable external predictor requires method='svi'; "
+            "freeze its parameters before using NUTS or HMC"
+        )
+    module, complement = lens.forward(parsed)
+    compiler = (
+        Compiler(module, families=family_obj.custom.catalog)
+        if family_obj.custom is not None
+        else Compiler(module)
+    )
+    program_runtime = compiler.compile()
+    morphism = program_runtime.morphism
+    if not isinstance(morphism, MonadicProgram):
+        raise TypeError(
+            f"fit: compiled morphism has type "
+            f"{type(morphism).__name__}, expected MonadicProgram"
+        )
+    program = morphism
+
+    observations: dict[str, torch.Tensor] = {}
+    observations.update(lens.fixed_column_observations(parsed))
+    from quivers.formulas._response_modifiers import response_input_name
+
+    observations[response_input_name(parsed)] = response_tensor(parsed, family_obj)
+    for _, _, predictor_formula in lens._predictor_items(parsed):
+        for group, codes in predictor_formula.group_indices.items():
+            observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
+                list(codes), dtype=torch.long
+            )
+    if family_obj.trials_parameter is not None:
+        trials = prepared.trials
+        assert trials is not None
+        if parsed.response_layout.event_shape:
+            observations["formula_trials"] = trials
+        if isinstance(binomial_trials, str) and not parsed.response_layout.event_shape:
+            observations[_qvr_name(binomial_trials)] = trials
+    if predictor is not None:
+        assert predictor_data is not None
+        assert predictor_name is not None
+        predictor_categories = (
+            len(FormulaToQVRModule._component_labels(parsed))
+            if family_obj.response is not None
+            else None
+        )
+        predictor_reference = (
+            family_obj.response.reference_index(
+                FormulaToQVRModule._component_labels(parsed)
+            )
+            if family_obj.response is not None
+            else 0
+        )
+        observations[predictor_name] = (
+            predictor_value
+            if predictor_value is not None
+            else _predictor_output(
+                predictor,
+                predictor_data,
+                n_obs=parsed.response_values.shape[0],
+                n_categories=predictor_categories,
+                reference=predictor_reference,
+            ).detach()
+        )
+    else:
+        predictor_categories = None
+        predictor_reference = 0
+
+    return _PreparedFit(
+        prepared,
+        module,
+        complement,
+        program,
+        observations,
+        predictor,
+        predictor_data,
+        predictor_name,
+        predictor_categories,
+        predictor_reference,
+        preparation_data,
+    )
+
+
+def _initial_values(
+    prepared: _PreparedFormula,
+    fixed_parameters: Mapping[str, float] | None,
+    initial_values: Mapping[str, torch.Tensor | float] | None,
+) -> dict[str, torch.Tensor | float]:
+    """Combine support-aware formula starts with explicit natural-scale overrides.
+
+    Parameters
+    ----------
+    prepared : _PreparedFormula
+        Bound response and auxiliary designs.
+    fixed_parameters : Mapping[str, float] or None
+        Auxiliary values excluded from the latent layout.
+    initial_values : Mapping[str, torch.Tensor or float] or None
+        Explicit starts, which take precedence.
+
+    Returns
+    -------
+    dict[str, torch.Tensor or float]
+        Named initial values consumed by the canonical inference drivers.
+    """
+    parsed, family_obj = prepared.formula, prepared.family
+    parameter_formulas = prepared.distributional
+    starts: dict[str, torch.Tensor | float] = {}
+    if (
+        family_obj.name in {"shifted_lognormal", "wiener"}
+        and "ndt" in parameter_formulas
+        and next(aux for aux in family_obj.aux_params if aux.name == "ndt").link.name
+        == "log"
+    ):
+        shift_formula = parameter_formulas["ndt"]
+        if any(column.is_intercept for column in shift_formula.fixed_columns):
+            # These are initial coordinates, never a model offset.
+            for column in shift_formula.fixed_columns:
+                name = "dpar_ndt_" + (
+                    "intercept" if column.is_intercept else f"beta_{column.qvr_name}"
+                )
+                starts[name] = (
+                    math.log(float(np.min(parsed.response_values)) / 4)
+                    if column.is_intercept
+                    else 0.0
+                )
+    if (
+        family_obj.name == "wiener"
+        and "ndt" not in parameter_formulas
+        and "ndt" not in (fixed_parameters or {})
+    ):
+        starts["ndt"] = float(np.min(parsed.response_values)) / 4
+    starts.update(initial_values or {})
+    return starts
+
+
+def _run_inference(
+    program: MonadicProgram,
+    observations: dict[str, torch.Tensor],
+    *,
+    method: Literal["nuts", "hmc", "svi"],
+    num_steps: int | None = None,
+    num_warmup: int | None = None,
+    num_samples: int | None = None,
+    num_chains: int | None = None,
+    learning_rate: float = 0.01,
+    seed: int = 0,
+    guide: type | None = None,
+    sample_prior: PriorMode = "no",
+    num_prior_samples: int = 100,
+    prior_seed: int | None = None,
+    predictor: nn.Module | None = None,
+    predictor_data: torch.Tensor | None = None,
+    predictor_name: str | None = None,
+    predictor_categories: int | None = None,
+    predictor_reference: int | None = 0,
+    initial_values: Mapping[str, torch.Tensor | float] | None = None,
+) -> _InferenceResult:
+    """Run the canonical inference and prior collectors for one native program.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        Single-response or joint compiled program.
+    observations : dict[str, torch.Tensor]
+        Checked runtime inputs and observations; SVI refreshes neural outputs here.
+    method : {"nuts", "hmc", "svi"}
+        Existing driver to invoke.
+    num_steps, num_warmup, num_samples, num_chains : int or None
+        Driver budgets, using the public fit defaults when omitted.
+    learning_rate : float
+        SVI optimizer step size.
+    seed : int
+        MCMC seed and default source of the independent prior stream.
+    guide : type or None
+        Guide constructor, defaulting to AutoNormalGuide.
+    sample_prior : {"no", "yes", "only"}
+        Canonical likelihood-scoring and independent-prior retention policy.
+    num_prior_samples : int
+        Independent prior draw count when requested.
+    prior_seed : int or None
+        Explicit independent prior seed.
+    predictor : nn.Module or None
+        Optional trainable external predictor.
+    predictor_data : torch.Tensor or None
+        Selected training input rows.
+    predictor_name : str or None
+        Checked neural observation binding.
+    predictor_categories : int or None
+        Response component count for vector-valued heads.
+    predictor_reference : int or None
+        Reference component, or None for all-component heads.
+    initial_values : Mapping[str, torch.Tensor or float] or None
+        Named natural-scale starts.
+
+    Returns
+    -------
+    _InferenceResult
+        Posterior, losses, and separately retained priors, with no result-view policy.
+    """
+    from quivers.effects.observation_scoring import observation_scoring
+    from quivers.inference.prior import _ancestral_program, _prior_mode, prior_draws
+
+    mode = _prior_mode(sample_prior)
+    if mode == "yes":
+        from quivers.inference._posterior import sample_count
+
+        sample_count(num_prior_samples)
+        _ancestral_program(program)
+    losses: tuple[float, ...] = ()
+    with observation_scoring(mode != "only"):
+        if method == "svi":
+            posterior, losses = _fit_svi(
+                program,
+                observations,
+                1000 if num_steps is None else num_steps,
+                learning_rate=learning_rate,
+                guide_cls=guide,
+                predictor=predictor,
+                predictor_data=predictor_data,
+                predictor_name=predictor_name,
+                predictor_categories=predictor_categories,
+                predictor_reference=predictor_reference,
+                initial_values=initial_values,
+            )
+        else:
+            posterior = _fit_mcmc(
+                program,
+                observations,
+                sampler=method,
+                num_warmup=500 if num_warmup is None else num_warmup,
+                num_samples=1000 if num_samples is None else num_samples,
+                num_chains=4 if num_chains is None else num_chains,
+                seed=seed,
+                initial_values=initial_values,
+            )
+
+    retained_prior = (
+        prior_draws(
+            program,
+            torch.zeros(1, 1),
+            observations,
+            num_samples=num_prior_samples,
+            seed=(seed + 1) % (2**64) if prior_seed is None else prior_seed,
+        )
+        if mode == "yes"
+        else None
+    )
+
+    return _InferenceResult(posterior, losses, retained_prior, mode)
+
+
+def _assemble_fit(
+    prepared: _PreparedFit,
+    result: _InferenceResult,
+    *,
+    refit_recipe: RefitRecipe | None,
+    reparameterize: Literal["centered", "noncentered"] = "noncentered",
+    thresholds_by: str | None = None,
+    mixture_components: int = 2,
+    fixed_prior: str = "Normal(0.0, 5.0)",
+    random_scale_prior: str = "HalfNormal(1.0)",
+    correlation_prior: str = "LKJCholesky(1.0)",
+    group_covariances: Mapping[str, GroupCovariance] | None = None,
+    priors: PriorInput | None = None,
+    fixed_parameters: Mapping[str, float] | None = None,
+) -> BayesianFit:
+    """Assemble the same retained formula view after fitting or state restoration.
+
+    Parameters
+    ----------
+    prepared : _PreparedFit
+        Checked program, observations, and retained design evaluators.
+    result : _InferenceResult
+        Existing posterior and independent prior objects.
+    refit_recipe : RefitRecipe or None
+        Original-data refit configuration, captured before training and subsetting.
+    reparameterize : {"centered", "noncentered"}
+        Authored group coordinate policy.
+    thresholds_by : str or None
+        Group with a full retained threshold profile.
+    mixture_components : int
+        Fitted mixture component count.
+    fixed_prior, random_scale_prior, correlation_prior : str
+        Original default-prior specifications.
+    group_covariances : Mapping[str, GroupCovariance] or None
+        Known covariance structures retained for prediction.
+    priors : PriorInput or None
+        Typed or exact-name prior overrides.
+    fixed_parameters : Mapping[str, float] or None
+        Fixed auxiliary values.
+
+    Returns
+    -------
+    BayesianFit
+        Retained result with a rebuilt live prediction plan.
+    """
+    return BayesianFit(
+        refit_recipe=refit_recipe,
+        formula=prepared.formula.formula,
+        family=prepared.formula.family,
+        program=prepared.program,
+        posterior=result.posterior,
+        sample_prior=result.sample_prior,
+        prior=result.prior,
+        losses=result.losses,
+        observations=prepared.observations,
+        reparameterize=reparameterize,
+        binomial_trials=prepared.formula.binomial_trials,
+        thresholds_by=thresholds_by,
+        mixture_components=mixture_components,
+        fixed_prior=fixed_prior,
+        random_scale_prior=random_scale_prior,
+        correlation_prior=correlation_prior,
+        group_covariances=dict(group_covariances or {}),
+        priors=normalize_priors(priors),
+        predictor=prepared.predictor,
+        predictor_data=prepared.predictor_data,
+        predictor_name=prepared.predictor_name,
+        distributional=prepared.formula.distributional,
+        predictor_graph=prepared.formula.graph,
+        fixed_parameters=dict(fixed_parameters or {}),
+        prediction_plan=FormulaPredictionPlan(
+            module=prepared.module,
+            preparation_data=prepared.preparation_data,
+            designs=prepared.formula.designs,
+            group_layouts=prepared.complement.group_layouts,
+            prior_targets=prepared.complement.prior_targets,
+        ),
+    )
 
 
 def _formula_lens(
@@ -2393,7 +2812,44 @@ def _formula_lens(
     mixture_components: int = 2,
     predictor_name: str | None = None,
 ) -> tuple[FormulaToQVRModule, Formula]:
-    """Use common preparation for source emission and prior inspection."""
+    """Use common preparation for source emission and prior inspection.
+
+    Parameters
+    ----------
+    formula : str
+        Authored formula over original dataframe rows.
+    data : IntoDataFrame
+        Original training columns, including response modifiers.
+    family : str or Family
+        Checked response law and retained link, threshold, and event choices.
+    weights, decision : str or None
+        Optional existing response-role columns.
+    distributional, nonlinear : Mapping or None
+        Auxiliary designs and checked derived predictor graph.
+    fixed_parameters : Mapping[str, float] or None
+        Bound auxiliary constants.
+    fixed_prior, random_scale_prior, correlation_prior : str
+        Defaults consumed by the existing typed prior catalog.
+    group_covariances : Mapping or None
+        Known group covariance structures.
+    priors : PriorInput or None
+        Typed selectors or existing exact-name overrides.
+    reparameterize : {"centered", "noncentered"}
+        Shared group coordinate policy.
+    binomial_trials : int or str or None
+        Finite-trial count or retained column.
+    thresholds_by : str or None
+        Group with an identified full threshold profile.
+    mixture_components : int
+        Finite-mixture component count.
+    predictor_name : str or None
+        Checked external neural binding.
+
+    Returns
+    -------
+    tuple[FormulaToQVRModule, Formula]
+        Existing compiler lens and its evaluated input.
+    """
     prepared = _prepare_formula(
         formula,
         data=data,
@@ -2439,7 +2895,51 @@ def _prepare_formula(
     predictor_name: str | None = None,
     caller: str = "formula_to_qvr",
 ) -> _PreparedFormula:
-    """Prepare one retained design and compiler configuration for every entry."""
+    """Prepare one retained design and compiler configuration for every entry.
+
+    Parameters
+    ----------
+    formula : str
+        Authored formula over original dataframe rows.
+    data : IntoDataFrame
+        Original training columns, including response modifiers.
+    family : str or Family
+        Checked response law and retained link, threshold, and event choices.
+    weights, decision : str or None
+        Optional existing response-role columns.
+    distributional, nonlinear : Mapping or None
+        Auxiliary designs and checked derived predictor graph.
+    fixed_parameters : Mapping[str, float] or None
+        Bound auxiliary constants.
+    fixed_prior, random_scale_prior, correlation_prior : str
+        Defaults consumed by the existing typed prior catalog.
+    group_covariances : Mapping or None
+        Known group covariance structures.
+    priors : PriorInput or None
+        Typed selectors or existing exact-name overrides.
+    reparameterize : {"centered", "noncentered"}
+        Shared group coordinate policy.
+    binomial_trials : int or str or None
+        Finite-trial count or retained column.
+    thresholds_by : str or None
+        Group with an identified full threshold profile.
+    mixture_components : int
+        Finite-mixture component count.
+    predictor_name : str or None
+        Checked external neural binding.
+    caller : str
+        Entry-point name used in located configuration errors.
+
+    Returns
+    -------
+    _PreparedFormula
+        One set of retained designs, typed family metadata, and compiler options.
+
+    Raises
+    ------
+    ValueError
+        If a family, response role, predictor, or trial contract is invalid.
+    """
     if isinstance(family, str):
         if family not in families:
             raise ValueError(
@@ -2693,6 +3193,36 @@ def _fit_svi(
     those models, use ``method="nuts"``. Users can swap in any other
     ``Guide`` class via ``fit(..., guide=SomeGuide)``; the class is
     constructed with ``(program, observed_names=...)``.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        Existing compiled native model.
+    observations : dict[str, torch.Tensor]
+        Mutable checked training bindings.
+    num_steps : int
+        Optimizer iteration budget.
+    learning_rate : float
+        Shared optimizer step size.
+    guide_cls : type or None
+        Existing guide constructor, defaulting to AutoNormalGuide.
+    predictor : nn.Module or None
+        External trainable module.
+    predictor_data : torch.Tensor or None
+        Included predictor rows.
+    predictor_name : str or None
+        Runtime neural binding.
+    predictor_categories : int or None
+        Component count for a vector response.
+    predictor_reference : int or None
+        Reference coordinate, or None for all components.
+    initial_values : Mapping or None
+        Named natural-scale guide starts.
+
+    Returns
+    -------
+    tuple[Guide, tuple[float, ...]]
+        Trained guide and retained finite losses.
     """
     if guide_cls is None:
         guide_cls = AutoNormalGuide
@@ -2718,6 +3248,18 @@ def _fit_svi(
     x = torch.zeros(1, 1, dtype=torch.long)
 
     def step_bindings(index: int) -> dict[str, torch.Tensor]:
+        """Refresh neural bindings for one existing SVI iteration.
+
+        Parameters
+        ----------
+        index : int
+            Iteration supplied by the shared driver.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Checked observations with the current differentiable head output.
+        """
         step_observations = observations
         if predictor is not None:
             assert predictor_data is not None and predictor_name is not None
@@ -2932,6 +3474,22 @@ def _validate_binomial_response(
     *,
     caller: str,
 ) -> None:
+    """Validate observed counts against their checked finite-trial tensor.
+
+    Parameters
+    ----------
+    response : torch.Tensor
+        Original count values.
+    trials : torch.Tensor
+        Per-row finite trials.
+    caller : str
+        Entry-point diagnostic label.
+
+    Raises
+    ------
+    ValueError
+        If counts are not finite integers within their trial bounds.
+    """
     if not torch.isfinite(response).all() or not torch.equal(
         response, response.round()
     ):

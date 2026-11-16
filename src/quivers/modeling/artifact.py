@@ -1,8 +1,8 @@
 """Durable fitted models reconstructed from checked specifications and tensor state.
 
 Artifacts contain no live program, dataframe evaluator, or executable pickle.
-Loading recompiles the original source and restores its state; it never fits a
-model or draws a replacement posterior. Registered factories are explicit
+Loading rebuilds checked source or formula preparation and restores its state;
+it never fits a model or draws a replacement posterior. Registered factories are explicit
 caller-provided reconstruction code, not imports selected by the file.
 """
 
@@ -12,6 +12,12 @@ from collections.abc import Mapping
 import hashlib
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from quivers.formulas import BayesianFit as _BayesianFit
+else:
+    _BayesianFit = object
 
 
 import torch
@@ -160,6 +166,15 @@ def _restore_posterior(payload: dict, codec: _Codec, context: ArtifactContext):
         }
     )
     registry = LatentRegistry.from_trace(context.program, recorded)
+    # A static guide may list checked external inputs as observed bindings;
+    # trace registries list only scored random sites. Preserve that original
+    # public registry contract, but never introduce an unbound observation.
+    saved_observed = frozenset(payload["observed"])
+    if not registry.observed_names <= saved_observed or not (
+        saved_observed - registry.observed_names
+    ) <= set(context.observations):
+        raise ValueError("artifact observation roles changed during strict replay")
+    registry = LatentRegistry(registry.sites, saved_observed, context.program)
     if _site_layout(registry) != codec.decode(
         payload["layout"]
     ) or registry.observed_names != frozenset(payload["observed"]):
@@ -247,7 +262,7 @@ def _validate_recorded(
 
 
 def save_fit(
-    fitted: ModelFit,
+    fitted: ModelFit | _BayesianFit,
     path: str | Path,
     *,
     factories: Mapping[str, ArtifactFactory] | None = None,
@@ -256,7 +271,7 @@ def save_fit(
 
     Parameters
     ----------
-    fitted : ModelFit
+    fitted : ModelFit or BayesianFit
         Original checked model, posterior, deterministic module state, and recipe.
     path : str or pathlib.Path
         Destination checkpoint. An existing file is replaced only after success.
@@ -271,9 +286,54 @@ def save_fit(
     """
     from quivers import __version__
 
-    codec = _Codec(factories)
-    if not isinstance(fitted, ModelFit):
-        raise TypeError("save_fit requires a source ModelFit")
+    if isinstance(fitted, ModelFit):
+        codec = _Codec(factories)
+        manifest = _source_state(fitted, codec)
+    else:
+        if not type(fitted).__module__.startswith("quivers.formulas."):
+            raise TypeError(
+                "save_fit requires a source ModelFit or formula BayesianFit"
+            )
+        from quivers.formulas._fit import BayesianFit
+        from quivers.formulas._artifact import _formula_state
+
+        if not isinstance(fitted, BayesianFit):
+            raise TypeError(
+                "save_fit requires a source ModelFit or formula BayesianFit"
+            )
+        codec = _Codec(factories, formula=True)
+        manifest = _formula_state(fitted, codec)
+    manifest.update(
+        format=_FORMAT, producer={"package": "quivers", "version": __version__}
+    )
+    text = json.dumps(manifest, sort_keys=True, allow_nan=False)
+    payload = {
+        "manifest": text,
+        "manifest_sha256": hashlib.sha256(text.encode()).hexdigest(),
+        "tensors": codec.tensors,
+        "digests": {
+            name: tensor_digest(value) for name, value in codec.tensors.items()
+        },
+    }
+    with atomic_output(Path(path)) as temporary:
+        torch.save(payload, temporary)
+
+
+def _source_state(fitted: ModelFit, codec: _Codec) -> dict:
+    """Capture a source fit through its original checked binding and recipe.
+
+    Parameters
+    ----------
+    fitted : ModelFit
+        Bound source result.
+    codec : _Codec
+        Closed declarative encoder.
+
+    Returns
+    -------
+    dict
+        Source-specific manifest fields, without live executable objects.
+    """
     bound = fitted.model
     recipe = fitted.refit_recipe
     canonical_recipe = (
@@ -300,11 +360,10 @@ def save_fit(
     if canonical_recipe:
         assert recipe is not None
         source, entry = recipe.provenance["source"], recipe.provenance["entry"]
-    manifest = {
-        "format": _FORMAT,
-        "producer": {"package": "quivers", "version": __version__},
+    return {
         "kind": "source",
         "source": source,
+        "families": codec.encode(bound.specification.families),
         "entry": entry,
         "data": codec.encode(dict(bound.data)),
         "input": codec.encode(bound.input),
@@ -317,17 +376,6 @@ def save_fit(
         "losses": codec.encode(fitted.losses),
         "recipe": recipe_state,
     }
-    text = json.dumps(manifest, sort_keys=True, allow_nan=False)
-    payload = {
-        "manifest": text,
-        "manifest_sha256": hashlib.sha256(text.encode()).hexdigest(),
-        "tensors": codec.tensors,
-        "digests": {
-            name: tensor_digest(value) for name, value in codec.tensors.items()
-        },
-    }
-    with atomic_output(Path(path)) as temporary:
-        torch.save(payload, temporary)
 
 
 def load_fit(
@@ -335,7 +383,7 @@ def load_fit(
     *,
     factories: Mapping[str, ArtifactFactory] | None = None,
     map_location: str | torch.device = "cpu",
-) -> ModelFit:
+) -> ModelFit | _BayesianFit:
     """Reconstruct a fit without optimization or replacement posterior draws.
 
     Parameters
@@ -349,7 +397,7 @@ def load_fit(
 
     Returns
     -------
-    ModelFit
+    ModelFit or BayesianFit
         Independent checked binding, posterior, and reconstructed live recipe.
         Loading a reference-owned recipe shares its newly loaded data, not the
         original process's memory. Saving always captures values at write time.
@@ -374,7 +422,10 @@ def load_fit(
     ):
         raise ValueError("artifact manifest integrity check failed")
     manifest = json.loads(text)
-    if manifest.get("format") != _FORMAT or manifest.get("kind") != "source":
+    if manifest.get("format") != _FORMAT or manifest.get("kind") not in {
+        "source",
+        "formula",
+    }:
         raise ValueError("unsupported fitted artifact format or kind")
     tensors, digests = payload["tensors"], payload["digests"]
     if (
@@ -386,11 +437,15 @@ def load_fit(
     for name, value in tensors.items():
         if not isinstance(value, torch.Tensor) or tensor_digest(value) != digests[name]:
             raise ValueError(f"artifact tensor integrity check failed for {name!r}")
-    codec = _Codec(factories, tensors)
+    codec = _Codec(factories, tensors, formula=manifest["kind"] == "formula")
     from quivers._rng import seeded_rng
 
     with seeded_rng(0, devices=[value.device for value in tensors.values()]):
-        return _restore_source(manifest, codec)
+        if manifest["kind"] == "source":
+            return _restore_source(manifest, codec)
+        from quivers.formulas._artifact import _restore_formula
+
+        return _restore_formula(manifest, codec)
 
 
 def _restore_source(manifest: dict, codec: _Codec) -> ModelFit:
@@ -413,7 +468,11 @@ def _restore_source(manifest: dict, codec: _Codec) -> ModelFit:
     TypeError, ValueError
         If a retained posterior, prior, or recipe reconstruction is incompatible.
     """
-    bound = Model(manifest["source"], entry=manifest["entry"]).bind(
+    bound = Model(
+        manifest["source"],
+        entry=manifest["entry"],
+        families=codec.decode(manifest.get("families")),
+    ).bind(
         codec.decode(manifest["data"]),
         parameters=codec.decode(manifest["static"]),
         input=codec.decode(manifest["input"]),

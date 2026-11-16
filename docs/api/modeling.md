@@ -70,8 +70,9 @@ for nominal row axes, data snapshots, and method seeds.
 
 ## Durable fitted artifacts
 
-`save_fit` records a source `ModelFit` as a versioned JSON specification and
-safe tensor checkpoint. `load_fit` recompiles the original QVR, restores its
+`save_fit` records a source `ModelFit` or formula `BayesianFit` as a versioned
+JSON specification and safe tensor checkpoint. `load_fit` rebuilds the checked
+program through the original preparation path, restores its
 module and posterior state, and rebuilds the retained fitting recipe. It does
 not optimize a model or draw replacement posterior values. For a scanned guide,
 strict conditioned replay recovers every reached latent address from saved
@@ -110,12 +111,56 @@ fold adapter. Saving captures values at write time. A loaded reference-owned
 source recipe shares the loaded binding's values. A cloned recipe retains an
 independent training snapshot. Neither shares memory with the original process.
 
+Formula artifacts rebuild transforms, contrasts, category labels, nonlinear
+designs, group layouts, threshold constraints, and retained spline knots from
+one frozen preparation snapshot. They restore trained neural state separately
+from the original predictor state retained for future refits. Loading neither
+executes the predictor nor calls `fit`. The artifact stores numeric, Boolean, string, or categorical dataframe
+columns with their dtypes, levels, order, and row index; live
+formulae evaluators are rebuilt rather than serialized.
+
+<!-- python: run -->
+```python
+import pandas as pd
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import torch
+from quivers.formulas import fit
+from quivers.modeling import load_fit, save_fit
+
+formula_fit = fit(
+    "y ~ center(x)",
+    data=pd.DataFrame({"y": [.2, .4, -.1], "x": [-1., 0., 2.]}),
+    method="svi", num_steps=0, seed=7,
+)
+new_rows = pd.DataFrame({"x": [.5, 3.]})
+with TemporaryDirectory() as formula_directory:
+    formula_path = Path(formula_directory) / "regression.qvrfit"
+    save_fit(formula_fit, formula_path)
+    restored_formula = load_fit(formula_path)
+    assert torch.equal(
+        formula_fit.posterior_linpred(new_data=new_rows, num_samples=4, seed=11),
+        restored_formula.posterior_linpred(new_data=new_rows, num_samples=4, seed=11),
+    )
+```
+
+Clone-owned formula recipes share their existing training snapshot internally
+with the reconstruction plan. Reference-owned recipes retain one separate
+frozen training snapshot, since later caller mutations may change a future
+`update` without changing the fitted prediction law. This costs one retained
+data snapshot per fit, independent of posterior draw count.
+
 The default Normal guide, recorded MCMC results, and retained prior draws have
 built-in contracts. Custom guides and external Python modules require an
 explicit named `ArtifactFactory` at both write and read time. Its decoder
 receives an `ArtifactContext` when reconstructing a guide. Factories are trusted
 caller code and must reconstruct without fitting or sampling. An artifact never
 chooses an import path or falls back to arbitrary object serialization.
+Custom family catalogs use the same explicit factory registration. Their
+checked semantic definitions are saved through the QIEC wire codec and must
+match the reconstructed catalog exactly. The factory key should identify a
+stable, versioned implementation; equality of semantic metadata does not prove
+that an external implementation computes the declared law.
 
 Analysis exports retain posterior tensors and diagnostics. A fitted artifact
 additionally retains the checked model needed for prediction and refitting.

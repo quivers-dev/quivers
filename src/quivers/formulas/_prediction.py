@@ -51,6 +51,10 @@ class FormulaPredictionPlan(ValueModel):
         Training program, including its priors and latent dimensions.
     designs : Mapping[str, DesignMatrices]
         Evaluated location and auxiliary formulas, retaining transform state.
+    preparation_data : IntoDataFrame or None
+        One frozen original-row snapshot for durable design reconstruction.
+        Clone-owned recipes share this snapshot internally; reference-owned
+        recipes retain a separate training snapshot before caller mutations.
     group_layouts : tuple[GroupBlockLayout, ...]
         Emitted raw group sites and coefficient-coordinate slices.
     prior_targets : tuple[PriorTarget, ...]
@@ -63,6 +67,9 @@ class FormulaPredictionPlan(ValueModel):
     module: Module = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     designs: Mapping[str, DesignMatrices] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    preparation_data: IntoDataFrame | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     group_layouts: tuple[GroupBlockLayout, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
