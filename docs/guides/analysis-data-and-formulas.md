@@ -1693,12 +1693,17 @@ spread and leaving the coefficients where they started.
 
 ### Prior overrides
 
-Prior overrides are keyed by the latent's name in the generated program, which
-`formula_to_qvr` shows before fitting. A prior is, as in brms, a `Family(arg, arg, ...)`
-call, whose numeric arguments become floats and whose identifier arguments refer to
-other latents of the program. An explicit prior is emitted exactly as written, without
-the scaling above. The full call shape lives in
-[Fitting and Diagnostics](analysis-fitting-and-diagnostics.md#prior-overrides).
+Existing mapping overrides use the latent names shown by `formula_to_qvr`.
+Typed `PriorSpec`/`PriorSet` rules instead select retained parameter roles and
+authored labels; the [selector workflow](#prior-selectors-and-shared-shrinkage)
+explains their scopes, precedence, sampled hierarchies, and bounds. An explicit
+prior retains its supplied scale without default column autoscaling. Prior calls
+may reference upstream latents and compose existing measure constructors.
+Canonical QVR calls and parsed nested priors retain integer lexemes where an
+integer carrier is required; the current simple-call prior adapter still
+converts numeric tokens to floats. See
+[Fitting and Diagnostics](analysis-fitting-and-diagnostics.md#prior-overrides)
+for the existing mapping form.
 
 ### Posterior coefficients and predictions
 

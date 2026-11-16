@@ -61,8 +61,12 @@ result = fit(
 )
 ```
 
-A prior's key is the latent's name in the generated QVR source, which `formula_to_qvr`
-shows before fitting.
+An existing mapping override uses the latent name shown by `formula_to_qvr`.
+Typed `PriorSpec`/`PriorSet` rules also select parameter classes, coefficients,
+groups, distributional parameters, and nonlinear leaves through retained
+metadata. The [selector workflow](analysis-data-and-formulas.md#prior-selectors-and-shared-shrinkage)
+covers precedence, normalized bounds, and shared shrinkage without requiring
+generated site names.
 
 ### Prior-only fitting and independent prior draws
 
