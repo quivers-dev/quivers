@@ -126,8 +126,8 @@ ignore = ["E741"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Recovery / benchmark tests are gated behind the `slow` marker; the
-# default invocation (`pytest tests/`) skips them so the everyday
-# turnaround stays under a minute.  Run them explicitly with
+# default invocation (`pytest tests/`) skips these expensive cases.
+# Run them explicitly with
 # `pytest -m slow tests/` or `pytest --runslow tests/`.
 markers = [
     "slow: deselected by default; run with `-m slow` or `--runslow`.",
