@@ -210,3 +210,51 @@ export decimal
     )
     reference = source.run("decimal", data={"a": 0.1, "out": (0.0,)}, sites={}).value
     assert native.item() == reference == actual[0, 0].item()
+
+
+@pytest.mark.parametrize("values", [[1, 3, 5, -3], [16777217, 16777219, 2**53, -1]])
+def test_integer_contrasts_keep_qvr_truncating_division_and_original_capacity(values):
+    counts = torch.tensor(values, dtype=torch.int64).reshape(1, 4)
+    plan = _contrast_plan(
+        ContrastExpression(expression="count/2"), {"count": counts}, None, None
+    )
+    assert plan.input_carriers == ("Int",) and plan.carrier == "Int"
+    expected = torch.div(counts, 2, rounding_mode="trunc").double()
+    torch.testing.assert_close(_evaluate_contrast(plan, {"count": counts}), expected)
+    actual = _analysis({"count": counts}, kind="prior").hypothesis("count/2")
+    torch.testing.assert_close(actual.estimate, expected.mean())
+    program = loads("""object Out:Real 1
+program integer_contrast(count:Int):Out->Out
+    let result=count/2
+    return result
+export integer_contrast
+""")
+    for value, oracle in zip(values, expected.flatten().tolist(), strict=True):
+        assert (
+            program.run(
+                "integer_contrast", data={"count": value, "out": (0,)}, sites={}
+            ).value
+            == oracle
+        )
+    with pytest.raises(ValueError, match="2\\*\\*53"):
+        _evaluate_contrast(
+            plan, {"count": torch.full((1, 4), 2**53 + 1, dtype=torch.int64)}
+        )
+
+
+def test_boolean_input_is_checked_as_predicate_and_stream_carriers_must_match():
+    mask = torch.tensor([[True, False, True, False]])
+    a = torch.tensor([[1.0, 2.0, 3.0, 4.0]], dtype=torch.double)
+    expression = ContrastExpression(expression="select(mask,a,-a)")
+    plan = _contrast_plan(expression, {"mask": mask, "a": a}, None, None)
+    torch.testing.assert_close(
+        _evaluate_contrast(plan, {"mask": mask, "a": a}), torch.where(mask, a, -a)
+    )
+    with pytest.raises(TypeError, match="same Bool carrier"):
+        _evaluate_contrast(plan, {"mask": mask.double(), "a": a})
+    from quivers.dsl.qiec_lowering import QiecDiagnosticError
+
+    with pytest.raises(QiecDiagnosticError):
+        _contrast_plan(
+            ContrastExpression(expression="mask+1.0"), {"mask": mask}, None, None
+        )

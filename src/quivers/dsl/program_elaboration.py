@@ -199,11 +199,7 @@ from quivers.dsl.composite_lets import (
     positions_let_call,
     scan_let_call,
 )
-from quivers.dsl.family_schemas import (
-    PARAMETER_ALIASES,
-    family_parameterizations,
-    render_parameterizations,
-)
+from quivers.dsl.family_schemas import PARAMETER_ALIASES
 from quivers.dsl.let_expr_traversal import (
     free_let_names,
     let_expr_children,
@@ -213,7 +209,7 @@ from quivers.dsl.let_expr_traversal import (
 from quivers.dsl.deduction_elaboration import PARAMS_INSTANCE
 from quivers.continuous.deterministic import learned_function_draw_message
 from quivers.continuous.param_source import attention_draw_message
-from quivers.dsl.draw_args import kernel_argument_refusal
+from quivers.dsl.draw_args import bind_family_arguments, kernel_argument_refusal
 from quivers.dsl.program_templates import (
     TemplateError,
     TemplateBindings,
@@ -7846,7 +7842,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         self: _Elaborator,
         record: DistributionFamily,
         surface_family: str,
-        raw: list[DrawArg | str | float | _Spread],
+        raw: list[DrawArg],
         step: SampleStep | ObserveStep | MarginalizeStep,
         plate: PlateShape,
         scope: _Scope,
@@ -7862,7 +7858,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             Canonical semantic family.
         surface_family : str
             Authored constructor name selecting accepted keyword schemas.
-        raw : list[DrawArg | str | float | _Spread]
+        raw : list[DrawArg]
             Authored arguments before canonical ordering.
         step : SampleStep | ObserveStep | MarginalizeStep
             Draw supplying source locations.
@@ -7882,40 +7878,15 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         list[tuple[str, Value]]
             Lowered named arguments in canonical constructor order.
         """
-        schemas = family_parameterizations(surface_family, record.parameter_names)
-        schema_text = render_parameterizations(schemas)
-        supplied: set[str] = set()
-        source: dict[str, DrawArg] = {}
-        for argument in raw:
-            if not isinstance(argument, DrawArgNamed):
-                self._fail(
-                    step,
-                    f"family {record.name!r} arguments are keyword-only; "
-                    f"use one complete schema: {schema_text}",
-                    code="qiec-program",
-                )
-            parameter_name = argument.parameter
-            if parameter_name in supplied:
-                self._fail(
-                    step,
-                    f"family {record.name!r} is given parameter "
-                    f"{parameter_name!r} twice",
-                    code="qiec-program",
-                )
-            supplied.add(parameter_name)
-            source[parameter_name] = argument.value
-
-        selected = next((schema for schema in schemas if set(schema) == supplied), None)
-        if selected is None:
-            self._fail(
-                step,
-                f"family {record.name!r} requires exactly one complete parameter "
-                f"schema {schema_text}; got ({', '.join(source)})",
-                code="qiec-program",
+        try:
+            bound = bind_family_arguments(
+                surface_family, tuple(raw), record.parameter_names, allow_defaults=False
             )
+        except TypeError as error:
+            self._fail(step, str(error), code="qiec-program")
 
         pairs: list[tuple[FamilyParameter, DrawArg | str | float | _Spread]] = []
-        for parameter_name in selected:
+        for parameter_name, source_argument in bound:
             try:
                 parameter = _semantic_family_parameter(
                     record, parameter_name, surface_family
@@ -7928,8 +7899,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"{', '.join(record.parameter_names)}",
                     code="qiec-program",
                 )
-            argument: DrawArg | str | float | _Spread = source[parameter_name]
-            if len(selected) == 1:
+            argument: DrawArg | str | float | _Spread = source_argument
+            if len(bound) == 1:
                 bundled = self._bundle_vector_argument(
                     record, [argument], step, plate, state
                 )
@@ -9201,35 +9172,17 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 f"family:{argument.family}: not in the semantic family registry",
                 code="qiec-program",
             )
-        schemas = family_parameterizations(argument.family, record.parameter_names)
-        schema_text = render_parameterizations(schemas)
-        if any(not isinstance(item, DrawArgNamed) for item in argument.args):
-            self._fail(
-                node,
-                f"family {argument.family!r} arguments are keyword-only; "
-                f"use one complete schema: {schema_text}",
-                code="qiec-program",
+        try:
+            bound = bind_family_arguments(
+                argument.family,
+                argument.args,
+                record.parameter_names,
+                allow_defaults=False,
             )
-        named_arguments = cast(tuple[DrawArgNamed, ...], argument.args)
-        source = {item.parameter: item.value for item in named_arguments}
-        if len(source) != len(argument.args):
-            self._fail(
-                node,
-                f"family {argument.family!r} is given a parameter twice",
-                code="qiec-program",
-            )
-        selected = next(
-            (schema for schema in schemas if set(schema) == set(source)), None
-        )
-        if selected is None:
-            self._fail(
-                node,
-                f"family {argument.family!r} requires exactly one complete "
-                f"parameter schema {schema_text}; got ({', '.join(source)})",
-                code="qiec-program",
-            )
+        except TypeError as error:
+            self._fail(node, str(error), code="qiec-program")
         arguments = []
-        for parameter_name in selected:
+        for parameter_name, parameter_argument in bound:
             try:
                 parameter = _semantic_family_parameter(
                     record, parameter_name, argument.family
@@ -9240,7 +9193,6 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"family {record.name!r} has no parameter {parameter_name!r}",
                     code="qiec-program",
                 )
-            parameter_argument = source[parameter_name]
             if (
                 isinstance(parameter_argument, DrawArgDist)
                 and parameter.constraint == "sampleable"
@@ -9374,28 +9326,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         init = morphism.init_family
         if init is not None and init.args:
-            schemas = family_parameterizations(init.family, record.parameter_names)
-            schema_text = render_parameterizations(schemas)
-            if any(not isinstance(item, DrawArgNamed) for item in init.args):
-                self._fail(
-                    node,
-                    f"family {record.name!r} arguments are keyword-only; "
-                    f"use one complete schema: {schema_text}",
-                    code="qiec-program",
+            try:
+                bound = bind_family_arguments(
+                    init.family, init.args, record.parameter_names, allow_defaults=False
                 )
-            source = {item.parameter: item.value for item in init.args}
-            selected = next(
-                (schema for schema in schemas if set(schema) == set(source)), None
-            )
-            if selected is None or len(source) != len(init.args):
-                self._fail(
-                    node,
-                    f"family {record.name!r} requires exactly one complete "
-                    f"parameter schema {schema_text}",
-                    code="qiec-program",
-                )
+            except TypeError as error:
+                self._fail(node, str(error), code="qiec-program")
             arguments = []
-            for parameter_name in selected:
+            for parameter_name, parameter_argument in bound:
                 parameter = _semantic_family_parameter(
                     record, parameter_name, init.family
                 )
@@ -9403,7 +9341,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     (
                         parameter.name,
                         self._draw_argument(
-                            source[parameter_name],
+                            parameter_argument,
                             parameter,
                             PlateShape(),
                             scope,

@@ -181,7 +181,14 @@ from quivers.dsl.let_expr_traversal import (
     walk_let_expr,
 )
 from quivers.dsl.markov_chains import chain_cells, markov_cell
-from quivers.dsl.step_resolution import StepResolutionError, _expr_ident_names
+from quivers.dsl.step_resolution import (
+    StepResolutionError,
+    _expr_ident_names,
+    morphism_table,
+    build_let_table,
+    resolve_step_dist,
+)
+from quivers.dsl.family_schemas import FAMILY_ALIASES, PARAMETER_ALIASES
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
@@ -6795,6 +6802,100 @@ class _ProgramsMixin:
             )
         )
 
+    def _inline_sampleable_references(self, family, arguments, bound_names):
+        """Expand fixed declared sampleables through canonical source resolution.
+
+        Parameters
+        ----------
+        family : str
+            Consuming family, whose semantic parameter constraints identify
+            sampleable positions.
+        arguments : tuple
+            Original structural draw arguments, retaining keyword order.
+        bound_names : set[str]
+            Lexical values that take precedence over module declarations.
+
+        Returns
+        -------
+        tuple
+            Arguments with fixed sampleable references replaced by their
+            original initializer trees; numeric references remain lexical.
+
+        Raises
+        ------
+        CompileError
+            If a referenced declaration contains a recursive initializer.
+        """
+        record = FAMILIES.get(FAMILY_ALIASES.get(family, family) or family)
+        if record is None or not any(
+            parameter.constraint == "sampleable" for parameter in record.parameters
+        ):
+            return arguments
+        morphisms = morphism_table(self._module)
+        aliases = build_let_table(self._module)
+
+        def sampleable(value, seen):
+            if isinstance(value, DrawArgList):
+                return value.with_(
+                    items=tuple(sampleable(item, seen) for item in value.items)
+                )
+            if isinstance(value, DrawArgDist):
+                return value.with_(args=arguments_for(value.family, value.args, seen))
+            if not isinstance(value, DrawArgName) or value.text in bound_names:
+                return value
+            if value.text not in morphisms and value.text not in aliases:
+                return value
+            resolved = resolve_step_dist(
+                value.text,
+                None,
+                morphisms=morphisms,
+                lets=aliases,
+                family_registry=frozenset(FAMILIES),
+                target="native",
+            )
+            declaration = morphisms.get(resolved.original_morphism_name)
+            initializer = declaration.init_family if declaration is not None else None
+            # Bare family declarations contain learned kernels, whose input
+            # context is retained by the ordinary named-morphism path.
+            if initializer is None or not initializer.args:
+                return value
+            name = resolved.original_morphism_name
+            if name in seen:
+                raise CompileError(
+                    f"recursive sampleable initializer {name!r}", value.line, value.col
+                )
+            return DrawArgDist(
+                family=initializer.family,
+                args=arguments_for(initializer.family, initializer.args, (*seen, name)),
+                line=value.line,
+                col=value.col,
+            )
+
+        def arguments_for(current, args, seen):
+            record = FAMILIES.get(FAMILY_ALIASES.get(current, current) or current)
+            if record is None or not any(
+                parameter.constraint == "sampleable" for parameter in record.parameters
+            ):
+                return args
+            bound = bind_family_arguments(
+                current, args, get_inline_param_names(current) or ()
+            )
+            parameter_aliases = PARAMETER_ALIASES.get(current, {})
+            values = []
+            for name, argument in bound:
+                semantic = parameter_aliases.get(name, name)
+                parameter = record.parameter(semantic)
+                if parameter.constraint == "sampleable":
+                    argument = sampleable(argument, seen)
+                elif isinstance(argument, DrawArgDist):
+                    argument = argument.with_(
+                        args=arguments_for(argument.family, argument.args, seen)
+                    )
+                values.append(DrawArgNamed(parameter=name, value=argument))
+            return tuple(values)
+
+        return arguments_for(family, arguments, ())
+
     def _resolve_draw_morphism(
         self,
         draw,
@@ -6911,6 +7012,18 @@ class _ProgramsMixin:
                     draw.line,
                     draw.col,
                 )
+            draw = draw.with_(
+                args=self._inline_sampleable_references(
+                    draw.morphism,
+                    draw.args,
+                    set(bound_vars)
+                    | (
+                        set(self._parameter_space_stack[-1])
+                        if self._parameter_space_stack
+                        else set()
+                    ),
+                )
+            )
             axes_override = self._axes_codomain(getattr(draw, "axes", None))
             try:
                 inline_codomain = self._infer_inline_codomain(

@@ -44,7 +44,11 @@ posterior.
 
 Inputs are detached, finite real tensors. Boolean and integer draws use the
 shared Float64 conversion policy, including refusal of original integers
-outside the exact range before conversion. Missing values are not deleted.
+outside the exact range before conversion. Retained QVR expressions preserve
+original Int and Bool inputs during checking and evaluation: `count / 2` uses
+QVR integer division, and Boolean inputs remain predicates. The resulting
+numeric contrast is converted to Float64 for its summary. Posterior and prior
+inputs must have the same scalar carrier. Missing values are not deleted.
 Scaled arithmetic preserves finite extreme locations and small spreads;
 dispersion overflow causes an explicit error, while values below Float64
 resolution may underflow to zero. Returned tensors remain

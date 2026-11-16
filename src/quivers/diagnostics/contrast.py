@@ -25,7 +25,9 @@ class ContrastExpression(ValueModel):
     ----------
     expression : str
         Existing QVR arithmetic, functions, and event-axis indexing. Chain and
-        draw axes are protected from indexing and reductions.
+        draw axes are protected from indexing and reductions. Original Int
+        and Bool carriers retain QVR integer arithmetic and predicate typing;
+        conversion to diagnostic Float64 values follows expression evaluation.
     bindings : dict[str, str]
         Optional expression aliases mapped to original variable labels. This
         permits labels such as ``condition[a]`` without changing their spelling.
@@ -52,12 +54,47 @@ class _ContrastPlan:
         Nominal result event axes from QIEC checking.
     shapes : tuple[tuple[int, ...], ...]
         Original input event shapes, excluding sample axes.
+    input_carriers : tuple[str, ...]
+        Canonical QVR scalar carriers of each retained input.
+    carrier : str
+        Canonical scalar carrier of the checked expression result.
     """
 
     names: tuple[str, ...]
     evaluate: Callable
     dimensions: tuple[str, ...]
     shapes: tuple[tuple[int, ...], ...]
+    input_carriers: tuple[str, ...]
+    carrier: str
+
+
+def _carrier(value: torch.Tensor) -> str:
+    """Read one retained tensor's canonical QVR scalar carrier.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        Original retained values, before diagnostic floating conversion.
+
+    Returns
+    -------
+    str
+        Real, Int, or Bool as used by the canonical QVR type checker.
+
+    Raises
+    ------
+    TypeError
+        If the input is not a real tensor.
+    """
+    if not isinstance(value, torch.Tensor) or value.is_complex():
+        raise TypeError("a contrast requires real retained tensors")
+    return (
+        "Bool"
+        if value.dtype == torch.bool
+        else "Real"
+        if value.is_floating_point()
+        else "Int"
+    )
 
 
 def _contrast_plan(
@@ -110,15 +147,19 @@ def _contrast_plan(
     axes = tuple(dict.fromkeys(axis for name in names for axis in dimensions[name]))
     nominal = {axis: f"ContrastAxis{i}" for i, axis in enumerate(axes)}
     arguments = []
+    input_carriers = tuple(_carrier(samples[name]) for name in names)
     substitution = {}
     for i, (variable, name) in enumerate(zip(variables, names, strict=True)):
         alias = f"contrast_input_{i}"
         substitution[variable] = LetExprVar(name=alias)
         shape = dimensions[name]
+        scalar = input_carriers[i]
         type_ = (
-            "Real"
+            scalar
             if not shape
-            else "Tensor[Real]([" + ",".join(nominal[axis] for axis in shape) + "])"
+            else f"Tensor[{scalar}](["
+            + ",".join(nominal[axis] for axis in shape)
+            + "])"
         )
         arguments.append(f"{alias}:{type_}")
     static = (
@@ -177,7 +218,15 @@ def _contrast_plan(
             {f"contrast_input_{i}": value for i, value in enumerate(values)}
         )
 
-    return _ContrastPlan(names, evaluate, result_dims, shapes)
+    scalar_result = type_ if result_shape is None else result_shape[0]
+    return _ContrastPlan(
+        names,
+        evaluate,
+        result_dims,
+        shapes,
+        input_carriers,
+        "Int" if scalar_result == INT else "Real",
+    )
 
 
 def _evaluate_contrast(
@@ -208,8 +257,22 @@ def _evaluate_contrast(
     if anchor.ndim < 2 or not all(anchor.shape[:2]):
         raise ValueError("contrast samples require nonempty chain and draw axes")
     values = []
-    for name, shape in zip(plan.names, plan.shapes, strict=True):
-        value = real_samples(samples[name], label=f"contrast variable {name!r}")
+    for name, shape, carrier in zip(
+        plan.names, plan.shapes, plan.input_carriers, strict=True
+    ):
+        original = samples[name]
+        checked = real_samples(original, label=f"contrast variable {name!r}")
+        if _carrier(original) != carrier:
+            raise TypeError(
+                f"contrast variable {name!r} requires the same {carrier} carrier in both streams"
+            )
+        value = (
+            checked
+            if carrier == "Real"
+            else original.detach().to(
+                dtype=torch.bool if carrier == "Bool" else torch.int64
+            )
+        )
         if value.shape[:2] != anchor.shape[:2] or tuple(value.shape[2:]) != shape:
             raise ValueError(
                 "contrast variables require aligned sample axes and matching event shapes"
