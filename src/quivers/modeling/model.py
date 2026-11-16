@@ -171,6 +171,7 @@ class Model:
             raise ValueError(f"unknown program {entry!r}; choose from {names}")
         self.entry = entry
         checked = lower_qvr_to_qiec(self.syntax)
+        self.checked_module = checked
         typed_entry = next((e for e in checked.entries if e.name == entry), None)
         if typed_entry is None:
             raise CompileError(f"entry {entry!r} has no checked input contract")
@@ -642,13 +643,18 @@ class ModelFit(ValueModel):
             )
         return self.posterior.samples
 
-    def draws(self, *, num_samples: int = 100) -> dict[str, torch.Tensor]:
+    def draws(
+        self, *, num_samples: int | None = None, seed: int | None = None
+    ) -> dict[str, torch.Tensor]:
         """Draw a variational posterior, or return recorded MCMC chains.
 
         Parameters
         ----------
-        num_samples : int
-            Number of fresh guide draws. Ignored for recorded MCMC chains.
+        num_samples : int or None
+            Maximum draws per recorded chain, or fresh guide draws. Omission
+            retains all MCMC draws or samples 100 guide draws.
+        seed : int or None
+            Optional CPU seed for guide sampling, restored on exit.
 
         Returns
         -------
@@ -661,25 +667,14 @@ class ModelFit(ValueModel):
         ValueError
             If num_samples is not positive.
         """
-        if num_samples < 1:
-            raise ValueError("num_samples must be positive")
-        if isinstance(self.posterior, MCMCResult):
-            return self.samples
-        with torch.no_grad():
-            draws = [
-                self.posterior.rsample(self.model.input) for _ in range(num_samples)
-            ]
-        return {
-            name: torch.stack(
-                [
-                    draw[name].reshape(
-                        self.posterior.registry.sites[name].constrained_shape
-                    )
-                    for draw in draws
-                ]
-            ).unsqueeze(0)
-            for name in draws[0]
-        }
+        from quivers.inference._posterior import constrained_draws
+
+        return constrained_draws(
+            self.posterior,
+            self.model.input,
+            num_samples=num_samples,
+            seed=seed,
+        )
 
     def predict(
         self,
@@ -797,7 +792,7 @@ class ModelFit(ValueModel):
                 raise ValueError(
                     f"log likelihood requires observations: {sorted(missing)}"
                 )
-            draws = self.draws(num_samples=100 if num_samples is None else num_samples)
+            draws = self.draws(num_samples=num_samples)
             if not draws:
                 raise ValueError("posterior has no latent draws")
             first = next(iter(draws.values()))

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 from scipy import integrate, stats
-from torch.distributions import Gamma, MultivariateNormal, Normal, Poisson
+from torch.distributions import Gamma, LogNormal, MultivariateNormal, Normal, Poisson
 
 from quivers.continuous._interval import log_interval_mass
 from quivers.continuous.families import ConditionalNormal, Truncated
@@ -168,3 +168,23 @@ def test_conditional_truncation_reports_its_actual_support() -> None:
 def test_rejection_limit_requires_positive_integer(iterations: int) -> None:
     with pytest.raises(ValueError, match="positive integer"):
         Truncated(_conditional(), lower=0.0, max_rejection_iterations=iterations)
+
+
+def test_transformed_positive_prior_preserves_normalization_and_derivatives() -> None:
+    location = torch.tensor(0.3, dtype=torch.float64, requires_grad=True)
+    scale = torch.tensor(0.7, dtype=torch.float64, requires_grad=True)
+    positive = Restrict(LogNormal(location, scale), low=0.0)
+    assert positive.log_normalizer().item() == 0.0
+    mass = log_interval_mass(LogNormal(location, scale), 0.4, 2.3)
+    oracle = stats.lognorm.cdf(2.3, s=0.7, scale=math.exp(0.3)) - stats.lognorm.cdf(
+        0.4, s=0.7, scale=math.exp(0.3)
+    )
+    assert mass.item() == pytest.approx(math.log(oracle), abs=1e-13)
+    assert torch.autograd.gradcheck(
+        lambda loc, std: log_interval_mass(LogNormal(loc, std), 0.4, 2.3),
+        (location, scale),
+    )
+    assert torch.autograd.gradgradcheck(
+        lambda loc, std: log_interval_mass(LogNormal(loc, std), 0.4, 2.3),
+        (location, scale),
+    )

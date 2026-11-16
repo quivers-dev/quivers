@@ -315,8 +315,20 @@ class PosteriorAnalysis(ValueModel):
         self._validate_axes()
         return waic(self.log_likelihood[self._likelihood_name(var_name)])
 
-    def to_datatree(self) -> _DataTree:
+    def to_datatree(
+        self,
+        *,
+        coords: Mapping[str, list] | None = None,
+        dims: Mapping[str, list[str]] | None = None,
+    ) -> _DataTree:
         """Convert retained tensors for the optional ArviZ diagnostics package.
+
+        Parameters
+        ----------
+        coords : Mapping[str, list] or None
+            Coordinate labels for named event or observation dimensions.
+        dims : Mapping[str, list[str]] or None
+            Dimension names per variable, excluding chain and draw axes.
 
         Returns
         -------
@@ -325,38 +337,18 @@ class PosteriorAnalysis(ValueModel):
             Chain and draw axes are retained for both posterior kinds.
         """
         self._validate_axes()
-        import arviz as az
-        from quivers.diagnostics.arviz_io import (
-            _ARVIZ_SAMPLE_STATS,
-            _ARVIZ_INTEGER_STATS,
-            _ARVIZ_BOOLEAN_STATS,
-            _tensor_to_numpy,
-        )
+        from quivers.diagnostics.arviz_io import _groups_to_datatree
 
-        groups = {
-            "posterior": self.samples,
-            "log_likelihood": self.log_likelihood,
-            "observed_data": self.observed_data,
-            "sample_stats": {
-                _ARVIZ_SAMPLE_STATS.get(k, k): v for k, v in self.sample_stats.items()
+        tree = _groups_to_datatree(
+            {
+                "posterior": self.samples,
+                "log_likelihood": self.log_likelihood,
+                "observed_data": self.observed_data,
+                "sample_stats": self.sample_stats,
             },
-        }
-        converted = {
-            group: {name: _tensor_to_numpy(t) for name, t in tensors.items()}
-            for group, tensors in groups.items()
-            if tensors
-        }
-        for original in self.sample_stats:
-            target = _ARVIZ_SAMPLE_STATS.get(original, original)
-            if original in _ARVIZ_INTEGER_STATS:
-                converted["sample_stats"][target] = converted["sample_stats"][
-                    target
-                ].astype("int64")
-            elif original in _ARVIZ_BOOLEAN_STATS:
-                converted["sample_stats"][target] = converted["sample_stats"][
-                    target
-                ].astype("bool")
-        tree = az.from_dict(converted)
+            coords=coords,
+            dims=dims,
+        )
         tree.attrs["quivers_posterior_kind"] = self.kind
         return tree
 

@@ -8,6 +8,8 @@ posterior predictive draws of every site.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import torch
 
 from quivers.continuous.programs import MonadicProgram
@@ -77,13 +79,13 @@ class Predictive:
                 f"Predictive: num_samples must be >= 1, got {self.num_samples}"
             )
 
-    def _iter_mcmc_latents(self) -> list[dict[str, torch.Tensor]]:
+    def _iter_mcmc_latents(self) -> Iterator[dict[str, torch.Tensor]]:
         """Return ``num_samples`` recorded posterior draws, one dict each,
         flattening the chain and sample axes.
 
-        Returns
-        -------
-        list[dict[str, torch.Tensor]]
+        Yields
+        ------
+        dict[str, torch.Tensor]
             One dict per selected draw, each site at its
             `LatentSite.constrained_shape`: one value every run of the
             predictive call shares.
@@ -94,12 +96,10 @@ class Predictive:
         # Random selection without replacement (when num_samples
         # equals the total, this is a permutation).
         perm = torch.randperm(chain_samples)[: self.num_samples]
-        out: list[dict[str, torch.Tensor]] = []
         for idx in perm.tolist():
             chain = idx // self.posterior.num_samples
             step = idx % self.posterior.num_samples
-            out.append({name: draws[chain, step] for name, draws in samples.items()})
-        return out
+            yield {name: draws[chain, step] for name, draws in samples.items()}
 
     @torch.no_grad()
     def __call__(
@@ -133,28 +133,34 @@ class Predictive:
         """
         observations = observations if observations is not None else {}
         if isinstance(self.posterior, Guide):
-            latents_iter: list[dict[str, torch.Tensor]] = [
-                self.posterior.rsample(x) for _ in range(self.num_samples)
-            ]
+            latents_iter = (self.posterior.rsample(x) for _ in range(self.num_samples))
         else:
             latents_iter = self._iter_mcmc_latents()
 
-        collected: dict[str, list[torch.Tensor]] = {}
-        for latents in latents_iter:
-            all_obs = {**latents, **observations}
-            tr = trace(self.model, x, observations=all_obs)
-            stray = sorted(set(latents) - set(tr.sites))
-            if stray:
-                raise ValueError(
-                    f"Predictive: the posterior holds draws of {stray}, which "
-                    f"are not sample sites of the model"
-                )
-            for name, site in tr.sites.items():
-                if site.is_deterministic:
-                    continue
-                collected.setdefault(name, []).append(site.value)
+        from quivers.inference._posterior import collect_site_draws
 
-        return {name: torch.stack(vals, dim=0) for name, vals in collected.items()}
+        def values() -> Iterator[dict[str, torch.Tensor]]:
+            for latents in latents_iter:
+                all_obs = {**latents, **observations}
+                recorded = trace(self.model, x, observations=all_obs)
+                stray = sorted(set(latents) - set(recorded.sites))
+                if stray:
+                    raise ValueError(
+                        f"Predictive: the posterior holds draws of {stray}, which "
+                        f"are not sample sites of the model"
+                    )
+                yield {
+                    name: site.value
+                    for name, site in recorded.sites.items()
+                    if not site.is_deterministic
+                }
+
+        return {
+            name: value.squeeze(0)
+            for name, value in collect_site_draws(
+                values(), (1, self.num_samples)
+            ).items()
+        }
 
 
 __all__ = ["Predictive"]

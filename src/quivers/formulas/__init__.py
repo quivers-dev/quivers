@@ -33,11 +33,13 @@ from quivers.formulas.formula import (
     RandomTerm,
     Formula,
     FormulaData,
+    ResponseLayout,
     formula_from_data,
 )
 from quivers.formulas.family import (
     Link,
     AuxParam,
+    OrdinalSpec,
     Family,
     links,
     families,
@@ -53,10 +55,12 @@ __all__ = [
     "RandomTerm",
     "Formula",
     "FormulaData",
+    "ResponseLayout",
     "formula_from_data",
     # family
     "Link",
     "AuxParam",
+    "OrdinalSpec",
     "Family",
     "links",
     "families",

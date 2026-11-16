@@ -334,13 +334,18 @@ value. The built-in families:
 | `beta_binomial` | logit (sigmoid) | known trial count, precision `phi ~ HalfCauchy(2.0)` |
 | `categorical` | reference-category multinomial logit | one coefficient and random effect per non-reference category |
 | `poisson` | log (exp) | none |
+| `com_poisson` | log for the rate, not response mean | `shape ~ Gamma(0.01, 0.01)` |
 | `negative_binomial` | log (exp) | `disp ~ Gamma(2.0, 2.0)` |
 | `negbinomial2` | log for response mean | reciprocal shape `sigma ~ Gamma(0.4, 0.3)` |
 | `discrete_weibull` | logit for survival parameter `q` | `shape ~ HalfCauchy(2.0)` |
 | `gamma` | log (exp) | `shape ~ Gamma(2.0, 2.0)` |
 | `beta` | logit (sigmoid) | `phi ~ HalfCauchy(2.0)` |
 | `student_t` | identity | `nu ~ Gamma(2.0, 0.1)`, `sigma ~ HalfCauchy(2.0)` |
-| `cumulative` | logit on the cumulative probabilities (`OrderedLogistic`) | learned ordered cutpoints |
+| `cumulative` | cumulative logit | ordered cutpoints, discrimination `disc=1` |
+| `acat` | adjacent-category logit | centered thresholds, `disc=1` |
+| `sratio` | stopping-ratio logit | centered thresholds, `disc=1` |
+| `cratio` | continuation-ratio logit | centered thresholds, `disc=1` |
+| `hurdle_cumulative` | cumulative logit above category zero | ordered positive-category cutpoints, `disc=1`, `hu ~ Beta(2, 2)` |
 | `zero_inflated_poisson` | log (exp) | `zi ~ Beta(2.0, 2.0)` |
 | `zero_inflated_negbinomial` | log for the component mean | `shape ~ Gamma(2.0, 2.0)`, `zi ~ Beta(2.0, 2.0)` |
 | `zero_inflated_binomial` | logit for the component success probability | known trial count, `zi ~ Beta(2.0, 2.0)` |
@@ -369,6 +374,43 @@ value. The built-in families:
 A new family is a [`Family`](../api/formulas/family.md#quivers.formulas.family.Family)
 value with its own observation family and link. The table's priors on auxiliary
 parameters are the library's defaults.
+
+### COM-Poisson rate and response mean
+
+`com_poisson` uses rate `mu=lambda` and positive dispersion `shape=nu`:
+its mass is proportional to `lambda**y / factorial(y)**nu`. The default
+location and shape links are log; the scalar shape prior is
+`Gamma(0.01, 0.01)`. At `nu=1` this is Poisson, but elsewhere the rate
+usually differs from the response mean. `posterior_linpred(transform=True)`
+returns the rate; `posterior_epred` computes the normalized response mean.
+The generated source passes `log_rate=eta` directly, avoiding an unnecessary
+exponential when the rate itself would overflow.
+
+```python
+from quivers.formulas import formula_to_qvr
+
+com_source = formula_to_qvr(
+    "y ~ x", data=pd.DataFrame({"y": [0, 1, 3], "x": [-1., 0., 1.]}),
+    family="com_poisson", fixed_parameters={"shape": 1.5},
+)
+assert "COMPoisson(log_rate=" in com_source
+```
+
+This rate convention matches the pinned brms
+[compiled Stan density](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/inst/chunks/fun_com_poisson.stan).
+But its released [R distribution helpers](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/distributions.R#L1222-L1300)
+use a mode-like parameter `m`, with rate `lambda=m**nu`; the released
+[prediction helper](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/posterior_predict.R#L571)
+passes its fitted `mu` to that helper unchanged. QVR uses the compiled
+rate law consistently for fitting, expectations, and predictive draws.
+Comparisons against those R helpers must first convert
+`m=lambda**(1/nu)`; agreement of parameter names would not establish
+agreement of response laws.
+
+Native and checked-reference execution support this family. Normalization
+and moments use certified bounded sums; inability to certify a result
+raises explicitly. Sampling uses a separate exact rejection envelope with
+a proposal budget. No CDF, censoring, or truncation capability is implied.
 
 ### Count dispersion and a zero atom at a quantile
 
@@ -796,8 +838,10 @@ The link registry includes `identity`, `logit`, `log`, `softmax`, `inverse`,
 the compiler emits its inverse. `sqrt` thus squares the predictor, while
 `inverse_square` emits its reciprocal square root. Positive and probability
 parameters must still lie in their distribution's support. Categorical models
-require softmax; cumulative ordinal models support logit and probit, which select
-`OrderedLogistic` and `OrderedProbit` respectively.
+require softmax. Ordinal link support depends on the construction, as
+described in [ordinal families](#ordinal-families-thresholds-and-category-specific-effects).
+The default cumulative logit/probit paths retain `OrderedLogistic` and
+`OrderedProbit`, respectively.
 
 `squareplus` maps a real predictor to a positive parameter through
 `(eta + sqrt(eta**2 + 4)) / 2`. `softit` maps it to a probability
@@ -942,6 +986,115 @@ component labels leaves the likelihood unchanged, so posterior draws can switch 
 [@stephens2000labels]: summaries should use quantities that do not depend on the labels,
 or align the labels first.
 
+### Ordinal families, thresholds, and category-specific effects
+
+Five formula families model ordered response labels: `cumulative`,
+`acat` (adjacent category), `sratio` (stopping ratio), `cratio`
+(continuation ratio), and `hurdle_cumulative`. Their static
+[`OrdinalSpec`](../api/formulas/family.md#quivers.formulas.family.OrdinalSpec)
+selects the probability construction, link, and threshold structure.
+Labels are contiguous integers `0, ..., K-1`; hurdle category zero is a
+separate atom, leaving `K-1` positive categories and `K-2` cutpoints.
+A binary hurdle model thus requires no cutpoints for its positive part.
+
+All five support `logit`, `probit`, `probit_approx`, `cloglog`, and
+`cauchit`. Cumulative, adjacent-category, and hurdle-cumulative models
+also support `softit`; the two sequential families refuse it. Link and
+threshold choices are family values, without new QVR header syntax:
+
+```python
+from quivers.formulas import families, formula_to_qvr
+
+rating_data = pd.DataFrame({
+    "rating": [0, 1, 2, 0, 1, 2], "x": [-1., 0., 1., -.5, .2, .8],
+})
+adjacent = families["acat"].with_links(mu="probit").with_thresholds("equidistant")
+adjacent_source = formula_to_qvr(
+    "rating ~ x + cs(1)", data=rating_data, family=adjacent,
+    fixed_parameters={"disc": 1.0},
+)
+assert "Categorical(logits=" in adjacent_source
+```
+
+Discrimination `disc` multiplies the threshold-minus-predictor contrast.
+It is fixed to one unless explicitly fixed, assigned a prior, or given a
+formula such as `distributional={"disc": "~ z"}`. Estimated scalar
+`disc` has default `LogNormal(0, 1)`; its distributional link is log.
+Every evaluated discrimination must be finite and strictly positive.
+Estimating both response scale and thresholds may require additional
+identification choices appropriate to the application.
+
+`with_thresholds("flexible")` gives free centered thresholds, ordered
+only for cumulative models. QVR's ordered defaults use Normal log
+spacings; noncumulative defaults use Normal threshold contrasts.
+`"equidistant"` uses one centered spacing, with default `LogNormal(0, 1)`
+for cumulative models and `Normal(0, 1)` otherwise. The latter spacing
+may be negative. `"sum_to_zero"` explicitly centers the threshold
+construction. `get_prior` reports the generated latent names and priors,
+which can be overridden through `priors`.
+
+These are QVR identification and prior choices. The released brms
+[threshold priors](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/priors.R#L734-L741)
+and [threshold construction](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/stan-response.R#L287-L373)
+do not establish the same induced prior: in particular, its default
+equidistant spacing prior is flat, and centering a sampled threshold
+vector differs from sampling a minimal contrast representation.
+
+`cs(expr)` gives a fixed or noncentered group coefficient one value per
+transition, including cumulative and hurdle-cumulative models. In
+noncumulative models, `cs(1)` supplies a transition intercept;
+`cs(x)` supplies transition-specific slopes. Shared correlation
+IDs may couple ordinary scalar and transition-valued coefficients,
+including across auxiliary predictors. `fixed_effects` and
+`random_effects` preserve the final transition axis.
+`posterior_linpred` returns `(chain, draw, row, transition)` when such
+terms are present; `posterior_epred` returns category probabilities.
+`posterior_linpred(transform=True)` refuses because a transition predictor
+alone is not a response probability.
+
+For cumulative and hurdle-cumulative `cs` terms, the compiler constructs
+ordered *effective cutpoints* on every training row. It bounds each
+adjacent spacing using the largest adjacent difference in the fitted
+category-specific predictors, then adds a positive slack. Flexible
+thresholds use Normal log-slack priors; equidistant thresholds use one
+positive spacing slack above the largest bound. The predictor remains
+the linear `cs(expr)` effect. The [formal construction](../semantics/programs.md#ordinal-probability-constructions)
+states the support inequalities.
+
+These are proper conditional slack priors, rather than the independent
+threshold priors in released brms. Its
+[experimental warning](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/brmsterms.R#L1097-L1112)
+allows cumulative category-specific terms without establishing row ordering.
+QVR retains the actual fitted cutpoints at each draw when predicting or
+selecting effects; it never recomputes them from a new frame. New covariates
+or effect selections that cross cutpoints fail with the chain, draw, row,
+and adjacent-spacing positions. The maximum defining a spacing bound
+need not be differentiable at a tie. A fixed `cs(1)` together with freely
+estimated cumulative or hurdle thresholds and a proportional intercept
+has redundant coordinates and is refused, including when its coefficient
+has an explicit prior. Use the ordinary intercept and thresholds for that
+profile, or a row-varying term such as `cs(x)`. Centered category-specific
+group effects remain unsupported.
+
+```python
+constrained = fit(
+    "rating ~ x + cs(x)", data=rating_data, family="cumulative",
+    method="svi", num_steps=2, seed=7,
+)
+threshold_draws = constrained.posterior_thresholds(num_samples=3, seed=7)
+assert threshold_draws.shape == (1, 3, 6, 2)
+assert (threshold_draws[..., 1:] > threshold_draws[..., :-1]).all()
+assert constrained.threshold_labels == ((0, 1), (1, 2))
+```
+
+`posterior_thresholds` returns `(chain, draw, row, threshold)` effective
+cutpoints. It includes selected varying location/slope effects and
+category-specific shifts; the proportional population predictor, fixed
+offsets, neural contribution, and discrimination are excluded. Its
+`threshold_labels` are adjacent category pairs, excluding the structural
+zero boundary of a hurdle model. All four posterior prediction methods
+share the new-data and group-selection policies described below.
+
 ### Ordinal mixed models and neural predictors
 
 The cumulative model for ordered ratings divides a continuous latent response at ordered
@@ -952,8 +1105,12 @@ are used, so group-specific spacings represent differences in scale use. The
 cumulative family infers the number of categories from contiguous
 integer response labels `0, ..., K-1`. Shared cutpoints are represented
 by cumulative positive spacings and centered to separate their location
-from the formula intercept. `thresholds_by` replaces the shared spacing
-vector with partially pooled group-specific spacings:
+from the formula intercept. `thresholds_by` constructs a complete partially
+pooled profile for each group: a centered shape and one varying location.
+It reuses an existing ordinary varying intercept for that factor, or adds
+one when absent. For a binary cumulative response, location alone supplies
+the single cutpoint. This is one identified construction, without a duplicate free
+location parameter:
 
 <!-- python: skip -->
 ```python
@@ -966,9 +1123,16 @@ ordinal_fit = fit(
 )
 ```
 
-Every participant's cutpoints remain ordered. Their vector is centered,
-so a participant random intercept controls location while the random
-threshold spacings model differences in scale use.
+Every participant's effective cutpoints remain ordered on the training
+rows. Their centered shape controls spacing, while the one participant
+intercept controls location. Flexible and sum-to-zero profiles span all
+cutpoint coordinates; equidistant profiles retain their common-spacing
+constraint. Their log-spacing or log-slack coordinates have a hierarchical prior:
+Normal `(0, 1)` means, HalfNormal `0.5` scales, and standard Normal
+group noise. Noncentered category-specific slopes may coexist with these profiles;
+a same-factor category-specific intercept would duplicate the complete
+profile and is refused. `posterior_thresholds` exposes the resulting
+row profiles directly.
 
 A differentiable PyTorch module can add to the linear predictor directly. It is passed
 with its input tensor, apart from the dataframe:
@@ -1173,8 +1337,8 @@ WAIC convention and observation-unit requirements.
 
 Pass `new_data` to `posterior_linpred`, `posterior_epred`, or
 `posterior_predict` to change the prediction rows while retaining the fitted
-coefficients and group effects. The frame supplies every predictor used by
-the location and auxiliary formulas. It does not need the response or
+coefficients and group effects. The frame supplies predictors used by
+the retained location and auxiliary terms. It does not need the response or
 likelihood-weight column:
 
 ```python
@@ -1205,19 +1369,87 @@ The row count may change. Fitted transforms, including centering, scaling,
 and orthogonal polynomial bases, retain their training state; categorical
 predictors retain their contrasts and column order. Known categorical and
 group levels may appear in any order, repeat, or be absent from the new
-frame. An unseen categorical level or group raises `ValueError`; this
-interface does not create coefficients or sample effects for a new group.
+frame. An unseen ordinary categorical predictor level raises
+`ValueError`. New group identities require an explicit policy, described below.
 The fitted latent layout and coefficient priors remain fixed.
 
 Include columns used by offsets and exposures, and by auxiliary formulas.
 Exposures remain strictly positive. A binomial, beta-binomial, or
 zero-inflated trial-count fit with per-row trials needs its column of
 nonnegative integer trial counts on the new rows; a fixed trial count is
-reused. Zero trials imply a zero count. Missing predictors, nonfinite evaluated values, incompatible
-design widths, and missing categorical or group values are refused before
-posterior draws are taken. Prediction frames must be nonempty and have
-unique column names. Response and likelihood-weight values, if present,
+reused. Zero trials imply a zero count. Missing predictors, nonfinite
+evaluated values, incompatible design widths, and missing categorical
+values are refused before posterior draws are taken. Missing group
+identities follow the explicit new-group policy below. Prediction frames
+must be nonempty and have unique column names. Response and likelihood-weight values, if present,
 do not determine the predicted response law.
+
+#### Selecting effects and predicting for new groups
+
+`posterior_linpred`, `posterior_epred`, `posterior_predict`, and
+`posterior_thresholds` accept `re_formula`. Its default
+`None` retains every fitted varying effect; `"~0"` sets their contributions
+to zero. A one-sided formula, such as `"~(0 + x | participant)"`, selects
+fitted slopes. Unknown selectors raise an error. Excluding an effect sets
+it to zero; it does not integrate over its posterior. Group-specific
+thresholds remain conditioned on their fitted or sampled group values.
+A column needed only by an excluded effect is unnecessary; a grouping
+column still used by thresholds or another retained term remains required.
+
+For a retained group contribution, unseen or missing grouping identities
+are refused by default. With `allow_new_levels=True`, `sample_new_levels` selects an
+unconditioned law, with explicit support-conditioned alternatives below:
+
+| Policy | Effect for one new identity |
+| --- | --- |
+| `"uncertainty"` | At each posterior draw, select one fitted donor uniformly and copy its joint group-effect vector. |
+| `"old_levels"` | Select one fitted donor index for all chains and draws; use that donor's changing posterior vector at each draw. |
+| `"gaussian"` | At each draw, sample from the fitted zero-mean Normal/LKJ group law using that draw's scales and correlations. |
+
+Donors are shared across slopes and auxiliary predictors belonging to the
+same group identity, retaining their fitted dependence. The donor pool is
+all fitted levels, even when prediction uses only a subset. Repeated new
+IDs share their sampled effects within a draw; repeated missing values
+identify one new group per grouping factor. A literal string `"NA"` is an
+ordinary identity, distinct from a missing value.
+
+Constrained cumulative category-specific predictions require an explicit
+`"feasible_uncertainty"` or `"feasible_gaussian"` policy for new group
+effects or profiles. These condition the joint new-group proposal on
+ordered effective cutpoints for all requested rows. Donor proposals copy
+actual full profiles and effects together; Gaussian proposals draw the
+fitted group law, including its hierarchical log-slack base law for a new
+threshold profile. Known profiles remain fixed at their posterior values.
+The routine tries at most 1,024 joint proposals per draw, then raises a
+located support error. It retains every posterior draw: it does not drop
+crossing draws, recompute thresholds, or silently change an unconditioned
+policy into a conditional one.
+
+```python
+unseen_participants = pd.DataFrame({
+    "x": [-0.5, 0.8, 0.2], "z": [0.1, -0.2, 0.4],
+    "participant": ["new", "new", "another"],
+})
+slope_only = posterior_fit.posterior_linpred(
+    new_data=future_participants, re_formula="~(0 + x | participant)",
+    num_samples=5, seed=7,
+)
+assert slope_only.shape == (1, 5, 3)
+new_group_means = posterior_fit.posterior_epred(
+    new_data=unseen_participants, allow_new_levels=True,
+    sample_new_levels="gaussian", num_samples=5, seed=7,
+)
+population_means = posterior_fit.posterior_epred(
+    new_data=unseen_participants, re_formula="~0", num_samples=5, seed=7,
+)
+assert new_group_means.shape == population_means.shape == (1, 5, 3)
+```
+
+Group-effect and response noise use separate random streams, and each
+request restores the caller's CPU RNG state. These policies follow the
+released brms [new-level preparation contract](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/prepare_predictions.R#L1024-L1122)
+for the supported Normal/LKJ group laws. They do not relax the requirement
+that ordinary categorical predictor levels use fitted contrasts.
 
 A neural fit additionally requires `predictor_data` for the new rows:
 `neural_fit.posterior_epred(new_data=future, predictor_data=new_features)`.

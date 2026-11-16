@@ -43,7 +43,7 @@ def test_kernel_protocol_executes_qiec_and_preserves_silent_errors(tmp_path) -> 
             reply=True,
             timeout=20,
         )["content"]
-        assert reply["status"] == "ok"
+        assert reply["status"] == "ok", reply
         reply = client.execute(
             "object Row : FinSet _\n"
             "object Out : Real 1\n"
@@ -58,12 +58,60 @@ def test_kernel_protocol_executes_qiec_and_preserves_silent_errors(tmp_path) -> 
             reply=True,
             timeout=20,
         )["content"]
-        assert reply["status"] == "ok"
+        assert reply["status"] == "ok", reply
         inspected = client.inspect("regression::x", 13, reply=True, timeout=15)[
             "content"
         ]
         assert inspected["found"]
         assert "Tensor[Real]([Row])" in inspected["data"]["text/plain"]
+        reply = client.execute(
+            "object Closed : FinSet 2\n"
+            "morphism closed_arrow : Closed -> Closed [role=parameter]\n"
+            "define closed_composite = closed_arrow >> closed_arrow\n"
+            ":type closed_composite",
+            reply=True,
+            timeout=20,
+        )["content"]
+        assert reply["status"] == "ok", reply
+        inspected = client.inspect("closed_arrow", 12, reply=True, timeout=15)[
+            "content"
+        ]
+        assert inspected["found"]
+        assert "Closed -> Closed" in inspected["data"]["text/plain"]
+        reply = client.execute(
+            "define checked_tail() : Real !{} =\n"
+            "    return positive_parameter(0.5) + log_probability(0.5) + "
+            "log1mexp(-0.5) + log_ndtr(-1.0)\n"
+            ":run checked_tail",
+            reply=True,
+            timeout=20,
+        )["content"]
+        assert reply["status"] == "ok", reply
+        reply = client.execute(
+            "define invalid_probability() : Real !{} =\n"
+            "    return log_probability(1.5)\n:run invalid_probability",
+            reply=True,
+            timeout=20,
+        )["content"]
+        assert reply["status"] == "error"
+        assert "probability" in reply["evalue"]
+        reply = client.execute(
+            "object CountRows : FinSet 2\n"
+            "program count_model : CountRows -> CountRows\n"
+            "    observe count_y : CountRows <- COMPoisson(rate=2.0, dispersion=1.3)\n"
+            "    return count_y\nexport count_model\n"
+            ":run count_model --data count_y=[1,2]",
+            reply=True,
+            timeout=20,
+        )["content"]
+        assert reply["status"] == "ok", reply
+        for prefix, expected in (
+            ("COMPo", "COMPoisson"),
+            ("log_nd", "log_ndtr"),
+            ("positive_para", "positive_parameter"),
+        ):
+            completed = client.complete(prefix, reply=True, timeout=15)["content"]
+            assert expected in completed["matches"]
         reply = client.execute("@@@ invalid @@@", silent=True, reply=True, timeout=15)[
             "content"
         ]

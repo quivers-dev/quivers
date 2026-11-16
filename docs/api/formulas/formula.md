@@ -27,4 +27,14 @@ numeric column as `Formula.response_weights`; `FormulaData` preserves it in
 the complement. The [likelihood-weight guide](../../guides/analysis-data-and-formulas.md#likelihood-weights)
 explains the objective, row alignment, and prediction contract.
 
+`cs(expr)` marks a transition-specific fixed or group column through
+`FixedColumn.category_specific`. The formula lens retains those flags and
+the authored fixed-column order in `FormulaData.category_specific_columns`
+and `fixed_column_order`; serialization through the value IR does not
+silently turn a category-specific coefficient into an ordinary scalar.
+`cs(1)` uses an internally prepared ones column, with an explicit refusal
+if the caller already uses its reserved name. The
+[ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)
+states supported constructions and prediction shapes.
+
 ::: quivers.formulas.formula

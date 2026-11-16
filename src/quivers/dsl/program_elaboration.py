@@ -2697,9 +2697,31 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             row_entries.append(self.instances[PARAMS_INSTANCE].entry)
         row = EffectRow(entries=tuple(row_entries))
         parameters = tuple(scope.locals[name] for name, _ in state.parameters)
+        authored_names = {
+            cast(str, parameter.name)
+            for parameter in static_program_parameters(declaration)
+        }
+        mentioned = _program_extent_mentions(
+            (
+                body,
+                result_type,
+                row,
+                *parameters,
+                declaration.domain,
+                declaration.codomain,
+            ),
+            self._program_objects,
+        )
         available = {
             binder.name: binder
-            for binder in (*state.static_binders, *state.extents.values())
+            for binder in (
+                *state.static_binders,
+                *(
+                    binder
+                    for name, binder in state.extents.items()
+                    if name in mentioned or name in authored_names
+                ),
+            )
         }
         authored = []
         for parameter in static_program_parameters(declaration):
@@ -10646,6 +10668,64 @@ class _ProgramState(QiecModel):
     )
     random: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     score: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+
+
+def _program_extent_mentions(
+    roots: Sequence[object], objects: Mapping[str, ObjectInfo]
+) -> frozenset[str]:
+    """Find extents this entry actually uses, without capturing other entries.
+
+    Parameters
+    ----------
+    roots : Sequence[object]
+        Checked body, interface types, effect row and source domain/codomain.
+    objects : Mapping[str, ObjectInfo]
+        Module object metadata resolving source object names.
+
+    Returns
+    -------
+    frozenset[str]
+        Unskolemized index names referenced by this entry. Traversal visits
+        shared kernel records once per bound-index scope and ignores literal
+        data buffers.
+    """
+    from quivers.qiec.terms import CaseMotive
+
+    found: set[str] = set()
+    pending = [(root, frozenset()) for root in roots]
+    seen: set[tuple[int, frozenset[str]]] = set()
+    while pending:
+        node, bound = pending.pop()
+        if isinstance(node, IndexVariable):
+            if node.identity is None and node.name not in bound:
+                found.add(node.name)
+        elif isinstance(node, TypeName):
+            info = objects.get(node.name)
+            if info is not None and isinstance(info.extent, IndexVariable):
+                pending.append((info.extent, bound))
+        elif isinstance(node, tuple | list):
+            pending.extend((item, bound) for item in node)
+        elif isinstance(node, Mapping):
+            pending.extend((item, bound) for item in node.values())
+        elif isinstance(node, dx.Model):
+            key = (id(node), bound)
+            if key in seen:
+                continue
+            seen.add(key)
+            if isinstance(node, CaseMotive):
+                pending.append(
+                    (node.result_type, bound | {binder.name for binder in node.indices})
+                )
+                continue
+            fields = (
+                ("type",) if isinstance(node, LiteralValue) else node.__field_specs__
+            )
+            pending.extend(
+                (getattr(node, name), bound)
+                for name in fields
+                if name not in {"origin", "tag", "identity"}
+            )
+    return frozenset(found)
 
 
 def _index_variables_in(terms: Sequence[StaticArgument]) -> frozenset[str]:

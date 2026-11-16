@@ -621,7 +621,7 @@ def _decode_module(module: Module) -> dict:
             if not isinstance(step.index, TypeName):
                 continue
             qgroup = step.index.name
-            if qgroup == "FormulaCategoryLogit":
+            if qgroup in {"FormulaCategoryLogit", "FormulaCutpoint"}:
                 if var == "intercept":
                     fixed_qvr_names.append(("", True))
                 elif var.startswith("beta_"):
@@ -813,10 +813,13 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             raise ValueError(
                 f"priors on distributionally regressed parameters {sorted(conflicting)} must name their coefficients, such as 'dpar_sigma_intercept'"
             )
-        if thresholds_by is not None and family.name != "cumulative":
+        if thresholds_by is not None and (
+            family.ordinal is None
+            or family.ordinal.kind not in {"cumulative", "hurdle_cumulative"}
+        ):
             raise ValueError(
                 "FormulaToQVRModule: thresholds_by is only valid for the "
-                "cumulative family"
+                "cumulative family or hurdle_cumulative family"
             )
         if family.trials_parameter is None and binomial_trials != 1:
             raise ValueError(
@@ -851,6 +854,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 "mixture family"
             )
         self._binomial_trials = binomial_trials
+        if (
+            thresholds_by is not None
+            and family.ordinal is not None
+            and family.ordinal.thresholds != "flexible"
+        ):
+            raise ValueError("thresholds_by currently requires flexible thresholds")
         self._thresholds_by = thresholds_by
         self._mixture_components = mixture_components
         self._predictor_name = (
@@ -885,6 +894,69 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for a categorical or cumulative family), or a prior does
             not parse as ``"Family(arg, ...)"``.
         """
+        if formula.response_values.shape[1:] != formula.response_layout.event_shape:
+            raise ValueError("response values do not match their declared event layout")
+        if formula.response_layout.event_shape and self._family.name not in {
+            "multinomial",
+            "dirichlet_multinomial",
+            "dirichlet",
+            "dirichlet2",
+            "logistic_normal",
+        }:
+            raise ValueError(f"{self._family.name} requires a scalar response event")
+        category_columns = tuple(
+            col for col in formula.fixed_columns if col.category_specific
+        )
+        category_terms = tuple(
+            term
+            for term in formula.random_terms
+            if term.column is not None and term.column.category_specific
+        )
+        if category_columns or category_terms:
+            if self._family.ordinal is None:
+                raise ValueError("cs terms require an ordinal response family")
+            if (
+                self._family.ordinal.kind in {"cumulative", "hurdle_cumulative"}
+                and any(column.name == "cs(1)" for column in category_columns)
+                and any(column.is_intercept for column in formula.fixed_columns)
+            ):
+                raise ValueError(
+                    "fixed cs(1) duplicates the freely estimated cumulative "
+                    "threshold profile and proportional intercept; use the ordinary "
+                    "intercept and thresholds instead, or use category-specific "
+                    "predictors that vary across rows"
+                )
+            if self._thresholds_by is not None:
+                duplicate = next(
+                    (
+                        term
+                        for term in category_terms
+                        if term.group == self._thresholds_by
+                        and term.column is not None
+                        and term.column.name == "cs(1)"
+                    ),
+                    None,
+                )
+                if duplicate is not None:
+                    raise ValueError(
+                        f"category-specific intercept {duplicate.slope!r} for "
+                        f"{duplicate.group!r} duplicates the full thresholds_by "
+                        "profile; use the threshold profile and its ordinary "
+                        "group intercept instead"
+                    )
+            if (
+                self._family.ordinal.kind == "hurdle_cumulative"
+                and self._category_count(formula, family=self._family.name) < 3
+            ):
+                raise ValueError(
+                    "cs terms require at least two positive ordinal categories"
+                )
+        for name, predictor in self._distributional.items():
+            if any(col.category_specific for col in predictor.fixed_columns) or any(
+                term.column is not None and term.column.category_specific
+                for term in predictor.random_terms
+            ):
+                raise ValueError(f"cs terms are only valid for mu, not {name!r}")
         if self._family.name in {"shifted_lognormal", "frechet"}:
             response = np.asarray(formula.response_values)
             if (
@@ -911,7 +983,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
         if formula.response_weights is not None:
             weights = formula.response_weights.data
-            if weights.shape != formula.response_values.shape:
+            if weights.shape != formula.response_values.shape[:1]:
                 raise ValueError("weights must align with every evaluated response row")
             if (
                 weights.dtype.kind not in "iuf"
@@ -994,6 +1066,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             formula=formula.formula,
             response_name=formula.response_name,
             response_values=formula.response_values,
+            response_layout=formula.response_layout,
             fixed_column_names={
                 col.qvr_name: (col.term, col.name) for col in formula.fixed_columns
             },
@@ -1006,6 +1079,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             group_levels=dict(formula.group_levels),
             group_indices=dict(formula.group_indices),
             random_terms=formula.random_terms,
+            fixed_column_order=tuple(col.qvr_name for col in formula.fixed_columns),
+            category_specific_columns=tuple(
+                col.qvr_name for col in formula.fixed_columns if col.category_specific
+            ),
             offsets=formula.offsets,
             response_weights=formula.response_weights,
         )
@@ -1050,12 +1127,22 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         dict[str, str]
             Overrideable site names and effective canonical distribution calls.
         """
+        formula = self._threshold_location_formula(formula)
         names = {
             aux.name
             for aux in self._family.aux_params
             if aux.name not in self._distributional
             and aux.name not in self._fixed_parameters
         }
+        if self._family.ordinal is not None:
+            names.update(
+                {
+                    "cutpoint_log_spacing",
+                    "cutpoint_spacing",
+                    "cutpoint_offset",
+                    "cutpoints_raw",
+                }
+            )
         if self._family.name == "mixture":
             names.update(("mixture_logit", "mixture_offset", "mixture_scale"))
         for prefix, predictor in (
@@ -1133,9 +1220,20 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                         name=name,
                         qvr_name=qvr_name,
                         is_intercept=False,
+                        category_specific=qvr_name
+                        in complement.category_specific_columns,
                         data=fixed_column_data[qvr_name],
                     )
                 )
+
+        if complement.fixed_column_order:
+            by_name = {column.qvr_name: column for column in fixed_columns}
+            fixed_columns = [
+                by_name.pop(name)
+                for name in complement.fixed_column_order
+                if name in by_name
+            ]
+            fixed_columns.extend(by_name.values())
 
         random_terms: list[RandomTerm] = []
         for qgroup, slope_qvr in decoded["random_terms_qvr"]:
@@ -1167,6 +1265,23 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             original_terms.get((_qvr_name(term.group), _qvr_name(term.slope)), term)
             for term in random_terms
         ]
+        by_term = {
+            (_qvr_name(term.group), _qvr_name(term.slope)): term
+            for term in random_terms
+        }
+        random_terms = [
+            by_term.pop(key) for key in original_terms if key in by_term
+        ] + list(by_term.values())
+        if self._thresholds_by is not None:
+            random_terms = [
+                term
+                for term in random_terms
+                if not (
+                    term.group == self._thresholds_by
+                    and term.slope == "Intercept"
+                    and (_qvr_name(term.group), "Intercept") not in original_terms
+                )
+            ]
         return Formula(
             formula=complement.formula,
             response_name=complement.response_name,
@@ -1175,6 +1290,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             offsets=complement.offsets,
             response_weights=complement.response_weights,
             response_values=complement.response_values,
+            response_layout=complement.response_layout,
             group_levels=complement.group_levels,
             group_indices=complement.group_indices,
         )
@@ -1237,12 +1353,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         values = np.asarray(formula.response_values, dtype=np.float64).reshape(-1)
         if values.size == 0 or not np.isfinite(values).all():
             raise ValueError(f"{family} family requires a nonempty, finite response")
+        if np.any(values < -(2**63)) or np.any(values >= 2**63):
+            raise ValueError(
+                f"{family} family requires integer category labels in the Int64 range"
+            )
         integers = values.astype(np.int64)
         if not np.equal(values, integers).all():
             raise ValueError(f"{family} family requires integer category labels")
         levels = np.unique(integers)
-        expected = np.arange(int(levels[-1]) + 1)
-        if not np.array_equal(levels, expected):
+        if levels[0] != 0 or levels[-1] != levels.size - 1:
             raise ValueError(
                 f"{family} family requires contiguous category labels "
                 f"0..K-1; got {levels.tolist()!r}"
@@ -1272,7 +1391,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         statements: list[Statement],
         program_steps: list[ProgramStep],
     ) -> str:
-        """Emit identified ordered cutpoints and return their variable name.
+        """Emit identified thresholds and return their variable name.
 
         Cutpoints are represented by a zero origin followed by cumulative
         positive spacings and are centered before use. Centering separates the
@@ -1280,18 +1399,71 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         the log spacings receive hierarchical group-level deviations, so every
         group gets an ordered scale without introducing an unidentified random
         threshold shift alongside its random intercept.
+
+        Parameters
+        ----------
+        formula : Formula
+            Response categories, category-specific design and group coding.
+        statements : list[Statement]
+            Declarations receiving the threshold and profile axes.
+        program_steps : list[ProgramStep]
+            Steps receiving priors and threshold transformations.
+
+        Returns
+        -------
+        str
+            Shared or rowwise threshold binding; empty for a binary hurdle
+            law without a positive-category boundary.
+
+        Raises
+        ------
+        ValueError
+            If a group is absent or a prior call is malformed.
         """
-        n_categories = self._ordinal_category_count(formula)
+        n_categories = self._category_count(formula, family=self._family.name)
+        spec = self._family.ordinal
+        assert spec is not None
+        if spec.kind == "hurdle_cumulative":
+            n_categories -= 1
         n_cutpoints = n_categories - 1
+        if n_cutpoints == 0:
+            return ""
+
+        ordered = spec.kind in {"cumulative", "hurdle_cumulative"}
+        constrained_cs = ordered and (
+            any(column.category_specific for column in formula.fixed_columns)
+            or any(
+                term.column is not None and term.column.category_specific
+                for term in formula.random_terms
+            )
+        )
         cutpoint_index = "FormulaCutpoint"
         self._append_finite_object(statements, cutpoint_index, n_cutpoints)
 
         if n_cutpoints == 1:
             if self._thresholds_by is not None:
-                raise ValueError(
-                    "thresholds_by requires at least three response categories; "
-                    "a binary cumulative model has only one threshold"
+                program_steps.extend(
+                    (
+                        _let(
+                            "cutpoint_matrix",
+                            _factor(
+                                (
+                                    ("threshold_group", _qvr_name(self._thresholds_by)),
+                                    ("cutpoint", cutpoint_index),
+                                ),
+                                body=LetExprLiteral(value=0.0),
+                            ),
+                        ),
+                        _let(
+                            "row_cutpoints",
+                            _index(
+                                "cutpoint_matrix",
+                                _var(f"{_qvr_name(self._thresholds_by)}_idx"),
+                            ),
+                        ),
+                    )
                 )
+                return "row_cutpoints"
             program_steps.append(
                 _let(
                     "cutpoints",
@@ -1303,23 +1475,123 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
             return "cutpoints"
 
+        if spec.thresholds == "equidistant":
+            family_name, args = _parse_prior_call(
+                self._user_priors.get(
+                    "cutpoint_spacing",
+                    "LogNormal(0.0, 1.0)" if ordered else "Normal(0.0, 1.0)",
+                )
+            )
+            if ordered:
+                program_steps.append(
+                    _auxiliary_draw(
+                        "cutpoint_spacing",
+                        self._user_priors.get(
+                            "cutpoint_spacing", "LogNormal(0.0, 1.0)"
+                        ),
+                        lower=0.0,
+                    )
+                )
+            else:
+                program_steps.append(_draw("cutpoint_spacing", family_name, args))
+            equidistant_spacing: LetExprNode = _var("cutpoint_spacing")
+            if constrained_cs:
+                self._append_ordinal_spacing_bounds(
+                    formula, statements, program_steps, n_cutpoints - 1
+                )
+                equidistant_spacing = _add(
+                    _call("max", _var("ordinal_spacing_bound")), equidistant_spacing
+                )
+            program_steps.append(
+                _let(
+                    "cutpoints",
+                    _factor(
+                        (("cutpoint", cutpoint_index),),
+                        body=_mul(
+                            _sub(
+                                _var("cutpoint"),
+                                LetExprLiteral(value=(n_cutpoints - 1) / 2),
+                            ),
+                            equidistant_spacing,
+                        ),
+                    ),
+                )
+            )
+            return "cutpoints"
+
+        if not ordered:
+            if spec.thresholds == "sum_to_zero":
+                index = cutpoint_index
+                latent = "cutpoints_raw"
+                n_free = n_cutpoints
+            else:
+                index = "FormulaThresholdContrast"
+                latent = "cutpoint_offset"
+                n_free = n_cutpoints - 1
+                self._append_finite_object(statements, index, n_free)
+            family_name, args = _parse_prior_call(
+                self._user_priors.get(latent, "Normal(0.0, 1.0)")
+            )
+            program_steps.append(
+                _draw(latent, family_name, args, index=TypeName(name=index))
+            )
+            if spec.thresholds == "sum_to_zero":
+                raw = _var(latent)
+            else:
+                raw = _factor(
+                    (("cutpoint", cutpoint_index),),
+                    cases=(
+                        (0, LetExprLiteral(value=0.0)),
+                        *(
+                            (
+                                position,
+                                _index(
+                                    latent,
+                                    LetExprLiteral(value=position - 1, integral=True),
+                                ),
+                            )
+                            for position in range(1, n_cutpoints)
+                        ),
+                    ),
+                )
+            program_steps.append(_let("cutpoints_uncentered", raw))
+            program_steps.append(
+                _let(
+                    "cutpoints",
+                    _sub(
+                        _var("cutpoints_uncentered"),
+                        _call("mean", _var("cutpoints_uncentered")),
+                    ),
+                )
+            )
+            return "cutpoints"
+
         spacing_index = "FormulaSpacing"
         n_spacings = n_cutpoints - 1
         self._append_finite_object(statements, spacing_index, n_spacings)
 
         if self._thresholds_by is None:
+            spacing_family, spacing_args = _parse_prior_call(
+                self._user_priors.get("cutpoint_log_spacing", "Normal(0.0, 1.0)")
+            )
             program_steps.append(
                 _draw(
                     "cutpoint_log_spacing",
-                    "Normal",
-                    (0.0, 1.0),
+                    spacing_family,
+                    spacing_args,
                     index=TypeName(name=spacing_index),
                 )
             )
+            spacing: LetExprNode = _call("exp", _var("cutpoint_log_spacing"))
+            if constrained_cs:
+                self._append_ordinal_spacing_bounds(
+                    formula, statements, program_steps, n_spacings
+                )
+                spacing = _add(_var("ordinal_spacing_bound"), spacing)
             program_steps.append(
                 _let(
                     "cutpoint_cumulative",
-                    _call("cumsum", _call("exp", _var("cutpoint_log_spacing"))),
+                    _call("cumsum", spacing),
                 )
             )
             cases = ((0, LetExprLiteral(value=0.0)),) + tuple(
@@ -1418,10 +1690,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 ),
             )
         )
+        spacing_matrix: LetExprNode = _call("exp", _var("cutpoint_log_spacing_matrix"))
+        if constrained_cs:
+            self._append_ordinal_spacing_bounds(
+                formula, statements, program_steps, n_spacings
+            )
+            spacing_matrix = _add(_var("ordinal_spacing_bound"), spacing_matrix)
         program_steps.append(
             _let(
                 "cutpoint_cumulative_matrix",
-                _call("cumsum", _call("exp", _var("cutpoint_log_spacing_matrix"))),
+                _call("cumsum", spacing_matrix),
             )
         )
         program_steps.append(
@@ -1496,11 +1774,628 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         return "row_cutpoints"
 
+    def _threshold_location_formula(self, formula: Formula) -> Formula:
+        """Reuse or introduce the one group location of a full threshold profile.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula whose threshold grouping factor has retained coding.
+
+        Returns
+        -------
+        Formula
+            Formula with exactly one ordinary intercept for the threshold group.
+
+        Raises
+        ------
+        ValueError
+            If the requested threshold group has no evaluated coding.
+        """
+        group = self._thresholds_by
+        if group is None:
+            return formula
+        if group not in formula.group_levels:
+            raise ValueError(
+                f"thresholds_by={group!r} requires evaluated group coding; "
+                "include the group in the formula or use the dataframe fitting adapter"
+            )
+        if any(
+            term.group == group and term.slope == "Intercept"
+            for term in formula.random_terms
+        ):
+            return formula
+        return formula.with_(
+            random_terms=(
+                *formula.random_terms,
+                RandomTerm(group=group, slope="Intercept"),
+            )
+        )
+
+    def _append_ordinal_spacing_bounds(
+        self,
+        formula: Formula,
+        statements: list[Statement],
+        steps: list[ProgramStep],
+        n_spacings: int,
+    ) -> None:
+        """Bound adjacent linear category effects on the retained design.
+
+        Parameters
+        ----------
+        formula : Formula
+            Evaluated design whose rows define the fitting domain.
+        statements : list[Statement]
+            Module declarations receiving the spacing axis when necessary.
+        steps : list[ProgramStep]
+            Program steps receiving one linear-time reduction per spacing.
+        n_spacings : int
+            Number of gaps between adjacent cumulative thresholds.
+
+        Notes
+        -----
+        The emitted bound is ``max(0, max_i(v[i,j+1]-v[i,j]))``.
+        Adding a positive slack gives every strictly feasible threshold gap
+        for the fixed linear effects. A prior on the log slack is a proper
+        conditional prior, distinct from independently specified threshold
+        priors conditioned on the feasible domain.
+        """
+        axis = "FormulaSpacing"
+        if not any(
+            isinstance(statement, ObjectDecl) and statement.names == (axis,)
+            for statement in statements
+        ):
+            self._append_finite_object(statements, axis, n_spacings)
+        gap = _var("constraint_spacing")
+
+        def difference(row: LetExprNode) -> LetExprNode:
+            """Form adjacent transition-effect differences.
+
+            Parameters
+            ----------
+            row : LetExprNode
+                Original fitting row index.
+
+            Returns
+            -------
+            LetExprNode
+                Adjacent effect difference at the bound spacing position.
+            """
+            return _sub(
+                _index(
+                    "eta_nonbaseline",
+                    row,
+                    _add(gap, LetExprLiteral(value=1, integral=True)),
+                ),
+                _index("eta_nonbaseline", row, gap),
+            )
+
+        def reduce_rows(row_axis: str, row: LetExprNode) -> LetExprNode:
+            """Reduce a nonempty row partition to nonnegative gap bounds.
+
+            Parameters
+            ----------
+            row_axis : str
+                Finite partition axis.
+            row : LetExprNode
+                Original row selected at each partition position.
+
+            Returns
+            -------
+            LetExprNode
+                One maximum lower bound for each threshold gap.
+            """
+            return _factor(
+                (("constraint_spacing", axis),),
+                body=_call(
+                    "max",
+                    LetExprLiteral(value=0.0),
+                    _call(
+                        "max",
+                        _factor((("constraint_row", row_axis),), body=difference(row)),
+                    ),
+                ),
+            )
+
+        if self._thresholds_by is not None:
+            group = self._thresholds_by
+            cases: list[tuple[int, LetExprNode]] = []
+            for code in range(len(formula.group_levels[group])):
+                positions = tuple(
+                    i
+                    for i, value in enumerate(formula.group_indices[group])
+                    if value == code
+                )
+                if not positions:
+                    bound = _factor(
+                        (("constraint_spacing", axis),), body=LetExprLiteral(value=0.0)
+                    )
+                else:
+                    row_axis = f"FormulaConstraintRows_{code}"
+                    rows_name = f"ordinal_constraint_rows_{code}"
+                    self._append_finite_object(statements, row_axis, len(positions))
+                    steps.append(
+                        _let(
+                            rows_name,
+                            _factor(
+                                (("constraint_member", row_axis),),
+                                cases=tuple(
+                                    (i, LetExprLiteral(value=position, integral=True))
+                                    for i, position in enumerate(positions)
+                                ),
+                            ),
+                        )
+                    )
+                    bound = reduce_rows(
+                        row_axis, _index(rows_name, _var("constraint_row"))
+                    )
+                cases.append((code, bound))
+            value = _factor(
+                (("constraint_group", _qvr_name(group)),), cases=tuple(cases)
+            )
+        else:
+            value = reduce_rows("Resp", _var("constraint_row"))
+        steps.append(
+            _let(
+                "ordinal_spacing_bound",
+                value,
+            )
+        )
+
+    @staticmethod
+    def _row_predictor(
+        formula: Formula, name: str, row: LetExprNode, *, neural: bool = False
+    ) -> LetExprNode:
+        """Index predictors whose declared design includes a row axis.
+
+        Parameters
+        ----------
+        formula : Formula
+            Proportional predictor metadata.
+        name : str
+            Predictor binding.
+        row : LetExprNode
+            Row index.
+        neural : bool
+            Whether an external predictor supplies a row axis.
+
+        Returns
+        -------
+        LetExprNode
+            Row-indexed predictor or its shared scalar binding.
+        """
+        rowwise = (
+            neural
+            or bool(formula.offsets)
+            or any(
+                term.column is None or not term.column.category_specific
+                for term in formula.random_terms
+            )
+            or any(
+                not column.is_intercept and not column.category_specific
+                for column in formula.fixed_columns
+            )
+        )
+        return _index(name, row) if rowwise else _var(name)
+
+    def _append_ordinal_contrasts(
+        self, formula: Formula, cutpoints: str, program_steps: list[ProgramStep]
+    ) -> None:
+        """Materialize and validate each row/transition contrast once.
+
+        Parameters
+        ----------
+        formula : Formula
+            Proportional and category-specific predictor metadata.
+        cutpoints : str
+            Shared or rowwise threshold binding.
+        program_steps : list[ProgramStep]
+            Steps receiving checked discrimination, contrasts and cumulative
+            row-order validation.
+        """
+        row, transition = _var("ordinal_row"), _var("ordinal_transition")
+        eta = self._row_predictor(
+            formula, "mu", row, neural=self._predictor_name is not None
+        )
+        category_specific = any(
+            column.category_specific for column in formula.fixed_columns
+        ) or any(
+            term.column is not None and term.column.category_specific
+            for term in formula.random_terms
+        )
+        if category_specific:
+            eta = _add(eta, _index("eta_nonbaseline", row, transition))
+        disc_formula = self._distributional.get("disc")
+        program_steps.append(
+            _let("ordinal_disc", _call("positive_parameter", _var("disc")))
+        )
+        disc = (
+            self._row_predictor(disc_formula, "ordinal_disc", row)
+            if disc_formula is not None
+            else _var("ordinal_disc")
+        )
+        cuts = (
+            _index(cutpoints, row, transition)
+            if self._thresholds_by is not None
+            else _index(cutpoints, transition)
+        )
+        program_steps.append(
+            _let(
+                "ordinal_contrasts",
+                _factor(
+                    (
+                        ("ordinal_row", "Resp"),
+                        ("ordinal_transition", "FormulaCutpoint"),
+                    ),
+                    body=_mul(disc, _sub(cuts, eta)),
+                ),
+            )
+        )
+        spec = self._family.ordinal
+        if (
+            category_specific
+            and spec is not None
+            and spec.kind in {"cumulative", "hurdle_cumulative"}
+            and self._category_count(formula, family=self._family.name)
+            - int(spec.kind == "hurdle_cumulative")
+            > 2
+        ):
+            gap = _var("ordinal_spacing")
+            differences = _factor(
+                (("ordinal_row", "Resp"), ("ordinal_spacing", "FormulaSpacing")),
+                body=_sub(
+                    _index(
+                        "ordinal_contrasts",
+                        row,
+                        _add(gap, LetExprLiteral(value=1, integral=True)),
+                    ),
+                    _index("ordinal_contrasts", row, gap),
+                ),
+            )
+            program_steps.append(
+                _let(
+                    "ordinal_effective_spacing",
+                    _call("positive_parameter", differences),
+                )
+            )
+
+    @staticmethod
+    def _append_ordinal_cdf(
+        argument: LetExprNode, link: str, prefix: str, steps: list[ProgramStep]
+    ) -> tuple[str, str]:
+        """Bind a shared pair of stable log CDF/survival expressions.
+
+        Parameters
+        ----------
+        argument : LetExprNode
+            Finite ordinal contrasts.
+        link : str
+            Static inverse link.
+        prefix : str
+            Namespace of intermediate bindings.
+        steps : list[ProgramStep]
+            Steps receiving stable probability expressions.
+
+        Returns
+        -------
+        tuple of str
+            Log-CDF and log-survival binding names.
+
+        Raises
+        ------
+        ValueError
+            If the inverse link is unsupported.
+        """
+
+        def bind(suffix: str, expression: LetExprNode) -> LetExprVar:
+            """Append an intermediate probability binding.
+
+            Parameters
+            ----------
+            suffix : str
+                Local binding label.
+            expression : LetExprNode
+                Expression to evaluate once.
+
+            Returns
+            -------
+            LetExprVar
+                Reference to the intermediate.
+            """
+            name = prefix + suffix
+            steps.append(_let(name, expression))
+            return _var(name)
+
+        def choose(
+            condition: LetExprNode, yes: LetExprNode, no: LetExprNode
+        ) -> LetExprCall:
+            """Select safe elementwise alternatives.
+
+            Parameters
+            ----------
+            condition : LetExprNode
+                Boolean predicate.
+            yes : LetExprNode
+                Value where the predicate holds.
+            no : LetExprNode
+                Value elsewhere.
+
+            Returns
+            -------
+            LetExprCall
+                Selection expression.
+            """
+            return _call("select", condition, yes, no)
+
+        zero, one = LetExprLiteral(value=0.0), LetExprLiteral(value=1.0)
+        z = bind("argument", argument)
+
+        def minus(x: LetExprNode) -> LetExprNode:
+            """Negate a real expression.
+
+            Parameters
+            ----------
+            x : LetExprNode
+                Expression to negate.
+
+            Returns
+            -------
+            LetExprNode
+                Its additive inverse.
+            """
+            return _mul(LetExprLiteral(value=-1.0), x)
+
+        if link in {"logit", "probit_approx"}:
+            if link == "probit_approx":
+                z = bind(
+                    "approximation",
+                    _add(
+                        _mul(
+                            LetExprLiteral(value=0.07056),
+                            _call("pow", z, LetExprLiteral(value=3.0)),
+                        ),
+                        _mul(LetExprLiteral(value=1.5976), z),
+                    ),
+                )
+            cdf, sf = _call("logsigmoid", z), _call("logsigmoid", minus(z))
+        elif link == "probit":
+            cdf, sf = _call("log_ndtr", z), _call("log_ndtr", minus(z))
+        elif link == "softit":
+            positive = bind("positive", _call("softplus", z))
+            small = LetExprBinOp(op="<", left=z, right=LetExprLiteral(value=-35.0))
+            safe = choose(small, zero, z)
+            log_positive = bind(
+                "log_positive", choose(small, z, _call("log", _call("softplus", safe)))
+            )
+            denominator = bind("denominator", _call("log1p", positive))
+            cdf, sf = _sub(log_positive, denominator), minus(denominator)
+        elif link == "cauchit":
+            magnitude = bind("magnitude", _call("abs", z))
+            tail = LetExprBinOp(op=">", left=magnitude, right=one)
+            safe = choose(tail, magnitude, one)
+            small = bind(
+                "small",
+                _sub(
+                    _call("log", _call("atan", _div(one, safe))),
+                    LetExprLiteral(value=math.log(math.pi)),
+                ),
+            )
+            large = bind("large", _call("log1mexp", small))
+            negative = LetExprBinOp(op="<", left=z, right=zero)
+            regular = _div(
+                _call("atan", choose(tail, zero, z)), LetExprLiteral(value=math.pi)
+            )
+            cdf = choose(
+                tail,
+                choose(negative, small, large),
+                _call("log_probability", _add(LetExprLiteral(value=0.5), regular)),
+            )
+            sf = choose(
+                tail,
+                choose(negative, large, small),
+                _call("log_probability", _sub(LetExprLiteral(value=0.5), regular)),
+            )
+        elif link == "cloglog":
+            small = LetExprBinOp(op="<", left=z, right=LetExprLiteral(value=-35.0))
+            large = LetExprBinOp(op=">", left=z, right=LetExprLiteral(value=80.0))
+            safe_cdf = choose(small, zero, choose(large, zero, z))
+            regular = _call("log1mexp", minus(_call("exp", safe_cdf)))
+            cdf = choose(small, z, choose(large, zero, regular))
+            overflow = LetExprBinOp(op=">", left=z, right=LetExprLiteral(value=709.0))
+            sf = choose(
+                overflow,
+                _call("log_probability", zero),
+                minus(_call("exp", choose(overflow, zero, z))),
+            )
+        else:
+            raise ValueError(f"unsupported ordinal link {link!r}")
+        bind("cdf", cdf)
+        bind("sf", sf)
+        return prefix + "cdf", prefix + "sf"
+
+    def _append_ordinal_logits(
+        self,
+        formula: Formula,
+        cutpoints: str,
+        statements: list[Statement],
+        program_steps: list[ProgramStep],
+    ) -> None:
+        """Lower ordinal log masses with shared transitions and one prefix scan.
+
+        Parameters
+        ----------
+        formula : Formula
+            Response and predictor metadata.
+        cutpoints : str
+            Shared or row-indexed threshold binding.
+        statements : list[Statement]
+            Declarations receiving the response-category axis.
+        program_steps : list[ProgramStep]
+            Steps receiving normalized category log masses.
+        """
+        spec = self._family.ordinal
+        assert spec is not None
+        categories = self._category_count(formula, family=self._family.name)
+        hurdle = spec.kind == "hurdle_cumulative"
+        base_categories = categories - int(hurdle)
+        self._append_finite_object(statements, "FormulaOrdinalCategory", categories)
+        row = _var("ordinal_row")
+        cdf_name: str | None = None
+        sf_name: str | None = None
+        if base_categories > 1:
+            self._append_ordinal_contrasts(formula, cutpoints, program_steps)
+            argument = _var("ordinal_contrasts")
+            if spec.kind in {"acat", "cratio"}:
+                argument = _mul(LetExprLiteral(value=-1.0), argument)
+            cdf_name, sf_name = self._append_ordinal_cdf(
+                argument, spec.link, "ordinal_log_", program_steps
+            )
+            if spec.kind == "acat":
+                program_steps.append(
+                    _let(
+                        "ordinal_prefix",
+                        _call("cumsum", _sub(_var(cdf_name), _var(sf_name))),
+                    )
+                )
+            elif spec.kind in {"sratio", "cratio"}:
+                continue_name = sf_name if spec.kind == "sratio" else cdf_name
+                program_steps.append(
+                    _let("ordinal_prefix", _call("cumsum", _var(continue_name)))
+                )
+
+        def cell(name: str, position: int) -> LetExprNode:
+            """Select one transition at the current response row.
+
+            Parameters
+            ----------
+            name : str
+                Transition binding.
+            position : int
+                Zero-based transition position.
+
+            Returns
+            -------
+            LetExprNode
+                Selected transition value.
+            """
+            return _index(name, row, LetExprLiteral(value=position, integral=True))
+
+        def base_mass(category: int) -> LetExprNode:
+            """Construct a category log mass before a hurdle component.
+
+            Parameters
+            ----------
+            category : int
+                Zero-based positive-law category.
+
+            Returns
+            -------
+            LetExprNode
+                Stable category log mass.
+            """
+            if base_categories == 1:
+                return LetExprLiteral(value=0.0)
+            assert cdf_name is not None and sf_name is not None
+            if spec.kind == "acat":
+                return (
+                    LetExprLiteral(value=0.0)
+                    if category == 0
+                    else cell("ordinal_prefix", category - 1)
+                )
+            if spec.kind in {"sratio", "cratio"}:
+                previous = (
+                    LetExprLiteral(value=0.0)
+                    if category == 0
+                    else cell("ordinal_prefix", category - 1)
+                )
+                stop_name = cdf_name if spec.kind == "sratio" else sf_name
+                return (
+                    previous
+                    if category == base_categories - 1
+                    else _add(previous, cell(stop_name, category))
+                )
+            if category == 0:
+                return cell(cdf_name, 0)
+            if category == base_categories - 1:
+                return cell(sf_name, category - 1)
+            if spec.link == "logit":
+                lower, upper = (
+                    cell("ordinal_contrasts", category - 1),
+                    cell("ordinal_contrasts", category),
+                )
+                return _add(
+                    cell(cdf_name, category),
+                    cell(sf_name, category - 1),
+                    _call("log1mexp", _sub(lower, upper)),
+                )
+            mirror = LetExprBinOp(
+                op=">",
+                left=cell(cdf_name, category - 1),
+                right=LetExprLiteral(value=-math.log(2)),
+            )
+            high = _call(
+                "select", mirror, cell(sf_name, category - 1), cell(cdf_name, category)
+            )
+            low = _call(
+                "select", mirror, cell(sf_name, category), cell(cdf_name, category - 1)
+            )
+            return _add(high, _call("log1mexp", _sub(low, high)))
+
+        hu: LetExprNode | None = None
+        if hurdle:
+            hu_formula = self._distributional.get("hu")
+            hu = (
+                self._row_predictor(hu_formula, "hu", row)
+                if hu_formula is not None
+                else _var("hu")
+            )
+        cases: list[tuple[int, LetExprNode]] = []
+        for category in range(categories):
+            if hurdle:
+                assert hu is not None
+                value = (
+                    _call("log_probability", hu)
+                    if category == 0
+                    else _add(
+                        _call("log_probability", _sub(LetExprLiteral(value=1.0), hu)),
+                        base_mass(category - 1),
+                    )
+                )
+            else:
+                value = base_mass(category)
+            cases.append((category, _factor((("ordinal_row", "Resp"),), body=value)))
+        program_steps.append(
+            _let(
+                "ordinal_logits_by_category",
+                _factor(
+                    (("ordinal_category", "FormulaOrdinalCategory"),),
+                    cases=tuple(cases),
+                ),
+            )
+        )
+        program_steps.append(
+            _let(
+                "ordinal_logits",
+                _factor(
+                    (
+                        ("ordinal_row", "Resp"),
+                        ("ordinal_category", "FormulaOrdinalCategory"),
+                    ),
+                    body=_index(
+                        "ordinal_logits_by_category", _var("ordinal_category"), row
+                    ),
+                ),
+            )
+        )
+
     def _append_categorical_predictor(
         self,
         formula: Formula,
         statements: list[Statement],
         program_steps: list[ProgramStep],
+        *,
+        ordinal_transitions: bool = False,
+        correlated: Mapping[tuple[str, str, str], LetExprNode] | None = None,
     ) -> None:
         """Emit an identified multinomial-logit predictor.
 
@@ -1510,12 +2405,21 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         additive direction that an unconstrained ``K``-logit parameterization
         would leave unidentified.
         """
-        n_categories = self._category_count(formula, family="categorical")
+        n_categories = self._category_count(formula, family=self._family.name)
+        if (
+            ordinal_transitions
+            and self._family.ordinal is not None
+            and self._family.ordinal.kind == "hurdle_cumulative"
+        ):
+            n_categories -= 1
         n_logits = n_categories - 1
         category_index = "FormulaCategory"
-        logit_index = "FormulaCategoryLogit"
-        self._append_finite_object(statements, category_index, n_categories)
-        self._append_finite_object(statements, logit_index, n_logits)
+        logit_index = (
+            "FormulaCutpoint" if ordinal_transitions else "FormulaCategoryLogit"
+        )
+        if not ordinal_transitions:
+            self._append_finite_object(statements, category_index, n_categories)
+            self._append_finite_object(statements, logit_index, n_logits)
 
         cell_terms: list[LetExprNode] = []
         response_var = _var("response")
@@ -1542,7 +2446,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for index, _ in enumerate(formula.offsets)
         )
 
-        if self._predictor_name is not None:
+        if self._predictor_name is not None and not ordinal_transitions:
             predictor_index = _add(
                 _mul(
                     response_var,
@@ -1558,35 +2462,35 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 "reparameterize='noncentered'"
             )
 
-        blocks: dict[tuple[str, str], list[RandomTerm]] = {}
+        correlated = dict(correlated or {})
+        blocks: dict[tuple[str, str], list[tuple[str, RandomTerm]]] = {}
         for term in formula.random_terms:
-            if term.correlation_id is not None:
+            if (
+                term.correlation_id is not None
+                and ("", term.group, term.slope) not in correlated
+            ):
                 identity = (
                     f"shared_{term.correlation_id}"
                     if term.shared
                     else term.correlation_id
                 )
-                blocks.setdefault((term.group, identity), []).append(term)
-        correlations: dict[tuple[str, str], tuple[str, int, list[RandomTerm]]] = {}
+                blocks.setdefault((term.group, identity), []).append(("", term))
         for (group, identity), members in blocks.items():
-            size = len(members) * n_logits
-            if size < 2:
-                continue
-            correlation = f"cor_{_qvr_name(identity)}"
-            dimension = f"FormulaCorrelation_{_qvr_name(identity)}"
-            self._append_finite_object(statements, dimension, size)
-            family, arguments = _parse_prior_call(
-                self._user_priors.get(correlation, self._correlation_prior)
+            correlated.update(
+                self._append_indexed_correlations(
+                    formula,
+                    group,
+                    identity,
+                    members,
+                    statements,
+                    program_steps,
+                    coordinate_axis=logit_index,
+                )
             )
-            if family != "LKJCholesky":
-                raise ValueError("correlation priors must use LKJCholesky")
-            program_steps.append(
-                _draw(correlation, family, arguments, index=TypeName(name=dimension))
-            )
-            for position, term in enumerate(members):
-                correlations[(group, term.slope)] = (correlation, position, members)
 
         for term in formula.random_terms:
+            if ("", term.group, term.slope) in (correlated or {}):
+                continue
             qgroup = _qvr_name(term.group)
             qslope = _qvr_name(term.slope)
             sigma_var = f"sigma_{qgroup}_{qslope}"
@@ -1620,77 +2524,51 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 f"alpha_{qgroup}" if slope == "Intercept" else f"beta_{qgroup}_{qslope}"
             )
             contribution_name = f"{z_var}_contribution"
-            correlated = correlations.get((group, slope))
+            joint_value = (correlated or {}).get(("", group, slope))
+            if joint_value is not None:
+                if slope != "Intercept":
+                    column = (
+                        f"random_{term.column.qvr_name}"
+                        if term.column is not None
+                        else qslope
+                    )
+                    joint_value = _mul(joint_value, _var(column))
+                program_steps.append(
+                    _let(
+                        contribution_name,
+                        _factor((("category_logit", logit_index),), body=joint_value),
+                    )
+                )
+                cell_terms.append(_index(contribution_name, logit_var, response_var))
+                continue
             column_name = (
                 f"random_{term.column.qvr_name}" if term.column is not None else qslope
             )
-            if correlated is not None:
-                correlation, term_position, members = correlated
-                cases: list[tuple[int, LetExprNode]] = []
-                for category in range(n_logits):
-                    row = term_position * n_logits + category
-                    terms: list[LetExprNode] = []
-                    for column in range(row + 1):
-                        member = members[column // n_logits]
-                        member_category = column % n_logits
-                        innovation = f"z_{qgroup}_{_qvr_name(member.slope)}"
-                        position = _add(
-                            _mul(
-                                _var("random_group"),
-                                LetExprLiteral(value=float(n_logits), integral=True),
-                            ),
-                            LetExprLiteral(value=float(member_category), integral=True),
-                        )
-                        terms.append(
-                            _mul(
-                                _index(
-                                    correlation,
-                                    LetExprLiteral(value=float(row), integral=True),
-                                    LetExprLiteral(value=float(column), integral=True),
-                                ),
-                                _index(innovation, position),
-                            )
-                        )
-                    contribution = _mul(
-                        _index(
-                            sigma_var,
-                            LetExprLiteral(value=float(category), integral=True),
-                        ),
-                        _add(*terms),
-                    )
-                    cases.append(
-                        (
-                            category,
-                            _factor((("random_group", qgroup),), body=contribution),
-                        )
-                    )
-                value = _factor((("category_logit", logit_index),), cases=tuple(cases))
-            else:
-                z_matrix = f"{z_var}_matrix"
-                flat_index = _add(
-                    _mul(
-                        _var("random_group"),
-                        LetExprLiteral(value=float(n_logits), integral=True),
+            z_matrix = f"{z_var}_matrix"
+            flat_index = _add(
+                _mul(
+                    _var("random_group"),
+                    LetExprLiteral(value=float(n_logits), integral=True),
+                ),
+                logit_var,
+            )
+            program_steps.append(
+                _let(
+                    z_matrix,
+                    _factor(
+                        (("category_logit", logit_index), ("random_group", qgroup)),
+                        body=_index(z_var, flat_index),
                     ),
-                    logit_var,
                 )
-                program_steps.append(
-                    _let(
-                        z_matrix,
-                        _factor(
-                            (("category_logit", logit_index), ("random_group", qgroup)),
-                            body=_index(z_var, flat_index),
-                        ),
-                    )
-                )
-                contribution = _mul(
-                    _index(sigma_var, logit_var),
-                    _index(z_matrix, logit_var, _var("random_group")),
-                )
-                value = _factor(
-                    (("category_logit", logit_index), ("random_group", qgroup)),
-                    body=contribution,
-                )
+            )
+            contribution = _mul(
+                _index(sigma_var, logit_var),
+                _index(z_matrix, logit_var, _var("random_group")),
+            )
+            value = _factor(
+                (("category_logit", logit_index), ("random_group", qgroup)),
+                body=contribution,
+            )
             program_steps.append(_let(latent, value))
             contribution = _index(latent, logit_var, _var(f"{qgroup}_idx"))
             if slope != "Intercept":
@@ -1712,6 +2590,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 ),
             )
         )
+        if ordinal_transitions:
+            return
         program_steps.append(
             _let(
                 "categorical_zero_logit",
@@ -1862,6 +2742,200 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         return "mixture_weights", "mixture_locations", "mixture_scale"
 
+    def _append_indexed_correlations(
+        self,
+        formula: Formula,
+        group: str,
+        identity: str,
+        members: list[tuple[str, RandomTerm]],
+        statements: list[Statement],
+        steps: list[ProgramStep],
+        *,
+        coordinate_axis: str | None = None,
+    ) -> dict[tuple[str, str, str], LetExprNode]:
+        """Correlate scalar and indexed coefficients in one block.
+
+        Parameters
+        ----------
+        formula : Formula
+            Full location predictor and response category metadata.
+        group : str
+            Shared grouping factor.
+        identity : str
+            Prior correlation-block identity.
+        coordinate_axis : str | None
+            Shared vector axis, or transition axes only for category-specific terms.
+        members : list[tuple[str, RandomTerm]]
+            Prefix and term pairs in fitted block order.
+        statements : list[Statement]
+            Module objects receiving finite coordinate axes.
+        steps : list[ProgramStep]
+            Priors and deterministic transformations to append.
+
+        Returns
+        -------
+        dict[tuple[str, str, str], LetExprNode]
+            Row gathers of scalar or transition-indexed group coefficients.
+
+        Raises
+        ------
+        ValueError
+            If centered transition effects or a non-LKJ correlation prior
+            are requested.
+        """
+        if self._reparameterize != "noncentered":
+            raise ValueError(
+                "indexed random effects require reparameterize='noncentered'"
+            )
+        transitions = (
+            self._category_count(formula, family=self._family.name) - 1
+            if coordinate_axis is not None
+            or any(
+                term.column is not None and term.column.category_specific
+                for _, term in members
+            )
+            else 1
+        )
+        if (
+            coordinate_axis is None
+            and self._family.ordinal is not None
+            and self._family.ordinal.kind == "hurdle_cumulative"
+        ):
+            transitions -= 1
+        widths = [
+            transitions
+            if coordinate_axis is not None
+            or (term.column is not None and term.column.category_specific)
+            else 1
+            for _, term in members
+        ]
+        dimension_size = sum(widths)
+        if dimension_size < 2:
+            return {}
+        qgroup = _qvr_name(group)
+        correlation = f"cor_{_qvr_name(identity)}"
+        dimension = f"FormulaCorrelation_{_qvr_name(identity)}"
+        self._append_finite_object(statements, dimension, dimension_size)
+        family, arguments = _parse_prior_call(
+            self._user_priors.get(correlation, self._correlation_prior)
+        )
+        if family != "LKJCholesky":
+            raise ValueError("correlation priors must use LKJCholesky")
+        steps.append(
+            _draw(correlation, family, arguments, index=TypeName(name=dimension))
+        )
+        scales: list[str] = []
+        innovation_cases: list[tuple[int, LetExprNode]] = []
+        coordinate = 0
+        for (prefix, term), width in zip(members, widths, strict=True):
+            qslope = _qvr_name(term.slope)
+            sigma = f"{prefix}sigma_{qgroup}_{qslope}"
+            innovation = f"{prefix}z_{qgroup}_{qslope}"
+            is_transition = coordinate_axis is not None or (
+                term.column is not None and term.column.category_specific
+            )
+            prior, args = _parse_prior_call(
+                self._user_priors.get(sigma, self._random_scale_prior)
+            )
+            steps.append(
+                _draw(
+                    sigma,
+                    prior,
+                    args,
+                    index=TypeName(name=coordinate_axis or "FormulaCutpoint")
+                    if is_transition
+                    else None,
+                )
+            )
+            plate_index = qgroup
+            if is_transition:
+                plate_index = f"FormulaRandomCell_{qgroup}_{qslope}"
+                self._append_finite_object(
+                    statements, plate_index, len(formula.group_levels[group]) * width
+                )
+            steps.append(
+                _draw(
+                    innovation, "Normal", (0.0, 1.0), index=TypeName(name=plate_index)
+                )
+            )
+            for component in range(width):
+                coordinate_index: LetExprNode = _var("random_group")
+                if is_transition:
+                    coordinate_index = _add(
+                        _mul(
+                            coordinate_index, LetExprLiteral(value=width, integral=True)
+                        ),
+                        LetExprLiteral(value=component, integral=True),
+                    )
+                innovation_cases.append(
+                    (
+                        coordinate,
+                        _factor(
+                            (("random_group", qgroup),),
+                            body=_index(innovation, coordinate_index),
+                        ),
+                    )
+                )
+                coordinate += 1
+            scales.append(sigma)
+        # Form the block once, multiply once, then gather each member's
+        # coordinates. The source grows linearly in the joint dimension;
+        # it does not duplicate a triangular sum for every coefficient.
+        innovation_matrix = f"__formula_group_{_qvr_name(identity)}_innovations"
+        transformed_matrix = f"__formula_group_{_qvr_name(identity)}_transformed"
+        steps.append(
+            _let(
+                innovation_matrix,
+                _factor(
+                    (("group_coordinate", dimension),), cases=tuple(innovation_cases)
+                ),
+            )
+        )
+        steps.append(
+            _let(
+                transformed_matrix,
+                _call("matmul", _var(correlation), _var(innovation_matrix)),
+            )
+        )
+        result = {}
+        offset = 0
+        for position, ((prefix, term), width) in enumerate(
+            zip(members, widths, strict=True)
+        ):
+            is_transition = coordinate_axis is not None or (
+                term.column is not None and term.column.category_specific
+            )
+            latent = prefix + (
+                f"alpha_{qgroup}"
+                if term.slope == "Intercept"
+                else f"beta_{qgroup}_{_qvr_name(term.slope)}"
+            )
+            member_coordinate: LetExprNode = LetExprLiteral(value=offset, integral=True)
+            scale: LetExprNode = _var(scales[position])
+            binders = (("random_group", qgroup),)
+            if is_transition:
+                member_coordinate = _add(member_coordinate, _var("category_logit"))
+                scale = _index(scales[position], _var("category_logit"))
+                binders = (
+                    ("category_logit", coordinate_axis or "FormulaCutpoint"),
+                    *binders,
+                )
+            value = _factor(
+                binders,
+                body=_mul(
+                    scale,
+                    _index(transformed_matrix, member_coordinate, _var("random_group")),
+                ),
+            )
+            steps.append(_let(latent, value))
+            result[(prefix, group, term.slope)] = (
+                _index(latent, _var("category_logit"), _var(f"{qgroup}_idx"))
+                if is_transition
+                else _index(latent, _var(f"{qgroup}_idx"))
+            )
+            offset += width
+        return result
+
     def _append_correlations(
         self,
         formula: Formula,
@@ -1908,6 +2982,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 blocks.setdefault((term.group, identity), []).append((prefix, term))
         result: dict[tuple[str, str, str], LetExprNode] = {}
         for (group, identity), members in blocks.items():
+            if self._reparameterize == "noncentered" or any(
+                term.column is not None and term.column.category_specific
+                for _, term in members
+            ):
+                result.update(
+                    self._append_indexed_correlations(
+                        formula, group, identity, members, statements, steps
+                    )
+                )
+                continue
             if len(members) < 2:
                 continue
             qgroup = _qvr_name(group)
@@ -1959,65 +3043,38 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     if term.slope == "Intercept"
                     else f"{prefix}beta_{qgroup}_{_qvr_name(term.slope)}"
                 )
-                if self._reparameterize == "noncentered":
-                    steps.append(
-                        _draw(
-                            innovation,
-                            "Normal",
-                            (0.0, 1.0),
-                            index=TypeName(name=qgroup),
-                        )
+                location = f"{latent}_conditional_location"
+                scale = f"{latent}_conditional_scale"
+                diagonal = _index(
+                    correlation,
+                    LetExprLiteral(value=float(row), integral=True),
+                    LetExprLiteral(value=float(row), integral=True),
+                )
+                steps.append(
+                    _let(
+                        location,
+                        _mul(_var(scales[row]), combination(None)),
                     )
-                    diagonal_term = _mul(
-                        _index(
-                            correlation,
-                            LetExprLiteral(value=float(row), integral=True),
-                            LetExprLiteral(value=float(row), integral=True),
-                        ),
-                        _var(innovation),
+                )
+                steps.append(_let(scale, _mul(_var(scales[row]), diagonal)))
+                steps.append(
+                    _draw(
+                        latent,
+                        "Normal",
+                        (location, scale),
+                        index=TypeName(name=qgroup),
                     )
-                    steps.append(
-                        _let(
-                            latent,
-                            _mul(
-                                _var(scales[row]),
-                                _add(combination(None), diagonal_term),
-                            ),
-                        )
+                )
+                standardized = _sub(
+                    _div(_var(latent), _var(scales[row])),
+                    combination(None),
+                )
+                steps.append(
+                    _let(
+                        innovation,
+                        _div(standardized, diagonal),
                     )
-                else:
-                    location = f"{latent}_conditional_location"
-                    scale = f"{latent}_conditional_scale"
-                    diagonal = _index(
-                        correlation,
-                        LetExprLiteral(value=float(row), integral=True),
-                        LetExprLiteral(value=float(row), integral=True),
-                    )
-                    steps.append(
-                        _let(
-                            location,
-                            _mul(_var(scales[row]), combination(None)),
-                        )
-                    )
-                    steps.append(_let(scale, _mul(_var(scales[row]), diagonal)))
-                    steps.append(
-                        _draw(
-                            latent,
-                            "Normal",
-                            (location, scale),
-                            index=TypeName(name=qgroup),
-                        )
-                    )
-                    standardized = _sub(
-                        _div(_var(latent), _var(scales[row])),
-                        combination(None),
-                    )
-                    steps.append(
-                        _let(
-                            innovation,
-                            _div(standardized, diagonal),
-                        )
-                    )
+                )
                 result[(prefix, group, term.slope)] = _index(
                     latent, _var(f"{qgroup}_idx")
                 )
@@ -2238,6 +3295,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         return parameters
 
     def _build_module(self, formula: Formula) -> Module:
+        formula = self._threshold_location_formula(formula)
         statements: list[Statement] = []
         n_obs = formula.response_values.shape[0]
         statements.append(
@@ -2288,9 +3346,19 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             statements.append(ExportDecl(expr=ExprIdent(name="model")))
             return Module(statements=tuple(statements))
 
+        proportional = formula.with_(
+            fixed_columns=tuple(
+                col for col in formula.fixed_columns if not col.category_specific
+            ),
+            random_terms=tuple(
+                term
+                for term in formula.random_terms
+                if term.column is None or not term.column.category_specific
+            ),
+        )
         correlated = self._append_correlations(formula, statements, program_steps)
         eta_expr = self._append_predictor(
-            formula,
+            proportional,
             program_steps,
             predictor_name=self._predictor_name,
             correlated=correlated,
@@ -2308,6 +3376,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 continue
             predictor = self._distributional.get(aux.name)
             if predictor is None:
+                if aux.fixed_default is not None and aux.name not in self._user_priors:
+                    program_steps.append(
+                        _let(aux.name, LetExprLiteral(value=aux.fixed_default))
+                    )
+                    continue
                 prior = self._user_priors.get(aux.name, aux.prior)
                 if (
                     self._family.name == "shifted_lognormal"
@@ -2336,24 +3409,86 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 _append_link(program_steps, aux.name, _var(eta_name), aux.link.name)
 
         cutpoints_name: str | None = None
-        if self._family.name == "cumulative":
+        cutpoint_steps: list[ProgramStep] = []
+        if self._family.ordinal is not None:
             cutpoints_name = self._append_ordinal_cutpoints(
-                formula, statements, program_steps
+                formula, statements, cutpoint_steps
             )
 
-        program_steps.append(_let("eta", eta_expr))
-        _append_link(
-            program_steps,
-            "mu",
-            _var("eta"),
-            "identity"
-            if self._family.name == "cumulative"
-            else self._family.location_link.name,
+        category_columns = tuple(
+            col for col in formula.fixed_columns if col.category_specific
         )
+        category_terms = tuple(
+            term
+            for term in formula.random_terms
+            if term.column is not None and term.column.category_specific
+        )
+        if category_columns or category_terms:
+            self._append_categorical_predictor(
+                formula.with_(
+                    fixed_columns=category_columns,
+                    random_terms=category_terms,
+                    offsets=(),
+                ),
+                statements,
+                program_steps,
+                ordinal_transitions=True,
+                correlated=correlated,
+            )
 
-        if self._family.name == "cumulative":
+        program_steps.extend(cutpoint_steps)
+
+        program_steps.append(_let("eta", eta_expr))
+        com_log_rate = (
+            self._family.name == "com_poisson"
+            and self._family.location_link.name == "log"
+        )
+        # A COM log-rate remains useful even when exp(eta) overflows. Its
+        # inverse-link prediction is evaluated on request, not as an unused
+        # part of every density or native response-mean computation.
+        if not com_log_rate:
+            _append_link(
+                program_steps,
+                "mu",
+                _var("eta"),
+                "identity"
+                if self._family.ordinal is not None
+                else self._family.location_link.name,
+            )
+
+        if self._family.ordinal is not None:
             assert cutpoints_name is not None
-            obs_args: tuple[str | float, ...] = ("mu", cutpoints_name)
+            if (
+                self._family.ordinal.kind == "cumulative"
+                and self._family.ordinal.link in {"logit", "probit"}
+            ):
+                # Preserve the existing cumulative source and constructor when
+                # discrimination is its fixed unit default.
+                disc_is_unit = (
+                    self._fixed_parameters.get("disc", 1.0) == 1.0
+                    and "disc" not in self._distributional
+                    and "disc" not in self._user_priors
+                    and not category_columns
+                    and not category_terms
+                )
+                if not disc_is_unit:
+                    self._append_ordinal_contrasts(
+                        formula, cutpoints_name, program_steps
+                    )
+                    program_steps.append(
+                        _let("ordinal_scaled_eta", LetExprLiteral(value=0.0))
+                    )
+                    obs_args: tuple[str | float, ...] = (
+                        "ordinal_scaled_eta",
+                        "ordinal_contrasts",
+                    )
+                else:
+                    obs_args = ("mu", cutpoints_name)
+            else:
+                self._append_ordinal_logits(
+                    formula, cutpoints_name, statements, program_steps
+                )
+                obs_args = ("ordinal_logits",)
         elif self._family.name == "skew_normal":
             program_steps.extend(
                 [
@@ -2567,19 +3702,38 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 formula, statements, program_steps
             )
         else:
-            obs_args = ("mu",) + tuple(self._family.extra_observe_args)
-        program_steps.append(
-            _draw(
-                _qvr_name(formula.response_name),
-                self._family.observe_family,
-                obs_args,
-                index=TypeName(name="Resp"),
-                mode="score",
-                weights="formula_weights"
-                if formula.response_weights is not None
-                else None,
+            obs_args = (
+                ("eta", "shape")
+                if com_log_rate
+                else ("mu",) + tuple(self._family.extra_observe_args)
             )
+        observation = _draw(
+            _qvr_name(formula.response_name),
+            self._family.observe_family,
+            obs_args,
+            index=TypeName(name="Resp"),
+            mode="score",
+            weights="formula_weights" if formula.response_weights is not None else None,
         )
+        if com_log_rate:
+            observation = observation.with_(
+                args=(
+                    DrawArgNamed(parameter="log_rate", value=_to_draw_arg("eta")),
+                    DrawArgNamed(parameter="dispersion", value=_to_draw_arg("shape")),
+                ),
+            )
+        if (
+            self._family.ordinal is not None
+            and self._family.observe_family == "Categorical"
+        ):
+            observation = observation.with_(
+                args=(
+                    DrawArgNamed(
+                        parameter="logits", value=_to_draw_arg("ordinal_logits")
+                    ),
+                )
+            )
+        program_steps.append(observation)
 
         program_decl = ProgramDecl(
             name="model",

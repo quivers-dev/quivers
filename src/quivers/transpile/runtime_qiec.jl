@@ -130,6 +130,10 @@ const _qvr_qiec_primitives = Dict{String, Any}(
     "bool_to_int" => a -> a ? 1 : 0,
     "select_real" => (c, a, b) -> ifelse(c, a, b),
     "select_int" => (c, a, b) -> ifelse(c, a, b),
+    "positive_parameter" => a -> _qvr_positive_parameter(a),
+    "log_probability" => a -> _qvr_log_probability(a),
+    "log1mexp" => a -> _qvr_log1mexp(a),
+    "log_ndtr" => a -> _qvr_log_ndtr(a),
     "expm1" => expm1,
     "log1p" => log1p,
     "log2" => log2,
@@ -659,4 +663,33 @@ function _qvr_qiec_run(build, operations)
         end
     end
     return _qvr_qiec_value(current.value)
+end
+
+function _qvr_log_probability(x)
+    x isa Real && !(x isa Bool) && isfinite(x) && 0 <= x <= 1 || error("log_probability requires a finite real in [0,1]")
+    return iszero(x) ? -Inf : log(x)
+end
+function _qvr_log1mexp(x)
+    x isa Real && !(x isa Bool) && !isnan(x) && x <= 0 || error("log1mexp requires a nonpositive real")
+    return iszero(x) ? -Inf : x > -log(2.0) ? log(-expm1(x)) : log1p(-exp(x))
+end
+function _qvr_log_ndtr(x)
+    x isa Real && !(x isa Bool) && !isnan(x) || error("log_ndtr requires a real other than NaN")
+    x == Inf && return zero(x)
+    x == -Inf && return -Inf
+    if abs(x) > 2.5
+        magnitude = abs(x)
+        denominator = magnitude
+        for k in 96:-1:1
+            denominator = magnitude + k / denominator
+        end
+        tail = -0.5 * magnitude * magnitude - 0.9189385332046727 - log(denominator)
+        return x < 0 ? tail : log1p(-exp(tail))
+    end
+    return log(0.5 * (1 + _qvr_qiec_erf(x / sqrt(2.0))))
+end
+
+function _qvr_positive_parameter(x)
+    x isa Real && !(x isa Bool) && isfinite(x) && x > 0 || error("positive_parameter requires a finite strictly positive real")
+    return x
 end

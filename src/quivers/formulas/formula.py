@@ -30,8 +30,10 @@ namespace so users coming from R get the expected base R behaviour.
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Literal, Mapping
+import io
 import re
+import tokenize
 
 import didactic.api as dx
 import formulae as fo
@@ -64,7 +66,86 @@ _R_TRANSFORMS = {
     "sinh": np.sinh,
     "cosh": np.cosh,
     "tanh": np.tanh,
+    "cs": np.asarray,
 }
+
+
+_CS_ONES = "qvrCSInterceptOnes"
+
+
+def _normalize_cs_intercept(formula: str) -> str:
+    """Give category-specific literal intercepts an explicit dataframe row axis.
+
+    Parameters
+    ----------
+    formula : str
+        Formula accepted by formulae, with optional cs(1) calls.
+
+    Returns
+    -------
+    str
+        Formula with literal-one cs arguments replaced by a reserved column.
+    """
+    tokens = [
+        token
+        for token in tokenize.generate_tokens(io.StringIO(formula).readline)
+        if token.type
+        not in {
+            tokenize.NEWLINE,
+            tokenize.NL,
+            tokenize.INDENT,
+            tokenize.DEDENT,
+            tokenize.COMMENT,
+        }
+    ]
+    lines = formula.splitlines(keepends=True)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+    spans: list[tuple[int, int]] = []
+    for index in range(len(tokens) - 3):
+        name, opening, value, closing = tokens[index : index + 4]
+        if (
+            name.type == tokenize.NAME
+            and name.string == "cs"
+            and opening.string == "("
+            and closing.string == ")"
+            and value.type == tokenize.NUMBER
+        ):
+            try:
+                is_one = float(value.string) == 1.0
+            except ValueError:
+                is_one = False
+            if is_one:
+                spans.append(
+                    (
+                        starts[value.start[0] - 1] + value.start[1],
+                        starts[value.end[0] - 1] + value.end[1],
+                    )
+                )
+    for start, end in reversed(spans):
+        formula = formula[:start] + _CS_ONES + formula[end:]
+    return formula
+
+
+def _contains_cs(expression: object) -> bool:
+    """Recognize cs calls structurally in formulae's lazy-expression tree.
+
+    Parameters
+    ----------
+    expression : object
+        Lazy formulae expression.
+
+    Returns
+    -------
+    bool
+        Whether this expression contains a category-specific modifier.
+    """
+    if getattr(expression, "callee", None) == "cs":
+        return True
+    return any(_contains_cs(arg) for arg in getattr(expression, "args", ())) or any(
+        _contains_cs(arg) for arg in getattr(expression, "kwargs", {}).values()
+    )
 
 
 def _exposure(values: object) -> np.ndarray:
@@ -174,7 +255,9 @@ class FixedColumn(ValueModel):
         only). Fixed-design inputs use this identifier; offsets and
         response weights use compiler-owned input names.
     is_intercept : bool
-        ``True`` for the constant-1 column.
+        ``True`` for the constant-1 proportional predictor column.
+    category_specific : bool
+        Whether cs(expr) gives this column one coefficient per ordinal transition.
     data : np.ndarray
         The column's values, shape ``(N,)``; read-only.
     """
@@ -183,6 +266,7 @@ class FixedColumn(ValueModel):
     name: str
     qvr_name: str
     is_intercept: bool = False
+    category_specific: bool = False
     data: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(_read_only))
 
 
@@ -215,6 +299,26 @@ class RandomTerm(ValueModel):
     )
 
 
+class ResponseLayout(ValueModel):
+    """Retain event coordinates independently of the observation-row axis.
+
+    Parameters
+    ----------
+    component_names : tuple[str, ...]
+        Ordered labels of a vector event; empty for a scalar response.
+    carrier : Literal["real", "integer"]
+        Numeric carrier of the evaluated response, before family validation.
+    """
+
+    component_names: tuple[str, ...] = ()
+    carrier: Literal["real", "integer"] = "real"
+
+    @property
+    def event_shape(self) -> tuple[int, ...]:
+        """Return event dimensions, excluding observation rows."""
+        return (len(self.component_names),) if self.component_names else ()
+
+
 class Formula(ValueModel):
     """A parsed regression formula plus the data it was parsed
     against.
@@ -237,7 +341,9 @@ class Formula(ValueModel):
     random_terms : tuple[RandomTerm, ...]
         Random-effect group specifications.
     response_values : np.ndarray
-        Response column values, shape ``(N,)``; read-only.
+        Response values with shape ``(N, *response_layout.event_shape)``; read-only.
+    response_layout : ResponseLayout
+        Event coordinates and evaluated numeric carrier.
     group_levels : dict[str, tuple[str, ...]]
         Canonical level ordering per grouping factor, used to derive
         deterministic plate-index tensors.
@@ -258,6 +364,9 @@ class Formula(ValueModel):
     )
     random_terms: tuple[RandomTerm, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    response_layout: ResponseLayout = dx.field(
+        default_factory=ResponseLayout, opaque=True, extras=OPAQUE_BY_VALUE
     )
     response_values: np.ndarray = dx.field(
         opaque=True, extras=opaque_by_value(_read_only)
@@ -289,13 +398,19 @@ class FormulaData(ValueModel):
     response_name : str
         Original response column name.
     response_values : np.ndarray
-        Response values with shape ``(N,)``; read-only.
+        Response values with shape ``(N, *response_layout.event_shape)``; read-only.
+    response_layout : ResponseLayout
+        Event coordinates and evaluated numeric carrier.
     fixed_column_names : Mapping[str, tuple[str, str]]
         ``(term, name)`` pairs keyed by normalized fixed-column name; a
         read-only mapping.
     fixed_column_data : Mapping[str, np.ndarray]
         Predictor values keyed by normalized fixed-column name; a
         read-only mapping of read-only arrays.
+    category_specific_columns : tuple[str, ...]
+        Normalized fixed-column names carrying ordinal transition coefficients.
+    fixed_column_order : tuple[str, ...]
+        Authored fixed-column order, retained across staged predictor emission.
     group_original_names : dict[str, str]
         Original group names keyed by normalized group name.
     group_levels : dict[str, tuple[str, ...]]
@@ -315,6 +430,9 @@ class FormulaData(ValueModel):
 
     formula: str = ""
     response_name: str = ""
+    response_layout: ResponseLayout = dx.field(
+        default_factory=ResponseLayout, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     response_values: np.ndarray = dx.field(
         opaque=True, extras=opaque_by_value(_read_only)
     )
@@ -326,6 +444,8 @@ class FormulaData(ValueModel):
         opaque=True,
         extras=opaque_by_value(_read_only_columns),
     )
+    category_specific_columns: tuple[str, ...] = ()
+    fixed_column_order: tuple[str, ...] = ()
     group_original_names: dict[str, str] = dx.field(default_factory=dict)
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
@@ -356,6 +476,11 @@ def _explode_term(term_name: str, term, n_obs: int) -> list[FixedColumn]:
     entries, matching R/brms's one-coefficient-per-column convention.
     """
     data = np.asarray(term.data)
+    category_specific = any(
+        _contains_cs(getattr(component, "call", None))
+        for component in getattr(term, "components", ())
+    )
+    display_name = term_name.replace(_CS_ONES, "1")
     if data.ndim == 1:
         # Single column; treat as one coefficient.
         is_intercept = (
@@ -364,9 +489,10 @@ def _explode_term(term_name: str, term, n_obs: int) -> list[FixedColumn]:
         return [
             FixedColumn(
                 term=term_name,
-                name=term_name,
-                qvr_name=("intercept" if is_intercept else _qvr_name(term_name)),
+                name=display_name,
+                qvr_name=("intercept" if is_intercept else _qvr_name(display_name)),
                 is_intercept=is_intercept,
+                category_specific=category_specific,
                 data=data.astype(np.float64),
             )
         ]
@@ -383,18 +509,20 @@ def _explode_term(term_name: str, term, n_obs: int) -> list[FixedColumn]:
         return [
             FixedColumn(
                 term=term_name,
-                name=term_name,
-                qvr_name=("intercept" if is_intercept else _qvr_name(term_name)),
+                name=display_name,
+                qvr_name=("intercept" if is_intercept else _qvr_name(display_name)),
                 is_intercept=is_intercept,
+                category_specific=category_specific,
                 data=data[:, 0].astype(np.float64),
             )
         ]
     return [
         FixedColumn(
             term=term_name,
-            name=f"{term_name}_{k + 1}",
-            qvr_name=_qvr_name(f"{term_name}_{k + 1}"),
+            name=f"{display_name}_{k + 1}",
+            qvr_name=_qvr_name(f"{display_name}_{k + 1}"),
             is_intercept=False,
+            category_specific=category_specific,
             data=data[:, k].astype(np.float64),
         )
         for k in range(n_cols)
@@ -508,7 +636,10 @@ def formula_from_data(
     R behaviour without explicit registration.
     ``offset(expr)`` adds an evaluated expression with coefficient one;
     ``exposure(expr)`` adds its logarithm and requires positive finite values.
-    These terms work in location and auxiliary formulas. Polynomial terms via
+    These terms work in location and auxiliary formulas. Ordinal ``cs(expr)``
+    terms retain a category-specific transition axis; ``cs(1)`` uses an internal
+    constant column so fresh-data evaluation preserves its row axis.
+    Polynomial terms via
     ``poly(x, k)`` are orthogonal by default, matching R's
     ``stats::poly``.
 
@@ -595,11 +726,20 @@ def _formula_and_design(
         )
     namespace: dict[str, object] = dict(_R_TRANSFORMS)
     if extra_namespace:
-        if {"offset", "exposure"} & extra_namespace.keys():
-            raise ValueError("offset and exposure are reserved formula modifiers")
+        if {"offset", "exposure", "cs", "cbind"} & extra_namespace.keys():
+            raise ValueError(
+                "offset, exposure, cs, and cbind are reserved formula modifiers"
+            )
         namespace.update(extra_namespace)
     namespace["exposure"] = _exposure
-    normalized, random_blocks = _random_blocks(formula)
+    namespace["cbind"] = lambda *columns: np.column_stack(columns)
+    cs_normalized = _normalize_cs_intercept(formula)
+    if _CS_ONES in pandas_df.columns:
+        raise ValueError(f"{_CS_ONES!r} is reserved for category-specific intercepts")
+    if cs_normalized != formula:
+        pandas_df = pandas_df.copy()
+        pandas_df[_CS_ONES] = 1.0
+    normalized, random_blocks = _random_blocks(cs_normalized)
     # Inspect only formulas containing modifiers, so ordinary formulas retain
     # their single design-matrix parse. Inspect before evaluation because a
     # nested offset object can otherwise fail inside formulae arithmetic.
@@ -690,13 +830,48 @@ def _formula_and_design(
                 codes = tuple(level_index[str(v)] for v in nw_df[group].to_list())
                 group_indices[group] = codes
 
-    response_values = (
-        np.asarray(dm.response.design_matrix).reshape(-1).astype(np.float64)
+    response_values = np.asarray(dm.response.design_matrix)
+    components = dm.response.term.term.components
+    response_call = (
+        getattr(components[0], "call", None) if len(components) == 1 else None
+    )
+    vector_response = getattr(response_call, "callee", None) == "cbind"
+    if vector_response:
+        assert response_call is not None
+        labels = tuple(str(argument) for argument in response_call.args)
+        if response_values.ndim != 2 or response_values.shape[1] != len(labels):
+            raise ValueError(
+                "cbind response arguments must each produce one numeric column"
+            )
+        if len(labels) < 2 or len(set(labels)) != len(labels):
+            raise ValueError(
+                "cbind responses require at least two distinct component labels"
+            )
+    else:
+        labels = ()
+        if response_values.ndim == 2 and response_values.shape[1] == 1:
+            response_values = response_values[:, 0]
+        if response_values.ndim != 1:
+            raise ValueError("vector responses require explicit cbind component labels")
+    if response_values.dtype.kind not in "iuf":
+        raise ValueError("responses must have a real or integer numeric carrier")
+    integer_carrier = response_values.dtype.kind in "iu"
+    if (
+        integer_carrier
+        and response_values.dtype.kind == "u"
+        and np.any(response_values > np.iinfo(np.int64).max)
+    ):
+        raise ValueError("integer responses exceed the Int64 carrier")
+    response_layout = ResponseLayout(
+        component_names=labels, carrier="integer" if integer_carrier else "real"
+    )
+    response_values = response_values.astype(
+        np.int64 if vector_response and integer_carrier else np.float64
     )
 
     if (
         response_weights is not None
-        and response_weights.data.shape != response_values.shape
+        and response_weights.data.shape != response_values.shape[:1]
     ):
         raise ValueError(
             "weights must align with every evaluated response row; missing model values cannot drop weighted rows"
@@ -710,6 +885,7 @@ def _formula_and_design(
         response_weights=response_weights,
         random_terms=tuple(random_terms),
         response_values=response_values,
+        response_layout=response_layout,
         group_levels=group_levels,
         group_indices=group_indices,
     ), dm
@@ -719,6 +895,7 @@ __all__ = [
     "FixedColumn",
     "RandomTerm",
     "Formula",
+    "ResponseLayout",
     "FormulaData",
     "formula_from_data",
 ]

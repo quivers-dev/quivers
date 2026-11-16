@@ -80,6 +80,8 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetExprVar,
 )
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
+from quivers.transpile._builtin_spellings import _probability_builtins_used
+
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import (
@@ -471,7 +473,9 @@ class StanRenderer(RendererBase):
         # into the program above the data block so the sampling
         # statement `y ~ kumaraswamy(a, b);` resolves through Stan's
         # `<family>_lpdf` lookup convention.
-        if any(_ir_uses_family(ir.body, f) for f in _STAN_RUNTIME_HELPER_FAMILIES):
+        if any(
+            _ir_uses_family(ir.body, f) for f in _STAN_RUNTIME_HELPER_FAMILIES
+        ) or _probability_builtins_used(ir.body):
             _graft_runtime_stan_helper(ctx.sb, self, "prog")
         # Pre-create blocks in canonical Stan order so emit_pretty
         # honours the `data? transformed_data? parameters?

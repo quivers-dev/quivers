@@ -27,6 +27,8 @@ from quivers.dsl import loads
 from quivers.dsl.parser import parse
 from quivers.dsl.pure_builtins import BUILTIN_REGISTRY, PRIMITIVE_BUILTINS
 from quivers.transpile import UnsupportedConstruct, available_targets, transpile
+from quivers.qiec.primitives import PRIMITIVES
+from quivers.transpile.qiec_ir import capabilities_for_target
 from quivers.transpile._builtin_spellings import (
     BUILTIN_SPELLINGS,
     ELABORATED_BUILTINS,
@@ -62,6 +64,10 @@ _UNARY: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "gelu": F.gelu,
     "lgamma": torch.lgamma,
     "log": torch.log,
+    "log_probability": torch.log,
+    "positive_parameter": lambda x: x,
+    "log1mexp": lambda x: torch.log(-torch.expm1(x)),
+    "log_ndtr": torch.special.log_ndtr,
     "log10": torch.log10,
     "log1p": torch.log1p,
     "log2": torch.log2,
@@ -109,7 +115,7 @@ _THRESHOLD = 0.43
 #: operand a tenth of an observation (within 0.07), so every argument
 #: stays inside the domain. ``round`` sits on a tie, which a target
 #: rounding half up or away from zero gets wrong.
-_ARGUMENT: dict[str, float] = {"acosh": 1.5, "round": 2.5, "pow": 0.6}
+_ARGUMENT: dict[str, float] = {"acosh": 1.5, "round": 2.5, "pow": 0.6, "log1mexp": -1.0}
 _DEFAULT_ARGUMENT = 0.4
 _EXPONENT = 1.5
 
@@ -463,7 +469,12 @@ def _computation_oracle(names: list[str], mu: float) -> float:
 def test_stan_scores_every_builtin_a_named_computation_applies(
     scratch: pathlib.Path,
 ) -> None:
-    names = _spelled("stan")
+    names = [
+        name
+        for name in _spelled("stan")
+        if name not in PRIMITIVES
+        or capabilities_for_target("stan").supports(PRIMITIVES[name].capability)
+    ]
     source = _computation_source(names)
     rendered = transpile(parse(source), target="stan")
     assert b"functions {" in rendered and b"round(" not in rendered

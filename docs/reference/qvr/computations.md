@@ -210,6 +210,37 @@ Support for authored primitive calls is checked separately from direct
 observation rendering. BUGS, JAGS, and Stan refuse these computation calls
 with capability diagnostics.
 
+## Checked scalar domains
+
+`log_probability(p)` computes `log(p)` for a finite probability, including
+`-inf` at zero. `log1mexp(x)` computes `log(1-exp(x))` for `x <= 0`,
+including `-inf`; `log_ndtr(x)` computes the standard Normal log CDF,
+including both infinite endpoints. `positive_parameter(x)` checks a
+finite strictly positive real and returns it unchanged. All four reject
+Boolean and NaN arguments. Their signatures are `Real -> Real`; these
+runtime domain checks do not introduce static indices or effects.
+
+<!-- compile: qiec -->
+```qvr
+define checked_scale(x : Real) : Real !{} =
+    return positive_parameter(x)
+
+define guarded_log(x : Real) : Real !{} =
+    if x < 0.0 then
+        return 0.0
+    else
+        return log_probability(x)
+```
+
+Only the selected conditional branch executes. Thus `guarded_log(-1)`
+returns zero, while an active invalid probability such as
+`guarded_log(1.2)` raises. The compiler retains control flow when eager
+selection would evaluate an invalid inactive branch. Unsupported symbolic
+branching is refused explicitly, and a checked computation need not have
+a tensor-fitting executor. The
+[primitive API](../../api/qiec/primitives.md#checked-probability-operations)
+states external target capabilities and endpoint limits.
+
 ## Entry points
 
 Every `define` in the source is an [entry point](execution-and-tooling.md#list-entry-points). The

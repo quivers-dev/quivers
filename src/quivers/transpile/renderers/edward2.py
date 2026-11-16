@@ -31,6 +31,8 @@ import pathlib
 import panproto
 
 from quivers.dsl.ast_nodes import Expr, MorphismDecl
+from quivers.transpile._builtin_spellings import _probability_builtins_used
+
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import EmitPretty, target_protocol
 from quivers.transpile.renderers._ranks import name_rank_map
@@ -292,14 +294,16 @@ class Edward2Renderer(RendererBase):
         # directly when a marginalize is present. A score or a call
         # needs the factor helper, a TFP distribution.
         factors = _ir_has_factor(ir.body)
+        probability = _probability_builtins_used(ir.body)
         if (
             _ir_has_marginalize(ir.body)
             or ir_uses_family(ir.body, "MixtureNormal")
             or qiec_families_used(ir)
             or factors
+            or probability
         ):
             self._emit_tfp_import(py)
-        if factors:
+        if factors or probability:
             graft_python_statements(
                 sb, _FACTOR_HELPER.read_text(), "mod", "qiec_factor"
             )

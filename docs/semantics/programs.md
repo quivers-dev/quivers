@@ -129,6 +129,174 @@ it introduces neither a static index nor a likelihood factor.
 Numerical evaluation must separately respect cancellation and overflow
 in these mathematical expressions.
 
+#### Vector count events
+
+For trial count $n\in\mathbb N$ and a probability vector $p$ on $C$
+categories, `Multinomial` has counting-measure density
+
+$$
+P(Y=y)=\frac{n!}{\prod_{c=1}^{C}y_c!}
+       \prod_{c=1}^{C}p_c^{y_c},
+\qquad y_c\in\mathbb N,\quad\sum_c y_c=n.
+$$
+
+The convention $0^0=1$ admits structural zero categories. With positive
+concentrations $\alpha_c$ and $A=\sum_c\alpha_c$, integrating over a
+Dirichlet probability vector gives `DirichletMultinomial`:
+
+$$
+P(Y=y)=\frac{n!}{\prod_c y_c!}
+       \frac{\Gamma(A)}{\Gamma(A+n)}
+       \prod_c\frac{\Gamma(\alpha_c+y_c)}{\Gamma(\alpha_c)}.
+$$
+
+Both laws put unit mass on the all-zero vector when $n=0$. The category
+axis is an event axis, while any observation axes form the batch. Thus
+`observe y : Row <- Multinomial(...) [over=Category]` contributes one
+log mass per row, rather than independent scores per count coordinate.
+Their sum constraint couples the coordinates. Static category and row
+extents specify these types; runtime trial and probability or
+concentration tensors specify the kernel. Declaring either tensor
+introduces no observation or random effect.
+
+#### COM-Poisson normalization
+
+For rate $\lambda\geq0$ and dispersion $\nu>0$, `COMPoisson` has counting-measure density
+
+$$
+p(k;\lambda,\nu)=\frac{\lambda^k}{(k!)^\nu Z(\lambda,\nu)},
+\qquad Z(\lambda,\nu)=\sum_{j=0}^{\infty}\frac{\lambda^j}{(j!)^\nu},
+\quad k\in\mathbb N.
+$$
+
+At zero rate the law is $\delta_0$. With $\eta=\log\lambda$,
+its score is $k\eta-\nu\log(k!)-\log Z$ and
+$\mathbb E[K]=\partial_\eta\log Z$; the rate is not generally this
+expectation. `rate` and `log_rate` select equivalent parameterizations,
+not separate effects or static indices. The formula frontend uses the
+same rate law for fitting and prediction. The released brms
+[Stan kernel](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/inst/chunks/fun_com_poisson.stan)
+uses this rate, whereas its [R helper](https://github.com/cran/brms/blob/b124949c14067aa658b176d26477ccf715881bf9/R/distributions.R#L1222-L1300)
+uses $m$ with $\lambda=m^\nu$.
+
+The infinite series defines the measure independently of an executor's
+certified summation budget. Native failure to certify normalization or
+moments is an explicit execution refusal, not replacement by a truncated
+law. The rejection sampler likewise refuses exhausted proposal or count
+capacity instead of changing the target measure.
+
+#### Ordinal probability constructions
+
+Let $F$ be the selected inverse link, $\eta$ a real predictor,
+$d>0$ discrimination, and $c_j$ the $K-1$ thresholds, with
+$z_j=d(c_j-\eta-e_j)$. The optional $e_j$ is a transition-specific
+predictor. For cumulative probabilities, put $F(z_{-1})=0$ and
+$F(z_{K-1})=1$. The category masses are
+
+$$
+p_j=F(z_j)-F(z_{j-1}),\qquad j=0,\ldots,K-1.
+$$
+
+These masses require nondecreasing row contrasts. Ordered base
+thresholds with a common predictor and positive discrimination establish
+this condition; arbitrary transition-specific predictors do not. For
+linear category-specific effects $v_{ij}$, the formula compiler instead
+uses the training-domain bound
+
+$$
+B_{gj}=\max\left(0,\max_{i:g(i)=g}
+           (v_{i,j+1}-v_{ij})\right),\qquad
+\delta_{gj}=B_{gj}+\exp(s_{gj}).
+$$
+
+Centered cumulative sums of $\delta_{gj}$ define the group's base
+cutpoints. Thus $c_{g,j+1}-v_{i,j+1}>c_{gj}-v_{ij}$ on every training
+row. A shared profile uses the maximum over all training rows;
+equidistant thresholds use the maximum bound across transitions plus
+one positive slack. This preserves a direct linear category-specific
+predictor, with a proper conditional prior on log slack $s$, rather
+than an independent prior on cutpoints. Ordinary derivatives need not
+exist where the maximum has tied arguments.
+
+For $K$ cumulative categories, a flexible group profile consists of
+$K-2$ centered shape coordinates and one varying location. Equidistant
+profiles constrain the shape to a common spacing. The compiler
+reuses or supplies exactly one ordinary group intercept; binary profiles
+have only the location coordinate. A duplicate same-group
+category-specific intercept is refused. Likewise, a fixed transition
+intercept with freely estimated cumulative thresholds and a proportional
+intercept repeats free coordinates; that combination is refused even
+when the coefficient has an explicit prior. The hurdle construction applies
+this representation to its positive categories; a single positive
+category has no cutpoint profile.
+
+At prediction, the actual fitted cutpoints are retained per posterior
+draw. New covariates and effect selections do not reconstruct the
+training bound. Every requested effective profile must remain ordered;
+a crossing is an explicit support failure. `posterior_thresholds`
+returns these row cutpoints after selected varying and category-specific
+shifts, before the proportional population predictor and discrimination.
+
+Adjacent-category probabilities instead set
+$q_j=F(-z_j)$ and
+$\log(p_{j+1}/p_j)=\log q_j-\log(1-q_j)$, then normalize the
+prefix sums of these log odds. For stopping-ratio probabilities, set
+$s_j=F(z_j)$; for continuation-ratio probabilities, set
+$s_j=1-F(-z_j)$. Both sequential constructions give
+
+$$
+p_j=s_j\prod_{i<j}(1-s_i)\quad(j<K-1),\qquad
+p_{K-1}=\prod_{i<K-1}(1-s_i).
+$$
+
+These noncumulative constructions impose no ordering on thresholds.
+Equidistant thresholds have the centered form
+$c_j=(j-(K-2)/2)\delta$; $\delta$ must be positive for cumulative
+models but may be any real for the other constructions. Threshold
+centering states an identification constraint, not an equivalence of
+priors induced by distinct latent representations.
+
+For hurdle probability $h$, an ordinal base on categories
+$1,\ldots,K-1$ becomes $p_0=h$ and
+$p_j=(1-h)p_j^{\mathrm{base}}$ for $j>0$.
+It uses $K-2$ base thresholds, including no threshold when there is one
+positive category. This is an extra lowest category, not a second atom
+added to the base's existing category zero.
+
+`OrdinalSpec` and threshold choices are static compiler configuration;
+cutpoints, discrimination, and category effects are runtime values.
+Their declarations add no likelihood. The observation contributes the
+selected category's log mass, with likelihood weights applied under the
+same rules as any other observation.
+
+#### Group effects at prediction time
+
+Selecting group effects restricts the predictor sum: omitted terms have
+value zero, rather than being integrated out. Group-specific thresholds
+are separate conditional parameters and remain in the response law.
+Known grouping identities reuse their posterior vectors. For a new
+identity and posterior draw $s$, donor prediction uses one common donor
+index $J_s$ across the identity's coefficients and auxiliary predictors.
+The `uncertainty` policy samples $J_s$ independently per draw; `old_levels`
+uses one $J$ for every chain and draw, while the donor vector still varies
+with $s$. Both draw donors from all fitted levels.
+
+The `gaussian` policy samples a new zero-mean group vector from the
+Normal/LKJ conditional law at draw $s$. Repeated rows with the same
+identity share that vector, including one shared new identity for
+repeated missing group values within a factor. This is prediction under
+a stated group law; it adds no fitted levels or changes to the posterior.
+For a constrained category-specific new-group profile, the explicit
+`feasible_uncertainty` and `feasible_gaussian` policies condition the
+joint donor or Gaussian proposal on ordered effective cutpoints for the
+requested rows. Gaussian threshold profiles use the fitted hierarchical
+log-slack base law. Known profiles retain their fitted values. Each
+posterior draw is retained; exhaustion of 1,024 proposals causes an
+execution refusal, without dropping draws or rebuilding thresholds.
+Ordinary categorical predictor contrasts remain fixed to their training
+levels. The [prediction guide](../guides/analysis-data-and-formulas.md#selecting-effects-and-predicting-for-new-groups)
+states the API and the supported policy boundary.
+
 #### Scalar response kernels and regression parameters
 
 A regression parameter need not occupy the same slot as a native family

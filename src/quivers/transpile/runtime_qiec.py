@@ -121,7 +121,13 @@ def _qvr_qiec_if(condition, then, otherwise):
         # A host's Boolean array decides the branch as the host reads
         # it; a host that traces rather than evaluates raises here, as
         # it does for any data-dependent branch.
-        condition = bool(condition)
+        try:
+            condition = bool(condition)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "QIEC conditional requires an evaluable Boolean; "
+                "this target cannot branch on a symbolic Boolean"
+            ) from error
     if not isinstance(condition, bool):
         raise TypeError("QIEC if condition is not a Boolean")
     return then() if condition else otherwise()
@@ -139,6 +145,60 @@ def _qvr_qiec_is_host(value):
 # primitive applied to the host's array stays on the host's array and
 # keeps its gradient; a primitive applied to plain Python values uses the
 # Python table.
+def _qvr_qiec_log_probability(value):
+    if (
+        isinstance(value, bool)
+        or not _qvr_qiec_math.isfinite(value)
+        or (not 0 <= value <= 1)
+    ):
+        raise ValueError("log_probability requires a finite real value in [0, 1]")
+    return _qvr_qiec_math.log(value) if value else -_qvr_qiec_math.inf
+
+
+def _qvr_qiec_log1mexp(value):
+    if isinstance(value, bool) or _qvr_qiec_math.isnan(value) or value > 0:
+        raise ValueError("log1mexp requires a nonpositive real value")
+    if value == 0:
+        return -_qvr_qiec_math.inf
+    if value > -_qvr_qiec_math.log(2):
+        return _qvr_qiec_math.log(-_qvr_qiec_math.expm1(value))
+    return _qvr_qiec_math.log1p(-_qvr_qiec_math.exp(value))
+
+
+def _qvr_qiec_log_ndtr(value):
+    if isinstance(value, bool) or _qvr_qiec_math.isnan(value):
+        raise ValueError("log_ndtr requires a real value other than NaN")
+    if value == _qvr_qiec_math.inf:
+        return 0.0
+    if value == -_qvr_qiec_math.inf:
+        return -_qvr_qiec_math.inf
+    if value < -10:
+        x = -value
+        denominator = x
+        for numerator in range(64, 0, -1):
+            denominator = x + numerator / denominator
+        return (
+            -0.5 * x * x
+            - 0.5 * _qvr_qiec_math.log(2 * _qvr_qiec_math.pi)
+            - _qvr_qiec_math.log(denominator)
+        )
+    if value > 0:
+        return _qvr_qiec_math.log1p(
+            -0.5 * _qvr_qiec_math.erfc(value / _qvr_qiec_math.sqrt(2))
+        )
+    return _qvr_qiec_math.log(
+        0.5 * _qvr_qiec_math.erfc(-value / _qvr_qiec_math.sqrt(2))
+    )
+
+
+def _qvr_qiec_positive_parameter(value):
+    if isinstance(value, bool) or not _qvr_qiec_math.isfinite(value) or value <= 0:
+        raise ValueError(
+            "positive_parameter requires a finite strictly positive real value"
+        )
+    return value
+
+
 _qvr_qiec_host_math = {}
 
 
@@ -155,6 +215,10 @@ def _qvr_qiec_mod_int(a, b):
 # registry; integer division and remainder truncate toward zero on every
 # host, which is why they are spelled out rather than borrowed.
 _qvr_qiec_primitives = {
+    "positive_parameter": _qvr_qiec_positive_parameter,
+    "log_probability": _qvr_qiec_log_probability,
+    "log1mexp": _qvr_qiec_log1mexp,
+    "log_ndtr": _qvr_qiec_log_ndtr,
     "add_int": lambda a, b: a + b,
     "sub_int": lambda a, b: a - b,
     "mul_int": lambda a, b: a * b,
@@ -1136,3 +1200,12 @@ def _qvr_qiec_run(build, operations):
             _qvr_qiec_drop_request(current[1])
             raise
     return _qvr_qiec_value(current[1])
+
+
+_qvr_qiec_host_math.update(
+    {
+        "log_probability": _qvr_qiec_log_probability,
+        "log1mexp": _qvr_qiec_log1mexp,
+        "log_ndtr": _qvr_qiec_log_ndtr,
+    }
+)

@@ -130,9 +130,12 @@ assert future_mean.shape == future_response.shape == (1, 20, 3)
 The first result contains expected responses; the second adds response noise.
 `posterior_linpred` instead exposes the linear predictor, with
 `transform=True` for its inverse-link value. New rows reuse fitted transforms
-and contrasts. Grouped models accept fitted group levels in any row order
-and reject new levels. Responses and likelihood weights are unnecessary;
-offsets, exposures, auxiliary predictors, and per-row trials still require
+and contrasts. Grouped models accept fitted group levels in any row order.
+New or missing group identities require `allow_new_levels=True`;
+`sample_new_levels` selects joint donor or fitted Gaussian/LKJ effects.
+`re_formula="~0"` excludes varying effects by setting them to zero.
+Responses and likelihood weights are unnecessary; offsets, exposures,
+auxiliary predictors, and per-row trials still require
 their columns. The [new-row guide](../../guides/analysis-data-and-formulas.md#predictions-on-new-rows)
 gives a grouped distributional example and the neural-input contract.
 
@@ -240,6 +243,16 @@ result = fit(
 ```
 
 The response labels must be consecutive integers starting at zero. The generated program exponentiates log spacings, sums them cumulatively, and centers each rater's thresholds, so the thresholds are ordered in every draw, the rater intercept is a shift of location, and the thresholds describe how each rater uses the scale.
+
+This combines one centered shape with one varying location per rater. The
+compiler reuses the formula's rater intercept, or supplies it when absent;
+a binary cumulative model needs only that location coordinate.
+`result.posterior_thresholds(num_samples=100)` exposes the effective row
+profiles with chain, draw, row, and threshold axes. For nonproportional
+`cs(expr)` terms, the compiler additionally constrains spacing to preserve
+training-row ordering and retains fitted cutpoints during prediction.
+The [ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)
+explains the conditional slack priors and explicit new-group support policies.
 
 ### Training with a neural predictor
 

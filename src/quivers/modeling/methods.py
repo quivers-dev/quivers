@@ -19,6 +19,7 @@ from quivers.inference import (
     SVI,
 )
 from quivers.modeling.model import BoundModel, ModelFit
+from quivers.inference.svi import _unique_parameters
 
 
 class MCMCMethod(ValueModel):
@@ -134,25 +135,16 @@ class VariationalMethod(ValueModel):
                     observations=data,
                 )
             )
-            parameters = list(
-                {
-                    id(p): p for p in (*program.parameters(), *guide.parameters())
-                }.values()
-            )
+            parameters = _unique_parameters(program.parameters(), guide.parameters())
             optimizer = (
                 self.optimizer_factory(parameters)
                 if self.optimizer_factory is not None
                 else torch.optim.Adam(parameters, lr=self.learning_rate)
             )
             svi = SVI(program, guide, optimizer, self.objective)
-            losses = []
-            for index in range(self.num_steps):
-                loss = svi.step(model.input, data)
-                if not math.isfinite(loss):
-                    raise ValueError(f"nonfinite variational loss at step {index}")
-                losses.append(loss)
-                if self.callback is not None:
-                    self.callback(index, loss)
+            losses = svi.run(
+                model.input, data, num_steps=self.num_steps, callback=self.callback
+            )
         return ModelFit(model=model, posterior=guide, losses=tuple(losses))
 
 

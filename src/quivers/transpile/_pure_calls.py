@@ -607,6 +607,14 @@ def _expression(
         if isinstance(value.value, str):
             return LetExprString(value=value.value)
     if isinstance(value, PrimitiveApplication):
+        if primitive(value.name).capability == "probability":
+            return LetExprCall(
+                func=value.name,
+                args=tuple(
+                    _expression(argument, cards, target, program)
+                    for argument in value.arguments
+                ),
+            )
         if value.name in {"observation_weight", "scale_weight"}:
             if target == RUNTIME_TARGET:
                 return LetExprCall(
@@ -857,6 +865,34 @@ def _bound_names(term: Computation | Value) -> set[str]:
     return found
 
 
+def _contains_checked_probability(value: Value) -> bool:
+    """Whether eager evaluation could reach a partial probability operation.
+
+    Parameters
+    ----------
+    value : Value
+        A branch result, including any local pure bindings.
+
+    Returns
+    -------
+    bool
+        Whether the branch must keep its control-flow boundary.
+    """
+    pending: list[Hashable] = [value]
+    while pending:
+        item = pending.pop()
+        if (
+            isinstance(item, PrimitiveApplication)
+            and primitive(item.name).capability == "probability"
+        ):
+            return True
+        if isinstance(item, tuple):
+            pending.extend(item)
+        elif isinstance(item, QiecModel):
+            pending.extend(getattr(item, name) for name in type(item).__field_specs__)
+    return False
+
+
 def _select(
     condition: Value,
     then: Value,
@@ -892,6 +928,12 @@ def _select(
     CallNotLowered
         If the branches return neither real nor integer values.
     """
+    if _contains_checked_probability(then) or _contains_checked_probability(otherwise):
+        raise CallNotLowered(
+            f"runs a conditional checked probability operation in `{owner}`"
+            f"{origin_line(term)}, which requires lazy QIEC control flow "
+            "rather than eagerly evaluating both select arguments"
+        )
     split = tensor_shape(result_type)
     element = result_type if split is None else split[0]
     if element == REAL:

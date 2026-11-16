@@ -9,14 +9,16 @@ import torch
 from torch.distributions import Distribution
 
 from quivers.continuous.plate import VectorisedObserve
-from quivers.inference._posterior import draw_count
-from quivers.inference.mcmc.driver import MCMCResult
+from quivers.inference._posterior import constrained_draws
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import Trace, trace
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
     from quivers.formulas._prediction import PredictionContext
+
+
+_MAX_FEASIBLE_GROUP_ATTEMPTS = 1024
 
 
 def posterior_draws(
@@ -43,41 +45,16 @@ def posterior_draws(
     ValueError
         If posterior sites or shapes do not match the fitted program.
     """
-    chains, count = draw_count(fit.posterior, num_samples)
     registry = LatentRegistry.from_model(
         fit.program, observed_names=set(fit.observations)
     )
-    if isinstance(fit.posterior, MCMCResult):
-        result = {
-            name: values[:, :count] for name, values in fit.posterior.samples.items()
-        }
-    else:
-        with torch.random.fork_rng(devices=[]), torch.no_grad():
-            torch.random.default_generator.manual_seed(seed)
-            input = torch.zeros(1, 1, dtype=torch.long)
-            result = {}
-            for draw in range(count):
-                sample = fit.posterior.rsample(input)
-                if set(sample) != set(registry.names):
-                    raise ValueError(
-                        "guide sites do not match the fitted formula's latent sites"
-                    )
-                for name in registry.names:
-                    value = sample[name].reshape(registry[name].constrained_shape)
-                    if name not in result:
-                        result[name] = value.new_empty((1, count, *value.shape))
-                    result[name][0, draw].copy_(value)
-    if set(result) != set(registry.names):
-        raise ValueError(
-            "posterior sites do not match the fitted formula's latent sites"
-        )
-    for name, values in result.items():
-        expected = (chains, count, *registry[name].constrained_shape)
-        if tuple(values.shape) != expected:
-            raise ValueError(
-                f"posterior site {name!r} has shape {tuple(values.shape)}, expected {expected}"
-            )
-    return result
+    return constrained_draws(
+        fit.posterior,
+        torch.zeros(1, 1, dtype=torch.long),
+        num_samples=num_samples,
+        seed=seed,
+        registry=registry,
+    )
 
 
 def replay(
@@ -104,6 +81,12 @@ def replay(
     ------
     Trace
         One native execution trace per chain and draw.
+
+    Raises
+    ------
+    ValueError
+        If fresh rows cross retained thresholds, or a conditional new-group
+        policy exhausts its proposal budget. Posterior draws remain unchanged.
     """
     with torch.no_grad():
         observations = dict(
@@ -111,14 +94,181 @@ def replay(
         )
         program = fit.program if context is None else context.program
         input = torch.zeros(1, 1, dtype=torch.long)
+        generator = torch.Generator().manual_seed(
+            (context.seed + 2) % 2**64 if context is not None else 0
+        )
+        fixed_donors: dict[str, torch.Tensor] = {}
+        specialized_shapes = {}
+        if context is not None and context.groups:
+            registry = LatentRegistry.from_model(
+                program, observed_names=set(observations)
+            )
+            specialized_shapes = {
+                name: registry[name].constrained_shape for name in registry.names
+            }
         for chain in range(shape[0]):
             for draw in range(shape[1]):
-                latents = {name: values[chain, draw] for name, values in draws.items()}
-                yield trace(
-                    program,
-                    input,
-                    observations | latents,
+                original_latents = {
+                    name: values[chain, draw] for name, values in draws.items()
+                }
+                retained: dict[str, torch.Tensor] = {}
+                fitted: Trace | None = None
+                if context is not None and context.retain_ordinal_cutpoints:
+                    fitted = trace(
+                        fit.program, input, dict(fit.observations) | original_latents
+                    )
+                    if "cutpoints" in fitted.sites:
+                        retained["cutpoints"] = fitted.sites["cutpoints"].value.reshape(
+                            -1
+                        )
+                feasible = (
+                    context is not None
+                    and context.new_level_policy.startswith("feasible_")
+                    and any(
+                        name in context.ordinal_order_groups
+                        and -1 in group.fitted_indices
+                        for name, group in context.groups.items()
+                    )
                 )
+                attempts = _MAX_FEASIBLE_GROUP_ATTEMPTS if feasible else 1
+                recorded: Trace | None = None
+                for attempt in range(attempts):
+                    latents = original_latents
+                    donors: dict[str, torch.Tensor] = {}
+                    if context is not None and context.groups:
+                        from quivers.formulas._group_prediction import remap_draw
+
+                        latents = remap_draw(
+                            context,
+                            latents,
+                            specialized_shapes,
+                            generator,
+                            fixed_donors,
+                            donors,
+                        )
+                    if (
+                        context is not None
+                        and context.retain_ordinal_cutpoints
+                        and fitted is not None
+                        and "cutpoint_matrix" in fitted.sites
+                    ):
+                        retained.update(
+                            _retained_group_cutpoints(
+                                fit,
+                                context,
+                                fitted,
+                                latents,
+                                observations,
+                                donors,
+                                input,
+                            )
+                        )
+                    try:
+                        recorded = trace(
+                            program, input, observations | latents | retained
+                        )
+                    except ValueError as exc:
+                        if (
+                            context is None
+                            or not context.retain_ordinal_cutpoints
+                            or "ordinal_effective_spacing" not in str(exc)
+                        ):
+                            raise
+                        if feasible and attempt + 1 < attempts:
+                            continue
+                        raise ValueError(
+                            "ordinal prediction requires ordered effective cutpoints; "
+                            f"chain {chain}, draw {draw}, requested rows/groups "
+                            f"{tuple(context.groups)}: {exc}. "
+                            + (
+                                f"No feasible joint new-group proposal was obtained in {attempts} attempts; "
+                                "the posterior draw was retained, and prediction failed."
+                                if feasible
+                                else "Fitted cutpoints were retained; use prediction covariates "
+                                "inside their fitted order-support domain."
+                            )
+                        ) from exc
+                    break
+                assert recorded is not None
+                yield recorded
+
+
+def _retained_group_cutpoints(
+    fit: BayesianFit,
+    context: PredictionContext,
+    fitted: Trace,
+    latents: dict[str, torch.Tensor],
+    observations: dict[str, torch.Tensor],
+    donors: dict[str, torch.Tensor],
+    input: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """Retain known profiles and obtain genuine conditional new-group proposals.
+
+    Parameters
+    ----------
+    fit : BayesianFit
+        Original grouped cumulative fit.
+    context : PredictionContext
+        Prepared compact group metadata and prediction program.
+    fitted : Trace
+        Full original-data replay, before varying-effect selection.
+    latents : dict of str to torch.Tensor
+        Jointly remapped raw group parameters for one proposal.
+    observations : dict of str to torch.Tensor
+        Fresh predictor bindings.
+    donors : dict of str to torch.Tensor
+        Joint donor indices for the non-Gaussian policies.
+    input : torch.Tensor
+        One native execution input.
+
+    Returns
+    -------
+    dict of str to torch.Tensor
+        Actual retained cutpoint profiles and inert support-bound overrides.
+        A Gaussian new group's profile is sampled from its original log-slack
+        hierarchical law and subsequently conditioned on fresh-row order by
+        the caller's explicit rejection policy.
+    """
+    assert fit.thresholds_by is not None
+    group = fit.thresholds_by
+    original_groups = len(fit.formula.group_levels[group])
+    matrix = fitted.sites["cutpoint_matrix"].value.reshape(original_groups, -1)
+    if group not in context.groups:
+        return {"cutpoint_matrix": matrix}
+    mapping = context.groups[group]
+    indices = torch.tensor(mapping.fitted_indices, dtype=torch.long)
+    cuts = matrix[indices.clamp_min(0)].clone()
+    gaps = max(0, matrix.shape[-1] - 1)
+    overrides: dict[str, torch.Tensor] = {}
+    if gaps:
+        overrides["ordinal_spacing_bound"] = matrix.new_zeros(len(indices), gaps)
+    new = indices < 0
+    if bool(new.any()):
+        if group in donors:
+            cuts[new] = matrix[donors[group][new]]
+        elif gaps:
+            # Obtain the existing emitter's hierarchical shape transform.
+            # Safe contrast overrides suppress response evaluation only in
+            # this proposal trace; the final trace validates the actual law.
+            transitions = matrix.shape[-1]
+            safe = torch.arange(transitions, dtype=matrix.dtype, device=matrix.device)
+            proposal = trace(
+                context.program,
+                input,
+                observations
+                | latents
+                | overrides
+                | {
+                    "ordinal_contrasts": safe.expand(context.rows, transitions),
+                    "ordinal_effective_spacing": matrix.new_ones(context.rows, gaps),
+                },
+            )
+            proposed = proposal.sites["cutpoint_matrix"].value.reshape(len(indices), -1)
+            cuts[new] = proposed[new]
+        else:
+            cuts[new] = 0
+    overrides["cutpoint_matrix"] = cuts
+    return overrides
 
 
 def response_distribution(recorded: Trace, response: str) -> Distribution:
@@ -202,19 +352,6 @@ def collect_draws(
     ValueError
         If the iterator's count or value shapes differ from the contract.
     """
-    count = shape[0] * shape[1]
-    result: torch.Tensor | None = None
-    completed = 0
-    with torch.no_grad():
-        for index, value in enumerate(values):
-            if index >= count:
-                raise ValueError("posterior replay produced too many draws")
-            if result is None:
-                result = value.new_empty((count, *value.shape))
-            elif result.shape[1:] != value.shape:
-                raise ValueError("posterior value shape changes between draws")
-            result[index].copy_(value)
-            completed = index + 1
-    if result is None or completed != count:
-        raise ValueError("posterior replay did not produce every retained draw")
-    return result.reshape(*shape, *result.shape[1:])
+    from quivers.inference._posterior import collect_draws as collect
+
+    return collect(values, shape)

@@ -50,6 +50,8 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.ast_nodes.let_expressions import LetExprNode
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
+from quivers.transpile._builtin_spellings import _probability_builtins_used
+
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.qiec_ir import IRQiecModule
 from quivers.transpile._expand_composites import expand_composite_lets
@@ -577,9 +579,11 @@ class TuringRenderer(RendererBase):
         # the source above the `@model function model` macrocall so the
         # body's `~ ContinuousBernoulli(...)` / `_qvr_rbf_kernel(...)`
         # call sites resolve through normal Julia name lookup.
-        if any(
-            _ir_uses_family(ir.body, f) for f in _TURING_RUNTIME_HELPER_FAMILIES
-        ) or qiec_helper_families_used(ir, self.target):
+        if (
+            any(_ir_uses_family(ir.body, f) for f in _TURING_RUNTIME_HELPER_FAMILIES)
+            or qiec_helper_families_used(ir, self.target)
+            or _probability_builtins_used(ir.body)
+        ):
             _graft_runtime_turing_helper(sb, counter, source)
         sb.edge(source, macro, "child_of")
         render_computations_dynamic(sb, ir, target=self.target, root=source)

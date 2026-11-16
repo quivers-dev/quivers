@@ -46,6 +46,36 @@ _ARVIZ_INTEGER_STATS = frozenset({"tree_depth", "num_steps"})
 _ARVIZ_BOOLEAN_STATS = frozenset({"diverged"})
 
 
+def _groups_to_datatree(
+    groups: Mapping[str, Mapping[str, torch.Tensor]],
+    *,
+    coords: Mapping[str, list] | None = None,
+    dims: Mapping[str, list[str]] | None = None,
+) -> xr.DataTree:
+    """Convert canonical tensor groups, sharing sampler-stat names and dtypes."""
+    data = {}
+    for group, tensors in groups.items():
+        if not tensors:
+            continue
+        converted = {}
+        for key, values in tensors.items():
+            array = _tensor_to_numpy(values)
+            name = key
+            if group == "sample_stats":
+                name = _ARVIZ_SAMPLE_STATS.get(key, key)
+                if key in _ARVIZ_INTEGER_STATS:
+                    array = array.astype("int64")
+                elif key in _ARVIZ_BOOLEAN_STATS:
+                    array = array.astype(bool)
+            converted[name] = array
+        data[group] = converted
+    return az.from_dict(
+        data,
+        coords=dict(coords) if coords is not None else None,
+        dims=dict(dims) if dims is not None else None,
+    )
+
+
 def to_datatree(
     posterior: MCMCResult,
     *,
@@ -99,50 +129,20 @@ def to_datatree(
         Canonical ArviZ DataTree consumable by every plotting and
         diagnostic function in the ArviZ 1.x API.
     """
-    data: dict[str, dict] = {}
-
-    posterior_group: dict = {}
-    for name, t in posterior.samples.items():
-        posterior_group[name] = _tensor_to_numpy(t)
-    data["posterior"] = posterior_group
-
-    sample_stats_group: dict = {
-        "lp": _tensor_to_numpy(posterior.log_densities),
-    }
-    # Per-draw sampler statistics, under ArviZ's canonical names where
-    # one exists and under their own (component-prefixed) names
-    # otherwise.
-    for key, values in posterior.sample_stats.items():
-        name = _ARVIZ_SAMPLE_STATS.get(key, key)
-        array = _tensor_to_numpy(values)
-        if key in _ARVIZ_INTEGER_STATS:
-            array = array.astype("int64")
-        elif key in _ARVIZ_BOOLEAN_STATS:
-            array = array.astype(bool)
-        sample_stats_group[name] = array
-    data["sample_stats"] = sample_stats_group
-
-    if observed_data:
-        data["observed_data"] = {
-            name: _tensor_to_numpy(t) for name, t in observed_data.items()
-        }
-    if posterior_predictive:
-        data["posterior_predictive"] = {
-            name: _tensor_to_numpy(t) for name, t in posterior_predictive.items()
-        }
-    if log_likelihood:
-        data["log_likelihood"] = {
-            name: _tensor_to_numpy(t) for name, t in log_likelihood.items()
-        }
-    if constant_data:
-        data["constant_data"] = {
-            name: _tensor_to_numpy(t) for name, t in constant_data.items()
-        }
-
-    return az.from_dict(
-        data,
-        coords=dict(coords) if coords is not None else None,
-        dims=dict(dims) if dims is not None else None,
+    return _groups_to_datatree(
+        {
+            "posterior": posterior.samples,
+            "sample_stats": {
+                "lp": posterior.log_densities,
+                **posterior.sample_stats,
+            },
+            "observed_data": observed_data or {},
+            "posterior_predictive": posterior_predictive or {},
+            "log_likelihood": log_likelihood or {},
+            "constant_data": constant_data or {},
+        },
+        coords=coords,
+        dims=dims,
     )
 
 
@@ -196,44 +196,33 @@ def to_datatree_from_svi(
     xr.DataTree
         The ArviZ DataTree, with a chain dimension of size 1.
     """
-    data: dict[str, dict] = {}
-
-    posterior_group: dict = {}
-    for name, t in samples.items():
-        arr = _tensor_to_numpy(t)
-        if arr.ndim == 0:
-            arr = arr.reshape(1)
-        posterior_group[name] = arr[None, ...]
-    data["posterior"] = posterior_group
-
+    # The public SVI adapter accepts draw-first tensors. Promote those axes
+    # once; every downstream conversion consumes canonical chain/draw groups.
+    posterior_group = {
+        name: (value.reshape(1) if value.ndim == 0 else value).unsqueeze(0)
+        for name, value in samples.items()
+    }
+    stats = {}
     if log_densities is not None:
-        lp = _tensor_to_numpy(log_densities)
-        if lp.ndim == 0:
-            lp = lp.reshape(1)
-        data["sample_stats"] = {"lp": lp[None, ...]}
-
-    if observed_data:
-        data["observed_data"] = {
-            name: _tensor_to_numpy(t) for name, t in observed_data.items()
-        }
-    if posterior_predictive:
-        data["posterior_predictive"] = {
-            name: _tensor_to_numpy(t)[None, ...]
-            for name, t in posterior_predictive.items()
-        }
-    if log_likelihood:
-        data["log_likelihood"] = {
-            name: _tensor_to_numpy(t)[None, ...] for name, t in log_likelihood.items()
-        }
-    if constant_data:
-        data["constant_data"] = {
-            name: _tensor_to_numpy(t) for name, t in constant_data.items()
-        }
-
-    return az.from_dict(
-        data,
-        coords=dict(coords) if coords is not None else None,
-        dims=dict(dims) if dims is not None else None,
+        values = log_densities
+        stats["lp"] = (values.reshape(1) if values.ndim == 0 else values).unsqueeze(0)
+    return _groups_to_datatree(
+        {
+            "posterior": posterior_group,
+            "sample_stats": stats,
+            "observed_data": observed_data or {},
+            "posterior_predictive": {
+                name: value.unsqueeze(0)
+                for name, value in (posterior_predictive or {}).items()
+            },
+            "log_likelihood": {
+                name: value.unsqueeze(0)
+                for name, value in (log_likelihood or {}).items()
+            },
+            "constant_data": constant_data or {},
+        },
+        coords=coords,
+        dims=dims,
     )
 
 

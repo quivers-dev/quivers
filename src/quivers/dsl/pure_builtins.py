@@ -68,6 +68,147 @@ def _eager_observation_weight(value: torch.Tensor | float) -> torch.Tensor | flo
     return value
 
 
+def _eager_positive_parameter(value: torch.Tensor | float) -> torch.Tensor | float:
+    """Validate a positive real parameter without changing its value or gradient.
+
+    Parameters
+    ----------
+    value : torch.Tensor or float
+        Natural-scale scalar or tensor parameter.
+
+    Returns
+    -------
+    torch.Tensor or float
+        The supplied value unchanged, retaining derivative identity.
+
+    Raises
+    ------
+    ValueError
+        If a value is boolean, nonfinite, zero, or negative.
+    """
+    if not isinstance(value, torch.Tensor):
+        from quivers.qiec.primitives import _positive_parameter
+
+        return _positive_parameter(value)
+    if not value.is_floating_point() or not bool(
+        (torch.isfinite(value) & (value > 0)).all()
+    ):
+        invalid = (
+            ~(torch.isfinite(value) & (value > 0))
+            if value.is_floating_point()
+            else torch.ones_like(value, dtype=torch.bool)
+        )
+        positions = invalid.nonzero(as_tuple=False)[:16].detach().cpu().tolist()
+        raise ValueError(
+            "positive_parameter requires finite strictly positive real values; "
+            f"invalid tensor positions {positions}"
+        )
+    return value
+
+
+def _eager_log_probability(value: torch.Tensor | float) -> torch.Tensor | float:
+    """Validate and log a probability, masking the singular zero endpoint.
+
+    Parameters
+    ----------
+    value : torch.Tensor or float
+        Finite real probability in the closed unit interval.
+
+    Returns
+    -------
+    torch.Tensor or float
+        Logarithms, negative infinity at zero. No finite derivative is claimed
+        at zero; masking prevents inactive endpoint expressions from leaking.
+
+    Raises
+    ------
+    ValueError
+        If a value is boolean, nonfinite, or outside [0, 1].
+    """
+    if not isinstance(value, torch.Tensor):
+        from quivers.qiec.primitives import _log_probability
+
+        return _log_probability(value)
+    if not value.is_floating_point() or not bool(
+        (torch.isfinite(value) & (value >= 0) & (value <= 1)).all()
+    ):
+        raise ValueError("log_probability requires finite real values in [0, 1]")
+    positive = value > 0
+    safe = torch.where(positive, value, torch.ones_like(value))
+    return torch.where(positive, safe.log(), -torch.inf)
+
+
+def _eager_log1mexp(value: torch.Tensor | float) -> torch.Tensor | float:
+    """Log complementary exponentials with protected endpoint derivatives.
+
+    Parameters
+    ----------
+    value : torch.Tensor or float
+        Nonpositive real values, including negative infinity.
+
+    Returns
+    -------
+    torch.Tensor or float
+        Log(1-exp(value)); negative infinity at zero. No finite derivative is
+        claimed at zero or at an infinite argument.
+
+    Raises
+    ------
+    ValueError
+        If a value is boolean, NaN, or positive.
+    """
+    if not isinstance(value, torch.Tensor):
+        from quivers.qiec.primitives import _log1mexp
+
+        return _log1mexp(value)
+    if not value.is_floating_point() or not bool(
+        (~torch.isnan(value) & (value <= 0)).all()
+    ):
+        raise ValueError("log1mexp requires nonpositive real values")
+    interior = torch.isfinite(value) & (value < 0)
+    safe = torch.where(interior, value, -torch.ones_like(value))
+    near = safe > -math.log(2)
+    near_arg = torch.where(near, safe, -torch.ones_like(safe))
+    far_arg = torch.where(near, -torch.ones_like(safe), safe)
+    result = torch.where(
+        near, torch.log(-torch.expm1(near_arg)), torch.log1p(-far_arg.exp())
+    )
+    return torch.where(
+        value == 0, -torch.inf, torch.where(value.isneginf(), 0.0, result)
+    )
+
+
+def _eager_log_ndtr(value: torch.Tensor | float) -> torch.Tensor | float:
+    """Normal log CDF with protected infinite endpoint derivatives.
+
+    Parameters
+    ----------
+    value : torch.Tensor or float
+        Real values, including either infinity.
+
+    Returns
+    -------
+    torch.Tensor or float
+        Normal log CDF, negative infinity at -infinity and zero at +infinity.
+
+    Raises
+    ------
+    ValueError
+        If a value is boolean or NaN.
+    """
+    if not isinstance(value, torch.Tensor):
+        from quivers.qiec.primitives import _log_ndtr
+
+        return _log_ndtr(value)
+    if not value.is_floating_point() or bool(torch.isnan(value).any()):
+        raise ValueError("log_ndtr requires real values other than NaN")
+    safe = torch.where(torch.isfinite(value), value, torch.zeros_like(value))
+    result = torch.special.log_ndtr(safe)
+    return torch.where(
+        value.isneginf(), -torch.inf, torch.where(value.isposinf(), 0.0, result)
+    )
+
+
 def _eager_scale_weight(
     coefficient: torch.Tensor | float, density: torch.Tensor | float
 ) -> torch.Tensor | float:
@@ -138,6 +279,10 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     "exp": lambda a: torch.exp(a),
     "expm1": lambda a: torch.expm1(a),
     "log": lambda a: torch.log(a),
+    "log_probability": _eager_log_probability,
+    "positive_parameter": _eager_positive_parameter,
+    "log1mexp": _eager_log1mexp,
+    "log_ndtr": _eager_log_ndtr,
     "log1p": lambda a: torch.log1p(a),
     "log2": lambda a: torch.log2(a),
     "log10": lambda a: torch.log10(a),
@@ -248,6 +393,10 @@ _BUILTIN_PRIMITIVES: Mapping[str, Mapping[tuple[TypeExpr, ...], str]] = {
     },
     "exp": {(REAL,): "exp"},
     "log": {(REAL,): "log"},
+    "log_probability": {(REAL,): "log_probability"},
+    "positive_parameter": {(REAL,): "positive_parameter"},
+    "log1mexp": {(REAL,): "log1mexp"},
+    "log_ndtr": {(REAL,): "log_ndtr"},
     "sqrt": {(REAL,): "sqrt"},
     "pow": {(REAL, REAL): "pow_real"},
     "abs": {(INT,): "abs_int", (REAL,): "abs_real"},

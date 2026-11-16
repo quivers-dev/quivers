@@ -20,6 +20,51 @@ at quantile `0.5`, it equals `Laplace(loc, 2 * scale)`.
 
 ::: quivers.continuous._asymmetric_laplace
 
+## COM-Poisson counts
+
+`COMPoisson` accepts exactly one of `rate` and `log_rate`, together with
+positive `dispersion`. `ConditionalCOMPoisson` learns native rate and
+dispersion. The family has mass proportional to
+`rate**k / factorial(k)**dispersion`; zero rate is a point mass at zero.
+Parameters, log scores, and moments use float64; samples use int64 and
+supply no pathwise gradient.
+
+Centered sums certify omitted mass and weighted moments with default
+`normalization_rtol=1e-12` and `max_terms=262144` candidate cells.
+Failure to certify within the budget raises `NotImplementedError`.
+The exact log-concave rejection sampler has its own
+`max_proposals=10000` round budget and raises `RuntimeError` on proposal
+or count-capacity failure. It does not sample a truncated normalization
+table. Native and checked-reference execution are supported; all 11
+external targets refuse this family. CDF and inverse-CDF operations,
+thus censoring and interval truncation, remain unavailable.
+
+::: quivers.continuous._com_poisson
+
+## Vector count events
+
+`Multinomial(total_count, probs=...)` and
+`Multinomial(total_count, logits=...)` choose exclusive parameterizations;
+`DirichletMultinomial(total_count, concentration)` adds a positive concentration
+vector. Their trailing category axis is one event, independent of batch axes.
+A batch may have heterogeneous trial counts. Every event has nonnegative
+integer coordinates summing to its trial count; zero trials give an all-zero
+vector, including for a single category.
+
+Trial counts are checked before floating conversion and lie in `0..2**53`.
+Parameters, scores, means, and variances use float64; discrete samples use
+int64 without pathwise reparameterization. Dirichlet-multinomial concentration
+sums must remain finite. `ConditionalMultinomial` learns category logits and
+`ConditionalDirichletMultinomial` learns positive concentrations, with fixed
+trials supplied to each conditional constructor.
+
+Native and checked-reference execution support both kernels. The
+[source example](../../guides/continuous-families.md#vector-count-events)
+keeps row dimensions separate from the category event axis. External rendering
+is a separate capability from these native interfaces.
+
+::: quivers.continuous._multinomial
+
 ## Discrete Weibull counts
 
 `DiscreteWeibull(probs, concentration)` has nonnegative integer support,

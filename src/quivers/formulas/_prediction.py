@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from typing import TYPE_CHECKING, Literal, Never, SupportsIndex
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Literal, Mapping, Never, SupportsIndex
 
 import didactic.api as dx
 from formulae.categorical import CategoricalBox
@@ -25,8 +25,16 @@ from quivers.dsl.ast_nodes import (
     ObjectDecl,
     TypeFromExpr,
 )
-from quivers.formulas.formula import FixedColumn, Formula, _qvr_name
+from quivers.formulas.formula import FixedColumn, Formula, _CS_ONES, _qvr_name
 from quivers.inference.registry import LatentRegistry
+from quivers.formulas._group_prediction import (
+    GroupRemap,
+    NewLevelPolicy,
+    compact_groups,
+    selected_effects,
+    select_contributions,
+    specialized_formula,
+)
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
@@ -82,6 +90,17 @@ class PredictionContext(ValueModel):
         Validated predictor bindings and internal response placeholders.
     rows : int
         Number of prediction rows.
+    groups : dict[str, GroupRemap]
+        Compact grouping axes and fitted raw-site mappings.
+    new_level_policy : NewLevelPolicy
+        Joint donor or conditional Gaussian policy for new identities.
+    seed : int
+        Request seed for the separate group-effect random stream.
+    retain_ordinal_cutpoints : bool
+        Replay fitted, design-constrained thresholds before applying prediction
+        row bindings or varying-effect exclusions.
+    ordinal_order_groups : tuple of str
+        Groups whose fresh effects or threshold profiles can affect order.
     """
 
     program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -89,9 +108,20 @@ class PredictionContext(ValueModel):
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     rows: int
+    groups: dict[str, GroupRemap] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    new_level_policy: NewLevelPolicy = "uncertainty"
+    seed: int = 0
+    retain_ordinal_cutpoints: bool = False
+    ordinal_order_groups: tuple[str, ...] = ()
 
 
-def _validate_categories(design: DesignMatrices, frame: pd.DataFrame) -> None:
+def _validate_categories(
+    design: DesignMatrices,
+    frame: pd.DataFrame,
+    selected: frozenset[tuple[str, str]] | None = None,
+) -> None:
     """Check required variables and categorical levels without global settings.
 
     Parameters
@@ -100,6 +130,9 @@ def _validate_categories(design: DesignMatrices, frame: pd.DataFrame) -> None:
         Fitted expression and contrast state.
     frame : pandas.DataFrame
         Fresh predictor rows.
+    selected : frozenset[tuple[str, str]] or None
+        Active grouping-factor and expanded-slope pairs. None validates all
+        fitted slopes; grouping identities are checked separately.
 
     Raises
     ------
@@ -113,7 +146,15 @@ def _validate_categories(design: DesignMatrices, frame: pd.DataFrame) -> None:
         terms.extend(design.common.terms.values())
     if design.group is not None:
         for term in design.group.terms.values():
-            terms.extend((term.expr, term.factor))
+            if selected is None or any(
+                group == term.factor.name
+                and (
+                    slope == term.expr.name.replace(_CS_ONES, "1")
+                    or slope.startswith(term.expr.name.replace(_CS_ONES, "1") + "_")
+                )
+                for group, slope in selected
+            ):
+                terms.append(term.expr)
     seen: set[int] = set()
     for term in terms:
         # formulae's CallVarsExtractor represents literal arguments by "".
@@ -215,7 +256,12 @@ def _column_values(
 
 
 def _predictor_bindings(
-    formula: Formula, design: DesignMatrices, frame: pd.DataFrame, prefix: str
+    formula: Formula,
+    design: DesignMatrices,
+    frame: pd.DataFrame,
+    prefix: str,
+    groups: Mapping[str, GroupRemap] | None = None,
+    selected: frozenset[tuple[str, str]] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Evaluate retained fixed columns, offsets, and random slopes once.
 
@@ -229,6 +275,10 @@ def _predictor_bindings(
         Fresh predictor rows.
     prefix : str
         Auxiliary-parameter input namespace, or the empty location prefix.
+    groups : Mapping[str, GroupRemap] or None
+        Compact group indices, or None to require original fitted levels.
+    selected : frozenset[tuple[str, str]] or None
+        Active grouping-factor and slope pairs; excluded slope inputs use zero.
 
     Returns
     -------
@@ -241,7 +291,7 @@ def _predictor_bindings(
         If evaluated columns or grouping levels are invalid.
     """
     rows = len(frame)
-    _validate_categories(design, frame)
+    _validate_categories(design, frame, selected)
     matrices: dict[str, np.ndarray] = {}
     if design.common is not None:
         evaluated = design.common.evaluate_new_data(frame)
@@ -265,9 +315,28 @@ def _predictor_bindings(
         slope_matrices = {}
         for term in design.group.terms.values():
             if term.expr.name not in slope_matrices:
-                slope_matrices[term.expr.name] = _numeric_matrix(
-                    term.expr.eval_new_data(frame), rows, term.expr.name
+                active = selected is None or any(
+                    group == term.factor.name
+                    and (
+                        slope == term.expr.name.replace(_CS_ONES, "1")
+                        or slope.startswith(term.expr.name.replace(_CS_ONES, "1") + "_")
+                    )
+                    for group, slope in selected
                 )
+                if active:
+                    slope_matrices[term.expr.name] = _numeric_matrix(
+                        term.expr.eval_new_data(frame), rows, term.expr.name
+                    )
+                else:
+                    width = len(
+                        {
+                            term_.column.name
+                            for term_ in formula.random_terms
+                            if term_.column is not None
+                            and term_.column.term == term.expr.name
+                        }
+                    )
+                    slope_matrices[term.expr.name] = np.zeros((rows, max(1, width)))
         # A slope shared by several grouping factors has one evaluated input.
         columns = tuple(
             {
@@ -283,6 +352,9 @@ def _predictor_bindings(
                 )
 
     for group, levels in formula.group_levels.items():
+        if groups is not None:
+            result[f"{_qvr_name(group)}_idx"] = groups[group].row_indices
+            continue
         mapping = {level: index for index, level in enumerate(levels)}
         values = frame[group]
         if np.asarray(pd.isna(values)).any():
@@ -313,6 +385,11 @@ def prepare_prediction(
     fit: BayesianFit,
     new_data: IntoDataFrame | None,
     predictor_data: torch.Tensor | None,
+    *,
+    re_formula: str | None = None,
+    allow_new_levels: bool = False,
+    sample_new_levels: NewLevelPolicy = "uncertainty",
+    seed: int = 0,
 ) -> PredictionContext:
     """Prepare and validate prediction rows before sampling posterior draws.
 
@@ -324,6 +401,14 @@ def prepare_prediction(
         Fresh predictor rows, or None for the retained training rows.
     predictor_data : torch.Tensor or None
         Explicit neural predictor input for fresh rows.
+    re_formula : str or None
+        One-sided varying-effect selector; None includes all and ``~0`` none.
+    allow_new_levels : bool
+        Permit unseen and missing grouping identities.
+    sample_new_levels : NewLevelPolicy
+        Joint donor policy or conditional Gaussian law for new identities.
+    seed : int
+        Seed for an independent group-effect random stream.
 
     Returns
     -------
@@ -337,7 +422,33 @@ def prepare_prediction(
     TypeError
         If the compiled prediction program changes its latent layout.
     """
-    if new_data is None:
+    if not isinstance(allow_new_levels, bool):
+        raise TypeError("allow_new_levels must be a bool")
+    if sample_new_levels not in {
+        "uncertainty",
+        "old_levels",
+        "gaussian",
+        "feasible_uncertainty",
+        "feasible_gaussian",
+    }:
+        raise ValueError(
+            "sample_new_levels must be uncertainty, old_levels, gaussian, "
+            "feasible_uncertainty, or feasible_gaussian"
+        )
+    formulas = {"mu": fit.formula, **fit.distributional}
+    constrained_cs = (
+        fit.family.ordinal is not None
+        and fit.family.ordinal.kind in {"cumulative", "hurdle_cumulative"}
+        and (
+            any(column.category_specific for column in fit.formula.fixed_columns)
+            or any(
+                term.column is not None and term.column.category_specific
+                for term in fit.formula.random_terms
+            )
+        )
+    )
+    selected = selected_effects(formulas, re_formula)
+    if new_data is None and re_formula is None:
         if predictor_data is not None:
             raise ValueError("predictor_data requires new_data")
         return PredictionContext(
@@ -346,9 +457,40 @@ def prepare_prediction(
             rows=len(fit.formula.response_values),
         )
     plan = fit.prediction_plan
+    if new_data is None:
+        if predictor_data is not None:
+            raise ValueError("predictor_data requires new_data")
+        if plan is None:
+            raise ValueError("this fit has no retained formula prediction plan")
+        module = select_contributions(plan.module, formulas, selected)
+        program = Compiler(module).compile().morphism
+        if not isinstance(program, MonadicProgram):
+            raise TypeError("prediction requires a native monadic program")
+        return PredictionContext(
+            program=program,
+            observations=fit.observations,
+            rows=len(fit.formula.response_values),
+            seed=seed,
+            retain_ordinal_cutpoints=constrained_cs,
+        )
     if plan is None:
         raise ValueError("this fit has no retained new_data prediction plan")
     frame = nw.from_native(new_data, eager_only=True).to_pandas()
+    needs_cs_intercept = any(
+        _CS_ONES in column.term
+        for formula in formulas.values()
+        for column in (
+            *formula.fixed_columns,
+            *(term.column for term in formula.random_terms if term.column is not None),
+        )
+    )
+    if needs_cs_intercept:
+        if _CS_ONES in frame.columns:
+            raise ValueError(
+                f"{_CS_ONES!r} is reserved for category-specific intercepts"
+            )
+        frame = frame.copy()
+        frame[_CS_ONES] = 1.0
     if len(frame) < 1 or not frame.columns.is_unique:
         raise ValueError("new_data requires nonempty rows and unique column names")
     if fit.predictor is not None and predictor_data is None:
@@ -356,6 +498,30 @@ def prepare_prediction(
     if fit.predictor is None and predictor_data is not None:
         raise ValueError("predictor_data requires a fitted neural predictor")
 
+    original = LatentRegistry.from_model(
+        fit.program, observed_names=set(fit.observations)
+    )
+    groups = compact_groups(fit, frame, selected, allow_new_levels, original)
+    order_groups = {
+        term.group
+        for term in fit.formula.random_terms
+        if term.column is not None and term.column.category_specific
+    }
+    if fit.thresholds_by is not None:
+        order_groups.add(fit.thresholds_by)
+    if (
+        constrained_cs
+        and any(
+            group in order_groups and -1 in mapping.fitted_indices
+            for group, mapping in groups.items()
+        )
+        and not sample_new_levels.startswith("feasible_")
+    ):
+        raise ValueError(
+            "new cumulative category-specific group effects require an explicit "
+            "sample_new_levels='feasible_uncertainty' or 'feasible_gaussian' "
+            "policy, conditioned on ordered thresholds for the requested rows"
+        )
     observations: dict[str, torch.Tensor] = {}
     for parameter, formula in (("mu", fit.formula), *fit.distributional.items()):
         bindings = _predictor_bindings(
@@ -363,6 +529,8 @@ def prepare_prediction(
             plan.designs[parameter],
             frame,
             "" if parameter == "mu" else f"dpar_{parameter}_",
+            groups,
+            selected,
         )
         for name, value in bindings.items():
             if name in observations and not torch.equal(value, observations[name]):
@@ -404,8 +572,20 @@ def prepare_prediction(
             raise ValueError("new_data neural predictor must produce finite values")
         observations[fit.predictor_name] = neural
 
+    module = plan.module
+    if groups or re_formula is not None:
+        specialized = {
+            name: specialized_formula(formula, groups)
+            for name, formula in formulas.items()
+        }
+        module, _ = fit._formula_lens(
+            distributional={
+                name: formula for name, formula in specialized.items() if name != "mu"
+            }
+        ).forward(specialized["mu"])
+        module = select_contributions(module, formulas, selected)
     statements = []
-    for statement in plan.module.statements:
+    for statement in module.statements:
         if isinstance(statement, ObjectDecl) and statement.names == ("Resp",):
             statement = statement.with_(
                 init=TypeFromExpr(
@@ -413,18 +593,40 @@ def prepare_prediction(
                 )
             )
         statements.append(statement)
-    program = (
-        Compiler(plan.module.with_(statements=tuple(statements))).compile().morphism
-    )
+    program = Compiler(module.with_(statements=tuple(statements))).compile().morphism
     if not isinstance(program, MonadicProgram):
         raise TypeError("prediction requires a native monadic program")
-    original = LatentRegistry.from_model(
-        fit.program, observed_names=set(fit.observations)
+    specialized_registry = LatentRegistry.from_model(
+        program, observed_names=set(observations)
     )
-    specialized = LatentRegistry.from_model(program, observed_names=set(observations))
-    if original.names != specialized.names or any(
-        original[name].constrained_shape != specialized[name].constrained_shape
-        for name in original.names
-    ):
-        raise TypeError("new_data specialization changed the fitted latent layout")
-    return PredictionContext(program=program, observations=observations, rows=rows)
+    group_sites = {
+        name: (group, width)
+        for group in groups.values()
+        for name, width in group.sites.items()
+    }
+    if original.names != specialized_registry.names:
+        raise TypeError("new_data specialization changed the fitted latent names")
+    for name in original.names:
+        original_shape = original[name].constrained_shape
+        fresh_shape = specialized_registry[name].constrained_shape
+        if name not in group_sites:
+            if original_shape != fresh_shape:
+                raise TypeError(
+                    f"new_data specialization changed latent layout at {name!r}"
+                )
+        else:
+            group, width = group_sites[name]
+            if int(np.prod(fresh_shape)) != len(group.fitted_indices) * width:
+                raise TypeError(
+                    f"new_data specialization changed group layout at {name!r}"
+                )
+    return PredictionContext(
+        program=program,
+        observations=observations,
+        rows=rows,
+        groups=groups,
+        new_level_policy=sample_new_levels,
+        seed=seed,
+        retain_ordinal_cutpoints=constrained_cs,
+        ordinal_order_groups=tuple(sorted(order_groups)) if constrained_cs else (),
+    )

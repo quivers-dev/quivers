@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import cast
+
+import didactic.api as dx
 import torch.nn as nn
 from quivers.dsl.markov_chains import chain_cells
 from quivers.continuous.deterministic import LearnedFunction
@@ -131,6 +134,7 @@ class Compiler(
         lower_qiec: bool = True,
     ) -> None:
         self._qiec_module: QiecModule | None = None
+        self._deferred_statements: tuple[Statement, ...] = ()
         # The QIEC projection is lowered on first use, after the
         # statements' own checks when `compile` drives it, so a source
         # error the statement compiler names is reported by it.
@@ -576,10 +580,133 @@ class Compiler(
                 value = self._compile_expr(expr)
             object.__setattr__(program, name, value)
 
-    def compile_env(self) -> dict:
+    @property
+    def deferred_statements(self) -> tuple[Statement, ...]:
+        """Authored declarations awaiting finite-object specialization.
+
+        Returns
+        -------
+        tuple[Statement, ...]
+            Uncompiled declarations in source order, retaining their authored
+            types. No finite cardinalities are invented for these declarations.
+        """
+        return self._deferred_statements
+
+    def _inferred_dependency_projection(self) -> frozenset[int]:
+        """Defer unresolved objects and their transitive runtime dependents.
+
+        The original source and checked QIEC module stay intact. Existing
+        morphism-expression dependency analysis supplies value edges; checked
+        entry telescopes supply program extent dependencies.
+
+        Returns
+        -------
+        frozenset[int]
+            Source statement positions awaiting runtime specialization.
+        """
+        from quivers.dsl._data_inference import _inferred_objects
+        from quivers.dsl.compiler.declarations import _type_names
+        from quivers.dsl.latent_weights import _references
+        from quivers.dsl.step_resolution import _expr_ident_names
+        from quivers.dsl.program_templates import static_program_parameters
+
+        inferred = _inferred_objects(self._module)
+        if not inferred:
+            return frozenset()
+        graph = _references(self._module)
+        checked = self.qiec_module
+        entries = {} if checked is None else {e.name: e for e in checked.entries}
+        object_names = {
+            name
+            for statement in self._module.statements
+            if isinstance(statement, ObjectDecl)
+            for name in statement.names
+        }
+        dependencies: list[set[str]] = []
+        declared: list[tuple[str, ...]] = []
+        for statement in self._module.statements:
+            names = (
+                statement.names
+                if isinstance(statement, ObjectDecl | MorphismDecl | CategoryDecl)
+                else (cast(str, statement.name),)
+                if hasattr(statement, "name")
+                else ()
+            )
+            declared.append(names)
+            references: set[str] = set().union(*(graph.get(name, ()) for name in names))
+            if isinstance(statement, ProgramDecl) and statement.name in entries:
+                # Value-input names occupy a different namespace from axes;
+                # checked telescopes, not spelling collisions, fix extent use.
+                references.difference_update(
+                    p.name for p in entries[statement.name].parameters
+                )
+                authored = {
+                    cast(str, p.name) for p in static_program_parameters(statement)
+                }
+                references.update(
+                    binder.name
+                    for binder in entries[statement.name].telescope
+                    if binder.name not in authored
+                )
+            else:
+                pending: list[object] = [statement]
+                while pending:
+                    node = pending.pop()
+                    if isinstance(node, ObjectExpr):
+                        references.update(name.name for name in _type_names(node))
+                        for arg in getattr(node, "args", ()):
+                            if isinstance(arg, str) and arg in object_names:
+                                references.add(arg)
+                    if isinstance(node, Expr):
+                        references.update(_expr_ident_names(node))
+                        name = getattr(node, "object_name", None)
+                        if name is not None:
+                            references.add(name)
+                    if isinstance(node, tuple):
+                        pending.extend(node)
+                    elif isinstance(node, dx.Model):
+                        pending.extend(
+                            getattr(node, name)
+                            for name in type(node).__field_specs__
+                            if name not in {"docs", "line", "col"}
+                        )
+                if isinstance(statement, SchemaDecl):
+                    references.difference_update(
+                        name for group in statement.parameters for name in group.names
+                    )
+                elif isinstance(statement, RuleDecl):
+                    references.difference_update(statement.variables)
+            dependencies.append(references)
+        blocked = set(inferred)
+        deferred = {i for i, names in enumerate(declared) if set(names) & blocked}
+        dependents: dict[str, list[int]] = {}
+        for i, references in enumerate(dependencies):
+            for name in references:
+                dependents.setdefault(name, []).append(i)
+        pending_names = list(blocked)
+        while pending_names:
+            name = pending_names.pop()
+            for i in dependents.get(name, ()):
+                if i in deferred:
+                    continue
+                deferred.add(i)
+                for defined in declared[i]:
+                    if defined not in blocked:
+                        blocked.add(defined)
+                        pending_names.append(defined)
+        return frozenset(deferred)
+
+    def compile_env(self, *, defer_unresolved: bool = False) -> dict:
         """Compile all statements and return the full environment.
 
         Useful for inspection without requiring an output declaration.
+
+        Parameters
+        ----------
+        defer_unresolved : bool
+            Retain unresolved finite objects and their dependent declarations
+            symbolically, compiling independent declarations for inspection.
+            False requires data to specialize every inferred object.
 
         Returns
         -------
@@ -589,8 +716,21 @@ class Compiler(
             (parametric templates), deductions, signatures, encoders,
             decoders, losses, bundles, contractions, transformations.
         """
-        self._specialize_data_objects()
-        for stmt in self._module.statements:
+        deferred = (
+            self._inferred_dependency_projection() if defer_unresolved else frozenset()
+        )
+        self._deferred_statements = tuple(
+            statement
+            for index, statement in enumerate(self._module.statements)
+            if index in deferred
+        )
+        if not deferred:
+            self._specialize_data_objects()
+        for index, stmt in enumerate(self._module.statements):
+            if index in deferred:
+                if isinstance(stmt, ProgramDecl):
+                    self._program_decls[stmt.name] = stmt
+                continue
             self._compile_statement(stmt)
         env: dict = {}
         env["__algebra__"] = self._algebra
@@ -624,6 +764,12 @@ class Compiler(
             env[name] = bundle
         for name, contr in getattr(self, "_contractions", {}).items():
             env[name] = contr
+        for statement in self._deferred_statements:
+            names = getattr(statement, "names", ()) or (
+                (statement.name,) if hasattr(statement, "name") else ()
+            )
+            for name in names:
+                env.setdefault(name, statement)
         return env
 
     def _compile_statement(self, stmt: Statement) -> None:

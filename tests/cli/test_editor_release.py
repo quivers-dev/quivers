@@ -77,8 +77,18 @@ def test_textmate_recognizes_every_checked_pure_builtin() -> None:
     assert all(pattern.fullmatch(name) for name in PURE_BUILTINS)
 
 
-@pytest.mark.parametrize("name", ["observation_weight", "scale_weight"])
-def test_checked_weight_builtins_are_repl_completion_candidates(name: str) -> None:
+@pytest.mark.parametrize(
+    "name",
+    [
+        "observation_weight",
+        "scale_weight",
+        "log_probability",
+        "log1mexp",
+        "log_ndtr",
+        "positive_parameter",
+    ],
+)
+def test_checked_builtins_are_repl_completion_candidates(name: str) -> None:
     from quivers.cli.repl_complete import all_completions
     from quivers.cli.repl_session import ReplSession
 
@@ -94,6 +104,9 @@ def test_checked_weight_builtins_are_repl_completion_candidates(name: str) -> No
         *COUNT_FAMILIES,
         *SHAPE_FAMILIES,
         "DiscreteWeibull",
+        "COMPoisson",
+        "Multinomial",
+        "DirichletMultinomial",
         "ZeroInflatedAsymmetricLaplace",
     ),
 )

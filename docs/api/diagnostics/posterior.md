@@ -32,6 +32,11 @@ A pointwise log-score variance above 0.4 sets `warning`, following the
 
 `to_datatree` and `loo` require the optional `diagnostics` extra. The DataTree
 retains chain and draw axes and records `quivers_posterior_kind` in its attributes.
+Pass `coords={"row": [...]}` and `dims={"y": ["row"]}` to label observation
+axes, or assign event-axis labels to latent variables. The shared converter
+uses the same sampler-statistic names and integer/Boolean dtypes for direct
+MCMC results and retained analysis snapshots; conversion detaches tensors
+without changing the retained draws.
 PSIS-LOO exposes ArviZ 1 results, including `elpd`, `elpd_i`, and `pareto_k`.
 Variational draws use relative efficiency one; this does not correct approximation
 error. Unstable importance weights may require exact refitting or a different

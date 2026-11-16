@@ -400,3 +400,50 @@ class TestLooPit:
         values = np.asarray(result["y"])
         assert values.shape == (20,)
         assert np.all((values >= 0.0) & (values <= 1.0))
+
+
+def test_mcmc_and_svi_adapters_share_labeled_snapshot_conversion():
+    from quivers.diagnostics import PosteriorAnalysis, to_datatree_from_svi
+
+    values = torch.arange(24.0).reshape(2, 4, 3)
+    result = _make_result({"beta": values})
+    result.sample_stats.update(
+        {
+            "diverged": torch.tensor([[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]),
+            "num_steps": torch.full((2, 4), 7.0),
+            "accept_prob": torch.full((2, 4), 0.9),
+        }
+    )
+    scores = {"y": torch.arange(40.0).reshape(2, 4, 5)}
+    observed = {"y": torch.arange(5)}
+    labels = {
+        "coords": {"coefficient": ["a", "b", "c"], "row": list("vwxyz")},
+        "dims": {"beta": ["coefficient"], "y": ["row"]},
+    }
+    direct = to_datatree(
+        result, observed_data=observed, log_likelihood=scores, **labels
+    )
+    analysis = PosteriorAnalysis(
+        samples=result.samples,
+        log_likelihood=scores,
+        observed_data=observed,
+        sample_stats={"lp": result.log_densities, **result.sample_stats},
+        kind="mcmc",
+    ).to_datatree(**labels)
+    for group in ("posterior", "sample_stats", "log_likelihood", "observed_data"):
+        xr.testing.assert_equal(direct[group].dataset, analysis[group].dataset)
+    svi = to_datatree_from_svi(
+        {"beta": values[0]},
+        log_likelihood={"y": scores["y"][0]},
+        observed_data=observed,
+        **labels,
+    )
+    snapshot = PosteriorAnalysis(
+        samples={"beta": values[:1]},
+        log_likelihood={"y": scores["y"][:1]},
+        observed_data=observed,
+        sample_stats={},
+        kind="variational",
+    ).to_datatree(**labels)
+    for group in ("posterior", "log_likelihood", "observed_data"):
+        xr.testing.assert_equal(svi[group].dataset, snapshot[group].dataset)

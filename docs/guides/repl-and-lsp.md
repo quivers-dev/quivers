@@ -1209,7 +1209,10 @@ export regression
 the same checked projection for diagnostics, formatting, highlighting, and
 navigation. Within `regression`, completion offers `x` and `y` with their declared
 types; hover and go-to-definition resolve them to their parameter declarations.
-These names are local to the program rather than module globals.
+These names are local to the program rather than module globals. Independent
+declarations with known dimensions remain compiled and inspectable in the same
+session. The compiler defers only declarations that depend on unresolved
+dimensions, and still reports errors in independent declarations.
 
 Program headers use the same telescope convention as checked computations:
 `[...]` binds static parameters, while `(...)` binds values supplied to execution.

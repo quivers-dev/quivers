@@ -47,6 +47,7 @@ from quivers.inference import (
     SVI,
     AutoNormalGuide,
 )
+from quivers.inference._posterior import draw_count
 from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
 
@@ -70,6 +71,8 @@ class BayesianFit(ValueModel):
     posterior : MCMCResult or Guide
         [`quivers.inference.MCMCResult`][quivers.inference.MCMCResult] from NUTS / HMC, or
         a [`quivers.inference.guides.base.Guide`][quivers.inference.guides.base.Guide] from SVI.
+    losses : tuple[float, ...]
+        Finite optimization losses for SVI; empty for recorded MCMC chains.
     observations : Mapping[str, torch.Tensor]
         Inference-time observations dict (response + per-column
         covariates + per-group plate indices).
@@ -93,6 +96,7 @@ class BayesianFit(ValueModel):
     family: Family
     program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     posterior: MCMCResult | Guide = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    losses: tuple[float, ...] = ()
     observations: Mapping[str, torch.Tensor] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -119,10 +123,22 @@ class BayesianFit(ValueModel):
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
-    @property
-    def qvr_source(self) -> str:
-        """Lazily emit the AST-equivalent ``.qvr`` source for display."""
-        lens = FormulaToQVRModule(
+    def _formula_lens(
+        self, *, distributional: Mapping[str, Formula] | None = None
+    ) -> FormulaToQVRModule:
+        """Reuse fitted compiler settings with optional specialized predictors.
+
+        Parameters
+        ----------
+        distributional : Mapping[str, Formula] or None
+            Specialized auxiliary metadata, or the fitted metadata.
+
+        Returns
+        -------
+        FormulaToQVRModule
+            A fresh lens retaining every fitted prior and compiler option.
+        """
+        return FormulaToQVRModule(
             self.family,
             fixed_prior=self.fixed_prior,
             random_scale_prior=self.random_scale_prior,
@@ -133,10 +149,16 @@ class BayesianFit(ValueModel):
             thresholds_by=self.thresholds_by,
             mixture_components=self.mixture_components,
             predictor_name=self.predictor_name,
-            distributional=self.distributional,
+            distributional=self.distributional
+            if distributional is None
+            else distributional,
             fixed_parameters=self.fixed_parameters,
         )
-        module, _ = lens.forward(self.formula)
+
+    @property
+    def qvr_source(self) -> str:
+        """Lazily emit the AST-equivalent ``.qvr`` source for display."""
+        module, _ = self._formula_lens().forward(self.formula)
         return module_to_source(module)
 
     def dump_qvr(self, path: str | Path) -> Path:
@@ -170,6 +192,23 @@ class BayesianFit(ValueModel):
                 )
             )
         )
+
+    @property
+    def threshold_labels(self) -> tuple[tuple[int, int], ...]:
+        """Adjacent category pairs identifying the ordinal transition axis.
+
+        Returns
+        -------
+        tuple of pair of int
+            Adjacent category labels, excluding the structural-zero boundary
+            in a hurdle cumulative model; empty for nonordinal families.
+        """
+        if self.family.ordinal is None:
+            return ()
+        labels = self.category_labels
+        if self.family.ordinal.kind == "hurdle_cumulative":
+            labels = labels[1:]
+        return tuple(zip(labels[:-1], labels[1:], strict=True))
 
     @property
     def group_levels(self) -> dict[str, tuple[str, ...]]:
@@ -262,7 +301,6 @@ class BayesianFit(ValueModel):
             Level order follows `group_levels`; categorical coefficients
             follow ``category_labels[1:]``.
         """
-        from quivers.formulas._posterior import draw_count
 
         predictor, prefix = self._formula_predictor(parameter)
         shape = draw_count(self.posterior, num_samples)
@@ -293,7 +331,6 @@ class BayesianFit(ValueModel):
             population coefficients. A group-only slope has population
             coefficient zero; fixed-only coefficients repeat over levels.
         """
-        from quivers.formulas._posterior import draw_count
 
         predictor, prefix = self._formula_predictor(parameter)
         shape = draw_count(self.posterior, num_samples)
@@ -316,6 +353,109 @@ class BayesianFit(ValueModel):
                 )
         return varying
 
+    def posterior_thresholds(
+        self,
+        *,
+        new_data: IntoDataFrame | None = None,
+        predictor_data: torch.Tensor | None = None,
+        re_formula: str | None = None,
+        allow_new_levels: bool = False,
+        sample_new_levels: Literal[
+            "uncertainty",
+            "old_levels",
+            "gaussian",
+            "feasible_uncertainty",
+            "feasible_gaussian",
+        ] = "uncertainty",
+        num_samples: int | None = None,
+        seed: int = 0,
+    ) -> torch.Tensor:
+        """Replay complete ordinal threshold profiles at each requested row.
+
+        Parameters
+        ----------
+        new_data : IntoDataFrame or None
+            Fresh predictors evaluated with fitted encodings, or training rows.
+        predictor_data : torch.Tensor or None
+            Explicit neural input for fresh prediction rows when required.
+        re_formula : str or None
+            Varying-effect selector, with the same meaning as `posterior_epred`.
+        allow_new_levels : bool
+            Permit unseen grouping identities under the selected policy.
+        sample_new_levels : str
+            Joint donor or Gaussian policy. Explicit ``feasible_`` policies
+            condition new category-specific effects on ordered row support.
+        num_samples : int or None
+            Draw count under the convention of `draws`.
+        seed : int
+            Seed for separate posterior and group-effect random streams.
+
+        Returns
+        -------
+        torch.Tensor
+            Effective thresholds with shape ``(chain, draw, row, threshold)``
+            and axis labels `threshold_labels`. They include centered group
+            shapes, selected varying location/slope shifts, and category-specific
+            shifts. The proportional population predictor, its offsets, neural
+            contribution, and discrimination are excluded. Cumulative profiles
+            are strictly ordered at every row.
+
+        Raises
+        ------
+        ValueError
+            If the family is not ordinal or a requested profile crosses.
+        """
+        from quivers.formulas._posterior import collect_draws, replay, row_binding
+        from quivers.formulas._prediction import prepare_prediction
+
+        if self.family.ordinal is None:
+            raise ValueError("posterior_thresholds requires an ordinal response family")
+        context = prepare_prediction(
+            self,
+            new_data,
+            predictor_data,
+            re_formula=re_formula,
+            allow_new_levels=allow_new_levels,
+            sample_new_levels=sample_new_levels,
+            seed=seed,
+        )
+        shape = draw_count(self.posterior, num_samples)
+        draws = self.draws(num_samples=num_samples, seed=seed)
+        width = len(self.threshold_labels)
+
+        def values():
+            for recorded in replay(self, draws, shape, context=context):
+                if width == 0:
+                    yield torch.empty(context.rows, 0)
+                    continue
+                cuts = row_binding(
+                    recorded.sites[
+                        "row_cutpoints" if self.thresholds_by else "cutpoints"
+                    ].value,
+                    context.rows,
+                    width,
+                )
+                if "eta_nonbaseline" in recorded.sites:
+                    cuts = cuts - row_binding(
+                        recorded.sites["eta_nonbaseline"].value, context.rows, width
+                    )
+                for term in self.formula.random_terms:
+                    if term.column is not None and term.column.category_specific:
+                        continue
+                    group = _qvr_name(term.group)
+                    latent = (
+                        f"alpha_{group}"
+                        if term.slope == "Intercept"
+                        else f"beta_{group}_{_qvr_name(term.slope)}"
+                    )
+                    name = f"{latent}_per_row"
+                    cuts = cuts - row_binding(
+                        recorded.sites[name].value, context.rows
+                    ).unsqueeze(-1)
+                yield cuts
+
+        return collect_draws(values(), shape)
+
     def posterior_linpred(
         self,
         *,
@@ -323,6 +463,15 @@ class BayesianFit(ValueModel):
         transform: bool = False,
         new_data: IntoDataFrame | None = None,
         predictor_data: torch.Tensor | None = None,
+        re_formula: str | None = None,
+        allow_new_levels: bool = False,
+        sample_new_levels: Literal[
+            "uncertainty",
+            "old_levels",
+            "gaussian",
+            "feasible_uncertainty",
+            "feasible_gaussian",
+        ] = "uncertainty",
         num_samples: int | None = None,
         seed: int = 0,
     ) -> torch.Tensor:
@@ -343,6 +492,25 @@ class BayesianFit(ValueModel):
         predictor_data : torch.Tensor or None
             Explicit input for a neural predictor on new rows. Required for
             neural fits with new_data; otherwise must be None.
+        re_formula : str or None
+            None includes all fitted varying effects; ``"~0"`` excludes
+            them; a one-sided group formula selects fitted slopes. This
+            sets excluded contributions to zero; it does not marginalize them.
+        allow_new_levels : bool
+            Permit unseen or missing grouping identities in new_data.
+            Repeated missing values share one new identity per group.
+            Ordinary categorical predictors still require fitted levels.
+        sample_new_levels : str
+            For each new identity, uncertainty chooses one fitted donor
+            jointly across slopes per posterior draw; old_levels retains
+            one donor across all chains and draws; gaussian samples the
+            fitted conditional zero-mean group law. Existing groups retain
+            their posterior effects. Group and response noise use distinct
+            random streams, and the caller's CPU RNG is restored. Explicit
+            feasible_uncertainty and feasible_gaussian policies condition joint
+            new-group proposals on cumulative row-order support; at most 1024
+            attempts are made per posterior draw, with an error on failure.
+            Fitted draws and cutpoints are retained.
         num_samples : int or None
             Draw count under the convention of `draws`.
         seed : int
@@ -362,45 +530,88 @@ class BayesianFit(ValueModel):
         """
         from quivers.formulas._posterior import (
             collect_draws,
-            draw_count,
             replay,
             row_binding,
         )
         from quivers.formulas._prediction import prepare_prediction
 
         self._formula_predictor(parameter)
-        ordinal = self.family.observe_family in {"OrderedLogistic", "OrderedProbit"}
+        ordinal = self.family.ordinal is not None
         if transform and parameter == "mu" and ordinal:
             raise ValueError(
                 "ordinal probabilities depend on thresholds; use posterior_epred"
             )
+        com_log_rate = (
+            self.family.name == "com_poisson"
+            and self.family.location_link.name == "log"
+            and parameter == "mu"
+        )
         binding = (
-            ("mu" if transform else "eta")
+            ("mu" if transform and not com_log_rate else "eta")
             if parameter == "mu"
             else (parameter if transform else f"dpar_{parameter}_eta")
         )
-        context = prepare_prediction(self, new_data, predictor_data)
+        context = prepare_prediction(
+            self,
+            new_data,
+            predictor_data,
+            re_formula=re_formula,
+            allow_new_levels=allow_new_levels,
+            sample_new_levels=sample_new_levels,
+            seed=seed,
+        )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         rows = context.rows
+        category_specific = parameter == "mu" and (
+            any(column.category_specific for column in self.formula.fixed_columns)
+            or any(
+                term.column is not None and term.column.category_specific
+                for term in self.formula.random_terms
+            )
+        )
         categories = (
-            len(self.category_labels)
-            if self.family.observe_family == "Categorical"
-            else 0
+            len(self.category_labels) if self.family.name == "categorical" else 0
         )
-        return collect_draws(
-            (
-                row_binding(recorded.sites[binding].value, rows, categories)
-                for recorded in replay(self, draws, shape, context=context)
-            ),
-            shape,
-        )
+        if category_specific:
+            categories = (
+                len(self.category_labels)
+                - 1
+                - int(
+                    self.family.ordinal is not None
+                    and self.family.ordinal.kind == "hurdle_cumulative"
+                )
+            )
+
+        def values():
+            for recorded in replay(self, draws, shape, context=context):
+                value = recorded.sites[binding].value
+                if com_log_rate and transform:
+                    value = value.exp()
+                if category_specific:
+                    proportional = row_binding(value, rows).unsqueeze(-1)
+                    specific = row_binding(
+                        recorded.sites["eta_nonbaseline"].value, rows, categories
+                    )
+                    value = proportional + specific
+                yield row_binding(value, rows, categories)
+
+        return collect_draws(values(), shape)
 
     def posterior_epred(
         self,
         *,
         new_data: IntoDataFrame | None = None,
         predictor_data: torch.Tensor | None = None,
+        re_formula: str | None = None,
+        allow_new_levels: bool = False,
+        sample_new_levels: Literal[
+            "uncertainty",
+            "old_levels",
+            "gaussian",
+            "feasible_uncertainty",
+            "feasible_gaussian",
+        ] = "uncertainty",
         num_samples: int | None = None,
         seed: int = 0,
     ) -> torch.Tensor:
@@ -413,6 +624,25 @@ class BayesianFit(ValueModel):
             or None for training rows. No response or weight column is needed.
         predictor_data : torch.Tensor or None
             Explicit neural input for new_data, required for neural fits.
+        re_formula : str or None
+            None includes all fitted varying effects; ``"~0"`` excludes
+            them; a one-sided group formula selects fitted slopes. This
+            sets excluded contributions to zero; it does not marginalize them.
+        allow_new_levels : bool
+            Permit unseen or missing grouping identities in new_data.
+            Repeated missing values share one new identity per group.
+            Ordinary categorical predictors still require fitted levels.
+        sample_new_levels : str
+            For each new identity, uncertainty chooses one fitted donor
+            jointly across slopes per posterior draw; old_levels retains
+            one donor across all chains and draws; gaussian samples the
+            fitted conditional zero-mean group law. Existing groups retain
+            their posterior effects. Group and response noise use distinct
+            random streams, and the caller's CPU RNG is restored. Explicit
+            feasible_uncertainty and feasible_gaussian policies condition joint
+            new-group proposals on cumulative row-order support; at most 1024
+            attempts are made per posterior draw, with an error on failure.
+            Fitted draws and cutpoints are retained.
         num_samples : int or None
             Draw count under the convention of `draws`.
         seed : int
@@ -437,7 +667,6 @@ class BayesianFit(ValueModel):
         """
         from quivers.formulas._posterior import (
             collect_draws,
-            draw_count,
             replay,
             response_distribution,
             row_binding,
@@ -448,7 +677,15 @@ class BayesianFit(ValueModel):
             raise TypeError(
                 "a circular response expectation requires an angular convention"
             )
-        context = prepare_prediction(self, new_data, predictor_data)
+        context = prepare_prediction(
+            self,
+            new_data,
+            predictor_data,
+            re_formula=re_formula,
+            allow_new_levels=allow_new_levels,
+            sample_new_levels=sample_new_levels,
+            seed=seed,
+        )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         rows = context.rows
@@ -465,6 +702,13 @@ class BayesianFit(ValueModel):
                         )
                     value = distribution.probs
                 elif categories:
+                    from quivers.continuous._ordinal import OrdinalDistribution
+
+                    if isinstance(distribution, OrdinalDistribution):
+                        yield row_binding(
+                            distribution.category_probs(), rows, categories
+                        )
+                        continue
                     codes = torch.arange(
                         categories, device=recorded.sites[response].value.device
                     )
@@ -511,7 +755,7 @@ class BayesianFit(ValueModel):
             and actual sampler statistics. Later analysis reuses these tensors.
         """
         from quivers.diagnostics.posterior import PosteriorAnalysis, _sample_stats
-        from quivers.formulas._posterior import draw_count, replay
+        from quivers.formulas._posterior import replay
         from quivers.inference._likelihood import collect_log_likelihood
 
         shape = draw_count(self.posterior, num_samples)
@@ -552,7 +796,7 @@ class BayesianFit(ValueModel):
         TypeError
             If a hidden response needs a marginal-likelihood observer.
         """
-        from quivers.formulas._posterior import draw_count, replay
+        from quivers.formulas._posterior import replay
         from quivers.inference._likelihood import collect_log_likelihood
 
         shape = draw_count(self.posterior, num_samples)
@@ -566,6 +810,15 @@ class BayesianFit(ValueModel):
         *,
         new_data: IntoDataFrame | None = None,
         predictor_data: torch.Tensor | None = None,
+        re_formula: str | None = None,
+        allow_new_levels: bool = False,
+        sample_new_levels: Literal[
+            "uncertainty",
+            "old_levels",
+            "gaussian",
+            "feasible_uncertainty",
+            "feasible_gaussian",
+        ] = "uncertainty",
         num_samples: int | None = None,
         seed: int = 0,
     ) -> torch.Tensor:
@@ -578,6 +831,25 @@ class BayesianFit(ValueModel):
             or None for training rows. No response or weight column is needed.
         predictor_data : torch.Tensor or None
             Explicit neural input for new_data, required for neural fits.
+        re_formula : str or None
+            None includes all fitted varying effects; ``"~0"`` excludes
+            them; a one-sided group formula selects fitted slopes. This
+            sets excluded contributions to zero; it does not marginalize them.
+        allow_new_levels : bool
+            Permit unseen or missing grouping identities in new_data.
+            Repeated missing values share one new identity per group.
+            Ordinary categorical predictors still require fitted levels.
+        sample_new_levels : str
+            For each new identity, uncertainty chooses one fitted donor
+            jointly across slopes per posterior draw; old_levels retains
+            one donor across all chains and draws; gaussian samples the
+            fitted conditional zero-mean group law. Existing groups retain
+            their posterior effects. Group and response noise use distinct
+            random streams, and the caller's CPU RNG is restored. Explicit
+            feasible_uncertainty and feasible_gaussian policies condition joint
+            new-group proposals on cumulative row-order support; at most 1024
+            attempts are made per posterior draw, with an error on failure.
+            Fitted draws and cutpoints are retained.
         num_samples : int or None
             Maximum draws per MCMC chain, or fresh guide draws, following
             `draws`. Each posterior draw supplies one response per row.
@@ -602,13 +874,20 @@ class BayesianFit(ValueModel):
         """
         from quivers.formulas._posterior import (
             collect_draws,
-            draw_count,
             replay,
             row_binding,
         )
         from quivers.formulas._prediction import prepare_prediction
 
-        context = prepare_prediction(self, new_data, predictor_data)
+        context = prepare_prediction(
+            self,
+            new_data,
+            predictor_data,
+            re_formula=re_formula,
+            allow_new_levels=allow_new_levels,
+            sample_new_levels=sample_new_levels,
+            seed=seed,
+        )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         rows = context.rows
@@ -715,8 +994,13 @@ class BayesianFit(ValueModel):
         collected: dict[tuple[str, str], list[torch.Tensor]] = {
             (term.group, term.slope): [] for term in predictor.random_terms
         }
-        categorical = self.family.observe_family == "Categorical"
-        categories = len(self.category_labels) - 1 if categorical else 0
+        categorical = self.family.name == "categorical"
+        categories = len(self.category_labels) - 1
+        if (
+            self.family.ordinal is not None
+            and self.family.ordinal.kind == "hurdle_cumulative"
+        ):
+            categories -= 1
         specifications = [
             (
                 term.group,
@@ -728,16 +1012,18 @@ class BayesianFit(ValueModel):
                     else f"beta_{_qvr_name(term.group)}_{_qvr_name(term.slope)}"
                 ),
                 len(predictor.group_levels[term.group]),
+                categories
+                if categorical
+                or (term.column is not None and term.column.category_specific)
+                else 0,
             )
             for term in predictor.random_terms
         ]
         for recorded in replay(self, draws, shape):
-            for group, slope, name, levels in specifications:
+            for group, slope, name, levels, width in specifications:
                 value = recorded.sites[name].value
                 value = (
-                    value.reshape(categories, levels).T
-                    if categorical
-                    else value.reshape(levels)
+                    value.reshape(width, levels).T if width else value.reshape(levels)
                 )
                 collected[(group, slope)].append(value)
         result: dict[str, dict[str, torch.Tensor]] = {}
@@ -906,7 +1192,9 @@ def fit(
         else:
             family_obj = family
 
-        parsed, design = _formula_and_design(formula, data, weights=weights)
+        parsed, design = _threshold_formula_and_design(
+            formula, data, thresholds_by=thresholds_by, weights=weights
+        )
         parameter_designs: dict[str, DesignMatrices] = {}
         parameter_formulas = _parse_distributional(
             distributional, data, parsed.response_name, designs=parameter_designs
@@ -1012,8 +1300,9 @@ def fit(
                         else 0.0
                     )
         starts.update(initial_values or {})
+        losses: tuple[float, ...] = ()
         if method == "svi":
-            posterior = _fit_svi(
+            posterior, losses = _fit_svi(
                 program,
                 observations,
                 1000 if num_steps is None else num_steps,
@@ -1042,6 +1331,7 @@ def fit(
             family=family_obj,
             program=program,
             posterior=posterior,
+            losses=losses,
             observations=observations,
             reparameterize=reparameterize,
             binomial_trials=binomial_trials,
@@ -1232,7 +1522,9 @@ def _formula_lens(
         family_obj = families[family]
     else:
         family_obj = family
-    parsed = formula_from_data(formula, data, weights=weights)
+    parsed, _ = _threshold_formula_and_design(
+        formula, data, thresholds_by=thresholds_by, weights=weights
+    )
     parameter_formulas = _parse_distributional(
         distributional, data, parsed.response_name
     )
@@ -1257,6 +1549,43 @@ def _formula_lens(
         fixed_parameters=fixed_parameters,
     )
     return lens, parsed
+
+
+def _threshold_formula_and_design(
+    formula: str,
+    data: IntoDataFrame,
+    *,
+    thresholds_by: str | None,
+    weights: str | None,
+) -> tuple[Formula, DesignMatrices]:
+    """Evaluate a full threshold profile with one shared group location.
+
+    Parameters
+    ----------
+    formula : str
+        Authored formula, retained for presentation.
+    data : IntoDataFrame
+        Training predictors and response.
+    thresholds_by : str or None
+        Group whose centered threshold shape also needs a location effect.
+    weights : str or None
+        Optional response-weight column.
+
+    Returns
+    -------
+    tuple of Formula and DesignMatrices
+        Evaluated metadata and retained transforms, with exactly one ordinary
+        varying intercept for the threshold group.
+    """
+    parsed, design = _formula_and_design(formula, data, weights=weights)
+    if thresholds_by is None or any(
+        term.group == thresholds_by and term.slope == "Intercept"
+        for term in parsed.random_terms
+    ):
+        return parsed, design
+    expanded = f"{formula} + (1 | {thresholds_by})"
+    parsed, design = _formula_and_design(expanded, data, weights=weights)
+    return parsed.with_(formula=formula), design
 
 
 def _parse_distributional(
@@ -1391,16 +1720,21 @@ def _fit_svi(
         if initial_values
         else guide_cls(program, observed_names=set(observations))
     )
-    parameters = list(program.parameters()) + list(guide.parameters())
-    if predictor is not None:
-        parameters.extend(predictor.parameters())
+    from quivers.inference.svi import _unique_parameters
+
+    parameters = _unique_parameters(
+        program.parameters(),
+        guide.parameters(),
+        () if predictor is None else predictor.parameters(),
+    )
     optimizer = torch.optim.Adam(parameters, lr=learning_rate)
     svi = SVI(program, guide, optimizer, ELBO())
     n_obs = int(observations[next(iter(observations))].shape[0])
     # One run of the program: its observation rows come from the data
     # through the formula's plate, not from the input's rows.
     x = torch.zeros(1, 1, dtype=torch.long)
-    for _ in range(num_steps):
+
+    def step_bindings(index: int) -> dict[str, torch.Tensor]:
         step_observations = observations
         if predictor is not None:
             assert predictor_data is not None and predictor_name is not None
@@ -1411,7 +1745,9 @@ def _fit_svi(
                 n_obs=n_obs,
                 n_categories=predictor_categories,
             )
-        svi.step(x, step_observations)
+        return step_observations
+
+    losses = svi.run(x, step_bindings, num_steps=num_steps)
     if predictor is not None:
         assert predictor_data is not None and predictor_name is not None
         observations[predictor_name] = _predictor_output(
@@ -1420,7 +1756,7 @@ def _fit_svi(
             n_obs=n_obs,
             n_categories=predictor_categories,
         ).detach()
-    return guide
+    return guide, losses
 
 
 def _binomial_trial_tensor(

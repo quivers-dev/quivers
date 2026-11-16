@@ -153,6 +153,16 @@ infer whether a real parameter denotes a mean, a log-location, or a scale.
 The selected family and any explicit regression parameter map determine
 that interpretation. None of these declarations alone extends an effect row.
 
+Checked scalar operations refine execution domains without introducing
+new static binders. `positive_parameter(x)` checks finite positivity;
+`log_probability(p)` checks a finite probability; `log1mexp(x)` checks
+a nonpositive logarithm; and `log_ndtr(x)` computes a Normal log CDF.
+Their checked signatures are `Real -> Real`; a carrier judgment alone
+does not prove their domains. An active invalid argument raises explicitly.
+A conditional that protects a partial operation must retain its branch
+boundary: eager evaluation of both branches would change its semantics.
+An executor that cannot preserve symbolic branching must refuse it.
+
 ### 3.1 Program steps
 
 The main rules are

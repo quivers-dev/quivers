@@ -4,7 +4,7 @@ A [response family](../../guides/analysis-data-and-formulas.md#family-registry) 
 the observations, and its [link function](https://en.wikipedia.org/wiki/Generalized_linear_model)
 connects the linear predictor to a parameter of that distribution [@nelder1972glm]. In
 [Bernoulli regression](../../tutorials/qvr/02-glms.md), the inverse logit maps an unconstrained
-predictor to a probability. The module gives `Family`, `Link`, and `AuxParam`, and the `families`
+predictor to a probability. The module gives `Family`, `Link`, `AuxParam`, and `OrdinalSpec`, and the `families`
 and `links` registries. `Family.with_links(mu="probit")` selects a location link,
 while `Family.with_links(sigma="softplus")` changes a distributional scale link;
 [link selection](../../guides/analysis-data-and-formulas.md#distributional-regression-and-link-selection)
@@ -18,6 +18,37 @@ equivalent forms and stages shared intermediates. The
 distinguishes a distributional predictor's link from a scalar auxiliary
 prior, and the [formal definition](../../semantics/programs.md#inverse-links-as-value-maps)
 states their value-map semantics.
+
+## Ordinal configuration
+
+`Family.ordinal` retains an `OrdinalSpec` for cumulative, adjacent-category,
+stopping-ratio, continuation-ratio, or hurdle-cumulative probabilities.
+`families["acat"].with_links(mu="probit").with_thresholds("equidistant")`
+returns a configured value. Discrimination defaults to the constant one;
+explicit scalar or distributional estimates must be finite and positive.
+`cs(expr)` supplies transition-specific effects. Cumulative and
+hurdle-cumulative effects use training-domain spacing bounds plus positive
+slack to keep effective row cutpoints ordered. Their proper conditional
+slack priors differ from independent brms threshold priors.
+`thresholds_by` combines centered group shape with exactly one reused or
+automatic varying location; noncentered category-specific slopes may
+coexist with it. A fixed `cs(1)` with free cumulative/hurdle thresholds
+and a proportional intercept is redundant and fails explicitly, as do
+centered category-specific groups and duplicate same-factor
+category-specific intercept/profile coordinates. The
+[ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)
+gives links, threshold support, generated priors, and prediction shapes.
+
+## COM-Poisson parameters
+
+`com_poisson` uses log-linked rate `mu=lambda` and log-linked dispersion
+`shape=nu`, with scalar default `Gamma(0.01, 0.01)`. Rate is not generally
+response mean. The compiler passes `log_rate` directly to the native
+kernel; transformed predictors return rate, while response expectations
+use its certified normalized moment. The
+[rate guide](../../guides/analysis-data-and-formulas.md#com-poisson-rate-and-response-mean)
+distinguishes the pinned released Stan law from its R helper's mode
+parameterization and states resource and capability limits.
 
 ## Count and zero-atom parameterizations
 

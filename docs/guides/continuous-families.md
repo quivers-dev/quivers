@@ -27,6 +27,72 @@ base distribution, which the current checked scalar-family argument contract
 cannot express as an inline source call. Use its native Python construction;
 registration does not establish a QVR source or export form.
 
+### Vector count events
+
+A Multinomial response is a vector of category counts for one observation.
+The row axis indexes observations; the category axis belongs to each event.
+A typed runtime header states both axes, while a static telescope can leave
+the row count to be inferred at binding:
+
+```qvr
+object Category : FinSet 3
+program count_vectors[n : Nat](
+    trials : Tensor[Int]([n]),
+    probabilities : Tensor[Real]([n, Category]),
+    y : Tensor[Int]([n, Category]),
+) : n -> n
+    observe y : n <- Multinomial(total_count=trials, probs=probabilities) [over=Category]
+    return y
+export count_vectors
+```
+
+`[over=Category]` marks a single vector event. Its log probability reduces
+the category coordinates together, leaving one score per observation row.
+This distinction also holds when row and category extents happen to be equal.
+The supplied trials may vary by row; responses must sum to those trials.
+Zero trials require an all-zero response. Replacing the kernel with
+`DirichletMultinomial(total_count=trials, concentration=concentrations)`
+uses a typed concentration tensor with the same axes.
+
+Both native kernels check finite trial counts in `0..2**53` before conversion,
+use float64 scores and moments, and draw int64 vectors without pathwise
+sampling gradients. The static `[n : Nat]` determines a shape; the runtime
+`trials` tensor supplies counts to the probability law. Native and
+checked-reference execution support these kernels; the
+[native API](../api/continuous/families.md#vector-count-events) gives the
+constructors and conditional learned-parameter variants.
+
+### COM-Poisson rates
+
+`COMPoisson(rate=..., dispersion=...)` uses a nonnegative rate and positive
+dispersion, or accepts `log_rate=...` instead of rate. Its Poisson limit
+has dispersion one; elsewhere rate is not generally the response mean.
+Float64 centered sums certify normalization and moments within explicit
+budgets, and an independent exact rejection envelope generates integer
+samples. Both paths fail explicitly when their resource or exact-count
+capacity is exceeded. The
+[native API](../api/continuous/families.md#com-poisson-counts)
+gives defaults and exception types; the
+[formula guide](analysis-data-and-formulas.md#com-poisson-rate-and-response-mean)
+gives regression parameters and the released brms helper distinction.
+
+```qvr
+object Out : Real 1
+program count_model[n : Nat](
+    log_rate : Real,
+    shape : Real,
+    y : Tensor[Int]([n]),
+) : n -> Out
+    observe y : n <- COMPoisson(log_rate=log_rate, dispersion=shape)
+    return log_rate
+export count_model
+```
+
+Here `n` specializes the response extent, while `shape` is a runtime
+dispersion parameter. The family argument's name does not make it a
+static shape index, and the typed response declaration alone contributes
+no likelihood; the `observe` step supplies it.
+
 ### Core families {#hand-written-core-families}
 
 ```python

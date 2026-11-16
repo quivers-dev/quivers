@@ -52,9 +52,10 @@ def _reference(base: Distribution) -> Tensor:
     for value in vars(base).values():
         if isinstance(value, Tensor) and value.is_floating_point():
             return value
-    inner = getattr(base, "base", None)
-    if isinstance(inner, Distribution):
-        return _reference(inner)
+    for attribute in ("base", "base_dist"):
+        inner = getattr(base, attribute, None)
+        if isinstance(inner, Distribution):
+            return _reference(inner)
     raise NotImplementedError(
         f"{type(base).__name__} does not expose a floating distribution parameter"
     )

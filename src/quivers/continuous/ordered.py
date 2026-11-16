@@ -22,76 +22,14 @@ Sampling is non-reparameterisable: the support is discrete.
 
 from __future__ import annotations
 
-import math
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 import torch
 from torch.distributions import constraints as _constraints
 
+from quivers.continuous._ordinal import OrdinalDistribution, OrdinalLink
 from quivers.continuous.morphisms import AnySpace, ContinuousMorphism
 from quivers.continuous.param_source import ParamSource, _make_source
-
-
-def _ordered_log_probs(
-    eta: torch.Tensor,
-    cutpoints: torch.Tensor,
-    log_cdf: Callable[[torch.Tensor], torch.Tensor],
-) -> torch.Tensor:
-    """Compute log-probabilities for every category at every input.
-
-    Parameters
-    ----------
-    eta : torch.Tensor
-        Latent locations. Shape ``(batch,)``.
-    cutpoints : torch.Tensor
-        Ordered cutpoints ``c_0 < c_1 < ... < c_{K-2}``. Shape
-        ``(K-1,)``.
-    log_cdf : callable
-        ``log_cdf(z)`` returns the log of the cumulative distribution
-        function at ``z``. Used to compute cumulative-probability
-        differences in a numerically stable way.
-
-    Returns
-    -------
-    torch.Tensor
-        Log-probabilities. Shape ``(batch, K)``.
-    """
-    diffs = cutpoints.unsqueeze(0) - eta.unsqueeze(-1)  # (batch, K - 1)
-    log_cdf_below = log_cdf(diffs)
-    log_cdf_above = log_cdf(-diffs)
-    # P(Y = k) for 0 < k < K - 1 is CDF(c_k - eta) - CDF(c_{k-1} - eta).
-    # log(a - b) where a = CDF(c_k - eta), b = CDF(c_{k-1} - eta) is
-    # numerically tricky; we compute via log( CDF(c_k - eta) * (1 -
-    # CDF(c_{k-1} - eta) / CDF(c_k - eta)) ) = log CDF(c_k - eta) +
-    # log1p(-exp(log CDF(c_{k-1} - eta) - log CDF(c_k - eta))).
-    if cutpoints.shape[0] >= 2:
-        a = log_cdf_below[..., 1:]
-        b = log_cdf_below[..., :-1]
-        middle = a + torch.log1p(
-            -torch.exp((b - a).clamp(max=0.0)).clamp(max=1.0 - 1e-12)
-        )
-    else:
-        middle = eta.new_empty((eta.shape[0], 0))
-    first = log_cdf_below[..., :1]
-    last = log_cdf_above[..., -1:]
-    return torch.cat([first, middle, last], dim=-1)
-
-
-def _logistic_log_cdf(z: torch.Tensor) -> torch.Tensor:
-    """Stable ``log(sigmoid(z))`` for the logistic CDF."""
-    return -torch.nn.functional.softplus(-z)
-
-
-_NORMAL_SQRT2 = math.sqrt(2.0)
-
-
-def _normal_log_cdf(z: torch.Tensor) -> torch.Tensor:
-    """Stable log of the standard normal cumulative distribution.
-
-    Uses ``log(0.5 * erfc(-z / sqrt(2)))`` for negative-tail
-    accuracy.
-    """
-    return torch.log(0.5 * torch.erfc(-z / _NORMAL_SQRT2).clamp(min=1e-30))
 
 
 class _ConditionalOrdered(ContinuousMorphism):
@@ -140,8 +78,7 @@ class _ConditionalOrdered(ContinuousMorphism):
             )
         return cutpoints
 
-    def _log_cdf(self, z: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError
+    _ordinal_link: OrdinalLink = "logit"
 
     def log_prob(
         self,
@@ -176,9 +113,7 @@ class _ConditionalOrdered(ContinuousMorphism):
             if cutpoints is None
             else self._validate_cutpoints(cutpoints)
         )
-        log_probs = _ordered_log_probs(eta, cps, self._log_cdf)
-        y_idx = y.long().clamp(min=0, max=self._k - 1)
-        return log_probs.gather(-1, y_idx.unsqueeze(-1)).squeeze(-1)
+        return OrdinalDistribution(eta, cps, link=self._ordinal_link).log_prob(y)
 
     def rsample(
         self,
@@ -222,16 +157,9 @@ class _ConditionalOrdered(ContinuousMorphism):
                 if cutpoints is None
                 else self._validate_cutpoints(cutpoints)
             )
-            log_probs = _ordered_log_probs(eta, cps, self._log_cdf)
-            probs = log_probs.exp().clamp(min=0.0)
-            probs = probs / probs.sum(dim=-1, keepdim=True)
-            n_samples = (
-                int(torch.Size(sample_shape).numel()) if len(sample_shape) > 0 else 1
+            return OrdinalDistribution(eta, cps, link=self._ordinal_link).sample(
+                sample_shape
             )
-            draws = torch.multinomial(probs, n_samples, replacement=True)
-            if len(sample_shape) == 0:
-                return draws.squeeze(-1).long()
-            return draws.T.reshape(*sample_shape, -1).long()
 
     def _default_cutpoints(self, eta: torch.Tensor) -> torch.Tensor:
         # Equally spaced cutpoints around zero on the unit-scale
@@ -265,8 +193,7 @@ class ConditionalOrderedLogistic(_ConditionalOrdered):
         Hidden layer width for the neural parameter source.
     """
 
-    def _log_cdf(self, z: torch.Tensor) -> torch.Tensor:
-        return _logistic_log_cdf(z)
+    _ordinal_link: OrdinalLink = "logit"
 
 
 class ConditionalOrderedProbit(_ConditionalOrdered):
@@ -288,8 +215,7 @@ class ConditionalOrderedProbit(_ConditionalOrdered):
         Hidden layer width for the neural parameter source.
     """
 
-    def _log_cdf(self, z: torch.Tensor) -> torch.Tensor:
-        return _normal_log_cdf(z)
+    _ordinal_link: OrdinalLink = "probit"
 
 
 __all__ = [

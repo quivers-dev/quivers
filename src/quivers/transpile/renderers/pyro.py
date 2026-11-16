@@ -13,6 +13,8 @@ import pathlib
 import panproto
 
 from quivers.dsl.ast_nodes import MorphismInitFamily
+from quivers.transpile._builtin_spellings import _probability_builtins_used
+
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.renderers._ranks import carries_event_dims, name_rank_map
@@ -1952,7 +1954,7 @@ def _load_runtime_pyro_helpers() -> tuple[
 ]:
     """Parse [`runtime_pyro.py`][quivers.transpile.runtime_pyro]
     through panproto's Python tree-sitter grammar at module-load time
-    and index every helper `class_definition` subtree by class name.
+    and index helper class and function subtrees by name.
 
     Returns the parsed schema, a map from class name to the
     class-definition vertex id, and a map from class name to the set
@@ -1971,7 +1973,7 @@ def _load_runtime_pyro_helpers() -> tuple[
     )
     roots: dict[str, str] = {}
     for v in schema.vertices:
-        if v.kind == "class_definition":
+        if v.kind in {"class_definition", "function_definition"}:
             name = _class_definition_name(schema, v.id)
             if name is not None:
                 roots[name] = v.id
@@ -2001,7 +2003,8 @@ def _ir_helper_classes_used(body: tuple[IRNode, ...]) -> set[str]:
     a helper is needed when the family's Pyro target name matches a
     `class` defined in
     [`runtime_pyro.py`][quivers.transpile.runtime_pyro]."""
-    used: set[str] = set()
+    probability = _probability_builtins_used(body)
+    used: set[str] = {"_qvr_" + name for name in probability}
     for node in body:
         if isinstance(node, (IRSample, IRObserve)):
             meta = FAMILY_META.get(node.family)

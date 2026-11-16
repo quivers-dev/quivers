@@ -13,6 +13,8 @@ import panproto
 import torch.distributions.constraints as c
 
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
+from quivers.transpile._builtin_spellings import _probability_builtins_used
+
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.renderers._ranks import carries_event_dims, name_rank_map
 from quivers.transpile.renderers._python_helpers import (
@@ -2121,7 +2123,7 @@ def _load_runtime_numpyro_helpers() -> tuple[
 ]:
     """Parse [`runtime_numpyro.py`][quivers.transpile.runtime_numpyro]
     through panproto's Python tree-sitter grammar at module-load time
-    and index every helper `class_definition` subtree by class name.
+    and index helper class and function subtrees by name.
 
     Returns the parsed schema, a map from class name to the
     class-definition vertex id, and a map from class name to the set of
@@ -2139,7 +2141,7 @@ def _load_runtime_numpyro_helpers() -> tuple[
     )
     roots: dict[str, str] = {}
     for v in schema.vertices:
-        if v.kind == "class_definition":
+        if v.kind in {"class_definition", "function_definition"}:
             name = _class_definition_name(schema, v.id)
             if name is not None:
                 roots[name] = v.id
@@ -2171,7 +2173,10 @@ def _ir_helper_classes_used(body: tuple[IRNode, ...]) -> set[str]:
     whose NumPyro target name matches a `class` in
     [`runtime_numpyro.py`][quivers.transpile.runtime_numpyro].
     """
-    used: set[str] = set()
+    probability = _probability_builtins_used(body)
+    used: set[str] = {"_qvr_" + name for name in probability}
+    if probability:
+        used.add("_qvr_probability_check")
     for node in body:
         if isinstance(node, (IRSample, IRObserve)):
             if node.family in _NUMPYRO_RUNTIME_HELPER_FAMILIES:

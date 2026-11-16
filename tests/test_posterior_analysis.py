@@ -1,6 +1,10 @@
 """Shared fit analysis matches independent empirical and likelihood oracles."""
 
 import math
+import os
+from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import patch
 
 import arviz as az
@@ -301,3 +305,102 @@ def test_empty_observation_units_still_allow_posterior_summaries():
     assert result.to_datatree()["log_likelihood"].dataset["y"].shape == (2, 5, 0)
     with pytest.raises(ValueError, match="nonempty"):
         result.waic()
+
+
+@pytest.mark.parametrize("kind", ["mcmc", "variational"])
+def test_analysis_datatree_labels_event_axes_and_preserves_tensor_values(kind):
+    samples = torch.arange(24.0).reshape(2, 4, 3).requires_grad_()
+    scores = torch.arange(40.0).reshape(2, 4, 5) / -10
+    observed = torch.arange(5)
+    statistics = (
+        {
+            "lp": torch.arange(8.0).reshape(2, 4),
+            "diverged": torch.tensor([[0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]]),
+            "tree_depth": torch.full((2, 4), 3.0),
+            "num_steps": torch.full((2, 4), 7.0),
+            "accept_prob": torch.full((2, 4), 0.75),
+            "component__num_steps": torch.full((2, 4), 11.0),
+        }
+        if kind == "mcmc"
+        else {}
+    )
+    if kind == "variational":
+        samples = samples[:1]
+        scores = scores[:1]
+    result = PosteriorAnalysis(
+        samples={"beta": samples},
+        log_likelihood={"y": scores},
+        observed_data={"y": observed},
+        sample_stats=statistics,
+        kind=kind,
+    )
+    tree = result.to_datatree(
+        coords={"coefficient": ["a", "b", "c"], "row": list("vwxyz")},
+        dims={"beta": ["coefficient"], "y": ["row"]},
+    )
+    assert tree["posterior"]["beta"].dims == ("chain", "draw", "coefficient")
+    assert tree["log_likelihood"]["y"].dims == ("chain", "draw", "row")
+    assert tree["observed_data"]["y"].dims == ("row",)
+    assert tree["posterior"]["beta"].coefficient.values.tolist() == ["a", "b", "c"]
+    np.testing.assert_array_equal(
+        tree["posterior"]["beta"], np.arange(24).reshape(2, 4, 3)[: samples.shape[0]]
+    )
+    np.testing.assert_allclose(
+        tree["log_likelihood"]["y"],
+        np.arange(40).reshape(2, 4, 5)[: samples.shape[0]] / -10,
+        rtol=1e-7,
+    )
+    np.testing.assert_array_equal(tree["observed_data"]["y"], np.arange(5))
+    assert samples.requires_grad and result.samples["beta"] is samples
+    assert tree.attrs["quivers_posterior_kind"] == kind
+    if kind == "mcmc":
+        assert tree["sample_stats"]["diverging"].dtype == np.dtype("bool")
+        assert tree["sample_stats"]["tree_depth"].dtype == np.dtype("int64")
+        assert tree["sample_stats"]["n_steps"].dtype == np.dtype("int64")
+        assert tree["sample_stats"]["component__num_steps"].dtype == np.dtype("float32")
+        np.testing.assert_array_equal(tree["sample_stats"]["acceptance_rate"], 0.75)
+        assert statistics["diverged"].dtype == torch.float32
+    else:
+        assert "sample_stats" not in tree.children
+
+
+def test_torch_only_analysis_does_not_import_optional_arviz_dependencies():
+    # Fresh interpreter: collection has already imported ArviZ in this process.
+    script = r"""
+import importlib.abc
+import sys
+class OptionalDependencyGuard(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'arviz', 'xarray'}:
+            raise ModuleNotFoundError('optional diagnostics dependency blocked')
+sys.meta_path.insert(0, OptionalDependencyGuard())
+import torch
+from quivers.diagnostics import PosteriorAnalysis
+analysis = PosteriorAnalysis(
+    samples={'theta': torch.arange(8.).reshape(1,8)},
+    log_likelihood={'y': torch.zeros(1,8,2)},
+    observed_data={'y': torch.zeros(2)},
+    sample_stats={}, kind='variational',
+)
+assert analysis.summary()['theta'].mean.item() == 3.5
+assert analysis.waic().num_observations == 2
+assert 'arviz' not in sys.modules and 'xarray' not in sys.modules
+try:
+    analysis.to_datatree()
+except ModuleNotFoundError as exc:
+    assert 'optional diagnostics dependency blocked' in str(exc)
+else:
+    raise AssertionError('conversion must require optional diagnostics packages')
+"""
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(Path(__file__).parents[1] / "src"), environment.get("PYTHONPATH", ""))
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=45,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

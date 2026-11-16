@@ -34,6 +34,7 @@ type PrimitiveCapability = Literal[
     "special",
     "activation",
     "weight",
+    "probability",
 ]
 """The feature a target must support to render a primitive."""
 
@@ -93,6 +94,117 @@ def _observation_weight(value: float) -> float:
     if isinstance(value, bool) or not math.isfinite(value) or value < 0:
         raise ValueError("observation weights must be finite and nonnegative")
     return value
+
+
+def _positive_parameter(value: float) -> float:
+    """Validate a finite, strictly positive scalar parameter.
+
+    Parameters
+    ----------
+    value : float
+        Candidate natural-scale parameter.
+
+    Returns
+    -------
+    float
+        The supplied parameter unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the value is boolean, nonfinite, zero, or negative.
+    """
+    if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+        raise ValueError(
+            "positive_parameter requires a finite strictly positive real value"
+        )
+    return value
+
+
+def _log_probability(value: float) -> float:
+    """Log a probability, retaining the zero-mass endpoint.
+
+    Parameters
+    ----------
+    value : float
+        Finite probability in the closed unit interval.
+
+    Returns
+    -------
+    float
+        Its logarithm, negative infinity at zero.
+
+    Raises
+    ------
+    ValueError
+        If the value is boolean, nonfinite, or outside the unit interval.
+    """
+    if isinstance(value, bool) or not math.isfinite(value) or not 0 <= value <= 1:
+        raise ValueError("log_probability requires a finite real value in [0, 1]")
+    return math.log(value) if value else -math.inf
+
+
+def _log1mexp(value: float) -> float:
+    """Log a complementary exponential without cancellation.
+
+    Parameters
+    ----------
+    value : float
+        Nonpositive logarithm, including negative infinity.
+
+    Returns
+    -------
+    float
+        Log(1-exp(value)), negative infinity at zero and zero at -infinity.
+
+    Raises
+    ------
+    ValueError
+        If the value is boolean, NaN, or positive.
+    """
+    if isinstance(value, bool) or math.isnan(value) or value > 0:
+        raise ValueError("log1mexp requires a nonpositive real value")
+    if value == 0:
+        return -math.inf
+    if value > -math.log(2):
+        return math.log(-math.expm1(value))
+    return math.log1p(-math.exp(value))
+
+
+def _log_ndtr(value: float) -> float:
+    """Standard normal log CDF with a standard-library negative-tail kernel.
+
+    Parameters
+    ----------
+    value : float
+        Real argument, including either infinity.
+
+    Returns
+    -------
+    float
+        Standard normal log CDF. A Mills-ratio continued fraction avoids
+        erfc underflow in the far negative tail.
+
+    Raises
+    ------
+    ValueError
+        If the value is boolean or NaN.
+    """
+    if isinstance(value, bool) or math.isnan(value):
+        raise ValueError("log_ndtr requires a real value other than NaN")
+    if value == math.inf:
+        return 0.0
+    if value == -math.inf:
+        return -math.inf
+    if value < -10:
+        x = -value
+        denominator = x
+        for numerator in range(64, 0, -1):
+            denominator = x + numerator / denominator
+        return -0.5 * x * x - 0.5 * math.log(2 * math.pi) - math.log(denominator)
+    if value > 0:
+        return math.log1p(-0.5 * math.erfc(value / math.sqrt(2)))
+    return math.log(0.5 * math.erfc(-value / math.sqrt(2)))
 
 
 def _truncating_division(dividend: int, divisor: int) -> int:
@@ -384,6 +496,10 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Callable[..., object]], ...] = (
     _signature("pow_real", (REAL, REAL), REAL, "math", math.pow),
     _signature("exp", (REAL,), REAL, "math", math.exp),
     _signature("log", (REAL,), REAL, "math", math.log),
+    _signature("log_probability", (REAL,), REAL, "probability", _log_probability),
+    _signature("positive_parameter", (REAL,), REAL, "probability", _positive_parameter),
+    _signature("log1mexp", (REAL,), REAL, "probability", _log1mexp),
+    _signature("log_ndtr", (REAL,), REAL, "probability", _log_ndtr),
     _signature("sqrt", (REAL,), REAL, "math", math.sqrt),
     _signature("eq_int", (INT, INT), BOOL, "comparison", lambda a, b: a == b),
     _signature("ne_int", (INT, INT), BOOL, "comparison", lambda a, b: a != b),

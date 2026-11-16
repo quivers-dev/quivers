@@ -48,6 +48,8 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetFactorCase,
 )
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
+from quivers.transpile._builtin_spellings import _probability_builtins_used
+
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import FAMILY_META
@@ -1267,6 +1269,7 @@ class GenRenderer(RendererBase):
             or _ir_uses_logit_callee(ir.body)
             or qiec_helper_families_used(ir, self.target)
             or _ir_has_factor(ir.body)
+            or _probability_builtins_used(ir.body)
         ):
             _graft_runtime_gen_helper(gx, src)
         gx.e(src, mc)

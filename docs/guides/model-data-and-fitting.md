@@ -197,7 +197,8 @@ Formula fits retain that encoding: use
 `formula_fit.posterior_predict(new_data=frame)` for a `BayesianFit`, with
 fitted transforms and known group levels. The
 [formula prediction guide](analysis-data-and-formulas.md#predictions-on-new-rows)
-also covers linear predictors, expected responses, and rejected new levels.
+also covers linear predictors, expected responses, selected varying effects,
+and explicit donor or Gaussian policies for new grouping identities.
 
 ### Extract pointwise log likelihoods
 
@@ -232,7 +233,7 @@ than assigning the whole marginalized joint to individual observations.
 `fit.analysis(num_samples=100, seed=7)` retains constrained draws, raw pointwise
 likelihoods on the original binding, observed responses, and recorded sampler
 statistics in a `PosteriorAnalysis`. Formula fits expose the same method.
-Its `summary()`, `waic(var_name="y")`, `to_datatree()`, and
+Its `summary()`, `waic(var_name="y")`, `to_datatree(coords=..., dims=...)`, and
 `loo(var_name="y")` methods reuse retained tensors without replaying the model.
 Select `var_name` explicitly when the program has multiple response variables;
 the interface does not combine unrelated observation units.
@@ -287,6 +288,7 @@ then specializes its dimensions and runs the tensor compiler's checks. A
 but the tensor fitting components refuse it pending
 [enhancement #232](https://github.com/quivers-dev/quivers/issues/232).
 
-Persistent factor coding, prediction for new group levels, and the wider
-regression interface require additional contracts, listed in the
+Formula fits retain factor coding and support checked new-group prediction
+policies. Portable fitted artifacts and the wider regression interface still
+require additional contracts, listed in the
 [capability audit](../developer/model-interface-roadmap.md).

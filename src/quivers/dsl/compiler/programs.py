@@ -7671,7 +7671,8 @@ class _ProgramsMixin:
         `CompileError` against the binding that
         produced it, which is what makes the diagnostic for a free
         name in ``let w = z + 1.0`` say the same thing, in the same
-        place, as the one for ``let w = z``.
+        place, as the one for ``let w = z``. Runtime domain validation
+        preserves ``ValueError`` and identifies the evaluated binding.
         """
 
         def _run(env: dict[str, "LetValue"]) -> "LetValue":
@@ -7681,6 +7682,8 @@ class _ProgramsMixin:
                 if exc.line:
                     raise
                 raise CompileError(f"{kind} {name!r}: {exc}", line, col) from exc
+            except ValueError as exc:
+                raise ValueError(f"{kind} {name!r} at {line}:{col}: {exc}") from exc
 
         return _run
 

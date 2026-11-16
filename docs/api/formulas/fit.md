@@ -20,11 +20,27 @@ fitted bindings on the training rows or on a supplied `new_data` frame. The firs
 response expectations; `posterior_predict` independently samples responses
 conditional on each posterior draw. Its tensor has shape `(chain, draw, row)`;
 categorical and ordinal responses use integer codes in `category_labels` order.
-All three accept keyword-only `new_data` and `predictor_data`. New rows reuse
-fitted transforms, contrasts, and known group levels; unseen categories and
-groups are refused. Response and likelihood-weight columns are unnecessary,
-but covariates, offsets, exposures, auxiliary predictors, and any per-row
-trials must be supplied. Neural fits require explicit new `predictor_data`.
+`posterior_thresholds` additionally exposes effective ordinal cutpoints as
+`(chain, draw, row, threshold)`, labeled by adjacent category pairs in
+`threshold_labels`. It excludes the proportional population predictor
+and discrimination. All four accept keyword-only `new_data` and `predictor_data`. New rows reuse
+fitted transforms, contrasts, and known group levels. Ordinary categorical
+predictor levels remain strict; `allow_new_levels=True` admits new or
+missing grouping identities. `sample_new_levels` selects per-draw donors
+(`"uncertainty"`), one donor index across draws (`"old_levels"`), or
+the fitted Normal/LKJ group law (`"gaussian"`). Donors are joint across
+slopes and auxiliary predictors. For constrained cumulative category-specific
+new-group profiles or effects, explicit `"feasible_uncertainty"` and
+`"feasible_gaussian"` condition the joint proposal on requested-row
+ordering. They retain all posterior draws and refuse after 1,024 failed
+proposals. Fitted cutpoints are replayed without reconstruction from fresh
+rows or selected effects; crossing profiles fail with located diagnostics.
+`re_formula=None` retains fitted varying
+effects, `"~0"` sets them to zero, and a one-sided group formula selects
+fitted terms. Unsupported selectors fail explicitly. Response and
+likelihood-weight columns are unnecessary, but retained covariates,
+offsets, exposures, auxiliary predictors, and per-row trials must be
+supplied. Neural fits require explicit new `predictor_data`.
 Training predictions reuse the compiled program; new rows specialize one
 program per request. Both fill one preallocated output tensor across draws.
 The [posterior workflow](../../guides/analysis-data-and-formulas.md#posterior-coefficients-and-predictions)

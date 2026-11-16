@@ -18,6 +18,8 @@ from quivers.dsl.ast_nodes import (
     MorphismDecl,
 )
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
+from quivers.transpile._builtin_spellings import _probability_builtins_used
+
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import (
     parser_registry,
@@ -220,15 +222,16 @@ class PyMCRenderer(RendererBase):
 
         # Graft runtime helpers for families PyMC does not ship, once,
         # as top-level definitions preceding `build_model`.
-        if (
+        family_helpers = (
             any(
                 _ir_uses_family(ir.body, family)
                 for family in _PYMC_RUNTIME_HELPER_FAMILIES
             )
             or _ir_uses_logit_helper(ir.body)
             or qiec_helper_families_used(ir, self.target)
-        ):
-            _graft_runtime_pymc_helpers(py)
+        )
+        if family_helpers or _probability_builtins_used(ir.body, include_select=True):
+            _graft_runtime_pymc_helpers(py, probability_only=not family_helpers)
 
         # Trailing `return model` inside the function body (outside
         # the with-block). PyMC's idiom is for `build_model` to return
@@ -1835,7 +1838,7 @@ def _ir_uses_family(body: tuple[IRNode, ...], family: str) -> bool:
     return False
 
 
-def _graft_runtime_pymc_helpers(py: PyCtx) -> None:
+def _graft_runtime_pymc_helpers(py: PyCtx, *, probability_only: bool = False) -> None:
     """Graft every top-level `function_definition` subtree from
     [`runtime_pymc.py`][quivers.transpile.runtime_pymc] into the
     per-render schema as a `child_of` of the `mod` module root.
@@ -1844,8 +1847,30 @@ def _graft_runtime_pymc_helpers(py: PyCtx) -> None:
     copied under fresh ids, so a render that grafts more than once
     keeps the schema's vertex-id invariant."""
     src_schema = _RUNTIME_PYMC_SCHEMA
+    roots = _RUNTIME_PYMC_ROOTS
+    if probability_only:
+        roots = tuple(
+            root
+            for root in roots
+            if any(
+                constraint.value.startswith(
+                    (
+                        "_qvr_log",
+                        "_qvr_probability_check",
+                        "_qvr_positive_parameter",
+                        "_qvr_select",
+                    )
+                )
+                for edge in src_schema.edges
+                if edge.src == root and edge.kind == "name"
+                for constraint in src_schema.constraints_for(edge.tgt)
+            )
+        )
+    reachable = set().union(*(_subtree_vertex_ids(src_schema, root) for root in roots))
     id_map: dict[str, str] = {}
     for old in _RUNTIME_PYMC_SUBTREE:
+        if old not in reachable:
+            continue
         new = py.fresh("rt")
         id_map[old] = new
         kind = next(v.kind for v in src_schema.vertices if v.id == old)
@@ -1855,7 +1880,7 @@ def _graft_runtime_pymc_helpers(py: PyCtx) -> None:
     for edge in src_schema.edges:
         if edge.src in id_map and edge.tgt in id_map:
             py.e(id_map[edge.src], id_map[edge.tgt], edge.kind)
-    for root in _RUNTIME_PYMC_ROOTS:
+    for root in roots:
         py.e("mod", id_map[root], "child_of")
 
 

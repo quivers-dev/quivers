@@ -15,7 +15,7 @@ vectors rather than scalar auxiliaries.
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Literal, Mapping
 
 import didactic.api as dx
 
@@ -42,6 +42,27 @@ class Link(dx.Model):
     inverse_expr: str
 
 
+class OrdinalSpec(dx.Model):
+    """Static ordinal likelihood and threshold configuration.
+
+    Attributes
+    ----------
+    kind : str
+        Cumulative, adjacent-category, stopping-ratio, or continuation-ratio
+        construction. The hurdle variant adds a separate lowest category zero.
+    link : str
+        Inverse link for cumulative or transition probabilities.
+    thresholds : str
+        Flexible, equally spaced, or explicitly sum-centered thresholds.
+    """
+
+    kind: Literal["cumulative", "acat", "sratio", "cratio", "hurdle_cumulative"]
+    link: Literal[
+        "logit", "probit", "probit_approx", "cloglog", "cauchit", "softit"
+    ] = "logit"
+    thresholds: Literal["flexible", "equidistant", "sum_to_zero"] = "flexible"
+
+
 class AuxParam(dx.Model):
     """An auxiliary family parameter (scale, dispersion, etc.).
 
@@ -55,11 +76,15 @@ class AuxParam(dx.Model):
         Link applied to a per-row linear predictor if the parameter
         is itself distributionally regressed (``y ~ x``, ``sigma ~
         x``, etc.); otherwise unused.
+    fixed_default : float or None
+        Optional constant used unless the parameter is explicitly regressed,
+        fixed, or given a prior. Ordinal discrimination defaults to one.
     """
 
     name: str
     prior: str
     link: Link
+    fixed_default: float | None = None
 
 
 class Family(dx.Model):
@@ -80,6 +105,8 @@ class Family(dx.Model):
     ``trials_parameter`` identifies families that require a constant or
     per-row number of trials. It names the native constructor parameter;
     fitting and prediction use the same metadata to validate trial counts.
+    ``ordinal`` retains static likelihood, inverse-link, and threshold choices;
+    ordinary QVR expressions lower these choices to checked category logits.
     """
 
     name: str
@@ -88,6 +115,33 @@ class Family(dx.Model):
     extra_observe_args: tuple[str, ...] = ()
     aux_params: tuple[AuxParam, ...] = ()
     trials_parameter: str | None = None
+    ordinal: OrdinalSpec | None = None
+
+    def with_thresholds(
+        self, thresholds: Literal["flexible", "equidistant", "sum_to_zero"]
+    ) -> Family:
+        """Return an ordinal family with the requested threshold structure.
+
+        Parameters
+        ----------
+        thresholds : {"flexible", "equidistant", "sum_to_zero"}
+            Threshold configuration; ordering applies only to cumulative models.
+
+        Returns
+        -------
+        Family
+            Independent family value preserving links and auxiliary parameters.
+
+        Raises
+        ------
+        ValueError
+            If the family is not ordinal or the threshold option is unknown.
+        """
+        if self.ordinal is None:
+            raise ValueError("threshold configuration requires an ordinal family")
+        if thresholds not in {"flexible", "equidistant", "sum_to_zero"}:
+            raise ValueError(f"unknown ordinal threshold configuration {thresholds!r}")
+        return self.with_(ordinal=self.ordinal.with_(thresholds=thresholds))
 
     def with_links(self, **parameters: str) -> Family:
         """Return a family with selected parameter links.
@@ -122,12 +176,26 @@ class Family(dx.Model):
             )
         if self.name == "categorical" and parameters.get("mu", "softmax") != "softmax":
             raise ValueError("categorical models require the softmax location link")
-        if self.name == "cumulative" and parameters.get("mu", "identity") not in {
-            "identity",
-            "logit",
-            "probit",
-        }:
-            raise ValueError("cumulative models support logit and probit links")
+        ordinal = self.ordinal
+        if ordinal is not None and "mu" in parameters:
+            requested = parameters["mu"]
+            if requested == "identity" and self.name == "cumulative":
+                requested = "logit"
+            allowed = {
+                "logit",
+                "probit",
+                "probit_approx",
+                "cloglog",
+                "cauchit",
+                "softit",
+            }
+            if ordinal.kind in {"sratio", "cratio"}:
+                allowed.remove("softit")
+            if requested not in allowed:
+                raise ValueError(
+                    f"{ordinal.kind} ordinal models support links {sorted(allowed)}"
+                )
+            ordinal = ordinal.with_(link=requested)
         location_link = (
             links[parameters["mu"]] if "mu" in parameters else self.location_link
         )
@@ -135,12 +203,17 @@ class Family(dx.Model):
             name=self.name,
             location_link=location_link,
             observe_family=(
-                "OrderedProbit" if location_link.name == "probit" else "OrderedLogistic"
+                "OrderedProbit" if ordinal.link == "probit" else "OrderedLogistic"
             )
-            if self.name == "cumulative"
+            if ordinal is not None
+            and ordinal.kind == "cumulative"
+            and ordinal.link in {"logit", "probit"}
+            else "Categorical"
+            if ordinal is not None
             else self.observe_family,
             extra_observe_args=self.extra_observe_args,
             trials_parameter=self.trials_parameter,
+            ordinal=ordinal,
             aux_params=tuple(
                 AuxParam(
                     name=aux.name,
@@ -148,6 +221,7 @@ class Family(dx.Model):
                     link=links[parameters[aux.name]]
                     if aux.name in parameters
                     else aux.link,
+                    fixed_default=aux.fixed_default,
                 )
                 for aux in self.aux_params
             ),
@@ -198,6 +272,13 @@ links: Mapping[str, Link] = {
 
 
 families: Mapping[str, Family] = {
+    "com_poisson": Family(
+        name="com_poisson",
+        location_link=_LOG,
+        observe_family="COMPoisson",
+        extra_observe_args=("shape",),
+        aux_params=(AuxParam(name="shape", prior="Gamma(0.01, 0.01)", link=_LOG),),
+    ),
     "discrete_weibull": Family(
         name="discrete_weibull",
         location_link=_LOGIT,
@@ -363,6 +444,57 @@ families: Mapping[str, Family] = {
         name="cumulative",
         location_link=_IDENTITY,
         observe_family="OrderedLogistic",
+        ordinal=OrdinalSpec(kind="cumulative"),
+        aux_params=(
+            AuxParam(
+                name="disc", prior="LogNormal(0.0, 1.0)", link=_LOG, fixed_default=1.0
+            ),
+        ),
+    ),
+    "hurdle_cumulative": Family(
+        name="hurdle_cumulative",
+        location_link=_LOGIT,
+        observe_family="Categorical",
+        ordinal=OrdinalSpec(kind="hurdle_cumulative"),
+        aux_params=(
+            AuxParam(
+                name="disc", prior="LogNormal(0.0, 1.0)", link=_LOG, fixed_default=1.0
+            ),
+            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT),
+        ),
+    ),
+    "acat": Family(
+        name="acat",
+        location_link=_LOGIT,
+        observe_family="Categorical",
+        ordinal=OrdinalSpec(kind="acat"),
+        aux_params=(
+            AuxParam(
+                name="disc", prior="LogNormal(0.0, 1.0)", link=_LOG, fixed_default=1.0
+            ),
+        ),
+    ),
+    "sratio": Family(
+        name="sratio",
+        location_link=_LOGIT,
+        observe_family="Categorical",
+        ordinal=OrdinalSpec(kind="sratio"),
+        aux_params=(
+            AuxParam(
+                name="disc", prior="LogNormal(0.0, 1.0)", link=_LOG, fixed_default=1.0
+            ),
+        ),
+    ),
+    "cratio": Family(
+        name="cratio",
+        location_link=_LOGIT,
+        observe_family="Categorical",
+        ordinal=OrdinalSpec(kind="cratio"),
+        aux_params=(
+            AuxParam(
+                name="disc", prior="LogNormal(0.0, 1.0)", link=_LOG, fixed_default=1.0
+            ),
+        ),
     ),
     "zero_inflated_poisson": Family(
         name="zero_inflated_poisson",
@@ -549,6 +681,7 @@ observe step and link into the emitted ``.qvr`` source.
 __all__ = [
     "Link",
     "AuxParam",
+    "OrdinalSpec",
     "Family",
     "links",
     "families",
