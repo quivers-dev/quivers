@@ -354,6 +354,44 @@ _CASES: dict[str, tuple[str, str, str, dict[str, Host], dict[str, Host], Oracle]
 }
 
 
+# Both factor slots share the rectangular event proof and the same dense oracle.
+for _axis in ("row", "col"):
+    _row = (
+        "row_scale_tril=[[1.2,0.0],[0.3,0.8]]"
+        if _axis == "row"
+        else "row_covariance=[[1.44,0.36],[0.36,0.73]]"
+    )
+    _col = (
+        "col_scale_tril=[[0.7,0.0,0.0],[-0.2,1.1,0.0],[0.1,0.3,0.9]]"
+        if _axis == "col"
+        else "col_covariance=[[0.49,-0.14,0.07],[-0.14,1.25,0.31],[0.07,0.31,0.91]]"
+    )
+    _CASES["matrix-normal-" + _axis + "-factor"] = (
+        "MatrixNormal",
+        _axis + "_scale_tril",
+        "object Col : FinSet 3\nprogram p : One -> One\n"
+        "    observe v : Row <- MatrixNormal(loc=[[0.0,0.0,0.0],[0.0,0.0,0.0]],"
+        + _row
+        + ","
+        + _col
+        + ") [over=[Two,Col]]\n"
+        "    return v\n",
+        {"v": [[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]] * 4},
+        {},
+        lambda s: (
+            D.MultivariateNormal(
+                torch.zeros(6, dtype=torch.double),
+                covariance_matrix=torch.kron(
+                    _t([[1.44, 0.36], [0.36, 0.73]]),
+                    _t([[0.49, -0.14, 0.07], [-0.14, 1.25, 0.31], [0.07, 0.31, 0.91]]),
+                ),
+            )
+            .log_prob(s["v"].flatten(-2))
+            .sum()
+        ),
+    )
+
+
 def _tensor(value: Host) -> torch.Tensor:
     """A value as the compiled runtime takes it: integers and Booleans as
     written, reals in single precision.

@@ -41,3 +41,16 @@ for _fixture, _family, _rendered in (
     ):
         if _target not in _rendered:
             PARAMETERIZATION_REFUSALS[(_fixture, _target)] = _kind
+
+
+# Matrix factors are multiplied into covariances by the shared plan helper.
+# The remaining refusals are the existing MatrixNormal/literal capabilities.
+for _axis in ("row", "col"):
+    for _target, _kind in (
+        ("bugs", "arg:matrix-literal"),
+        ("church", "arg:matrix-literal"),
+        ("jags", "family:no-target-name:MatrixNormal"),
+    ):
+        PARAMETERIZATION_REFUSALS[
+            ("steps/observe_matrix_normal_" + _axis + "_factor", _target)
+        ] = _kind

@@ -2029,7 +2029,14 @@ def _matrix_normal_builder(
     torch.distributions.Distribution
         The matrix-normal distribution.
     """
-    return MatrixNormal(**dict(zip(names, params, strict=True)))
+    values = dict(zip(names, params, strict=True))
+    return MatrixNormal(
+        values["loc"],
+        row_covariance=values.get("row_covariance"),
+        col_covariance=values.get("col_covariance"),
+        row_scale_tril=values.get("row_scale_tril"),
+        col_scale_tril=values.get("col_scale_tril"),
+    )
 
 
 def _categorical_logits_builder(params: list[torch.Tensor]) -> D.Distribution:

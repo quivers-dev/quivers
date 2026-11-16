@@ -426,7 +426,8 @@ correlations within each level. A `GroupCovariance` retains its labels, copies
 its fixed matrix, and checks every fitted level against those labels. Its
 matrix scale is preserved; normalization to a correlation matrix is optional.
 
-```python:run
+<!-- python: run -->
+```python
 import pandas as pd
 from quivers.formulas import GroupCovariance, fit
 
@@ -470,9 +471,9 @@ precision is retained through floating matrix operations and gradients return
 to the original learned-head dtypes.
 
 Preparation caches the support basis and its factors, and prediction prepares
-the Schur factors once per request. The current MatrixNormal covariance
-constructor still factors its row and column covariances during evaluation;
-factor-valued constructor alternatives are needed to remove that repeated work.
+the Schur factors once per request. The emitted MatrixNormal receives row and
+column Cholesky factors directly, avoiding repeated factorization of the known
+level covariance and covariance reconstruction from learned coefficient factors.
 
 Fresh labeled levels use the covariance's conditional mean and Schur covariance
 given **all** fitted levels, including fitted groups absent from the request.

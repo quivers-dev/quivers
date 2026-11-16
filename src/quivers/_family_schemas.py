@@ -124,6 +124,12 @@ _ALTERNATIVE_SCHEMAS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("loc", "covariance_matrix"),
         ("loc", "precision_matrix"),
     ),
+    "MatrixNormal": (
+        ("loc", "row_covariance", "col_covariance"),
+        ("loc", "row_scale_tril", "col_covariance"),
+        ("loc", "row_covariance", "col_scale_tril"),
+        ("loc", "row_scale_tril", "col_scale_tril"),
+    ),
     "Wishart": (
         ("df", "scale_tril"),
         ("df", "covariance_matrix"),
@@ -320,6 +326,23 @@ def render_parameterizations(schemas: tuple[tuple[str, ...], ...]) -> str:
         Parenthesized alternatives joined by ``or``.
     """
     return " or ".join("(" + ", ".join(schema) + ")" for schema in schemas)
+
+
+def _family_signature(family: str) -> str | None:
+    """Render the canonical constructor schemas for interactive tooling.
+
+    Parameters
+    ----------
+    family : str
+        Name resolved after authored declarations and local bindings.
+
+    Returns
+    -------
+    str or None
+        Family name and complete parameter alternatives, or None for other names.
+    """
+    schemas = family_parameterizations(family, ())
+    return family + " " + render_parameterizations(schemas) if schemas else None
 
 
 __all__ = [

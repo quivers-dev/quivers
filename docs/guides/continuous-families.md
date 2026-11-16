@@ -846,6 +846,32 @@ As a prior on a learnable table in QVR,
 the first axis in `over` takes the row covariance and the second the column
 covariance ([Latent morphism prior](dsl-declarations.md#latent-morphism-prior)).
 
+MatrixNormal also accepts `row_scale_tril` and `col_scale_tril` independently
+of one another. Supply exactly one covariance or lower Cholesky factor for
+each axis. The same triangular-solve density and reparameterized sampler serve
+all four combinations. Supplied factors avoid forming covariance products or
+performing Cholesky factorization; `expand` and batch selection retain those
+factor coordinates. `ConditionalMatrixNormal` passes its learned factors
+directly through this constructor. Its row and column dimensions remain
+separate named event axes, including rectangular matrices.
+
+```qvr
+object Row : FinSet 2
+object Col : FinSet 3
+program matrix_prior : Row -> Row
+    sample weights <- MatrixNormal(loc=[[0.0,0.0,0.0],[0.0,0.0,0.0]], row_scale_tril=[[1.2,0.0],[0.3,0.8]], col_scale_tril=[[0.7,0.0,0.0],[-0.2,1.1,0.0],[0.1,0.3,0.9]]) [over=[Row,Col]]
+    return weights
+export matrix_prior
+```
+
+Native and checked-reference execution retain these parameterizations.
+`:info MatrixNormal`, notebook inspection, editor hover, and completion details
+read the same complete constructor schemas, including mixed covariance/factor
+forms. Authored declarations retain precedence over builtin family help.
+External targets receive literal factors multiplied into covariances through
+the existing matrix constructor. A factor known only at runtime is refused
+when that target has no declared MatrixNormal factor interface.
+
 ### InverseWishart: conjugate covariance prior
 
 ```python

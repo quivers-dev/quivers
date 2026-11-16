@@ -586,6 +586,15 @@ affine support; rank zero is the deterministic law $B=M$. The noncentered
 change of variables on support coordinates contributes
 $\frac d2\log|C|+r\log|DL|$.
 
+The equivalent MatrixNormal constructor may specify each covariance or its
+lower Cholesky factor independently: `row_covariance` / `row_scale_tril` and
+`col_covariance` / `col_scale_tril`. These four parameterizations denote the
+same matrix-valued law. They preserve the two intrinsic event axes and introduce
+no change-of-variables term, because their parameters differ while the random
+matrix carrier remains fixed. Supplying a factor avoids both its covariance
+product and another Cholesky factorization. Covariance-aware group emission uses
+prepared row factors and the existing learned coefficient factors directly.
+
 For fitted and fresh level partitions $f,n$, covariance-aware Gaussian
 prediction uses deviation mean $A_{nf}A_{ff}^{+}(B_f-M_f)$ and row covariance
 $A_{nn}-A_{nf}A_{ff}^{+}A_{fn}$, with the same column covariance $\Sigma$.

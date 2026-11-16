@@ -362,3 +362,15 @@ See the [count guide](../../guides/continuous-families.md#discrete-categorical-f
 for the distinction between sampling limits and density evaluation.
 
 ::: quivers.continuous._zero_inflated_count
+
+
+## Matrix-normal factors
+
+`MatrixNormal` accepts independently exclusive `row_covariance` /
+`row_scale_tril` and `col_covariance` / `col_scale_tril` arguments. Factor
+inputs use triangular solves and draws directly; covariance properties are
+materialized lazily. `mean`, entrywise `variance`, and batch `expand` retain
+rectangular event dimensions. See the [matrix-prior guide](../../guides/continuous-families.md#matrixnormal-kronecker-covariance-matrix-prior).
+
+
+::: quivers.continuous._matrix.MatrixNormal

@@ -2307,8 +2307,8 @@ class ConditionalMatrixNormal(ContinuousMorphism):
         V_chol = self._build_tril(col_raw, p, self._n_col_tril)
         return MatrixNormal(
             loc_flat.reshape(*loc_flat.shape[:-1], n, p),
-            U_chol @ U_chol.transpose(-1, -2),
-            V_chol @ V_chol.transpose(-1, -2),
+            row_scale_tril=U_chol,
+            col_scale_tril=V_chol,
         )
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:

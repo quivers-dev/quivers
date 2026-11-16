@@ -14,6 +14,7 @@ from torch.distributions import (
     MixtureSameFamily,
 )
 from torch.distributions import transforms as T
+from torch.distributions.utils import lazy_property
 
 from quivers.continuous._atoms import _family_metadata
 
@@ -42,9 +43,18 @@ def _constructor_parameters(distribution, record):
         ranks.pop("logits" if use_probs else "probs")
     # A Cholesky factor is a complete differentiable representation regardless
     # of which covariance parameterization the original constructor accepted.
-    if "scale_tril" in ranks:
-        ranks.pop("covariance_matrix", None)
-        ranks.pop("precision_matrix", None)
+    factor_alternatives = {
+        "scale_tril": ("covariance_matrix", "precision_matrix"),
+        **{
+            name: (name.removesuffix("_scale_tril") + "_covariance",)
+            for name in ranks
+            if name.endswith("_scale_tril")
+        },
+    }
+    for factor, alternatives in factor_alternatives.items():
+        if factor in ranks:
+            for alternative in alternatives:
+                ranks.pop(alternative, None)
     if "log_rate" in ranks and "rate" in ranks:
         boundary = getattr(distribution, "_boundary_rate", None)
         preserve_rate = boundary is getattr(distribution, "rate", None)
@@ -163,6 +173,12 @@ def _reconstruct(distribution, transform_parameter):
             and name not in declared_names
             and name != "validate_args"
         ):
+            # Extra constructor configuration is scalar host metadata. A lazy
+            # Tensor alternative is not configuration and must not be materialized.
+            if isinstance(
+                inspect.getattr_static(type(distribution), name, None), lazy_property
+            ):
+                continue
             value = getattr(distribution, name, parameter.default)
             if value is not inspect.Parameter.empty and not isinstance(value, Tensor):
                 parameters[name] = value

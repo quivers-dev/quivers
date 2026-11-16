@@ -108,7 +108,7 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.draw_args import bind_family_arguments
-from quivers.dsl.family_schemas import family_parameter_names
+from quivers.dsl.family_schemas import family_parameter_names, family_parameterizations
 from quivers.formulas.family import Family
 from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
 from quivers.formulas._group_covariance import GroupCovariance
@@ -301,6 +301,7 @@ def _draw(
     index: TypeName | None = None,
     mode: Literal["sample", "score", "marginal"] = "sample",
     weights: str | None = None,
+    parameterization: tuple[str, ...] | None = None,
 ) -> SampleStep | ObserveStep:
     """Build a surface program step for a draw of ``var`` from ``family``.
 
@@ -310,9 +311,17 @@ def _draw(
     so the marginal mode collapses to sample here. Bare-string and
     bare-float ``args`` are lifted into the tagged
     [`DrawArg`][quivers.dsl.ast_nodes.DrawArg] shape the AST field
-    expects.
+    expects. An explicit ``parameterization`` selects another complete schema
+    from the shared constructor catalogue without rebuilding the draw AST.
     """
-    parameters = family_parameter_names(family)
+    parameters = parameterization or family_parameter_names(family)
+    if (
+        parameterization is not None
+        and parameterization not in family_parameterizations(family, ())
+    ):
+        raise ValueError(
+            f"formula family {family!r} has no parameterization {parameterization!r}"
+        )
     if parameters is None:
         raise ValueError(f"formula family {family!r} has no QVR parameter schema")
     if len(args) != len(parameters):
@@ -1738,15 +1747,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             stem = f"__formula_level_basis_{_qvr_name(layout.group)}"
             if any(name.startswith(stem + "_") for name in obs):
                 continue
-            projection, covariance, factor = basis.tensors()
+            projection, _, factor = basis.tensors()
             if layout.parameterization == "centered":
                 obs[stem + "_projection"] = projection
-                obs[stem + "_row_covariance"] = covariance
+                obs[stem + "_row_factor"] = torch.tensor(
+                    basis.coordinate_factor, dtype=torch.float64
+                )
             else:
                 obs[stem + "_factor"] = factor
-                obs[stem + "_row_covariance"] = torch.eye(
-                    basis.rank, dtype=torch.float64
-                )
+                obs[stem + "_row_factor"] = torch.eye(basis.rank, dtype=torch.float64)
         if (
             formula.response_layout.event_shape
             and self._family.trials_parameter is not None
@@ -3703,21 +3712,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 ),
             )
         )
+        row_factor = basis_stem + "_row_factor"
         if self._reparameterize == "centered":
-            transpose = _factor(
-                (("matrix_row", dimension), ("matrix_column", dimension)),
-                body=_index(column_factor, _var("matrix_column"), _var("matrix_row")),
-            )
-            steps.append(
-                _let(column_covariance, _call("matmul", _var(column_factor), transpose))
-            )
-            row_covariance = basis_stem + "_row_covariance"
+            matrix_column_factor = column_factor
             mapping = basis_stem + "_projection"
         else:
-            row_covariance = basis_stem + "_row_covariance"
+            matrix_column_factor = column_covariance
             steps.append(
                 _let(
-                    column_covariance,
+                    matrix_column_factor,
                     _factor(
                         (("matrix_row", dimension), ("matrix_column", dimension)),
                         body=identity_value,
@@ -3726,7 +3729,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
             mapping = basis_stem + "_factor"
         assert raw is not None
-        draw = _draw(raw, "MatrixNormal", (zero, row_covariance, column_covariance))
+        draw = _draw(
+            raw,
+            "MatrixNormal",
+            (zero, row_factor, matrix_column_factor),
+            parameterization=("loc", "row_scale_tril", "col_scale_tril"),
+        )
         steps.append(
             draw.with_(
                 axes=AxisSpec(over=(support, dimension)),
@@ -4575,12 +4583,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     matrix_input(
                         stem + "_projection", _qvr_name(layout.group), support
                     ),
-                    matrix_input(stem + "_row_covariance", support, support),
+                    matrix_input(stem + "_row_factor", support, support),
                 )
             else:
                 parameters += (
                     matrix_input(stem + "_factor", _qvr_name(layout.group), support),
-                    matrix_input(stem + "_row_covariance", support, support),
+                    matrix_input(stem + "_row_factor", support, support),
                 )
         existing = {parameter.name for parameter in parameters}
         for role, column in formula.modifiers.columns():

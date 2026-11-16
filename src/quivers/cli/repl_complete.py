@@ -42,6 +42,7 @@ from quivers.dsl.qiec_tooling import (
 )
 from quivers.transpile import available_targets
 from quivers._observation import EVENT_OPTIONS
+from quivers._family_schemas import _family_signature
 
 
 class Completion(dx.Model):
@@ -278,12 +279,16 @@ def _keyword_completions(prefix: str) -> list[Completion]:
             detail = (
                 "static Nat addition"
                 if fn in _STATIC_INDEX_FUNCTION_TOKENS
-                else "builtin"
+                else _family_signature(fn) or "builtin"
             )
             out.append(Completion(text=fn, kind="function", detail=detail))
     for ty in sorted(_BUILTIN_TYPE_TOKENS):
         if ty.startswith(prefix):
-            out.append(Completion(text=ty, kind="type", detail="builtin type"))
+            out.append(
+                Completion(
+                    text=ty, kind="type", detail=_family_signature(ty) or "builtin type"
+                )
+            )
     for ns in sorted(_ALGEBRA_NAMES):
         if ns.startswith(prefix):
             out.append(Completion(text=ns, kind="namespace", detail="algebra"))

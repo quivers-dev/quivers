@@ -1503,6 +1503,16 @@ class _ProgramWalk:
             self._tensor_parameter_input(distribution.name, name, value)
         if distribution.name in _FACTOR_FAMILIES and "scale_tril" in names:
             self._factor_scale(distribution.name, pre, names)
+        if distribution.name == "MatrixNormal":
+            for axis in ("row", "col"):
+                if axis + "_scale_tril" in names:
+                    self._factor_scale(
+                        distribution.name,
+                        pre,
+                        names,
+                        parameter=axis + "_scale_tril",
+                        covariance=axis + "_covariance",
+                    )
         if distribution.name == "InverseWishart" and "scale_tril" in names:
             self._inverse_wishart_scale(pre, names)
         ordered = _arg_names_for(meta, tuple(pre), self.ctx)
@@ -1707,7 +1717,15 @@ class _ProgramWalk:
         pre[position] = scale
         names[position] = "scale_matrix"
 
-    def _factor_scale(self, family: str, pre: list[IRArg], names: list[str]) -> None:
+    def _factor_scale(
+        self,
+        family: str,
+        pre: list[IRArg],
+        names: list[str],
+        *,
+        parameter: str = "scale_tril",
+        covariance: str = "covariance_matrix",
+    ) -> None:
         """Hand a Cholesky factor to the target as it reads it.
 
         A source writes the scale of a Wishart or the covariance of a
@@ -1720,18 +1738,20 @@ class _ProgramWalk:
         Parameters
         ----------
         family : str
-            The family, one of `_FACTOR_FAMILIES`.
+            Gaussian or Wishart family whose matrix factor is lowered.
         pre : list[IRArg]
             The call's wire arguments, rewritten in place.
         names : list[str]
             The parameter each argument fills, rewritten in place.
+        parameter, covariance : str
+            Authored factor slot and corresponding covariance slot.
 
         Raises
         ------
         UnsupportedConstruct
             If the factor is not a literal.
         """
-        position = names.index("scale_tril")
+        position = names.index(parameter)
         factor = pre[position]
         if isinstance(factor, IRArgMatrix) and all(
             isinstance(entry, IRArgNumber)
@@ -1752,15 +1772,18 @@ class _ProgramWalk:
                     for row in scale
                 )
             )
-            names[position] = "covariance_matrix"
+            names[position] = covariance
             return
-        if self.planner.target in _RUNTIME_FACTOR_TARGETS:
+        runtime_targets = (
+            _RUNTIME_FACTOR_TARGETS if parameter == "scale_tril" else frozenset({"ir"})
+        )
+        if self.planner.target in runtime_targets:
             # The target's library takes the factor itself.
             return
         raise UnsupportedConstruct(
             f"qvr-{self.planner.target}",
             [
-                f"family:{family}:scale_tril: the {family}'s scale_tril is a "
+                f"family:{family}:{parameter}: the {family}'s {parameter} is a "
                 f"Cholesky factor known only at run time, which "
                 f"{self.planner.target} has no Cholesky parameterization of "
                 f"{family} to take; write it as a matrix literal"

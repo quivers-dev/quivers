@@ -32,6 +32,7 @@ from lsprotocol import types as lsp
 
 from quivers import __version__
 from quivers.analysis.scope import ScopedRef, resolve_scoped_path, top_level_bindings
+from quivers._family_schemas import _family_signature
 from quivers.cli.repl_complete import all_completions
 from quivers.cli.repl_highlight import (
     SEMANTIC_TOKEN_MODIFIERS,
@@ -790,7 +791,12 @@ def _render_hover(
     if decl is None:
         if name in doc.env:
             return f"```\n{name} :: {type(doc.env[name]).__name__}\n```"
-        return None
+        family = _family_signature(name)
+        return (
+            f"**Distribution parameters**\n\n```text\n{family}\n```"
+            if family is not None
+            else None
+        )
     qvr = _slice_source(doc, decl)
     if isinstance(
         decl, QiecBinder | QiecValueParameter | QiecLocalBinding | ProgramParam

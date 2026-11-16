@@ -535,6 +535,12 @@ def _cholesky(matrix: Matrix, subject: str) -> Matrix:
     size = len(matrix)
     if any(len(row) != size for row in matrix):
         raise DistributionError(f"{subject} is not square")
+    if any(
+        not math.isclose(matrix[i][j], matrix[j][i], rel_tol=1e-5, abs_tol=1e-6)
+        for i in range(size)
+        for j in range(i)
+    ):
+        raise DistributionError(f"{subject} is not symmetric")
     factor = [[0.0] * size for _ in range(size)]
     for i in range(size):
         for j in range(i + 1):
@@ -3092,6 +3098,50 @@ def _inversewishart_density(a: Mapping[str, object], value: object) -> float:
     ) - (len(point) + 1) * _log_det_from_cholesky(point_factor)
 
 
+def _matrixnormal_factor(a: Mapping[str, object], axis: str, size: int) -> Matrix:
+    """Read one covariance or its validated lower factor.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Checked constructor arguments.
+    axis : str
+        Row or column parameter prefix.
+    size : int
+        Corresponding location event extent.
+
+    Returns
+    -------
+    Matrix
+        Lower Cholesky factor, without covariance reconstruction.
+
+    Raises
+    ------
+    DistributionError
+        If the parameterization, shape, or triangular factor is invalid.
+    """
+    covariance, factor = axis + "_covariance", axis + "_scale_tril"
+    if (covariance in a) == (factor in a):
+        raise DistributionError(
+            f"MatrixNormal requires exactly one {axis} covariance or factor"
+        )
+    value = _matrix_parameter(a, factor if factor in a else covariance, "MatrixNormal")
+    if len(value) != size or any(len(row) != size for row in value):
+        raise DistributionError(
+            f"MatrixNormal {axis} matrix disagrees with location extent"
+        )
+    if factor in a:
+        if any(
+            value[i][i] <= 0 or any(value[i][j] != 0 for j in range(i + 1, size))
+            for i in range(size)
+        ):
+            raise DistributionError(
+                f"MatrixNormal {factor} must be lower triangular with positive diagonal"
+            )
+        return value
+    return _cholesky(value, f"{axis} covariance of MatrixNormal")
+
+
 def _matrixnormal_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``MatrixNormal``.
 
@@ -3109,14 +3159,8 @@ def _matrixnormal_sample(a: Mapping[str, object], rng: random.Random) -> object:
         ``A``, ``B`` the Cholesky factors of the row and column covariances.
     """
     loc = _matrix_parameter(a, "loc", "MatrixNormal")
-    rows = _cholesky(
-        _matrix_parameter(a, "row_covariance", "MatrixNormal"),
-        "row covariance of MatrixNormal",
-    )
-    columns = _cholesky(
-        _matrix_parameter(a, "col_covariance", "MatrixNormal"),
-        "column covariance of MatrixNormal",
-    )
+    rows = _matrixnormal_factor(a, "row", len(loc))
+    columns = _matrixnormal_factor(a, "col", len(loc[0]))
     noise = tuple(tuple(rng.gauss(0.0, 1.0) for _ in loc[0]) for _ in loc)
     shaped = _matmul(_matmul(rows, noise), _transpose(columns))
     return tuple(
@@ -3152,14 +3196,8 @@ def _matrixnormal_density(a: Mapping[str, object], value: object) -> float:
     n, p = len(loc), len(loc[0]) if loc else 0
     if len(point) != n or any(len(row) != p for row in point):
         raise DistributionError("MatrixNormal is scored at a matrix of the wrong size")
-    row_factor = _cholesky(
-        _matrix_parameter(a, "row_covariance", "MatrixNormal"),
-        "row covariance of MatrixNormal",
-    )
-    column_factor = _cholesky(
-        _matrix_parameter(a, "col_covariance", "MatrixNormal"),
-        "column covariance of MatrixNormal",
-    )
+    row_factor = _matrixnormal_factor(a, "row", n)
+    column_factor = _matrixnormal_factor(a, "col", p)
     residual = tuple(
         tuple(x - m for x, m in zip(row, loc_row, strict=True))
         for row, loc_row in zip(point, loc, strict=True)

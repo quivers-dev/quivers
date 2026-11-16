@@ -460,6 +460,17 @@ _EXPECTED_ORTHOGONAL_RAISES.update(
     }
 )
 
+# Both literal factor alternatives lower to the existing covariance constructor.
+for _axis in ("row", "col"):
+    for _target, _kind in (
+        ("bugs", "arg:matrix-literal"),
+        ("church", "arg:matrix-literal"),
+        ("jags", "family:no-target-name:MatrixNormal"),
+    ):
+        _EXPECTED_ORTHOGONAL_RAISES[
+            (_target, "steps", "observe_matrix_normal_" + _axis + "_factor")
+        ] = _kind
+
 # Vector- and matrix-valued families a target ships no class for, or
 # whose literal arguments it cannot take, are refused by name.
 _EXPECTED_ORTHOGONAL_RAISES.update(

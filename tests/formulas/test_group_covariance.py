@@ -189,7 +189,11 @@ def test_full_joint_all_heads_and_reference_match_dense_kronecker_oracle(
         values[site] = raw[: basis.rank * 2].reshape(basis.rank, 2).requires_grad_()
     result = trace(native, torch.zeros(1, 1), obs | values)
     sigma = torch.stack([values["sigma_g_Intercept"], values["sigma_g_x"]])
-    coefficient_factor = sigma[:, None] * values["cor_g"]
+    # A factor-parameterized centered MatrixNormal differentiates on the
+    # declared lower-triangular carrier, rather than its invalid upper entries.
+    coefficient_factor = sigma[:, None] * (
+        values["cor_g"].tril() if parameterization == "centered" else values["cor_g"]
+    )
     projection, coordinate, factor = basis.tensors()
     if basis.rank:
         if parameterization == "centered":
@@ -486,3 +490,74 @@ def test_covariance_extension_retains_training_block_and_validates_labels_before
     assert "sigma_g_Intercept" in get_prior(
         "y~1+(1|g)", data=frame, group_covariances={"g": base}
     )
+
+
+@pytest.mark.parametrize("parameterization", ["centered", "noncentered"])
+@pytest.mark.parametrize("name", ["categorical", "dirichlet", "logistic_normal"])
+def test_component_known_covariance_fit_replay_and_fresh_labels(parameterization, name):
+    import pandas as pd
+    from quivers.formulas import fit, families
+
+    covariance = GroupCovariance(
+        levels=("a", "b", "new"),
+        matrix=((1.4, 0.2, 0.3), (0.2, 0.8, 0.1), (0.3, 0.1, 1.0)),
+    )
+    frame = pd.DataFrame(
+        {
+            "g": ["b", "a", "b", "a"],
+            "x": [-0.3, 0.2, 0.4, 0.7],
+            "y": [0, 1, 2, 0],
+            "a": [0.2, 0.1, 0.4, 0.5],
+            "b": [0.3, 0.6, 0.2, 0.3],
+            "c": [0.5, 0.3, 0.4, 0.2],
+        }
+    )
+    formula = "y~x+(1+x|g)" if name == "categorical" else "cbind(a,b,c)~x+(1+x|g)"
+    family = (
+        families[name] if name == "categorical" else families[name].with_reference("b")
+    )
+    result = fit(
+        formula,
+        data=frame,
+        family=family,
+        group_covariances={"g": covariance},
+        reparameterize=parameterization,
+        method="svi",
+        num_steps=1,
+        seed=7,
+    )
+    options = {"num_samples": 2, "seed": 8}
+    original = result.posterior_linpred(**options)
+    known = result.posterior_linpred(new_data=frame.iloc[[1, 0]], **options)
+    torch.testing.assert_close(known, original[:, :, [1, 0]])
+    fresh = result.posterior_linpred(
+        new_data=pd.DataFrame({"g": ["new", "a", "new"], "x": [0.2, 0.2, 0.2]}),
+        allow_new_levels=True,
+        sample_new_levels="gaussian",
+        **options,
+    )
+    torch.testing.assert_close(fresh[:, :, 0], fresh[:, :, 2])
+    torch.testing.assert_close(fresh[:, :, 1], original[:, :, 1])
+    assert all(
+        torch.isfinite(value).all()
+        for value in result.log_likelihood(**options).values()
+    )
+    assert result.category_labels == (
+        (0, 1, 2) if name == "categorical" else ("a", "b", "c")
+    )
+
+
+@pytest.mark.parametrize("parameterization", ["centered", "noncentered"])
+def test_prepared_group_trace_does_not_refactor_known_or_learned_covariances(
+    parameterization,
+):
+    from unittest.mock import patch
+    from quivers.inference.trace import trace
+
+    _, _, _, _, native, observations, _ = _compiled(parameterization)
+    with patch(
+        "torch.linalg.cholesky",
+        side_effect=AssertionError("repeated covariance factorization"),
+    ):
+        recorded = trace(native, torch.zeros(1, 1), observations=observations)
+        assert torch.isfinite(recorded.log_joint).all()

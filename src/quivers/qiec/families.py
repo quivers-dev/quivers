@@ -1460,6 +1460,18 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
                 rank=2,
                 event_dims=(1, 1),
             ),
+            FamilyParameter(
+                name="row_scale_tril",
+                constraint="lower_cholesky",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="col_scale_tril",
+                constraint="lower_cholesky",
+                rank=2,
+                event_dims=(1, 1),
+            ),
         ),
         support="real",
         element=REAL,

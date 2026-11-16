@@ -1184,6 +1184,16 @@ FAMILY_META: dict[str, FamilyMeta] = {
                     axis_indices=(1, 1),
                     constraint_kind="positive_definite",
                 ),
+                StructuredDataArg(
+                    arg_name="row_scale_tril",
+                    axis_indices=(0, 0),
+                    constraint_kind="real_matrix",
+                ),
+                StructuredDataArg(
+                    arg_name="col_scale_tril",
+                    axis_indices=(1, 1),
+                    constraint_kind="real_matrix",
+                ),
             ),
             event_axis_source=OverOrCodomainAxes(axis_count=2),
             sample_constraint_kind="real_matrix",

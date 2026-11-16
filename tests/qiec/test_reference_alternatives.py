@@ -124,6 +124,35 @@ _CASES: dict[str, tuple[dict[str, Host], dict[str, dict[str, Host]], Host, Oracl
     ),
 }
 
+
+_CASES["MatrixNormal"] = (
+    {"loc": ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))},
+    {
+        str((row, col)): {
+            "row_scale_tril" if row else "row_covariance": ((1.2, 0.0), (0.0, 0.8))
+            if row
+            else ((1.44, 0.0), (0.0, 0.64)),
+            "col_scale_tril" if col else "col_covariance": (
+                (0.7, 0.0, 0.0),
+                (0.0, 1.1, 0.0),
+                (0.0, 0.0, 0.9),
+            )
+            if col
+            else ((0.49, 0.0, 0.0), (0.0, 1.21, 0.0), (0.0, 0.0, 0.81)),
+        }
+        for row in (False, True)
+        for col in (False, True)
+    },
+    ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6)),
+    lambda loc, **parameters: D.Independent(
+        D.Normal(
+            loc,
+            torch.tensor([[0.84, 1.32, 1.08], [0.56, 0.88, 0.72]], dtype=torch.double),
+        ),
+        2,
+    ),
+)
+
 _PAIRS = [
     (family, alternative)
     for family, (_, alternatives, _, _) in sorted(_CASES.items())

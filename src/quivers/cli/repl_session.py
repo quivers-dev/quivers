@@ -58,6 +58,7 @@ from quivers.cli.repl_browse import (
     _children_for_space,
     _program_parameter_groups,
 )
+from quivers._family_schemas import _family_signature
 from quivers.core.objects import FinSet
 from quivers.dsl import (
     CompileError,
@@ -1319,6 +1320,9 @@ class ReplSession:
                     f"{name} :: {_pretty_runtime_value(value)}\n"
                     f"  (bound, no source declaration)"
                 )
+            family = _family_signature(name)
+            if family is not None:
+                return _resp(family)
             return _err(f"unknown name: {name}")
         line = getattr(decl, "line", 0)
         col = getattr(decl, "col", 0)
