@@ -164,3 +164,31 @@ def test_scaled_weights_normalize_included_rows_without_overflow():
 def test_role_dependencies_and_numeric_domains_fail_before_model_execution(sources):
     with pytest.raises(ValueError):
         bind_roles(pd.DataFrame({"y": [1.0]}), sources)
+
+
+@pytest.mark.parametrize("response", [-0.1, 1.1])
+def test_exact_response_outside_truncation_bounds_fails_before_fitting(
+    response, monkeypatch
+):
+    from quivers.formulas import fit
+    import quivers.formulas._fit as fitting
+
+    def refuse_inference(*args, **kwargs):
+        raise AssertionError("validation must precede latent initialization")
+
+    monkeypatch.setattr(fitting, "_fit_svi", refuse_inference)
+    with pytest.raises(ValueError, match="exact responses.*truncation bounds"):
+        fit(
+            "y | trunc(lb=0.,ub=1.) ~ 1",
+            data=pd.DataFrame({"y": [response]}),
+            method="svi",
+            num_steps=1,
+        )
+
+
+def test_censor_endpoints_outside_truncation_and_closed_exact_boundaries_remain_valid():
+    frame = pd.DataFrame({"y": [-1.0, 2.0, 0.0, 1.0], "code": [1, -1, 0, 0]})
+    from quivers.formulas import formula_from_data
+
+    formula = formula_from_data("y | cens(code) + trunc(lb=0.,ub=1.) ~ 1", frame)
+    np.testing.assert_array_equal(formula.response_values, frame.y.to_numpy())

@@ -44,6 +44,9 @@ all design and role validation, and retained positions align auxiliary and
 neural inputs. The [response-modifier guide](../../guides/analysis-data-and-formulas.md#response-modifiers-and-recorded-events)
 states event endpoints, scale combination, supported families, and fresh-data
 requirements. These records compare by value and retain read-only column data.
+Exact observations must lie within their inclusive truncation bounds before
+inference begins. Censoring endpoints may lie outside the sampling interval;
+their recorded events are intersected with that interval when scored.
 
 `cs(expr)` marks a transition-specific fixed or group column through
 `FixedColumn.category_specific`. The formula lens retains those flags and

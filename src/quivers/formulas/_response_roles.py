@@ -433,9 +433,11 @@ def bind_roles(
 
 
 def validate_event_response(
-    response: np.ndarray, censoring: CensoringSpec | None
+    response: np.ndarray,
+    censoring: CensoringSpec | None,
+    truncation: TruncationSpec | None = None,
 ) -> None:
-    """Validate active interval endpoints after the response design is evaluated.
+    """Validate recorded endpoints and exact outcomes after response evaluation.
 
     Parameters
     ----------
@@ -443,17 +445,43 @@ def validate_event_response(
         Evaluated scalar response or first censoring endpoint.
     censoring : CensoringSpec or None
         Retained status and second endpoints on the included rows.
+    truncation : TruncationSpec or None
+        Inclusive retained sampling bounds. Exact outcomes must lie inside;
+        censoring endpoints can lie outside the sampling support.
 
     Raises
     ------
     ValueError
         If censoring metadata is misaligned, the response is not scalar, or an
-        active interval endpoint does not exceed its first endpoint.
+        active interval endpoint does not exceed its first endpoint, or an
+        exact outcome lies outside its truncation interval.
     """
-    if censoring is None:
+    if censoring is None and truncation is None:
         return
     values = np.asarray(response)
-    if values.ndim != 1 or censoring.status.data.shape != values.shape:
+    if values.ndim != 1:
+        raise ValueError("recorded events require one scalar response per included row")
+    if truncation is not None:
+        exact = (
+            np.ones(values.shape, dtype=bool)
+            if censoring is None
+            else censoring.status.data == 0
+        )
+        for bound, lower in ((truncation.lower, True), (truncation.upper, False)):
+            if bound is None:
+                continue
+            if bound.data.shape != values.shape:
+                raise ValueError(
+                    "truncation bounds must align with included response rows"
+                )
+            outside = values < bound.data if lower else values > bound.data
+            if np.any(exact & outside):
+                raise ValueError(
+                    "exact responses must lie within their truncation bounds"
+                )
+    if censoring is None:
+        return
+    if censoring.status.data.shape != values.shape:
         raise ValueError("censoring requires one scalar response per included row")
     interval = censoring.status.data == 2
     if interval.any():

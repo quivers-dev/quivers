@@ -1106,7 +1106,9 @@ def _formula_and_design(
         np.int64 if vector_response and integer_carrier else np.float64
     )
 
-    validate_event_response(response_values, response_modifiers.censoring)
+    validate_event_response(
+        response_values, response_modifiers.censoring, response_modifiers.truncation
+    )
     if any(
         column.data.shape != response_values.shape[:1]
         for _, column in response_modifiers.columns()

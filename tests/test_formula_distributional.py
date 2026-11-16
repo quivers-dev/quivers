@@ -264,7 +264,11 @@ def test_added_families_use_brms_parameterization(data, family_name):
     distributions = {
         "lognormal": lambda: torch.distributions.LogNormal(eta, parameters["sigma"]),
         "exponential": lambda: torch.distributions.Exponential(1 / mu),
-        "geometric": lambda: torch.distributions.Geometric(probs=1 / (1 + mu)),
+        # Count-law arithmetic promotes the computed predictor probability;
+        # the predictor itself and its coefficient gradients retain Float32.
+        "geometric": lambda: torch.distributions.Geometric(
+            probs=(1 / (1 + mu)).double()
+        ),
         "weibull": lambda: torch.distributions.Weibull(
             mu / torch.exp(torch.lgamma(1 + 1 / parameters["shape"])),
             parameters["shape"],
