@@ -54,6 +54,7 @@ for _axis in ("row", "col"):
         ("bugs", "arg:matrix-literal"),
         ("church", "arg:matrix-literal"),
         ("jags", "family:no-target-name:MatrixNormal"),
+        ("pymc", "family:MatrixNormal:plated"),
     ):
         PARAMETERIZATION_REFUSALS[
             ("steps/observe_matrix_normal_" + _axis + "_factor", _target)

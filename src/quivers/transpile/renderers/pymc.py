@@ -605,6 +605,9 @@ class PyMCRenderer(RendererBase):
         dist_class = meta.target_names.get("pymc")
         if dist_class is None:
             raise UnsupportedConstruct(self.target, [f"family:{node.family}"])
+        if node.family == "MatrixNormal" and node.plate.batch_dims:
+            # `pymc.MatrixNormal` scores exactly one two-dimensional value.
+            raise UnsupportedConstruct(self.target, ["family:MatrixNormal:plated"])
 
         # A family PyMC does not ship (`ContinuousBernoulli`) resolves
         # to a grafted runtime helper called by bare name; the graft

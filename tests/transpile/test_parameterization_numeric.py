@@ -339,9 +339,10 @@ for _axis in ("row", "col"):
         _axis + "_scale_tril",
         "steps/observe_matrix_normal_" + _axis + "_factor",
         {"v": [[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]] * 3},
-        [{}],
+        _ETAS,
         lambda v: (
-            D.MultivariateNormal(
+            _eta(v)
+            + D.MultivariateNormal(
                 torch.zeros(6, dtype=torch.double),
                 covariance_matrix=torch.kron(
                     _t([[1.44, 0.36], [0.36, 0.73]]),
@@ -631,7 +632,7 @@ def test_target_scores_the_reference_joint(
             name: "int"
             if name in _INTEGERS
             else "float32"
-            if len(shapes[name]) == 2
+            if len(shapes[name]) >= 2
             else "float"
             for name in shapes
         },

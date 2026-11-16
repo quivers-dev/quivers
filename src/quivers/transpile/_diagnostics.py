@@ -545,6 +545,18 @@ def _render_family_kind(backend: str, tail: str, explained: bool) -> str:
             f"`tau * lambda * z` with `lambda ~ HalfCauchy(1.0)` and "
             f"`z ~ Normal(0.0, 1.0)`, which every target expresses."
         )
+    if detail == "plated":
+        headline = (
+            f"the {_language(backend)} `{family}` distribution scores one "
+            f"event, so a `{family}` site under a plate has no form on this "
+            f"target"
+        )
+        if explained:
+            return headline
+        return (
+            f"{headline}. Draw or observe a single event, or write the plated "
+            f"site with a family this target scores row by row."
+        )
     if explained:
         return _cannot(backend, f"score a draw from `{family}`")
     if not detail:

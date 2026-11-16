@@ -17,7 +17,7 @@
     regenerates the page and fails when the result differs from
     what is committed.
 
-`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 47 programs of the [examples gallery](examples/index.md) and for 155 construct fixtures, each isolating a single QVR surface construct.
+`transpile(module, target=...)` has 11 registered backends. Given a program it either returns target source bytes or raises `UnsupportedConstruct` naming the constructs it cannot represent. This page records which of the two happens, for the 47 programs of the [examples gallery](examples/index.md) and for 160 construct fixtures, each isolating a single QVR surface construct.
 
 Support is thus stated as a refusal boundary rather than as a feature list. A construct no backend accepts is a limit of the export surface itself, and reaching any target means writing the model differently; a construct one backend alone refuses is a limit of that target, and another target may take the program unchanged. Sections 2 and 3 separate the two, since the remedies differ.
 
@@ -39,17 +39,17 @@ For instance, `qiec:capability:search:lp_parser__run` says that the target canno
 
 | Backend                                               | Gallery programs | Constructs |
 |-------------------------------------------------------|------------------|------------|
-| [bugs](semantics/transpile-correctness/bugs.md)       | 14 / 47          | 73 / 155   |
-| [church](semantics/transpile-correctness/church.md)   | 16 / 47          | 95 / 155   |
-| [edward2](semantics/transpile-correctness/edward2.md) | 23 / 47          | 113 / 155  |
-| [gen](semantics/transpile-correctness/gen.md)         | 21 / 47          | 99 / 155   |
-| [jags](semantics/transpile-correctness/jags.md)       | 20 / 47          | 83 / 155   |
-| [numpyro](semantics/transpile-correctness/numpyro.md) | 24 / 47          | 127 / 155  |
-| [pymc](semantics/transpile-correctness/pymc.md)       | 23 / 47          | 111 / 155  |
-| [pyro](semantics/transpile-correctness/pyro.md)       | 24 / 47          | 130 / 155  |
-| [stan](semantics/transpile-correctness/stan.md)       | 23 / 47          | 99 / 155   |
-| [turing](semantics/transpile-correctness/turing.md)   | 21 / 47          | 103 / 155  |
-| [webppl](semantics/transpile-correctness/webppl.md)   | 23 / 47          | 104 / 155  |
+| [bugs](semantics/transpile-correctness/bugs.md)       | 14 / 47          | 73 / 160   |
+| [church](semantics/transpile-correctness/church.md)   | 16 / 47          | 95 / 160   |
+| [edward2](semantics/transpile-correctness/edward2.md) | 23 / 47          | 115 / 160  |
+| [gen](semantics/transpile-correctness/gen.md)         | 21 / 47          | 101 / 160  |
+| [jags](semantics/transpile-correctness/jags.md)       | 20 / 47          | 83 / 160   |
+| [numpyro](semantics/transpile-correctness/numpyro.md) | 24 / 47          | 129 / 160  |
+| [pymc](semantics/transpile-correctness/pymc.md)       | 23 / 47          | 111 / 160  |
+| [pyro](semantics/transpile-correctness/pyro.md)       | 24 / 47          | 132 / 160  |
+| [stan](semantics/transpile-correctness/stan.md)       | 23 / 47          | 101 / 160  |
+| [turing](semantics/transpile-correctness/turing.md)   | 21 / 47          | 105 / 160  |
+| [webppl](semantics/transpile-correctness/webppl.md)   | 23 / 47          | 106 / 160  |
 
 Each backend links to its transpilation-correctness page, which documents the structure it emits, the parameter conversions it applies, and the evidence exercised for it.
 
@@ -174,7 +174,12 @@ One minimal program per surface construct, so a `no` here isolates the construct
 | `steps/observe_gather_matrix_row`                | no   | yes    | yes     | yes | no   | yes     | yes  | yes  | no   | no     | no     |
 | `steps/observe_geometric_logits`                 | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
 | `steps/observe_logits_data`                      | no   | no     | yes     | no  | no   | yes     | no   | yes  | no   | no     | no     |
+| `steps/observe_matrix_normal_col_factor`         | no   | no     | yes     | yes | no   | yes     | no   | yes  | yes  | yes    | yes    |
+| `steps/observe_matrix_normal_row_factor`         | no   | no     | yes     | yes | no   | yes     | no   | yes  | yes  | yes    | yes    |
 | `steps/observe_multinomial_logits`               | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/observe_multivariate_student_covariance`  | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/observe_multivariate_student_factor`      | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
+| `steps/observe_multivariate_student_precision`   | no   | no     | no      | no  | no   | no      | no   | no   | no   | no     | no     |
 | `steps/observe_mvn_host_factor`                  | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_mvn_lkj_factor`                   | no   | no     | no      | no  | no   | yes     | yes  | yes  | yes  | no     | no     |
 | `steps/observe_negative_binomial_logits`         | no   | no     | yes     | no  | no   | no      | no   | yes  | no   | no     | no     |
@@ -819,7 +824,7 @@ Every backend reports it in the same words. `bugs` on `stochastic_volatility` re
 
 ### Refused everywhere, for unrelated reasons
 
-No backend renders `steps/observe_alr_reference`, `steps/observe_bernstein_hazard_log_rate`, `steps/observe_com_poisson_log_rate`, `steps/observe_continuous_bernoulli_logits`, `steps/observe_dirichlet_multinomial`, `steps/observe_multinomial_logits`, and no kind is reported by all of them, so the refusals are per-target limits that happen to overlap. Section 3 carries each backend's own reason.
+No backend renders `steps/observe_alr_reference`, `steps/observe_bernstein_hazard_log_rate`, `steps/observe_com_poisson_log_rate`, `steps/observe_continuous_bernoulli_logits`, `steps/observe_dirichlet_multinomial`, `steps/observe_multinomial_logits`, `steps/observe_multivariate_student_covariance`, `steps/observe_multivariate_student_factor`, `steps/observe_multivariate_student_precision`, and no kind is reported by all of them, so the refusals are per-target limits that happen to overlap. Section 3 carries each backend's own reason.
 
 ## 3. What each backend alone refuses
 
@@ -993,9 +998,9 @@ bugs cannot transpile this program:
 
 **`arg:matrix-literal`, `family:MatrixNormal`**
 
-Refused for: `steps/sample_matrix_normal`.
+Refused for: `steps/observe_matrix_normal_col_factor`, `steps/observe_matrix_normal_row_factor`, `steps/sample_matrix_normal`.
 
-Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+Renders on: `edward2`, `gen`, `numpyro`, `pyro`, `stan`, `turing`, `webppl`.
 
 Reported kinds:
 
@@ -1004,7 +1009,7 @@ arg:matrix-literal
 family:MatrixNormal: no BUGS target name
 ```
 
-`bugs` on `steps/sample_matrix_normal` reports:
+`bugs` on `steps/observe_matrix_normal_col_factor` reports:
 
 ```text
 bugs cannot transpile this program:
@@ -1511,9 +1516,9 @@ Every program below renders on at least one other backend and is refused here.
 
 **`arg:matrix-literal`**
 
-Refused for: `steps/sample_matrix_normal`, `steps/sample_mvn_covariance`, `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_precision`, `steps/sample_mvn_sampled_loc`.
+Refused for: `steps/observe_matrix_normal_col_factor`, `steps/observe_matrix_normal_row_factor`, `steps/sample_matrix_normal`, `steps/sample_mvn_covariance`, `steps/sample_mvn_factor`, `steps/sample_mvn_host_loc`, `steps/sample_mvn_precision`, `steps/sample_mvn_sampled_loc`.
 
-Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+Renders on: `edward2`, `gen`, `numpyro`, `pyro`, `stan`, `turing`, `webppl`.
 
 Reported kinds:
 
@@ -1521,7 +1526,7 @@ Reported kinds:
 arg:matrix-literal
 ```
 
-`church` on `steps/sample_matrix_normal` reports:
+`church` on `steps/observe_matrix_normal_col_factor` reports:
 
 ```text
 church cannot take a matrix literal `[[a, b], ...]` in a distribution-argument position. Bind the matrix as a data input instead.
@@ -2729,9 +2734,9 @@ jags has no `LKJCholesky` distribution. Pick a family this target supports, or w
 
 **`family:no-target-name:MatrixNormal`**
 
-Refused for: `axes/matrix_kronecker`, `steps/sample_matrix_normal`.
+Refused for: `axes/matrix_kronecker`, `steps/observe_matrix_normal_col_factor`, `steps/observe_matrix_normal_row_factor`, `steps/sample_matrix_normal`.
 
-Renders on: `edward2`, `gen`, `numpyro`, `pymc`, `pyro`, `stan`, `turing`, `webppl`.
+Renders on: `edward2`, `gen`, `numpyro`, `pyro`, `stan`, `turing`, `webppl`.
 
 Reported kinds:
 
@@ -3100,6 +3105,24 @@ family:InverseWishart
 
 ```text
 pymc has no `InverseWishart` distribution: the family registry contains no matching target distribution. Pick a family this target supports, or write the density you want as an explicit `score` step.
+```
+
+**`family:MatrixNormal:plated`**
+
+Refused for: `steps/observe_matrix_normal_col_factor`, `steps/observe_matrix_normal_row_factor`.
+
+Renders on: `edward2`, `gen`, `numpyro`, `pyro`, `stan`, `turing`, `webppl`.
+
+Reported kinds:
+
+```text
+family:MatrixNormal:plated
+```
+
+`pymc` on `steps/observe_matrix_normal_col_factor` reports:
+
+```text
+the PyMC `MatrixNormal` distribution scores one event, so a `MatrixNormal` site under a plate has no form on this target. Draw or observe a single event, or write the plated site with a family this target scores row by row.
 ```
 
 **`family:NegativeBinomial:logits`**
