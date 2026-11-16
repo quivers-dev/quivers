@@ -92,4 +92,58 @@ The [formula workflow](../../guides/analysis-data-and-formulas.md#raw-likelihood
 gives an executable fit and analysis. Low-level samplers can construct
 `PosteriorAnalysis` directly with explicit tensor mappings and provenance.
 
+## Retained analysis storage
+
+A **posterior archive** retains the analysis tensors and their coordinate contract.
+`to_netcdf` writes the existing ArviZ DataTree groups, and `from_netcdf` restores
+owned CPU tensors without replaying the model. `from_datatree` accepts the same
+groups directly. The optional `diagnostics` extra supplies this storage path.
+
+Archives retain (i) original tensor dtypes and draw provenance, (ii) chain, draw,
+and event labels, and (iii) group-specific event dimensions. The last distinction
+matters for vector observations: their recorded response can retain a category
+axis even when each raw likelihood has already reduced that event to one score.
+The same converter serves ordinary ArviZ analysis and storage.
+
+`coords` and `dims` on `PosteriorAnalysis` supply defaults for later conversion and
+covariance requests; explicit method arguments override them. `group_dims`
+preserves dimensions that differ between observed data and reduced likelihoods.
+Readers validate sample-axis labels across groups, rather than matching draws by
+array extent. External trees need explicit `kind`; chain count alone cannot
+establish MCMC provenance. Unknown format versions, lossy dtype metadata, and
+conflicting sampler-statistic aliases are refused.
+
+Float16 and BFloat16 values use exact Float32 storage where the NumPy or NetCDF
+backend lacks their dtype, then restore their recorded dtype. Integer draws keep
+their original capacity; reading them does not bypass summary checks before a
+Float64 conversion. Writes use an atomic sibling file, shared with source
+migration, so an interrupted write preserves the previous destination.
+
+<!-- python: run -->
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import torch
+from quivers.diagnostics import PosteriorAnalysis
+
+analysis = PosteriorAnalysis(
+    samples={"theta": torch.tensor([[[0.2, 0.7], [0.4, 0.6], [0.3, 0.8]]])},
+    log_likelihood={}, kind="variational",
+    coords={"coefficient": ["intercept", "slope"]},
+    dims={"theta": ["coefficient"]},
+)
+with TemporaryDirectory() as directory:
+    path = Path(directory) / "posterior.nc"
+    analysis.to_netcdf(path)
+    restored = PosteriorAnalysis.from_netcdf(path)
+assert restored.kind == "variational"
+torch.testing.assert_close(restored.samples["theta"], analysis.samples["theta"])
+assert restored.covariance().coordinate_labels == (("intercept",), ("slope",))
+```
+
+This archive stores retained analysis. Executable prediction also requires the
+fitted program, its deterministic parameters, and preprocessing state; those
+objects are not reconstructed from posterior draws alone. The file layout uses
+[xarray DataTree NetCDF storage](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.to_netcdf.html).
+
 ::: quivers.diagnostics.posterior

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import math
+import json
 from itertools import product
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import didactic.api as dx
@@ -256,6 +258,12 @@ class PosteriorAnalysis(ValueModel):
     kind : "mcmc" or "variational" or "prior"
         Provenance of the draws. Variational and independent prior layout
         axes never supply MCMC convergence diagnostics.
+    group_dims : Mapping
+        Optional group-specific event dimensions, preserving observed vector
+        events alongside their reduced pointwise likelihood axes.
+    coords, dims : Mapping
+        Retained coordinate labels and event dimension names, used by default
+        for DataTree conversion and covariance. Explicit method arguments override them.
 
     Notes
     -----
@@ -276,6 +284,16 @@ class PosteriorAnalysis(ValueModel):
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     kind: Literal["mcmc", "variational", "prior"] = "mcmc"
+    coords: Mapping[str, Sequence[object]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    dims: Mapping[str, Sequence[str]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    group_dims: Mapping[str, Mapping[str, Sequence[str]]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
 
     def _validate_axes(self) -> None:
         """Check that posterior and likelihood groups share chain/draw axes.
@@ -436,6 +454,8 @@ class PosteriorAnalysis(ValueModel):
         from quivers.diagnostics._numeric import real_samples
 
         self._validate_axes()
+        coords = self.coords if coords is None else coords
+        dims = self.dims if dims is None else dims
         if isinstance(var_names, str | bytes):
             raise TypeError("var_names must be a sequence of site names")
         names = tuple(self.samples) if var_names is None else tuple(var_names)
@@ -652,20 +672,135 @@ class PosteriorAnalysis(ValueModel):
             Chain and draw axes are retained for both posterior kinds.
         """
         self._validate_axes()
-        from quivers.diagnostics.arviz_io import _groups_to_datatree
+        from quivers.diagnostics.arviz_io import (
+            _ARVIZ_SAMPLE_STATS,
+            _groups_to_datatree,
+        )
 
+        groups = {
+            "posterior": self.samples,
+            "log_likelihood": self.log_likelihood,
+            "observed_data": self.observed_data,
+            "sample_stats": self.sample_stats,
+        }
         tree = _groups_to_datatree(
-            {
-                "posterior": self.samples,
-                "log_likelihood": self.log_likelihood,
-                "observed_data": self.observed_data,
-                "sample_stats": self.sample_stats,
+            groups,
+            coords={
+                name: list(values)
+                for name, values in (self.coords if coords is None else coords).items()
             },
-            coords=coords,
-            dims=dims,
+            dims={
+                name: list(values)
+                for name, values in (self.dims if dims is None else dims).items()
+            },
+            group_dims={
+                group: {name: list(axes) for name, axes in names.items()}
+                for group, names in self.group_dims.items()
+            }
+            if dims is None
+            else None,
         )
         tree.attrs["quivers_posterior_kind"] = self.kind
+        tree.attrs["quivers_posterior_format"] = "qvr-posterior/v1"
+        tree.attrs["quivers_sample_stat_names"] = json.dumps(
+            {_ARVIZ_SAMPLE_STATS.get(name, name): name for name in self.sample_stats},
+            sort_keys=True,
+        )
+        tree.attrs["quivers_tensor_dtypes"] = json.dumps(
+            {
+                group: {
+                    (
+                        _ARVIZ_SAMPLE_STATS.get(name, name)
+                        if group == "sample_stats"
+                        else name
+                    ): str(value.dtype)
+                    for name, value in values.items()
+                }
+                for group, values in groups.items()
+            },
+            sort_keys=True,
+        )
         return tree
+
+    @classmethod
+    def from_datatree(
+        cls,
+        tree: _DataTree,
+        *,
+        kind: Literal["mcmc", "variational", "prior"] | None = None,
+    ) -> PosteriorAnalysis:
+        """Restore retained analysis tensors and labels from an ArviZ DataTree.
+
+        Parameters
+        ----------
+        tree : xarray.DataTree
+            Canonical posterior, likelihood, observed-data, and sample-stat groups.
+        kind : {"mcmc", "variational", "prior"} or None
+            Explicit provenance for external trees. QVR trees retain it in metadata;
+            an override must agree. Chain count never determines provenance.
+
+        Returns
+        -------
+        PosteriorAnalysis
+            Independently owned CPU tensors, dimensions, labels, and provenance.
+            This restores analysis, rather than an executable predictor or optimizer.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If provenance, format, labels, groups, or sampled axes are inconsistent.
+        """
+        from quivers.diagnostics.arviz_io import _posterior_from_datatree
+
+        return _posterior_from_datatree(tree, kind=kind)
+
+    def to_netcdf(self, path: str | Path) -> None:
+        """Write retained analysis through the existing DataTree NetCDF format.
+
+        Parameters
+        ----------
+        path : str or Path
+            Output NetCDF file. Requires the diagnostics extra.
+        """
+        from quivers._atomic import atomic_output
+
+        tree = self.to_datatree()
+        with atomic_output(Path(path)) as temporary:
+            encoding = {
+                f"/{group}": {
+                    name: {"dtype": "float32"}
+                    for name, variable in node.dataset.data_vars.items()
+                    if variable.dtype == "float16"
+                }
+                for group, node in tree.children.items()
+            }
+            tree.to_netcdf(temporary, engine="netcdf4", encoding=encoding)
+
+    @classmethod
+    def from_netcdf(cls, path: str | Path) -> PosteriorAnalysis:
+        """Read a QVR retained analysis without reconstructing a fitted evaluator.
+
+        Parameters
+        ----------
+        path : str or Path
+            NetCDF file written from a QVR posterior DataTree.
+
+        Returns
+        -------
+        PosteriorAnalysis
+            Owned CPU tensors and coordinate metadata, after axis validation.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If the stored tree does not satisfy the retained analysis contract.
+        OSError
+            If the input file is missing or cannot be opened as NetCDF.
+        """
+        import xarray as xr
+
+        with xr.open_datatree(path, engine="netcdf4") as tree:
+            return cls.from_datatree(tree)
 
     def loo(self, *, var_name: str | None = None, pointwise: bool = True) -> object:
         """Run optional ArviZ PSIS-LOO without recomputing model likelihoods.

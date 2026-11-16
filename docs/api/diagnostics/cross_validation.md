@@ -38,8 +38,10 @@ within a fold. Multiple responses require an explicit `responses` selection and
 aligned joint posterior draws. The runner sums all selected response and row log
 likelihoods **within each draw**, then computes log-mean-exp across draws. Summing
 marginal log predictive densities instead would describe a different prediction.
-This follows the distinction between pointwise and joint held-out densities in
-the [loo ELPD reference](https://mc-stan.org/loo/reference/elpd.html).
+The [brms K-fold reference](https://search.r-project.org/CRAN/refmans/brms/html/kfold.brmsfit.html)
+distinguishes these observation, fold, and group prediction units. The
+[loo ELPD reference](https://mc-stan.org/loo/reference/elpd.html) describes
+pointwise log-likelihood arrays with separate iteration, chain, and data axes.
 
 `fold_ids` evaluates a subset without extrapolating missing folds. `result.elpd`
 sums only evaluated units; `result.complete` reports whether all folds ran.
