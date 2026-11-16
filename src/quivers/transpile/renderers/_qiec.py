@@ -331,19 +331,18 @@ def _callee_ids(node: IRQiecComputation) -> list[str]:
     return found
 
 
-def carried_computations(
+def _checked_static_computations(
     ir: IRProgram, target: str
 ) -> tuple[IRQiecNamedComputation, ...]:
-    """The computations a static target's output defines.
+    """Check and select the computations a static target's output defines.
 
     Every computation the target can represent is defined, called or
     not, so a module's entry points stay in the output where the
     target has a form for them; one the program never calls and the
     target cannot represent is left out, since it is no part of the
     program the output denotes. A needed computation the target
-    cannot represent is refused by
-    `refuse_static_gaps`
-    before this is read.
+    cannot represent is refused. One capability analysis supplies both the
+    needed-computation check and the carried-computation selection.
 
     Parameters
     ----------
@@ -356,27 +355,6 @@ def carried_computations(
     -------
     tuple[IRQiecNamedComputation, ...]
         The definable computations, in module order.
-    """
-    public_target = qiec_target_name(target)
-    gaps = frozenset(
-        diagnostic.computation
-        for diagnostic in analyze_qiec_capabilities(ir.module, public_target)
-        if diagnostic.computation is not None
-    )
-    return tuple(
-        item for item in _runtime_computations(ir.module) if item.name not in gaps
-    )
-
-
-def refuse_static_gaps(ir: IRProgram, target: str) -> None:
-    """Refuse a lowered root whose needed computations a static target lacks.
-
-    Parameters
-    ----------
-    ir : IRProgram
-        The lowered root.
-    target : str
-        The renderer's target label.
 
     Raises
     ------
@@ -384,35 +362,23 @@ def refuse_static_gaps(ir: IRProgram, target: str) -> None:
         If the target lacks a capability a needed computation uses.
     """
     public_target = qiec_target_name(target)
-    needed = frozenset(item.id.text for item in needed_computations(ir))
-    diagnostics = tuple(
-        diagnostic
-        for diagnostic in analyze_qiec_capabilities(ir.module, public_target)
-        if diagnostic.computation is None
-        or _computation_id(ir.module, diagnostic.computation) in needed
+    diagnostics = analyze_qiec_capabilities(ir.module, public_target)
+    needed = frozenset(item.name for item in needed_computations(ir))
+    refused = tuple(
+        diagnostic.kind
+        for diagnostic in diagnostics
+        if diagnostic.computation is None or diagnostic.computation in needed
     )
-    if diagnostics:
-        raise UnsupportedConstruct(
-            f"qvr-{public_target}", [diagnostic.kind for diagnostic in diagnostics]
-        )
-
-
-def _computation_id(module: IRQiecModule, name: str) -> str:
-    """The identity of a module computation.
-
-    Parameters
-    ----------
-    module : IRQiecModule
-        The module.
-    name : str
-        The computation's name.
-
-    Returns
-    -------
-    str
-        Its identity text.
-    """
-    return next(item.id.text for item in module.computations if item.name == name)
+    if refused:
+        raise UnsupportedConstruct(f"qvr-{public_target}", list(refused))
+    gaps = frozenset(
+        diagnostic.computation
+        for diagnostic in diagnostics
+        if diagnostic.computation is not None
+    )
+    return tuple(
+        item for item in _runtime_computations(ir.module) if item.name not in gaps
+    )
 
 
 def render_computations_static(
@@ -421,6 +387,7 @@ def render_computations_static(
     *,
     target: str,
     destination: str,
+    computations: tuple[IRQiecNamedComputation, ...] | None = None,
 ) -> None:
     """Render the computations a static target needs into its block.
 
@@ -434,6 +401,9 @@ def render_computations_static(
         The renderer's target label.
     destination : str
         The schema vertex the definitions are placed under.
+    computations : tuple[IRQiecNamedComputation, ...] or None
+        The checked selection for this render, when its block layout already
+        needed that selection. Otherwise check and select it here.
 
     Raises
     ------
@@ -441,8 +411,11 @@ def render_computations_static(
         If the target lacks a capability a needed computation uses.
     """
     public_target = qiec_target_name(target)
-    refuse_static_gaps(ir, target)
-    carried = carried_computations(ir, target)
+    carried = (
+        _checked_static_computations(ir, target)
+        if computations is None
+        else computations
+    )
     if not carried:
         if public_target not in {"bugs", "jags"}:
             return

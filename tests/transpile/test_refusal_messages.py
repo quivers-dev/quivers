@@ -122,7 +122,7 @@ FORWARDING_SITES: dict[tuple[str, str], str] = {
     ("transpile/renderers/_qiec.py", "render_computations_dynamic"): (
         "QIEC capability diagnostics, measured on the support page"
     ),
-    ("transpile/renderers/_qiec.py", "refuse_static_gaps"): (
+    ("transpile/renderers/_qiec.py", "_checked_static_computations"): (
         "QIEC capability diagnostics, measured on the support page"
     ),
     ("transpile/renderers/bugs.py", "_reject_list_args"): (

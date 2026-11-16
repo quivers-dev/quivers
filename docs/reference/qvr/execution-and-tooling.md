@@ -194,6 +194,10 @@ can reuse that evidence while the source is identical; object specialization, te
 and source replacement require fresh checking. Reusing a model thus keeps each binding's data
 and specialized input contract independent.
 
+Type-expression probes likewise retain the loaded module's checked evidence while
+allocating fresh native compiler state. Static target renderers reuse one capability
+selection within each render; a later render checks its own module again.
+
 ## Language-server features
 
 The QVR language server (LSP) uses the compiler's typed source model. It provides:

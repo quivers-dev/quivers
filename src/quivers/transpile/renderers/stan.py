@@ -147,9 +147,8 @@ from quivers.transpile.renderers._base import (
     mixture_normal_components,
 )
 from quivers.transpile.renderers._qiec import (
-    refuse_static_gaps,
+    _checked_static_computations,
     render_computations_static,
-    carried_computations,
     has_runtime_computations,
 )
 from quivers.transpile.renderers._one_based import counter_value, is_class_code_family
@@ -513,11 +512,10 @@ class StanRenderer(RendererBase):
         self._class_index_widths_state.update(self._compute_class_index_widths(ir))
         # A needed computation the static subset lacks is refused before
         # the body is walked, so its call site is never rendered.
-        if has_runtime_computations(ir):
-            refuse_static_gaps(ir, self.target)
+        carried = _checked_static_computations(ir, self.target)
         # Program root.
         ctx.sb.vertex("prog", "program")
-        if carried_computations(ir, self.target):
+        if carried:
             self._ensure_block(ctx, "function_body")
         # Stan ships `normal`, `beta`, `gamma`, ... as built-in
         # densities but lacks `kumaraswamy`. When the IR samples or
@@ -567,6 +565,7 @@ class StanRenderer(RendererBase):
                 ir,
                 target=self.target,
                 destination=self._blocks.get("function_body", "prog"),
+                computations=carried,
             )
         return ctx.sb.build()
 

@@ -2081,6 +2081,8 @@ class ReplSession:
             module_name=qiec_module_name(self._loaded_path),
             file_path=str(self._loaded_path) if self._loaded_path else "<repl>",
         )
+        if self._qiec_module is not None:
+            c._reuse_checked_source(self._module, self._qiec_module)
         try:
             c.compile_env()
         except CompileError, QiecDiagnosticError:
