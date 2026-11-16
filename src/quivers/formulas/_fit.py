@@ -1216,12 +1216,41 @@ class BayesianFit(ValueModel):
         )
 
     def log_likelihood(
-        self, *, num_samples: int | None = None, seed: int = 0
+        self,
+        *,
+        new_data: IntoDataFrame | None = None,
+        predictor_data: torch.Tensor | None = None,
+        trials: int | str | None = None,
+        re_formula: str | None = None,
+        allow_new_levels: bool = False,
+        sample_new_levels: Literal[
+            "uncertainty",
+            "old_levels",
+            "gaussian",
+            "feasible_uncertainty",
+            "feasible_gaussian",
+        ] = "uncertainty",
+        num_samples: int | None = None,
+        seed: int = 0,
     ) -> dict[str, torch.Tensor]:
-        """Evaluate raw response log likelihoods on the fitted rows.
+        """Evaluate raw response log likelihoods on fitted or recorded fresh rows.
 
         Parameters
         ----------
+        new_data : IntoDataFrame or None
+            Fresh predictors, outcomes, and authored observation-event columns.
+            None scores the fitted rows. Fitting weight columns are not required.
+        predictor_data : torch.Tensor or None
+            Neural inputs aligned with fresh rows before any subset selection.
+        trials : int or str or None
+            Existing count-trial override. Fresh vector counts otherwise infer
+            their totals from their recorded components.
+        re_formula : str or None
+            Existing varying-effect selector; ``~0`` excludes varying effects.
+        allow_new_levels : bool
+            Permit fresh grouping identities under the selected prediction policy.
+        sample_new_levels : str
+            Existing joint donor or conditional Gaussian group-effect policy.
         num_samples : int or None
             Maximum retained draws per chain, or fresh variational draws.
         seed : int
@@ -1241,12 +1270,64 @@ class BayesianFit(ValueModel):
         from quivers.formulas._posterior import replay
         from quivers.inference._likelihood import collect_log_likelihood
 
+        context = None
+        if new_data is not None:
+            from quivers.formulas._likelihood import prepare_likelihood
+
+            context = prepare_likelihood(
+                self,
+                new_data,
+                predictor_data,
+                trials=trials,
+                re_formula=re_formula,
+                allow_new_levels=allow_new_levels,
+                sample_new_levels=sample_new_levels,
+                seed=seed,
+            )
+        else:
+            from quivers.formulas._prediction import prepare_prediction
+
+            if trials is not None:
+                if self.family.trials_parameter is None:
+                    raise ValueError(
+                        "trial overrides require a count family with a trial parameter"
+                    )
+                _response_trials(
+                    self.formula,
+                    self.prediction_plan.designs["mu"].data
+                    if self.prediction_plan is not None
+                    else None,
+                    trials,
+                    caller="log_likelihood",
+                )
+            context = prepare_prediction(
+                self,
+                None,
+                predictor_data,
+                trials=trials,
+                re_formula=re_formula,
+                allow_new_levels=allow_new_levels,
+                sample_new_levels=sample_new_levels,
+                seed=seed,
+            )
+            if trials is not None:
+                from quivers.formulas._response_modifiers import response_input_name
+
+                name = response_input_name(self.formula)
+                context = context.with_(
+                    observations=dict(context.observations)
+                    | {
+                        name: self.observations[name],
+                    }
+                )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
         response = _qvr_name(self.formula.response_name)
         with torch.no_grad():
             return collect_log_likelihood(
-                replay(self, draws, shape, score_observations=True), {response}, shape
+                replay(self, draws, shape, context=context, score_observations=True),
+                {response},
+                shape,
             )
 
     def posterior_predict(
@@ -2533,7 +2614,7 @@ def _fit_svi(
 
 def _response_trials(
     formula: Formula,
-    data: IntoDataFrame,
+    data: IntoDataFrame | None,
     specification: int | str | None,
     *,
     caller: str,
@@ -2544,7 +2625,7 @@ def _response_trials(
     ----------
     formula : Formula
         Evaluated response with explicit row/event metadata.
-    data : IntoDataFrame
+    data : IntoDataFrame or None
         Source rows containing any specified trial column.
     specification : int or str or None
         Constant or trial column; None infers vector row totals.

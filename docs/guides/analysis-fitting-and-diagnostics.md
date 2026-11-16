@@ -261,6 +261,41 @@ optionally grouped by a named dim.
 
 ArviZ computes LOO, comparison, and the predictive checks.
 
+### Score recorded fresh outcomes
+
+`BayesianFit.log_likelihood(new_data=...)` evaluates recorded outcomes under
+retained posterior draws. It reuses the fitted response transformation and
+categorical level order, predictor encodings, group-effect policies, and native
+observation scorer. The output preserves `(chain, draw, row)`; vector event
+components are reduced within a row. Fitting weights are excluded, so fresh rows
+need no weight column.
+
+<!-- python: run -->
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+training = pd.DataFrame({"y": [0.2, 0.9, 1.1], "x": [0.0, 1.0, 2.0]})
+fitted = fit("y ~ x", data=training, method="svi", num_steps=2, seed=7)
+held_out = pd.DataFrame({"y": [1.0, 1.4], "x": [2.5, 3.0]})
+scores = fitted.log_likelihood(new_data=held_out, num_samples=3, seed=8)
+assert scores["y"].shape == (1, 3, 2)
+```
+
+The small optimization budget illustrates the interface; inference still needs
+the checks described above. Supply the response and any authored censoring,
+truncation, measurement-error, decision, subset, or trial columns. Subsets select
+fresh rows before response evaluation, and neural `predictor_data` follows the
+same selection. Vector count responses infer fresh row totals; an explicit
+`trials` declaration must agree with their component sums. Categorical outcomes
+retain the training level order even when a fresh batch omits some levels.
+
+`re_formula`, `allow_new_levels`, and `sample_new_levels` have the same meanings
+as in posterior prediction. These scores condition on the selected group-effect
+policy; they are not an integration over every possible new group. Omitting
+`new_data` scores the fitted outcomes. Source `ModelFit.log_likelihood(data=...)`
+uses its existing checked rebinding interface for the corresponding operation.
+
 ### Convergence diagnostics for any draws
 
 [`rhat`](../api/diagnostics/convergence.md#quivers.diagnostics.convergence.rhat),
