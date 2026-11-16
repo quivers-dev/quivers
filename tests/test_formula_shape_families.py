@@ -201,14 +201,55 @@ def test_frechet_unsafe_regression_link_is_refused():
         FormulaToQVRModule(lens_family)
 
 
-def test_frechet_restricted_override_must_state_a_valid_lower_bound():
-    with pytest.raises(ValueError, match="lower bound"):
-        get_prior(
-            "y ~ 1",
-            data=pd.DataFrame({"y": [0.1, 0.3]}),
-            family="frechet",
-            priors={"nu": "Restrict(base=Normal(loc=0.0, scale=2.0), low=0.0)"},
+@pytest.mark.parametrize("shape", [1.01, 1.7, 3.0])
+def test_frechet_restricted_override_intersects_domain_and_normalizes(shape):
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.double)
+    try:
+        frame = pd.DataFrame({"y": [0.8, 1.4]})
+        parsed = formula_from_data("y ~ 1", frame)
+        lens = FormulaToQVRModule(
+            families["frechet"],
+            user_priors={
+                "intercept": "Normal(0.0, 1.0)",
+                "nu": "Restrict(base=Normal(loc=0.0, scale=2.0), low=0.0)",
+            },
         )
+        module, _ = lens.forward(parsed)
+        source = loads(module_to_source(module))
+        nu = torch.tensor(shape, requires_grad=True)
+        recorded = trace(
+            source.morphism,
+            torch.zeros(1, 1),
+            {
+                "intercept": torch.tensor(0.0),
+                "nu": nu,
+                "y": torch.tensor(frame.y.to_numpy()),
+            },
+        )
+        expected_prior = stats.norm.logpdf(shape, scale=2) - stats.norm.logsf(
+            1, scale=2
+        )
+        assert recorded.sites["nu"].log_prob.item() == pytest.approx(
+            expected_prior, abs=2e-12
+        )
+        assert torch.autograd.grad(recorded.sites["nu"].log_prob.sum(), nu)[
+            0
+        ].item() == pytest.approx(-shape / 4, abs=2e-12)
+        expected = (
+            expected_prior
+            + stats.norm.logpdf(0)
+            + stats.invweibull.logpdf(
+                frame.y.to_numpy(), shape, scale=1 / special.gamma(1 - 1 / shape)
+            ).sum()
+        )
+        assert recorded.log_joint.sum().item() == pytest.approx(expected, abs=2e-11)
+        reference = source.run(
+            "model", data={"y": tuple(frame.y)}, sites={"intercept": 0.0, "nu": shape}
+        )
+        assert reference.log_joint == pytest.approx(expected, abs=2e-11)
+    finally:
+        torch.set_default_dtype(previous)
 
 
 @pytest.mark.parametrize(
