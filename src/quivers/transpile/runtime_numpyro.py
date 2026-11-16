@@ -336,12 +336,18 @@ class OneHotCategorical(numpyro.distributions.Distribution):
 
     arg_constraints = {
         "probs": numpyro.distributions.constraints.simplex,
+        "logits": numpyro.distributions.constraints.real_vector,
     }
     support = numpyro.distributions.constraints.simplex
     has_enumerate_support = True
 
-    def __init__(self, probs, *, validate_args=None):
-        self.probs = jnp.asarray(probs, dtype=jnp.result_type(float))
+    def __init__(self, probs=None, *, logits=None, validate_args=None):
+        self._categorical = numpyro.distributions.Categorical(
+            probs=probs, logits=logits, validate_args=validate_args
+        )
+        self.probs = self._categorical.probs
+        raw_logits = self._categorical.logits
+        self.logits = raw_logits - jss.logsumexp(raw_logits, axis=-1, keepdims=True)
         batch_shape = jnp.shape(self.probs)[:-1]
         event_shape = jnp.shape(self.probs)[-1:]
         super().__init__(
@@ -351,13 +357,11 @@ class OneHotCategorical(numpyro.distributions.Distribution):
         )
 
     def sample(self, key, sample_shape=()):
-        idx = numpyro.distributions.CategoricalProbs(self.probs).sample(
-            key, sample_shape
-        )
+        idx = self._categorical.sample(key, sample_shape)
         return jnp.eye(self.event_shape[0])[idx]
 
     def log_prob(self, value):
-        return jnp.sum(jss.xlogy(value, self.probs), axis=-1)
+        return jnp.sum(jnp.where(value == 0, 0.0, value * self.logits), axis=-1)
 
 
 class OrderedProbit(numpyro.distributions.CategoricalProbs):

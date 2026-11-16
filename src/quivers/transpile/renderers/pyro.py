@@ -12,6 +12,10 @@ import pathlib
 
 import panproto
 
+from quivers._family_schemas import (
+    _semantic_parameterizations,
+    family_parameter_names,
+)
 from quivers.dsl.ast_nodes import MorphismInitFamily
 from quivers.transpile._builtin_spellings import _probability_builtins_used
 
@@ -1255,6 +1259,10 @@ class PyroRenderer(RendererBase):
         """
         positional: list[str] = []
         keyword: list[tuple[str, str]] = []
+        canonical = family_parameter_names(meta.qvr_name)
+        if canonical is not None:
+            schemas = _semantic_parameterizations(meta.qvr_name, canonical)
+            canonical = schemas[0] if schemas else ()
         if not arg_names or len(arg_names) != len(args):
             torch_constraints = getattr(
                 meta.distribution_class, "arg_constraints", None
@@ -1275,6 +1283,10 @@ class PyroRenderer(RendererBase):
                 vid = self._lower_arg(pctx, ir_arg, meta=meta, arg_name=arg_name)
             if arg_name in aliases:
                 keyword.append((aliases[arg_name], vid))
+            elif canonical is not None and arg_name not in canonical:
+                # An alternate constructor slot must retain its identity;
+                # its ordinal position names a different canonical parameter.
+                keyword.append((arg_name, vid))
             else:
                 positional.append(vid)
         return _DistArgs(
@@ -1881,13 +1893,6 @@ _PYRO_TENSOR_SCALARS: frozenset[tuple[str, str]] = frozenset(
 
 
 _PYRO_KEYWORD_BINDINGS: dict[str, dict[str, str]] = {
-    "Categorical": {
-        "logits": "logits",
-    },
-    **{
-        family: {"logits": "logits"}
-        for family in ("Bernoulli", "Binomial", "Geometric", "NegativeBinomial")
-    },
     **{
         family: {
             "precision_matrix": "precision_matrix",

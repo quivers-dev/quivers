@@ -1,0 +1,6 @@
+object Row : FinSet 4
+program model : Row -> Row
+    sample eta <- Normal(loc=0.0, scale=2.0)
+    observe u : Row <- RelaxedBernoulli(temperature=0.7, logits=eta)
+    return u
+export model

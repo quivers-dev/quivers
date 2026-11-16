@@ -83,6 +83,51 @@ _SIGMAS: list[dict[str, Host]] = [
 _CASES: dict[
     str, tuple[str, str, str, dict[str, Host], list[dict[str, Host]], Oracle]
 ] = {
+    "relaxed-bernoulli-logits": (
+        "RelaxedBernoulli",
+        "logits",
+        "steps/observe_relaxed_bernoulli_logits",
+        {"u": [0.1, 0.45, 0.8, 0.97]},
+        _ETAS,
+        lambda v: (
+            _eta(v)
+            + D.RelaxedBernoulli(_t(0.7), logits=_t(v["eta"]))
+            .log_prob(_t(v["u"]))
+            .sum()
+        ),
+    ),
+    "onehot-categorical-logits": (
+        "OneHotCategorical",
+        "logits",
+        "steps/observe_onehot_categorical_logits",
+        {"v": [[1, 0, 0], [0, 0, 1], [0, 1, 0]]},
+        [{}],
+        lambda v: (
+            D.OneHotCategorical(logits=_t([0.2, -0.4, 0.7])).log_prob(_t(v["v"])).sum()
+        ),
+    ),
+    "relaxed-onehot-logits": (
+        "RelaxedOneHotCategorical",
+        "logits",
+        "steps/observe_relaxed_onehot_logits",
+        {"v": [[0.2, 0.3, 0.5], [0.6, 0.1, 0.3], [0.4, 0.4, 0.2]]},
+        [{}],
+        lambda v: (
+            D.RelaxedOneHotCategorical(_t(0.7), logits=_t([0.2, -0.4, 0.7]))
+            .log_prob(_t(v["v"]))
+            .sum()
+        ),
+    ),
+    "bernstein-hazard-log-rate": (
+        "BernsteinHazard",
+        "log_rate",
+        "steps/observe_bernstein_hazard_log_rate",
+        {"t": [0.0, 0.4, 1.0, 2.7]},
+        _ETAS,
+        lambda v: (
+            _eta(v) + D.Exponential(_t(v["eta"]).exp()).log_prob(_t(v["t"])).sum()
+        ),
+    ),
     "multinomial-logits": (
         "Multinomial",
         "logits",
@@ -336,13 +381,29 @@ _REFUSED: dict[tuple[str, str], str] = {
     ),
 }
 
-# All four laws have native and checked-reference fixtures above. These
+# These laws have native and checked-reference fixtures above. Their
 # external cells are actual measured capability refusals, not numeric claims.
-for _fixture, _family in (
-    ("steps/observe_multinomial_logits", "Multinomial"),
-    ("steps/observe_dirichlet_multinomial", "DirichletMultinomial"),
-    ("steps/observe_com_poisson_log_rate", "COMPoisson"),
-    ("steps/observe_alr_reference", "AdditiveLogRatioNormal"),
+for _fixture, _family, _rendered in (
+    ("steps/observe_bernstein_hazard_log_rate", "BernsteinHazard", ()),
+    ("steps/observe_multinomial_logits", "Multinomial", ()),
+    ("steps/observe_dirichlet_multinomial", "DirichletMultinomial", ()),
+    ("steps/observe_com_poisson_log_rate", "COMPoisson", ()),
+    ("steps/observe_alr_reference", "AdditiveLogRatioNormal", ()),
+    (
+        "steps/observe_relaxed_bernoulli_logits",
+        "RelaxedBernoulli",
+        ("edward2", "numpyro", "pyro"),
+    ),
+    (
+        "steps/observe_onehot_categorical_logits",
+        "OneHotCategorical",
+        ("edward2", "numpyro", "pyro"),
+    ),
+    (
+        "steps/observe_relaxed_onehot_logits",
+        "RelaxedOneHotCategorical",
+        ("edward2", "pyro"),
+    ),
 ):
     for _target, _kind in (
         ("bugs", f"family:{_family}:"),
@@ -357,7 +418,8 @@ for _fixture, _family in (
         ("turing", f"family:{_family}:"),
         ("webppl", f"family:no-webppl-target:{_family}"),
     ):
-        _REFUSED[(_fixture, _target)] = _kind
+        if _target not in _rendered:
+            _REFUSED[(_fixture, _target)] = _kind
 
 _TARGETS: tuple[str, ...] = tuple(sorted(_BACKENDS_WITH_IMAGES))
 

@@ -27,6 +27,14 @@ Pyro's distributions are those of
 are built on, so the map is the identity for every QVR family with a `pyro.distributions` class:
 $\pi_{F, \mathsf{Pyro}} = \mathrm{id}$ and $c_{F, \mathsf{Pyro}} = 0$.
 
+Alternate constructor parameters retain their semantic names. The renderer reads
+the shared constructor schemas and emits a keyword when its position would
+otherwise select a different canonical parameter. This includes `logits` for
+Bernoulli, count, one-hot, and relaxed categorical laws. Surface aliases are
+resolved before this comparison; a location parameter thus remains a location
+parameter regardless of its authored spelling. Independent parameterization
+fixtures compare emitted scores with native and reference execution.
+
 ## Emitted constructs
 
 **`sample` and `observe`.** `pyro.sample("x", <dist>)` for a latent variable and

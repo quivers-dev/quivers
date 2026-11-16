@@ -1,0 +1,6 @@
+object Row : FinSet 3
+object Category : FinSet 3
+program model : Row -> Row
+    observe v : Row <- RelaxedOneHotCategorical(temperature=0.7, logits=[0.2, -0.4, 0.7]) [over=Category]
+    return v
+export model
