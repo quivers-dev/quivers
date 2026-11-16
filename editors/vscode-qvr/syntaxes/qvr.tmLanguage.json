@@ -182,7 +182,7 @@
     },
     "builtin-function": {
       "name": "support.function.builtin.qvr",
-      "match": "\\b(?:FreeMonoid|FreeResiduated|abs|acos|acosh|asin|asinh|atan|atanh|cap|ccg|ceil|change_base|chart_fold|concat|cos|cosh|cumsum|cup|curry_left|curry_right|dagger|digamma|elu|erf|erfc|erfinv|exp|expm1|fan|filter|floor|fold|freeze|from_data|gelu|identity|int|lambek|layer_norm|length|lgamma|log|log10|log1mexp|log1p|log2|log_mass|log_ndtr|log_prob|log_probability|log_softmax|logsigmoid|logsumexp|logsumexp_over|map|matmul|max|mean|min|mish|normalize|observation_weight|parser|positive_parameter|pow|prod|real|reciprocal|relu|relu6|repeat|rms_norm|round|rsqrt|scale_weight|scan|select|selu|sigmoid|sign|silu|sin|sinh|slice|softmax|softplus|softsign|sort|sqrt|square|stack|sum|tan|tanh|trace|traverse|trunc|weight|weight_value)\\b"
+      "match": "\\b(?:FreeMonoid|FreeResiduated|abs|acos|acosh|asin|asinh|atan|atanh|cap|ccg|ceil|change_base|chart_fold|concat|cos|cosh|cumsum|cup|curry_left|curry_right|dagger|digamma|elu|erf|erfc|erfinv|exp|expm1|fan|filter|floor|fold|freeze|from_data|gelu|identity|int|interval_upper|lambek|layer_norm|length|lgamma|log|log10|log1mexp|log1p|log2|log_mass|log_ndtr|log_prob|log_probability|log_softmax|logsigmoid|logsumexp|logsumexp_over|map|matmul|max|mean|min|mish|normalize|observation_status|observation_weight|parser|positive_parameter|pow|prod|real|reciprocal|relu|relu6|repeat|rms_norm|round|rsqrt|scale_weight|scan|select|selu|sigmoid|sign|silu|sin|sinh|slice|softmax|softplus|softsign|sort|sqrt|square|stack|sum|tan|tanh|trace|traverse|trunc|weight|weight_value)\\b"
     },
     "builtin-type": {
       "name": "support.class.builtin.qvr",
