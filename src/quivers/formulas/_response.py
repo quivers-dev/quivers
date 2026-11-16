@@ -31,8 +31,14 @@ def response_dtype(formula: Formula, family: Family | None = None) -> torch.dtyp
     from quivers.qiec.families import family as semantic_family
     from quivers.qiec.types import BOOL, INT
 
-    element = semantic_family(family.observe_family).element if family is not None else None
-    if element == INT or family is None and formula.response_layout.carrier == "integer":
+    element = (
+        semantic_family(family.observe_family).element if family is not None else None
+    )
+    if (
+        element == INT
+        or family is None
+        and formula.response_layout.carrier == "integer"
+    ):
         return torch.int64
     if element == BOOL:
         return torch.bool
@@ -59,11 +65,21 @@ def _response_values_tensor(values: np.ndarray, dtype: torch.dtype) -> torch.Ten
     ValueError
         If an integer/Boolean observation cannot inhabit its declared carrier.
     """
-    if dtype in {torch.int64,torch.bool}:
+    if dtype in {torch.int64, torch.bool}:
         bound = 1 if dtype == torch.bool else 2**53
-        if values.dtype.kind not in "biuf" or not np.isfinite(values).all() or np.any(values > bound) or np.any(values < (0 if dtype == torch.bool else -bound)) or np.any(values != np.floor(values)):
-            raise ValueError("Boolean responses require exact zero/one values" if dtype == torch.bool else "integer responses require finite integral values within exact Float64 scoring capacity 2**53")
-    return torch.as_tensor(values.copy(),dtype=dtype)
+        if (
+            values.dtype.kind not in "biuf"
+            or not np.isfinite(values).all()
+            or np.any(values > bound)
+            or np.any(values < (0 if dtype == torch.bool else -bound))
+            or np.any(values != np.floor(values))
+        ):
+            raise ValueError(
+                "Boolean responses require exact zero/one values"
+                if dtype == torch.bool
+                else "integer responses require finite integral values within exact Float64 scoring capacity 2**53"
+            )
+    return torch.as_tensor(values.copy(), dtype=dtype)
 
 
 def response_tensor(formula: Formula, family: Family | None = None) -> torch.Tensor:
@@ -83,7 +99,9 @@ def response_tensor(formula: Formula, family: Family | None = None) -> torch.Ten
         events, or Float32 real scalar observations. Count validation precedes
         conversion and never silently truncates fractional observations.
     """
-    return _response_values_tensor(formula.response_values,response_dtype(formula,family))
+    return _response_values_tensor(
+        formula.response_values, response_dtype(formula, family)
+    )
 
 
 def response_point(formula: Formula, family: Family) -> torch.Tensor:
@@ -101,7 +119,9 @@ def response_point(formula: Formula, family: Family) -> torch.Tensor:
     torch.Tensor
         One scalar/event point preserving the fitted response carrier.
     """
-    return _response_values_tensor(formula.response_values[:1],response_dtype(formula,family))[0]
+    return _response_values_tensor(
+        formula.response_values[:1], response_dtype(formula, family)
+    )[0]
 
 
 def count_totals(formula: Formula) -> torch.Tensor:

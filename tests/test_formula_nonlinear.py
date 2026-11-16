@@ -392,16 +392,27 @@ def test_labelled_nonlinear_response_roots_match_native_laws_and_all_head_gradie
         torch.autograd.grad(raw, theta, retain_graph=True)[0],
         torch.autograd.grad(expected, theta)[0],
     )
+
     def host(value):
-        if isinstance(value,list):
+        if isinstance(value, list):
             return tuple(host(item) for item in value)
         return value
-    reference_data={key:host(value.tolist()) for key,value in observations.items()}
-    if name == "categorical":
-        reference_data[_qvr_name(parsed.response_name)] = tuple(int(value) for value in observations[_qvr_name(parsed.response_name)].tolist())
-    reference=run_program(lower_qvr_to_qiec(module),"model",data=reference_data,sites={key:host(value.detach().tolist()) for key,value in sites.items()})
-    assert reference.log_joint==pytest.approx(float(actual.log_joint.sum().detach()),abs=2e-11)
 
+    reference_data = {key: host(value.tolist()) for key, value in observations.items()}
+    if name == "categorical":
+        reference_data[_qvr_name(parsed.response_name)] = tuple(
+            int(value)
+            for value in observations[_qvr_name(parsed.response_name)].tolist()
+        )
+    reference = run_program(
+        lower_qvr_to_qiec(module),
+        "model",
+        data=reference_data,
+        sites={key: host(value.detach().tolist()) for key, value in sites.items()},
+    )
+    assert reference.log_joint == pytest.approx(
+        float(actual.log_joint.sum().detach()), abs=2e-11
+    )
 
 
 def test_nonlinear_group_parameters_reuse_known_and_new_group_prediction_metadata():
@@ -595,34 +606,75 @@ def test_nonlinear_expressions_use_the_existing_qiec_function_and_type_checker(
 
 
 def test_shared_group_ids_keep_joint_nonlinear_parameter_donors():
-    result=fit("y~a*exp(b*x)",data=_frame(),nonlinear={"a":"~1+(1|joint|g)","b":"~1+(1|joint|g)"},fixed_parameters={"sigma":.5},method="svi",num_steps=1)
-    factor=torch.tensor([[1.,0.],[.6,.8]])
-    z=torch.tensor([[1.,-.5],[-.3,.8]])
-    scales=torch.tensor([.3,.4])
-    effects=z@factor.T*scales
-    result=_recorded(result,{"cor_shared_joint":factor,"nlpar_a_intercept":torch.tensor(1.),"nlpar_b_intercept":torch.tensor(.2),"nlpar_a_sigma_g_Intercept":scales[0],"nlpar_b_sigma_g_Intercept":scales[1],"nlpar_a_z_g_Intercept":z[:,0],"nlpar_b_z_g_Intercept":z[:,1]})
-    assert len(result.prediction_plan.group_layouts)==1
-    fresh=pd.DataFrame({"g":["b","a","b"],"x":[.25,.5,.75]})
-    idx=torch.tensor([1,0,1])
-    expected=(1+effects[idx,0])*torch.exp((.2+effects[idx,1])*torch.tensor(fresh.x.to_numpy()))
-    torch.testing.assert_close(result.posterior_epred(new_data=fresh),expected.expand(2,3,3))
-    new=pd.DataFrame({"g":["fresh","fresh"],"x":[.5,.5]})
-    observed=result.posterior_epred(new_data=new,allow_new_levels=True,sample_new_levels="uncertainty",seed=6)
-    candidates=(1+effects[:,0])*torch.exp((.2+effects[:,1])*.5)
-    assert bool(((observed-candidates[0]).abs()<1e-6).logical_or((observed-candidates[1]).abs()<1e-6).all())
-    torch.testing.assert_close(observed[...,0],observed[...,1])
+    result = fit(
+        "y~a*exp(b*x)",
+        data=_frame(),
+        nonlinear={"a": "~1+(1|joint|g)", "b": "~1+(1|joint|g)"},
+        fixed_parameters={"sigma": 0.5},
+        method="svi",
+        num_steps=1,
+    )
+    factor = torch.tensor([[1.0, 0.0], [0.6, 0.8]])
+    z = torch.tensor([[1.0, -0.5], [-0.3, 0.8]])
+    scales = torch.tensor([0.3, 0.4])
+    effects = z @ factor.T * scales
+    result = _recorded(
+        result,
+        {
+            "cor_shared_joint": factor,
+            "nlpar_a_intercept": torch.tensor(1.0),
+            "nlpar_b_intercept": torch.tensor(0.2),
+            "nlpar_a_sigma_g_Intercept": scales[0],
+            "nlpar_b_sigma_g_Intercept": scales[1],
+            "nlpar_a_z_g_Intercept": z[:, 0],
+            "nlpar_b_z_g_Intercept": z[:, 1],
+        },
+    )
+    assert len(result.prediction_plan.group_layouts) == 1
+    fresh = pd.DataFrame({"g": ["b", "a", "b"], "x": [0.25, 0.5, 0.75]})
+    idx = torch.tensor([1, 0, 1])
+    expected = (1 + effects[idx, 0]) * torch.exp(
+        (0.2 + effects[idx, 1]) * torch.tensor(fresh.x.to_numpy())
+    )
+    torch.testing.assert_close(
+        result.posterior_epred(new_data=fresh), expected.expand(2, 3, 3)
+    )
+    new = pd.DataFrame({"g": ["fresh", "fresh"], "x": [0.5, 0.5]})
+    observed = result.posterior_epred(
+        new_data=new, allow_new_levels=True, sample_new_levels="uncertainty", seed=6
+    )
+    candidates = (1 + effects[:, 0]) * torch.exp((0.2 + effects[:, 1]) * 0.5)
+    assert bool(
+        ((observed - candidates[0]).abs() < 1e-6)
+        .logical_or((observed - candidates[1]).abs() < 1e-6)
+        .all()
+    )
+    torch.testing.assert_close(observed[..., 0], observed[..., 1])
 
 
 def test_nonlinear_leaf_stateful_transforms_and_factor_coding_reuse_fitted_designs():
-    frame=_frame().assign(c=["a","b","a","b"])
-    result=fit("y~a*exp(b*x)",data=frame,nonlinear={"a":"~poly(z,2)+c","b":"~1"},fixed_parameters={"sigma":.5},method="svi",num_steps=1)
-    fresh=pd.DataFrame({"x":[.25,.5],"z":[10.,20.],"c":["b","a"]})
-    context=prepare_prediction(result,fresh,None)
-    fitted=result.prediction_plan.designs["a"].common.evaluate_new_data(fresh)
-    matrix=torch.as_tensor(fitted.design_matrix,dtype=torch.float32)
-    columns=[column for column in result.predictor_graph.leaves["a"].fixed_columns if not column.is_intercept]
-    for position,column in enumerate(columns,start=1):
-        torch.testing.assert_close(context.observations[f"nlpar_a_{column.qvr_name}"],matrix[:,position])
-    assert result.posterior_epred(new_data=fresh,num_samples=2).shape==(1,2,2)
-    with pytest.raises(ValueError,match="unknown levels"):
-        result.posterior_epred(new_data=fresh.assign(c="unfitted"),num_samples=1)
+    frame = _frame().assign(c=["a", "b", "a", "b"])
+    result = fit(
+        "y~a*exp(b*x)",
+        data=frame,
+        nonlinear={"a": "~poly(z,2)+c", "b": "~1"},
+        fixed_parameters={"sigma": 0.5},
+        method="svi",
+        num_steps=1,
+    )
+    fresh = pd.DataFrame({"x": [0.25, 0.5], "z": [10.0, 20.0], "c": ["b", "a"]})
+    context = prepare_prediction(result, fresh, None)
+    fitted = result.prediction_plan.designs["a"].common.evaluate_new_data(fresh)
+    matrix = torch.as_tensor(fitted.design_matrix, dtype=torch.float32)
+    columns = [
+        column
+        for column in result.predictor_graph.leaves["a"].fixed_columns
+        if not column.is_intercept
+    ]
+    for position, column in enumerate(columns, start=1):
+        torch.testing.assert_close(
+            context.observations[f"nlpar_a_{column.qvr_name}"], matrix[:, position]
+        )
+    assert result.posterior_epred(new_data=fresh, num_samples=2).shape == (1, 2, 2)
+    with pytest.raises(ValueError, match="unknown levels"):
+        result.posterior_epred(new_data=fresh.assign(c="unfitted"), num_samples=1)

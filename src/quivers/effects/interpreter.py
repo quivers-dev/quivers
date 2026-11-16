@@ -1430,7 +1430,10 @@ class _HostSteps:
             annotations["subsample_rows"] = rows
             drawing = _SubsampledMorphism(drawing, rows, factor)
         if isinstance(spec, Observe):
-            from quivers.effects.observation_scoring import _enabled, _UnscoredObservation
+            from quivers.effects.observation_scoring import (
+                _enabled,
+                _UnscoredObservation,
+            )
 
             if not _enabled(self.run):
                 drawing = _UnscoredObservation(drawing)
