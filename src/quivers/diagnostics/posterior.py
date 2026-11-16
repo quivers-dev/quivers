@@ -11,6 +11,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers.diagnostics._numeric import empirical_summary, probabilities
 from quivers.diagnostics.convergence import (
     ConvergenceSummary,
     summary as convergence_summary,
@@ -298,13 +299,7 @@ class PosteriorAnalysis(ValueModel):
             Float64 summaries on each site's event axes.
         """
         self._validate_axes()
-        levels = tuple(probs)
-        if any(
-            isinstance(p, bool) or not math.isfinite(p) or not 0 < p < 1 for p in levels
-        ):
-            raise ValueError(
-                "summary probabilities must lie strictly between zero and one"
-            )
+        levels = probabilities(probs)
         diagnostics = (
             convergence_summary(self.samples, probs=levels)
             if self.kind == "mcmc"
@@ -325,13 +320,7 @@ class PosteriorAnalysis(ValueModel):
                 mean, sd, quantiles = d.mean, d.sd, d.quantiles
             else:
                 pooled = values.detach().double().flatten(0, 1)
-                mean, sd = pooled.mean(0), pooled.std(0, correction=1)
-                q = torch.tensor(levels, dtype=torch.float64, device=pooled.device)
-                quantiles = (
-                    torch.quantile(pooled, q, dim=0)
-                    if levels
-                    else pooled.new_empty((0, *pooled.shape[1:]))
-                )
+                mean, sd, quantiles = empirical_summary(pooled, levels)
             result[name] = PosteriorSummary(
                 mean=mean,
                 sd=sd,

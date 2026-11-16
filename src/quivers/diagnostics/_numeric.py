@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+import math
+
 import torch
 
 from quivers._count_capacity import _MAX_EXACT_COUNT
@@ -46,6 +49,119 @@ def real_samples(values: torch.Tensor, *, label: str) -> torch.Tensor:
             f"{label} requires finite samples; missing values are not deleted"
         )
     return result
+
+
+def probabilities(probs: Sequence[float]) -> tuple[float, ...]:
+    """Validate interior empirical quantile probabilities.
+
+    Parameters
+    ----------
+    probs : Sequence[float]
+        Requested probabilities, retaining their order and repetitions.
+
+    Returns
+    -------
+    tuple[float, ...]
+        Validated probabilities; an empty sequence is permitted.
+
+    Raises
+    ------
+    ValueError
+        If a probability is Boolean, nonfinite, or outside the open unit interval.
+    """
+    levels = tuple(probs)
+    if any(
+        isinstance(p, bool) or not math.isfinite(p) or not 0 < p < 1 for p in levels
+    ):
+        raise ValueError("summary probabilities must lie strictly between zero and one")
+    return levels
+
+
+def linear_quantile(sorted_values: torch.Tensor, prob: float) -> torch.Tensor:
+    """Interpolate a type-7 quantile without overflowing opposite-sign endpoints.
+
+    Parameters
+    ----------
+    sorted_values : torch.Tensor
+        Values sorted ascending along a nonempty first axis.
+    prob : float
+        Probability in the closed unit interval.
+
+    Returns
+    -------
+    torch.Tensor
+        The interpolated quantile with the first axis reduced.
+    """
+    position = (sorted_values.shape[0] - 1) * prob
+    lower = min(math.floor(position), sorted_values.shape[0] - 1)
+    fraction = position - lower
+    below = sorted_values[lower]
+    if fraction == 0:
+        return below
+    above = sorted_values[min(lower + 1, sorted_values.shape[0] - 1)]
+    opposite = torch.signbit(below) != torch.signbit(above)
+    # same-sign subtraction preserves small spreads near large offsets.
+    difference = torch.where(opposite, torch.zeros_like(above), above - below)
+    interpolated = (
+        above - difference * (1 - fraction)
+        if fraction >= 0.5
+        else below + difference * fraction
+    )
+    return torch.where(
+        opposite, (1 - fraction) * below + fraction * above, interpolated
+    )
+
+
+def empirical_summary(
+    pooled: torch.Tensor, levels: Sequence[float], *, robust: bool = False
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Summarize retained draws using scaled arithmetic and shared type-7 quantiles.
+
+    Parameters
+    ----------
+    pooled : torch.Tensor
+        Float64 values with a nonempty leading sample axis.
+    levels : Sequence[float]
+        Validated quantile probabilities.
+    robust : bool
+        Use median and normal-consistent median absolute deviation instead of
+        mean and sample standard deviation.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        Location, dispersion, and quantiles on the remaining event axes.
+        One draw has undefined sample standard deviation, represented by NaN.
+    """
+    anchor = pooled[0]
+    deltas = pooled - anchor
+    shifted = torch.isfinite(deltas).all(0)
+    working = torch.where(shifted, deltas, pooled)
+    scale = working.abs().amax(0)
+    divisor = torch.where(scale > 0, scale, torch.ones_like(scale))
+    normalized = working / divisor
+    ordered = pooled.sort(dim=0).values if levels or robust else None
+    if robust:
+        assert ordered is not None
+        estimate = linear_quantile(ordered, 0.5)
+        ordered_normalized = torch.where(shifted, ordered - anchor, ordered) / divisor
+        normalized_median = linear_quantile(ordered_normalized, 0.5)
+        deviations = (normalized - normalized_median).abs().sort(dim=0).values
+        dispersion = linear_quantile(deviations, 0.5) * 1.482602218505602 * scale
+    else:
+        center = normalized.mean(0) * scale
+        estimate = torch.where(shifted, anchor + center, center)
+        dispersion = (
+            normalized.std(dim=0, correction=1) * scale
+            if pooled.shape[0] > 1
+            else torch.full_like(estimate, torch.nan)
+        )
+    quantiles = (
+        torch.stack([linear_quantile(ordered, p) for p in levels])
+        if ordered is not None and levels
+        else pooled.new_empty((0, *pooled.shape[1:]))
+    )
+    return estimate, dispersion, quantiles
 
 
 __all__: list[str] = []

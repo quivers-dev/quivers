@@ -171,6 +171,16 @@ These matrices describe dependence among draws; they do not establish MCMC
 convergence. The [API reference](../api/diagnostics/posterior.md#joint-covariance-and-correlation)
 states the coordinate and numeric-capacity policies.
 
+A derived contrast can use those same retained tensors. Pass its
+`(chain, draw, *event)` tensor to `hypothesis_summary`, optionally with jointly
+constructed prior contrasts. The result separates below, equal, and above
+frequencies from posterior region odds and prior-corrected region Bayes factors.
+Compute a contrast within each joint draw; independently rearranging parameter
+draws would change their dependence. Exact equality is descriptive, without a
+point-null density estimate. The
+[contrast API](../api/diagnostics/hypothesis.md) states the prior assumptions,
+coordinate labels, and empirical zero-frequency policy.
+
 The [diagnostics adapter](../api/diagnostics/index.md) converts quivers' inference
 records for [ArviZ](https://python.arviz.org/) and returns an
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)

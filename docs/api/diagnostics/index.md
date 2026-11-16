@@ -16,4 +16,8 @@ from either source or formula fits. Its uncertainty summaries and empirical WAIC
 need only PyTorch; MCMC convergence diagnostics require recorded chains.
 DataTree conversion and PSIS-LOO use the optional ArviZ dependency.
 
+[Contrast summaries](hypothesis.md) analyze derived retained draws, reporting
+strict-region probabilities and posterior odds separately from prior-corrected
+region Bayes factors. Equality frequencies remain descriptive.
+
 ::: quivers.diagnostics

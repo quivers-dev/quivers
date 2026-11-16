@@ -55,6 +55,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
+from quivers.diagnostics._numeric import linear_quantile as _linear_quantile
 
 EssMethod = Literal["bulk", "tail", "mean", "sd", "quantile"]
 """The quantity an effective sample size refers to: ``"bulk"``
@@ -267,37 +268,6 @@ def _z_scale(chains: torch.Tensor) -> torch.Tensor:
     return (math.sqrt(2.0) * torch.erfinv(2.0 * probabilities - 1.0)).reshape(
         chains.shape
     )
-
-
-def _linear_quantile(sorted_values: torch.Tensor, prob: float) -> torch.Tensor:
-    """Quantile by linear interpolation between order statistics.
-
-    This is Hyndman and Fan's type 7 definition, NumPy's default,
-    including its two-sided interpolation formula.
-
-    Parameters
-    ----------
-    sorted_values : torch.Tensor
-        Values sorted ascending along the first axis.
-    prob : float
-        Probability in ``[0, 1]``.
-
-    Returns
-    -------
-    torch.Tensor
-        The quantile, with the first axis reduced.
-    """
-    size = sorted_values.shape[0]
-    position = (size - 1) * prob
-    lower = min(int(math.floor(position)), size - 1)
-    upper = min(lower + 1, size - 1)
-    fraction = position - lower
-    below = sorted_values[lower]
-    above = sorted_values[upper]
-    difference = above - below
-    if fraction >= 0.5:
-        return above - difference * (1.0 - fraction)
-    return below + difference * fraction
 
 
 def _quantile(chains: torch.Tensor, prob: float) -> float:
