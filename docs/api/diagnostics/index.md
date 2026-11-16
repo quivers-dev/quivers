@@ -16,6 +16,11 @@ from either source or formula fits. Its uncertainty summaries and empirical WAIC
 need only PyTorch; MCMC convergence diagnostics require recorded chains.
 DataTree conversion and PSIS-LOO use the optional ArviZ dependency.
 
+[Refit cross-validation](cross_validation.md) retains explicit random, grouped, or
+stratified partitions and scores held-out likelihoods from existing fitters.
+It supports selected folds and joint response, fold, or group prediction units
+without requiring ArviZ.
+
 [Contrast summaries](hypothesis.md) analyze derived retained draws, reporting
 strict-region probabilities and posterior odds separately from prior-corrected
 region Bayes factors. Equality frequencies remain descriptive.

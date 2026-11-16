@@ -422,6 +422,7 @@ nav:
       - Simulation-Based Calibration: api/diagnostics/calibration.md
       - ArviZ DataTree Adapter: api/diagnostics/arviz_io.md
       - Model Comparison: api/diagnostics/comparison.md
+      - Refit Cross-Validation: api/diagnostics/cross_validation.md
       - Predictive Checks: api/diagnostics/predictive_checks.md
     - Model Binding and Fitting: api/modeling.md
     - Formulas:

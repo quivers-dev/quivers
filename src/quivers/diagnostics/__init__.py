@@ -50,6 +50,16 @@ from quivers.diagnostics.convergence import (
 if TYPE_CHECKING:
     import numpy as np
 
+    from quivers.diagnostics.cross_validation import (
+        FoldLabel,
+        FoldSplit,
+        FoldPlan,
+        FoldPrediction,
+        CrossValidationResult,
+        fold_plan,
+        cross_validate,
+    )
+
     from quivers.diagnostics.arviz_io import (
         to_datatree,
         to_datatree_any,
@@ -103,6 +113,13 @@ if TYPE_CHECKING:
     )
 
 _LAZY_EXPORTS: dict[str, str] = {
+    "FoldLabel": "quivers.diagnostics.cross_validation",
+    "FoldSplit": "quivers.diagnostics.cross_validation",
+    "FoldPlan": "quivers.diagnostics.cross_validation",
+    "FoldPrediction": "quivers.diagnostics.cross_validation",
+    "CrossValidationResult": "quivers.diagnostics.cross_validation",
+    "fold_plan": "quivers.diagnostics.cross_validation",
+    "cross_validate": "quivers.diagnostics.cross_validation",
     "GridValue": "quivers.diagnostics.conditional",
     "PredictionGrid": "quivers.diagnostics.conditional",
     "ConditionalEffects": "quivers.diagnostics.conditional",
@@ -182,6 +199,13 @@ def __getattr__(name: str) -> _LazyExport:
 
 
 __all__ = [
+    "FoldLabel",
+    "FoldSplit",
+    "FoldPlan",
+    "FoldPrediction",
+    "CrossValidationResult",
+    "fold_plan",
+    "cross_validate",
     "GridValue",
     "PredictionGrid",
     "ConditionalEffects",
