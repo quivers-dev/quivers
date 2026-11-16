@@ -1,4 +1,4 @@
-"""Edward2 half-t responses retain the folded law beyond a density shift."""
+"""Edward2 retains folded laws and constructor-specific vector shapes."""
 
 import math
 from pathlib import Path
@@ -51,3 +51,62 @@ def test_edward2_half_student_density_support_derivatives_and_sampling(scratch):
     (directory / "source.py").write_bytes(transpile(parse(SOURCE), target="edward2"))
     result = _docker.run_probe_script(image=image, script=SCRIPT, scratch=directory)
     assert_half_student_measurement(result)
+
+
+@pytest.mark.parametrize("logits", [False, True])
+@pytest.mark.parametrize("row_temperature", [False, True])
+def test_edward2_relaxed_categories_preserve_scalar_and_row_temperatures(
+    scratch, logits, row_temperature
+):
+    import torch
+    from tests.transpile.test_edward2_observed import _relaxed_source
+
+    argument = "logits=[0.2,-0.4,0.7]" if logits else "probs=[0.2,0.3,0.5]"
+    source = transpile(
+        parse(_relaxed_source(argument, row_temperature)), target="edward2"
+    )
+    values = torch.tensor([[0.2, 0.3, 0.5], [0.6, 0.1, 0.3]], dtype=torch.double)
+    temperature = torch.tensor(
+        [0.5, 1.2] if row_temperature else 0.7, dtype=torch.double
+    )
+    parameters = (
+        {"logits": torch.tensor([0.2, -0.4, 0.7], dtype=torch.double)}
+        if logits
+        else {"probs": torch.tensor([0.2, 0.3, 0.5], dtype=torch.double)}
+    )
+    expected = sum(
+        torch.distributions.RelaxedOneHotCategorical(tau, **parameters).log_prob(value)
+        for tau, value in zip(temperature.expand(2), values, strict=True)
+    )
+    data = {"v": values.reshape(-1).tolist()}
+    shapes = {"v": [2, 3]}
+    dtypes = {"v": "float32"}
+    if row_temperature:
+        expected += (
+            torch.distributions.LogNormal(
+                torch.tensor(0.0, dtype=torch.double),
+                torch.tensor(0.2, dtype=torch.double),
+            )
+            .log_prob(temperature)
+            .sum()
+        )
+        data["tau"] = temperature.tolist()
+        shapes["tau"] = [2]
+        dtypes["tau"] = "float"
+    image = "panproto-test-edward2"
+    if not _docker.image_available(image):
+        raise RuntimeError(f"docker image {image!r} not available")
+    script = Path(__file__).parent / "probes" / "_scripts" / "edward2.py"
+    result = _docker.run_probe(
+        image=image,
+        script=script,
+        source=source,
+        source_ext="py",
+        points=[{"params": {}, "data": data}],
+        shapes=shapes,
+        dtypes=dtypes,
+        scratch=scratch / "relaxed-shape",
+    )
+    assert result["log_densities"] == pytest.approx(
+        [float(expected)], rel=2e-6, abs=2e-6
+    )
