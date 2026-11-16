@@ -46,7 +46,8 @@ from quivers.transpile.renderers._python_helpers import (
     string_literal,
     with_statement,
 )
-from quivers.transpile._pipeline import parser_registry, target_protocol
+from quivers.transpile._pipeline import target_protocol
+from quivers.transpile._runtime_sources import python_runtime_helpers
 from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
 from quivers.transpile.ir import (
     ConstraintSpec,
@@ -2026,84 +2027,11 @@ _RUNTIME_NUMPYRO_PATH = (
 )
 
 
-def _class_definition_name(schema: panproto.Schema, class_vid: str) -> str | None:
-    """The literal name of a `class_definition` vertex, or `None`."""
-    for edge in schema.edges:
-        if edge.src == class_vid and edge.kind == "name":
-            name_v = next(
-                (vv for vv in schema.vertices if vv.id == edge.tgt),
-                None,
-            )
-            if name_v is None:
-                continue
-            return next(
-                (
-                    c.value
-                    for c in schema.constraints_for(name_v.id)
-                    if c.sort == "literal-value"
-                ),
-                None,
-            )
-    return None
-
-
-def _subtree_vertex_ids(schema: panproto.Schema, root: str) -> set[str]:
-    """Every vertex id reachable from `root` via outgoing edges."""
-    seen: set[str] = {root}
-    frontier: list[str] = [root]
-    while frontier:
-        src = frontier.pop()
-        for edge in schema.edges:
-            if edge.src == src and edge.tgt not in seen:
-                seen.add(edge.tgt)
-                frontier.append(edge.tgt)
-    return seen
-
-
-def _load_runtime_numpyro_helpers() -> tuple[
-    panproto.Schema, dict[str, str], dict[str, set[str]]
-]:
-    """Parse [`runtime_numpyro.py`][quivers.transpile.runtime_numpyro]
-    through panproto's Python tree-sitter grammar at module-load time
-    and index helper class and function subtrees by name.
-
-    Returns the parsed schema, a map from class name to the
-    class-definition vertex id, and a map from class name to the set of
-    vertex ids in that class's subtree. The renderer's
-    `_emit_runtime_helper`
-    grafts a class subtree (vertex + all descendants + their
-    constraints + edges) into the per-render schema as a `child_of`
-    of the emitted module. The emit is a real Python class definition,
-    with no string literal, no `exec`, and no runtime self-injection.
-    """
-    from quivers.transpile._runtime_sources import python_runtime_source
-
-    schema = parser_registry().parse_with_protocol(
-        "python",
-        python_runtime_source(_RUNTIME_NUMPYRO_PATH),
-        str(_RUNTIME_NUMPYRO_PATH),
-    )
-    roots: dict[str, str] = {}
-    for v in schema.vertices:
-        if v.kind in {"class_definition", "function_definition"}:
-            name = _class_definition_name(schema, v.id)
-            if name is not None:
-                roots[name] = v.id
-    if not roots:
-        raise RuntimeError(
-            f"no helper `class` definitions found in {_RUNTIME_NUMPYRO_PATH}; "
-            "the renderer expects it as the source of truth for the "
-            "embedded NumPyro runtime helpers."
-        )
-    subtrees = {name: _subtree_vertex_ids(schema, root) for name, root in roots.items()}
-    return schema, roots, subtrees
-
-
 (
     _RUNTIME_NUMPYRO_HELPER_SCHEMA,
     _RUNTIME_NUMPYRO_HELPER_ROOTS,
     _RUNTIME_NUMPYRO_HELPER_SUBTREES,
-) = _load_runtime_numpyro_helpers()
+) = python_runtime_helpers(_RUNTIME_NUMPYRO_PATH)
 
 
 def _ir_helper_classes_used(body: tuple[IRNode, ...]) -> set[str]:
