@@ -785,10 +785,12 @@ def _render_call_kind(backend: str, tail: str) -> str:
             f"stochastic and deterministic relations between named nodes, "
             f"with no statement that runs a computation, draws under a "
             f"site name it computes, or scores a weight it accumulates. A "
-            f"pure computation whose body is a chain of bindings is inlined "
-            f"before the plan reaches this target, so `{callee}` is either "
-            f"effectful or recursive. Write its draws and scores as steps of "
-            f"the program, or transpile to a target with a host runtime."
+            f"pure computation is inlined only when this target can preserve "
+            f"its operations and control flow. In particular, eager branch "
+            f"selection requires both branches to have total operations; "
+            f"a guarded logarithm or division must remain lazy. This call "
+            f"cannot be safely inlined. Write supported draws and scores as "
+            f"program steps, or choose a target with a host runtime."
         )
     return f"{_cannot(backend, 'transpile this call')}: {tail}"
 

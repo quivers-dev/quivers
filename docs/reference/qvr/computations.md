@@ -279,7 +279,10 @@ Only the selected conditional branch executes. Thus `guarded_log(-1)`
 returns zero, while an active invalid probability such as
 `guarded_log(1.2)` raises. The compiler retains control flow when eager
 selection would evaluate an invalid inactive branch. Unsupported symbolic
-branching is refused explicitly, and a checked computation need not have
+branching is refused explicitly. A primitive's `total` contract certifies that
+every well-typed argument satisfies its domain. The compiler may use eager
+selection when both branches have this proof, including their local bindings;
+otherwise it preserves lazy branch evaluation. A checked computation need not have
 a tensor-fitting executor. The
 [primitive API](../../api/qiec/primitives.md#checked-probability-operations)
 states external target capabilities and endpoint limits.

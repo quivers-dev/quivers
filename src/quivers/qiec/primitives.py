@@ -52,12 +52,16 @@ class PrimitiveSignature(QiecModel):
         The result type.
     capability
         The feature a target must support to render the primitive.
+    total
+        Whether all well-typed arguments satisfy its domain. This proof
+        permits eager branch selection; unproved primitives default to false.
     """
 
     name: str
     parameters: tuple[TypeExpr, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     capability: PrimitiveCapability
+    total: bool = False
 
     @property
     def id(self) -> PrimitiveId:
@@ -506,6 +510,8 @@ def _signature(
     result: TypeExpr,
     capability: PrimitiveCapability,
     implementation: Callable[..., object],
+    *,
+    total: bool = False,
 ) -> tuple[PrimitiveSignature, Callable[..., object]]:
     """Pair a signature with its reference implementation.
 
@@ -521,6 +527,8 @@ def _signature(
         The feature tag.
     implementation : Callable[..., object]
         The reference implementation over host values.
+    total : bool
+        Whether the primitive has no additional argument-domain restriction.
 
     Returns
     -------
@@ -528,28 +536,44 @@ def _signature(
         The signature and implementation, ready for the tables below.
     """
     return PrimitiveSignature(
-        name=name, parameters=parameters, result=result, capability=capability
+        name=name,
+        parameters=parameters,
+        result=result,
+        capability=capability,
+        total=total or capability in {"comparison", "boolean", "string"},
     ), implementation
 
 
 _ENTRIES: tuple[tuple[PrimitiveSignature, Callable[..., object]], ...] = (
-    _signature("add_int", (INT, INT), INT, "arithmetic", lambda a, b: a + b),
-    _signature("sub_int", (INT, INT), INT, "arithmetic", lambda a, b: a - b),
-    _signature("mul_int", (INT, INT), INT, "arithmetic", lambda a, b: a * b),
+    _signature(
+        "add_int", (INT, INT), INT, "arithmetic", lambda a, b: a + b, total=True
+    ),
+    _signature(
+        "sub_int", (INT, INT), INT, "arithmetic", lambda a, b: a - b, total=True
+    ),
+    _signature(
+        "mul_int", (INT, INT), INT, "arithmetic", lambda a, b: a * b, total=True
+    ),
     _signature("div_int", (INT, INT), INT, "arithmetic", _truncating_division),
     _signature("mod_int", (INT, INT), INT, "arithmetic", _truncating_remainder),
-    _signature("neg_int", (INT,), INT, "arithmetic", lambda a: -a),
-    _signature("abs_int", (INT,), INT, "arithmetic", abs),
-    _signature("min_int", (INT, INT), INT, "arithmetic", min),
-    _signature("max_int", (INT, INT), INT, "arithmetic", max),
-    _signature("add_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a + b),
-    _signature("sub_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a - b),
-    _signature("mul_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a * b),
+    _signature("neg_int", (INT,), INT, "arithmetic", lambda a: -a, total=True),
+    _signature("abs_int", (INT,), INT, "arithmetic", abs, total=True),
+    _signature("min_int", (INT, INT), INT, "arithmetic", min, total=True),
+    _signature("max_int", (INT, INT), INT, "arithmetic", max, total=True),
+    _signature(
+        "add_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a + b, total=True
+    ),
+    _signature(
+        "sub_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a - b, total=True
+    ),
+    _signature(
+        "mul_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a * b, total=True
+    ),
     _signature("div_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a / b),
-    _signature("neg_real", (REAL,), REAL, "arithmetic", lambda a: -a),
-    _signature("abs_real", (REAL,), REAL, "arithmetic", abs),
-    _signature("min_real", (REAL, REAL), REAL, "arithmetic", min),
-    _signature("max_real", (REAL, REAL), REAL, "arithmetic", max),
+    _signature("neg_real", (REAL,), REAL, "arithmetic", lambda a: -a, total=True),
+    _signature("abs_real", (REAL,), REAL, "arithmetic", abs, total=True),
+    _signature("min_real", (REAL, REAL), REAL, "arithmetic", min, total=True),
+    _signature("max_real", (REAL, REAL), REAL, "arithmetic", max, total=True),
     _signature("pow_real", (REAL, REAL), REAL, "math", math.pow),
     _signature("exp", (REAL,), REAL, "math", math.exp),
     _signature("log", (REAL,), REAL, "math", math.log),

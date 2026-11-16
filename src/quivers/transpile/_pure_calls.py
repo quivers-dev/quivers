@@ -74,6 +74,8 @@ from quivers.qiec.terms import (
     WeightSum,
 )
 from quivers.qiec.types import (
+    INT,
+    REAL,
     IndexLiteral,
     IndexSum,
     IndexTerm,
@@ -958,6 +960,38 @@ def _bound_names(term: Computation | Value) -> set[str]:
     return found
 
 
+def _total_value(value: Value) -> bool:
+    """Prove eager evaluation safe using the closed primitive domain contracts.
+
+    Parameters
+    ----------
+    value : Value
+        Checked pure expression, including any sequential local bindings.
+
+    Returns
+    -------
+    bool
+        True only when every operation is certified total. Distribution
+        construction, queries, indexing and unproved operations remain lazy.
+    """
+    if isinstance(value, Var | LiteralValue):
+        return True
+    if isinstance(value, PrimitiveApplication):
+        return primitive(value.name).total and all(
+            _total_value(argument) for argument in value.arguments
+        )
+    if isinstance(value, LetValue):
+        return all(
+            _total_value(binding.value) for binding in value.bindings
+        ) and _total_value(value.body)
+    if isinstance(value, ConditionalValue):
+        return all(
+            _total_value(branch)
+            for branch in (value.condition, value.then, value.otherwise)
+        )
+    return False
+
+
 def _select(
     condition: Value,
     then: Value,
@@ -986,8 +1020,24 @@ def _select(
     Returns
     -------
     Value
-        A lazy conditional value at the common checked result type.
+        A total numeric select when both branches have a domain proof;
+        otherwise a lazy conditional at the common checked result type.
     """
+    if result_type in (REAL, INT) and _total_value(then) and _total_value(otherwise):
+        signature = primitive("select_real" if result_type == REAL else "select_int")
+        return PrimitiveApplication(
+            primitive=signature.id,
+            name=signature.name,
+            arguments=(condition, then, otherwise),
+            result_type=result_type,
+            origin=_first_origin(term)
+            or SourceOrigin(
+                module=owner,
+                structural_path=("if",),
+                role="primitive",
+                source_protocol="qiec-lowering",
+            ),
+        )
     return ConditionalValue(
         condition=condition, then=then, otherwise=otherwise, result_type=result_type
     )
