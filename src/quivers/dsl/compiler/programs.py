@@ -6802,7 +6802,9 @@ class _ProgramsMixin:
             )
         )
 
-    def _inline_sampleable_references(self, family, arguments, bound_names):
+    def _inline_sampleable_references(
+        self, family, arguments, bound_names, *, references=None
+    ):
         """Expand fixed declared sampleables through canonical source resolution.
 
         Parameters
@@ -6814,6 +6816,9 @@ class _ProgramsMixin:
             Original structural draw arguments, retaining keyword order.
         bound_names : set[str]
             Lexical values that take precedence over module declarations.
+        references : dict or None
+            Optional destination for learned native kernels consuming the
+            original program input rather than a fixed initializer.
 
         Returns
         -------
@@ -6852,12 +6857,17 @@ class _ProgramsMixin:
                 lets=aliases,
                 family_registry=frozenset(FAMILIES),
                 target="native",
+                native_kernel=True,
             )
             declaration = morphisms.get(resolved.original_morphism_name)
             initializer = declaration.init_family if declaration is not None else None
             # Bare family declarations contain learned kernels, whose input
             # context is retained by the ordinary named-morphism path.
             if initializer is None or not initializer.args:
+                if references is not None:
+                    native = self._morphisms.get(resolved.original_morphism_name)
+                    if isinstance(native, ContinuousMorphism):
+                        references[value.text] = native
                 return value
             name = resolved.original_morphism_name
             if name in seen:
@@ -7012,6 +7022,7 @@ class _ProgramsMixin:
                     draw.line,
                     draw.col,
                 )
+            sampleable_references = {}
             draw = draw.with_(
                 args=self._inline_sampleable_references(
                     draw.morphism,
@@ -7022,6 +7033,7 @@ class _ProgramsMixin:
                         if self._parameter_space_stack
                         else set()
                     ),
+                    references=sampleable_references,
                 )
             )
             axes_override = self._axes_codomain(getattr(draw, "axes", None))
@@ -7075,6 +7087,7 @@ class _ProgramsMixin:
                     inline_codomain,
                     value_extents=value_extents,
                     variable_types=variable_types,
+                    sampleable_references=sampleable_references,
                 )
                 broadcast = self._broadcast_codomain(draw, morph, axes_override)
                 if broadcast is not None:
@@ -7084,6 +7097,7 @@ class _ProgramsMixin:
                         broadcast,
                         value_extents=value_extents,
                         variable_types=variable_types,
+                        sampleable_references=sampleable_references,
                     )
             except UnsizedParameterError as exc:
                 # An inline family the checked program cannot size is
@@ -7177,12 +7191,18 @@ class _ProgramsMixin:
         extents = list(
             dict.fromkeys(
                 int(w)
-                for (kind, w), rank in zip(
-                    spec,
-                    getattr(morph, "_param_event_ranks", (0,) * len(spec)),
-                    strict=True,
+                for position, ((kind, w), rank) in enumerate(
+                    zip(
+                        spec,
+                        getattr(morph, "_param_event_ranks", (0,) * len(spec)),
+                        strict=True,
+                    )
                 )
-                if rank == 0 and kind == "var" and w is not None and w > 1
+                if position not in getattr(morph, "_context_parameters", ())
+                and rank == 0
+                and kind == "var"
+                and w is not None
+                and w > 1
             )
         )
         if not extents:

@@ -811,6 +811,7 @@ def resolve_step_dist(
     lets: dict[str, Expr],
     family_registry: frozenset[str],
     target: str,
+    native_kernel: bool = False,
     _seen: tuple[str, ...] = (),
 ) -> ResolvedDist:
     """Resolve a sample / observe step's morphism slot to a
@@ -841,6 +842,11 @@ def resolve_step_dist(
         immediately with the step's own args.
     target
         Backend name (for error messages).
+    native_kernel : bool
+        Resolve the source identity of a kernel retained by the native runtime.
+        This permits declared parameter sources because the caller retains the
+        actual learned module; wire-only consumers must leave this false and
+        cannot reconstruct its law from the returned default arguments.
     _seen
         Internal: the chain of names visited during resolution. The
         resolver detects cycles (``let a = b; let b = a``) by
@@ -874,7 +880,7 @@ def resolve_step_dist(
     if morphism_name in morphisms:
         decl = morphisms[morphism_name]
         param_source = param_source_kind(decl, target=target)
-        if param_source is not None:
+        if param_source is not None and not native_kernel:
             raise StepResolutionError(
                 target,
                 [f"param-source:{param_source}"],
@@ -925,6 +931,7 @@ def resolve_step_dist(
                 family_registry=family_registry,
                 target=target,
                 chain=chain,
+                native_kernel=native_kernel,
             )
         if _role_of(decl) == "embed":
             raise StepResolutionError(target, [f"embed:{morphism_name}"])
@@ -940,6 +947,7 @@ def resolve_step_dist(
             family_registry=family_registry,
             target=target,
             chain=chain,
+            native_kernel=native_kernel,
         )
 
     raise StepResolutionError(
@@ -1201,6 +1209,7 @@ def _resolve_expr(
     family_registry: frozenset[str],
     target: str,
     chain: tuple[str, ...],
+    native_kernel: bool = False,
 ) -> ResolvedDist:
     """Unfold a let / morphism init expression. Pure aliases
     (``let a = b``) recurse into the aliased name; composite
@@ -1220,6 +1229,7 @@ def _resolve_expr(
             lets=lets,
             family_registry=family_registry,
             target=target,
+            native_kernel=native_kernel,
             _seen=chain,
         )
     expr_kind = str(getattr(expr, "kind", type(expr).__name__))

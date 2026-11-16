@@ -3148,7 +3148,21 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"here but as {self._render(existing.type)} elsewhere",
                     code="qiec-program",
                 )
-            if role == "observation":
+            if role in {"weight", "bias"}:
+                previous = next(
+                    (value for key, value in state.parameters if key == name), None
+                )
+                if previous not in {"data", role}:
+                    self._fail(
+                        node,
+                        f"learned parameter {name!r} conflicts with an existing {previous or 'step'} binding",
+                        code="qiec-program",
+                    )
+                state.parameters[:] = [
+                    (key, role if key == name else value)
+                    for key, value in state.parameters
+                ]
+            elif role == "observation":
                 state.parameters[:] = [
                     (key, "observation" if key == name else value)
                     for key, value in state.parameters
@@ -8540,9 +8554,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         lets=self._program_lets,
                         family_registry=frozenset(FAMILIES),
                         target="qvr-qiec",
+                        native_kernel=True,
                     )
                 except StepResolutionError as error:
-                    self._fail(node, error.detail, code="qiec-program")
+                    self._fail(
+                        node,
+                        error.detail,
+                        code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
+                    )
                 morphism = self._program_morphisms.get(resolved.original_morphism_name)
             if morphism is not None:
                 return self._morphism_distribution(morphism, name, scope, state, node)
@@ -9102,15 +9121,26 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         items: list[Value] = []
         for item in argument.items:
-            if not isinstance(item, DrawArgDist):
+            if isinstance(item, DrawArgDist):
+                lowered = self._nested_distribution(
+                    item, scope, state, node, positions=positions
+                )
+            elif isinstance(item, DrawArgName):
+                lowered = self._draw_argument(
+                    item,
+                    FAMILIES["Mixture"].parameter("component"),
+                    PlateShape(batch=tuple(axis for axis, _ in positions)),
+                    scope,
+                    state,
+                    node,
+                )
+            else:
                 self._fail(
                     node,
                     "every component of a mixture must be a distribution",
                     code="qiec-program",
                 )
-            items.append(
-                self._nested_distribution(item, scope, state, node, positions=positions)
-            )
+            items.append(lowered)
         context = scope.context()
         types = [self._value_type(item, context, node) for item in items]
         if any(item != types[0] for item in types):
@@ -9320,6 +9350,36 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         QiecDiagnosticError
             If the morphism has no distribution initializer.
         """
+        family = _bare_init_family(morphism)
+        if family is not None and self._conditional_map(morphism, family):
+            try:
+                origin = resolve_step_dist(
+                    name,
+                    None,
+                    morphisms=self._program_morphisms,
+                    lets=self._program_lets,
+                    family_registry=frozenset(FAMILIES),
+                    target="qvr-qiec",
+                    native_kernel=True,
+                )
+            except StepResolutionError as error:
+                self._fail(
+                    node,
+                    error.detail,
+                    code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
+                )
+            # A sampleable value retains exactly the ordinary named kernel's
+            # conditioning inputs and explicit parameter-map telescope.
+            step = SampleStep(
+                vars=("__sampleable_value",),
+                morphism=origin.original_morphism_name,
+                args=None,
+                line=getattr(node, "line", 0),
+                col=getattr(node, "col", 0),
+            )
+            return self._step_distribution(
+                step, scope, state, f"__sampleable_{origin.original_morphism_name}"
+            )
         try:
             resolved = resolve_step_dist(
                 name,
@@ -9330,7 +9390,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 target="qvr-qiec",
             )
         except StepResolutionError as error:
-            self._fail(node, error.detail, code="qiec-program")
+            self._fail(
+                node,
+                error.detail,
+                code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
+            )
         record = FAMILIES.get(resolved.family)
         if record is None:
             self._fail(

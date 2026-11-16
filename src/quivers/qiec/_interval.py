@@ -122,7 +122,7 @@ def _local_interval(base, lower, upper, variation, *, maximum=1e-4):
 
 
 def log_interval_mass(base, low, high, *, lower_closed=True, upper_closed=True):
-    """Integrate a raw scalar measure over an endpoint-aware interval.
+    """Integrate a raw measure over an interval or independent rectangle.
 
     Parameters
     ----------
@@ -153,6 +153,22 @@ def log_interval_mass(base, low, high, *, lower_closed=True, upper_closed=True):
     upper = math.inf if high is None else high
     if lower > upper or lower == upper and not (lower_closed and upper_closed):
         return -math.inf
+    from itertools import product
+    from quivers.qiec.distributions import RuntimeDistribution
+
+    if isinstance(base, RuntimeDistribution) and base.plated:
+        return sum(
+            log_interval_mass(
+                base.at(position),
+                low,
+                high,
+                lower_closed=lower_closed,
+                upper_closed=upper_closed,
+            )
+            for position in product(
+                *(range(extent) for extent in (*base.batch, *base.event))
+            )
+        )
     if lower == upper and math.isfinite(lower):
         from quivers.qiec._atoms import log_atom_mass
 
@@ -161,8 +177,8 @@ def log_interval_mass(base, low, high, *, lower_closed=True, upper_closed=True):
     arguments = getattr(base, "arguments", {})
     if family == "PointMass":
         atom = arguments["value"]
-        inside = (atom > lower or lower_closed and atom == lower) and (
-            atom < upper or upper_closed and atom == upper
+        inside = rf._within(
+            atom, low, high, lower_closed=lower_closed, upper_closed=upper_closed
         )
         return 0.0 if inside else -math.inf
     if family in {"Restrict", "Truncated"}:

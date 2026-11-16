@@ -69,6 +69,40 @@ by a likelihood and is an s-finite kernel. Staton shows that s-finite kernels ar
 composition and that it is associative [@staton2017commutative], so the composite is defined for
 every body.
 
+### Named distribution values {#named-distribution-values}
+
+A declared kernel can fill a sampleable argument in a measure constructor.
+Fixed initializers retain their authored parameter names and values. A learned
+kernel reads the original program input, as an ordinary draw from that kernel
+does; aliases preserve the same kernel and its parameters.
+
+```qvr
+object Input : Real 2
+object Output : Real 3
+morphism base : Input -> Output [param_source=linear] ~ Normal
+define alias = base
+program model : Input -> Output
+    sample value <- Restrict(base=alias, low=-1.0, high=1.0)
+    return value
+export model
+```
+
+Here `value` is a three-coordinate event at each two-coordinate conditioning
+input. Input batch axes remain batch axes when the kernel becomes a distribution
+value. The native constructor retains one conditioning block, shares the
+registered kernel parameters across references, and evaluates the kernel at the
+actual input. It introduces no probing samples or additional random sites.
+
+Checked reference execution uses the same parameter-map telescope as an ordinary
+named-kernel draw: this example requires `base_param_weight` and
+`base_param_bias` alongside the domain input. These values must be the actual
+kernel weights when comparing the reference and native executions. In the native
+`Model` interface, those parameters remain owned by the registered kernel and
+are excluded from external-data requirements. An optional typed declaration of
+a parameter-map input checks its type while retaining that ownership; supplying
+it as external data is an error. A lexical binding takes precedence over a
+module-level name, and cyclic aliases receive a source-located diagnostic.
+
 ## 2. Steps
 
 ### 2.1 Draws {#21-bind}

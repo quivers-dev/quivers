@@ -4170,7 +4170,7 @@ def _optional_bound(a: Mapping[str, object], name: str, family: str) -> float | 
 
 
 def _within(
-    point: float,
+    point: object,
     low: float | None,
     high: float | None,
     *,
@@ -4181,8 +4181,9 @@ def _within(
 
     Parameters
     ----------
-    point : float
-        The point.
+    point : object
+        A scalar point or nested tuple of coordinates, all of which must
+        satisfy the same interval bounds.
     low : float | None
         The lower end, or ``None`` for none.
     high : float | None
@@ -4193,6 +4194,20 @@ def _within(
     bool
         True when the point is inside.
     """
+    if isinstance(point, tuple):
+        return all(
+            _within(
+                coordinate,
+                low,
+                high,
+                lower_closed=lower_closed,
+                upper_closed=upper_closed,
+            )
+            for coordinate in point
+        )
+    if not isinstance(point, bool):
+        finite_value(point, "Restrict")
+    assert isinstance(point, int | float)
     return (low is None or point > low or lower_closed and point == low) and (
         high is None or point < high or upper_closed and point == high
     )
@@ -4283,7 +4298,7 @@ def _restrict_sample(a: Mapping[str, object], rng: random.Random) -> object:
             "Restrict sampling requires finite positive interval mass"
         )
     for _ in range(100_000):
-        draw = finite_value(base.sample(rng), "Restrict base")  # type: ignore[attr-defined]
+        draw = base.sample(rng)  # type: ignore[attr-defined]
         if _within(
             draw,
             low,
@@ -4317,9 +4332,8 @@ def _restrict_density(a: Mapping[str, object], value: object) -> float:
     base = _sampleable(a, "base", "Restrict")
     low = _optional_bound(a, "low", "Restrict")
     high = _optional_bound(a, "high", "Restrict")
-    point = finite_value(value, "Restrict")
     if not _within(
-        point,
+        value,
         low,
         high,
         lower_closed=_closed(a, "lower_closed"),
@@ -4411,7 +4425,7 @@ def _pointmass_sample(a: Mapping[str, object], rng: random.Random) -> object:
         The point.
     """
     del rng
-    return real_parameter(a, "value", "PointMass")
+    return a["value"]
 
 
 def _pointmass_density(a: Mapping[str, object], value: object) -> float:
@@ -4430,9 +4444,7 @@ def _pointmass_density(a: Mapping[str, object], value: object) -> float:
         Zero at the point, ``-inf`` elsewhere: the Dirac measure's
         density against counting measure at its point.
     """
-    point = finite_value(value, "PointMass")
-    atom = real_parameter(a, "value", "PointMass")
-    return 0.0 if math.isclose(point, atom, rel_tol=1e-12, abs_tol=1e-12) else -math.inf
+    return 0.0 if value == a["value"] else -math.inf
 
 
 def _transformed_log_mass(a: Mapping[str, object]) -> float:

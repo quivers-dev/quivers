@@ -472,6 +472,7 @@ class MixedInlineDistribution(ContinuousMorphism):
                 f"{len(self._param_event_ranks)} disagrees with "
                 f"param_spec length {len(param_spec)}"
             )
+        self._context_parameters: frozenset[int] = frozenset()
         self._param_shapes: tuple[tuple[int, ...] | None, ...] = (
             param_shapes
             if param_shapes is not None
@@ -857,10 +858,13 @@ class MixedInlineDistribution(ContinuousMorphism):
         """
         widths = [
             int(t.shape[-1])
-            for t, (kind, _), rank in zip(
-                params, self._param_spec, self._param_event_ranks, strict=True
+            for position, (t, (kind, _), rank) in enumerate(
+                zip(params, self._param_spec, self._param_event_ranks, strict=True)
             )
-            if kind == "var" and rank < 1 and t.dim() >= 2
+            if position not in getattr(self, "_context_parameters", ())
+            and kind == "var"
+            and rank < 1
+            and t.dim() >= 2
         ]
         return max(widths, default=1)
 
@@ -2419,7 +2423,7 @@ def _dynamic_distribution_arguments(arguments):
 
 
 def _make_dynamic_operator_distribution(
-    family, args, codomain, variable_types, value_extents
+    family, args, codomain, variable_types, value_extents, sampleable_references=None
 ):
     """Compose runtime distribution values using the shared inline packing plan.
 
@@ -2435,6 +2439,9 @@ def _make_dynamic_operator_distribution(
         Native spaces of values read by nested constructors.
     value_extents : Mapping or None
         Checked extents, retaining event dimensions independently of batch axes.
+    sampleable_references : Mapping or None
+        Actual registered native kernels consuming the original program input.
+        All references share one packed context slot and retain parameter identity.
 
     Returns
     -------
@@ -2442,6 +2449,92 @@ def _make_dynamic_operator_distribution(
         One mixed morphism and its ordinary source-value arguments.
     """
     specs, ranks, shapes, integers, names = [], [], [], [], []
+    references = {} if sampleable_references is None else sampleable_references
+    context_position = None
+    context_domain = None
+    variable_types = {} if variable_types is None else dict(variable_types)
+
+    def reference_value(text):
+        """Retain one native kernel with a shared conditioning slot.
+
+        Parameters
+        ----------
+        text : str
+            Canonically resolved source reference.
+
+        Returns
+        -------
+        tuple
+            Runtime builder and metadata-only support prototype.
+        """
+        nonlocal context_position, context_domain
+        from quivers.effects.program_module import INPUT_NAME
+
+        reference = references[text]
+        if context_position is None:
+            context_position = len(specs)
+            context_domain = reference.domain
+            width = int(getattr(context_domain, "dim", 1))
+            specs.append(("var", width))
+            # The context is a row of conditioning features, not a shared
+            # tensor-valued distribution parameter. The existing per-row
+            # feature packing contract preserves all input batch rows.
+            ranks.append(0)
+            shapes.append(None)
+            integers.append(False)
+            names.append(INPUT_NAME)
+            variable_types[INPUT_NAME] = context_domain
+        elif reference.domain != context_domain:
+            raise ValueError(
+                "sampleable kernel references must consume the same original input domain"
+            )
+        position = context_position
+        support = reference.support
+        event_rank = support.event_dim
+        event = (
+            tuple(getattr(reference.codomain, "event_shape", ())) if event_rank else ()
+        )
+        if event_rank and not event:
+            if event_rank != 1:
+                raise ValueError(
+                    "a matrix-valued kernel reference requires explicit intrinsic event axes"
+                )
+            event = (reference.codomain.dim,)
+        if event_rank == 0 and isinstance(reference.codomain, ContinuousSpace):
+            event = tuple(reference.codomain.event_shape)
+            support = _constraints.independent(support, len(event))
+        prototype = _SupportOnlyDistribution(support, (), event)
+
+        def build(params):
+            """Construct the retained kernel law at its actual input.
+
+            Parameters
+            ----------
+            params : list[torch.Tensor]
+                Resolved inline features, including the conditioning block.
+
+            Returns
+            -------
+            torch.distributions.Distribution
+                Kernel value with input batch axes and output event axes.
+            """
+            context = params[position]
+            if context.ndim == 1:
+                context = context.unsqueeze(-1)
+            distribution = reference.sampling_distribution(context)
+            # Input batch axes are retained. Native independent output
+            # coordinates become the kernel value's event axes, exactly as
+            # ordinary named kernels reduce them when scoring one output.
+            output_rank = len(distribution.batch_shape) - (context.ndim - 1)
+            if output_rank < 0:
+                raise ValueError("a referenced kernel dropped an input batch axis")
+            return (
+                D.Independent(distribution, output_rank)
+                if output_rank
+                else distribution
+            )
+
+        return build, prototype
 
     def value(argument, owner, name, rank, integer):
         if isinstance(argument, DrawArgNamed):
@@ -2449,7 +2542,10 @@ def _make_dynamic_operator_distribution(
         if isinstance(argument, DrawArgDist):
             return node(argument.family, argument.args)
         if isinstance(argument, DrawArgList) and any(
-            isinstance(item, DrawArgDist) for item in argument.items
+            isinstance(item, DrawArgDist)
+            or isinstance(item, DrawArgName)
+            and item.text in references
+            for item in argument.items
         ):
             children = [
                 value(item, owner, name, rank, integer) for item in argument.items
@@ -2460,6 +2556,8 @@ def _make_dynamic_operator_distribution(
             )
         if isinstance(argument, DrawArgName | str):
             text = argument.text if isinstance(argument, DrawArgName) else argument
+            if text in references:
+                return reference_value(text)
             if text in {"true", "false"} or text in BIJECTORS_BY_NAME:
                 literal = _eval_draw_arg_value(argument, variable_types)
                 return (lambda params: literal), literal
@@ -2561,6 +2659,8 @@ def _make_dynamic_operator_distribution(
     build, prototype = node(family, args)
     support = prototype.support
     assert isinstance(support, _constraints.Constraint)
+    if references and prototype.event_shape and isinstance(codomain, Euclidean):
+        codomain = Euclidean(name=codomain.name, dim=math.prod(prototype.event_shape))
     widths = tuple(
         int(width) if width is not None else None
         for kind, width in specs
@@ -2578,6 +2678,11 @@ def _make_dynamic_operator_distribution(
         param_shapes=tuple(shapes),
         param_integers=tuple(integers),
     )
+    morph._context_parameters = frozenset(
+        () if context_position is None else (context_position,)
+    )
+    for i, reference in enumerate(dict.fromkeys(references.values())):
+        morph.add_module(f"_sampleable_reference_{i}", reference)
     return morph, tuple(names)
 
 
@@ -2865,6 +2970,8 @@ def make_inline_distribution(
     codomain: AnySpace,
     variable_types: dict[str, AnySpace] | None = None,
     value_extents: Mapping[str, tuple[int, ...]] | None = None,
+    *,
+    sampleable_references: Mapping[str, ContinuousMorphism] | None = None,
 ) -> tuple[ContinuousMorphism, tuple[StepArgument, ...] | None]:
     """Create an inline distribution from family name and mixed args.
 
@@ -2892,6 +2999,11 @@ def make_inline_distribution(
         gather ``mu[z]`` reads, per index, the value left after its
         gathered axes: one entry of a vector, or one row of a matrix.
 
+    sampleable_references : Mapping or None
+        Native kernel references in sampleable argument positions. Their
+        original input context is packed once, independently of scalar or
+        event-valued constructor parameters.
+
     Returns
     -------
     tuple of (ContinuousMorphism, tuple[str, ...] | None)
@@ -2904,9 +3016,11 @@ def make_inline_distribution(
         If a gather indexes more axes than its value's checked extents
         have.
     """
-    if family in _OPERATOR_FAMILIES and _dynamic_distribution_arguments(args):
+    if family in _OPERATOR_FAMILIES and (
+        sampleable_references or _dynamic_distribution_arguments(args)
+    ):
         return _make_dynamic_operator_distribution(
-            family, args, codomain, variable_types, value_extents
+            family, args, codomain, variable_types, value_extents, sampleable_references
         )
     args, selected_parameters = _bind_inline_arguments(family, args)
     if family in _OPERATOR_FAMILIES:
