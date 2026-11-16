@@ -1987,7 +1987,6 @@ class Independent(Measure):
         Optional Torch argument-validation policy."""
 
     arg_constraints: dict = {}
-    has_rsample = False
 
     def __init__(
         self,
@@ -2014,6 +2013,63 @@ class Independent(Measure):
             event_shape=self._inner.event_shape,
             validate_args=validate_args,
         )
+
+    @property
+    def has_rsample(self) -> bool:
+        """Whether the base law supports a pathwise sample.
+
+        Returns
+        -------
+        bool
+            The base law's declared sampling capability.
+        """
+        return self.base.has_rsample
+
+    @property
+    def mean(self) -> Tensor:
+        """Base means with the declared batch and event axes retained.
+
+        Returns
+        -------
+        Tensor
+            Coordinate means, when defined by the base law.
+        """
+        return self._inner.mean
+
+    @property
+    def variance(self) -> Tensor:
+        """Base marginal variances with every coordinate axis retained.
+
+        Returns
+        -------
+        Tensor
+            Marginal coordinate variances, when defined by the base law.
+        """
+        return self._inner.variance
+
+    def rsample(
+        self, sample_shape: torch.Size | tuple[int, ...] | list[int] = torch.Size()
+    ) -> Tensor:
+        """Draw pathwise samples only when the base law supports them.
+
+        Parameters
+        ----------
+        sample_shape : torch.Size or tuple of int or list of int
+            Additional leading independent sample axes.
+
+        Returns
+        -------
+        Tensor
+            Base pathwise draws with the same coordinate layout.
+
+        Raises
+        ------
+        NotImplementedError
+            If the base law has no pathwise sampler.
+        """
+        if not self.has_rsample:
+            raise NotImplementedError("Independent base law has no pathwise sampler")
+        return self._inner.rsample(sample_shape)
 
     @_constraints.dependent_property
     def support(self) -> _constraints.Constraint:

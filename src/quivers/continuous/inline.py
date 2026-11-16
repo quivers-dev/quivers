@@ -33,6 +33,7 @@ FamilySpec entry.
 from __future__ import annotations
 
 from typing import Literal
+from functools import partial
 from numbers import Integral, Real
 import math
 from collections.abc import Callable, Mapping
@@ -210,11 +211,33 @@ def _to_event_shape(value: torch.Tensor, dist: D.Distribution) -> torch.Tensor:
     return value
 
 
+def _fixed_coordinate_shape(codomain: AnySpace) -> tuple[int, ...]:
+    """Read literal scalar-parameter axes from the declared output carrier.
+
+    Parameters
+    ----------
+    codomain : AnySpace
+        Output carrier; continuous events retain their declared tensor axes.
+
+    Returns
+    -------
+    tuple[int, ...]
+        Independent coordinate axes for scalar literal parameters.
+    """
+    if isinstance(codomain, ContinuousSpace):
+        return codomain.event_shape
+    return (int(getattr(codomain, "dim", 1)),)
+
+
 class FixedDistribution(ContinuousMorphism):
     """A distribution with all parameters fixed at construction time.
 
     The ``rsample`` input is used only for batch size and device
     inference; the distribution parameters themselves are constants.
+    An explicit Euclidean ``intrinsic_shape`` retains tensor event axes.
+    The constructor owns its native event suffix; remaining scalar coordinate
+    axes use the shared independent-product measure. Scores retain every
+    leading sample and execution axis.
 
     Parameters
     ----------
@@ -283,7 +306,45 @@ class FixedDistribution(ContinuousMorphism):
         torch.distributions.Distribution
             The distribution, with a batch shape of the input's rows.
         """
-        return self._make_dist_fn(x.shape[0], x.device)
+        return self._fixed_distribution(x.shape[0], x.device)
+
+    def _fixed_distribution(self, batch: int, device: torch.device) -> D.Distribution:
+        """Apply explicit event ownership at the shared fixed-constructor boundary.
+
+        Parameters
+        ----------
+        batch : int
+            Number of native execution rows.
+        device : torch.device
+            Device on which literal parameters are constructed.
+
+        Returns
+        -------
+        torch.distributions.Distribution
+            Native law with declared coordinate axes reinterpreted as events.
+
+        Raises
+        ------
+        ValueError
+            If the constructor's intrinsic event disagrees with the carrier.
+        """
+        dist = self._make_dist_fn(batch, device)
+        codomain = self.codomain
+        if not isinstance(codomain, Euclidean) or codomain.intrinsic_shape is None:
+            return dist
+        shape = codomain.intrinsic_shape
+        native = tuple(dist.event_shape)
+        if len(native) > len(shape) or native and shape[-len(native) :] != native:
+            raise ValueError(
+                f"native event shape {native} does not match declared event shape {shape}"
+            )
+        coordinates = shape[: len(shape) - len(native)]
+        expected_batch = torch.Size((batch, *coordinates))
+        if dist.batch_shape != expected_batch:
+            dist = dist.expand(expected_batch)
+        if coordinates:
+            dist = _MeasureIndependent(dist, len(coordinates))
+        return dist
 
     def rsample(
         self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
@@ -303,7 +364,7 @@ class FixedDistribution(ContinuousMorphism):
             Samples from the distribution.
         """
         batch = x.shape[0]
-        dist = self._make_dist_fn(batch, x.device)
+        dist = self._get_dist(x)
         shape = torch.Size(sample_shape)
         if not dist.batch_shape and not dist.event_shape:
             # A closed-form operator measure (the `Restrict` a
@@ -337,7 +398,13 @@ class FixedDistribution(ContinuousMorphism):
         Returns
         -------
         torch.Tensor
-            Log-probabilities. Shape ``(batch,)``.
+            One log density per leading sample and run position for explicitly
+            shaped events; legacy carriers retain their native batch layout.
+
+        Raises
+        ------
+        ValueError
+            If an explicitly shaped query has incompatible event axes.
         """
         if self._discrete:
             floating = (
@@ -357,19 +424,30 @@ class FixedDistribution(ContinuousMorphism):
         # shared prior across the program's response count, or read an
         # event coordinate as a batch row.
         device = value.device if value.dim() >= 1 else x.device
-        dist = self._make_dist_fn(1, device)
+        dist = self._fixed_distribution(1, device)
         # A `Measure` (an operator-algebra sub-distribution such as
         # the `Restrict` a desugared half-family produces) carries its
         # residual mass symbolically in ``log_normalizer``; the
         # sample / observe boundary is where the algebra collapses it
         # to a probability density, so we score the renormalised
         # log-density here rather than the raw sub-measure value.
-        value = _to_event_shape(value, dist)
+        codomain = self.codomain
+        event = codomain.intrinsic_shape if isinstance(codomain, Euclidean) else None
+        explicit = event is not None
+        if event is not None:
+            if len(event) and (
+                value.ndim < len(event) or tuple(value.shape[-len(event) :]) != event
+            ):
+                raise ValueError(
+                    f"expected trailing event shape {event}, got {tuple(value.shape)}"
+                )
+        else:
+            value = _to_event_shape(value, dist)
         if isinstance(dist, _Measure):
             lp = dist.log_prob_normalized(value)
         else:
             lp = dist.log_prob(value)
-        if lp.dim() > 1:
+        if not explicit and lp.dim() > 1:
             return lp.sum(dim=-1)
         return lp
 
@@ -906,11 +984,11 @@ def make_fixed_logitnormal(
     FixedDistribution
         Distribution morphism sampling from LogitNormal(mu, sigma).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        mu_t = torch.full((batch, d), mu, device=device)
-        sigma_t = torch.full((batch, d), sigma, device=device)
+        mu_t = torch.full((batch, *coordinate_shape), mu, device=device)
+        sigma_t = torch.full((batch, *coordinate_shape), sigma, device=device)
         base = D.Normal(mu_t, sigma_t)
         return D.TransformedDistribution(base, [D.SigmoidTransform()])
 
@@ -936,11 +1014,11 @@ def make_fixed_uniform(
     FixedDistribution
         Distribution morphism sampling from Uniform(low, high).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        low_t = torch.full((batch, d), low, device=device)
-        high_t = torch.full((batch, d), high, device=device)
+        low_t = torch.full((batch, *coordinate_shape), low, device=device)
+        high_t = torch.full((batch, *coordinate_shape), high, device=device)
         return D.Uniform(low_t, high_t)
 
     return FixedDistribution(
@@ -967,11 +1045,11 @@ def make_fixed_normal(
     FixedDistribution
         Distribution morphism sampling from Normal(loc, scale).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        loc_t = torch.full((batch, d), loc, device=device)
-        scale_t = torch.full((batch, d), scale, device=device)
+        loc_t = torch.full((batch, *coordinate_shape), loc, device=device)
+        scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.Normal(loc_t, scale_t)
 
     return FixedDistribution(codomain, builder)
@@ -1021,11 +1099,11 @@ def make_fixed_beta(
     FixedDistribution
         Distribution morphism sampling from Beta(a, b).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        a = torch.full((batch, d), concentration1, device=device)
-        b = torch.full((batch, d), concentration0, device=device)
+        a = torch.full((batch, *coordinate_shape), concentration1, device=device)
+        b = torch.full((batch, *coordinate_shape), concentration0, device=device)
         return D.Beta(a, b)
 
     return FixedDistribution(codomain, builder, support=_constraints.unit_interval)
@@ -1063,11 +1141,11 @@ def make_fixed_logit_beta(
     """
     _require_positive("LogitBeta", concentration1=concentration1)
     _require_positive("LogitBeta", concentration0=concentration0)
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        a = torch.full((batch, d), concentration1, device=device)
-        b = torch.full((batch, d), concentration0, device=device)
+        a = torch.full((batch, *coordinate_shape), concentration1, device=device)
+        b = torch.full((batch, *coordinate_shape), concentration0, device=device)
         return LogitBeta(a, b)
 
     return FixedDistribution(codomain, builder, support=_constraints.real)
@@ -1105,11 +1183,11 @@ def make_fixed_log_gamma(
     """
     _require_positive("LogGamma", concentration=concentration)
     _require_positive("LogGamma", rate=rate)
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        conc_t = torch.full((batch, d), concentration, device=device)
-        rate_t = torch.full((batch, d), rate, device=device)
+        conc_t = torch.full((batch, *coordinate_shape), concentration, device=device)
+        rate_t = torch.full((batch, *coordinate_shape), rate, device=device)
         return LogGamma(conc_t, rate_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.real)
@@ -1150,10 +1228,10 @@ def make_fixed_exponential(rate: float, codomain: AnySpace) -> FixedDistribution
     FixedDistribution
         Distribution morphism sampling from Exponential(rate).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        rate_t = torch.full((batch, d), rate, device=device)
+        rate_t = torch.full((batch, *coordinate_shape), rate, device=device)
         return D.Exponential(rate_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.positive)
@@ -1174,10 +1252,10 @@ def make_fixed_halfcauchy(scale: float, codomain: AnySpace) -> FixedDistribution
     FixedDistribution
         Distribution morphism sampling from HalfCauchy(scale).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        scale_t = torch.full((batch, d), scale, device=device)
+        scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.HalfCauchy(scale_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.positive)
@@ -1198,10 +1276,10 @@ def make_fixed_halfnormal(scale: float, codomain: AnySpace) -> FixedDistribution
     FixedDistribution
         Distribution morphism sampling from HalfNormal(scale).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        scale_t = torch.full((batch, d), scale, device=device)
+        scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.HalfNormal(scale_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.positive)
@@ -1226,11 +1304,11 @@ def make_fixed_lognormal(
     FixedDistribution
         Distribution morphism sampling from LogNormal(loc, scale).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        loc_t = torch.full((batch, d), loc, device=device)
-        scale_t = torch.full((batch, d), scale, device=device)
+        loc_t = torch.full((batch, *coordinate_shape), loc, device=device)
+        scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.LogNormal(loc_t, scale_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.positive)
@@ -1255,11 +1333,11 @@ def make_fixed_gamma(
     FixedDistribution
         Distribution morphism sampling from Gamma(concentration, rate).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        conc_t = torch.full((batch, d), concentration, device=device)
-        rate_t = torch.full((batch, d), rate, device=device)
+        conc_t = torch.full((batch, *coordinate_shape), concentration, device=device)
+        rate_t = torch.full((batch, *coordinate_shape), rate, device=device)
         return D.Gamma(conc_t, rate_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.positive)
@@ -1327,11 +1405,11 @@ def make_fixed_truncated_normal(
     codomain: AnySpace,
 ) -> FixedDistribution:
     """Create a fixed truncated normal with literal parameters."""
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         params = [
-            torch.full((batch, d), value, device=device)
+            torch.full((batch, *coordinate_shape), value, device=device)
             for value in (mu, sigma, low, high)
         ]
         return _truncated_normal_builder(params)
@@ -1932,20 +2010,26 @@ def _inverse_wishart_builder(params: list[torch.Tensor]) -> D.Distribution:
     return InverseWishart(params[0], params[1])
 
 
-def _matrix_normal_builder(params: list[torch.Tensor]) -> D.Distribution:
+def _matrix_normal_builder(
+    params: list[torch.Tensor],
+    *,
+    names: tuple[str, ...] = ("loc", "row_covariance", "col_covariance"),
+) -> D.Distribution:
     """Build MatrixNormal from ``[loc, row_covariance, col_covariance]``.
 
     Parameters
     ----------
     params : list[torch.Tensor]
-        The mean matrix and the row and column covariances.
+        The mean matrix and the row and column covariances or factors.
+    names : tuple[str, ...]
+        The complete checked constructor parameterization.
 
     Returns
     -------
     torch.distributions.Distribution
         The matrix-normal distribution.
     """
-    return MatrixNormal(params[0], params[1], params[2])
+    return MatrixNormal(**dict(zip(names, params, strict=True)))
 
 
 def _categorical_logits_builder(params: list[torch.Tensor]) -> D.Distribution:
@@ -3218,19 +3302,23 @@ def make_inline_distribution(
         param_names = ("logits",)
         dist_builder = _categorical_logits_builder
     elif selected_parameters is not None and selected_parameters != param_names:
-        spec = FAMILY_REGISTRY[family]
+        spec = FAMILY_REGISTRY.get(family)
         source_parameters = selected_parameters
 
         def _selected_builder(
             params: list[torch.Tensor],
-            _spec: FamilySpec = spec,
+            _spec: FamilySpec | None = spec,
             _parameters: tuple[str, ...] = source_parameters,
+            _family: str = family,
         ) -> D.Distribution:
-            return _spec.dist_class(
-                **{
+            return _raw_distribution_value(
+                _family,
+                {
                     name: _selected_clamp(_spec, name, value)
+                    if _spec is not None
+                    else value
                     for name, value in zip(_parameters, params, strict=True)
-                }
+                },
             )
 
         param_names = selected_parameters
@@ -3393,7 +3481,7 @@ def _make_fixed_selected_parameters(
             _check_trial_count_source(
                 torch.as_tensor(value) if isinstance(value, (list, tuple)) else value
             )
-    d = int(getattr(codomain, "dim", 1))
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         values: dict[str, torch.Tensor] = {}
@@ -3404,7 +3492,7 @@ def _make_fixed_selected_parameters(
                 tensor = literal.expand(batch, *literal.shape)
             else:
                 tensor = torch.full(
-                    (batch, d),
+                    (batch, *coordinate_shape),
                     float(_literal_scalar(value, family)),
                     device=device,
                     dtype=dtype,
@@ -3433,7 +3521,14 @@ def _logit_geometric_builder(params: list[torch.Tensor]) -> D.Distribution:
 #: source names.
 _ALTERNATIVE_BUILDERS: dict[
     tuple[str, tuple[str, ...]], Callable[[list[torch.Tensor]], D.Distribution]
-] = {("Geometric", ("logits",)): _logit_geometric_builder}
+] = {
+    ("Geometric", ("logits",)): _logit_geometric_builder,
+    **{
+        ("MatrixNormal", names): partial(_matrix_normal_builder, names=names)
+        for names in family_parameterizations("MatrixNormal", ())
+        if names != ("loc", "row_covariance", "col_covariance")
+    },
+}
 
 
 def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.Tensor:
@@ -3570,8 +3665,8 @@ def _build_generic_fixed_factory(spec: FamilySpec) -> Callable:
     """Return a fixed-factory callable matching the
     ``make_fixed_X(literal_args..., codomain)`` calling convention.
 
-    The factory broadcasts each scalar literal to ``(batch, d)``
-    where ``d = getattr(codomain, "dim", 1)`` and clamps the value
+    The factory broadcasts each scalar literal over the declared output
+    coordinate axes after the native execution batch and clamps the value
     by the per-parameter inline clamp before passing it to the
     underlying torch distribution.  Discrete families have their
     output cast to ``long`` by `FixedDistribution`.
@@ -3589,7 +3684,7 @@ def _build_generic_fixed_factory(spec: FamilySpec) -> Callable:
                 f"got {len(all_args)} args"
             )
         *literal_args, codomain = all_args
-        d = getattr(codomain, "dim", 1)
+        coordinate_shape = _fixed_coordinate_shape(codomain)
         clamped_floats = []
         for param, val in zip(spec.params, literal_args):
             if param.kind == "integer":
@@ -3603,7 +3698,7 @@ def _build_generic_fixed_factory(spec: FamilySpec) -> Callable:
             kwargs = {}
             for param, val in zip(spec.params, clamped_floats):
                 kwargs[param.name] = torch.full(
-                    (batch, d),
+                    (batch, *coordinate_shape),
                     val,
                     device=device,
                     dtype=torch.float64

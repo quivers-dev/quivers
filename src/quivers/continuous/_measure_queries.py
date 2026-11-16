@@ -37,9 +37,12 @@ def log_mass(distribution: Distribution, *, batch_axes: int = 0) -> Tensor:
         or not 0 <= batch_axes <= len(distribution.batch_shape)
     ):
         raise ValueError("log_mass retained axes must be within the batch rank")
-    normalizer = getattr(distribution, "log_normalizer", None)
-    if callable(normalizer):
-        mass = torch.as_tensor(normalizer())
+    # A probability family's normalizing constant need not be its total
+    # mass. Only the measure algebra gives log_normalizer that meaning.
+    from quivers.continuous.measure import Measure
+
+    if isinstance(distribution, Measure):
+        mass = torch.as_tensor(distribution.log_normalizer())
     else:
         # Stored parameters preserve zero derivatives without forcing cached
         # transformations such as log(0) for categorical probability zeros.
