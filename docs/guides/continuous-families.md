@@ -571,7 +571,10 @@ capabilities must produce an explicit error.
 The native wrapper reads the base's scalar-coordinate distributions and
 computes deterministic interval masses. It uses log-CDF or log-survival
 methods where supplied, stable Normal tails, and incomplete-gamma
-calculations for Gamma and Poisson. Other scalar bases need a working
+calculations for Gamma and Poisson. Beta intervals use log-CDF and
+log-survival calculations from a shared continued-fraction recurrence;
+positive affine transforms delegate interval probabilities to their base.
+Other scalar bases need a working
 CDF; unsupported bases and coupled events raise explicit errors. An
 interval with zero or nonfinite computed probability is rejected.
 
@@ -601,8 +604,15 @@ converged float64 tail recurrences. Its lower-tail series, upper-tail
 continued fraction, and small-shape complement calculations have a
 512-iteration convergence limit; nonconvergence raises explicitly. This
 policy supplies no uniform accuracy or convergence guarantee across all
-parameter regimes. Derivative support remains a separate question for
-each other base family.
+parameter regimes. Beta tails support derivatives in both concentrations
+and the evaluation point through float64 recurrences with a 4096-iteration
+limit. Short interior intervals use a positive eight-node Gauss–Legendre
+rule when the density varies by less than the local integration threshold;
+this avoids subtracting tails that have rounded to the same value. The
+native and reference kernels share the rule's fixed constants. Beta
+interval tests cover first and second derivatives and compare concentrated
+and short intervals with independent high-precision integrals. Derivative
+support remains a separate question for each other base family.
 
 ## Event and batch axes {#event-rank-and-axis-role-syntax}
 

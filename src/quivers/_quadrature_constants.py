@@ -1,10 +1,32 @@
-"""Fixed Gauss–Legendre rules used by the skew-normal tail integrator.
+"""Fixed Gauss–Legendre rules shared by scalar and tensor probability kernels.
 
 Nodes and weights on [-1, 1], rounded to binary64. Keeping the numerical
 constants in the core package avoids importing optional NumPy to score a law.
 The rules integrate polynomials through degree 2*n - 1; regression tests check
 that property independently of the generator (NumPy ``leggauss``).
 """
+
+_NODES_8: tuple[float, ...] = (
+    -0.9602898564975363,
+    -0.7966664774136267,
+    -0.5255324099163290,
+    -0.1834346424956498,
+    0.1834346424956498,
+    0.5255324099163290,
+    0.7966664774136267,
+    0.9602898564975363,
+)
+
+_WEIGHTS_8: tuple[float, ...] = (
+    0.1012285362903763,
+    0.2223810344533745,
+    0.3137066458778873,
+    0.3626837833783620,
+    0.3626837833783620,
+    0.3137066458778873,
+    0.2223810344533745,
+    0.1012285362903763,
+)
 
 _NODES_32: tuple[float, ...] = (
     -0.9972638618494816,

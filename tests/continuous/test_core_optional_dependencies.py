@@ -7,10 +7,10 @@ import sys
 import pytest
 import torch
 
-from quivers.continuous import _quadrature_constants as rules
+from quivers import _quadrature_constants as rules
 
 
-@pytest.mark.parametrize("order", [32, 128])
+@pytest.mark.parametrize("order", [8, 32, 128])
 def test_fixed_quadrature_integrates_monomials(order):
     nodes = torch.tensor(getattr(rules, f"_NODES_{order}"), dtype=torch.float64)
     weights = torch.tensor(getattr(rules, f"_WEIGHTS_{order}"), dtype=torch.float64)

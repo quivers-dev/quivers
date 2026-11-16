@@ -6,10 +6,20 @@ import torch
 from collections.abc import Callable
 from typing import cast
 from torch import Tensor
-from torch.distributions import Distribution, Exponential, Gamma, Normal, Poisson
+from torch.distributions import (
+    AffineTransform,
+    Beta,
+    Distribution,
+    Exponential,
+    Gamma,
+    Normal,
+    Poisson,
+    TransformedDistribution,
+)
 
 from quivers.continuous._ordered import _log1mexp
 from quivers.continuous._truncated_normal import TruncatedNormal
+from quivers._quadrature_constants import _NODES_8, _WEIGHTS_8
 
 
 class _PoissonTails(torch.autograd.Function):
@@ -52,10 +62,9 @@ def _reference(base: Distribution) -> Tensor:
     for value in vars(base).values():
         if isinstance(value, Tensor) and value.is_floating_point():
             return value
-    for attribute in ("base", "base_dist"):
-        inner = getattr(base, attribute, None)
-        if isinstance(inner, Distribution):
-            return _reference(inner)
+    for value in vars(base).values():
+        if isinstance(value, Distribution):
+            return _reference(value)
     raise NotImplementedError(
         f"{type(base).__name__} does not expose a floating distribution parameter"
     )
@@ -69,6 +78,24 @@ def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
         return cast(Callable[[Tensor], Tensor], log_cdf)(value), cast(
             Callable[[Tensor], Tensor], log_sf
         )(value)
+    if isinstance(base, Normal):
+        standardized = (value.double() - base.loc.double()) / base.scale.double()
+        return torch.special.log_ndtr(standardized), torch.special.log_ndtr(
+            -standardized
+        )
+    if isinstance(base, Beta):
+        from quivers.continuous._beta_tails import log_beta_tails
+
+        return log_beta_tails(base.concentration1, base.concentration0, value)
+    if isinstance(base, TransformedDistribution) and all(
+        isinstance(transform, AffineTransform)
+        and bool((torch.as_tensor(transform.scale) > 0).all())
+        for transform in base.transforms
+    ):
+        inverse = value
+        for transform in reversed(base.transforms):
+            inverse = cast(Tensor, transform.inv(inverse))
+        return _log_tails(base.base_dist, inverse)
     if isinstance(base, Exponential):
         exponent = -base.rate * value.clamp_min(0)
         return _log1mexp(exponent), exponent
@@ -121,39 +148,36 @@ def _narrow_interval(
             / scale.square()
         )
         narrow = (width > 0) & (variation < 1e-4)
+    elif isinstance(base, Beta):
+        safe_lower = lower.clamp_min(torch.finfo(torch.float64).tiny)
+        safe_remaining = (1 - upper).clamp_min(torch.finfo(torch.float64).tiny)
+        variation = width * (
+            (base.concentration1.double() - 1).abs() / safe_lower
+            + (base.concentration0.double() - 1).abs() / safe_remaining
+        )
+        narrow = (lower > 0) & (upper < 1) & (width > 0) & (variation < 1e-4)
     else:
         return None
     if not bool(narrow.any()):
         return None
-    midpoint = torch.where(narrow, lower + width / 2, 1.0)
+    midpoint = torch.where(narrow, lower + width / 2, 0.5)
     half_width = torch.where(narrow, width / 2, 0.1)
-    nodes = midpoint.new_tensor(
-        [
-            -0.9602898564975363,
-            -0.7966664774136267,
-            -0.5255324099163290,
-            -0.1834346424956498,
-            0.1834346424956498,
-            0.5255324099163290,
-            0.7966664774136267,
-            0.9602898564975363,
-        ]
-    )
-    weights = midpoint.new_tensor(
-        [
-            0.1012285362903763,
-            0.2223810344533745,
-            0.3137066458778873,
-            0.3626837833783620,
-            0.3626837833783620,
-            0.3137066458778873,
-            0.2223810344533745,
-            0.1012285362903763,
-        ]
-    )
+    nodes = midpoint.new_tensor(_NODES_8)
+    weights = midpoint.new_tensor(_WEIGHTS_8)
     node_shape = (8,) + (1,) * midpoint.ndim
     points = midpoint.unsqueeze(0) + half_width.unsqueeze(0) * nodes.reshape(node_shape)
-    density = base.log_prob(points)
+    if isinstance(base, Beta):
+        from quivers.continuous._beta_tails import _log_front
+
+        density = (
+            _log_front(
+                base.concentration1.double(), base.concentration0.double(), points
+            )
+            - points.log()
+            - torch.log1p(-points)
+        )
+    else:
+        density = base.log_prob(points)
     result = half_width.log() + torch.logsumexp(
         density + weights.log().reshape(node_shape), dim=0
     )

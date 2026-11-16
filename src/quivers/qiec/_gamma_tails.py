@@ -2,6 +2,7 @@
 
 import math
 
+from quivers._quadrature_constants import _NODES_8, _WEIGHTS_8
 from quivers.qiec._count_mixtures import _stirling_error
 from quivers.qiec.reference_support import DistributionError
 
@@ -234,21 +235,14 @@ def _gamma_interval_log_mass(
             if relative_width <= 1e-4 and variation <= 0.01:
                 # Log-tail subtraction loses digits for short intervals. Eight
                 # positive Gauss nodes instead integrate the smooth local density.
-                nodes_weights = (
-                    (0.9602898564975363, 0.1012285362903763),
-                    (0.7966664774136267, 0.2223810344533745),
-                    (0.5255324099163290, 0.3137066458778873),
-                    (0.1834346424956498, 0.3626837833783620),
-                )
                 terms = []
-                for node, weight in nodes_weights:
-                    for sign in (-1, 1):
-                        point = (low + width * ((1 + sign * node) / 2)) * rate
-                        terms.append(
-                            math.log(weight / 2)
-                            + _log_kernel(shape, point)
-                            - math.log(point)
-                        )
+                for node, weight in zip(_NODES_8, _WEIGHTS_8, strict=True):
+                    point = (low + width * ((1 + node) / 2)) * rate
+                    terms.append(
+                        math.log(weight / 2)
+                        + _log_kernel(shape, point)
+                        - math.log(point)
+                    )
                 largest = max(terms)
                 return (
                     math.log(width)

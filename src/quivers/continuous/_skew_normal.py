@@ -10,7 +10,7 @@ from torch import Tensor
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
 
-from quivers.continuous._quadrature_constants import (
+from quivers._quadrature_constants import (
     _NODES_32,
     _WEIGHTS_32,
     _NODES_128,
