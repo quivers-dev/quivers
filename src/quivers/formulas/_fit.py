@@ -20,7 +20,7 @@ import numpy as np
 from quivers._count_capacity import _MAX_EXACT_COUNT
 from quivers.formulas._count_data import checked_integer_data
 from pathlib import Path
-from typing import Literal, Mapping, Sequence, Unpack
+from typing import Literal, Mapping, Sequence, Unpack, cast
 
 import didactic.api as dx
 from formulae.matrices import DesignMatrices
@@ -75,6 +75,7 @@ from quivers.inference.mcmc.driver import MCMCResult
 
 
 from quivers.diagnostics.posterior import PosteriorAnalysis
+from quivers.diagnostics.conditional import ConditionalEffects, PredictionGrid
 from quivers.diagnostics.contrast import ContrastExpression
 from quivers.diagnostics.hypothesis import HypothesisSummary
 
@@ -197,6 +198,83 @@ class BayesianFit(ValueModel):
         neither sampled nor modified. Seeded drivers restore the caller's RNG.
         """
         return sampler.run(self.program, torch.zeros(1, 1), dict(self.observations))
+
+    def conditional_effects(
+        self,
+        grid: PredictionGrid,
+        *,
+        method: Literal["epred", "linpred", "predict"] = "epred",
+        parameter: str = "mu",
+        transform: bool = False,
+        **options: Unpack[ExpectationOptions],
+    ) -> ConditionalEffects:
+        """Predict one joint grid and retain conditional or empirical effects.
+
+        Parameters
+        ----------
+        grid : PredictionGrid
+            Explicit effect coordinates and conditioning/reference rows,
+            constructed with `quivers.diagnostics.prediction_grid`.
+        method : {"epred", "linpred", "predict"}
+            Expected responses, linear predictors, or response replications.
+            Expectations average response laws, not sampled replications.
+        parameter : str
+            Predictor selected only for linpred; other methods require mu.
+        transform : bool
+            Apply the inverse link only for linpred.
+        **options : ExpectationOptions
+            Existing prediction keywords, including varying-effect selectors,
+            new-level policies, trial/neural inputs, draw budget, and seed.
+            The grid supplies new_data; mc_samples applies only to epred.
+
+        Returns
+        -------
+        ConditionalEffects
+            Joint chain/draw/point/condition/event predictions, with reference
+            rows averaged within each draw only for empirical grids. Retained
+            draws support paired contrasts, covariance, and common summaries.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If the method/options or grid are invalid, or the existing fitted
+            prediction contract rejects a predictor, group, or response law.
+        """
+        if "new_data" in options:
+            raise ValueError("conditional_effects takes new_data from its grid")
+        if method not in {"epred", "linpred", "predict"}:
+            raise ValueError("method must be epred, linpred, or predict")
+        if method != "linpred" and (parameter != "mu" or transform):
+            raise ValueError("parameter and transform apply only to linpred effects")
+        if method != "epred" and "mc_samples" in options:
+            raise ValueError("mc_samples applies only to epred effects")
+        request = options.copy()
+        request["new_data"] = grid.to_frame()
+        if method == "epred":
+            predictions = self.posterior_epred(**request)
+        else:
+            # The guard above excludes the sole expectation-only key.
+            prediction_options = cast(PredictionOptions, request)
+            if method == "linpred":
+                predictions = self.posterior_linpred(
+                    parameter=parameter,
+                    transform=transform,
+                    **prediction_options,
+                )
+            else:
+                predictions = self.posterior_predict(**prediction_options)
+        return grid.result(
+            predictions,
+            kind="mcmc"
+            if isinstance(self.posterior, MCMCResult)
+            else "prior"
+            if isinstance(self.posterior, PriorDraws)
+            else "variational",
+            method=method,
+            labels=self.predictor_labels(parameter)
+            if method == "linpred"
+            else self.category_labels,
+        )
 
     def prior_draws(
         self,

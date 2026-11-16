@@ -64,6 +64,12 @@ if TYPE_CHECKING:
         waic,
     )
     from quivers.diagnostics.regression import bayesian_r2
+    from quivers.diagnostics.conditional import (
+        GridValue,
+        PredictionGrid,
+        ConditionalEffects,
+        prediction_grid,
+    )
     from quivers.diagnostics.density import (
         PointNullAssumptions,
         DensityOrdinate,
@@ -96,6 +102,10 @@ if TYPE_CHECKING:
     )
 
 _LAZY_EXPORTS: dict[str, str] = {
+    "GridValue": "quivers.diagnostics.conditional",
+    "PredictionGrid": "quivers.diagnostics.conditional",
+    "ConditionalEffects": "quivers.diagnostics.conditional",
+    "prediction_grid": "quivers.diagnostics.conditional",
     "PointNullAssumptions": "quivers.diagnostics.density",
     "DensityOrdinate": "quivers.diagnostics.density",
     "DensityRatio": "quivers.diagnostics.density",
@@ -170,6 +180,10 @@ def __getattr__(name: str) -> _LazyExport:
 
 
 __all__ = [
+    "GridValue",
+    "PredictionGrid",
+    "ConditionalEffects",
+    "prediction_grid",
     "PointNullAssumptions",
     "DensityOrdinate",
     "DensityRatio",
