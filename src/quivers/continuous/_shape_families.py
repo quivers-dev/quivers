@@ -9,6 +9,8 @@ from torch import Tensor
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
 
+from quivers.continuous._ordinal import _log1mexp
+
 
 _EULER = 0.57721566490153286061
 _ZETA = (
@@ -116,25 +118,6 @@ def _gamma_variance_ratio(x: Tensor) -> Tensor:
     difference = torch.lgamma(1 - 2 * regular) - 2 * log_first
     result = (2 * log_first).exp() * torch.expm1(difference) / regular.square()
     return torch.where(small, series, result)
-
-
-def _log1mexp(x: Tensor) -> Tensor:
-    """Evaluate log(1-exp(x)) on nonpositive arguments.
-
-    Parameters
-    ----------
-    x : Tensor
-        Nonpositive log probabilities.
-
-    Returns
-    -------
-    Tensor
-        Stable log complements.
-    """
-    left = x < -math.log(2)
-    a = torch.where(left, x, torch.full_like(x, -1))
-    b = torch.where(left, torch.full_like(x, -1), x)
-    return torch.where(left, torch.log1p(-a.exp()), torch.log(-torch.expm1(b)))
 
 
 def _log1mexp_neg_exp(log_t: Tensor) -> Tensor:

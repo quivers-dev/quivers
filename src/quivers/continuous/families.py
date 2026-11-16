@@ -26,6 +26,8 @@ implemented as standalone classes.
 
 from __future__ import annotations
 
+from quivers._quadrature_constants import _NODES_16, _WEIGHTS_16
+
 import math
 from collections.abc import Callable, Sequence
 from typing import cast
@@ -3663,46 +3665,10 @@ def _gauss_legendre_16(
     table 25.4) are mapped to ``[0, 1]`` via ``t = (1 + xi) / 2`` with
     weights scaled by ``1/2``.
     """
-    nodes_pm1 = (
-        -0.9894009349916499,
-        -0.9445750230732326,
-        -0.8656312023878318,
-        -0.7554044083550030,
-        -0.6178762444026438,
-        -0.4580167776572274,
-        -0.2816035507792589,
-        -0.0950125098376374,
-        0.0950125098376374,
-        0.2816035507792589,
-        0.4580167776572274,
-        0.6178762444026438,
-        0.7554044083550030,
-        0.8656312023878318,
-        0.9445750230732326,
-        0.9894009349916499,
-    )
-    weights_pm1 = (
-        0.0271524594117541,
-        0.0622535239386479,
-        0.0951585116824928,
-        0.1246289712555339,
-        0.1495959888165767,
-        0.1691565193950025,
-        0.1826034150449236,
-        0.1894506104550685,
-        0.1894506104550685,
-        0.1826034150449236,
-        0.1691565193950025,
-        0.1495959888165767,
-        0.1246289712555339,
-        0.0951585116824928,
-        0.0622535239386479,
-        0.0271524594117541,
-    )
     nodes = torch.tensor(
-        [(1.0 + n) * 0.5 for n in nodes_pm1], device=device, dtype=dtype
+        [(1.0 + n) * 0.5 for n in _NODES_16], device=device, dtype=dtype
     )
-    weights = torch.tensor([w * 0.5 for w in weights_pm1], device=device, dtype=dtype)
+    weights = torch.tensor([w * 0.5 for w in _WEIGHTS_16], device=device, dtype=dtype)
     return nodes, weights
 
 

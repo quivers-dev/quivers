@@ -17,6 +17,8 @@ from torch import Tensor
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
 
+from quivers.continuous._ordinal import _log1mexp
+
 from quivers.continuous._zip_hurdle import _OpenUnitInterval
 from quivers.qiec._wiener import _draw
 
@@ -46,25 +48,6 @@ def _exprel(x: Tensor) -> Tensor:
         polynomial = 1 / math.factorial(power + 1) + z * polynomial
     regular = torch.where(small, -1.0, x)
     return torch.where(small, polynomial, regular.expm1() / regular)
-
-
-def _log1mexp(x: Tensor) -> Tensor:
-    """Log a strictly positive exponential complement with safe branches.
-
-    Parameters
-    ----------
-    x : Tensor
-        Strictly negative arguments.
-
-    Returns
-    -------
-    Tensor
-        log(1-exp(x)), without inactive-branch gradient singularities.
-    """
-    near = x > -math.log(2)
-    close = torch.where(near, x, -1.0)
-    far = torch.where(near, -1.0, x)
-    return torch.where(near, (-close.expm1()).log(), torch.log1p(-far.exp()))
 
 
 def _log_ratio(time: Tensor, distance: Tensor, opposite: Tensor) -> Tensor:

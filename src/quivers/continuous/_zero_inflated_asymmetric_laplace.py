@@ -146,8 +146,7 @@ class ZeroInflatedAsymmetricLaplace(Distribution):
             Log cumulative and strict survival probabilities.
         """
         base = self._component()
-        base_cdf = base.log_cdf(value)
-        base_sf = base.log_survival_function(value)
+        base_cdf, base_sf = base._log_tails(value)
         below = value < 0
         left_probability = torch.where(below, self.zero_prob, 0.0)
         right_probability = torch.where(~below, self.zero_prob, 0.0)
