@@ -3156,7 +3156,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"here but as {self._render(existing.type)} elsewhere",
                     code="qiec-program",
                 )
-            if role in {"weight", "bias"} and name not in self._program_latent_weight_names:
+            if (
+                role in {"weight", "bias"}
+                and name not in self._program_latent_weight_names
+            ):
                 previous = next(
                     (value for key, value in state.parameters if key == name), None
                 )
