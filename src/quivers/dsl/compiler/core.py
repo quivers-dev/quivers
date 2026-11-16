@@ -9,7 +9,7 @@ import torch.nn as nn
 from quivers.dsl.markov_chains import chain_cells
 from quivers.continuous.deterministic import LearnedFunction
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
-from quivers.continuous.morphisms import AnySpace
+from quivers.continuous.morphisms import AnySpace, ContinuousMorphism
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.checked_program import CheckedProgram
 from quivers.core.objects import SetObject
@@ -191,6 +191,11 @@ class Compiler(
         # The parameter spaces of the program being compiled, innermost
         # last: its host data and its lets, by name.
         self._parameter_space_stack: list[dict[str, AnySpace]] = []
+        # Nested latent kernels use the ordinary raw-network binding at
+        # each site; the scoped context is compile-time metadata only.
+        self._sampleable_context_stack: list[
+            dict[tuple[str, str], tuple[ContinuousMorphism, str]]
+        ] = []
         # The checked extents of the values the program being compiled
         # binds, innermost last, by name.
         self._value_extents_stack: list[dict[str, tuple[int, ...]]] = []

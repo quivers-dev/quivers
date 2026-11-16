@@ -2377,8 +2377,7 @@ def _make_dynamic_operator_distribution(
     """
     specs, ranks, shapes, integers, names = [], [], [], [], []
     references = {} if sampleable_references is None else sampleable_references
-    context_position = None
-    context_domain = None
+    context_positions = {}
     variable_types = {} if variable_types is None else dict(variable_types)
 
     def reference_value(text):
@@ -2394,13 +2393,11 @@ def _make_dynamic_operator_distribution(
         tuple
             Runtime builder and metadata-only support prototype.
         """
-        nonlocal context_position, context_domain
-        from quivers.effects.program_module import INPUT_NAME
-
-        reference = references[text]
-        if context_position is None:
-            context_position = len(specs)
+        reference, input_name = references[text]
+        if input_name not in context_positions:
+            position = len(specs)
             context_domain = reference.domain
+            context_positions[input_name] = (position, context_domain)
             width = int(getattr(context_domain, "dim", 1))
             specs.append(("var", width))
             # The context is a row of conditioning features, not a shared
@@ -2409,13 +2406,13 @@ def _make_dynamic_operator_distribution(
             ranks.append(0)
             shapes.append(None)
             integers.append(False)
-            names.append(INPUT_NAME)
-            variable_types[INPUT_NAME] = context_domain
-        elif reference.domain != context_domain:
+            names.append(input_name)
+            variable_types[input_name] = context_domain
+        elif reference.domain != context_positions[input_name][1]:
             raise ValueError(
-                "sampleable kernel references must consume the same original input domain"
+                "sampleable kernel references sharing an input must consume the same domain"
             )
-        position = context_position
+        position = context_positions[input_name][0]
         support = reference.support
         event_rank = support.event_dim
         event = (
@@ -2614,9 +2611,11 @@ def _make_dynamic_operator_distribution(
         param_integers=tuple(integers),
     )
     morph._context_parameters = frozenset(
-        () if context_position is None else (context_position,)
+        position for position, _ in context_positions.values()
     )
-    for i, reference in enumerate(dict.fromkeys(references.values())):
+    for i, reference in enumerate(
+        dict.fromkeys(value[0] for value in references.values())
+    ):
         morph.add_module(f"_sampleable_reference_{i}", reference)
     return morph, tuple(names) if names else None
 
@@ -2872,7 +2871,7 @@ def make_inline_distribution(
     variable_types: dict[str, AnySpace] | None = None,
     value_extents: Mapping[str, tuple[int, ...]] | None = None,
     *,
-    sampleable_references: Mapping[str, ContinuousMorphism] | None = None,
+    sampleable_references: Mapping[str, tuple[ContinuousMorphism, str]] | None = None,
 ) -> tuple[ContinuousMorphism, tuple[StepArgument, ...] | None]:
     """Create an inline distribution from family name and mixed args.
 

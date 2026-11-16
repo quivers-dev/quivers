@@ -1851,6 +1851,9 @@ class _ProgramsMixin:
     _program_templates: dict[str, ProgramDecl]
     _call_refusals: dict[str, CompileError]
     _parameter_space_stack: list[dict[str, AnySpace]]
+    _sampleable_context_stack: list[
+        dict[tuple[str, str], tuple[ContinuousMorphism, str]]
+    ]
     _value_extents_stack: list[dict[str, tuple[int, ...]]]
     _contractions: dict
     _transformations: dict
@@ -4231,7 +4234,14 @@ class _ProgramsMixin:
                 )
         decl, scan_effects = self._expand_cell_scans(decl)
         decl = decl.with_(draws=self._inline_pure_calls(decl.name, decl.draws))
-        decl = decl.with_(draws=self._latent_kernel_draws(decl.draws))
+        sampleable_contexts: dict[tuple[str, str], tuple[ContinuousMorphism, str]] = {}
+        decl = decl.with_(
+            draws=self._latent_kernel_draws(
+                decl.draws,
+                sampleable_contexts,
+                set(decl.params or ()) | {p.name for p in decl.value_parameters},
+            )
+        )
         if not step_program and _calls_a_computation(decl.draws):
             # A program calling a named computation runs as its checked
             # computation: the callee's body is a term of the module,
@@ -4281,6 +4291,7 @@ class _ProgramsMixin:
                         parameter.name, parameter_spaces.get(parameter.name)
                     )
         self._parameter_space_stack.append(parameter_spaces)
+        self._sampleable_context_stack.append(sampleable_contexts)
         self._value_extents_stack.append(self._checked_value_extents(decl.name))
         steps: list[Step] = []
         # A grouped latent is an enumeration axis, even when its extent
@@ -5679,6 +5690,7 @@ class _ProgramsMixin:
                     f"return variable {rv!r} not bound in program", decl.line, decl.col
                 )
         self._parameter_space_stack.pop()
+        self._sampleable_context_stack.pop()
         self._value_extents_stack.pop()
         prog = MonadicProgram(
             domain,
@@ -5728,7 +5740,10 @@ class _ProgramsMixin:
         return None
 
     def _latent_kernel_draws(
-        self, steps: tuple[ProgramStep, ...]
+        self,
+        steps: tuple[ProgramStep, ...],
+        contexts: dict[tuple[str, str], tuple[ContinuousMorphism, str]],
+        bound_names: set[str],
     ) -> tuple[ProgramStep, ...]:
         """Draw through each latent-weight kernel at its drawn weights.
 
@@ -5745,6 +5760,10 @@ class _ProgramsMixin:
         ----------
         steps : tuple[ProgramStep, ...]
             A program body, marginalization scopes included.
+        contexts : dict
+            Scoped sampleable reference bindings, populated once per site.
+        bound_names : set[str]
+            Lexical values taking precedence over module sampleables.
 
         Returns
         -------
@@ -5757,17 +5776,93 @@ class _ProgramsMixin:
             If a draw through a latent-weight kernel names no argument,
             or an argument that is not a binding.
         """
+        if not self._latent_networks:
+            return steps
         rewritten: list[ProgramStep] = []
+        latent_names = {
+            id(self._morphisms[name]): name for name in self._latent_networks
+        }
+        bound_names = set(bound_names)
+        occupied = (
+            set(bound_names)
+            | {name for step in steps for name in getattr(step, "vars", ())}
+            | {step.name for step in steps if isinstance(step, LetStep)}
+        )
         for step in steps:
             if isinstance(step, MarginalizeStep):
                 rewritten.append(
-                    step.with_(scope=self._latent_kernel_draws(step.scope))
+                    step.with_(
+                        scope=self._latent_kernel_draws(
+                            step.scope, contexts, bound_names | {step.var}
+                        )
+                    )
                 )
                 continue
             if not isinstance(step, SampleStep | ObserveStep):
                 rewritten.append(step)
+                if isinstance(step, LetStep):
+                    bound_names.add(step.name)
                 continue
-            network = self._latent_networks.get(step.morphism)
+            site = step.vars[0] if step.vars else "value"
+            references: dict[str, tuple[ContinuousMorphism, str]] = {}
+            self._inline_sampleable_references(
+                step.morphism, step.args or (), bound_names, references=references
+            )
+            raw_by_network: dict[tuple[str, tuple[str, ...]], str] = {}
+            source_line, source_col = step.line, step.col
+
+            def raw_network(name: str, inputs: tuple[str, ...]) -> str:
+                """Emit one ordinary network evaluation per distinct context.
+
+                Parameters
+                ----------
+                name : str
+                    Canonical latent kernel name.
+                inputs : tuple[str, ...]
+                    Actual conditioning bindings, in domain-factor order.
+
+                Returns
+                -------
+                str
+                    Fresh raw parameter binding, shared by repeated aliases.
+                """
+                key = (name, inputs)
+                if key not in raw_by_network:
+                    stem = f"{name}__raw_{site}"
+                    raw = stem
+                    suffix = 0
+                    while raw in occupied:
+                        suffix += 1
+                        raw = f"{stem}_{suffix}"
+                    occupied.add(raw)
+                    raw_by_network[key] = raw
+                    rewritten.append(
+                        LetStep(
+                            name=raw,
+                            value=LetExprCall(
+                                func=f"{name}__network",
+                                args=tuple(LetExprVar(name=value) for value in inputs),
+                            ),
+                            line=source_line,
+                            col=source_col,
+                        )
+                    )
+                return raw_by_network[key]
+
+            for alias, reference in references.items():
+                name = latent_names.get(id(reference[0]))
+                if name is not None:
+                    contexts[(site, alias)] = (
+                        self._morphisms[f"{name}__family"],
+                        raw_network(name, ("_x_input",)),
+                    )
+            bound_names.update(step.vars)
+            network_name = latent_names.get(id(self._morphisms.get(step.morphism)))
+            network = (
+                self._latent_networks.get(network_name)
+                if network_name is not None
+                else None
+            )
             if network is None:
                 rewritten.append(step)
                 continue
@@ -5784,22 +5879,11 @@ class _ProgramsMixin:
                     step.line,
                     step.col,
                 )
-            site = step.vars[0] if step.vars else "value"
-            raw = f"{step.morphism}__raw_{site}"
-            rewritten.append(
-                LetStep(
-                    name=raw,
-                    value=LetExprCall(
-                        func=f"{step.morphism}__network",
-                        args=tuple(LetExprVar(name=text) for text in names),
-                    ),
-                    line=step.line,
-                    col=step.col,
-                )
-            )
+            assert network_name is not None
+            raw = raw_network(network_name, tuple(names))
             rewritten.append(
                 step.with_(
-                    morphism=f"{step.morphism}__family",
+                    morphism=f"{network_name}__family",
                     args=(DrawArgName(text=raw),),
                 )
             )
@@ -6803,7 +6887,7 @@ class _ProgramsMixin:
         )
 
     def _inline_sampleable_references(
-        self, family, arguments, bound_names, *, references=None
+        self, family, arguments, bound_names, *, references=None, site=None
     ):
         """Expand fixed declared sampleables through canonical source resolution.
 
@@ -6819,6 +6903,8 @@ class _ProgramsMixin:
         references : dict or None
             Optional destination for learned native kernels consuming the
             original program input rather than a fixed initializer.
+        site : str or None
+            Current draw site, selecting its scoped latent-network context.
 
         Returns
         -------
@@ -6867,7 +6953,12 @@ class _ProgramsMixin:
                 if references is not None:
                     native = self._morphisms.get(resolved.original_morphism_name)
                     if isinstance(native, ContinuousMorphism):
-                        references[value.text] = native
+                        contexts = self._sampleable_context_stack
+                        references[value.text] = (
+                            contexts[-1].get((site, value.text), (native, "_x_input"))
+                            if contexts and site is not None
+                            else (native, "_x_input")
+                        )
                 return value
             name = resolved.original_morphism_name
             if name in seen:
@@ -7034,6 +7125,7 @@ class _ProgramsMixin:
                         else set()
                     ),
                     references=sampleable_references,
+                    site=draw.vars[0] if draw.vars else "value",
                 )
             )
             axes_override = self._axes_codomain(getattr(draw, "axes", None))

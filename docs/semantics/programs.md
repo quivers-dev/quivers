@@ -103,6 +103,29 @@ a parameter-map input checks its type while retaining that ownership; supplying
 it as external data is an error. A lexical binding takes precedence over a
 module-level name, and cyclic aliases receive a source-located diagnostic.
 
+A kernel declared with `[weights=latent]` instead reads the program's sampled
+network weights. Nested constructors and nominal aliases retain those same
+sites: repeated references draw each weight once per run and share its value.
+The compiler uses the ordinary latent-network evaluation before constructing
+the conditional family, so restrictions and normalization preserve gradients
+through every network head. These weights are latent variables, rather than
+required external inputs or unused point estimates.
+
+```qvr
+object Input : Real 2
+object Output : Real 1
+morphism base : Input -> Output [weights=latent, prior_scale=0.5] ~ Normal
+define alias = base
+program model : Input -> Output
+    sample value <- Restrict(base=alias, low=-1.0, high=1.0)
+    return value
+export model
+```
+
+Checked reference execution draws the same weight sites, or accepts their
+explicit values for a joint-density comparison. Each run has its own drawn
+weights; two aliases within that run do not introduce independent copies.
+
 ## 2. Steps
 
 ### 2.1 Draws {#21-bind}
