@@ -14,7 +14,7 @@ write it. What the evidence for a correct translation is, and how it is checked,
 
 $$
 \mathrm{Module}
-\xrightarrow{\ \mathsf{Lower} = \mathsf{Check} ; \mathsf{Plan}\ }
+\xrightarrow{\ \mathsf{Lower}_{\mathsf T} = \mathsf{Check} ; \mathsf{Plan}_{\mathsf T}\ }
 \mathrm{IRProgram}
 \xrightarrow{\ \mathsf{Render}_{\mathsf{T}}[\mathsf{AnalyzeQIEC}_{\mathsf{T}}]\ }
 \mathrm{panproto.Schema}
@@ -32,7 +32,9 @@ $$
   from the module's types, from `FAMILY_META`, and from `arg_constraints` of the PyTorch distribution
   class. The inputs of the plan are the parameters of the entry point. The result is one `IRProgram`,
   which also holds the whole checked module as a typed tree, `IRQiecModule`. A module with no program
-  lowers to its module and an empty plan. `Plan` does not depend on the target either.
+  lowers to its module and an empty plan. Planning also checks target-specific
+  representability, such as whether a target accepts per-row vector parameters;
+  these checks can refuse a plan before rendering.
 - **`Render[T]`** is one class for each target (`StanRenderer`, `NumPyroRenderer`, `PyMCRenderer`, and so
   on). It turns the plan into a [panproto](https://github.com/panproto/panproto) schema of the target's
   syntax tree, using the support predicates of §2.3 and the entries of `FAMILY_META`, and then renders
@@ -47,7 +49,9 @@ $$
 The compiler of the runtime checks the same module and attaches its `QiecModule` to the compiled
 `Program`, but transpilation does not use that object. `transpile()` classifies the source, and
 `Lower.forward()` elaborates and checks the syntax tree itself, so a direct call of `Lower` is checked
-the same way. The analysis of target features happens inside the renderer.
+the same way. Source typing is independent of the target. Planning checks the
+representability of structural statements and inputs; rendering checks the needed
+QIEC computations and the declaration forms available in the target.
 
 ## 2. The IR {#2-the-ir}
 
@@ -69,8 +73,10 @@ resumption grades. Tests parse the source emitted for every target and, where th
 installed, compare its requests and results with the [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for QIEC.
 
 Stan, BUGS, and JAGS accept a static subset, which the analysis checks: each computation has a closed,
-empty row and no static parameters, returns a scalar, and uses only scalar `Return` and `Bind`. Stan
-admits value parameters of types `Bool`, `Int`, and `Real`. BUGS and JAGS require computations without
+empty row and no static parameters, returns a scalar, and uses the scalar
+computation forms that the target's capability analysis accepts. Stan admits
+value parameters of types `Bool`, `Int`, and `Real`, including checked scalar
+conditionals. BUGS and JAGS require computations without
 parameters, since their models have no callable functions with parameters. Every other QIEC feature gets
 a capability diagnostic, and no renderer treats an executable term as metadata it may ignore.
 
@@ -127,11 +133,20 @@ def is_int_category(c: Constraint) -> bool: ...
 def is_int_count(c: Constraint) -> bool: ...
 ```
 
-A renderer decides how to declare a value only through these predicates, never by testing the class of a
-constraint or the name of a family, so a new kind of support needs one new predicate. A PyTorch
-constraint does not survive didactic's encoding and decoding, so the IR stores a structural copy,
-`ConstraintSpec`, with one variant for each kind the predicates tell apart. `from_constraint` builds it
-when lowering, and `.to_constraint()` rebuilds the PyTorch constraint when a renderer needs it.
+A renderer derives declarations from the structural support, its predicates,
+and its bounds. Family-specific spelling remains in the family registry.
+A PyTorch constraint does not survive didactic's encoding and decoding, so the
+IR stores a structural copy, `ConstraintSpec`. `from_constraint` builds this
+copy for distribution supports, and `.to_constraint()` reconstructs the PyTorch
+constraint when a renderer needs it.
+
+Pure bindings and retained computation calls instead obtain their scalar
+carrier directly from the checked binder type: `Bool` becomes `CSBoolean`,
+`Int` becomes `CSInteger`, and `Real` becomes `CSReal`. Tensor axes remain in
+`Plate`; inspecting the expression's syntax is unnecessary. A runtime `Nat`
+input retains its nonnegative boundary restriction as `CSNonnegativeInteger`,
+while integer arithmetic on that input has the unrestricted integer carrier.
+These records survive serialization and target planning.
 
 ### 2.4 `IRArg`: arguments as a typed tree {#24-irarg-typed-argument-tree}
 
@@ -143,7 +158,7 @@ class IRArg(dx.TaggedUnion, discriminator="kind"):
     ...
 
 class IRArgNumber(IRArg):
-    value: float
+    value: int | float
     kind: Literal["number"] = "number"
 
 class IRArgRef(IRArg):
@@ -242,6 +257,7 @@ class IRCall(IRNode):
     random_instance: str
     score_instance: str
     plate: Plate
+    constraint: ConstraintSpec
     kind: Literal["call"] = "call"
 
 class IRReturn(IRNode):
@@ -339,7 +355,9 @@ stage. `Lower`, in [`quivers.transpile.plan`](../api/transpile/plan.md), impleme
    caller: a local `z` of a program drawn as `theta` is the site `theta$z` on the reference machine and the
    [compiled runtime](../guides/dsl-overview.md#compilation-pipeline), and since no target admits `$` in a name, the plan spells it `theta__z`.
 
-`Lower` does not depend on the target and imports no renderer.
+`Lower` imports no renderer. Its source elaboration and checking use the same
+QIEC rules for every target; its planning phase receives the target to report
+unsupported structural representations before source emission.
 
 ## 5. `Renderer[T]`: from the IR to a schema {#5-renderert-ir-panprotoschema}
 
@@ -398,8 +416,19 @@ of the scope.
 | `is_int_category(c)` | () | () | `int<lower=0, upper=K-1> <name>;` |
 | `is_int_count(c)` | () | () | `int<lower=0> <name>;` |
 
-The other targets have tables of the same form, from a predicate, event axes, and batch axes to a
-declaration, and no row names a family.
+An unrestricted integer carrier, `CSInteger`, declares an `int` without a
+nonnegative bound. Deterministic integer and Boolean bindings require a separate
+placement decision: Stan forbids integer transformed parameters, so these
+bindings and their transitive deterministic dependents become model-local
+variables. Unrelated continuous bindings remain transformed parameters. Returning
+a model-local value replays its needed pure bindings in `generated quantities`,
+without adding a draw or density factor. Top-level data, parameter, and output
+sizes must remain data-only; a model-local size dependency receives an explicit
+declaration diagnostic. Local array sizes can use earlier model-local values.
+
+The other targets likewise combine support, event axes, and batch axes when
+choosing declarations. Distribution naming and reparameterization remain
+separate from this carrier and placement decision.
 
 ### 5.1 Kinds of target
 
