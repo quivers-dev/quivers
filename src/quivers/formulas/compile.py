@@ -73,7 +73,6 @@ import numpy as np
 import torch
 
 from quivers.dsl.ast_nodes import (
-    AxisSpec,
     ExportDecl,
     ExprIdent,
     LetExprBinOp,
@@ -92,7 +91,6 @@ from quivers.dsl.ast_nodes import (
     ObserveStep,
     OptionEntry,
     OptionName,
-    OptionList,
     ProgramDecl,
     ProgramStep,
     SampleStep,
@@ -2537,121 +2535,22 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         cell_index = "FormulaThresholdCell"
         self._append_finite_object(statements, cell_index, n_groups * n_shape)
 
-        mean_prior = self._prior_draw(
-            "cutpoint_log_spacing_mean",
-            "Normal(0.0, 1.0)",
-        )
-        scale_prior = self._prior_draw(
-            "cutpoint_log_spacing_scale",
-            "HalfNormal(0.5)",
-            lower=0.0 if "cutpoint_log_spacing_scale" in self._user_priors else None,
-        )
-        program_steps.extend(
-            (
-                mean_prior.with_(index=TypeName(name=shape_index)),
-                scale_prior.with_(index=TypeName(name=shape_index)),
-            )
-        )
-        flat_index = _add(
-            _mul(
-                _var("threshold_group"),
-                LetExprLiteral(value=float(n_shape), integral=True),
+        emit_group_block(
+            self,
+            plan_threshold_block(
+                group,
+                n_groups,
+                shape_index,
+                n_shape,
+                self._level_basis(group, formula.group_levels)
+                if group in self._group_covariances
+                else None,
+                cell_axis=cell_index,
+                parameterization=self._reparameterize,
             ),
-            _var("spacing"),
+            statements,
+            program_steps,
         )
-        if group in self._group_covariances:
-            physical = self._append_covariance_matrix(
-                plan_threshold_block(
-                    group,
-                    n_groups,
-                    shape_index,
-                    n_shape,
-                    self._level_basis(group, formula.group_levels),
-                    parameterization=self._reparameterize,
-                ),
-                statements,
-                program_steps,
-            )
-            program_steps.append(_let("cutpoint_log_spacing_matrix", _var(physical)))
-        else:
-            threshold_raw = (
-                "cutpoint_log_spacing_value"
-                if self._reparameterize == "centered"
-                else "cutpoint_log_spacing_noise"
-            )
-            if self._reparameterize == "centered":
-                for suffix in ("mean", "scale"):
-                    program_steps.append(
-                        _let(
-                            f"cutpoint_log_spacing_cell_{suffix}",
-                            _factor(
-                                (("threshold_cell", cell_index),),
-                                body=_index(
-                                    f"cutpoint_log_spacing_{suffix}",
-                                    LetExprBinOp(
-                                        op="%",
-                                        left=_var("threshold_cell"),
-                                        right=LetExprLiteral(
-                                            value=n_shape, integral=True
-                                        ),
-                                    ),
-                                ),
-                            ),
-                        )
-                    )
-                program_steps.append(
-                    _draw(
-                        threshold_raw,
-                        "Normal",
-                        (
-                            "cutpoint_log_spacing_cell_mean",
-                            "cutpoint_log_spacing_cell_scale",
-                        ),
-                        index=TypeName(name=cell_index),
-                    )
-                )
-            else:
-                program_steps.append(
-                    _draw(
-                        threshold_raw,
-                        "Normal",
-                        (0.0, 1.0),
-                        index=TypeName(name=cell_index),
-                    )
-                )
-            program_steps.append(
-                _let(
-                    "cutpoint_noise_matrix",
-                    _factor(
-                        (("threshold_group", qgroup), ("spacing", shape_index)),
-                        body=_index(threshold_raw, flat_index),
-                    ),
-                )
-            )
-            log_spacing = _add(
-                _index("cutpoint_log_spacing_mean", _var("spacing")),
-                _mul(
-                    _index("cutpoint_log_spacing_scale", _var("spacing")),
-                    _index(
-                        "cutpoint_noise_matrix",
-                        _var("threshold_group"),
-                        _var("spacing"),
-                    ),
-                ),
-            )
-            if self._reparameterize == "centered":
-                log_spacing = _index(
-                    "cutpoint_noise_matrix", _var("threshold_group"), _var("spacing")
-                )
-            program_steps.append(
-                _let(
-                    "cutpoint_log_spacing_matrix",
-                    _factor(
-                        (("threshold_group", qgroup), ("spacing", shape_index)),
-                        body=log_spacing,
-                    ),
-                )
-            )
         spacing_matrix: LetExprNode = _call("exp", _var("cutpoint_log_spacing_matrix"))
         if spec.thresholds == "equidistant":
             # The one gap must dominate all adjacent CS contrasts. A proper
@@ -3859,292 +3758,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 return law.level.basis
         return self._group_covariances[group].basis(levels[group])
 
-    def _append_covariance_matrix(
-        self,
-        law: GroupBlockLaw,
-        statements: list[Statement],
-        steps: list[ProgramStep],
-    ) -> str:
-        """Emit one Gaussian law in explicit level-support coordinates.
-
-        Parameters
-        ----------
-        law : GroupBlockLaw
-            Block with a known level covariance.
-        statements : list[Statement]
-            Module object declarations.
-        steps : list[ProgramStep]
-            Canonical Gaussian draw and deterministic matrix transformations.
-
-        Returns
-        -------
-        str
-            Physical coefficient matrix binding.
-
-        Raises
-        ------
-        ValueError
-            If the block has no known level covariance or coordinate axis.
-        """
-        basis, dimension = law.level.basis, law.coordinate_axis
-        if basis is None or dimension is None:
-            raise ValueError("a support-coordinate block needs a known covariance")
-        layout = law.layout
-        group = law.group
-        members = layout.members
-        correlation = layout.correlation_site
-        token = _qvr_name(law.identity)
-        stem = f"__formula_level_{token}"
-        support = f"FormulaGroupSupport_{_qvr_name(group)}"
-        basis_stem = f"__formula_level_basis_{_qvr_name(group)}"
-        raw = members[0].raw_site
-        self._emitted_groups.append(law)
-        qgroup = _qvr_name(group)
-        scale_cases, mean_cases = [], []
-        for member in members:
-            for component in range(member.width):
-                index = LetExprLiteral(value=component, integral=True)
-                assert member.scale_site is not None
-                scale = (
-                    _index(member.scale_site, index)
-                    if member.axis is not None
-                    else _var(member.scale_site)
-                )
-                mean = (
-                    (
-                        _index(member.mean_site, index)
-                        if member.axis is not None
-                        else _var(member.mean_site)
-                    )
-                    if member.mean_site is not None
-                    else LetExprLiteral(value=0.0)
-                )
-                scale_cases.append((member.offset + component, scale))
-                mean_cases.append((member.offset + component, mean))
-        scale_vector, mean_vector = stem + "_scales", stem + "_means"
-        steps.extend(
-            (
-                _let(
-                    scale_vector,
-                    _factor((("coefficient", dimension),), cases=tuple(scale_cases)),
-                ),
-                _let(
-                    mean_vector,
-                    _factor((("coefficient", dimension),), cases=tuple(mean_cases)),
-                ),
-            )
-        )
-        physical = stem + "_coefficients"
-        if not basis.rank:
-            steps.append(
-                _let(
-                    physical,
-                    _factor(
-                        (("level", qgroup), ("coefficient", dimension)),
-                        body=_index(mean_vector, _var("coefficient")),
-                    ),
-                )
-            )
-            return physical
-        self._append_finite_object(statements, support, basis.rank)
-        identity_value = _call(
-            "select",
-            LetExprBinOp(op="==", left=_var("matrix_row"), right=_var("matrix_column")),
-            LetExprLiteral(value=1.0),
-            LetExprLiteral(value=0.0),
-        )
-        zero, column_factor = stem + "_zero", stem + "_column_factor"
-        column_covariance = stem + "_column_covariance"
-        steps.append(
-            _let(
-                zero,
-                _factor(
-                    (("support", support), ("coefficient", dimension)),
-                    body=LetExprLiteral(value=0.0),
-                ),
-            )
-        )
-        steps.append(
-            _let(
-                column_factor,
-                _factor(
-                    (("matrix_row", dimension), ("matrix_column", dimension)),
-                    body=_mul(
-                        _index(scale_vector, _var("matrix_row")),
-                        _index(correlation, _var("matrix_row"), _var("matrix_column"))
-                        if correlation is not None
-                        else identity_value,
-                    ),
-                ),
-            )
-        )
-        row_factor = basis_stem + "_row_factor"
-        if self._reparameterize == "centered":
-            matrix_column_factor = column_factor
-            mapping = basis_stem + "_projection"
-        else:
-            matrix_column_factor = column_covariance
-            steps.append(
-                _let(
-                    matrix_column_factor,
-                    _factor(
-                        (("matrix_row", dimension), ("matrix_column", dimension)),
-                        body=identity_value,
-                    ),
-                )
-            )
-            mapping = basis_stem + "_factor"
-        assert raw is not None
-        draw = _draw(
-            raw,
-            "MatrixNormal",
-            (zero, row_factor, matrix_column_factor),
-            parameterization=("loc", "row_scale_tril", "col_scale_tril"),
-        )
-        steps.append(
-            draw.with_(
-                axes=AxisSpec(over=(support, dimension)),
-                options=(
-                    OptionEntry(
-                        key="over",
-                        value=OptionList(
-                            items=(
-                                OptionName(value=support),
-                                OptionName(value=dimension),
-                            )
-                        ),
-                    ),
-                ),
-            )
-        )
-        mapped = stem + "_mapped"
-        steps.append(_let(mapped, _call("matmul", _var(mapping), _var(raw))))
-        if self._reparameterize == "noncentered":
-            transpose = _factor(
-                (("matrix_row", dimension), ("matrix_column", dimension)),
-                body=_index(column_factor, _var("matrix_column"), _var("matrix_row")),
-            )
-            transformed = stem + "_transformed"
-            steps.append(_let(transformed, _call("matmul", _var(mapped), transpose)))
-            mapped = transformed
-        steps.append(
-            _let(
-                physical,
-                _factor(
-                    (("level", qgroup), ("coefficient", dimension)),
-                    body=_add(
-                        _index(mapped, _var("level"), _var("coefficient")),
-                        _index(mean_vector, _var("coefficient")),
-                    ),
-                ),
-            )
-        )
-        return physical
-
-    def _append_covariance_coefficients(
-        self,
-        law: GroupBlockLaw,
-        statements: list[Statement],
-        steps: list[ProgramStep],
-    ) -> dict[tuple[str, str, str], LetExprNode]:
-        """Reuse one covariance-aware Gaussian block for scalar and vector effects.
-
-        Parameters
-        ----------
-        law : GroupBlockLaw
-            Joint block with a known level covariance.
-        statements, steps : list
-            Existing module and program construction buffers.
-
-        Returns
-        -------
-        dict
-            Retained row-wise contributions in the ordinary predictor contract.
-
-        Raises
-        ------
-        ValueError
-            If the correlation prior is not an LKJ Cholesky distribution.
-        """
-        layout = law.layout
-        group, qgroup = law.group, _qvr_name(law.group)
-        dimension = law.coordinate_axis
-        assert dimension is not None
-        self._append_finite_object(statements, dimension, law.width)
-        for correlation in law.correlation.sites:
-            prior = self._prior_draw(
-                correlation, self._correlation_prior, index=TypeName(name=dimension)
-            )
-            if prior.morphism != "LKJCholesky":
-                raise ValueError("correlation priors must use LKJCholesky")
-            steps.append(prior)
-        for member in law.members:
-            steps.append(
-                self._prior_draw(
-                    member.scale.site,
-                    self._random_scale_prior,
-                    index=TypeName(name=member.axis)
-                    if member.axis is not None
-                    else None,
-                )
-            )
-        matrix = self._append_covariance_matrix(law, statements, steps)
-        result = {}
-        for member in layout.members:
-            component = (
-                _add(
-                    LetExprLiteral(value=member.offset, integral=True),
-                    _var("category_logit"),
-                )
-                if member.axis is not None
-                else LetExprLiteral(value=member.offset, integral=True)
-            )
-            binders = (("random_group", qgroup),)
-            if member.axis is not None:
-                binders = (("category_logit", member.axis), *binders)
-            steps.append(
-                _let(
-                    member.coefficient,
-                    _factor(
-                        binders, body=_index(matrix, _var("random_group"), component)
-                    ),
-                )
-            )
-            result[(member.prefix, group, member.slope)] = (
-                _index(
-                    member.coefficient, _var("category_logit"), _var(f"{qgroup}_idx")
-                )
-                if member.axis is not None
-                else _index(member.coefficient, _var(f"{qgroup}_idx"))
-            )
-        return result
-
-    def _emit_joint_block(
-        self,
-        law: GroupBlockLaw,
-        statements: list[Statement],
-        steps: list[ProgramStep],
-    ) -> dict[tuple[str, str, str], LetExprNode]:
-        """Emit one block ahead of the predictors that read it.
-
-        Parameters
-        ----------
-        law : GroupBlockLaw
-            Planned joint block.
-        statements : list[Statement]
-            Module objects receiving finite coordinate axes.
-        steps : list[ProgramStep]
-            Priors and deterministic transformations to append.
-
-        Returns
-        -------
-        dict[tuple[str, str, str], LetExprNode]
-            Each member's coefficient gathered at the response rows' levels.
-        """
-        if law.level.basis is not None:
-            return self._append_covariance_coefficients(law, statements, steps)
-        return emit_group_block(self, law, statements, steps)
-
     def _transition_axis(self, formula: Formula) -> tuple[str, int] | None:
         """Read the axis of category-specific group coefficients.
 
@@ -4227,7 +3840,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         result: dict[tuple[str, str, str], LetExprNode] = dict(supplied or {})
         for law in laws:
             if law.placement == "joint":
-                result.update(self._emit_joint_block(law, statements, steps))
+                result.update(emit_group_block(self, law, statements, steps))
         return result
 
     def _append_predictor(

@@ -18,6 +18,7 @@ from quivers.formulas._group_law import (
     CoefficientCorrelation,
     GroupBlockLaw,
     GroupLevelLaw,
+    GroupMean,
     GroupMemberLaw,
     GroupScale,
     IdentityCovariance,
@@ -25,6 +26,7 @@ from quivers.formulas._group_law import (
     KnownCovariance,
     LevelCovariance,
     LKJCorrelation,
+    MemberBinders,
     MembershipRows,
     PriorWeight,
     RowMap,
@@ -445,6 +447,9 @@ def plan_inline_block(
                     component_axis=axis[0] if axis is not None else None,
                 ),
                 rows=row_map(formula, term, prefix),
+                binders=MemberBinders(
+                    matrix=f"{raw}_matrix", cell_scale=f"{raw}_scale"
+                ),
                 cell_axis=cell_axis(prefix, group, term.slope)
                 if axis is not None
                 else None,
@@ -559,11 +564,12 @@ def plan_threshold_block(
     size: int,
     axis: str,
     width: int,
-    basis: GroupCovarianceBasis,
+    basis: GroupCovarianceBasis | None,
     *,
+    cell_axis: str,
     parameterization: Literal["centered", "noncentered"],
 ) -> GroupBlockLaw:
-    """Build the law of grouped threshold log spacings with a known covariance.
+    """Build the law of the grouped log spacings of ordinal thresholds.
 
     Parameters
     ----------
@@ -575,24 +581,36 @@ def plan_threshold_block(
         Axis over the free log-spacing coordinates.
     width : int
         Number of free log-spacing coordinates.
-    basis : GroupCovarianceBasis
-        Support basis of the known level covariance.
+    basis : GroupCovarianceBasis or None
+        Support basis of a known level covariance; None for independent
+        levels.
+    cell_axis : str
+        Flat axis over levels and spacing coordinates.
     parameterization : {"centered", "noncentered"}
         Coordinates of the raw site.
 
     Returns
     -------
     GroupBlockLaw
-        One member over the spacing axis with an affine mean.
+        One member over the spacing axis with an affine mean, bound by
+        level before spacing.
     """
     identity = f"thresholds_{_qvr_name(group)}"
+    if basis is not None:
+        raw = f"group_covariance_{identity}" if basis.rank else None
+    elif parameterization == "centered":
+        raw = "cutpoint_log_spacing_value"
+    else:
+        raw = "cutpoint_log_spacing_noise"
     return GroupBlockLaw(
         identity=identity,
         level=GroupLevelLaw(
             group=group,
             axis=_qvr_name(group),
             size=size,
-            covariance=KnownCovariance(basis=basis),
+            covariance=KnownCovariance(basis=basis)
+            if basis is not None
+            else IdentityCovariance(),
         ),
         members=(
             GroupMemberLaw(
@@ -602,12 +620,27 @@ def plan_threshold_block(
                 width=width,
                 offset=0,
                 coefficient="cutpoint_log_spacing_matrix",
-                raw_site=f"group_covariance_{identity}" if basis.rank else None,
+                raw_site=raw,
                 scale=GroupScale(
-                    site="cutpoint_log_spacing_scale", component_axis=axis
+                    site="cutpoint_log_spacing_scale",
+                    component_axis=axis,
+                    prior="HalfNormal(0.5)",
+                    lower=0.0,
                 ),
                 rows=SingleLevelRows(index=f"{_qvr_name(group)}_idx"),
-                mean_site="cutpoint_log_spacing_mean",
+                mean=GroupMean(
+                    site="cutpoint_log_spacing_mean", prior="Normal(0.0, 1.0)"
+                ),
+                binders=MemberBinders(
+                    level="threshold_group",
+                    component="spacing",
+                    cell="threshold_cell",
+                    matrix="cutpoint_noise_matrix",
+                    cell_scale="cutpoint_log_spacing_cell_scale",
+                    cell_mean="cutpoint_log_spacing_cell_mean",
+                    level_major=True,
+                ),
+                cell_axis=cell_axis if basis is None else None,
             ),
         ),
         correlation=IndependentCoordinates(),

@@ -251,11 +251,60 @@ class GroupScale(ValueModel):
         Axis over the ``by`` levels, when each has its own scale.
     component_axis : str or None
         Axis over the member's components, when each has its own scale.
+    prior : str or None
+        Default prior; None for the configured group-level scale prior.
+    lower : float or None
+        Lower bound imposed on an explicitly configured prior; None leaves
+        a configured prior as written.
     """
 
     site: str
     by_axis: str | None = None
     component_axis: str | None = None
+    prior: str | None = None
+    lower: float | None = None
+
+
+class GroupMean(ValueModel):
+    """The affine mean of one member over its components.
+
+    Parameters
+    ----------
+    site : str
+        Mean site.
+    prior : str
+        Default prior.
+    """
+
+    site: str
+    prior: str
+
+
+class MemberBinders(ValueModel):
+    """The private bindings one member's emission introduces.
+
+    Parameters
+    ----------
+    level, component, cell : str
+        Variables ranging over the grouping levels, the member's components,
+        and the flat level-by-component cells of its raw site.
+    matrix : str or None
+        Binding of a flat raw site read over levels and components.
+    cell_scale, cell_mean : str or None
+        Bindings of the scale and mean of each flat cell of a centered raw
+        site.
+    level_major : bool
+        Whether the coefficient binding is indexed by level before
+        component.
+    """
+
+    level: str = "random_group"
+    component: str = "category_logit"
+    cell: str = "random_cell"
+    matrix: str | None = None
+    cell_scale: str | None = None
+    cell_mean: str | None = None
+    level_major: bool = False
 
 
 class RowMap(dx.TaggedUnion, discriminator="kind"):
@@ -319,8 +368,10 @@ class GroupMemberLaw(ValueModel):
         Its standard deviation.
     rows : RowMap
         Its map to the response rows.
-    mean_site : str or None
+    mean : GroupMean or None
         Affine mean of the coefficient; None for a zero mean.
+    binders : MemberBinders
+        Private bindings of the member's emission.
     cell_axis : str or None
         Flat axis over the levels and components, level-major, indexing the
         raw site of a member with a component axis that owns its site.
@@ -335,8 +386,22 @@ class GroupMemberLaw(ValueModel):
     raw_site: str | None
     scale: GroupScale = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     rows: RowMap = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    mean_site: str | None = None
+    mean: GroupMean | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
+    binders: MemberBinders = dx.field(
+        default_factory=MemberBinders, opaque=True, extras=OPAQUE_BY_VALUE
+    )
     cell_axis: str | None = None
+
+    @property
+    def mean_site(self) -> str | None:
+        """Return the site of the member's affine mean.
+
+        Returns
+        -------
+        str or None
+            Mean site, or None for a zero mean.
+        """
+        return self.mean.site if self.mean is not None else None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -517,7 +582,16 @@ def renamed_law(
                 axis=_rename(objects, member.axis),
                 coefficient=names.get(member.coefficient, member.coefficient),
                 raw_site=_rename(names, member.raw_site),
-                mean_site=_rename(names, member.mean_site),
+                mean=None
+                if member.mean is None
+                else member.mean.with_(
+                    site=names.get(member.mean.site, member.mean.site)
+                ),
+                binders=member.binders.with_(
+                    matrix=_rename(names, member.binders.matrix),
+                    cell_scale=_rename(names, member.binders.cell_scale),
+                    cell_mean=_rename(names, member.binders.cell_mean),
+                ),
                 cell_axis=_rename(objects, member.cell_axis),
                 scale=member.scale.with_(
                     site=names.get(member.scale.site, member.scale.site),

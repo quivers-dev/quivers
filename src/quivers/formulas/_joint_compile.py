@@ -44,6 +44,7 @@ from quivers.formulas._autocor import autocor_binding
 from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
 from quivers.formulas._group_law import GroupBlockLaw, renamed_law
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._group_emission import emit_group_block
 from quivers.formulas._group_plan import plan_joint_block
 from quivers.formulas._grouping_emission import (
     all_group_options,
@@ -952,7 +953,8 @@ def _shared_groups(
                     for index in lens._family.response.coordinate_indices(names)
                 )
             predictors.append((parameter, actual_prefix, predictor))
-        values = emitter._emit_joint_block(
+        values = emit_group_block(
+            emitter,
             plan_joint_block(
                 group,
                 "joint_shared_" + identity,
