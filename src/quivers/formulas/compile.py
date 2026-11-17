@@ -66,6 +66,7 @@ from quivers._count_capacity import _MAX_EXACT_COUNT
 
 import math
 import re
+from collections.abc import Sequence
 from typing import Literal, Mapping
 
 import didactic.api as dx
@@ -140,9 +141,16 @@ from quivers.formulas._mixture import (
     expand_mixture,
     validate_mixture_options,
 )
-from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
-from quivers.formulas._group_law import GroupBlockLaw, plan_group_blocks
-from quivers.formulas._group_covariance import GroupCovariance
+from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._group_law import GroupBlockLaw
+from quivers.formulas._group_plan import (
+    plan_group_blocks,
+    plan_threshold_block,
+)
+from quivers.formulas._group_covariance import (
+    GroupCovariance,
+    GroupCovarianceBasis,
+)
 from quivers.formulas._ast import (
     _bind,
     _let,
@@ -1043,8 +1051,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._fixed_prior = fixed_prior
         self._random_scale_prior = random_scale_prior
         self._set_prior_configuration(user_priors)
-        self._group_layouts: list[GroupBlockLayout] = []
-        self._group_laws: tuple[GroupBlockLaw, ...] = ()
+        self._emitted_groups: list[GroupBlockLaw] = []
+        self._group_plan: dict[tuple[str, str, str], GroupBlockLaw] = {}
         conflicting = (
             self._distributional.keys() | expression_roots
         ) & self._named_prior_inputs.keys()
@@ -1166,18 +1174,18 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         tuple[GroupBlockLayout, ...]
             Immutable group blocks shared with retained prediction plans.
         """
-        return tuple(self._group_layouts)
+        return tuple(law.layout for law in self._emitted_groups)
 
     @property
     def group_laws(self) -> tuple[GroupBlockLaw, ...]:
-        """Return the planned law of each emitted group block.
+        """Return the law of each group block of the latest forward pass.
 
         Returns
         -------
         tuple[GroupBlockLaw, ...]
-            Joint blocks, then independent blocks in predictor order.
+            Laws in emission order.
         """
-        return self._group_laws
+        return tuple(self._emitted_groups)
 
     def _observe_argument(
         self, argument: str | float, scale: Mapping[str, LetExprNode]
@@ -1339,7 +1347,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 self._user_priors = dict(self._user_priors) | {
                     auxiliary.name: auxiliary.prior
                 }
-        self._group_layouts = []
+        self._emitted_groups = []
         known_groups = {
             group
             for _, _, predictor in self._predictor_items(formula)
@@ -1671,7 +1679,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             if not same:
                 self._user_priors = resolved
                 self._prior_steps = steps
-                self._group_layouts = []
+                self._emitted_groups = []
                 module = self._build_module(formula, supplied_groups=supplied_groups)
                 targets = self._catalogue_prior_targets(formula, module)
             special = {
@@ -1756,7 +1764,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             group_original_names={_qvr_name(g): g for g in formula.group_levels.keys()},
             group_levels=dict(formula.group_levels),
             group_indices=dict(formula.group_indices),
-            group_layouts=self.group_layouts,
+            group_laws=self.group_laws,
             prior_targets=self.prior_targets,
             random_terms=formula.random_terms,
             fixed_column_order=tuple(col.qvr_name for col in formula.fixed_columns),
@@ -1843,7 +1851,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             value,
             self._family,
             self._predictor_items(value),
-            self.group_layouts,
+            self.group_laws,
             nonlinear_names=()
             if self._predictor_graph is None
             else tuple(self._predictor_graph.leaves),
@@ -2621,23 +2629,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             _var("spacing"),
         )
         if group in self._group_covariances:
-            member = GroupMemberLayout(
-                prefix="thresholds_",
-                slope="log_spacing",
-                axis=shape_index,
-                width=n_shape,
-                offset=0,
-                coefficient="cutpoint_log_spacing_matrix",
-                raw_site=None,
-                scale_site="cutpoint_log_spacing_scale",
-                mean_site="cutpoint_log_spacing_mean",
-            )
-            physical, _ = self._append_covariance_matrix(
-                formula,
-                group,
-                f"thresholds_{_qvr_name(group)}",
-                (member,),
-                shape_index,
+            physical = self._append_covariance_matrix(
+                plan_threshold_block(
+                    group,
+                    shape_index,
+                    n_shape,
+                    self._level_basis(group, formula.group_levels),
+                    parameterization=self._reparameterize,
+                ),
                 statements,
                 program_steps,
             )
@@ -3708,25 +3707,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                         raw_site, "Normal", (0.0, 1.0), index=TypeName(name=cell_index)
                     )
                 )
-            self._group_layouts.append(
-                GroupBlockLayout(
-                    group=term.group,
-                    identity=f"independent_{prefix}{qgroup}_{qslope}",
-                    coordinate_axis=logit_index,
-                    parameterization=self._reparameterize,
-                    members=(
-                        GroupMemberLayout(
-                            prefix=prefix,
-                            slope=term.slope,
-                            axis=logit_index,
-                            width=n_logits,
-                            offset=0,
-                            coefficient=latent,
-                            raw_site=raw_site,
-                            scale_site=sigma_var,
-                        ),
-                    ),
-                )
+            self._emitted_groups.append(
+                self._group_plan[(prefix, term.group, term.slope)]
             )
 
         for term in formula.random_terms:
@@ -3922,66 +3904,69 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         _append_link(program_steps, parameter, _var(f"{prefix}eta"), link)
 
+    def _level_basis(
+        self, group: str, levels: Mapping[str, Sequence[str]]
+    ) -> GroupCovarianceBasis:
+        """Read the support basis of a grouping factor's known covariance.
+
+        Parameters
+        ----------
+        group : str
+            Grouping factor with a known level covariance.
+        levels : Mapping[str, Sequence[str]]
+            Labels of each grouping factor in level-axis order.
+
+        Returns
+        -------
+        GroupCovarianceBasis
+            The basis of an emitted block of the factor, or a new
+            factorization over its labels.
+        """
+        for law in self._emitted_groups:
+            if law.group == group and law.level.basis is not None:
+                return law.level.basis
+        return self._group_covariances[group].basis(levels[group])
+
     def _append_covariance_matrix(
         self,
-        formula: Formula,
-        group: str,
-        identity: str,
-        members: tuple[GroupMemberLayout, ...],
-        dimension: str,
+        law: GroupBlockLaw,
         statements: list[Statement],
         steps: list[ProgramStep],
-        *,
-        correlation: str | None = None,
-    ) -> tuple[str, GroupBlockLayout]:
+    ) -> str:
         """Emit one Gaussian law in explicit level-support coordinates.
 
         Parameters
         ----------
-        formula : Formula
-            Retained physical level labels.
-        group, identity, dimension : str
-            Group name, unique block identity and coefficient coordinate axis.
-        members : tuple[GroupMemberLayout, ...]
-            Scale, optional affine mean, and coefficient slices.
+        law : GroupBlockLaw
+            Block with a known level covariance.
         statements : list[Statement]
             Module object declarations.
         steps : list[ProgramStep]
             Canonical Gaussian draw and deterministic matrix transformations.
-        correlation : str or None
-            Existing learned coefficient Cholesky factor.
 
         Returns
         -------
-        tuple[str, GroupBlockLayout]
-            Physical coefficient matrix binding and retained raw-coordinate map.
+        str
+            Physical coefficient matrix binding.
+
+        Raises
+        ------
+        ValueError
+            If the block has no known level covariance or coordinate axis.
         """
-        basis = next(
-            (
-                layout.level_covariance
-                for layout in self._group_layouts
-                if layout.group == group and layout.level_covariance is not None
-            ),
-            None,
-        )
-        if basis is None:
-            basis = self._group_covariances[group].basis(formula.group_levels[group])
-        token = _qvr_name(identity)
+        basis, dimension = law.level.basis, law.coordinate_axis
+        if basis is None or dimension is None:
+            raise ValueError("a support-coordinate block needs a known covariance")
+        layout = law.layout
+        group = law.group
+        members = layout.members
+        correlation = layout.correlation_site
+        token = _qvr_name(law.identity)
         stem = f"__formula_level_{token}"
         support = f"FormulaGroupSupport_{_qvr_name(group)}"
         basis_stem = f"__formula_level_basis_{_qvr_name(group)}"
-        raw = f"group_covariance_{token}" if basis.rank else None
-        members = tuple(member.with_(raw_site=raw) for member in members)
-        layout = GroupBlockLayout(
-            group=group,
-            identity=identity,
-            coordinate_axis=dimension,
-            parameterization=self._reparameterize,
-            members=members,
-            correlation_site=correlation,
-            level_covariance=basis,
-        )
-        self._group_layouts.append(layout)
+        raw = members[0].raw_site
+        self._emitted_groups.append(law)
         qgroup = _qvr_name(group)
         scale_cases, mean_cases = [], []
         for member in members:
@@ -4028,7 +4013,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     ),
                 )
             )
-            return physical, layout
+            return physical
         self._append_finite_object(statements, support, basis.rank)
         identity_value = _call(
             "select",
@@ -4122,90 +4107,56 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 ),
             )
         )
-        return physical, layout
+        return physical
 
     def _append_covariance_coefficients(
         self,
-        formula: Formula,
-        group: str,
-        identity: str,
-        members: list[tuple[str, RandomTerm]],
-        axes: list[tuple[str, int] | None],
+        law: GroupBlockLaw,
         statements: list[Statement],
         steps: list[ProgramStep],
-        *,
-        correlate: bool,
     ) -> dict[tuple[str, str, str], LetExprNode]:
         """Reuse one covariance-aware Gaussian block for scalar and vector effects.
 
         Parameters
         ----------
-        formula : Formula
-            Predictor carrying physical grouping levels.
-        group, identity : str
-            Authored group and unique block identity.
-        members, axes : list
-            Ordered predictor terms and explicit component coordinates.
+        law : GroupBlockLaw
+            Joint block with a known level covariance.
         statements, steps : list
             Existing module and program construction buffers.
-        correlate : bool
-            Whether coefficient coordinates share the existing LKJ hierarchy.
 
         Returns
         -------
         dict
             Retained row-wise contributions in the ordinary predictor contract.
+
+        Raises
+        ------
+        ValueError
+            If the correlation prior is not an LKJ Cholesky distribution.
         """
-        token, qgroup = _qvr_name(identity), _qvr_name(group)
-        dimension = f"FormulaCorrelation_{token}"
-        widths = [axis[1] if axis is not None else 1 for axis in axes]
-        self._append_finite_object(statements, dimension, sum(widths))
-        correlation = f"cor_{token}" if correlate else None
-        if correlation is not None:
+        layout = law.layout
+        group, qgroup = law.group, _qvr_name(law.group)
+        dimension = law.coordinate_axis
+        assert dimension is not None
+        self._append_finite_object(statements, dimension, law.width)
+        for correlation in law.correlation.sites:
             prior = self._prior_draw(
                 correlation, self._correlation_prior, index=TypeName(name=dimension)
             )
             if prior.morphism != "LKJCholesky":
                 raise ValueError("correlation priors must use LKJCholesky")
             steps.append(prior)
-        layouts, offset = [], 0
-        for (prefix, term), width, axis in zip(members, widths, axes, strict=True):
-            sigma = f"{prefix}sigma_{qgroup}_{_qvr_name(term.slope)}"
+        for member in law.members:
             steps.append(
                 self._prior_draw(
-                    sigma,
+                    member.scale.site,
                     self._random_scale_prior,
-                    index=TypeName(name=axis[0]) if axis is not None else None,
+                    index=TypeName(name=member.axis)
+                    if member.axis is not None
+                    else None,
                 )
             )
-            latent = prefix + (
-                f"alpha_{qgroup}"
-                if term.slope == "Intercept"
-                else f"beta_{qgroup}_{_qvr_name(term.slope)}"
-            )
-            layouts.append(
-                GroupMemberLayout(
-                    prefix=prefix,
-                    slope=term.slope,
-                    axis=axis[0] if axis is not None else None,
-                    width=width,
-                    offset=offset,
-                    coefficient=latent,
-                    raw_site=None,
-                    scale_site=sigma,
-                )
-            )
-            offset += width
-        matrix, layout = self._append_covariance_matrix(
-            formula,
-            group,
-            identity,
-            tuple(layouts),
-            dimension,
-            statements,
-            steps,
-            correlation=correlation,
-        )
+        matrix = self._append_covariance_matrix(law, statements, steps)
         result = {}
         for member in layout.members:
             component = (
@@ -4249,7 +4200,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         coordinate_count: int | None = None,
         coordinate_axes: Mapping[str, tuple[str, int]] | None = None,
         member_axes: tuple[tuple[str, int] | None, ...] | None = None,
-        correlate: bool = True,
+        law: GroupBlockLaw | None = None,
     ) -> dict[tuple[str, str, str], LetExprNode]:
         """Correlate scalar and indexed coefficients in one block.
 
@@ -4271,8 +4222,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Exact per-member axes for a joint block spanning response graphs.
             This preserves distinct category axes even when predictors share
             a prefix or their cardinalities happen to coincide.
-        correlate : bool
-            Whether coefficient coordinates share the LKJ correlation law.
+        law : GroupBlockLaw or None
+            Planned law of the block; None for one scalar coordinate without
+            a known covariance, which is an independent coefficient.
         members : list[tuple[str, RandomTerm]]
             Prefix and term pairs in fitted block order.
         statements : list[Statement]
@@ -4328,19 +4280,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             raise ValueError("group member axes must align with every coefficient")
         widths = [axis[1] if axis is not None else 1 for axis in axes]
         dimension_size = sum(widths)
-        if dimension_size < 2 and group not in self._group_covariances:
+        if law is None:
             return {}
-        if group in self._group_covariances:
-            return self._append_covariance_coefficients(
-                formula,
-                group,
-                identity,
-                members,
-                axes,
-                statements,
-                steps,
-                correlate=correlate and dimension_size > 1,
-            )
+        if law.level.basis is not None:
+            return self._append_covariance_coefficients(law, statements, steps)
         qgroup = _qvr_name(group)
         correlation = f"cor_{_qvr_name(identity)}"
         dimension = f"FormulaCorrelation_{_qvr_name(identity)}"
@@ -4355,40 +4298,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError("correlation priors must use LKJCholesky")
             steps.append(prior_draw)
         joint_raw = f"group_coefficients_{_qvr_name(identity)}"
-        member_layouts = []
-        offset = 0
-        for (prefix, term), width, axis in zip(members, widths, axes, strict=True):
-            coefficient = prefix + (
-                f"alpha_{qgroup}"
-                if term.slope == "Intercept"
-                else f"beta_{qgroup}_{_qvr_name(term.slope)}"
-            )
-            member_layouts.append(
-                GroupMemberLayout(
-                    prefix=prefix,
-                    slope=term.slope,
-                    axis=axis[0] if axis is not None else None,
-                    width=width,
-                    offset=offset,
-                    coefficient=coefficient,
-                    raw_site=joint_raw
-                    if self._reparameterize == "centered"
-                    else f"{prefix}z_{qgroup}_{_qvr_name(term.slope)}",
-                    scale_site=f"{prefix}sigma_{qgroup}_{_qvr_name(term.slope)}",
-                )
-            )
-            offset += width
-        layout = GroupBlockLayout(
-            group=group,
-            identity=identity,
-            coordinate_axis=dimension,
-            parameterization=self._reparameterize,
-            members=tuple(member_layouts),
-            correlation_site=correlation
-            if option is None or not option.by_levels
-            else None,
-        )
-        self._group_layouts.append(layout)
+        layout = law.layout
+        self._emitted_groups.append(law)
         scales: list[str] = []
         innovation_cases: list[tuple[int, LetExprNode]] = []
         coordinate = 0
@@ -4655,7 +4566,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         # brms gr(by =, dist = "student"): by axes and Student-t mixing scales.
         append_group_options(self, self._predictor_items(formula), statements, steps)
-        self._group_laws = plan_group_blocks(
+        laws = plan_group_blocks(
             self._predictor_items(formula),
             levels=formula.group_levels,
             covariances=self._group_covariances,
@@ -4664,11 +4575,18 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             transition_axis=self._transition_axis(formula),
             supplied=supplied or {},
         )
+        self._group_plan = {
+            (member.prefix, law.group, member.slope): law
+            for law in laws
+            for member in law.members
+        }
         blocks = joint_group_blocks(
             self._predictor_items(formula), self._group_covariances, supplied or {}
         )
         result: dict[tuple[str, str, str], LetExprNode] = dict(supplied or {})
         for (group, identity), members in blocks.items():
+            prefix, term = members[0]
+            law = self._group_plan[(prefix, group, term.slope)]
             result.update(
                 self._append_indexed_correlations(
                     formula,
@@ -4678,9 +4596,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     statements,
                     steps,
                     coordinate_axes=coordinate_axes,
-                    correlate=any(
-                        term.correlation_id is not None for _, term in members
-                    ),
+                    law=law if law.placement == "joint" else None,
                 )
             )
         return result
@@ -4859,28 +4775,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 if weighted is not None:
                     program_steps.append(weighted)
                 per_level_expr = _index(latent_var, _var(idx_name))
-            self._group_layouts.append(
-                GroupBlockLayout(
-                    group=group,
-                    identity=f"independent_{prefix}{qgroup}_{qslope}",
-                    coordinate_axis=None,
-                    parameterization=self._reparameterize,
-                    members=(
-                        GroupMemberLayout(
-                            prefix=prefix,
-                            slope=slope,
-                            axis=None,
-                            width=1,
-                            offset=0,
-                            coefficient=latent_var,
-                            raw_site=latent_var
-                            if self._reparameterize == "centered"
-                            else f"{prefix}z_{qgroup}_{qslope}",
-                            scale_site=sigma_var,
-                        ),
-                    ),
-                )
-            )
+            self._emitted_groups.append(self._group_plan[(prefix, group, slope)])
             membership = membership_value(formula, term, prefix, per_level_expr)
             if membership is not None:
                 program_steps.append(_let(contrib_name, membership))
@@ -5723,7 +5618,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         if self._family.mixture is not None:
             emission = emit_mixture(self, formula, supplied_groups)
             self._mixture_targets = emission.prior_targets
-            self._group_layouts.extend(emission.group_layouts)
+            self._emitted_groups.extend(emission.group_laws)
             return emission.module
         formula = self._threshold_location_formula(formula)
         statements: list[Statement] = []

@@ -77,7 +77,7 @@ from quivers.dsl.program_templates import (
 )
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._ast import _add, _call, _factor, _index, _let, _var
-from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._group_law import GroupBlockLaw, renamed_law
 from quivers.formulas._prior_emission import build_prior_targets
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._response_modifiers import response_input_name
@@ -562,7 +562,7 @@ def validate_mixture_options(
 
 
 class MixtureEmission(ValueModel):
-    """One mixture program with its prior catalogue and group layouts.
+    """One mixture program with its prior catalogue and group-block laws.
 
     Parameters
     ----------
@@ -570,15 +570,15 @@ class MixtureEmission(ValueModel):
         The emitted QVR module.
     prior_targets : tuple[PriorTarget, ...]
         Every overrideable latent site with mixture parameter scopes.
-    group_layouts : tuple[GroupBlockLayout, ...]
-        Group coefficient layouts renamed into component namespaces.
+    group_laws : tuple[GroupBlockLaw, ...]
+        Group-block laws renamed into component namespaces.
     """
 
     module: Module = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     prior_targets: tuple[PriorTarget, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    group_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+    group_laws: tuple[GroupBlockLaw, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
@@ -714,8 +714,8 @@ class _SubEmission(ValueModel):
         Renamed runtime parameters.
     prior_targets : tuple[PriorTarget, ...]
         Renamed prior catalogue entries with mixture scopes.
-    group_layouts : tuple[GroupBlockLayout, ...]
-        Renamed group layouts.
+    group_laws : tuple[GroupBlockLaw, ...]
+        Renamed group-block laws.
     correlation_ids : frozenset[str]
         Group-level correlation identifiers used by the sub-emission.
     """
@@ -735,7 +735,7 @@ class _SubEmission(ValueModel):
     prior_targets: tuple[PriorTarget, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    group_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+    group_laws: tuple[GroupBlockLaw, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     correlation_ids: frozenset[str] = frozenset()
@@ -962,36 +962,11 @@ def _sub_emission(
         )
         for target in sub.prior_targets
     )
-    layouts = tuple(
-        layout.with_(
-            identity=namespace.prefix("") + layout.identity,
-            coordinate_axis=None
-            if layout.coordinate_axis is None
-            else objects.get(layout.coordinate_axis, layout.coordinate_axis),
-            correlation_site=None
-            if layout.correlation_site is None
-            else names.get(layout.correlation_site, layout.correlation_site),
-            members=tuple(
-                member.with_(
-                    prefix=namespace.prefix(member.prefix),
-                    axis=None
-                    if member.axis is None
-                    else objects.get(member.axis, member.axis),
-                    coefficient=names.get(member.coefficient, member.coefficient),
-                    raw_site=None
-                    if member.raw_site is None
-                    else names.get(member.raw_site, member.raw_site),
-                    scale_site=None
-                    if member.scale_site is None
-                    else names.get(member.scale_site, member.scale_site),
-                    mean_site=None
-                    if member.mean_site is None
-                    else names.get(member.mean_site, member.mean_site),
-                )
-                for member in layout.members
-            ),
+    laws = tuple(
+        renamed_law(
+            law, names, objects, namespace.prefix, namespace.prefix("") + law.identity
         )
-        for layout in sub.group_layouts
+        for law in sub.group_laws
     )
     correlation_ids = frozenset(
         term.correlation_id
@@ -1005,7 +980,7 @@ def _sub_emission(
         observation=observation,
         parameters=parameters,
         prior_targets=targets,
-        group_layouts=layouts,
+        group_laws=laws,
         correlation_ids=correlation_ids,
     )
 
@@ -1223,7 +1198,7 @@ def _shared_blocks(
     statements: list[Statement],
     steps: list[ProgramStep],
     targets: list[PriorTarget],
-    layouts: list[GroupBlockLayout],
+    laws: list[GroupBlockLaw],
     external: Mapping[tuple[str, str, str], LetExprNode],
 ) -> dict[tuple[str, str, str], LetExprNode]:
     """Emit one group block for each identifier shared by mixture parameters.
@@ -1244,8 +1219,8 @@ def _shared_blocks(
         Declarations and program steps receiving the blocks.
     targets : list[PriorTarget]
         Prior catalogue receiving the blocks' scale and correlation sites.
-    layouts : list[GroupBlockLayout]
-        Group layouts receiving the blocks.
+    laws : list[GroupBlockLaw]
+        Group-block laws receiving the blocks.
     external : Mapping
         Coefficients a joint multivariate program already supplies; their
         terms are not emitted again.
@@ -1272,7 +1247,7 @@ def _shared_blocks(
     if not cross:
         return {}
     helper = copy(lens)
-    helper._group_layouts = []
+    helper._emitted_groups = []
     helper._distributional = {
         name: predictor.with_(
             fixed_columns=(),
@@ -1297,7 +1272,7 @@ def _shared_blocks(
     block_steps: list[ProgramStep] = []
     supplied = helper._append_correlations(bare, statements, block_steps)
     steps.extend(block_steps)
-    layouts.extend(helper.group_layouts)
+    laws.extend(helper.group_laws)
     module = Module(
         statements=(
             *statements,
@@ -1319,7 +1294,7 @@ def _shared_blocks(
             bare,
             lens._family,
             helper._predictor_items(bare),
-            helper.group_layouts,
+            helper.group_laws,
             draw=lens._parse_prior,
         )
         if target.class_ in {"sd", "cor"}
@@ -1468,7 +1443,7 @@ def emit_mixture(
     Returns
     -------
     MixtureEmission
-        Module, prior catalogue and group layouts.
+        Module, prior catalogue and group-block laws.
 
     Raises
     ------
@@ -1516,7 +1491,7 @@ def emit_mixture(
     steps: list[ProgramStep] = []
     parameters: dict[str, QiecValueParameter] = {}
     targets: list[PriorTarget] = []
-    layouts: list[GroupBlockLayout] = []
+    laws: list[GroupBlockLaw] = []
     ordinal = spec.components[0].ordinal is not None
     # brms: an ordered ordinal mixture shares one threshold vector, ordered
     # when any component has ordered thresholds.
@@ -1547,12 +1522,10 @@ def emit_mixture(
         for parameter in emission.parameters:
             parameters.setdefault(parameter.name, parameter)
         targets.extend(emission.prior_targets)
-        layouts.extend(emission.group_layouts)
+        laws.extend(emission.group_laws)
 
     external = dict(supplied_groups or {})
-    supplied = _shared_blocks(
-        lens, formula, statements, steps, targets, layouts, external
-    )
+    supplied = _shared_blocks(lens, formula, statements, steps, targets, laws, external)
     supplied.update(external)
     shared = (
         shared
@@ -1878,7 +1851,7 @@ def emit_mixture(
     return MixtureEmission(
         module=Module(statements=tuple(statements)),
         prior_targets=tuple(targets),
-        group_layouts=tuple(layouts),
+        group_laws=tuple(laws),
     )
 
 

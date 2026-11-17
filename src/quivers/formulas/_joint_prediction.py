@@ -496,7 +496,7 @@ def prepare_joint_prediction(
                     }
                 )
             formula = specialize(formula)
-        lens._group_layouts = []
+        lens._emitted_groups = []
         components[name] = (lens, formula)
 
     def local(name: str, module: Module) -> Module:

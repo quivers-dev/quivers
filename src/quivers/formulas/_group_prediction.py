@@ -17,7 +17,6 @@ from quivers.formulas._group_covariance import (
     _tolerance,
 )
 from quivers.formulas._grouping import rewrite_grouping
-from quivers.formulas._grouping_emission import student_groups, student_sites
 from quivers.formulas._group_layout import (
     GroupBlockLayout,
     _covariance_coefficients,
@@ -291,9 +290,11 @@ def compact_groups(
                     f"fitted group term {term.slope!r} for {group!r} has no "
                     "compiled coordinate layout"
                 )
-        # brms gr(dist = "student"): each level also owns its mixing scale.
-        if student_groups(fit._predictor_items()) >= {group}:
-            sites[student_sites(group)[1]] = 1
+        # Each level of a Student-t factor also owns its mixing scale.
+        if fit.prediction_plan is not None:
+            for law in fit.prediction_plan.group_laws:
+                if law.group == group and law.level.mixing is not None:
+                    sites[law.level.mixing.mixing_site] = 1
         threshold_raw = next(
             (
                 name

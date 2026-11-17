@@ -18,38 +18,26 @@ With standard-normal innovations ``Z``,
 
     B = diag(dfm) . L_V Z . (diag(sd[by]) L_R[by])^T + mean.
 
-`plan_group_blocks` builds every block of a model from its predictors. The
-emitter, the coordinate layout read by prediction, and the per-factor
-structure read by postprocessing are all functions of the planned laws.
+The emitter, the coordinate layout read by prediction, the coefficient
+reconstruction, and the per-factor structure read by postprocessing are all
+functions of these laws.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Literal
 
 import didactic.api as dx
+import torch
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
-from quivers.formulas._group_covariance import GroupCovariance, GroupCovarianceBasis
+from quivers.formulas._group_covariance import GroupCovarianceBasis
 from quivers.formulas._group_layout import (
     GroupBlockLayout,
-    GroupLevelStructure,
     GroupMemberLayout,
+    _covariance_coefficients,
 )
-from quivers.formulas._grouping import GroupLevelOptions
-from quivers.formulas._grouping_emission import (
-    all_group_options,
-    by_axis,
-    by_correlation_sites,
-    by_input,
-    joint_group_blocks,
-    member_index,
-    member_input,
-    student_sites,
-    weight_input,
-)
-from quivers.formulas.formula import Formula, RandomTerm, _qvr_name
 
 __all__: list[str] = []
 
@@ -446,514 +434,261 @@ class GroupBlockLaw(ValueModel):
         )
 
 
-def coefficient_binding(prefix: str, group: str, slope: str) -> str:
-    """Name the binding of one coefficient over its grouping levels.
+def _rename(names: Mapping[str, str], value: str | None) -> str | None:
+    """Rename an optional name, keeping names outside the mapping.
 
     Parameters
     ----------
-    prefix : str
-        Predictor namespace.
-    group : str
-        Grouping-factor name.
-    slope : str
-        Coefficient label.
+    names : Mapping[str, str]
+        Local names and their replacements.
+    value : str or None
+        Optional local name.
 
     Returns
     -------
-    str
-        ``alpha_<group>`` for an intercept, ``beta_<group>_<slope>``
-        otherwise, within the predictor namespace.
+    str or None
+        The replacement, the name itself when it has none, or None.
     """
-    qgroup = _qvr_name(group)
-    if slope == "Intercept":
-        return f"{prefix}alpha_{qgroup}"
-    return f"{prefix}beta_{qgroup}_{_qvr_name(slope)}"
+    return None if value is None else names.get(value, value)
 
 
-def scale_site(prefix: str, group: str, slope: str) -> str:
-    """Name the standard-deviation site of one coefficient.
-
-    Parameters
-    ----------
-    prefix : str
-        Predictor namespace.
-    group : str
-        Grouping-factor name.
-    slope : str
-        Coefficient label.
-
-    Returns
-    -------
-    str
-        Sample-site name.
-    """
-    return f"{prefix}sigma_{_qvr_name(group)}_{_qvr_name(slope)}"
-
-
-def innovation_site(prefix: str, group: str, slope: str) -> str:
-    """Name the standard-normal innovation site of one coefficient.
-
-    Parameters
-    ----------
-    prefix : str
-        Predictor namespace.
-    group : str
-        Grouping-factor name.
-    slope : str
-        Coefficient label.
-
-    Returns
-    -------
-    str
-        Sample-site name.
-    """
-    return f"{prefix}z_{_qvr_name(group)}_{_qvr_name(slope)}"
-
-
-def row_map(formula: Formula, term: RandomTerm, prefix: str) -> RowMap:
-    """Build the map from one coefficient's levels to the response rows.
-
-    Parameters
-    ----------
-    formula : Formula
-        Predictor owning the coefficient.
-    term : RandomTerm
-        Group-level coefficient.
-    prefix : str
-        Predictor namespace.
-
-    Returns
-    -------
-    RowMap
-        A weighted sum over members for a multi-membership factor, the row's
-        one level and covariate otherwise.
-    """
-    index = f"{_qvr_name(term.group)}_idx"
-    membership = formula.grouping.membership(term.group)
-    if membership is not None:
-        return MembershipRows(
-            index=index,
-            indices=tuple(
-                member_index(term.group, member) for member in range(membership.size)
-            ),
-            covariates=tuple(
-                member_input(prefix, term.group, term.slope, member)
-                for member in range(membership.size)
-            ),
-        )
-    if term.slope == "Intercept":
-        return SingleLevelRows(index=index)
-    return SingleLevelRows(
-        index=index,
-        covariate=prefix
-        + (
-            f"random_{term.column.qvr_name}"
-            if term.column is not None
-            else _qvr_name(term.slope)
-        ),
-    )
-
-
-def _level_law(
-    group: str,
-    option: GroupLevelOptions | None,
-    covariance: LevelCovariance,
-) -> GroupLevelLaw:
-    """Build the level factors of a block from its ``gr()`` options.
-
-    Parameters
-    ----------
-    group : str
-        Grouping-factor name.
-    option : GroupLevelOptions or None
-        Level-coded options of the block.
-    covariance : LevelCovariance
-        Covariance between the levels.
-
-    Returns
-    -------
-    GroupLevelLaw
-        Level axis, covariance, and the declared ``by``, mixing, and prior
-        weight factors.
-
-    Raises
-    ------
-    ValueError
-        If the options partition the levels without naming a ``by`` variable.
-    """
-    by = mixing = weight = None
-    if option is not None and option.by_levels:
-        if option.options.by is None:
-            raise ValueError(f"gr({group}) has by levels without a by variable")
-        by = ByLevels(
-            variable=option.options.by,
-            levels=option.by_levels,
-            codes=option.by_codes,
-            axis=by_axis(group),
-            input=by_input(group),
-        )
-    if option is not None and option.options.student:
-        df, udf, dfm = student_sites(group)
-        mixing = StudentMixing(df_site=df, mixing_site=udf, multiplier=dfm)
-    if option is not None and option.prior_weights:
-        weight = PriorWeight(input=weight_input(group), weights=option.prior_weights)
-    return GroupLevelLaw(
-        group=group,
-        axis=_qvr_name(group),
-        covariance=covariance,
-        by=by,
-        mixing=mixing,
-        prior_weight=weight,
-    )
-
-
-def member_axis(
-    prefix: str,
-    term: RandomTerm,
-    component_axes: Mapping[str, tuple[str, int]],
-    transition_axis: tuple[str, int] | None,
-) -> tuple[str, int] | None:
-    """Read the component axis of one group-level coefficient.
-
-    Parameters
-    ----------
-    prefix : str
-        Predictor namespace.
-    term : RandomTerm
-        Group-level coefficient.
-    component_axes : Mapping[str, tuple[str, int]]
-        Axis and width of each predictor with one coefficient per component.
-    transition_axis : tuple[str, int] or None
-        Axis and width of category-specific coefficients.
-
-    Returns
-    -------
-    tuple[str, int] or None
-        Axis name and width, or None for a scalar coefficient.
-
-    Raises
-    ------
-    ValueError
-        If a category-specific coefficient has no transition axis.
-    """
-    axis = component_axes.get(prefix)
-    if axis is not None:
-        return axis
-    if term.column is not None and term.column.category_specific:
-        if transition_axis is None:
-            raise ValueError(
-                f"category-specific coefficient {term.slope!r} requires a "
-                "response with transitions"
-            )
-        return transition_axis
-    return None
-
-
-def plan_joint_block(
-    group: str,
+def renamed_law(
+    law: GroupBlockLaw,
+    names: Mapping[str, str],
+    objects: Mapping[str, str],
+    prefix: Callable[[str], str],
     identity: str,
-    members: Sequence[tuple[str, RandomTerm, Formula]],
-    axes: Sequence[tuple[str, int] | None],
-    *,
-    option: GroupLevelOptions | None,
-    basis: GroupCovarianceBasis | None,
-    correlate: bool,
-    parameterization: Literal["centered", "noncentered"],
 ) -> GroupBlockLaw:
-    """Build the law of one block emitted ahead of the predictors.
+    """Carry a law into another namespace of bindings and objects.
 
     Parameters
     ----------
-    group : str
-        Grouping-factor name.
+    law : GroupBlockLaw
+        Law in its local namespace.
+    names : Mapping[str, str]
+        Local sites, bindings and inputs and their replacements.
+    objects : Mapping[str, str]
+        Local axes and their replacements.
+    prefix : Callable[[str], str]
+        Map from a local predictor namespace to its replacement.
     identity : str
-        Block identity.
-    members : Sequence[tuple[str, RandomTerm, Formula]]
-        Predictor namespace, coefficient, and owning predictor of each
-        member, in coordinate order.
-    axes : Sequence[tuple[str, int] or None]
-        Component axis and width of each member.
-    option : GroupLevelOptions or None
-        Level-coded ``gr()`` options of the block.
-    basis : GroupCovarianceBasis or None
-        Support basis of a known level covariance.
-    correlate : bool
-        Whether the members share a correlation identifier.
-    parameterization : {"centered", "noncentered"}
-        Coordinates of the raw sites.
+        Block identity in the new namespace.
 
     Returns
     -------
     GroupBlockLaw
-        The planned joint law.
-
-    Raises
-    ------
-    ValueError
-        If the axes do not align with the members.
+        The same law with every identity, axis, site and input renamed.
     """
-    if len(axes) != len(members):
-        raise ValueError("group member axes must align with every coefficient")
-    token = _qvr_name(identity)
-    width = sum(axis[1] if axis is not None else 1 for axis in axes)
-    covariance: LevelCovariance = (
-        KnownCovariance(basis=basis) if basis is not None else IdentityCovariance()
-    )
-    level = _level_law(group, option, covariance)
-    correlation: CoefficientCorrelation
-    if basis is not None:
-        correlation = (
-            LKJCorrelation(site=f"cor_{token}")
-            if correlate and width > 1
-            else IndependentCoordinates()
+    level = law.level
+    by, mixing, weight = level.by, level.mixing, level.prior_weight
+    correlation = law.correlation
+    if isinstance(correlation, LKJCorrelation):
+        correlation = correlation.with_(
+            site=names.get(correlation.site, correlation.site)
         )
-        shared_raw = f"group_covariance_{token}" if basis.rank else None
-    else:
-        correlation = (
-            ByLKJCorrelation(by_sites=by_correlation_sites(identity, option))
-            if option is not None and level.by is not None
-            else LKJCorrelation(site=f"cor_{token}")
+    elif isinstance(correlation, ByLKJCorrelation):
+        correlation = correlation.with_(
+            by_sites=tuple(names.get(site, site) for site in correlation.by_sites)
         )
-        shared_raw = (
-            f"group_coefficients_{token}" if parameterization == "centered" else None
-        )
-    laws, offset = [], 0
-    for (prefix, term, formula), axis in zip(members, axes, strict=True):
-        raw = (
-            shared_raw
-            if basis is not None or parameterization == "centered"
-            else innovation_site(prefix, group, term.slope)
-        )
-        laws.append(
-            GroupMemberLaw(
-                prefix=prefix,
-                slope=term.slope,
-                axis=axis[0] if axis is not None else None,
-                width=axis[1] if axis is not None else 1,
-                offset=offset,
-                coefficient=coefficient_binding(prefix, group, term.slope),
-                raw_site=raw,
-                scale=GroupScale(
-                    site=scale_site(prefix, group, term.slope),
-                    by_axis=level.by.axis
-                    if level.by is not None and axis is None
-                    else None,
-                    component_axis=axis[0] if axis is not None else None,
+    members = []
+    for member in law.members:
+        rows = member.rows
+        if isinstance(rows, SingleLevelRows):
+            rows = rows.with_(
+                index=names.get(rows.index, rows.index),
+                covariate=_rename(names, rows.covariate),
+            )
+        elif isinstance(rows, MembershipRows):
+            rows = rows.with_(
+                index=names.get(rows.index, rows.index),
+                indices=tuple(names.get(name, name) for name in rows.indices),
+                covariates=tuple(names.get(name, name) for name in rows.covariates),
+            )
+        members.append(
+            member.with_(
+                prefix=prefix(member.prefix),
+                axis=_rename(objects, member.axis),
+                coefficient=names.get(member.coefficient, member.coefficient),
+                raw_site=_rename(names, member.raw_site),
+                mean_site=_rename(names, member.mean_site),
+                scale=member.scale.with_(
+                    site=names.get(member.scale.site, member.scale.site),
+                    by_axis=_rename(objects, member.scale.by_axis),
+                    component_axis=_rename(objects, member.scale.component_axis),
                 ),
-                rows=row_map(formula, term, prefix),
+                rows=rows,
             )
         )
-        offset += laws[-1].width
-    return GroupBlockLaw(
+    return law.with_(
         identity=identity,
-        level=level,
-        members=tuple(laws),
+        coordinate_axis=_rename(objects, law.coordinate_axis),
         correlation=correlation,
-        parameterization=parameterization,
-        placement="joint",
-        coordinate_axis=f"FormulaCorrelation_{token}",
-    )
-
-
-def plan_inline_block(
-    prefix: str,
-    term: RandomTerm,
-    formula: Formula,
-    axis: tuple[str, int] | None,
-    *,
-    parameterization: Literal["centered", "noncentered"],
-) -> GroupBlockLaw:
-    """Build the law of one independent coefficient emitted with its predictor.
-
-    Parameters
-    ----------
-    prefix : str
-        Predictor namespace.
-    term : RandomTerm
-        Group-level coefficient.
-    formula : Formula
-        Predictor owning the coefficient.
-    axis : tuple[str, int] or None
-        Component axis and width; None for a scalar coefficient.
-    parameterization : {"centered", "noncentered"}
-        Coordinates of the raw site.
-
-    Returns
-    -------
-    GroupBlockLaw
-        The planned one-member law.
-    """
-    group = term.group
-    coefficient = coefficient_binding(prefix, group, term.slope)
-    # A coefficient over a component axis reads none of the gr() options.
-    option = formula.grouping.option(group) if axis is None else None
-    level = _level_law(group, option, IdentityCovariance())
-    if parameterization == "noncentered":
-        raw = innovation_site(prefix, group, term.slope)
-    elif axis is None:
-        raw = coefficient
-    else:
-        raw = f"centered_{coefficient}"
-    return GroupBlockLaw(
-        identity=f"independent_{prefix}{_qvr_name(group)}_{_qvr_name(term.slope)}",
-        level=level,
-        members=(
-            GroupMemberLaw(
-                prefix=prefix,
-                slope=term.slope,
-                axis=axis[0] if axis is not None else None,
-                width=axis[1] if axis is not None else 1,
-                offset=0,
-                coefficient=coefficient,
-                raw_site=raw,
-                scale=GroupScale(
-                    site=scale_site(prefix, group, term.slope),
-                    by_axis=level.by.axis if level.by is not None else None,
-                    component_axis=axis[0] if axis is not None else None,
-                ),
-                rows=row_map(formula, term, prefix),
+        members=tuple(members),
+        level=level.with_(
+            axis=objects.get(level.axis, level.axis),
+            by=None
+            if by is None
+            else by.with_(
+                axis=objects.get(by.axis, by.axis), input=names.get(by.input, by.input)
             ),
+            mixing=None
+            if mixing is None
+            else mixing.with_(
+                df_site=names.get(mixing.df_site, mixing.df_site),
+                mixing_site=names.get(mixing.mixing_site, mixing.mixing_site),
+                multiplier=names.get(mixing.multiplier, mixing.multiplier),
+            ),
+            prior_weight=None
+            if weight is None
+            else weight.with_(input=names.get(weight.input, weight.input)),
         ),
-        correlation=IndependentCoordinates(),
-        parameterization=parameterization,
-        placement="inline",
-        coordinate_axis=axis[0] if axis is not None else None,
     )
 
 
-def plan_group_blocks(
-    predictors: Iterable[tuple[str, str, Formula]],
-    *,
-    levels: Mapping[str, Sequence[str]],
-    covariances: Mapping[str, GroupCovariance],
-    parameterization: Literal["centered", "noncentered"],
-    component_axes: Mapping[str, tuple[str, int]],
-    transition_axis: tuple[str, int] | None,
-    supplied: Collection[tuple[str, str, str]] = (),
-) -> tuple[GroupBlockLaw, ...]:
-    """Plan the law of every block of group-level coefficients of a model.
-
-    Terms sharing a correlation identifier, and every term of a factor with
-    a known level covariance, form joint blocks; a joint block of one scalar
-    coordinate without a known covariance is an independent coefficient. The
-    remaining terms are independent one-member blocks. Runs in time linear
-    in the number of group terms.
-
-    Parameters
-    ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Predicted parameters as (name, coefficient prefix, design).
-    levels : Mapping[str, Sequence[str]]
-        Labels of each grouping factor with a known covariance, in the
-        order of its level axis.
-    covariances : Mapping[str, GroupCovariance]
-        Known level covariance by grouping factor.
-    parameterization : {"centered", "noncentered"}
-        Coordinates of the raw sites.
-    component_axes : Mapping[str, tuple[str, int]]
-        Axis and width of each predictor with one coefficient per component.
-    transition_axis : tuple[str, int] or None
-        Axis and width of category-specific coefficients.
-    supplied : Collection[tuple[str, str, str]]
-        Members, as (prefix, group, slope), whose block another program
-        emits.
-
-    Returns
-    -------
-    tuple[GroupBlockLaw, ...]
-        Joint blocks in first-appearance order, then independent blocks in
-        predictor and term order.
-    """
-    predictors = tuple(predictors)
-    options = all_group_options(predictors)
-    owners = {
-        (prefix, term.group, term.slope): formula
-        for _, prefix, formula in predictors
-        for term in formula.random_terms
-    }
-    bases: dict[str, GroupCovarianceBasis] = {}
-    laws: list[GroupBlockLaw] = []
-    planned: set[tuple[str, str, str]] = set(supplied)
-    for (group, identity), members in joint_group_blocks(
-        predictors, covariances, supplied
-    ).items():
-        axes = [
-            member_axis(prefix, term, component_axes, transition_axis)
-            for prefix, term in members
-        ]
-        width = sum(axis[1] if axis is not None else 1 for axis in axes)
-        if width < 2 and group not in covariances:
-            continue
-        if group in covariances and group not in bases:
-            bases[group] = covariances[group].basis(levels[group])
-        laws.append(
-            plan_joint_block(
-                group,
-                identity,
-                [
-                    (prefix, term, owners[(prefix, group, term.slope)])
-                    for prefix, term in members
-                ],
-                axes,
-                option=options.get(group),
-                basis=bases.get(group),
-                correlate=any(term.correlation_id is not None for _, term in members),
-                parameterization=parameterization,
-            )
-        )
-        planned.update((prefix, group, term.slope) for prefix, term in members)
-    for _, prefix, formula in predictors:
-        for term in formula.random_terms:
-            if (prefix, term.group, term.slope) in planned:
-                continue
-            laws.append(
-                plan_inline_block(
-                    prefix,
-                    term,
-                    formula,
-                    member_axis(prefix, term, component_axes, transition_axis),
-                    parameterization=parameterization,
-                )
-            )
-    return tuple(laws)
-
-
-def group_level_structures(
+def option_prior_sites(
     laws: Iterable[GroupBlockLaw],
-) -> dict[str, GroupLevelStructure]:
-    """Describe the per-level structure of each grouping factor's blocks.
+) -> tuple[tuple[str, str, str, str | None, float | None], ...]:
+    """List the overrideable sites the level factors of the blocks add.
 
     Parameters
     ----------
     laws : Iterable[GroupBlockLaw]
-        Planned group blocks.
+        Emitted group blocks.
 
     Returns
     -------
-    dict[str, GroupLevelStructure]
-        Grouping factors with a ``by`` partition or Student-t mixing mapped
-        to the sites and codes their blocks declare.
+    tuple[tuple[str, str, str, str or None, float or None], ...]
+        Site, prior class (``df`` or ``cor``), group, coefficient label (the
+        ``by`` level of a correlation), and lower bound: each Student-t
+        degrees-of-freedom site once, then every per-``by``-level
+        correlation.
     """
-    result: dict[str, GroupLevelStructure] = {}
+    laws = tuple(laws)
+    degrees: dict[str, tuple[str, str, str, str | None, float | None]] = {}
+    for law in laws:
+        mixing = law.level.mixing
+        if mixing is not None:
+            degrees.setdefault(
+                mixing.df_site, (mixing.df_site, "df", law.group, None, 1.0)
+            )
+    sites = list(degrees.values())
+    for law in laws:
+        correlation, by = law.correlation, law.level.by
+        if isinstance(correlation, ByLKJCorrelation) and by is not None:
+            for label, site in zip(by.levels, correlation.by_sites, strict=True):
+                sites.append((site, "cor", law.group, label, None))
+    return tuple(sites)
+
+
+def group_coefficients(
+    draws: Mapping[str, torch.Tensor],
+    laws: Sequence[GroupBlockLaw],
+    levels: Mapping[str, Sequence[str]],
+) -> dict[tuple[str, str, str], torch.Tensor]:
+    """Reconstruct the coefficients of every block from its retained sites.
+
+    Each block is rebuilt from the factors its law declares: innovations
+    are correlated by the Cholesky factor of the block, or of each level's
+    ``by`` level; scaled by each member's standard deviation, read at the
+    level's ``by`` level when the scale has a ``by`` axis; and multiplied by
+    the Student-t mixing multiplier ``sqrt(df * mixing)`` of each level. A
+    known level covariance is decoded from its support coordinates. Cost is
+    O(draws x levels x width^2).
+
+    Parameters
+    ----------
+    draws : Mapping[str, torch.Tensor]
+        Constrained sites with chain and draw axes.
+    laws : Sequence[GroupBlockLaw]
+        Laws of the emitted blocks.
+    levels : Mapping[str, Sequence[str]]
+        Authored group labels in retained level order.
+
+    Returns
+    -------
+    dict[tuple[str, str, str], torch.Tensor]
+        Prefix, group, and slope to arrays shaped chain, draw, level and,
+        for a member with a component axis, component.
+
+    Raises
+    ------
+    ValueError
+        If the retained ``by`` codes disagree with the level count, or a
+        block without a known covariance lacks a raw site.
+    """
+    result = {}
     for law in laws:
         level = law.level
-        if level.by is None and level.mixing is None:
-            continue
-        existing = result.get(law.group, GroupLevelStructure())
+        count = len(levels[law.group])
+        codes = None
+        if level.by is not None:
+            codes = torch.tensor(level.by.codes, dtype=torch.long)
+            if codes.numel() != count:
+                raise ValueError(
+                    f"grouping factor {law.group!r} has {count} levels but "
+                    f"{codes.numel()} by-level codes"
+                )
         correlation = law.correlation
-        sites = dict(existing.by_correlation_sites)
-        if isinstance(correlation, ByLKJCorrelation):
-            sites[law.identity] = correlation.by_sites
-        result[law.group] = GroupLevelStructure(
-            by=level.by.variable if level.by is not None else existing.by,
-            by_levels=level.by.levels if level.by is not None else existing.by_levels,
-            by_codes=level.by.codes if level.by is not None else existing.by_codes,
-            by_correlation_sites=sites,
-            df_site=level.mixing.df_site
-            if level.mixing is not None
-            else existing.df_site,
-            mixing_site=level.mixing.mixing_site
-            if level.mixing is not None
-            else existing.mixing_site,
-        )
+        if level.basis is not None:
+            coefficients = _covariance_coefficients(draws, law.layout, sample_ndims=2)
+        else:
+            raws, scales = [], []
+            for member in law.members:
+                if member.raw_site is None:
+                    raise ValueError(
+                        f"group block {law.identity!r} has no retained raw site"
+                    )
+                raw = draws[member.raw_site]
+                raws.append(raw)
+                scale = draws[member.scale.site]
+                scale = scale.reshape(*scale.shape[:2], -1, member.width)
+                scales.append(
+                    scale[:, :, codes]
+                    if member.scale.by_axis is not None and codes is not None
+                    else scale
+                )
+            if law.parameterization == "centered":
+                if len({member.raw_site for member in law.members}) == 1:
+                    coefficients = raws[0].reshape(*raws[0].shape[:2], count, law.width)
+                else:
+                    coefficients = torch.cat(
+                        [
+                            raw.reshape(*raw.shape[:2], count, member.width)
+                            for raw, member in zip(raws, law.members, strict=True)
+                        ],
+                        -1,
+                    )
+            else:
+                innovation = torch.cat(
+                    [
+                        raw.reshape(*raw.shape[:2], count, member.width)
+                        for raw, member in zip(raws, law.members, strict=True)
+                    ],
+                    -1,
+                )
+                if isinstance(correlation, LKJCorrelation):
+                    innovation = innovation @ draws[correlation.site].transpose(-1, -2)
+                elif isinstance(correlation, ByLKJCorrelation):
+                    if codes is None:
+                        raise ValueError(
+                            "per-by-level correlations require retained by-level codes"
+                        )
+                    factors = torch.stack(
+                        [draws[site] for site in correlation.by_sites], dim=2
+                    )
+                    innovation = (
+                        factors[:, :, codes] @ innovation.unsqueeze(-1)
+                    ).squeeze(-1)
+                coefficients = innovation * torch.cat(
+                    [scale.expand(*scale.shape[:2], count, -1) for scale in scales], -1
+                )
+        if level.mixing is not None:
+            df, udf = draws[level.mixing.df_site], draws[level.mixing.mixing_site]
+            multiplier = (df.unsqueeze(-1) * udf.reshape(*udf.shape[:2], count)).sqrt()
+            coefficients = coefficients * multiplier.unsqueeze(-1)
+        for member in law.members:
+            value = coefficients[..., member.offset : member.offset + member.width]
+            result[(member.prefix, law.group, member.slope)] = (
+                value if member.axis is not None else value.squeeze(-1)
+            )
     return result

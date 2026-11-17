@@ -160,7 +160,7 @@ def test_full_joint_all_heads_and_reference_match_dense_kronecker_oracle(
     from quivers.dsl.emit import module_to_source
     from quivers.dsl import loads
     from quivers.inference import trace
-    from quivers.formulas._group_layout import _group_coefficients
+    from quivers.formulas._group_law import group_coefficients
 
     spec, lens, parsed, module, native, obs, complement = _compiled(
         parameterization, rank=rank
@@ -250,8 +250,8 @@ def test_full_joint_all_heads_and_reference_match_dense_kronecker_oracle(
         name: value.detach().reshape(1, 1, *value.shape)
         for name, value in values.items()
     }
-    coefficients = _group_coefficients(
-        retained, complement.group_layouts, parsed.group_levels
+    coefficients = group_coefficients(
+        retained, complement.group_laws, parsed.group_levels
     )
     torch.testing.assert_close(
         coefficients[("", "g", "Intercept")].reshape(2), physical[:, 0].detach()

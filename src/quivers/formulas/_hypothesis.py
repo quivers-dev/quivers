@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from quivers.diagnostics.contrast import _contrast_hypothesis
-from quivers.formulas._group_layout import _group_coefficients
+from quivers.formulas._group_law import group_coefficients
 
 # Pathfinder draws report variational provenance.
 from quivers.inference.pathfinder import draw_provenance
@@ -171,16 +171,15 @@ def _formula_contrast_inputs(
             raise ValueError(
                 f"unknown grouping factor {group!r} for predictor {parameter!r}"
             )
-        coefficients = _group_coefficients(
+        coefficients = group_coefficients(
             draws,
             tuple(
-                layout
-                for layout in plan.group_layouts
-                if layout.group == group
-                and any(member.prefix == prefix for member in layout.members)
+                law
+                for law in plan.group_laws
+                if law.group == group
+                and any(member.prefix == prefix for member in law.members)
             ),
             fit.group_levels,
-            fit._group_structures(),
         )
         varying = {
             term.slope: coefficients[(prefix, group, term.slope)]

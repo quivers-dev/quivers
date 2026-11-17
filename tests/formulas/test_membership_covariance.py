@@ -171,7 +171,7 @@ def _sites(case: dict, lens: FormulaToQVRModule, draw: int, factor: torch.Tensor
     }
     scales = [draws[name][draw] for name in case["variables"] if name.startswith("sd_")]
     column = 0
-    for layout in lens._group_layouts:
+    for layout in lens.group_layouts:
         width = len(layout.members)
         block = effects[:, column : column + width]
         scale = torch.tensor(scales[column : column + width], dtype=torch.float64)
@@ -238,7 +238,7 @@ def _reference(case: dict, lens: FormulaToQVRModule, observed: dict, beta_scale:
     lcov = torch.tensor(case["Lcov"], dtype=torch.float64)
     x1 = torch.tensor(_frame()["x1"].tolist(), dtype=torch.float64)
     y = observed["y"]
-    correlated = any(layout.correlation_site for layout in lens._group_layouts)
+    correlated = any(layout.correlation_site for layout in lens.group_layouts)
     blocks = sorted({key.split("_")[1] for key in data if key.startswith("J_")})
 
     def density(point: torch.Tensor) -> torch.Tensor:
@@ -308,7 +308,7 @@ def test_joint_density_and_derivatives_equal_the_brms_model(case):
     observed["__formula_level_basis_mmg1g2_factor"] = torch.tensor(
         case["Lcov"], dtype=torch.float64
     )
-    layouts = lens._group_layouts
+    layouts = lens.group_layouts
 
     def actual(point: torch.Tensor) -> torch.Tensor:
         values = {

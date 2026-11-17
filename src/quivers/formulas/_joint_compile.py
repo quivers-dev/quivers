@@ -42,7 +42,10 @@ from quivers.dsl.program_templates import (
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._autocor import autocor_binding
 from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
+from quivers.formulas._group_law import GroupBlockLaw, renamed_law
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._group_plan import plan_joint_block
+from quivers.formulas._grouping_emission import all_group_options
 from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
     apply_prior_plan,
@@ -115,8 +118,8 @@ class _JointEmission:
         The composed QVR module, exporting one program.
     responses : Mapping[str, _ResponseEmission]
         Namespaced response emissions, in authored order.
-    group_layouts : tuple[GroupBlockLayout, ...]
-        Shared and response-local group coefficient layouts.
+    group_laws : tuple[GroupBlockLaw, ...]
+        Laws of the shared and response-local group blocks.
     prior_targets : tuple[PriorTarget, ...]
         Every latent site eligible for prior rules.
     fixed_inputs : Mapping[str, torch.Tensor]
@@ -127,10 +130,21 @@ class _JointEmission:
 
     module: Module
     responses: Mapping[str, _ResponseEmission]
-    group_layouts: tuple[GroupBlockLayout, ...]
+    group_laws: tuple[GroupBlockLaw, ...]
     prior_targets: tuple[PriorTarget, ...]
     fixed_inputs: Mapping[str, torch.Tensor]
     families: FamilyCatalog
+
+    @property
+    def group_layouts(self) -> tuple[GroupBlockLayout, ...]:
+        """Return the coordinate layout of each group block.
+
+        Returns
+        -------
+        tuple[GroupBlockLayout, ...]
+            Raw sites and coefficient slices derived from the block laws.
+        """
+        return tuple(law.layout for law in self.group_laws)
 
 
 def _recode(formula: Formula, levels: Mapping[str, tuple[str, ...]]) -> Formula:
@@ -210,7 +224,7 @@ def _normalized_components(
                     for key, value in original._predictor_graph.leaves.items()
                 }
             )
-        lens._group_layouts = []
+        lens._emitted_groups = []
         result[name] = (lens, _recode(formula, levels))
     return result, levels
 
@@ -412,18 +426,18 @@ def _renamed(names: Mapping[str, str], value: str | None) -> str | None:
     return None if value is None else names.get(value, value)
 
 
-def _layout(
-    layout: GroupBlockLayout,
+def _law(
+    law: GroupBlockLaw,
     names: Mapping[str, str],
     objects: Mapping[str, str],
     prefix: str,
-) -> GroupBlockLayout:
-    """Preserve actual coefficient coordinates under the same source namespace.
+) -> GroupBlockLaw:
+    """Carry a response-local group block into the joint namespace.
 
     Parameters
     ----------
-    layout : GroupBlockLayout
-        Response-local group block layout.
+    law : GroupBlockLaw
+        Response-local group block law.
     names : Mapping[str, str]
         Local binding names and their namespaced names.
     objects : Mapping[str, str]
@@ -433,24 +447,11 @@ def _layout(
 
     Returns
     -------
-    GroupBlockLayout
-        The layout with every identity, axis, and site renamed.
+    GroupBlockLaw
+        The law with every identity, axis, and site renamed.
     """
-    return layout.with_(
-        identity=prefix + layout.identity,
-        coordinate_axis=_renamed(objects, layout.coordinate_axis),
-        correlation_site=_renamed(names, layout.correlation_site),
-        members=tuple(
-            member.with_(
-                prefix=prefix + member.prefix,
-                axis=_renamed(objects, member.axis),
-                coefficient=names.get(member.coefficient, member.coefficient),
-                raw_site=_renamed(names, member.raw_site),
-                scale_site=_renamed(names, member.scale_site),
-                mean_site=_renamed(names, member.mean_site),
-            )
-            for member in layout.members
-        ),
+    return renamed_law(
+        law, names, objects, lambda local: prefix + local, prefix + law.identity
     )
 
 
@@ -459,14 +460,14 @@ def _response_parts(
     initial_objects: Sequence[Statement],
     global_steps: Sequence[ProgramStep],
     global_parameters: Sequence[QiecValueParameter],
-    global_layouts: Sequence[GroupBlockLayout],
+    global_laws: Sequence[GroupBlockLaw],
 ) -> tuple[
     list[Statement],
     list[ProgramStep],
     list[QiecValueParameter],
     list[str],
     list[PriorTarget],
-    list[GroupBlockLayout],
+    list[GroupBlockLaw],
 ]:
     """Collect namespaced responses without changing their conditional prior laws.
 
@@ -480,14 +481,14 @@ def _response_parts(
         Joint program steps preceding the response steps.
     global_parameters : Sequence[QiecValueParameter]
         Joint runtime parameters preceding the response parameters.
-    global_layouts : Sequence[GroupBlockLayout]
-        Shared group layouts preceding the response layouts.
+    global_laws : Sequence[GroupBlockLaw]
+        Shared group-block laws preceding the response laws.
 
     Returns
     -------
     tuple
         Object declarations, program steps, runtime parameters, returned
-        names, prior targets, and group layouts of the joint program.
+        names, prior targets, and group-block laws of the joint program.
 
     Raises
     ------
@@ -498,7 +499,7 @@ def _response_parts(
     steps, parameters = list(global_steps), list(global_parameters)
     returned: list[str] = []
     targets: list[PriorTarget] = []
-    layouts = list(global_layouts)
+    laws = list(global_laws)
     for name, response in responses.items():
         for statement in response.module.statements:
             if isinstance(statement, ObjectDecl):
@@ -529,11 +530,11 @@ def _response_parts(
             )
             for target in response.lens.prior_targets
         )
-        layouts.extend(
-            _layout(layout, response.names, response.objects, response.prefix)
-            for layout in response.lens.group_layouts
+        laws.extend(
+            _law(law, response.names, response.objects, response.prefix)
+            for law in response.lens.group_laws
         )
-    return statements, steps, parameters, returned, targets, layouts
+    return statements, steps, parameters, returned, targets, laws
 
 
 def _member_axis(
@@ -907,7 +908,7 @@ def _shared_groups(
                     )
     first_lens, first_formula = next(iter(components.values()))
     emitter = copy(first_lens)
-    emitter._group_layouts = []
+    emitter._emitted_groups = []
     emitter._set_prior_configuration(None)
     counts = len(first_formula.response_values)
     grouping = first_formula.with_(
@@ -956,6 +957,23 @@ def _shared_groups(
             steps,
             coordinate_count=1,
             member_axes=tuple(axes),
+            law=plan_joint_block(
+                group,
+                "joint_shared_" + identity,
+                [
+                    (actual_prefix, term, predictor)
+                    for (actual_prefix, term), (_, _, _, predictor, _) in zip(
+                        actual, members, strict=True
+                    )
+                ],
+                axes,
+                option=all_group_options(emitter._predictor_items(grouping)).get(group),
+                basis=emitter._level_basis(group, grouping.group_levels)
+                if group in emitter._group_covariances
+                else None,
+                correlate=True,
+                parameterization=emitter._reparameterize,
+            ),
         )
         for name, _parameter, prefix, _predictor, term in members:
             actual_prefix = "response_" + _qvr_name(name) + "__" + prefix
@@ -1087,7 +1105,7 @@ def emit_joint(
         initial_objects,
         global_steps,
         global_parameters,
-        emitter.group_layouts,
+        emitter.group_laws,
     )
     global_module = Module(
         statements=(
@@ -1107,7 +1125,7 @@ def emit_joint(
         grouping,
         emitter._family,
         predictors,
-        emitter.group_layouts,
+        emitter.group_laws,
         draw=emitter._parse_prior,
         predictor_scopes=scopes,
         predictor_component_labels=labels,
@@ -1175,7 +1193,7 @@ def emit_joint(
             initial_objects,
             global_steps,
             global_parameters,
-            emitter.group_layouts,
+            emitter.group_laws,
         )
         program = program.with_(
             draws=tuple(steps),

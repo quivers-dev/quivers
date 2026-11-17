@@ -50,6 +50,7 @@ from quivers.formulas._grouping_emission import (
 from quivers.formulas._monotonic_emission import monotonic_prediction_bindings
 from quivers.formulas._latent_effects import formula_families
 from quivers.formulas._autocor import latent_prediction
+from quivers.formulas._group_law import GroupBlockLaw
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
 
@@ -84,8 +85,9 @@ class FormulaPredictionPlan(ValueModel):
         One frozen original-row snapshot for durable design reconstruction.
         Clone-owned recipes share this snapshot internally; reference-owned
         recipes retain a separate training snapshot before caller mutations.
-    group_layouts : tuple[GroupBlockLayout, ...]
-        Emitted raw group sites and coefficient-coordinate slices.
+    group_laws : tuple[GroupBlockLaw, ...]
+        Laws of the emitted group blocks, with their raw sites and
+        coefficient-coordinate slices.
     prior_targets : tuple[PriorTarget, ...]
         Actual emitted parameter roles, authored labels, and nominal axes.
     version : str
@@ -100,13 +102,24 @@ class FormulaPredictionPlan(ValueModel):
     preparation_data: IntoDataFrame | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
-    group_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+    group_laws: tuple[GroupBlockLaw, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     prior_targets: tuple[PriorTarget, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     version: Literal["qvr-formula-prediction/v1"] = "qvr-formula-prediction/v1"
+
+    @property
+    def group_layouts(self) -> tuple[GroupBlockLayout, ...]:
+        """Return the coordinate layout of each group block.
+
+        Returns
+        -------
+        tuple[GroupBlockLayout, ...]
+            Raw sites and coefficient slices derived from the block laws.
+        """
+        return tuple(law.layout for law in self.group_laws)
 
     def __reduce_ex__(self, protocol: SupportsIndex) -> Never:
         """Refuse to serialize mutable, environment-dependent evaluator state.

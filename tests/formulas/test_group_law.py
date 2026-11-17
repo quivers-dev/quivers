@@ -27,7 +27,6 @@ from quivers.formulas._group_law import (
     LKJCorrelation,
     MembershipRows,
     SingleLevelRows,
-    group_level_structures,
 )
 
 Parameterization = Literal["centered", "noncentered"]
@@ -193,10 +192,6 @@ def test_by_student_and_prior_weight_are_declared_level_factors():
         by_sites=(f"cor_{law.identity}_by1", f"cor_{law.identity}_by2")
     )
     assert all(member.scale.by_axis == level.by.axis for member in law.members)
-    structure = group_level_structures((law,))["g"]
-    assert structure.by == "fb" and structure.by_codes == (0, 0, 1)
-    assert structure.by_correlation_sites == {law.identity: law.correlation.sites}
-    assert (structure.df_site, structure.mixing_site) == ("df_g", "udf_g")
 
 
 def test_multi_membership_is_a_row_map():
@@ -265,6 +260,4 @@ def test_program_samples_exactly_the_sites_the_laws_declare(
         or site in {law.members[0].coefficient for law in laws}
     }
     assert group_sites <= declared | {"sigma"}
-    assert tuple(law.layout for law in laws) == tuple(
-        sorted(lens.group_layouts, key=[law.layout for law in laws].index)
-    )
+    assert tuple(law.layout for law in laws) == lens.group_layouts

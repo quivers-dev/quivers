@@ -74,7 +74,7 @@ from quivers.formulas._row_retention import (
     model_texts,
 )
 from quivers.formulas._group_covariance import GroupCovariance
-from quivers.formulas._group_layout import _group_coefficients
+from quivers.formulas._group_law import group_coefficients
 from quivers.formulas._group_prediction import NewLevelPolicy
 from quivers.formulas._joint_compile import _JointEmission, emit_joint
 from quivers.formulas._joint_options import JointFitOptions
@@ -417,7 +417,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         authored = self.specification.responses[name]
         part = self.prepared[name]
         lens = copy(response.lens)
-        lens._group_layouts = []
+        lens._emitted_groups = []
         module, complement = lens.forward(response.formula)
         family = part.family
         program = (
@@ -456,7 +456,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 module=module,
                 designs=part.designs,
                 preparation_data=self.preparation_data,
-                group_layouts=complement.group_layouts,
+                group_laws=complement.group_laws,
                 prior_targets=complement.prior_targets,
             ),
         )
@@ -1127,12 +1127,12 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         dict[str, dict[str, torch.Tensor]]
             Group and coefficient label mapped to per-level draws.
         """
-        coefficients = _group_coefficients(
+        coefficients = group_coefficients(
             draws,
             tuple(
-                layout
-                for layout in self.emission.group_layouts
-                if any(member.prefix == prefix for member in layout.members)
+                law
+                for law in self.emission.group_laws
+                if any(member.prefix == prefix for member in law.members)
             ),
             self.group_levels,
         )
