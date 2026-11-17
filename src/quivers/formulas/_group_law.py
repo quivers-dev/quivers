@@ -132,6 +132,8 @@ class GroupLevelLaw(ValueModel):
         Authored grouping factor.
     axis : str
         Finite axis over its levels.
+    size : int
+        Number of levels.
     covariance : LevelCovariance
         Covariance between the levels.
     by : ByLevels or None
@@ -144,6 +146,7 @@ class GroupLevelLaw(ValueModel):
 
     group: str
     axis: str
+    size: int
     covariance: LevelCovariance = dx.field(
         default_factory=IdentityCovariance, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -318,6 +321,9 @@ class GroupMemberLaw(ValueModel):
         Its map to the response rows.
     mean_site : str or None
         Affine mean of the coefficient; None for a zero mean.
+    cell_axis : str or None
+        Flat axis over the levels and components, level-major, indexing the
+        raw site of a member with a component axis that owns its site.
     """
 
     prefix: str
@@ -330,6 +336,7 @@ class GroupMemberLaw(ValueModel):
     scale: GroupScale = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     rows: RowMap = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     mean_site: str | None = None
+    cell_axis: str | None = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -511,6 +518,7 @@ def renamed_law(
                 coefficient=names.get(member.coefficient, member.coefficient),
                 raw_site=_rename(names, member.raw_site),
                 mean_site=_rename(names, member.mean_site),
+                cell_axis=_rename(objects, member.cell_axis),
                 scale=member.scale.with_(
                     site=names.get(member.scale.site, member.scale.site),
                     by_axis=_rename(objects, member.scale.by_axis),

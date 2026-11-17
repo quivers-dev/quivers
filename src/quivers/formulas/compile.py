@@ -60,7 +60,6 @@ GetPut holds for every `Formula` ``f``: ``backward(*forward(f)) == f``.
 
 from __future__ import annotations
 
-from quivers.family_catalog import FamilyCatalog
 
 from quivers._count_capacity import _MAX_EXACT_COUNT
 
@@ -79,7 +78,6 @@ from quivers.dsl.ast_nodes import (
     ExprIdent,
     LetExprBinOp,
     LetExprCall,
-    LetExprIndex,
     LetExprLiteral,
     LetExprNode,
     LetExprVar,
@@ -111,7 +109,7 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.draw_args import bind_family_arguments
-from quivers.dsl.family_schemas import family_parameter_names, family_parameterizations
+from quivers.dsl.family_schemas import family_parameter_names
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas.family import Domain, Family, Link, families, links
 from quivers.formulas._recorded_event_families import check_recorded_event_family
@@ -143,8 +141,11 @@ from quivers.formulas._mixture import (
 )
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_law import GroupBlockLaw
+from quivers.formulas._group_emission import emit_group_block, row_contribution
 from quivers.formulas._group_plan import (
+    coefficient_binding,
     plan_group_blocks,
+    row_map,
     plan_threshold_block,
 )
 from quivers.formulas._group_covariance import (
@@ -153,6 +154,7 @@ from quivers.formulas._group_covariance import (
 )
 from quivers.formulas._ast import (
     _bind,
+    _draw,
     _let,
     _var,
     _add,
@@ -210,7 +212,6 @@ from quivers.formulas._grouping_emission import (
     all_group_options,
     append_group_options,
     by_correlations,
-    independent_coefficient,
     joint_group_blocks,
     level_scale,
     mixing,
@@ -220,7 +221,6 @@ from quivers.formulas._grouping_emission import (
     scale_index,
     membership_observations,
     membership_runtime_parameters,
-    membership_value,
 )
 from quivers.formulas._monotonic_emission import (
     append_monotonic_terms,
@@ -442,69 +442,6 @@ def _named_prior_arguments(
     except TypeError as error:
         raise ValueError(str(error)) from error
     return tuple(DrawArgNamed(parameter=name, value=value) for name, value in bound)
-
-
-def _draw(
-    var: str,
-    family: str,
-    args: tuple[str | float, ...],
-    *,
-    index: TypeName | None = None,
-    mode: Literal["sample", "score", "marginal"] = "sample",
-    weights: str | None = None,
-    parameterization: tuple[str, ...] | None = None,
-    family_catalog: FamilyCatalog | None = None,
-) -> SampleStep | ObserveStep:
-    """Build a surface program step for a draw of ``var`` from ``family``.
-
-    ``mode="sample"`` / ``"marginal"`` map to `SampleStep`;
-    ``mode="score"`` maps to `ObserveStep`. Marginalisation of
-    formula draws is not currently emitted by the formula compiler,
-    so the marginal mode collapses to sample here. Bare-string and
-    bare-float ``args`` are lifted into the tagged
-    [`DrawArg`][quivers.dsl.ast_nodes.DrawArg] shape the AST field
-    expects. An explicit ``parameterization`` selects another complete schema
-    from the shared constructor catalogue without rebuilding the draw AST.
-    """
-    parameters = parameterization or (
-        family_catalog.parameter_names(family)
-        if family_catalog is not None
-        else family_parameter_names(family)
-    )
-    if (
-        parameterization is not None
-        and parameterization not in family_parameterizations(family, ())
-    ):
-        raise ValueError(
-            f"formula family {family!r} has no parameterization {parameterization!r}"
-        )
-    if parameters is None:
-        raise ValueError(f"formula family {family!r} has no QVR parameter schema")
-    if len(args) != len(parameters):
-        raise ValueError(
-            f"formula {family} expects {len(parameters)} argument(s) "
-            f"({', '.join(parameters)}), got {len(args)}"
-        )
-    tagged_args = tuple(
-        DrawArgNamed(parameter=parameter, value=_to_draw_arg(argument))
-        for parameter, argument in zip(parameters, args, strict=True)
-    )
-    if mode == "score":
-        return ObserveStep(
-            vars=(var,),
-            morphism=family,
-            args=tagged_args,
-            index=index,
-            options=()
-            if weights is None
-            else (OptionEntry(key="weights", value=OptionName(value=weights)),),
-        )
-    return SampleStep(
-        vars=(var,),
-        morphism=family,
-        args=tagged_args,
-        index=index,
-    )
 
 
 def _auxiliary_draw(
@@ -2632,6 +2569,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             physical = self._append_covariance_matrix(
                 plan_threshold_block(
                     group,
+                    n_groups,
                     shape_index,
                     n_shape,
                     self._level_basis(group, formula.group_levels),
@@ -4604,6 +4542,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
     def _append_predictor(
         self,
         formula: Formula,
+        statements: list[Statement],
         program_steps: list[ProgramStep],
         *,
         prefix: str = "",
@@ -4616,6 +4555,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         ----------
         formula : Formula
             Evaluated design columns and group coding.
+        statements : list[Statement]
+            Module declarations receiving the axes of group blocks.
         program_steps : list[ProgramStep]
             Steps to append coefficient draws and row contributions to.
         prefix : str
@@ -4681,124 +4622,26 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             # external module rather than being frozen into the data frame.
             linear_terms.append(_var(predictor_name))
 
-        # Random effects.  Each (slope | g) entry emits its own scale
-        # latent + per-level plate draw + per-row gather; multiple
-        # slopes per group are independent (uncorrelated; matches
-        # lme4's `(... || g)` semantics).
-        #
-        # Reparameterisation:
-        # * Centered ("centered"): ``alpha_g : g <- Normal(0, sigma_g)``
-        #   directly. Its posterior geometry can couple group coefficients
-        #   strongly to their scales.
-        # * Non-centered ("noncentered", default): emit
-        #     z_g_<slope> : g <- Normal(0, 1)
-        #     let alpha_g = sigma_g * z_g_<slope>
-        #   The per-level draws sit in unit space; ``sigma_g`` scales
-        #   the (deterministic) ``alpha_g`` afterwards. Mathematically
-        #   identical conditional Gaussian law, with different inference
-        #   coordinates. The default remains noncentered.
+        # Each group coefficient is gathered at the rows' levels, from its
+        # joint block or from its own block emitted here, and carried to the
+        # rows by its row map.
         for term in formula.random_terms:
-            group = term.group
-            qgroup = _qvr_name(group)
-            slope = term.slope
-            qslope = _qvr_name(slope)
-            correlated_value = (correlated or {}).get((prefix, group, slope))
-            if correlated_value is not None:
-                latent_name = (
-                    f"{prefix}alpha_{qgroup}"
-                    if slope == "Intercept"
-                    else f"{prefix}beta_{qgroup}_{qslope}"
-                )
-                # brms mm(): a weighted sum over the members' levels.
-                membership = membership_value(formula, term, prefix, correlated_value)
-                if membership is not None:
-                    correlated_value = membership
-                elif slope != "Intercept":
-                    column_name = (
-                        f"random_{term.column.qvr_name}"
-                        if term.column is not None
-                        else qslope
-                    )
-                    correlated_value = _mul(
-                        correlated_value, _var(prefix + column_name)
-                    )
-                contribution = f"{latent_name}_per_row"
-                program_steps.append(_let(contribution, correlated_value))
-                linear_terms.append(_var(contribution))
-                continue
-            sigma_var = f"{prefix}sigma_{qgroup}_{qslope}"
-            # brms gr(by =, dist = "student", pw =) shape the level coefficients.
-            option = formula.grouping.option(group)
+            key = (prefix, term.group, term.slope)
+            gathered = (correlated or {}).get(key)
+            if gathered is None:
+                gathered = emit_group_block(
+                    self, self._group_plan[key], statements, program_steps
+                )[key]
+            contribution = (
+                f"{coefficient_binding(prefix, term.group, term.slope)}_per_row"
+            )
             program_steps.append(
-                self._prior_draw(
-                    sigma_var, self._random_scale_prior, index=scale_index(option)
+                _let(
+                    contribution,
+                    row_contribution(row_map(formula, term, prefix), gathered),
                 )
             )
-            if slope == "Intercept":
-                latent_var = f"{prefix}alpha_{qgroup}"
-            else:
-                latent_var = f"{prefix}beta_{qgroup}_{qslope}"
-            contrib_name = f"{latent_var}_per_row"
-            idx_name = f"{qgroup}_idx"
-            if self._reparameterize == "centered":
-                program_steps.append(
-                    _draw(
-                        latent_var,
-                        "Normal",
-                        (0.0, sigma_var),
-                        index=TypeName(name=qgroup),
-                    )
-                )
-                per_level_expr: LetExprNode = LetExprIndex(
-                    array=_var(latent_var), indices=(_var(idx_name),)
-                )
-            else:
-                # Materialize group coefficients once per group before the
-                # per-response gather. This also retains the native bindings
-                # used by posterior coefficient inspection.
-                z_var = f"{prefix}z_{qgroup}_{qslope}"
-                program_steps.append(
-                    _draw(
-                        z_var,
-                        "Normal",
-                        (0.0, 1.0),
-                        index=TypeName(name=qgroup),
-                    )
-                )
-                program_steps.append(
-                    _let(
-                        latent_var,
-                        independent_coefficient(option, sigma_var, z_var, group),
-                    )
-                )
-                weighted = prior_weight_score(option, f"{z_var}_prior_weight", (z_var,))
-                if weighted is not None:
-                    program_steps.append(weighted)
-                per_level_expr = _index(latent_var, _var(idx_name))
-            self._emitted_groups.append(self._group_plan[(prefix, group, slope)])
-            membership = membership_value(formula, term, prefix, per_level_expr)
-            if membership is not None:
-                program_steps.append(_let(contrib_name, membership))
-            elif slope == "Intercept":
-                program_steps.append(_let(contrib_name, per_level_expr))
-            else:
-                program_steps.append(
-                    _let(
-                        contrib_name,
-                        _mul(
-                            per_level_expr,
-                            _var(
-                                prefix
-                                + (
-                                    f"random_{term.column.qvr_name}"
-                                    if term.column is not None
-                                    else qslope
-                                )
-                            ),
-                        ),
-                    )
-                )
-            linear_terms.append(_var(contrib_name))
+            linear_terms.append(_var(contribution))
 
         return _add(*linear_terms) if linear_terms else LetExprLiteral(value=0.0)
 
@@ -5471,7 +5314,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             return
         for name, leaf in graph.leaves.items():
             value = self._append_predictor(
-                leaf, steps, prefix=f"nlpar_{name}_", correlated=correlated
+                leaf, statements, steps, prefix=f"nlpar_{name}_", correlated=correlated
             )
             raw = f"nlpar_{name}_raw"
             steps.append(_let(raw, value))
@@ -5556,6 +5399,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             if aux.per_component and append_scale_predictors(
                 self,
                 formula,
+                statements,
                 program_steps,
                 correlated,
                 aux.prior,
@@ -5600,6 +5444,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             else:
                 linear_predictor = self._append_predictor(
                     predictor,
+                    statements,
                     program_steps,
                     prefix=f"dpar_{aux.name}_",
                     correlated=correlated,
@@ -5815,6 +5660,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._append_graph_parameters(formula, statements, program_steps, correlated)
         eta_expr = self._append_predictor(
             proportional,
+            statements,
             program_steps,
             predictor_name=self._predictor_name,
             correlated=correlated,

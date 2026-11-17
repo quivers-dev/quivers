@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from quivers.dsl._value_expressions import _parse_value_expression
 from quivers.dsl.let_expr_traversal import substitute_let_expr
 from quivers.dsl.ast_nodes import (
+    DrawArgNamed,
+    ObserveStep,
+    OptionEntry,
+    OptionName,
+    SampleStep,
+    atom_to_draw_arg,
     LetStep,
     Module,
     ObjectDecl,
@@ -24,6 +31,8 @@ from quivers.dsl.ast_nodes import (
     LetFactorCase,
     TypeName,
 )
+from quivers.dsl.family_schemas import family_parameter_names, family_parameterizations
+from quivers.family_catalog import FamilyCatalog
 
 
 @lru_cache(maxsize=None)
@@ -242,6 +251,69 @@ def _factor(
         ),
         body=body,
         cases=tuple(LetFactorCase(label=label, value=value) for label, value in cases),
+    )
+
+
+def _draw(
+    var: str,
+    family: str,
+    args: tuple[str | float, ...],
+    *,
+    index: TypeName | None = None,
+    mode: Literal["sample", "score", "marginal"] = "sample",
+    weights: str | None = None,
+    parameterization: tuple[str, ...] | None = None,
+    family_catalog: FamilyCatalog | None = None,
+) -> SampleStep | ObserveStep:
+    """Build a surface program step for a draw of ``var`` from ``family``.
+
+    ``mode="sample"`` / ``"marginal"`` map to `SampleStep`;
+    ``mode="score"`` maps to `ObserveStep`. Marginalisation of
+    formula draws is not currently emitted by the formula compiler,
+    so the marginal mode collapses to sample here. Bare-string and
+    bare-float ``args`` are lifted into the tagged
+    [`DrawArg`][quivers.dsl.ast_nodes.DrawArg] shape the AST field
+    expects. An explicit ``parameterization`` selects another complete schema
+    from the shared constructor catalogue without rebuilding the draw AST.
+    """
+    parameters = parameterization or (
+        family_catalog.parameter_names(family)
+        if family_catalog is not None
+        else family_parameter_names(family)
+    )
+    if (
+        parameterization is not None
+        and parameterization not in family_parameterizations(family, ())
+    ):
+        raise ValueError(
+            f"formula family {family!r} has no parameterization {parameterization!r}"
+        )
+    if parameters is None:
+        raise ValueError(f"formula family {family!r} has no QVR parameter schema")
+    if len(args) != len(parameters):
+        raise ValueError(
+            f"formula {family} expects {len(parameters)} argument(s) "
+            f"({', '.join(parameters)}), got {len(args)}"
+        )
+    tagged_args = tuple(
+        DrawArgNamed(parameter=parameter, value=atom_to_draw_arg(argument))
+        for parameter, argument in zip(parameters, args, strict=True)
+    )
+    if mode == "score":
+        return ObserveStep(
+            vars=(var,),
+            morphism=family,
+            args=tagged_args,
+            index=index,
+            options=()
+            if weights is None
+            else (OptionEntry(key="weights", value=OptionName(value=weights)),),
+        )
+    return SampleStep(
+        vars=(var,),
+        morphism=family,
+        args=tagged_args,
+        index=index,
     )
 
 

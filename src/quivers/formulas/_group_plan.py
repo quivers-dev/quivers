@@ -112,6 +112,26 @@ def innovation_site(prefix: str, group: str, slope: str) -> str:
     return f"{prefix}z_{_qvr_name(group)}_{_qvr_name(slope)}"
 
 
+def cell_axis(prefix: str, group: str, slope: str) -> str:
+    """Name the flat level-by-component axis of one coefficient's raw site.
+
+    Parameters
+    ----------
+    prefix : str
+        Predictor namespace.
+    group : str
+        Grouping-factor name.
+    slope : str
+        Coefficient label.
+
+    Returns
+    -------
+    str
+        Axis name.
+    """
+    return f"{prefix}FormulaRandomCell_{_qvr_name(group)}_{_qvr_name(slope)}"
+
+
 def row_map(formula: Formula, term: RandomTerm, prefix: str) -> RowMap:
     """Build the map from one coefficient's levels to the response rows.
 
@@ -158,6 +178,7 @@ def row_map(formula: Formula, term: RandomTerm, prefix: str) -> RowMap:
 
 def _level_law(
     group: str,
+    size: int,
     option: GroupLevelOptions | None,
     covariance: LevelCovariance,
 ) -> GroupLevelLaw:
@@ -167,6 +188,8 @@ def _level_law(
     ----------
     group : str
         Grouping-factor name.
+    size : int
+        Number of levels.
     option : GroupLevelOptions or None
         Level-coded options of the block.
     covariance : LevelCovariance
@@ -202,6 +225,7 @@ def _level_law(
     return GroupLevelLaw(
         group=group,
         axis=_qvr_name(group),
+        size=size,
         covariance=covariance,
         by=by,
         mixing=mixing,
@@ -301,7 +325,9 @@ def plan_joint_block(
     covariance: LevelCovariance = (
         KnownCovariance(basis=basis) if basis is not None else IdentityCovariance()
     )
-    level = _level_law(group, option, covariance)
+    level = _level_law(
+        group, len(members[0][2].group_levels[group]), option, covariance
+    )
     correlation: CoefficientCorrelation
     if basis is not None:
         correlation = (
@@ -343,6 +369,9 @@ def plan_joint_block(
                     component_axis=axis[0] if axis is not None else None,
                 ),
                 rows=row_map(formula, term, prefix),
+                cell_axis=cell_axis(prefix, group, term.slope)
+                if axis is not None and raw != shared_raw
+                else None,
             )
         )
         offset += laws[-1].width
@@ -389,7 +418,9 @@ def plan_inline_block(
     coefficient = coefficient_binding(prefix, group, term.slope)
     # A coefficient over a component axis reads none of the gr() options.
     option = formula.grouping.option(group) if axis is None else None
-    level = _level_law(group, option, IdentityCovariance())
+    level = _level_law(
+        group, len(formula.group_levels[group]), option, IdentityCovariance()
+    )
     if parameterization == "noncentered":
         raw = innovation_site(prefix, group, term.slope)
     elif axis is None:
@@ -414,6 +445,9 @@ def plan_inline_block(
                     component_axis=axis[0] if axis is not None else None,
                 ),
                 rows=row_map(formula, term, prefix),
+                cell_axis=cell_axis(prefix, group, term.slope)
+                if axis is not None
+                else None,
             ),
         ),
         correlation=IndependentCoordinates(),
@@ -522,6 +556,7 @@ def plan_group_blocks(
 
 def plan_threshold_block(
     group: str,
+    size: int,
     axis: str,
     width: int,
     basis: GroupCovarianceBasis,
@@ -534,6 +569,8 @@ def plan_threshold_block(
     ----------
     group : str
         Grouping factor of the thresholds.
+    size : int
+        Number of levels.
     axis : str
         Axis over the free log-spacing coordinates.
     width : int
@@ -554,6 +591,7 @@ def plan_threshold_block(
         level=GroupLevelLaw(
             group=group,
             axis=_qvr_name(group),
+            size=size,
             covariance=KnownCovariance(basis=basis),
         ),
         members=(

@@ -147,54 +147,6 @@ def member_input(prefix: str, group: str, slope: str, member: int) -> str:
     return f"{prefix}{_qvr_name(group)}_{_qvr_name(slope)}_member{member + 1}"
 
 
-def membership_value(
-    formula: Formula, term: RandomTerm, prefix: str, gathered: LetExprNode
-) -> LetExprNode | None:
-    """Replace a single-level gather by the weighted sum over members.
-
-    Parameters
-    ----------
-    formula : Formula
-        Predictor owning the coefficient.
-    term : RandomTerm
-        Group-level coefficient.
-    prefix : str
-        Predictor namespace.
-    gathered : LetExprNode
-        The ordinary gather ``r[J[n]]`` of the coefficient.
-
-    Returns
-    -------
-    LetExprNode or None
-        ``sum_k r[J_k[n]] * C_k[n]`` for a multi-membership factor, including
-        the covariate; None for an ordinary factor.
-
-    Raises
-    ------
-    ValueError
-        If the coefficient is not gathered by its group's row index.
-    """
-    membership = formula.grouping.membership(term.group)
-    if membership is None:
-        return None
-    index = _var(f"{_qvr_name(term.group)}_idx")
-    if not isinstance(gathered, LetExprIndex) or gathered.indices[-1:] != (index,):
-        raise ValueError(
-            f"multi-membership factor {term.group!r} requires a level-indexed coefficient"
-        )
-    return _add(
-        *(
-            _mul(
-                gathered.with_(
-                    indices=(*gathered.indices[:-1], _var(member_index(term.group, k)))
-                ),
-                _var(member_input(prefix, term.group, term.slope, k)),
-            )
-            for k in range(membership.size)
-        )
-    )
-
-
 def _tensor(element: str, *axes: str) -> QiecTypeApplication:
     """Declare a tensor over named finite axes.
 
@@ -665,35 +617,6 @@ def mixing(option: GroupLevelOptions | None, level: LetExprNode) -> LetExprNode 
     if option is None or not option.options.student:
         return None
     return _index(student_sites(option.group)[2], level)
-
-
-def independent_coefficient(
-    option: GroupLevelOptions | None, sigma: str, innovation: str, group: str
-) -> LetExprNode:
-    """Build an independent coefficient vector from its innovations.
-
-    Parameters
-    ----------
-    option : GroupLevelOptions or None
-        The coefficient's grouping options.
-    sigma, innovation : str
-        Standard-deviation and standard-normal sites.
-    group : str
-        Grouping-factor name.
-
-    Returns
-    -------
-    LetExprNode
-        ``sigma * z``, or per level ``dfm_j * sigma[by_j] * z_j``.
-    """
-    if option is None or (not option.by_levels and not option.options.student):
-        return _mul(_var(sigma), _var(innovation))
-    level = _var("group_level")
-    value = _mul(level_scale(option, sigma, level), _index(innovation, level))
-    multiplier = mixing(option, level)
-    if multiplier is not None:
-        value = _mul(multiplier, value)
-    return _factor((("group_level", _qvr_name(group)),), body=value)
 
 
 _LOG_ROOT_TWO_PI = 0.9189385332046727
