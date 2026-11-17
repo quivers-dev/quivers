@@ -199,11 +199,18 @@ def test_all_inference_engines_fit_joint_response_data(frame, method):
     assert torch.isfinite(result.posterior_epred(num_samples=2)).all()
 
 
-@pytest.mark.parametrize("bad", [0.0, -0.1, math.nan, math.inf])
+@pytest.mark.parametrize("bad", [0.0, -0.1, math.inf])
 def test_invalid_reaction_times_rejected_before_fitting(frame, bad):
     frame.loc[0, "rt"] = bad
-    with pytest.raises(ValueError, match="finite|positive|missing"):
+    with pytest.raises(ValueError, match="finite|positive"):
         _fit(frame)
+
+
+def test_missing_reaction_time_removes_its_row(frame):
+    frame.loc[0, "rt"] = math.nan
+    with pytest.warns(UserWarning, match="rt"):
+        result = _fit(frame)
+    assert result.included_rows == (1, 2, 3)
 
 
 def test_ndt_must_precede_every_observed_rt(frame):
