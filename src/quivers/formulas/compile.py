@@ -1441,19 +1441,21 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 for term in predictor.random_terms
             ):
                 raise ValueError(f"cs terms are only valid for mu, not {name!r}")
-        if self._family.name in {"shifted_lognormal", "frechet"}:
-            response = np.asarray(formula.response_values)
-            if (
-                response.size == 0
-                or not np.isfinite(response).all()
-                or np.any(response <= 0)
+        interval = self._family.response_interval
+        if interval is not None:
+            response = np.asarray(formula.response_values, dtype=np.float64)
+            # A missing response is NaN and is not an observed value.
+            observed = response[~np.isnan(response)]
+            if np.isinf(observed).any() or not all(
+                interval.contains(value) for value in observed.tolist()
             ):
                 raise ValueError(
-                    f"{self._family.name} requires finite positive response values"
+                    f"{self._family.name} response values must be finite and "
+                    f"{interval.requirement()}"
                 )
             ndt = self._fixed_parameters.get("ndt")
-            if ndt is not None and np.any(response <= ndt):
-                raise ValueError("shifted_lognormal responses must exceed fixed ndt")
+            if ndt is not None and np.any(observed <= ndt):
+                raise ValueError(f"{self._family.name} responses must exceed fixed ndt")
         if formula.modifiers.decision is not None and (
             self._family.decision_event is None
         ):
@@ -1463,14 +1465,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             response = np.asarray(formula.response_values)
             if decision is None:
                 raise ValueError(
-                    "wiener requires a decision column: response | dec(column) or decision=column"
+                    f"{self._family.name} requires a decision column: "
+                    "response | dec(column) or decision=column"
                 )
-            if (
-                response.ndim != 1
-                or not np.isfinite(response).all()
-                or np.any(response <= 0)
-            ):
-                raise ValueError("wiener requires finite positive reaction times")
             if (
                 decision.data.shape != response.shape
                 or decision.data.dtype.kind not in "iu"
@@ -1479,10 +1476,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError(
                     "decisions must be checked integer 0/1 values aligned with response rows"
                 )
-            if "ndt" in self._fixed_parameters and np.any(
-                response <= self._fixed_parameters["ndt"]
-            ):
-                raise ValueError("wiener reaction times must exceed fixed ndt")
             aliases = {"formula_response", "formula_decision"}
             if aliases & {
                 _qvr_name(formula.response_name),
@@ -1491,17 +1484,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             }:
                 raise ValueError(
                     "formula_response and formula_decision are reserved response input aliases"
-                )
-        if self._family.name == "zero_inflated_beta":
-            response = np.asarray(formula.response_values)
-            if (
-                response.size == 0
-                or not np.isfinite(response).all()
-                or np.any(response < 0)
-                or np.any(response >= 1)
-            ):
-                raise ValueError(
-                    "zero_inflated_beta requires finite response values in [0, 1)"
                 )
         if formula.modifiers.standard_error is not None:
             error = formula.modifiers.standard_error

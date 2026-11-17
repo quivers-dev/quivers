@@ -151,10 +151,10 @@ a [multivariate model](formula-multivariate.md).
 
 A group identifier shared by several component formulas, `(1 | p | g)`
 in the main formula for instance, correlates those group effects in one
-block across the components, as in brms. Categorical, simplex,
-continuous hurdle, Wiener, Cox, and custom families are refused as
-components. brms also excludes the categorical, simplex, and continuous
-hurdle families.
+block across the components, as in brms. Any family with a scalar
+response event can be a component, including the continuous hurdle and
+zero-inflated families, which brms excludes. Categorical, simplex,
+Wiener, Cox, and custom families are refused as components.
 
 ## Mixtures of ordinal families
 

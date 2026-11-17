@@ -113,7 +113,7 @@ class OrdinalSpec(dx.Model):
 
 
 class Domain(dx.Model):
-    """The interval of values a family parameter may take.
+    """The interval of values a family parameter or response may take.
 
     Attributes
     ----------
@@ -121,13 +121,16 @@ class Domain(dx.Model):
         Lower endpoint, or None when unbounded below.
     upper : float or None
         Upper endpoint, or None when unbounded above.
-    closed : bool
-        Whether the finite endpoints belong to the interval.
+    lower_closed : bool
+        Whether the lower endpoint belongs to the interval.
+    upper_closed : bool
+        Whether the upper endpoint belongs to the interval.
     """
 
     lower: float | None = 0.0
     upper: float | None = None
-    closed: bool = False
+    lower_closed: bool = False
+    upper_closed: bool = False
 
     def contains(self, value: float) -> bool:
         """Test membership of one finite value.
@@ -135,7 +138,7 @@ class Domain(dx.Model):
         Parameters
         ----------
         value : float
-            Candidate parameter value.
+            Candidate value.
 
         Returns
         -------
@@ -143,10 +146,10 @@ class Domain(dx.Model):
             True when the value lies in the interval.
         """
         above = self.lower is None or (
-            value >= self.lower if self.closed else value > self.lower
+            value >= self.lower if self.lower_closed else value > self.lower
         )
         below = self.upper is None or (
-            value <= self.upper if self.closed else value < self.upper
+            value <= self.upper if self.upper_closed else value < self.upper
         )
         return above and below
 
@@ -162,27 +165,37 @@ class Domain(dx.Model):
             return "be a real number"
         if self.upper is None:
             if self.lower == 0:
-                return "be nonnegative" if self.closed else "be strictly positive"
+                return "be nonnegative" if self.lower_closed else "be strictly positive"
             return (
                 f"be at least {self.lower:g}"
-                if self.closed
+                if self.lower_closed
                 else f"exceed {self.lower:g}"
             )
         if self.lower is None:
             return (
                 f"be at most {self.upper:g}"
-                if self.closed
+                if self.upper_closed
                 else f"be below {self.upper:g}"
             )
-        if self.closed:
-            return f"be in [{self.lower:g}, {self.upper:g}]"
-        return f"be strictly between {self.lower:g} and {self.upper:g}"
+        if not self.lower_closed and not self.upper_closed:
+            return f"be strictly between {self.lower:g} and {self.upper:g}"
+        left = "[" if self.lower_closed else "("
+        right = "]" if self.upper_closed else ")"
+        return f"be in {left}{self.lower:g}, {self.upper:g}{right}"
 
 
 _REAL = Domain(lower=None)
-_NONNEGATIVE = Domain(closed=True)
+_NONNEGATIVE = Domain(lower_closed=True)
 _UNIT_OPEN = Domain(upper=1.0)
-_UNIT_CLOSED = Domain(upper=1.0, closed=True)
+_UNIT_CLOSED = Domain(upper=1.0, lower_closed=True, upper_closed=True)
+
+_SUPPORT_DOMAINS: Mapping[str, Domain] = {
+    "real": _REAL,
+    "positive": Domain(),
+    "nonnegative": _NONNEGATIVE,
+    "unit_interval": _UNIT_OPEN,
+}
+"""The interval of each parameter-free continuous support kind."""
 
 
 class AuxParam(dx.Model):
@@ -366,6 +379,10 @@ class Family(ValueModel):
         Native constructor parameter that accepts the location on the log
         scale. Under a log location link the linear predictor is passed to it
         directly, so a rate too large to exponentiate still scores.
+    response_domain : Domain or None
+        Interval every observed response must lie in, stated only where the
+        native support depends on parameters or the family narrows it;
+        otherwise the native support and its atoms give it.
     decision_event : str or None
         Expression forming the scored event from ``formula_response`` and
         the binary ``formula_decision`` of a ``dec()`` term. None for a
@@ -394,7 +411,35 @@ class Family(ValueModel):
     observe_args: tuple[str | float, ...] = ("mu",)
     exposure: Exposure | None = None
     log_location_argument: str | None = None
+    response_domain: Domain | None = None
     decision_event: str | None = None
+
+    @property
+    def response_interval(self) -> Domain | None:
+        """The interval a scalar continuous response must lie in.
+
+        An atom of the native law at an endpoint of its support closes that
+        endpoint.
+
+        Returns
+        -------
+        Domain or None
+            The declared or native interval, or None for a discrete, vector
+            or composite response, whose values are checked by their coding.
+        """
+        if self.response_domain is not None:
+            return self.response_domain
+        native = self.native
+        if native.discrete or native.compositional or native.event_rank:
+            return None
+        domain = _SUPPORT_DOMAINS.get(str(native.support))
+        if domain is None:
+            return None
+        atoms = native.atom_locations
+        return domain.with_(
+            lower_closed=domain.lower_closed or atoms is None or domain.lower in atoms,
+            upper_closed=domain.upper_closed or atoms is None or domain.upper in atoms,
+        )
 
     @property
     def native(self) -> DistributionFamily:
@@ -668,6 +713,7 @@ class Family(ValueModel):
             observe_args=self.observe_args,
             exposure=self.exposure,
             log_location_argument=self.log_location_argument,
+            response_domain=self.response_domain,
             decision_event=self.decision_event,
             trials_parameter=self.trials_parameter,
             ordinal=ordinal,
@@ -763,6 +809,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="wiener",
         location_link=_IDENTITY,
         observe_family="Wiener",
+        response_domain=Domain(),
         decision_event="formula_response * (2.0 * real(formula_decision) - 1.0)",
         observe_args=("bs", "ndt", "bias", "mu"),
         aux_params=(
@@ -834,6 +881,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="shifted_lognormal",
         location_link=_IDENTITY,
         observe_family="ShiftedLogNormal",
+        response_domain=Domain(),
         observe_args=("mu", "sigma", "ndt"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
@@ -1187,6 +1235,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="zero_inflated_beta",
         location_link=_LOGIT,
         observe_family="ZeroOneInflatedBeta",
+        response_domain=Domain(upper=1.0, lower_closed=True),
         observe_args=("mu", "phi", "zi", 0.0),
         aux_params=(
             AuxParam(name="phi", prior="HalfCauchy(2.0)", link=_LOG),

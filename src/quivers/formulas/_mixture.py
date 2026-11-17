@@ -97,24 +97,6 @@ if TYPE_CHECKING:
 
 _Value = TypeVar("_Value")
 
-#: brms 2.23 ``no_mixture``: categorical, multinomial, simplex and continuous
-#: hurdle laws (``is_cont_hurdle``: hurdle_gamma, hurdle_lognormal,
-#: zero_inflated_beta, zero_one_inflated_beta).
-_NO_MIXTURE = frozenset(
-    {
-        "categorical",
-        "multinomial",
-        "dirichlet_multinomial",
-        "dirichlet",
-        "dirichlet2",
-        "logistic_normal",
-        "hurdle_gamma",
-        "hurdle_lognormal",
-        "zero_inflated_beta",
-        "zero_one_inflated_beta",
-    }
-)
-
 #: Components this mixture construction refuses, with the reason.
 _UNSUPPORTED = {
     "wiener": "its signed decision response is not a scalar mixture event",
@@ -166,12 +148,6 @@ def _component_family(value: str | Family) -> Family:
         raise TypeError("mixture components must be family names or Family values")
     if value.mixture is not None or value.name == "mixture":
         raise ValueError("mixture: a component cannot itself be a mixture")
-    if value.name in _NO_MIXTURE:
-        raise ValueError(
-            f"mixture: family {value.name!r} is not allowed in mixture models: "
-            "brms 2.23 refuses categorical, multinomial, simplex, and continuous "
-            "hurdle and zero-inflated families as mixture components"
-        )
     if value.name in _UNSUPPORTED:
         raise ValueError(
             f"mixture: family {value.name!r} is not supported as a mixture "
@@ -183,7 +159,8 @@ def _component_family(value: str | Family) -> Family:
         )
     if value.response is not None:
         raise ValueError(
-            f"mixture: family {value.name!r} is not allowed in mixture models"
+            f"mixture: family {value.name!r} is not allowed in mixture models: "
+            "a component must have a scalar response event"
         )
     if any(aux.name == "theta" for aux in value.aux_params):
         raise ValueError("mixture: parameter name 'theta' is reserved in mixtures")
