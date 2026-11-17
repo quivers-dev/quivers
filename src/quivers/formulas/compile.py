@@ -139,9 +139,15 @@ from quivers.formulas._mixture import (
 )
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_law import GroupBlockLaw
-from quivers.formulas._group_emission import emit_group_block, row_contribution
+from quivers.formulas._group_emission import (
+    bind_group_block,
+    draw_group_block,
+    emit_group_block,
+    row_contribution,
+)
 from quivers.formulas._group_plan import (
     coefficient_binding,
+    innovation_site,
     plan_group_blocks,
     row_map,
     plan_threshold_block,
@@ -3479,142 +3485,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
             cell_terms.append(_index(self._predictor_name, predictor_index))
 
-        correlated = dict(correlated or {})
-        for term in formula.random_terms:
-            if (prefix, term.group, term.slope) in (correlated or {}):
-                continue
-            qgroup = _qvr_name(term.group)
-            qslope = _qvr_name(term.slope)
-            sigma_var = f"{prefix}sigma_{qgroup}_{qslope}"
-            program_steps.append(
-                self._prior_draw(
-                    sigma_var,
-                    self._random_scale_prior,
-                    index=TypeName(name=logit_index),
-                )
+        cell_terms.extend(
+            self._append_group_terms(
+                formula,
+                statements,
+                program_steps,
+                prefix=prefix,
+                correlated=correlated,
+                output_axis=logit_index,
             )
-            n_groups = len(formula.group_levels[term.group])
-            cell_index = f"{prefix}FormulaRandomCell_{qgroup}_{qslope}"
-            self._append_finite_object(statements, cell_index, n_groups * n_logits)
-            latent = prefix + (
-                f"alpha_{qgroup}"
-                if term.slope == "Intercept"
-                else f"beta_{qgroup}_{qslope}"
-            )
-            raw_site = (
-                f"centered_{latent}"
-                if self._reparameterize == "centered"
-                else f"{prefix}z_{qgroup}_{qslope}"
-            )
-            if self._reparameterize == "centered":
-                scale_rows = f"{raw_site}_scale"
-                program_steps.append(
-                    _let(
-                        scale_rows,
-                        _factor(
-                            (("random_cell", cell_index),),
-                            body=_index(
-                                sigma_var,
-                                LetExprBinOp(
-                                    op="%",
-                                    left=_var("random_cell"),
-                                    right=LetExprLiteral(value=n_logits, integral=True),
-                                ),
-                            ),
-                        ),
-                    )
-                )
-                program_steps.append(
-                    _draw(
-                        raw_site,
-                        "Normal",
-                        (0.0, scale_rows),
-                        index=TypeName(name=cell_index),
-                    )
-                )
-            else:
-                program_steps.append(
-                    _draw(
-                        raw_site, "Normal", (0.0, 1.0), index=TypeName(name=cell_index)
-                    )
-                )
-            self._emitted_groups.append(
-                self._group_plan[(prefix, term.group, term.slope)]
-            )
-
-        for term in formula.random_terms:
-            group = term.group
-            qgroup = _qvr_name(group)
-            slope = term.slope
-            qslope = _qvr_name(slope)
-            sigma_var = f"{prefix}sigma_{qgroup}_{qslope}"
-            z_var = f"{prefix}z_{qgroup}_{qslope}"
-            latent = (
-                f"{prefix}alpha_{qgroup}"
-                if slope == "Intercept"
-                else f"{prefix}beta_{qgroup}_{qslope}"
-            )
-            contribution_name = f"{z_var}_contribution"
-            joint_value = (correlated or {}).get((prefix, group, slope))
-            if joint_value is not None:
-                if slope != "Intercept":
-                    column = (
-                        f"{prefix}random_{term.column.qvr_name}"
-                        if term.column is not None
-                        else prefix + qslope
-                    )
-                    joint_value = _mul(joint_value, _var(column))
-                program_steps.append(
-                    _let(
-                        contribution_name,
-                        _factor((("category_logit", logit_index),), body=joint_value),
-                    )
-                )
-                cell_terms.append(_index(contribution_name, logit_var, response_var))
-                continue
-            column_name = (
-                f"{prefix}random_{term.column.qvr_name}"
-                if term.column is not None
-                else prefix + qslope
-            )
-            raw_site = (
-                f"centered_{latent}" if self._reparameterize == "centered" else z_var
-            )
-            z_matrix = f"{raw_site}_matrix"
-            flat_index = _add(
-                _mul(
-                    _var("random_group"),
-                    LetExprLiteral(value=float(n_logits), integral=True),
-                ),
-                logit_var,
-            )
-            program_steps.append(
-                _let(
-                    z_matrix,
-                    _factor(
-                        (("category_logit", logit_index), ("random_group", qgroup)),
-                        body=_index(raw_site, flat_index),
-                    ),
-                )
-            )
-            contribution = _index(z_matrix, logit_var, _var("random_group"))
-            if self._reparameterize == "noncentered":
-                contribution = _mul(_index(sigma_var, logit_var), contribution)
-            value = _factor(
-                (("category_logit", logit_index), ("random_group", qgroup)),
-                body=contribution,
-            )
-            program_steps.append(_let(latent, value))
-            contribution = _index(latent, logit_var, _var(f"{qgroup}_idx"))
-            if slope != "Intercept":
-                contribution = _mul(contribution, _var(column_name))
-            program_steps.append(
-                _let(
-                    contribution_name,
-                    _factor((("category_logit", logit_index),), body=contribution),
-                )
-            )
-            cell_terms.append(_index(contribution_name, logit_var, response_var))
+        )
 
         for contribution in self._append_design_terms(
             formula,
@@ -3843,6 +3723,77 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 result.update(emit_group_block(self, law, statements, steps))
         return result
 
+    def _append_group_terms(
+        self,
+        formula: Formula,
+        statements: list[Statement],
+        steps: list[ProgramStep],
+        *,
+        prefix: str,
+        correlated: Mapping[tuple[str, str, str], LetExprNode] | None,
+        output_axis: str | None,
+    ) -> list[LetExprNode]:
+        """Emit the row contribution of every group coefficient of a predictor.
+
+        Each coefficient is gathered at the rows' levels, from its joint
+        block or from its own block emitted here, and carried to the rows by
+        its row map. A predictor over an output axis binds one contribution
+        per component and row.
+
+        Parameters
+        ----------
+        formula : Formula
+            Evaluated group terms and their row maps.
+        statements : list[Statement]
+            Module declarations receiving the axes of group blocks.
+        steps : list[ProgramStep]
+            Steps receiving the blocks and the row contributions.
+        prefix : str
+            Namespace of the predictor's coefficients and covariates.
+        correlated : Mapping or None
+            Coefficients of blocks emitted ahead of the predictor, gathered
+            at the rows' levels.
+        output_axis : str or None
+            Component axis of the predictor; None for a scalar predictor.
+
+        Returns
+        -------
+        list[LetExprNode]
+            One term per group coefficient: a row vector for a scalar
+            predictor, or its value at the predictor's component and row.
+        """
+        emitted = dict(correlated or {})
+        pending = [
+            self._group_plan[key]
+            for term in formula.random_terms
+            if (key := (prefix, term.group, term.slope)) not in emitted
+        ]
+        # A predictor over an output axis draws every block before binding
+        # any; a scalar predictor draws and binds one block at a time.
+        if output_axis is not None:
+            for law in pending:
+                draw_group_block(self, law, statements, steps)
+        terms: list[LetExprNode] = []
+        for term in formula.random_terms:
+            key = (prefix, term.group, term.slope)
+            if key not in emitted:
+                law = self._group_plan[key]
+                if output_axis is None:
+                    draw_group_block(self, law, statements, steps)
+                emitted.update(bind_group_block(self, law, steps))
+            value = row_contribution(row_map(formula, term, prefix), emitted[key])
+            if output_axis is None:
+                name = f"{coefficient_binding(prefix, term.group, term.slope)}_per_row"
+                steps.append(_let(name, value))
+                terms.append(_var(name))
+            else:
+                name = f"{innovation_site(prefix, term.group, term.slope)}_contribution"
+                steps.append(
+                    _let(name, _factor((("category_logit", output_axis),), body=value))
+                )
+                terms.append(_index(name, _var("category_logit"), _var("response")))
+        return terms
+
     def _append_predictor(
         self,
         formula: Formula,
@@ -3926,26 +3877,16 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             # external module rather than being frozen into the data frame.
             linear_terms.append(_var(predictor_name))
 
-        # Each group coefficient is gathered at the rows' levels, from its
-        # joint block or from its own block emitted here, and carried to the
-        # rows by its row map.
-        for term in formula.random_terms:
-            key = (prefix, term.group, term.slope)
-            gathered = (correlated or {}).get(key)
-            if gathered is None:
-                gathered = emit_group_block(
-                    self, self._group_plan[key], statements, program_steps
-                )[key]
-            contribution = (
-                f"{coefficient_binding(prefix, term.group, term.slope)}_per_row"
+        linear_terms.extend(
+            self._append_group_terms(
+                formula,
+                statements,
+                program_steps,
+                prefix=prefix,
+                correlated=correlated,
+                output_axis=None,
             )
-            program_steps.append(
-                _let(
-                    contribution,
-                    row_contribution(row_map(formula, term, prefix), gathered),
-                )
-            )
-            linear_terms.append(_var(contribution))
+        )
 
         return _add(*linear_terms) if linear_terms else LetExprLiteral(value=0.0)
 
