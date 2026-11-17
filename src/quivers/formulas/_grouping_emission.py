@@ -14,7 +14,7 @@ new-level policies of the shared Gaussian group layout unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from formulae.terms.terms import Term
@@ -57,6 +57,55 @@ if TYPE_CHECKING:
     from quivers.formulas.compile import FormulaToQVRModule
 
 __all__: list[str] = []
+
+
+def joint_group_blocks(
+    predictors: Iterable[tuple[str, str, Formula]],
+    covariances: Collection[str],
+    supplied: Collection[tuple[str, str, str]] = (),
+) -> dict[tuple[str, str], list[tuple[str, RandomTerm]]]:
+    """Collect the group terms that share one joint coefficient distribution.
+
+    A term joins a block through a correlation identifier, or stands as a
+    block of its own when its grouping factor has a known level covariance.
+    Other terms are independent and belong to no block. Runs in time linear
+    in the number of group terms.
+
+    Parameters
+    ----------
+    predictors : Iterable[tuple[str, str, Formula]]
+        Predicted parameters as (name, coefficient prefix, design).
+    covariances : Collection[str]
+        Grouping factors with a known level covariance.
+    supplied : Collection[tuple[str, str, str]]
+        Members, as (prefix, group, slope), whose block is already emitted.
+
+    Returns
+    -------
+    dict[tuple[str, str], list[tuple[str, RandomTerm]]]
+        Members of each block as (prefix, term), keyed by grouping factor and
+        block identity, in first-appearance order.
+    """
+    blocks: dict[tuple[str, str], list[tuple[str, RandomTerm]]] = {}
+    for _, prefix, predictor in predictors:
+        for term in predictor.random_terms:
+            if (prefix, term.group, term.slope) in supplied:
+                continue
+            if term.correlation_id is None:
+                if term.group not in covariances:
+                    continue
+                identity = (
+                    prefix
+                    + f"independent_{_qvr_name(term.group)}_{_qvr_name(term.slope)}"
+                )
+            else:
+                identity = (
+                    f"shared_{term.correlation_id}"
+                    if term.shared
+                    else prefix + term.correlation_id
+                )
+            blocks.setdefault((term.group, identity), []).append((prefix, term))
+    return blocks
 
 
 def member_index(group: str, member: int) -> str:

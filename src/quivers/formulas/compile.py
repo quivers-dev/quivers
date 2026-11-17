@@ -202,6 +202,7 @@ from quivers.formulas._grouping_emission import (
     append_group_options,
     by_correlations,
     independent_coefficient,
+    joint_group_blocks,
     level_scale,
     mixing,
     option_observations,
@@ -1593,27 +1594,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 "the 'dpar_' prefix is reserved for distributional coefficients and inputs"
             )
         correlation_names: dict[str, tuple[str, str]] = {}
-        for _, prefix, predictor in self._predictor_items(formula):
-            for term in predictor.random_terms:
-                if term.correlation_id is None:
-                    if term.group not in self._group_covariances:
-                        continue
-                    identity = (
-                        prefix
-                        + f"independent_{_qvr_name(term.group)}_{_qvr_name(term.slope)}"
-                    )
-                else:
-                    identity = (
-                        f"shared_{term.correlation_id}"
-                        if term.shared
-                        else prefix + term.correlation_id
-                    )
-                name = f"cor_{_qvr_name(identity)}"
-                block = (term.group, identity)
-                if correlation_names.setdefault(name, block) != block:
-                    raise ValueError(
-                        f"correlation name {name!r} is ambiguous across groups or blocks; use distinct shared IDs"
-                    )
+        for block in joint_group_blocks(
+            self._predictor_items(formula), self._group_covariances
+        ):
+            name = f"cor_{_qvr_name(block[1])}"
+            if correlation_names.setdefault(name, block) != block:
+                raise ValueError(
+                    f"correlation name {name!r} is ambiguous across groups or blocks; use distinct shared IDs"
+                )
         module = self._build_module(formula, supplied_groups=supplied_groups)
         targets = self._catalogue_prior_targets(formula, module)
         # brms default policy: one rule for every site no user rule selects.
@@ -4626,27 +4614,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         # brms gr(by =, dist = "student"): by axes and Student-t mixing scales.
         append_group_options(self, self._predictor_items(formula), statements, steps)
-        blocks: dict[tuple[str, str], list[tuple[str, RandomTerm]]] = {}
-        for _, prefix, predictor in self._predictor_items(formula):
-            for term in predictor.random_terms:
-                if (prefix, term.group, term.slope) in (supplied or {}):
-                    continue
-                if term.correlation_id is None:
-                    # An independent coefficient still follows a supplied
-                    # level covariance, in its own one-coefficient block.
-                    if term.group not in self._group_covariances:
-                        continue
-                    identity = (
-                        prefix
-                        + f"independent_{_qvr_name(term.group)}_{_qvr_name(term.slope)}"
-                    )
-                else:
-                    identity = (
-                        f"shared_{term.correlation_id}"
-                        if term.shared
-                        else prefix + term.correlation_id
-                    )
-                blocks.setdefault((term.group, identity), []).append((prefix, term))
+        blocks = joint_group_blocks(
+            self._predictor_items(formula), self._group_covariances, supplied or {}
+        )
         result: dict[tuple[str, str, str], LetExprNode] = dict(supplied or {})
         for (group, identity), members in blocks.items():
             result.update(
