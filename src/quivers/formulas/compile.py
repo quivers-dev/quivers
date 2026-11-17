@@ -3705,7 +3705,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         append_group_options(self, self._predictor_items(formula), statements, steps)
         laws = plan_group_blocks(
             self._predictor_items(formula),
-            levels=formula.group_levels,
+            levels={
+                group: levels
+                for _, _, predictor in self._predictor_items(formula)
+                for group, levels in predictor.group_levels.items()
+            },
             covariances=self._group_covariances,
             parameterization=self._reparameterize,
             component_axes=coordinate_axes or {},
