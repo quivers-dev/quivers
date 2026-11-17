@@ -15,13 +15,18 @@ from torch.distributions import constraints as _constraints
 from torch.distributions.distribution import Distribution
 
 from quivers.continuous._closed_probability import ClosedPoisson, _count_log
+from quivers.continuous._recorded_event_tails import (
+    log_normal_mixture_tails,
+    log_zero_one_inflated_beta_tails,
+)
 from quivers.continuous._zero_inflated_count import _InflatedCount
 from quivers.continuous._zero_truncated_poisson import (
     positive_poisson_mean,
     positive_poisson_log_mean,
     positive_poisson_sample,
 )
-from quivers.continuous.measure import Mixture
+from quivers.continuous._observation_events import event_log_prob
+from quivers.continuous.measure import Mixture, Normalize, Restrict
 
 
 class ZeroInflatedPoisson(_InflatedCount):
@@ -296,6 +301,111 @@ class MixtureNormal(Distribution):
     def log_prob(self, value: Tensor) -> Tensor:
         return self._mixture.log_prob(value)
 
+    def _log_tails(self, value: Tensor) -> tuple[Tensor, Tensor]:
+        """Evaluate the log CDF and log survival as weighted component sums.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points without the component axis.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Float64 ``log P(Y <= value)`` and ``log P(Y > value)``.
+        """
+        return log_normal_mixture_tails(self.weights, self.loc, self.scale, value)
+
+    def _components(self) -> list[torch.distributions.Normal]:
+        """Build the Normal components in component-axis order.
+
+        Returns
+        -------
+        list[torch.distributions.Normal]
+            One Normal law per mixture component.
+        """
+        return [
+            torch.distributions.Normal(self.loc[..., k], self.scale[..., k])
+            for k in range(self._num_components)
+        ]
+
+    def recorded_event_log_prob(
+        self,
+        value: Tensor,
+        *,
+        status: Tensor | int | None = None,
+        interval_upper: Tensor | float | None = None,
+        trunc_lower: Tensor | float | None = None,
+        trunc_upper: Tensor | float | None = None,
+    ) -> Tensor:
+        """Score a recorded event with each component truncated separately.
+
+        brms normalizes every mixture component on the truncation interval and
+        then mixes the normalized components with the mixing weights. The
+        score is ``log sum_k w_k P_k(event) / P_k(lower <= Y <= upper)``, and
+        censoring alone reduces to the mass of the mixture. Cost: O(n K).
+
+        Parameters
+        ----------
+        value : Tensor
+            Exact outcomes or first censoring endpoints.
+        status : Tensor or int or None
+            Censoring codes -1 left, 0 exact, 1 right, 2 interval.
+        interval_upper : Tensor or float or None
+            Upper endpoints of interval-censored rows.
+        trunc_lower, trunc_upper : Tensor or float or None
+            Inclusive truncation bounds.
+
+        Returns
+        -------
+        Tensor
+            Unweighted log likelihoods per row.
+        """
+        scores = torch.stack(
+            [
+                event_log_prob(
+                    component,
+                    value,
+                    status=status,
+                    interval_upper=interval_upper,
+                    trunc_lower=trunc_lower,
+                    trunc_upper=trunc_upper,
+                )
+                for component in self._components()
+            ],
+            dim=-1,
+        )
+        log_weights = torch.where(
+            self.weights > 0,
+            torch.where(self.weights > 0, self.weights, 1.0).log(),
+            -torch.inf,
+        )
+        return torch.logsumexp(log_weights + scores, dim=-1)
+
+    def componentwise_truncation(
+        self, lower: Tensor | float | None, upper: Tensor | float | None
+    ) -> Mixture:
+        """Mix the components after normalizing each on the truncation interval.
+
+        Parameters
+        ----------
+        lower, upper : Tensor or float or None
+            Inclusive truncation bounds; None leaves a side open.
+
+        Returns
+        -------
+        Mixture
+            The brms truncated mixture, sampled by component then by the
+            component's truncated Normal law.
+        """
+        return Mixture(
+            self.weights,
+            [
+                Normalize(Restrict(component, lower, upper))
+                for component in self._components()
+            ],
+        )
+
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         return self._mixture.sample(sample_shape)
 
@@ -399,6 +509,57 @@ class ZeroOneInflatedBeta(Distribution):
             lp_zero,
             torch.where(is_one, lp_one, torch.where(is_interior, lp_mid, -torch.inf)),
         )
+
+    def _log_tails(self, value: Tensor) -> tuple[Tensor, Tensor]:
+        """Evaluate the log CDF and log survival, including both atoms.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Float64 ``log P(Y <= value)`` and ``log P(Y > value)``.
+        """
+        return log_zero_one_inflated_beta_tails(
+            self.mu, self.phi, self.zoi, self.coi, value, left=False
+        )
+
+    def log_cdf_left(self, value: Tensor) -> Tensor:
+        """Evaluate ``log P(Y < value)``, excluding an atom at the query.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points.
+
+        Returns
+        -------
+        Tensor
+            Float64 log left limits of the CDF.
+        """
+        return log_zero_one_inflated_beta_tails(
+            self.mu, self.phi, self.zoi, self.coi, value, left=True
+        )[0]
+
+    def log_survival_function_left(self, value: Tensor) -> Tensor:
+        """Evaluate ``log P(Y >= value)``, including an atom at the query.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points.
+
+        Returns
+        -------
+        Tensor
+            Float64 log survival including the query point.
+        """
+        return log_zero_one_inflated_beta_tails(
+            self.mu, self.phi, self.zoi, self.coi, value, left=True
+        )[1]
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         shape = sample_shape + self.batch_shape

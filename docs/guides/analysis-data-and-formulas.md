@@ -302,6 +302,22 @@ changes the recorded likelihood event. Thus raw `log_likelihood` reports
 unweighted event log probabilities under the truncated law, including exact
 response densities where status is zero.
 
+`cens` and `trunc` are admitted for exactly the families whose brms family
+list admits them; every other family, including `bernoulli`, `xbeta`,
+`zero_one_inflated_beta`, `wiener`, the ordinal families, and the
+compositional families, refuses them with an error naming the family and the
+term. Every admitted family scores both tails of its law directly, so the
+far tails stay finite. Student-t tails use the regularized
+[incomplete beta function](https://en.wikipedia.org/wiki/Beta_function#Incomplete_beta_function),
+von Mises tails use the Bessel series of the CDF on $[-\pi,\pi]$ with a
+certified truncation bound, and Conway-Maxwell-Poisson tails sum the
+normalizing series with a certified remainder. Zero-inflated and hurdle laws
+add their atom at zero to the component tails. The Gaussian `mixture` family
+follows brms in truncating each component separately: the score of a
+truncated row is
+$\log\sum_k w_k\,P_k(\text{event})/P_k(\text{lb}\leq Y\leq\text{ub})$, and
+truncated predictions draw a component and then its truncated Normal law.
+
 `se(error)` supports Gaussian, Student-t, and skew-normal responses.
 By default, known errors combine with residual `sigma` through
 $\sqrt{\text{error}^2+\sigma^2}$; `se(error, sigma=False)` uses strictly

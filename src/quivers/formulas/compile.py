@@ -113,6 +113,7 @@ from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.family_schemas import family_parameter_names, family_parameterizations
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas.family import Family
+from quivers.formulas._recorded_event_families import check_recorded_event_family
 from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._ast import (
@@ -1379,17 +1380,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError(
                     "se(sigma=False) excludes a separate residual sigma; remove its formula, fixed value, or prior"
                 )
-        if (
-            formula.modifiers.censoring is not None
-            or formula.modifiers.truncation is not None
-        ) and (
-            self._family.ordinal is not None
-            or self._family.response is not None
-            or self._family.name == "wiener"
-        ):
-            raise ValueError(
-                "censoring/truncation requires an ordinary scalar response family"
-            )
+        check_recorded_event_family(
+            self._family.name,
+            custom=self._family.custom is not None,
+            censoring=formula.modifiers.censoring,
+            truncation=formula.modifiers.truncation,
+        )
         if (
             formula.modifiers.trials is not None
             and self._family.trials_parameter is None

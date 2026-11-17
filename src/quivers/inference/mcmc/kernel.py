@@ -33,6 +33,12 @@ from torch.distributions import constraints as _constraints
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.program_steps import Draw, Observe
+from quivers.continuous._com_poisson import COMPoisson
+from quivers.qiec._beta_tails import beta_fraction
+from quivers.continuous._observation_events import (
+    require_finite_parameters,
+    require_truncation_mass,
+)
 from quivers.continuous.param_transforms import _validate_parameter, positive_parameter
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.joint_plan import JointPlans
@@ -47,12 +53,21 @@ _DISTRIBUTION_VALIDATION_CODE = frozenset(
         Distribution._validate_sample.__code__,
         positive_parameter.__code__,
         _validate_parameter.__code__,
+        require_truncation_mass.__code__,
+        require_finite_parameters.__code__,
+        COMPoisson._parameters.__code__,
+        COMPoisson._statistics.__code__,
+        beta_fraction.__code__,
     }
 )
 """Raising frames for distribution parameter and value constraints.
 
-Includes Torch's constructor and observation validators and the inline
-parameter validators.
+Includes Torch's constructor and observation validators, the inline
+parameter validators, the truncation-mass and finite-parameter checks of
+recorded events, the COM-Poisson modal-capacity and normalizer-budget
+refusals, which brms's Stan code also rejects (``nu is too close to zero``,
+``cannot handle y > 10000``), and the incomplete
+Beta continued fraction exhausting its budget at extreme count shapes.
 """
 
 
@@ -61,7 +76,11 @@ def _rejects_position(error: BaseException) -> bool:
     position lies outside the model's support.
 
     A ``ValueError`` raised by a Torch distribution validator or the
-    inline positive-parameter validator marks a constraint violation.
+    inline positive-parameter validator marks a constraint violation, as
+    do the registered numerical-range refusals: the COM-Poisson capacity
+    and normalizer-budget refusals (``NotImplementedError``) and an
+    exhausted incomplete Beta
+    continued fraction (a ``RuntimeError``).
     The code object of the innermost traceback frame identifies the
     validator, independently of the error message.
     A `torch.linalg.LinAlgError` is a factorization of a matrix that
@@ -82,7 +101,7 @@ def _rejects_position(error: BaseException) -> bool:
     """
     if isinstance(error, torch.linalg.LinAlgError):
         return True
-    if not isinstance(error, ValueError):
+    if not isinstance(error, ValueError | RuntimeError):
         return False
     frame = error.__traceback__
     if frame is None:
@@ -601,7 +620,7 @@ class PotentialFn:
         trace_side, log_det_total = self._trace_side(z)
         try:
             log_p = self._plans.log_joint({**trace_side, **self._observations})
-        except (ValueError, torch.linalg.LinAlgError) as error:
+        except (ValueError, RuntimeError, torch.linalg.LinAlgError) as error:
             if not _rejects_position(error):
                 raise
             return torch.tensor(float("-inf"), device=z.device, dtype=z.dtype)

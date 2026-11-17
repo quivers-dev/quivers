@@ -229,7 +229,8 @@ class COMPoisson(Distribution):
             second = second + (w * signed.square()).sum(-1)
             fourth = fourth + (w * safe_k.pow(4)).sum(-1)
             centered_fourth = centered_fourth + (w * signed.pow(4)).sum(-1)
-            radius = end - 1
+            # A float radius keeps radius**4 representable beyond int64.
+            radius = float(end - 1)
             with torch.no_grad():
                 upper = mode + radius
                 lower = (mode - radius).clamp_min(0)

@@ -2,12 +2,74 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import cast
+
 import torch
 from torch import Tensor
 from torch.distributions import Distribution
 
 from quivers.continuous._censored import _interior_point
 from quivers.continuous._interval import _reference, log_interval_mass
+
+
+def require_truncation_mass(log_mass: Tensor) -> None:
+    """Refuse a truncation interval that carries no mass under the law.
+
+    Samplers treat this refusal like a distribution-parameter validator: a
+    position whose parameters leave the interval without mass lies outside
+    the model's support and is rejected, while invalid data still surfaces
+    when the initial position is scored.
+
+    Parameters
+    ----------
+    log_mass : Tensor
+        Log mass of each row's truncation interval.
+
+    Raises
+    ------
+    ValueError
+        If any row's mass is zero or not finite.
+    """
+    if not bool(torch.isfinite(log_mass).all()):
+        raise ValueError(
+            "truncation interval must have positive finite mass in every row"
+        )
+
+
+def require_finite_parameters(base: Distribution) -> None:
+    """Refuse a response law holding a NaN or positive-infinite parameter.
+
+    Tail evaluations need finite parameters. Samplers treat this refusal like
+    a distribution-parameter validator, so a divergent proposal that drives a
+    scale or rate to infinity is a rejected position rather than an error.
+    Negative infinity remains admitted, as in a zero-rate log parameter.
+
+    Parameters
+    ----------
+    base : Distribution
+        Response law, including any wrapped base laws.
+
+    Raises
+    ------
+    ValueError
+        If a floating parameter is NaN or positive infinity.
+    """
+    pending: list[Distribution] = [base]
+    while pending:
+        current = pending.pop()
+        for value in vars(current).values():
+            if isinstance(value, Distribution):
+                pending.append(value)
+            elif (
+                isinstance(value, Tensor)
+                and value.is_floating_point()
+                and bool((value.isnan() | value.isposinf()).any())
+            ):
+                raise ValueError(
+                    f"{type(current).__name__} parameters must not be NaN or "
+                    "positive infinity to score a recorded event"
+                )
 
 
 def event_log_prob(
@@ -51,6 +113,16 @@ def event_log_prob(
     NotImplementedError
         If the response has a coupled event or lacks interval-mass support.
     """
+    require_finite_parameters(base)
+    recorded = getattr(base, "recorded_event_log_prob", None)
+    if callable(recorded):
+        return cast(Callable[..., Tensor], recorded)(
+            value,
+            status=status,
+            interval_upper=interval_upper,
+            trunc_lower=trunc_lower,
+            trunc_upper=trunc_upper,
+        )
     if base.event_shape:
         raise NotImplementedError(
             "response censoring/truncation requires scalar events"
@@ -100,10 +172,8 @@ def event_log_prob(
         if truncated
         else reference.new_zeros(shape)
     )
-    if truncated and not bool(torch.isfinite(denominator).all()):
-        raise ValueError(
-            "truncation interval must have positive finite mass in every row"
-        )
+    if truncated:
+        require_truncation_mass(denominator)
     exact = code == 0
     result = reference.new_full(shape, -torch.inf)
     if bool(exact.any()):

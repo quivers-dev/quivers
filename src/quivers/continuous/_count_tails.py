@@ -226,10 +226,15 @@ def negative_binomial_log_tails(
     small = active & ~short & (total <= 0.1) & ((p > 0) | logits)
     r = torch.where(small, total, 1.0)
     a = torch.where(small, k + 1, 1.0)
-    x = torch.where(small, p, 0.5)
+    # The survival I_p(k + 1, r) uses its continued fraction only where it
+    # converges, p < (a + 1) / (a + r + 2); beyond, the CDF I_q(r, k + 1)
+    # is evaluated in the reflected orientation, where q = 1 - p is small.
+    reflected = small & (p * (a + r + 2) > a + 1)
+    direct = small & ~reflected
+    x = torch.where(direct, p, 0.5)
     log_factor = (
-        a * torch.where(small, lp, -math.log(2))
-        + r * torch.where(small, lq, -math.log(2))
+        a * torch.where(direct, lp, -math.log(2))
+        + r * torch.where(direct, lq, -math.log(2))
         + _log_gamma_increment(a, r)
         - torch.lgamma(1 + r)
         - a.log()
@@ -240,9 +245,46 @@ def negative_binomial_log_tails(
     sf_small = torch.where(
         r > 0, torch.where(r > 0, r, 1.0).log() + log_factor, -torch.inf
     )
-    generic_r = torch.where(active & ~small & (total > 0), total, 1.0)
-    generic_k = torch.where(active & ~small & (total > 0), k + 1, 1.0)
+    # Inactive rows use fixed safe coordinates so their derivatives stay finite.
+    r_reflected = torch.where(reflected, r, 1.0)
+    a_reflected = torch.where(reflected, a, 1.0)
+    log_reflected = (
+        r_reflected * torch.where(reflected, lq, -math.log(2))
+        + a_reflected * torch.where(reflected, lp, -math.log(2))
+        + _log_gamma_increment(a_reflected, r_reflected)
+        - torch.lgamma(1 + r_reflected)
+        + _fraction(r_reflected, a_reflected, torch.where(reflected, q, 0.5)).log()
+    ).clamp_max(0.0)
+    cdf_small = torch.where(reflected, log_reflected, cdf_small)
+    sf_small = torch.where(
+        reflected,
+        _log1mexp(torch.where(log_reflected < 0, log_reflected, -1.0)),
+        sf_small,
+    )
+    # A large shape with a small count sums the k + 1 masses of the CDF
+    # directly; the continued fraction would need about sqrt(shape) terms.
+    # The survival is the CDF's complement while the CDF is below one half.
+    summed = active & ~small & (total > 1e3) & (k <= 64)
+    count = torch.arange(65, dtype=torch.float64, device=k.device)
+    summed_r = torch.where(summed, total, 1.0).unsqueeze(-1)
+    log_masses = (
+        _log_gamma_increment(summed_r, count)
+        - torch.lgamma(count + 1)
+        + summed_r * torch.where(summed, lq, -math.log(2)).unsqueeze(-1)
+        + count * torch.where(summed, lp, -math.log(2)).unsqueeze(-1)
+    )
+    log_masses = torch.where(
+        count <= torch.where(summed, k, 0.0).unsqueeze(-1), log_masses, -torch.inf
+    )
+    cdf_summed = torch.logsumexp(log_masses, dim=-1).clamp_max(0.0)
+    complement = summed & (cdf_summed < -math.log(2))
+    sf_summed = _log1mexp(torch.where(complement, cdf_summed, -1.0))
+    generic = active & ~small & (total > 0) & ~complement
+    generic_r = torch.where(generic, total, 1.0)
+    generic_k = torch.where(generic, k + 1, 1.0)
     cdf, sf = _beta_log_pair(generic_r, generic_k, lq, lp)
+    cdf = torch.where(summed, cdf_summed, cdf)
+    sf = torch.where(complement, sf_summed, sf)
     cdf, sf = torch.where(small, cdf_small, cdf), torch.where(small, sf_small, sf)
     first = total * lq
     second = total * lq + torch.log1p(total * p)

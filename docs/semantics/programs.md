@@ -842,6 +842,12 @@ conditional law. Likelihood weights multiply this observation contribution
 after its event and normalizer are formed; raw pointwise extraction omits
 the weight. Censoring metadata introduces no sampling effect of its own.
 
+A finite Normal mixture with weights $w_k$ is the one exception, matching
+brms: truncation normalizes each component separately, so a recorded event
+contributes $\log\sum_k w_k K_{\theta,k}(E_i\cap T_i)/K_{\theta,k}(T_i)$
+and truncated prediction draws a component and then its truncated law.
+Without truncation this equals the mixture mass of $E_i$.
+
 For independent scalar coordinates truncated to a rectangle,
 $Z_\theta=\prod_j Z_{\theta,j}$, so log normalizers add over the
 event coordinates. A coupled vector event requires its joint rectangle

@@ -297,6 +297,9 @@ class ContinuousMorphism(nn.Module, ABC):
         lower, upper = event.get("trunc_lower"), event.get("trunc_upper")
         if lower is None and upper is None:
             return base
+        truncated = getattr(base, "componentwise_truncation", None)
+        if callable(truncated):
+            return truncated(lower, upper)
         from quivers.continuous.measure import Normalize, Restrict
 
         return Normalize(Restrict(base, lower, upper))

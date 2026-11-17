@@ -29,9 +29,11 @@ from quivers.continuous._measure_queries import log_mass as _native_log_mass
 from quivers.continuous._interval import (
     _closed_flag,
     _endpoint_tails,
+    _log_tails,
     _reference,
     log_interval_mass,
 )
+from quivers.continuous._recorded_event_tails import _log_complement, invert_log_cdf
 
 
 _NEG_INF = float("-inf")
@@ -1136,9 +1138,10 @@ class Restrict(Measure):
         Returns
         -------
         Tensor | None
-            The draws, or ``None`` when the base has no closed-form CDF
-            or inverse CDF, or is discrete (its inverse CDF does not
-            give the conditioned mass function).
+            The draws, or ``None`` when the base has no CDF. A continuous
+            base without an inverse CDF, and a discrete base, are inverted
+            by bisection on the log CDF; a discrete draw is the smallest
+            count whose CDF reaches the uniform variate.
         """
         if isinstance(self.base, torch.distributions.Normal):
             low = self.low if self.low is not None else -torch.inf
@@ -1148,8 +1151,7 @@ class Restrict(Measure):
                 torch.where(active, low, -torch.inf),
                 torch.where(active, high, torch.inf),
             ).sample(sample_shape)
-        if getattr(self.base.support, "is_discrete", False):
-            return None
+        discrete = bool(getattr(self.base.support, "is_discrete", False))
         # The CDF values and the inversion run in double precision: an
         # interval deep in a tail has CDF values within float32 rounding
         # of one another, which single precision would collapse.
@@ -1157,17 +1159,19 @@ class Restrict(Measure):
         try:
             reference = _reference(self.base)
             zero = torch.zeros(self.batch_shape, dtype=wide, device=reference.device)
-            lower = (
-                zero
+            # The draw is made in log CDF coordinates, so an interval whose
+            # CDF values underflow (a far tail) still carries a uniform draw.
+            log_lower = (
+                zero - torch.inf
                 if self.low is None
                 else _endpoint_tails(
                     self.base,
                     self.low.to(device=reference.device, dtype=wide),
                     self.lower_closed,
-                )[0].exp()
+                )[0]
             )
-            upper = (
-                zero + 1.0
+            log_upper = (
+                zero
                 if self.high is None
                 else _endpoint_tails(
                     self.base,
@@ -1175,25 +1179,76 @@ class Restrict(Measure):
                     not self.upper_closed
                     if isinstance(self.upper_closed, bool)
                     else ~self.upper_closed,
-                )[0].exp()
+                )[0]
             )
-            lower = torch.where(active, lower, 0.0)
-            upper = torch.where(active, upper, 1.0)
-            if not bool(
-                (torch.isfinite(lower) & torch.isfinite(upper) & (upper > lower)).all()
-            ):
+            log_lower = torch.where(active, log_lower, -torch.inf)
+            log_upper = torch.where(active, log_upper, 0.0)
+            if not bool((torch.isfinite(log_upper) & (log_upper > log_lower)).all()):
                 return None
+            # Bisection costs one log-CDF evaluation per halving. A continuous
+            # base without an inverse CDF is left to rejection when every
+            # active row's interval holds at least a twentieth of the mass;
+            # lighter intervals are inverted by bisection. A discrete base is
+            # always inverted, which needs about 64 halvings, so its draws
+            # keep one carrier whatever the interval mass.
+            light = bool(
+                (
+                    active
+                    & (
+                        log_upper + _log_complement(log_lower - log_upper)
+                        < math.log(0.05)
+                    )
+                ).any()
+            )
             shape = self._extended_shape(sample_shape)
             uniform = torch.rand(shape, dtype=wide, device=reference.device)
-            probability = lower + (upper - lower) * uniform
-            if not bool(((probability > 0) & (probability < 1)).all()):
+            log_probability = log_upper + torch.log(
+                uniform + (1 - uniform) * (log_lower - log_upper).exp()
+            )
+            probability = log_probability.exp()
+            base = self.base
+            low = (
+                torch.full_like(probability, -torch.inf)
+                if self.low is None
+                else self.low.to(probability).expand(shape)
+            )
+            high = (
+                torch.full_like(probability, torch.inf)
+                if self.high is None
+                else self.high.to(probability).expand(shape)
+            )
+            if not light and not discrete and type(self.base).icdf is Distribution.icdf:
                 return None
-            draws = self.base.icdf(probability)
+            if discrete:
+                # The smallest count whose CDF reaches the uniform draw: the
+                # bisection point lies within float64 resolution above it.
+                draws = invert_log_cdf(
+                    lambda point: _log_tails(base, point)[0],
+                    log_probability,
+                    low.floor() - 1,
+                    high,
+                    iterations=80,
+                ).floor()
+            else:
+                try:
+                    if not bool(((probability > 0) & (probability < 1)).all()):
+                        raise NotImplementedError(
+                            "the inverse CDF needs representable probabilities"
+                        )
+                    draws = self.base.icdf(probability)
+                except NotImplementedError:
+                    draws = invert_log_cdf(
+                        lambda point: _log_tails(base, point)[0],
+                        log_probability,
+                        low,
+                        high,
+                    )
         except NotImplementedError:
             return None
         if not bool((~active | (torch.isfinite(draws) & self._inside(draws))).all()):
             return None
-        return draws.to(reference)
+        # Counts stay in float64, which represents every count below 2**53.
+        return draws if discrete else draws.to(reference)
 
     def _sample_by_rejection(self, sample_shape: torch.Size, active: Tensor) -> Tensor:
         """Draw by redrawing each entry outside the interval.

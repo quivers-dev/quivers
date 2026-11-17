@@ -18,6 +18,11 @@ from torch.distributions import (
 )
 
 from quivers.continuous._ordered import _log1mexp
+from quivers.continuous._recorded_event_tails import (
+    log_exponential_tails,
+    recorded_event_log_tails,
+    scaled_tail_point,
+)
 from quivers.continuous._truncated_normal import TruncatedNormal
 from quivers._quadrature_constants import _NODES_8, _WEIGHTS_8
 
@@ -140,14 +145,14 @@ def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
             torch.where(inside, sf, torch.where(point <= lower, 0.0, -torch.inf)),
         )
     if isinstance(base, Exponential):
-        exponent = -base.rate * value.clamp_min(0)
-        return _log1mexp(exponent), exponent
+        return log_exponential_tails(base.rate, value)
     if isinstance(base, Gamma):
         from quivers.continuous._gamma_tails import log_gamma_tails
 
-        return log_gamma_tails(
-            base.concentration, base.rate.double() * value.double().clamp_min(0)
-        )
+        return log_gamma_tails(base.concentration, scaled_tail_point(base.rate, value))
+    special = recorded_event_log_tails(base, value)
+    if special is not None:
+        return special
     from quivers.continuous._count_tails import distribution_count_log_tails
 
     count_tails = distribution_count_log_tails(base, value)

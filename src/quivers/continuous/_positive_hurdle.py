@@ -7,6 +7,8 @@ from torch import Tensor
 from torch.distributions import Distribution, Gamma, LogNormal, constraints
 from torch.distributions.utils import broadcast_all
 
+from quivers.continuous._recorded_event_tails import log_hurdle_tails
+
 
 class _PositiveHurdle(Distribution):
     """Shared scoring and sampling under the atom-plus-positive reference measure."""
@@ -115,17 +117,57 @@ class _PositiveHurdle(Distribution):
         Returns
         -------
         Tensor
-            Cumulative probabilities. Gamma-component concentration derivatives
-            inherit PyTorch's incomplete-gamma derivative support.
+            Cumulative probabilities, differentiable in every parameter
+            including the Gamma shape.
         """
-        positive = (value > 0) & torch.isfinite(value)
-        point = torch.where(positive, value, 1.0)
-        interior = self.zero_prob + (1 - self.zero_prob) * self._base().cdf(point)
-        result = torch.where(
-            value < 0, 0.0, torch.where(positive, interior, self.zero_prob)
-        )
-        result = torch.where(torch.isposinf(value), 1.0, result)
+        result = self._log_tails(value)[0].exp().to(self.zero_prob.dtype)
         return torch.where(torch.isnan(value), value, result)
+
+    def _log_tails(self, value: Tensor) -> tuple[Tensor, Tensor]:
+        """Evaluate the log CDF and log survival, including the zero atom.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Float64 ``log P(Y <= value)`` and ``log P(Y > value)``.
+        """
+        point = torch.where(torch.isnan(value), 0.0, value)
+        return log_hurdle_tails(self.zero_prob, self._base(), point, left=False)
+
+    def log_cdf_left(self, value: Tensor) -> Tensor:
+        """Evaluate ``log P(Y < value)``, excluding an atom at the query.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points.
+
+        Returns
+        -------
+        Tensor
+            Float64 log left limits of the CDF.
+        """
+        return log_hurdle_tails(self.zero_prob, self._base(), value, left=True)[0]
+
+    def log_survival_function_left(self, value: Tensor) -> Tensor:
+        """Evaluate ``log P(Y >= value)``, including an atom at the query.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points.
+
+        Returns
+        -------
+        Tensor
+            Float64 log survival including the query point.
+        """
+        return log_hurdle_tails(self.zero_prob, self._base(), value, left=True)[1]
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         """Draw independent atom indicators and positive component values.
