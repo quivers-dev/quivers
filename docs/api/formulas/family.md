@@ -56,6 +56,18 @@ The [vector guide](../../guides/analysis-data-and-formulas.md#factor-and-vector-
 gives component labels, inferred training totals, new-row trial counts,
 and explicit Monte Carlo expectations for additive log-ratio responses.
 
+## Finite mixtures
+
+`Family.mixture` retains a `MixtureSpec` for families built by
+[`mixture`](index.md#quivers.formulas.mixture): the component families
+after `nmix` repetition, the `order` identification, and equated
+parameters. The mixture's auxiliary parameters are the component
+parameters with the component number appended (`mu1`, `sigma1`, `nu2`)
+and the proportions `theta1, ..., thetaK`. Links belong to the components,
+so `with_links` refuses a mixture. The
+[mixture guide](../../guides/formula-mixtures.md) gives the brms
+correspondence and the identification by ordered intercepts.
+
 ## Retained proportional-hazards baselines
 
 `Family.baseline` retains a `BaselineSpec` for `cox` regressions.

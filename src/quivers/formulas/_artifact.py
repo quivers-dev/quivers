@@ -255,6 +255,7 @@ def _formula_state(fitted: BayesianFit, codec: _Codec) -> dict:
         "prior": codec.encode(fitted.prior),
         "sample_prior": fitted.sample_prior,
         "losses": codec.encode(fitted.losses),
+        "criteria": codec.encode(dict(fitted.criteria)),
     }
 
 
@@ -357,4 +358,4 @@ def _restore_formula(manifest: dict, codec: _Codec) -> BayesianFit:
     )
     return _assemble_fit(
         native, result, refit_recipe=recipe, **_arguments(_assemble_fit, options)
-    )
+    ).with_(criteria=codec.decode(manifest["criteria"]))

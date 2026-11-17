@@ -1,0 +1,265 @@
+{
+  "brms": "2.20.4",
+  "data": [
+    {
+      "y": 0.3,
+      "x": 1,
+      "x2": 0,
+      "z": 0.5,
+      "f": "a",
+      "g": "u",
+      "xo": "lo",
+      "xs": "a"
+    },
+    {
+      "y": -1.2,
+      "x": 2,
+      "x2": 1,
+      "z": -1.1,
+      "f": "b",
+      "g": "v",
+      "xo": "mid",
+      "xs": "c"
+    },
+    {
+      "y": 0.8,
+      "x": 3,
+      "x2": 2,
+      "z": 0.3,
+      "f": "c",
+      "g": "w",
+      "xo": "hi",
+      "xs": "d"
+    },
+    {
+      "y": 1.9,
+      "x": 4,
+      "x2": 0,
+      "z": 1.7,
+      "f": "a",
+      "g": "u",
+      "xo": "top",
+      "xs": "a"
+    },
+    {
+      "y": -0.4,
+      "x": 2,
+      "x2": 1,
+      "z": -0.2,
+      "f": "b",
+      "g": "v",
+      "xo": "mid",
+      "xs": "c"
+    },
+    {
+      "y": 0.1,
+      "x": 3,
+      "x2": 2,
+      "z": 0.9,
+      "f": "c",
+      "g": "w",
+      "xo": "hi",
+      "xs": "d"
+    },
+    {
+      "y": 1.4,
+      "x": 1,
+      "x2": 0,
+      "z": -1.4,
+      "f": "a",
+      "g": "u",
+      "xo": "lo",
+      "xs": "a"
+    },
+    {
+      "y": -0.7,
+      "x": 4,
+      "x2": 1,
+      "z": 0.6,
+      "f": "b",
+      "g": "v",
+      "xo": "top",
+      "xs": "c"
+    },
+    {
+      "y": 0.6,
+      "x": 3,
+      "x2": 2,
+      "z": 1.2,
+      "f": "c",
+      "g": "w",
+      "xo": "hi",
+      "xs": "d"
+    },
+    {
+      "y": 2.2,
+      "x": 2,
+      "x2": 0,
+      "z": -0.8,
+      "f": "a",
+      "g": "u",
+      "xo": "mid",
+      "xs": "a"
+    },
+    {
+      "y": -1.5,
+      "x": 4,
+      "x2": 1,
+      "z": 0.4,
+      "f": "b",
+      "g": "v",
+      "xo": "top",
+      "xs": "c"
+    },
+    {
+      "y": 0.9,
+      "x": 1,
+      "x2": 2,
+      "z": -0.3,
+      "f": "c",
+      "g": "w",
+      "xo": "lo",
+      "xs": "d"
+    }
+  ],
+  "cases": [
+    {
+      "formula": "y ~ mo(x)",
+      "data": {
+        "Ksp": 1,
+        "Imo": 1,
+        "Xmo_1": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Jmo": 3,
+        "con_simo_1": [1, 1, 1]
+      },
+      "predictor": "mu[n] += (bsp[1]) * mo(simo_1, Xmo_1[n]);",
+      "shared": [],
+      "b": "mox",
+      "simo": "mox1",
+      "simo_prior": "dirichlet(1)"
+    },
+    {
+      "formula": "y ~ mo(xo)",
+      "data": {
+        "Ksp": 1,
+        "Imo": 1,
+        "Xmo_1": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Jmo": 3,
+        "con_simo_1": [1, 1, 1]
+      },
+      "predictor": "mu[n] += (bsp[1]) * mo(simo_1, Xmo_1[n]);",
+      "shared": [],
+      "b": "moxo",
+      "simo": "moxo1",
+      "simo_prior": "dirichlet(1)"
+    },
+    {
+      "formula": "y ~ mo(xs)",
+      "data": {
+        "Ksp": 1,
+        "Imo": 1,
+        "Xmo_1": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2],
+        "Jmo": 2,
+        "con_simo_1": [1, 1]
+      },
+      "predictor": "mu[n] += (bsp[1]) * mo(simo_1, Xmo_1[n]);",
+      "shared": [],
+      "b": "moxs",
+      "simo": "moxs1",
+      "simo_prior": "dirichlet(1)"
+    },
+    {
+      "formula": "y ~ mo(x) * z",
+      "data": {
+        "Ksp": 2,
+        "Csp_1": [0.5, -1.1, 0.3, 1.7, -0.2, 0.9, -1.4, 0.6, 1.2, -0.8, 0.4, -0.3],
+        "Imo": 2,
+        "Xmo_1": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Xmo_2": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Jmo": [3, 3],
+        "con_simo_1": [1, 1, 1],
+        "con_simo_2": [1, 1, 1]
+      },
+      "predictor": "mu[n] += (bsp[1]) * mo(simo_1, Xmo_1[n]) + (bsp[2]) * mo(simo_2, Xmo_2[n]) * Csp_1[n];",
+      "shared": [],
+      "b": ["mox", "mox:z", "z"],
+      "simo": ["mox:z1", "mox1"],
+      "simo_prior": "dirichlet(1)"
+    },
+    {
+      "formula": "y ~ mo(x) * mo(x2)",
+      "data": {
+        "Ksp": 3,
+        "Imo": 4,
+        "Xmo_1": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Xmo_2": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2],
+        "Xmo_3": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Xmo_4": [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2],
+        "Jmo": [3, 2, 3, 2],
+        "con_simo_1": [1, 1, 1],
+        "con_simo_2": [1, 1],
+        "con_simo_3": [1, 1, 1],
+        "con_simo_4": [1, 1]
+      },
+      "predictor": "mu[n] += (bsp[1]) * mo(simo_1, Xmo_1[n]) + (bsp[2]) * mo(simo_2, Xmo_2[n]) + (bsp[3]) * mo(simo_3, Xmo_3[n]) * mo(simo_4, Xmo_4[n]);",
+      "shared": [],
+      "b": ["mox", "mox:mox2", "mox2"],
+      "simo": ["mox:mox21", "mox:mox22", "mox1", "mox21"],
+      "simo_prior": "dirichlet(1)"
+    },
+    {
+      "formula": "y ~ mo(x):f",
+      "data": {
+        "Ksp": 3,
+        "Csp_1": [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
+        "Csp_2": [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0],
+        "Csp_3": [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1],
+        "Imo": 3,
+        "Xmo_1": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Xmo_2": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Xmo_3": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Jmo": [3, 3, 3],
+        "con_simo_1": [1, 1, 1],
+        "con_simo_2": [1, 1, 1],
+        "con_simo_3": [1, 1, 1]
+      },
+      "predictor": "mu[n] += (bsp[1]) * mo(simo_1, Xmo_1[n]) * Csp_1[n] + (bsp[2]) * mo(simo_2, Xmo_2[n]) * Csp_2[n] + (bsp[3]) * mo(simo_3, Xmo_3[n]) * Csp_3[n];",
+      "shared": [],
+      "b": ["mox:fa", "mox:fb", "mox:fc"],
+      "simo": ["mox:fa1", "mox:fb1", "mox:fc1"],
+      "simo_prior": "dirichlet(1)"
+    },
+    {
+      "formula": "y ~ mo(x, id = 'i') * z",
+      "data": {
+        "Ksp": 2,
+        "Csp_1": [0.5, -1.1, 0.3, 1.7, -0.2, 0.9, -1.4, 0.6, 1.2, -0.8, 0.4, -0.3],
+        "Imo": 2,
+        "Xmo_1": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Xmo_2": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Jmo": [3, 3],
+        "con_simo_1": [1, 1, 1]
+      },
+      "predictor": "mu[n] += (bsp[1]) * mo(simo_1, Xmo_1[n]) + (bsp[2]) * mo(simo_2, Xmo_2[n]) * Csp_1[n];",
+      "shared": "simplex[Jmo[2]] simo_2 = simo_1;",
+      "b": ["moxidEQi", "moxidEQi:z", "z"],
+      "simo": "i",
+      "simo_prior": "dirichlet(1)"
+    },
+    {
+      "formula": "y ~ mo(x) + (mo(x) | g)",
+      "data": {
+        "Ksp": 1,
+        "Imo": 1,
+        "Xmo_1": [0, 1, 2, 3, 1, 2, 0, 3, 2, 1, 3, 0],
+        "Jmo": 3,
+        "con_simo_1": [1, 1, 1]
+      },
+      "predictor": "mu[n] += (bsp[1] + r_1_2[J_1[n]]) * mo(simo_1, Xmo_1[n]) + r_1_1[J_1[n]] * Z_1_1[n];",
+      "shared": [],
+      "b": "mox",
+      "simo": "mox1",
+      "simo_prior": "dirichlet(1)"
+    }
+  ]
+}

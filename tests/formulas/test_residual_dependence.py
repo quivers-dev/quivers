@@ -12,7 +12,6 @@ from quivers.formulas._residual_dependence import (
     ResidualKernel,
     arma_factor,
     compound_symmetry_factor,
-    sar_parameters,
 )
 
 
@@ -29,7 +28,7 @@ def test_arma_density_and_every_parameter_derivative_match_innovation_oracle(
     scale = _tensor([0.7, 1.1, 0.9], grad=True)
     ar, ma = _tensor([phi], grad=True), _tensor([theta], grad=True)
     y = _tensor([0.5, -0.3, 1.2])
-    actual = ResidualKernel("arma", stationary=stationary)(
+    actual = ResidualKernel(kind="arma", stationary=stationary)(
         {"loc": loc, "scale": scale, "ar": ar, "ma": ma}
     ).log_prob(y)
     if stationary:
@@ -115,7 +114,7 @@ def test_native_kernels_match_scipy_and_preserve_all_parameter_gradients(kind, s
     nu = _tensor(5.0, grad=True)
     values = {"loc": loc, "scale": scale, "rho": rho, "factor": factor, "nu": nu}
     known = matrix if kind == "fixed" else weights if kind.startswith("sar") else ()
-    kernel = ResidualKernel(kind, matrix=known, student=student)
+    kernel = ResidualKernel(kind=kind, matrix=known, student=student)
     distribution = kernel(values)
     s = scale.detach().numpy()
     mean = loc.detach().numpy()
@@ -154,33 +153,32 @@ def test_native_kernels_match_scipy_and_preserve_all_parameter_gradients(kind, s
 
 def test_fixed_covariance_is_factored_once_and_copies_known_data(monkeypatch):
     matrix = _tensor([[1.0, 0.2], [0.2, 1.0]])
-    kernel = ResidualKernel("fixed", matrix=matrix)
+    kernel = ResidualKernel(kind="fixed", matrix=matrix)
     matrix.fill_(99)
-    original = torch.linalg.cholesky
+    y = _tensor([0.3, -0.4])
+    expected = multivariate_normal.logpdf(y.numpy(), cov=[[1.0, 0.2], [0.2, 1.0]])
+    first = kernel({"loc": _tensor([0.0, 0.0]), "scale": _tensor([1.0, 1.0])})
+    np.testing.assert_allclose(float(first.log_prob(y)), expected, rtol=1e-12)
 
     def fail(*args, **kwargs):
         raise AssertionError("known covariance was factored during replay")
 
+    monkeypatch.setattr(np.linalg, "cholesky", fail)
     monkeypatch.setattr(torch.linalg, "cholesky", fail)
     for _ in range(2):
         law = kernel({"loc": _tensor([0.0, 0.0]), "scale": _tensor([1.0, 1.0])})
-        torch.testing.assert_close(
-            law.covariance_matrix, _tensor([[1.0, 0.2], [0.2, 1.0]])
-        )
-    monkeypatch.setattr(torch.linalg, "cholesky", original)
+        np.testing.assert_allclose(float(law.log_prob(y)), expected, rtol=1e-12)
 
 
 def test_exact_compound_symmetry_support_and_singular_spatial_operator_are_checked():
     for rho in [-0.5, 1.0]:
         with pytest.raises(ValueError, match="domain"):
             compound_symmetry_factor(_tensor([1.0, 1.0, 1.0]), _tensor(rho))
-    with pytest.raises(ValueError, match="nonsingular"):
-        sar_parameters(
-            _tensor([0.0, 0.0]),
-            _tensor([1.0, 1.0]),
-            _tensor(1.0),
-            torch.eye(2, dtype=torch.float64),
-        )
+    singular = ResidualKernel(kind="sar_lag", matrix=torch.eye(2, dtype=torch.float64))
+    score = singular(
+        {"loc": _tensor([0.0, 0.0]), "scale": _tensor([1.0, 1.0]), "rho": _tensor(1.0)}
+    ).log_prob(_tensor([0.1, 0.2]))
+    assert score == -torch.inf
     with pytest.raises(ValueError, match="orders"):
         arma_factor(
             _tensor([1.0, 1.0]), _tensor([0.1, 0.2]), _tensor([]), stationary=True
@@ -198,7 +196,7 @@ def test_residual_catalog_runs_checked_source_and_existing_inference_methods(
     from quivers.modeling import Model, VariationalMethod, MCMCMethod
     from quivers.inference import MCMC, HMCKernel, NUTSKernel
 
-    kernel = ResidualKernel("arma", student=student)
+    kernel = ResidualKernel(kind="arma", student=student)
     parameters = ",nu=nu" if student else ""
     degrees = "    sample nu <- Gamma(concentration=3.0,rate=1.0)\n" if student else ""
     source = (
@@ -261,7 +259,7 @@ def test_student_innovation_filter_has_independent_radial_noise_and_linear_stora
     ma = _tensor([0.3], grad=True)
     nu = _tensor(4.5, grad=True)
     y = _tensor([0.4, 0.8, -0.1, 0.7])
-    law = ResidualKernel("arma", student=True)(
+    law = ResidualKernel(kind="arma", student=True)(
         {"loc": loc, "scale": scale, "ar": ar, "ma": ma, "nu": nu}
     )
     residual = y - loc

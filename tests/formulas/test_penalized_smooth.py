@@ -136,18 +136,25 @@ def test_auxiliary_smooth_uses_same_prior_and_prediction_paths_and_typed_overrid
 
 
 @pytest.mark.parametrize(
-    "formula",
+    ("formula", "message"),
     [
-        "y~s(x)",
-        "y~s(x,bs='tp')",
-        "y~s(x,bs='ps',k=6)*z",
-        "y~(s(x,bs='ps',k=6)|z)",
+        ("y~s(x,bs='ps',k=6)*z", "standalone"),
+        ("y~(s(x,bs='ps',k=6)|z)", "structured smooth"),
+        ("y~te(x,z)", "use 't2'"),
+        ("y~ti(x,z)", "use 't2'"),
+        ("y~s(x,bs='ds')", "unsupported smooth basis"),
+        ("y~s(x,bs='sos')", "exactly two covariates"),
+        ("y~s(x,k=20)", "fewer unique covariate"),
+        ("y~s(x,bs='cr',m=2)", "fixed penalty order"),
+        ("y~s(x,xt=3)", "reads no xt entry"),
+        ("y~s(x,bs='bs',m=c(3,2,1))", "several penalties"),
+        ("y~s(x,id=1)+s(z,bs='cr',id=1)", "sharing id"),
+        ("y~s(x,k=2)", "must exceed"),
+        ("y~t2(x,z,k=2)", "at least 3"),
     ],
 )
-def test_unimplemented_smooth_constructions_are_never_unpenalized_fixed_columns(
-    formula,
-):
-    with pytest.raises(ValueError, match="thin-plate|standalone|structured smooth"):
+def test_invalid_or_unsupported_smooths_raise_located_errors(formula, message):
+    with pytest.raises(ValueError, match=message):
         formula_from_data(formula, _frame())
 
 
@@ -262,3 +269,10 @@ def test_spline_structural_state_and_artifact_replay_retain_every_coordinate(
     torch.testing.assert_close(
         restored.posterior_epred(new_data=fresh, num_samples=2, seed=9), expected
     )
+
+
+def test_data_column_named_c_stays_a_column_beside_c_vector_options():
+    frame = _frame().assign(c=np.linspace(0.0, 1.0, 12))
+    formula = formula_from_data("y ~ c + s(x, bs='ps', k=6, m=c(2, 2))", frame)
+    [column] = [col for col in formula.fixed_columns if col.name == "c"]
+    np.testing.assert_array_equal(column.data, frame["c"].to_numpy())

@@ -108,12 +108,48 @@ class GroupBlockLayout(ValueModel):
         return sites
 
 
+class GroupLevelStructure(ValueModel):
+    """Describe the per-level structure of a grouping factor's ``gr()`` options.
+
+    Parameters
+    ----------
+    by : str or None
+        The ``by`` variable, or None without one.
+    by_levels : tuple[str, ...]
+        Its levels in scale-site order.
+    by_codes : tuple[int, ...]
+        The ``by`` level of each grouping level, in group-level order.
+    by_correlation_sites : dict[str, tuple[str, ...]]
+        Correlation-block identity to one Cholesky site per ``by`` level.
+    df_site, mixing_site : str or None
+        The degrees-of-freedom site and the per-level mixing site of
+        ``dist = "student"``, whose coefficients carry the multiplier
+        ``sqrt(df * udf_j)``; None for Gaussian group effects.
+    """
+
+    by: str | None = None
+    by_levels: tuple[str, ...] = ()
+    by_codes: tuple[int, ...] = ()
+    by_correlation_sites: dict[str, tuple[str, ...]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    df_site: str | None = None
+    mixing_site: str | None = None
+
+
 def _group_coefficients(
     draws: Mapping[str, torch.Tensor],
     layouts: Sequence[GroupBlockLayout],
     levels: Mapping[str, Sequence[str]],
+    structures: Mapping[str, GroupLevelStructure] | None = None,
 ) -> dict[tuple[str, str, str], torch.Tensor]:
     """Reconstruct all Gaussian block coefficients over retained sample axes.
+
+    A grouping factor with a ``by`` variable has one standard deviation, and
+    in a correlated block one Cholesky factor, per ``by`` level, and each
+    grouping level reads those of its own ``by`` level. A Student-t factor
+    multiplies every coefficient of level ``j`` by ``sqrt(df * udf_j)``.
+    Cost is O(draws x levels x width^2).
 
     Parameters
     ----------
@@ -123,6 +159,8 @@ def _group_coefficients(
         Exact block, slice, scale, and Cholesky metadata from emission.
     levels : Mapping[str, Sequence[str]]
         Authored group labels in retained level order.
+    structures : Mapping[str, GroupLevelStructure] or None
+        Per-level ``gr()`` structure by grouping factor.
 
     Returns
     -------
@@ -138,6 +176,30 @@ def _group_coefficients(
     result = {}
     for layout in layouts:
         count = len(levels[layout.group])
+        structure = (structures or {}).get(layout.group)
+        codes = (
+            torch.tensor(structure.by_codes, dtype=torch.long)
+            if structure is not None and structure.by_codes
+            else None
+        )
+        if codes is not None and codes.numel() != count:
+            raise ValueError(
+                f"grouping factor {layout.group!r} has {count} levels but "
+                f"{codes.numel()} by-level codes"
+            )
+        by_sites = (
+            structure.by_correlation_sites.get(layout.identity, ())
+            if structure is not None
+            else ()
+        )
+        multiplier = None
+        if (
+            structure is not None
+            and structure.df_site is not None
+            and structure.mixing_site is not None
+        ):
+            df, udf = draws[structure.df_site], draws[structure.mixing_site]
+            multiplier = (df.unsqueeze(-1) * udf.reshape(*udf.shape[:2], count)).sqrt()
         if layout.level_covariance is not None:
             coefficients = _covariance_coefficients(draws, layout, sample_ndims=2)
             for member in layout.members:
@@ -171,11 +233,43 @@ def _group_coefficients(
             coefficients = (
                 innovation @ draws[layout.correlation_site].transpose(-1, -2)
             ) * scale.unsqueeze(-2)
+        elif by_sites:
+            if codes is None:
+                raise ValueError(
+                    "per-by-level correlations require retained by-level codes"
+                )
+            innovations, scales = [], []
+            for member in layout.members:
+                if member.scale_site is None or member.raw_site is None:
+                    raise ValueError(
+                        "noncentered coefficients require retained scale-site metadata"
+                    )
+                raw = draws[member.raw_site]
+                innovations.append(raw.reshape(*raw.shape[:2], count, member.width))
+                scale = draws[member.scale_site]
+                scales.append(
+                    scale.reshape(*scale.shape[:2], -1, member.width)[:, :, codes]
+                )
+            factors = torch.stack([draws[site] for site in by_sites], dim=2)
+            coefficients = (
+                factors[:, :, codes] @ torch.cat(innovations, -1).unsqueeze(-1)
+            ).squeeze(-1) * torch.cat(scales, -1)
         else:
             coefficients = None
         for member in layout.members:
             if coefficients is not None:
                 value = coefficients[..., member.offset : member.offset + member.width]
+            elif codes is not None and layout.parameterization == "noncentered":
+                if member.scale_site is None or member.raw_site is None:
+                    raise ValueError(
+                        "noncentered coefficients require retained scale-site metadata"
+                    )
+                raw = draws[member.raw_site]
+                scale = draws[member.scale_site]
+                value = (
+                    raw.reshape(*raw.shape[:2], count, member.width)
+                    * scale.reshape(*scale.shape[:2], -1, member.width)[:, :, codes]
+                )
             else:
                 assert member.raw_site is not None
                 raw = draws[member.raw_site]
@@ -187,6 +281,8 @@ def _group_coefficients(
                         )
                     scale = draws[member.scale_site]
                     value = value * scale.reshape(*scale.shape[:2], 1, member.width)
+            if multiplier is not None:
+                value = value * multiplier.unsqueeze(-1)
             result[(member.prefix, layout.group, member.slope)] = (
                 value if member.axis is not None else value.squeeze(-1)
             )

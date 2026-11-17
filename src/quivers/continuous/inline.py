@@ -3414,7 +3414,10 @@ def make_inline_distribution(
                 )
                 morph = factory(value, codomain)
             else:
-                morph = factory(*args, codomain)
+                morph = factory(
+                    *_real_literals(family, factory_parameters, args, families),
+                    codomain,
+                )
             return (morph, None)
         if family not in builders:
             raise ValueError(f"no fixed factory for inline family {family!r}")
@@ -3567,6 +3570,55 @@ def _registry_integer_parameters(
         and "integer" in record.parameter(aliases.get(name, name)).constraint
         for name in parameters
     )
+
+
+def _real_literals(
+    family: str,
+    parameters: tuple[str, ...],
+    args: tuple,
+    families: FamilyCatalog | None = None,
+) -> tuple:
+    """Carry integer literals of real-valued parameters as floating scalars.
+
+    A literal such as the ``0`` of ``Normal(0, 1)`` denotes a real number.
+    Left as an integer it would give the native law integer parameter
+    tensors, which score but cannot draw.
+
+    Parameters
+    ----------
+    family : str
+        The family's source name.
+    parameters : tuple[str, ...]
+        The fixed factory's parameter names, in argument order.
+    args : tuple
+        Normalized literal arguments, at most one per parameter.
+    families : FamilyCatalog or None
+        Catalog that records the family, or None for the built-in one.
+
+    Returns
+    -------
+    tuple
+        The arguments, with each integer literal of a recorded parameter
+        whose constraint is not an integer one converted to float. Other
+        arguments are returned unchanged.
+    """
+    record = (families if families is not None else FAMILIES).get(
+        FAMILY_ALIASES.get(family, family)
+    )
+    if record is None:
+        return args
+    aliases = PARAMETER_ALIASES.get(family, {})
+    converted = list(args)
+    for position, (name, value) in enumerate(zip(parameters, args, strict=False)):
+        semantic = aliases.get(name, name)
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and semantic in record.parameter_names
+            and "integer" not in record.parameter(semantic).constraint
+        ):
+            converted[position] = float(value)
+    return tuple(converted)
 
 
 def _registry_event_ranks(

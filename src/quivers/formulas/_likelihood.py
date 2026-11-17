@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import narwhals as nw
@@ -9,6 +10,7 @@ from narwhals.typing import IntoDataFrame
 import numpy as np
 import torch
 
+from quivers.formulas._autocor import AutocorMatrix
 from quivers.formulas._group_prediction import NewLevelPolicy
 from quivers.formulas._prediction import (
     PredictionContext,
@@ -21,7 +23,11 @@ from quivers.formulas._response import (
     validate_simplex,
 )
 from quivers.formulas._response_modifiers import response_input_name
-from quivers.formulas._response_roles import bind_roles, validate_event_response
+from quivers.formulas._response_roles import (
+    bind_roles,
+    resolved_threshold_groups,
+    validate_event_response,
+)
 from quivers.formulas.formula import ResponseModifiers
 
 if TYPE_CHECKING:
@@ -38,6 +44,8 @@ def prepare_likelihood(
     allow_new_levels: bool = False,
     sample_new_levels: NewLevelPolicy = "uncertainty",
     seed: int = 0,
+    incl_autocor: bool = True,
+    data2: Mapping[str, AutocorMatrix] | None = None,
 ) -> PredictionContext:
     """Prepare recorded rows with fitted encodings and raw sampling-law inputs.
 
@@ -59,6 +67,11 @@ def prepare_likelihood(
         Existing joint group-effect prediction policy.
     seed : int
         Seed for that policy's separate random stream.
+    incl_autocor : bool
+        Score with an autocorrelation term's structure (brms ``incl_autocor``).
+    data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+        Matrices of ``sar`` and ``fcor`` terms over the rows of ``new_data``
+        (brms ``newdata2``).
 
     Returns
     -------
@@ -86,7 +99,9 @@ def prepare_likelihood(
     }
     if trials is not None and "trials" in sources:
         sources["trials"] = trials
-    frame, bound = bind_roles(frame, sources)
+    frame, bound = bind_roles(
+        frame, sources, threshold_groups=fit.formula.modifiers.threshold_groups
+    )
     modifiers = ResponseModifiers(**bound)
     if predictor_data is not None and modifiers.subset is not None:
         if predictor_data.shape[:1] != (modifiers.subset.size,):
@@ -97,16 +112,24 @@ def prepare_likelihood(
     evaluated = plan.designs["mu"].response
     if evaluated is None:
         raise ValueError("the retained formula has no response evaluator")
+    evaluated_values = np.asarray(evaluated.term.term.eval_new_data(frame))
     values = normalize_response_values(
-        np.asarray(evaluated.term.term.eval_new_data(frame)),
+        evaluated_values,
         component_names=fit.formula.response_layout.component_names,
-        category_levels=fit.formula.response_layout.category_levels,
+        # brms thres() and cat() declare the categories of integer codes,
+        # which evaluate to a code vector and not to factor indicators.
+        category_levels=()
+        if fit.formula.modifiers.thresholds is not None and evaluated_values.ndim == 1
+        else fit.formula.response_layout.category_levels,
     )
     if values.shape[:1] != (len(frame),):
         raise ValueError("fresh response evaluation must retain every included row")
     if not np.isfinite(values).all():
         raise ValueError("fresh responses must be finite")
     validate_event_response(values, modifiers.censoring, modifiers.truncation)
+    if modifiers.threshold_groups is not None:
+        # brms thres(n, gr): a fresh response lies among its group's categories.
+        resolved_threshold_groups(values, modifiers.threshold_groups)
     # This immutable view shares fitted encodings; it does not reevaluate designs.
     response = fit.formula.with_(response_values=values, modifiers=modifiers)
     if (
@@ -156,6 +179,8 @@ def prepare_likelihood(
         seed=seed,
         trials=prediction_trials,
         require_trials=False,
+        incl_autocor=incl_autocor,
+        data2=data2,
     )
     observations = dict(context.observations)
     if counts is not None:

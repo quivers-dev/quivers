@@ -34,7 +34,21 @@ from quivers.formulas._ast import (
     _var,
     finite_object_sizes,
 )
+from quivers.formulas._autocor import autocor_matrix_targets, autocor_prior_target
+from quivers.formulas._category_formulas import scale_parameter
+from quivers.formulas._gp import gp_prior_sites
+from quivers.formulas._grouping_emission import option_prior_sites
+from quivers.formulas._monotonic_emission import monotonic_prior_sites
 from quivers.formulas._priors import PriorTarget, PriorSpec, RegularizedHorseshoe, R2D2
+
+# brms prior surface: flat and constant rules, main = TRUE, sampled coordinates.
+from quivers.formulas._brms_priors import (
+    SHRINKAGE_SCALE_CLASSES,
+    apply_fixed_rules,
+    flat_event_rank,
+    join_main_rules,
+)
+from quivers.formulas._population_coordinates import sampled_site
 
 
 def _ordered_steps(steps: Sequence[ProgramStep]) -> tuple[ProgramStep, ...]:
@@ -129,6 +143,9 @@ def apply_prior_plan(
         If a hierarchy targets an incompatible class, has inconsistent block
         settings, or supplies a mismatched allocation-concentration vector.
     """
+    # Flat and constant rules rewrite their sites; main = TRUE joins classes.
+    module, selected = apply_fixed_rules(module, targets, selected)
+    selected = join_main_rules(selected, targets)
     by_site = {target.site: target for target in targets}
     statements = list(module.statements)
     program = next(item for item in statements if isinstance(item, ProgramDecl))
@@ -140,9 +157,17 @@ def apply_prior_plan(
         if isinstance(rule.distribution, str):
             continue
         target = by_site[site]
-        if target.class_ not in {"b", "sd"}:
+        if target.class_ not in {"b", *SHRINKAGE_SCALE_CLASSES}:
             raise ValueError(
-                f"shrinkage prior on {site!r} requires b or sd coordinates"
+                f"shrinkage prior on {site!r} requires b or sd coordinates "
+                "(classes b, sd, sds, sdgp, sderr, sdcar)"
+            )
+        # brms: a shrunken standard deviation is the shrinkage scale itself.
+        if target.class_ in SHRINKAGE_SCALE_CLASSES and (
+            rule.lower is not None or rule.upper is not None
+        ):
+            raise ValueError(
+                f"shrinkage on standard deviation {site!r} takes no bounds"
             )
         key = ("block", rule.block) if rule.block is not None else ("rule", rule)
         blocks.setdefault(key, []).append((target, rule))
@@ -347,7 +372,11 @@ def apply_prior_plan(
                 replacement = base_step.with_(morphism=prior.morphism, args=prior.args)
             replacements[target.site] = (
                 _let(scale_name, scale),
-                restrict_prior_step(target, rule, replacement),
+                # brms (R2D2M2, horseshoe on sd): the standard deviation is
+                # the shrinkage scale; coefficients keep their Normal kernel.
+                _let(target.site, _var(scale_name))
+                if target.class_ in SHRINKAGE_SCALE_CLASSES
+                else restrict_prior_step(target, rule, replacement),
             )
             offset += target.width
     for site, rule in selected.items():
@@ -453,7 +482,10 @@ def build_prior_targets(
                     f"prior target {site!r} has no retained nominal finite axis"
                 )
             axes = (step.index.name,)
-        record = semantic_family(step.morphism)
+        # Improper flat laws live in a compilation-local catalog.
+        event_rank = flat_event_rank(step.morphism)
+        if event_rank is None:
+            event_rank = semantic_family(step.morphism).event_rank
         targets[site] = PriorTarget(
             site=site,
             class_=role,
@@ -461,7 +493,7 @@ def build_prior_targets(
             shape=tuple(sizes[axis] for axis in axes),
             lower=lower,
             upper=upper,
-            event_rank=record.event_rank,
+            event_rank=event_rank,
             component_labels=(labels if component_labels is None else component_labels)
             if axes and role in {"b", "Intercept", "sd", "sds"}
             else (),
@@ -470,8 +502,20 @@ def build_prior_targets(
 
     for _name, prefix, predictor in predictors:
         for term in predictor.design_terms:
+            # brms gp(): classes sdgp and lscale in place of one sds.
+            if term.gp is not None:
+                for site, role, coef in gp_prior_sites(term.gp, prefix):
+                    add(
+                        site,
+                        role,
+                        coef=coef,
+                        lower=0.0,
+                        component_labels=(predictor_component_labels or {}).get(prefix),
+                        **scopes[prefix],
+                    )
+                continue
             add(
-                prefix + term.qvr_name + "_scale",
+                prefix + (term.scale_group or term.qvr_name) + "_scale",
                 "sds",
                 coef=term.term,
                 lower=0.0,
@@ -479,13 +523,25 @@ def build_prior_targets(
                 **scopes[prefix],
             )
         for column in predictor.fixed_columns:
-            site = prefix + (
-                "intercept" if column.is_intercept else "beta_" + column.qvr_name
+            # Centered and QR predictors sample transformed coordinates.
+            site = sampled_site(
+                prefix
+                + ("intercept" if column.is_intercept else "beta_" + column.qvr_name),
+                samples,
             )
             add(
                 site,
                 "Intercept" if column.is_intercept else "b",
                 coef=column.name,
+                component_labels=(predictor_component_labels or {}).get(prefix),
+                **scopes[prefix],
+            )
+        # brms mo(): class b for bsp, class simo for each simplex.
+        for site, role, coef in monotonic_prior_sites(predictor, prefix):
+            add(
+                site,
+                role,
+                coef=coef,
                 component_labels=(predictor_component_labels or {}).get(prefix),
                 **scopes[prefix],
             )
@@ -500,6 +556,9 @@ def build_prior_targets(
                 component_labels=(predictor_component_labels or {}).get(prefix),
                 **scopes[prefix],
             )
+    # brms gr(dist = "student") df and gr(by =) per-level correlations.
+    for site, role, group, coef, lower in option_prior_sites(predictors, layouts):
+        add(site, role, group=group, coef=coef, lower=lower)
     for layout in layouts:
         site = layout.correlation_site
         if site is None:
@@ -514,6 +573,12 @@ def build_prior_targets(
         upper = 1.0 if support == "unit_interval" else None
         if auxiliary.link.name == "logm1":
             lower = 1.0
+        # Autocorrelation parameters take brms classes (ar, ma, cosy, ...).
+        structural = autocor_prior_target(family, auxiliary.name)
+        if structural is not None:
+            role, lag, lower, upper = structural
+            add(auxiliary.name, role, lower=lower, upper=upper, coef=lag)
+            continue
         add(
             auxiliary.name,
             auxiliary.name,
@@ -529,6 +594,7 @@ def build_prior_targets(
             "cutpoints_raw",
             "cutpoint_log_spacing_mean",
             "cutpoint_log_spacing_scale",
+            "threshold_location",
         ):
             add(
                 site,
@@ -537,11 +603,17 @@ def build_prior_targets(
             )
     if family.baseline is not None:
         add("sbhaz", "sbhaz")
-    if family.name == "mixture":
-        for site in ("mixture_logit", "mixture_offset", "mixture_scale"):
-            add(site, site)
     if family.response is not None and family.response.kind == "logistic_normal":
         add("rescor", "rescor")
+        # brms sigma<c>: the scalar scale of a category without a formula.
+        for label in labels:
+            name = scale_parameter(label)
+            add(name, name, lower=0.0, dpar=name)
+    for site, role in autocor_matrix_targets(family):
+        add(site, role)
+    for latent in formula.latent_terms:
+        for site, role, lower, upper in latent.prior_sites():
+            add(site, role, lower=lower, upper=upper)
     return tuple(targets.values())
 
 

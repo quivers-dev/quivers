@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from narwhals.typing import IntoDataFrame
 
 from quivers.modeling.refit import RefitRecipe, SnapshotPolicy, _snapshot
+from quivers.formulas._formula_options import expand_dot_formula
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
@@ -63,6 +64,16 @@ def update_fit(
     recipe = fitted.refit_recipe
     if recipe is None:
         raise ValueError("this fit has no retained refit recipe")
+    # R update.formula: "." stands for the fitted sides.
+    if isinstance(overrides.get("formula"), str) and isinstance(
+        recipe.method.get("formula"), str
+    ):
+        overrides = {
+            **overrides,
+            "formula": expand_dot_formula(
+                str(recipe.method["formula"]), str(overrides["formula"])
+            ),
+        }
     options = {**recipe.method, **overrides}
     if "method" in overrides and overrides["method"] != recipe.method["method"]:
         inactive = (
@@ -73,4 +84,15 @@ def update_fit(
         for name in inactive:
             if name not in overrides:
                 options[name] = None
+    # Pathfinder runs no MCMC or SVI iterations, and its arguments apply to
+    # it alone.
+    switched = {overrides.get("method"), overrides.get("algorithm")} - {None}
+    if "pathfinder" in switched:
+        for name in ("num_warmup", "num_samples", "num_steps", "control"):
+            if name not in overrides:
+                options[name] = None
+        if "thin" not in overrides:
+            options["thin"] = 1
+    elif switched and "pathfinder" not in overrides:
+        options["pathfinder"] = None
     return recipe.run(data, method=options)

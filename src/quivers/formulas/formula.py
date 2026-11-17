@@ -40,18 +40,65 @@ import formulae as fo
 from formulae.matrices import DesignMatrices
 import narwhals as nw
 import numpy as np
+import pandas as pd
 from narwhals.typing import IntoDataFrame
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
 from quivers.formulas._design import SymbolicColumn
+
+# brms ``0 + Intercept``: a reserved constant column in class b.
+from quivers.formulas._formula_options import (
+    BRMS_INTERCEPT,
+    display_label,
+    normalize_intercept_term,
+    normalize_r_syntax,
+    without_zero_intercept,
+)
+from quivers.formulas._r_transforms import r_transform_namespace
+
+# brms drop_unused_levels.
+from quivers.formulas._data_options import (
+    dropping_unused_levels,
+    formula_data2,
+    keep_unused_levels,
+)
+from quivers.formulas._gp import (
+    GaussianProcess,
+    GaussianProcessBlock,
+    gp_namespace,
+    gp_rows,
+)
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._latent_effects import LatentTerm
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._row_retention import (
     complete_rows,
     compose_positions,
     role_columns,
 )
-from quivers.formulas._smooth import PSpline
+from quivers.formulas._mgcv_smooth import BSplineBasis
+from quivers.formulas._grouping import (
+    GroupingPlan,
+    add_grouping_columns,
+    fit_group_options,
+    fit_membership,
+    is_member_call,
+    member_covariate,
+    rewrite_grouping,
+)
+from quivers.formulas._monotonic import (
+    Monotonic,
+    MonotonicTerm,
+    monotonic_design,
+    monotonic_positions,
+    monotonic_slopes,
+)
+from quivers.formulas._smooth import (
+    SmoothState,
+    SmoothTransform,
+    r_list,
+    smooth_namespace,
+)
 
 
 #: R-style transforms wired into formulae's evaluation namespace.
@@ -363,8 +410,20 @@ class GaussianDesignTerm(ValueModel):
     coefficient_map : tuple[tuple[float, ...], ...]
         Original basis coordinates to evaluated null and Gaussian coordinates,
         in their retained evaluator-column order; empty for a supplied design.
+        For one level of a factor ``by`` smooth, the map applies before the
+        rows of other levels are set to zero.
     constraint : tuple[float, ...]
         Original training-basis mean defining the identification constraint.
+    scale_group : str
+        Name of a smoothing scale shared with other blocks (an mgcv ``id``),
+        or empty when this block samples its own scale.
+    gp : GaussianProcessBlock or None
+        For an approximate ``gp()`` term, the block whose coordinates take
+        per-coordinate scales ``sqrt(spd)`` of sampled ``sdgp`` and
+        ``lscale`` in place of one smoothing scale. For an exact ``gp()``
+        term, the block whose coordinates are its distinct inputs: ``data``
+        maps rows to inputs with their ``by`` contrast values, and
+        ``column_indices`` name the ``1 + D`` evaluated columns it reads.
     """
 
     term: str
@@ -376,6 +435,10 @@ class GaussianDesignTerm(ValueModel):
     )
     coefficient_map: tuple[tuple[float, ...], ...] = ()
     constraint: tuple[float, ...] = ()
+    scale_group: str = ""
+    gp: GaussianProcessBlock | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     @dx.model_validator()
     def _validate(self) -> None:
@@ -394,9 +457,12 @@ class GaussianDesignTerm(ValueModel):
             raise ValueError(
                 "Gaussian design terms require a finite real row-by-coordinate matrix"
             )
+        # An exact gp() block reads 1 + D evaluated columns into one design
+        # column per distinct input.
+        exact_gp = self.gp is not None and self.gp.exact
         if (
             self.data.shape[1] < 1
-            or len(self.column_indices) != self.data.shape[1]
+            or (not exact_gp and len(self.column_indices) != self.data.shape[1])
             or tuple(sorted(set(self.column_indices))) != self.column_indices
             or any(type(index) is not int or index < 0 for index in self.column_indices)
         ):
@@ -488,6 +554,52 @@ class RowSelection(ValueModel):
     positions: tuple[int, ...]
 
 
+class ThresholdGroups(ValueModel):
+    """Group-specific ordinal threshold vectors of brms ``thres(n, gr)``.
+
+    Parameters
+    ----------
+    column : FixedColumn
+        Zero-based code of each row's threshold group, an index into
+        ``levels``.
+    levels : tuple[str, ...]
+        Group labels in brms's sorted factor order.
+    counts : tuple[int, ...]
+        Number of thresholds of each group, one fewer than its number of
+        categories. Empty until resolved from the response when the formula
+        declares no count.
+    extra_category : bool
+        Whether response code zero is a category outside the thresholds (the
+        hurdle of ``hurdle_cumulative``), so that a group with ``n``
+        thresholds has the codes ``0, ..., n + 1``.
+    """
+
+    column: FixedColumn = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    levels: tuple[str, ...]
+    counts: tuple[int, ...] = ()
+    extra_category: bool = False
+
+    @dx.model_validator()
+    def _validate(self) -> None:
+        """Require one positive count per labeled group.
+
+        Raises
+        ------
+        ValueError
+            If the levels are empty or repeated, or the counts do not give
+            one positive integer per level.
+        """
+        if not self.levels or len(set(self.levels)) != len(self.levels):
+            raise ValueError("threshold groups require distinct labels")
+        if self.counts and (
+            len(self.counts) != len(self.levels)
+            or any(count < 1 for count in self.counts)
+        ):
+            raise ValueError(
+                "threshold groups require one positive threshold count per group"
+            )
+
+
 class ResponseModifiers(ValueModel):
     """Retain typed response-row inputs independently of predictor coefficients.
 
@@ -510,6 +622,16 @@ class ResponseModifiers(ValueModel):
         values, as original positions.
     trials : FixedColumn or None
         Exact finite trial counts supplied by a response modifier.
+    rate : FixedColumn or None
+        Positive response denominators of brms ``rate()``, multiplying the
+        count mean (and the negative binomial shape) of each row.
+    thresholds : int or None
+        Number of ordinal thresholds declared by brms ``thres()`` or ``cat()``
+        (one fewer than the number of categories), which may exceed the
+        number of observed categories.
+    threshold_groups : ThresholdGroups or None
+        Row codes, labels, and threshold counts of brms ``thres(n, gr)``,
+        whose groups each own one threshold vector.
     weights_scale : bool
         Whether weights were normalized to the number of included rows.
     sources : tuple[tuple[str, str or int or float or bool], ...]
@@ -536,6 +658,14 @@ class ResponseModifiers(ValueModel):
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     trials: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    # mixtures package (WP2b): brms rate() denominators.
+    rate: FixedColumn | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    thresholds: int | None = None
+    threshold_groups: ThresholdGroups | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     weights_scale: bool = False
@@ -569,6 +699,9 @@ class ResponseModifiers(ValueModel):
         if self.standard_error is not None:
             columns.append(("standard_error", self.standard_error.column))
         columns.append(("trials", self.trials))
+        columns.append(("rate", self.rate))
+        if self.threshold_groups is not None:
+            columns.append(("threshold_group", self.threshold_groups.column))
         return tuple((role, column) for role, column in columns if column is not None)
 
 
@@ -643,6 +776,16 @@ class Formula(ValueModel):
         the linear-predictor scale. These columns receive no coefficients.
     group_indices : dict[str, tuple[int, ...]]
         Per-group integer index array, shape ``(N,)``.
+    latent_terms : tuple[LatentTerm, ...]
+        Structured latent vectors added to the location predictor, such as
+        brms ``car`` terms, with their retained row-to-coordinate coding.
+    monotonic_terms : tuple[MonotonicTerm, ...]
+        brms ``mo()`` special-effects columns: cumulative category indicators
+        of each monotonic factor and the covariate of the other components.
+    grouping : GroupingPlan
+        brms interaction (``g1:g2``) and multi-membership (``mm()``) grouping
+        factors, multi-membership codes and weights, member covariates, and
+        ``gr(cov = )`` matrix names.
     """
 
     formula: str
@@ -669,6 +812,15 @@ class Formula(ValueModel):
     )
     modifiers: ResponseModifiers = dx.field(
         default_factory=ResponseModifiers, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    latent_terms: tuple[LatentTerm, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    monotonic_terms: tuple[MonotonicTerm, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    grouping: GroupingPlan = dx.field(
+        default_factory=GroupingPlan, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
 
@@ -725,6 +877,10 @@ class FormulaData(ValueModel):
     random_terms : tuple[RandomTerm, ...]
         Original slope-column data and correlation identities, matched to
         the group/slope structure decoded from the emitted module.
+    monotonic_terms : tuple[MonotonicTerm, ...]
+        Retained ``mo()`` columns with their training indicators.
+    grouping : GroupingPlan
+        Retained derived grouping factors and multi-membership codes.
     """
 
     formula: str = ""
@@ -769,6 +925,12 @@ class FormulaData(ValueModel):
     random_terms: tuple[RandomTerm, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    monotonic_terms: tuple[MonotonicTerm, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    grouping: GroupingPlan = dx.field(
+        default_factory=GroupingPlan, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def _qvr_name(raw: str) -> str:
@@ -782,6 +944,143 @@ def _qvr_name(raw: str) -> str:
     return cleaned
 
 
+_SMOOTH_NAMES = frozenset({"s", "t2", "te", "ti"})
+#: R's logical literals and NA, bound for brms term options such as ``iso = FALSE``.
+R_LITERALS: dict[str, bool | None] = {"TRUE": True, "FALSE": False, "NA": None}
+_SMOOTH_CALLS = frozenset({"s", "t2"})
+
+
+def _r_vector(*values: int | float | str) -> tuple[int | float | str, ...]:
+    """Evaluate R's ``c()`` for literal smooth options such as ``m = c(3, 1)``.
+
+    Parameters
+    ----------
+    *values : int, float, or str
+        Literal entries.
+
+    Returns
+    -------
+    tuple[int | float | str, ...]
+        The entries in order.
+
+    Raises
+    ------
+    ValueError
+        If an entry is not a scalar literal.
+    """
+    if any(not isinstance(value, (int, float, str)) for value in values):
+        raise ValueError(
+            "c() in a formula builds vectors of literal smooth options only"
+        )
+    return values
+
+
+def _smooth_design(
+    term_name: str, state: SmoothState, columns: list[FixedColumn]
+) -> tuple[list[FixedColumn], list[GaussianDesignTerm]]:
+    """Split an evaluated smooth into population columns and Gaussian blocks.
+
+    Parameters
+    ----------
+    term_name : str
+        Authored formulae term.
+    state : SmoothState
+        Retained smooth with its block layout.
+    columns : list[FixedColumn]
+        Exploded evaluated columns of the term.
+
+    Returns
+    -------
+    tuple[list[FixedColumn], list[GaussianDesignTerm]]
+        Unpenalized population columns and one design block per penalized
+        group.
+    """
+    layouts = state.layout
+    width = len(columns)
+    basis = (
+        SplineBasis(knots=state.basis.knots, degree=state.basis.order - 1)
+        if isinstance(state.basis, BSplineBasis)
+        else None
+    )
+    fixed = [columns[index] for layout in layouts for index in layout.fixed]
+    terms = []
+    for position, (block, layout) in enumerate(zip(state.blocks, layouts, strict=True)):
+        mapping = np.asarray(block.coefficient_map)
+        padded = np.zeros((mapping.shape[0], width))
+        padded[:, list(layout.fixed)] = mapping[:, : block.fixed_width]
+        offset = block.fixed_width
+        for group_index, group in enumerate(layout.random):
+            padded[:, list(group)] = mapping[:, offset : offset + len(group)]
+            offset += len(group)
+        for group_index, group in enumerate(layout.random):
+            suffix = f"_by{position + 1}" if block.level is not None else ""
+            if len(layout.random) > 1:
+                suffix += f"_{group_index + 1}"
+            terms.append(
+                GaussianDesignTerm(
+                    term=term_name,
+                    qvr_name="smooth_" + _qvr_name(term_name) + suffix,
+                    column_indices=group,
+                    data=np.column_stack([columns[index].data for index in group]),
+                    basis=basis,
+                    coefficient_map=tuple(map(tuple, padded.tolist())),
+                    constraint=state.constraint,
+                    scale_group=(
+                        f"smooth_id_{_qvr_name(state.identity)}_{group_index + 1}"
+                        if state.identity is not None
+                        else ""
+                    ),
+                )
+            )
+    return fixed, terms
+
+
+def _gp_design(
+    term_name: str, transform: GaussianProcess, columns: list[FixedColumn]
+) -> list[GaussianDesignTerm]:
+    """Split an evaluated ``gp()`` term into one Gaussian block per sub-GP.
+
+    Parameters
+    ----------
+    term_name : str
+        Authored formulae term.
+    transform : GaussianProcess
+        Retained transform with its sub-GPs.
+    columns : list[FixedColumn]
+        Exploded evaluated basis columns, sub-GPs in order.
+
+    Returns
+    -------
+    list[GaussianDesignTerm]
+        One block per sub-GP.
+    """
+    assert transform.state is not None
+    terms = []
+    start = 0
+    for subterm in transform.state.subterms:
+        # An exact gp() sub-GP evaluates its contrast values and covariates.
+        width = (
+            subterm.orders.shape[1] + 1
+            if subterm.block.exact
+            else subterm.orders.shape[0]
+        )
+        indices = tuple(range(start, start + width))
+        start += width
+        data = np.column_stack([columns[index].data for index in indices])
+        if subterm.block.exact:
+            data = gp_rows(data, subterm.block)[1]
+        terms.append(
+            GaussianDesignTerm(
+                term=term_name,
+                qvr_name="gp_" + _qvr_name(subterm.block.label),
+                column_indices=indices,
+                data=data,
+                gp=subterm.block,
+            )
+        )
+    return terms
+
+
 def _explode_term(term_name: str, term, n_obs: int) -> list[FixedColumn]:
     """Explode a single formulae Term into one or more FixedColumn
     entries, matching R/brms's one-coefficient-per-column convention.
@@ -791,7 +1090,7 @@ def _explode_term(term_name: str, term, n_obs: int) -> list[FixedColumn]:
         _contains_cs(getattr(component, "call", None))
         for component in getattr(term, "components", ())
     )
-    display_name = term_name.replace(_CS_ONES, "1")
+    display_name = display_label(term_name.replace(_CS_ONES, "1"))
     if data.ndim == 1:
         # Single column; treat as one coefficient.
         is_intercept = (
@@ -950,6 +1249,13 @@ def _group_coding(
     if len(column.drop_nulls()) != len(column):
         raise ValueError(f"grouping factor {group!r} has missing training identities")
     levels = tuple(str(value) for value in column.unique().sort().to_list())
+    # brms drop_unused_levels = FALSE: declared levels no row uses keep their
+    # group effects.
+    native = column.to_native()
+    if not dropping_unused_levels() and isinstance(
+        getattr(native, "dtype", None), pd.CategoricalDtype
+    ):
+        levels = tuple(str(value) for value in sorted(native.cat.categories))
     if not levels or len(set(levels)) != len(levels):
         raise ValueError(f"grouping factor {group!r} has empty or ambiguous labels")
     positions = {value: index for index, value in enumerate(levels)}
@@ -1047,6 +1353,8 @@ def _formula_and_design(
     decision: str | None = None,
     groups: tuple[str, ...] = (),
     extra_namespace: Mapping[str, object] | None = None,
+    cmc: bool = True,
+    extra_category: bool = False,
 ) -> tuple[Formula, DesignMatrices]:
     """Evaluate a formula once and retain its fitted transformation state.
 
@@ -1064,6 +1372,13 @@ def _formula_and_design(
         Additional structural grouping columns, using the same fitted coding.
     extra_namespace : Mapping[str, object] or None
         Additional expression bindings.
+    cmc : bool
+        brms ``cmc``: with False, a formula without intercept is evaluated
+        with treatment coding and its intercept column is dropped.
+    extra_category : bool
+        Whether response code zero is a category outside the ordinal
+        thresholds (the hurdle of ``hurdle_cumulative``), so that ``thres(n)``
+        declares the codes ``0, ..., n + 1``.
 
     Returns
     -------
@@ -1079,13 +1394,17 @@ def _formula_and_design(
     pandas_df = nw_df.to_pandas()
     from quivers.formulas._response_roles import (
         bind_roles,
+        declared_categories,
         parse_roles,
+        resolved_threshold_groups,
         validate_event_response,
     )
 
     normalized_formula, names = parse_roles(
         formula, {"weights": weights, "decision": decision}
     )
+    # R operators: ^ in I(), (a + b)^k, %in%, and R's scale.
+    normalized_formula = normalize_r_syntax(normalized_formula)
     # brms na_omit: a row missing any model variable is removed before
     # anything is built, and its original position is retained.
     original_rows = len(pandas_df)
@@ -1111,13 +1430,37 @@ def _formula_and_design(
     nw_df = nw.from_native(pandas_df, eager_only=True)
     namespace: dict[str, object] = dict(_R_TRANSFORMS)
     if extra_namespace:
-        if {"offset", "exposure", "cs", "cbind", "s"} & extra_namespace.keys():
+        if {
+            "offset",
+            "exposure",
+            "cs",
+            "cbind",
+            "c",
+            "list",
+            "mo",
+            "mmc",
+            "gp",
+            *_SMOOTH_NAMES,
+        } & extra_namespace.keys():
             raise ValueError(
-                "offset, exposure, cs, and cbind are reserved formula modifiers"
+                "offset, exposure, cs, cbind, c, list, mo, mmc, gp, s, t2, te, and ti are reserved formula modifiers"
             )
         namespace.update(extra_namespace)
     namespace["exposure"] = _exposure
-    namespace["s"] = PSpline
+    namespace.update(smooth_namespace())
+    namespace.update(r_transform_namespace())
+    namespace.update(gp_namespace())
+    # R's logical literals and NA for brms term options such as iso = FALSE.
+    namespace.update(R_LITERALS)
+    namespace["c"] = _r_vector
+    # R's list() for a smooth's xt argument, whose entries name data2 objects
+    # (brms evaluates them in the data environment).
+    namespace["list"] = r_list
+    for data2_name, data2_object in formula_data2().items():
+        if data2_name.isidentifier():
+            namespace.setdefault(data2_name, data2_object)
+    namespace["mo"] = Monotonic
+    namespace["mmc"] = lambda *columns: np.column_stack(columns)
     namespace["cbind"] = lambda *columns: np.column_stack(columns)
     cs_normalized = _normalize_cs_intercept(normalized_formula)
     if _CS_ONES in pandas_df.columns:
@@ -1125,7 +1468,21 @@ def _formula_and_design(
     if cs_normalized != normalized_formula:
         pandas_df = pandas_df.copy()
         pandas_df[_CS_ONES] = 1.0
-    normalized, random_blocks = _random_blocks(cs_normalized)
+    # brms 0 + Intercept: the Intercept variable is a column of ones.
+    intercept_normalized = normalize_intercept_term(cs_normalized)
+    if intercept_normalized != cs_normalized:
+        if BRMS_INTERCEPT in pandas_df.columns:
+            raise ValueError(f"{BRMS_INTERCEPT!r} is reserved for the Intercept term")
+        pandas_df = pandas_df.copy()
+        pandas_df[BRMS_INTERCEPT] = 1.0
+        cs_normalized = intercept_normalized
+    # brms gr(), mm(), g1:g2, and g1/g2 become plain bars over derived factors.
+    regrouped = rewrite_grouping(cs_normalized)
+    pandas_df = add_grouping_columns(pandas_df, regrouped.specs)
+    nw_df = nw.from_native(pandas_df, eager_only=True)
+    member_covariates = []
+    memberships = []
+    normalized, random_blocks = _random_blocks(regrouped.formula)
     # Inspect only formulas containing modifiers, so ordinary formulas retain
     # their single design-matrix parse. Inspect before evaluation because a
     # nested offset object can otherwise fail inside formulae arithmetic.
@@ -1160,6 +1517,19 @@ def _formula_and_design(
                     "offset and exposure terms cannot be random coefficients"
                 )
     dm = fo.design_matrices(normalized, data=pandas_df, extra_namespace=namespace)
+    # brms cmc = FALSE: no intercept without cell-mean coding.
+    drop_intercept = not cmc and (
+        dm.common is None or "Intercept" not in dm.common.terms
+    )
+    if drop_intercept:
+        dm = fo.design_matrices(
+            without_zero_intercept(normalized),
+            data=pandas_df,
+            extra_namespace=namespace,
+        )
+    # brms drop_unused_levels = FALSE keeps declared levels.
+    if not dropping_unused_levels():
+        dm = keep_unused_levels(dm, pandas_df)
     if dm.response is None:
         raise ValueError(
             f"formula_from_data: formula {formula!r} has no response "
@@ -1171,56 +1541,64 @@ def _formula_and_design(
     fixed_columns: list[FixedColumn] = []
     design_terms: list[GaussianDesignTerm] = []
     offsets: list[FixedColumn] = []
+    smooth_ids: dict[str, tuple[tuple[str, ...], int]] = {}
+    monotonic_terms: list[MonotonicTerm] = []
     if dm.common is not None:
         for term_name, term in dm.common.terms.items():
-            columns = _explode_term(term_name, term, n_obs)
             components = getattr(term, "components", ())
-            modifier = (
-                getattr(getattr(components[0], "call", None), "callee", None)
-                if len(components) == 1
-                else None
+            # brms mo() terms and their interactions are special-effects columns.
+            if monotonic_positions(components):
+                monotonic_terms.extend(monotonic_design(term_name, components))
+                continue
+            columns = _explode_term(term_name, term, n_obs)
+            call = (
+                getattr(components[0], "call", None) if len(components) == 1 else None
             )
-            if modifier != "s" and any(
-                _modifier_calls(getattr(component, "call", None), frozenset({"s"}))
+            modifier = getattr(call, "callee", None)
+            if modifier not in _SMOOTH_CALLS and any(
+                _modifier_calls(getattr(component, "call", None), _SMOOTH_CALLS)
                 for component in components
             ):
                 raise ValueError(
-                    "smooths must be standalone additive terms; use a retained tensor/by design for smooth interactions"
+                    "smooths must be standalone additive terms; use by= or t2() for smooth interactions"
                 )
-            if modifier == "s":
-                assert components
-                transform = components[0].call.stateful_transform
-                if not isinstance(transform, PSpline):
+            # brms gp(): one Gaussian design block per by contrast.
+            if modifier != "gp" and any(
+                _modifier_calls(getattr(component, "call", None), frozenset({"gp"}))
+                for component in components
+            ):
+                raise ValueError(
+                    "gp() terms must be standalone additive terms; use by= for interactions"
+                )
+            if modifier == "gp":
+                transform = getattr(call, "stateful_transform", None)
+                if (
+                    not isinstance(transform, GaussianProcess)
+                    or transform.state is None
+                ):
+                    raise ValueError("gp() terms require the retained basis evaluator")
+                design_terms.extend(_gp_design(term_name, transform, columns))
+            elif modifier in _SMOOTH_CALLS:
+                transform = getattr(call, "stateful_transform", None)
+                if (
+                    not isinstance(transform, SmoothTransform)
+                    or transform.state is None
+                ):
                     raise ValueError(
                         "smooth terms require the retained spline evaluator"
                     )
-                fixed_columns.extend(columns[: transform.null_width])
-                selected = tuple(range(transform.null_width, len(columns)))
-                assert transform.penalty is not None
-                coefficient_map = tuple(
-                    (*fixed, *random)
-                    for fixed, random in zip(
-                        transform.penalty.null_factor,
-                        transform.penalty.random_factor,
-                        strict=True,
-                    )
+                identity = transform.state.identity
+                if identity is not None:
+                    shape = (transform.state.spec, len(transform.state.blocks))
+                    if smooth_ids.setdefault(identity, shape) != shape:
+                        raise ValueError(
+                            f"smooths sharing id={identity!r} must use the same basis, dimension, order, and by structure"
+                        )
+                smooth_fixed, smooth_terms = _smooth_design(
+                    term_name, transform.state, columns
                 )
-                design_terms.append(
-                    GaussianDesignTerm(
-                        term=term_name,
-                        qvr_name="smooth_" + _qvr_name(term_name),
-                        column_indices=selected,
-                        data=np.column_stack(
-                            [columns[index].data for index in selected]
-                        ),
-                        basis=SplineBasis(
-                            knots=tuple(transform.basis._knots.tolist()),
-                            degree=transform.basis._degree,
-                        ),
-                        coefficient_map=coefficient_map,
-                        constraint=transform.penalty.constraint,
-                    )
-                )
+                fixed_columns.extend(smooth_fixed)
+                design_terms.extend(smooth_terms)
             elif modifier in {"offset", "exposure"}:
                 if len(columns) != 1 or columns[0].data.shape != (n_obs,):
                     raise ValueError(
@@ -1232,21 +1610,73 @@ def _formula_and_design(
             else:
                 fixed_columns.extend(columns)
 
+    if drop_intercept:
+        fixed_columns = [column for column in fixed_columns if not column.is_intercept]
     random_terms: list[RandomTerm] = []
     group_levels: dict[str, tuple[str, ...]] = {}
     group_indices: dict[str, tuple[int, ...]] = {}
     if dm.group is not None:
         for term in dm.group.terms.values():
             if any(
-                _modifier_calls(getattr(component, "call", None), frozenset({"s"}))
+                _modifier_calls(getattr(component, "call", None), _SMOOTH_CALLS)
                 for component in getattr(term.expr, "components", ())
             ):
                 raise ValueError(
                     "random smooths require a structured smooth/group design, not ordinary random coefficients"
                 )
+            if any(
+                _modifier_calls(getattr(component, "call", None), frozenset({"gp"}))
+                for component in getattr(term.expr, "components", ())
+            ):
+                raise ValueError("gp() terms cannot be group-level coefficients")
             group = term.factor.name
             identity, shared = random_blocks.get((term.expr.name, group), (None, False))
-            for column in _explode_term(term.expr.name, term.expr, n_obs):
+            # A group-level mo() slope varies the matching population column.
+            slopes = (
+                monotonic_slopes(monotonic_terms, term.expr.name, group)
+                if monotonic_positions(getattr(term.expr, "components", ()))
+                else ()
+            )
+            random_terms.extend(
+                RandomTerm(
+                    slope=slope, group=group, correlation_id=identity, shared=shared
+                )
+                for slope in slopes
+            )
+            # mm(): the coefficient enters through every member's covariate.
+            spec = next((item for item in regrouped.specs if item.name == group), None)
+            membership = (
+                spec if spec is not None and spec.kind == "membership" else None
+            )
+            per_member = is_member_call(getattr(term.expr, "components", ()))
+            if per_member and membership is None:
+                raise ValueError("mmc() requires an mm() grouping factor")
+            if slopes and membership is not None:
+                raise ValueError("mo() slopes cannot vary over an mm() grouping factor")
+            if per_member and membership is not None:
+                random_terms.append(
+                    RandomTerm(
+                        slope=term.expr.name,
+                        group=group,
+                        correlation_id=identity,
+                        shared=shared,
+                    )
+                )
+                member_covariates.append(
+                    member_covariate(
+                        group,
+                        membership,
+                        term.expr.name,
+                        term.expr.name,
+                        term.expr.data,
+                        per_member=True,
+                    )
+                )
+            for column in (
+                ()
+                if slopes or per_member
+                else _explode_term(term.expr.name, term.expr, n_obs)
+            ):
                 random_terms.append(
                     RandomTerm(
                         slope="Intercept" if column.is_intercept else column.name,
@@ -1256,6 +1686,21 @@ def _formula_and_design(
                         column=column,
                     )
                 )
+                if membership is not None:
+                    member_covariates.append(
+                        member_covariate(
+                            group,
+                            membership,
+                            "Intercept" if column.is_intercept else column.name,
+                            "" if column.is_intercept else column.term,
+                            np.ones(n_obs) if column.is_intercept else column.data,
+                            per_member=False,
+                        )
+                    )
+            if group not in group_levels and membership is not None:
+                group_levels[group], fitted = fit_membership(pandas_df, membership)
+                group_indices[group] = fitted.codes[0]
+                memberships.append(fitted)
             if group not in group_levels:
                 group_levels[group], group_indices[group] = _group_coding(nw_df, group)
     if not isinstance(groups, tuple) or any(
@@ -1303,6 +1748,25 @@ def _formula_and_design(
         category_levels=category_levels,
         ordered=ordered_response,
     )
+    # brms thres(n, gr): each group owns its threshold count.
+    if response_modifiers.threshold_groups is not None:
+        resolved = resolved_threshold_groups(
+            response_values,
+            response_modifiers.threshold_groups.with_(extra_category=extra_category),
+        )
+        response_modifiers = response_modifiers.with_(
+            threshold_groups=resolved, thresholds=max(resolved.counts)
+        )
+    # brms thres()/cat(): declared ordinal categories beyond those observed.
+    if response_modifiers.thresholds is not None:
+        category_levels, ordered_response = declared_categories(
+            response_values,
+            category_levels,
+            response_modifiers.thresholds + int(extra_category),
+        )
+        response_layout = response_layout.with_(
+            category_levels=category_levels, ordered=ordered_response
+        )
     validate_event_response(
         response_values, response_modifiers.censoring, response_modifiers.truncation
     )
@@ -1326,6 +1790,16 @@ def _formula_and_design(
         response_layout=response_layout,
         group_levels=group_levels,
         group_indices=group_indices,
+        monotonic_terms=tuple(monotonic_terms),
+        grouping=GroupingPlan(
+            specs=regrouped.specs,
+            covariances=regrouped.covariances,
+            memberships=tuple(memberships),
+            covariates=tuple(member_covariates),
+            options=fit_group_options(
+                regrouped.options, pandas_df, group_levels, group_indices
+            ),
+        ),
     ), dm
 
 

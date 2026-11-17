@@ -8,3 +8,12 @@ p-values and leave-one-out probability integral transform (LOO-PIT) checks of ca
 held-out observations.
 
 ::: quivers.diagnostics.predictive_checks
+
+## The data behind bayesplot's checks
+
+The `ppc_*` functions of [`quivers.diagnostics`](index.md) compute the tables bayesplot draws its
+`ppc_*` plots from [@gabry2019visualization], with bayesplot's column names
+and row order. `pp_check` on a fit selects the draws and data as brms does
+(see the [analysis guide](../../guides/analysis-fitting-and-diagnostics.md#posterior-predictive-checks)).
+
+::: quivers.diagnostics._ppc_data

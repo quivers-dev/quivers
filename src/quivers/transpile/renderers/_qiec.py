@@ -88,6 +88,7 @@ from quivers.transpile.qiec_ir import (
     IRQiecLetValue,
     IRQiecReduction,
     IRQiecRowwise,
+    IRQiecCholeskyFactor,
     IRQiecGather,
     IRQiecKernelMatrix,
     IRQiecLogDensity,
@@ -1460,7 +1461,7 @@ def _free_runtime_capture(
         elif isinstance(item, IRQiecTableMap):
             value(item.table, locally_bound)
             value(item.index, locally_bound)
-        elif isinstance(item, IRQiecReduction | IRQiecRowwise):
+        elif isinstance(item, IRQiecReduction | IRQiecRowwise | IRQiecCholeskyFactor):
             value(item.value, locally_bound)
         elif isinstance(item, IRQiecComprehension):
             value(item.body, locally_bound | {item.binder.name})
@@ -1556,7 +1557,7 @@ def qiec_families_used(ir: IRProgram) -> frozenset[str]:
         elif isinstance(item, IRQiecTableMap):
             value(item.table)
             value(item.index)
-        elif isinstance(item, IRQiecReduction | IRQiecRowwise):
+        elif isinstance(item, IRQiecReduction | IRQiecRowwise | IRQiecCholeskyFactor):
             value(item.value)
         elif isinstance(item, IRQiecComprehension):
             value(item.body)

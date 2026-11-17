@@ -12,14 +12,20 @@ import torch
 from quivers.formulas import fit, formula_from_data
 from quivers.formulas._prediction import prepare_prediction
 from quivers.inference.mcmc.driver import MCMCResult
+from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import trace
 
 
 def _recorded(result, values=None, chains=2, count=3):
     draws = result.draws(num_samples=1)
+    # Derived coefficient sites (ordered or centered intercepts) are not latent.
+    latent = LatentRegistry.from_model(
+        result.program, observed_names=set(result.observations)
+    ).names
     samples = {
         name: value[0, 0].expand(chains, count, *value.shape[2:]).clone()
         for name, value in draws.items()
+        if name in latent
     }
     for name, value in (values or {}).items():
         samples[name] = value.expand(chains, count, *value.shape).clone()
@@ -125,8 +131,9 @@ def test_stateful_transforms_and_contrasts_retain_training_state_and_column_orde
     fresh = pd.DataFrame({"x": [10.0, 12.0], "c": ["c", "a"]})
     matrix = torch.tensor(
         [
-            [1.0, 8.5, 8.5 / math.sqrt(1.25), 8.5 / math.sqrt(5), 35.5, 0.0, 1.0],
-            [1.0, 10.5, 10.5 / math.sqrt(1.25), 10.5 / math.sqrt(5), 54.5, 0.0, 0.0],
+            # R scale() divides by the n - 1 deviation, sqrt(5 / 3) for x.
+            [1.0, 8.5, 8.5 / math.sqrt(5 / 3), 8.5 / math.sqrt(5), 35.5, 0.0, 1.0],
+            [1.0, 10.5, 10.5 / math.sqrt(5 / 3), 10.5 / math.sqrt(5), 54.5, 0.0, 0.0],
         ]
     )
     expected = (matrix @ torch.tensor(coefficients)).expand(2, 3, 2)

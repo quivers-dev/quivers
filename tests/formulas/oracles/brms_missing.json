@@ -1,0 +1,79 @@
+{
+  "mi": {
+    "Nmi_x": 3,
+    "Jmi_x": [2, 4, 7],
+    "stan": ["  vector[Ksp_y] bsp_y;  // special effects coefficients", "  vector[Nmi_x] Ymi_x;  // estimated missings", "    vector[N_x] Yl_x = Y_x;", "    Yl_x[Jmi_x] = Ymi_x;", "      mu_y[n] += (bsp_y[1]) * Yl_x[n] + (bsp_y[2]) * Yl_x[n] * Csp_y_1[n];", "    target += normal_id_glm_lpdf(Yl_x | Xc_x, Intercept_x, b_x, sigma_x);"],
+    "variables": ["b_y_Intercept", "b_x_Intercept", "b_x_z", "bsp_y_mix", "bsp_y_mix:z", "sigma_y", "sigma_x", "Ymi_x[2]", "Ymi_x[4]", "Ymi_x[7]"],
+    "log_lik_x": [0, 1, 0, 1, 0, 0, 1, 0]
+  },
+  "me_response": {
+    "Yl": "vector[N] Yl;  // latent variable",
+    "stan": ["  vector<lower=0>[N] noise;", "  array[Nme] int<lower=1> Jme;", "  target += normal_lpdf(Y[Jme] | Yl[Jme], noise[Jme]);"]
+  },
+  "me": {
+    "stan": ["  vector[N] Xn_1;  // noisy values", "  vector[N] Xn_2;  // noisy values", "  vector[Mme_1] meanme_1;  // latent means", "  vector<lower=0>[Mme_1] sdme_1;  // latent SDs", "  matrix[Mme_1, N] zme_1;  // standardized latent values", "  cholesky_factor_corr[Mme_1] Lme_1;  // cholesky factor of the latent correlation matrix", "  matrix[N, Mme_1] Xme1;  // actual latent values", "  vector[N] Xme_1;", "  vector[N] Xme_2;", "  Xme1 = rep_matrix(transpose(meanme_1), N) + transpose(diag_pre_multiply(sdme_1, Lme_1) * zme_1);", "  Xme_1 = Xme1[, 1];", "  Xme_2 = Xme1[, 2];", "  lprior += lkj_corr_cholesky_lpdf(Lme_1 | 1);", "      mu[n] += (bsp[1]) * Xme_1[n] + (bsp[2]) * Xme_2[n];", "  target += normal_lpdf(Xn_1 | Xme_1, noise_1);", "  target += normal_lpdf(Xn_2 | Xme_2, noise_2);", "  target += std_normal_lpdf(to_vector(zme_1));", "  corr_matrix[Mme_1] Corme_1 = multiply_lower_tri_self_transpose(Lme_1);", "  vector<lower=-1,upper=1>[NCme_1] corme_1;", "      corme_1[choose(k - 1, 2) + j] = Corme_1[j, k];"],
+    "variables": ["b_Intercept", "bsp_mexs", "bsp_mezs", "sigma", "meanme_mex", "meanme_mez", "sdme_mex", "sdme_mez", "corme__mex__mez"],
+    "prior": [
+      {
+        "prior": "",
+        "class": "b",
+        "coef": ""
+      },
+      {
+        "prior": "",
+        "class": "b",
+        "coef": "mexs"
+      },
+      {
+        "prior": "",
+        "class": "b",
+        "coef": "mezs"
+      },
+      {
+        "prior": "lkj(1)",
+        "class": "corme",
+        "coef": ""
+      },
+      {
+        "prior": "student_t(3, 0.2, 2.5)",
+        "class": "Intercept",
+        "coef": ""
+      },
+      {
+        "prior": "",
+        "class": "meanme",
+        "coef": ""
+      },
+      {
+        "prior": "",
+        "class": "meanme",
+        "coef": "mex"
+      },
+      {
+        "prior": "",
+        "class": "meanme",
+        "coef": "mez"
+      },
+      {
+        "prior": "",
+        "class": "sdme",
+        "coef": ""
+      },
+      {
+        "prior": "",
+        "class": "sdme",
+        "coef": "mex"
+      },
+      {
+        "prior": "",
+        "class": "sdme",
+        "coef": "mez"
+      },
+      {
+        "prior": "student_t(3, 0, 2.5)",
+        "class": "sigma",
+        "coef": ""
+      }
+    ]
+  }
+}

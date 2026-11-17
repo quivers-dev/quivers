@@ -1,7 +1,7 @@
 """Which response families admit the ``cens`` and ``trunc`` addition terms.
 
 The decision for every registered family follows the ``ad`` entries of the
-brms family lists (``R/family-lists.R`` at brms 2.23.0): a family admits
+brms family lists (``R/family-lists.R``): a family admits
 ``cens`` and ``trunc`` exactly when brms lists them for it. A family missing
 from `RECORDED_EVENT_DECISIONS` is refused until a decision is recorded, so a
 new family cannot silently inherit either behaviour.

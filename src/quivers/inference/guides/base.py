@@ -42,6 +42,9 @@ from quivers.continuous.programs import MonadicProgram
 from quivers.effects.subsample import active_subsets
 from quivers.inference.registry import LatentRegistry
 
+# A structure-only recording lets laws without draws answer with a placeholder.
+from quivers.inference._latent_recording import latent_structure_recording
+
 # Module lookup bypasses the package's same-named function export and
 # retains the module while the effects and inference packages initialize.
 if TYPE_CHECKING:
@@ -161,7 +164,7 @@ class Guide(nn.Module, ABC):
         """
         if x is None:
             return LatentRegistry.from_model(model, observed_names)
-        with torch.random.fork_rng(devices=[]):
+        with torch.random.fork_rng(devices=[]), latent_structure_recording():
             recorded = _trace.trace(model, x, observations=dict(observations or {}))
         return LatentRegistry.from_trace(model, recorded)
 

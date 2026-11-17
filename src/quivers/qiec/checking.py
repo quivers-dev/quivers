@@ -106,6 +106,7 @@ from quivers.qiec.terms import (
     TableMap,
     Reduction,
     Rowwise,
+    CholeskyFactor,
     Comprehension,
     LetValue,
     TransportValue,
@@ -2748,6 +2749,27 @@ def infer_value(
         if value.result_type != actual:
             raise KernelError(
                 f"{value.operator} keeps its argument's type {render_static(actual)}, not the "
+                f"claimed {render_static(value.result_type)}",
+                "qiec-primitive",
+            )
+        return actual
+    if isinstance(value, CholeskyFactor):
+        actual = infer_value(value.value, registry, context)
+        shape = tensor_shape(actual)
+        if (
+            shape is None
+            or shape[0] != REAL
+            or len(shape[1]) < 2
+            or shape[1][-1] != shape[1][-2]
+        ):
+            raise KernelError(
+                "cholesky takes a Tensor[Real] whose last two axes have one "
+                f"extent, not {actual!r}",
+                "qiec-primitive",
+            )
+        if value.result_type != actual:
+            raise KernelError(
+                f"cholesky keeps its argument's type {render_static(actual)}, not the "
                 f"claimed {render_static(value.result_type)}",
                 "qiec-primitive",
             )

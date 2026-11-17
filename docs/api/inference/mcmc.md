@@ -28,6 +28,27 @@ and the type aliases that parameterize the kernels and the runner.
 
 ::: quivers.inference.mcmc
 
+## Parallel chains
+
+A compiled program holds compilation-local family catalogs and prepared
+evaluation plans, and a kernel holds the adaptation state of the chain it
+runs, so neither is sent to another process. Instead,
+[`parallel_chains`][quivers.inference.mcmc.parallel.parallel_chains] starts
+worker processes by the `spawn` method and gives each a picklable recipe, a
+[`ChainWorker`][quivers.inference.mcmc.parallel.ChainWorker], which rebuilds
+the program and data as the parent built them and runs its share of the
+chains with [`run_chains`][quivers.inference.mcmc.parallel.run_chains]. Chain
+`c` draws from the stream the driver derives from the run seed and `c`, with
+fresh kernel adaptation, so a chain's record does not depend on the process
+it ran in. The parent checks each worker's model fingerprint and run seed and
+assembles the records with the driver's own result assembly, so the result
+equals the serial run with the same seed, draw for draw. A run with a
+checkpoint, a callback, or no explicit seed is refused. Formula fits take
+brms's `cores`, and [`MCMCMethod`][quivers.modeling.methods.MCMCMethod] takes
+`cores` for a model built from QVR source.
+
+::: quivers.inference.mcmc.parallel
+
 ## Sequential Monte Carlo
 
 [Tempered sequential Monte Carlo](../../guides/inference-mcmc.md#tempered-sequential-monte-carlo)

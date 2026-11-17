@@ -49,10 +49,17 @@ from quivers.formulas.family import (
     OrdinalSpec,
     ResponseSpec,
     BaselineSpec,
+    MixtureSpec,
     Family,
     links,
     families,
 )
+
+# mixtures: brms mixture() families.
+from quivers.formulas._mixture import mixture
+
+# brms update_adterms(): edit response addition terms.
+from quivers.formulas._addition_terms import update_adterms
 from quivers.formulas.compile import (
     FormulaToQVRModule,
 )
@@ -76,16 +83,81 @@ from quivers.formulas._priors import (
 from quivers.formulas._custom_family import custom_family
 from quivers.formulas._custom_types import CustomFamilySpec
 from quivers.formulas._fit import BayesianFit, fit, formula_to_qvr, get_prior
+from quivers.formulas._smooth_effects import conditional_smooths
+from quivers.formulas._gp import GaussianProcessBlock, GaussianProcessConditional
+from quivers.formulas._multivariate import (
+    MecorSetting,
+    MultivariateFormula,
+    RescorSetting,
+    ResponseModel,
+    bf,
+    mvbf,
+    set_mecor,
+    set_rescor,
+)
+from quivers.formulas._joint_fit import MultivariateFit
+from quivers.formulas._multiple import MultipleFit, combine_models, fit_multiple
 from quivers.formulas._response_modifiers import (
     ResponseDraws,
     PredictionOptions,
     ExpectationOptions,
 )
+from quivers.formulas._postprocess_loo import KFoldPrediction, KFoldResult
+from quivers.formulas._postprocess_methods import (
+    JointPredictionOptions,
+    SinglePredictionOptions,
+    kfold_predict,
+    loo_compare,
+    loo_model_weights,
+    model_weights,
+)
+from quivers.formulas._postprocess_summary import FitSummary, VarCorrBlock
+
+# brms evidence, model averaging, conditional effects and predictive checks.
+from quivers.formulas._brms_effects import (
+    BrmsConditionalEffects,
+    EffectFrame,
+    make_conditions,
+)
+from quivers.formulas._evidence import (
+    BayesFactor,
+    bayes_factor,
+    bridge_sampler,
+    post_prob,
+)
+from quivers.formulas._mcmc_plot import mcmc_plot
+from quivers.formulas._model_averaging import (
+    PosteriorAverage,
+    PredictionAverage,
+    posterior_average,
+    pp_average,
+)
+from quivers.formulas._pp_check import PPCheck, pp_check
+
+# brms prior tables, flat and constant priors, and fitting controls.
+from quivers.formulas._brms_priors import PriorRow, PriorTable
+from quivers.formulas._fit_controls import PathfinderOptions, SamplerControl
+from quivers.formulas._priors import ConstantPrior, ImproperFlat
+from quivers.formulas._prior_tables import default_prior, prior_summary, validate_prior
+
+# Keyword types that public signatures name.
+from quivers.formulas._brms_effects import (
+    ConditionalEffectsOptions,
+    JointConditionalEffectsOptions,
+)
+from quivers.formulas._joint_options import FormulaFitOptions
+from quivers.formulas._prior_tables import PriorTableOptions
 
 __all__ = [
+    "ConditionalEffectsOptions",
+    "JointConditionalEffectsOptions",
+    "FormulaFitOptions",
+    "PriorTableOptions",
     # formula
     "FixedColumn",
     "GaussianDesignTerm",
+    "GaussianProcessBlock",
+    "GaussianProcessConditional",
     "SplineBasis",
     "RandomTerm",
     "Formula",
@@ -111,6 +183,9 @@ __all__ = [
     "custom_family",
     "links",
     "families",
+    "mixture",
+    "MixtureSpec",
+    "update_adterms",
     "PriorSpec",
     "PriorSet",
     "PriorTarget",
@@ -133,4 +208,55 @@ __all__ = [
     "fit",
     "formula_to_qvr",
     "get_prior",
+    "conditional_smooths",
+    # joint (multivariate) formulas
+    "MultivariateFormula",
+    "MultivariateFit",
+    "ResponseModel",
+    "RescorSetting",
+    "bf",
+    "mvbf",
+    "set_rescor",
+    "set_mecor",
+    "MecorSetting",
+    # multiple imputation (brm_multiple, combine_models)
+    "MultipleFit",
+    "combine_models",
+    "fit_multiple",
+    # brms post-processing (summaries, criteria, k-fold)
+    "FitSummary",
+    "JointPredictionOptions",
+    "KFoldPrediction",
+    "KFoldResult",
+    "SinglePredictionOptions",
+    "VarCorrBlock",
+    "kfold_predict",
+    "loo_compare",
+    "loo_model_weights",
+    "model_weights",
+    # brms evidence, model averaging, conditional effects and predictive checks
+    "BayesFactor",
+    "BrmsConditionalEffects",
+    "EffectFrame",
+    "PPCheck",
+    "PosteriorAverage",
+    "PredictionAverage",
+    "bayes_factor",
+    "bridge_sampler",
+    "make_conditions",
+    "mcmc_plot",
+    "post_prob",
+    "posterior_average",
+    "pp_average",
+    "pp_check",
+    # brms prior tables, flat and constant priors, and fitting controls
+    "ConstantPrior",
+    "ImproperFlat",
+    "PriorRow",
+    "PriorTable",
+    "PathfinderOptions",
+    "SamplerControl",
+    "default_prior",
+    "prior_summary",
+    "validate_prior",
 ]

@@ -1,0 +1,1 @@
+{"s_code":true,"s_data":true,"t2_code":true,"t2_data":true,"mgcv_design":true,"mgcv_random":true,"s_label":"s(x, sp = 0.5)","t2_label":"t2(x, z, sp = c(1, 2, 3))"}

@@ -23,6 +23,7 @@ from quivers.formulas.formula import (
     TruncationSpec,
     Formula,
     ResponseModifiers,
+    ThresholdGroups,
 )
 
 if TYPE_CHECKING:
@@ -41,6 +42,9 @@ class BoundRoles(TypedDict, total=False):
     standard_error: StandardErrorSpec
     subset: RowSelection
     trials: FixedColumn
+    rate: FixedColumn
+    thresholds: int
+    threshold_groups: ThresholdGroups
     weights_scale: bool
     sources: tuple[tuple[str, RoleSource], ...]
 
@@ -57,6 +61,11 @@ _CALLS = {
     "se": (("standard_error",), {"sigma": "se_sigma"}),
     "subset": (("subset",), {}),
     "trials": (("trials",), {}),
+    # brms rate(denom): count response denominators.
+    "rate": (("rate",), {}),
+    # brms thres(n, gr) and the deprecated cat(n): ordinal threshold counts.
+    "thres": (("thresholds", "threshold_group"), {"gr": "threshold_group"}),
+    "cat": (("categories",), {}),
 }
 _ALIASES = {
     "weights": "formula_weights",
@@ -67,6 +76,8 @@ _ALIASES = {
     "trunc_upper": "formula_trunc_upper",
     "standard_error": "formula_standard_error",
     "trials": "formula_trials",
+    "rate": "formula_rate",
+    "threshold_group": "formula_threshold_group",
 }
 _ROLES = frozenset(
     role
@@ -175,7 +186,13 @@ def parse_roles(
             if role in arguments:
                 raise ValueError(f"{call.func.id} gives {role} twice")
             arguments[role] = keyword.value
-        required = set() if call.func.id == "trunc" else {positional[0]}
+        # brms thres(gr = g) takes each group's count from its responses.
+        required = (
+            set()
+            if call.func.id == "trunc"
+            or (call.func.id == "thres" and "threshold_group" in arguments)
+            else {positional[0]}
+        )
         if not arguments or required - arguments.keys():
             raise ValueError(f"{call.func.id} requires its response role argument")
         for role, node in arguments.items():
@@ -263,8 +280,195 @@ def _numeric(values: np.ndarray, role: str, *, finite: bool = True) -> np.ndarra
     return result
 
 
+def declared_categories(
+    values: np.ndarray, levels: tuple[str, ...], thresholds: int
+) -> tuple[tuple[str, ...], bool]:
+    """Declare all categories of an ordinal response from its threshold count.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        Response codes (zero-based integers or factor codes).
+    levels : tuple[str, ...]
+        Factor levels, or empty for an integer response.
+    thresholds : int
+        Declared number of thresholds.
+
+    Returns
+    -------
+    tuple[tuple[str, ...], bool]
+        The category labels (``"0"`` to ``"K-1"`` for integer codes) and that
+        they are ordered.
+
+    Raises
+    ------
+    ValueError
+        If factor levels disagree with the count or codes fall outside it.
+    """
+    count = thresholds + 1
+    if levels:
+        if len(levels) != count:
+            raise ValueError(
+                f"thres() declares {count} categories but the response has "
+                f"{len(levels)} levels"
+            )
+        return levels, True
+    codes = np.asarray(values, dtype=np.float64).reshape(-1)
+    if (
+        not np.isfinite(codes).all()
+        or not np.equal(codes, np.round(codes)).all()
+        or np.any(codes < 0)
+        or np.any(codes >= count)
+    ):
+        raise ValueError(
+            f"thres() declares categories 0, ..., {count - 1}; response codes must "
+            "be integers among them"
+        )
+    return tuple(str(index) for index in range(count)), True
+
+
+def bind_threshold_groups(
+    frame: pd.DataFrame,
+    sources: Mapping[str, RoleSource],
+    fitted: ThresholdGroups | None = None,
+) -> ThresholdGroups:
+    """Bind the threshold group of each row, as brms ``thres(n, gr)``.
+
+    brms keeps one threshold vector per level of ``gr``, in the sorted order
+    of the labels, and reads the number of thresholds of a group from ``n``,
+    which must be constant within the group.
+
+    Parameters
+    ----------
+    frame : pandas.DataFrame
+        Included rows.
+    sources : Mapping
+        Role sources holding ``threshold_group`` and optionally ``thresholds``.
+    fitted : ThresholdGroups or None
+        Fitted groups whose labels and counts fresh rows are coded against.
+
+    Returns
+    -------
+    ThresholdGroups
+        Row codes and labels, with counts when ``n`` declares them or the
+        fitted groups hold them.
+
+    Raises
+    ------
+    ValueError
+        If the group column is not a column, a fresh row names a group
+        without fitted thresholds, or ``n`` is not one positive integer per
+        group.
+    """
+    source = sources["threshold_group"]
+    if not isinstance(source, str):
+        raise ValueError("thres(gr = ...) must name a dataframe column")
+    labels = [str(value) for value in _values(frame, source, "thres(gr)")]
+    if fitted is not None:
+        positions = {label: index for index, label in enumerate(fitted.levels)}
+        unknown = sorted(set(labels) - set(positions))
+        if unknown:
+            raise ValueError(
+                f"threshold group {source!r} has no fitted thresholds for "
+                f"{unknown!r}; a group's thresholds are estimated from its own rows"
+            )
+        codes = np.asarray([positions[label] for label in labels], dtype=np.int64)
+        return fitted.with_(
+            column=fitted.column.with_(data=codes),
+        )
+    levels = tuple(sorted(set(labels)))
+    positions = {label: index for index, label in enumerate(levels)}
+    codes = np.asarray([positions[label] for label in labels], dtype=np.int64)
+    counts: tuple[int, ...] = ()
+    if "thresholds" in sources:
+        declared = _numeric(
+            _values(frame, sources["thresholds"], "thresholds"), "thresholds"
+        )
+        per_group = []
+        for index, label in enumerate(levels):
+            values = np.unique(declared[codes == index])
+            if values.size != 1 or values[0] != int(values[0]) or values[0] < 1:
+                raise ValueError(
+                    "thres(n, gr) requires one positive integer number of "
+                    f"thresholds in threshold group {label!r}"
+                )
+            per_group.append(int(values[0]))
+        counts = tuple(per_group)
+    return ThresholdGroups(
+        column=FixedColumn(
+            term=source,
+            name=source,
+            qvr_name=_ALIASES["threshold_group"],
+            data=codes,
+        ),
+        levels=levels,
+        counts=counts,
+    )
+
+
+def resolved_threshold_groups(
+    values: np.ndarray, groups: ThresholdGroups
+) -> ThresholdGroups:
+    """Resolve and check each group's threshold count against its responses.
+
+    Without a declared count brms takes a group's number of thresholds from
+    the largest response of the group. With an extra category (the hurdle,
+    code zero) a group with ``n`` thresholds has the codes ``0, ..., n + 1``.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        Zero-based integer response codes of the included rows.
+    groups : ThresholdGroups
+        Row codes and labels, with declared counts or none.
+
+    Returns
+    -------
+    ThresholdGroups
+        The groups with one threshold count per label.
+
+    Raises
+    ------
+    ValueError
+        If the response is not a vector of nonnegative integer codes, a group
+        has a single category, or a response exceeds its group's count.
+    """
+    codes = np.asarray(values, dtype=np.float64)
+    if (
+        codes.ndim != 1
+        or not np.isfinite(codes).all()
+        or not np.equal(codes, np.round(codes)).all()
+        or np.any(codes < 0)
+    ):
+        raise ValueError(
+            "thres(gr = ...) requires a scalar response of nonnegative integer codes"
+        )
+    membership = np.asarray(groups.column.data)
+    counts = []
+    for index, label in enumerate(groups.levels):
+        observed = codes[membership == index]
+        largest = int(observed.max()) if observed.size else 0
+        extra = int(groups.extra_category)
+        count = groups.counts[index] if groups.counts else largest - extra
+        if count < 1:
+            raise ValueError(
+                f"threshold group {label!r} has a single response category; "
+                "declare its number of thresholds with thres(n, gr)"
+            )
+        if largest > count + extra:
+            raise ValueError(
+                f"threshold group {label!r} declares categories 0, ..., "
+                f"{count + extra} but holds the response {largest}"
+            )
+        counts.append(count)
+    return groups.with_(counts=tuple(counts))
+
+
 def bind_roles(
-    frame: pd.DataFrame, sources: Mapping[str, RoleSource]
+    frame: pd.DataFrame,
+    sources: Mapping[str, RoleSource],
+    *,
+    threshold_groups: ThresholdGroups | None = None,
 ) -> tuple[pd.DataFrame, BoundRoles]:
     """Select included rows, then bind every retained observation role once.
 
@@ -274,6 +478,8 @@ def bind_roles(
         Original source rows; excluded rows are never inspected for other roles.
     sources : Mapping
         Checked modifier roles from parse_roles or equivalent API keywords.
+    threshold_groups : ThresholdGroups or None
+        Fitted threshold groups that fresh rows are coded against.
 
     Returns
     -------
@@ -291,8 +497,11 @@ def bind_roles(
         raise ValueError(f"unknown response modifier roles {sorted(unknown)}")
     if "subset" in sources:
         mask = _values(frame, sources["subset"], "subset")
+        # brms subset() also reads numeric 0/1 indicators as logical.
+        if mask.dtype.kind in "iuf" and bool(np.isin(mask, (0, 1)).all()):
+            mask = mask.astype(bool)
         if mask.dtype.kind != "b":
-            raise ValueError("subset requires Boolean values")
+            raise ValueError("subset requires Boolean or 0/1 values")
         positions = tuple(int(index) for index in np.flatnonzero(mask))
         if not positions:
             raise ValueError("subset selects no response rows")
@@ -418,6 +627,29 @@ def bind_roles(
         bindings["truncation"] = TruncationSpec(
             lower=bounds.get("trunc_lower"), upper=bounds.get("trunc_upper")
         )
+    if "rate" in sources:
+        values = _numeric(_values(frame, sources["rate"], "rate"), "rate")
+        if np.any(values <= 0):
+            raise ValueError("rate denominators must be positive")
+        bindings["rate"] = column("rate", values)
+    if "thresholds" in sources and "categories" in sources:
+        raise ValueError("thres() and cat() both declare the number of thresholds")
+    if "threshold_group" in sources:
+        if "categories" in sources:
+            raise ValueError("cat() cannot be combined with thres(gr = ...)")
+        bindings["threshold_groups"] = bind_threshold_groups(
+            frame, sources, threshold_groups
+        )
+    for role, shift in (("thresholds", 0), ("categories", 1)):
+        if role not in sources or "threshold_group" in sources:
+            continue
+        values = np.unique(_numeric(_values(frame, sources[role], role), role))
+        if values.size != 1 or values[0] != int(values[0]) or values[0] - shift < 1:
+            raise ValueError(
+                f"{role} requires one positive integer for every row "
+                f"({'thres' if role == 'thresholds' else 'cat'}() without gr)"
+            )
+        bindings["thresholds"] = int(values[0]) - shift
     if "trials" in sources:
         values = _values(frame, sources["trials"], "trials")
         checked_integer_data(
@@ -574,7 +806,7 @@ def prediction_role_bindings(
     required = {
         role: source
         for role, source in modifiers.sources
-        if role in {"trunc_lower", "trunc_upper", "standard_error", "se_sigma"}
+        if role in {"trunc_lower", "trunc_upper", "standard_error", "se_sigma", "rate"}
     }
     _, bound = bind_roles(frame, required)
     columns = []
@@ -586,9 +818,17 @@ def prediction_role_bindings(
             for column in (truncation.lower, truncation.upper)
             if column is not None
         )
+    if isinstance(rate := bound.get("rate"), FixedColumn):
+        columns.append(rate)
     bindings = {
         column.qvr_name: torch.as_tensor(column.data.copy()) for column in columns
     }
+    if modifiers.threshold_groups is not None:
+        # brms thres(n, gr): fresh rows are coded against the fitted groups.
+        fresh = bind_threshold_groups(
+            frame, dict(modifiers.sources), modifiers.threshold_groups
+        )
+        bindings[fresh.column.qvr_name] = torch.as_tensor(fresh.column.data.copy())
     if modifiers.censoring is not None:
         bindings[modifiers.censoring.status.qvr_name] = torch.zeros(
             len(frame), dtype=torch.long

@@ -71,7 +71,20 @@ from quivers.inference.mcmc.metropolis import (
     RandomWalkProposal,
 )
 
+from quivers.inference.mcmc.parallel import (
+    ChainStates,
+    ChainWorker,
+    assemble_chains,
+    parallel_chains,
+    run_chains,
+)
+
 __all__ = [
+    "ChainStates",
+    "ChainWorker",
+    "assemble_chains",
+    "parallel_chains",
+    "run_chains",
     "MCMCKernel",
     "KernelState",
     "PotentialFn",

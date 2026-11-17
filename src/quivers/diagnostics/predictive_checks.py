@@ -15,19 +15,7 @@ import arviz as az
 import numpy as np
 import xarray as xr
 
-
-STATISTICS: dict[str, Callable[[np.ndarray], float]] = {
-    "mean": lambda y: float(np.mean(y)),
-    "median": lambda y: float(np.median(y)),
-    "sd": lambda y: float(np.std(y)),
-    "var": lambda y: float(np.var(y)),
-    "min": lambda y: float(np.min(y)),
-    "max": lambda y: float(np.max(y)),
-    "q05": lambda y: float(np.quantile(y, 0.05)),
-    "q95": lambda y: float(np.quantile(y, 0.95)),
-}
-"""The built-in scalar test statistics ``T(y) -> scalar``, keyed by the
-name `posterior_predictive_check` accepts for its ``statistic`` argument."""
+from quivers.diagnostics._ppc_data import STATISTICS
 
 
 def posterior_predictive_check(

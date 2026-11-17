@@ -220,6 +220,7 @@ of fixed shape `map`, `fold`, `length`, and `logsumexp_over`.
 | `select(c, a, b)` | `a` where the `Bool` `c` holds and `b` elsewhere, entry by entry, with both evaluated |
 | `real(c)`, `int(c)` | read a `Bool` as one or zero |
 | `matmul(a, b)` | sum the last axis of `a` against the first axis of a vector or matrix `b` |
+| `cholesky(a)` | the lower Cholesky factor of each symmetric positive-definite matrix in the last two axes of a real tensor |
 | `layer_norm(v)`, `rms_norm(v)` | normalize each row along the last axis, with an optional real `eps` |
 
 `traverse` is computation syntax, not a pure value. The collection forms and their restrictions

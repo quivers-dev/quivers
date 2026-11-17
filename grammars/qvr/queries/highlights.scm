@@ -271,6 +271,7 @@
     "atan"
     "atanh"
     "ceil"
+    "cholesky"
     "concat"
     "cos"
     "cosh"

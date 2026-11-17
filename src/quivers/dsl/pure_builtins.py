@@ -61,6 +61,35 @@ def _tensor_matmul(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
     return torch.matmul(left, right)
 
 
+def _tensor_cholesky(value: torch.Tensor) -> torch.Tensor:
+    """Factor symmetric positive-definite matrices along the last two axes.
+
+    The lower factor ``L`` with ``L L^T = A`` costs O(n^3) for an
+    ``n``-by-``n`` matrix and is differentiable to any order. Only the lower
+    triangle of ``A`` is read. A matrix that is not numerically positive
+    definite has no factor: its entries are NaN, so a density built from it
+    is undefined and a sampler rejects the proposal, as Stan rejects a
+    failed ``cholesky_decompose``.
+
+    Parameters
+    ----------
+    value : torch.Tensor
+        Real matrices with any leading batch axes.
+
+    Returns
+    -------
+    torch.Tensor
+        Lower-triangular factors of the same shape.
+    """
+    factor, info = torch.linalg.cholesky_ex(value)
+    failed = info != 0
+    if bool(failed.any()):
+        factor = torch.where(
+            failed[..., None, None], torch.full_like(factor, torch.nan), factor
+        )
+    return factor
+
+
 def _eager_observation_weight(value: torch.Tensor | float) -> torch.Tensor | float:
     """Check the same finite, nonnegative carrier as the reference primitive.
 
@@ -453,6 +482,7 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
         a * torch.rsqrt(a.pow(2).mean(dim=-1, keepdim=True) + float(eps))
     ),
     "matmul": _tensor_matmul,
+    "cholesky": _tensor_cholesky,
     "real": lambda a: (
         a.to(dtype=torch.get_default_dtype())
         if isinstance(a, torch.Tensor)
@@ -600,6 +630,11 @@ _SHAPE_BUILTINS: Mapping[str, frozenset[int]] = {
     "rms_norm": frozenset({1, 2}),
 }
 
+#: Builtins that act on the last two axes of a tensor of matrices, keeping
+#: its shape. The checked lowering spells each as one opaque matrix term,
+#: as a factorization has no finite expression in selections and sums.
+_MATRIX_FUNCTIONS: frozenset[str] = frozenset({"cholesky"})
+
 #: Higher-order operations whose types are determined by their collection and
 #: lambda arguments rather than by one first-order primitive signature.
 _COLLECTION_BUILTINS: frozenset[str] = frozenset(
@@ -612,6 +647,7 @@ type QiecBuiltinForm = Literal[
     "reduction",
     "rowwise",
     "shape",
+    "matrix",
     "collection",
     "unsupported",
     "host-only",
@@ -689,6 +725,8 @@ def _qiec_form(name: str) -> QiecBuiltinForm:
         return "rowwise"
     if name in _SHAPE_BUILTINS:
         return "shape"
+    if name in _MATRIX_FUNCTIONS:
+        return "matrix"
     if name == "filter":
         return "unsupported"
     if name in _COLLECTION_BUILTINS:
@@ -708,6 +746,8 @@ def _qiec_arities(name: str, form: QiecBuiltinForm) -> frozenset[int]:
         return frozenset(arities)
     if form == "shape":
         return _SHAPE_BUILTINS[name]
+    if form == "matrix":
+        return frozenset({1})
     if name in _COLLECTION_ARITIES:
         return _COLLECTION_ARITIES[name]
     return frozenset()
@@ -724,6 +764,8 @@ def _shape_rule(name: str, form: QiecBuiltinForm) -> str:
         return "last-axis-transform"
     if form == "shape":
         return "last-axis-rebuild"
+    if form == "matrix":
+        return "last-two-axes-transform"
     if name == "length":
         return "leading-extent"
     if name == "filter":
@@ -786,6 +828,9 @@ PRIMITIVE_OPERATORS: Mapping[str, LetBinaryOperator] = {
 
 #: The builtins that rebuild the last axis of their arguments.
 SHAPE_BUILTINS: frozenset[str] = frozenset(_SHAPE_BUILTINS)
+
+#: The builtins that transform the matrices in a tensor's last two axes.
+MATRIX_FUNCTIONS: frozenset[str] = _MATRIX_FUNCTIONS
 
 #: The builtin each call primitive reads back as.
 PRIMITIVE_BUILTINS: Mapping[str, str] = {

@@ -28,11 +28,11 @@ def test_response_specs_preserve_authored_axes_order_and_immutable_options():
     "responses",
     [
         {},
-        {"a": ResponseModel(formula="a~1")},
         {"a-b": ResponseModel(formula="a~1"), "a b": ResponseModel(formula="b~1")},
     ],
 )
 def test_invalid_response_coordinate_system_fails(responses):
+    # One response is a valid joint formula (used by mi()/me() models).
     with pytest.raises((ValueError, dx.ValidationError)):
         MultivariateFormula(responses=responses)
 

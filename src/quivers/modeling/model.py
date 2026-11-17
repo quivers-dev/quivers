@@ -50,6 +50,9 @@ from quivers.diagnostics.conditional import ConditionalEffects, PredictionGrid
 from quivers.diagnostics.cross_validation import FoldPrediction, FoldSplit
 from quivers.modeling.refit import RefitRecipe, SnapshotPolicy
 
+# Pathfinder draws report variational provenance.
+from quivers.inference.pathfinder import draw_provenance
+
 
 class ModelSchema(ValueModel):
     """The checked input contract of one QVR program.
@@ -1008,11 +1011,7 @@ class ModelFit(ValueModel):
         )[site]
         return grid.result(
             predictions,
-            kind="mcmc"
-            if isinstance(self.posterior, MCMCResult)
-            else "prior"
-            if isinstance(self.posterior, PriorDraws)
-            else "variational",
+            kind=draw_provenance(self.posterior),
         )
 
     def evidence(self, sampler: SMC) -> SMCResult:

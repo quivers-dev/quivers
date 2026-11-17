@@ -153,13 +153,9 @@ def _model(
         upper=0.8 if bounded else None,
     )
     if group:
-        rules = rules + PriorSpec(
-            distribution=hierarchy,
-            class_="sd",
-            block="shared",
-            lower=0.1 if bounded else None,
-            upper=0.9 if bounded else None,
-        )
+        # brms: a shrunken standard deviation is the shrinkage scale itself,
+        # so its rule carries no bounds.
+        rules = rules + PriorSpec(distribution=hierarchy, class_="sd", block="shared")
     lens = FormulaToQVRModule(
         families["categorical" if categorical else "gaussian"], user_priors=rules
     )
@@ -262,18 +258,12 @@ def test_sampled_shrinkage_joint_all_latent_gradients_and_reference_match_torch(
             density -= normalizer.log().sum()
         density += torch.distributions.HalfCauchy(2.0).log_prob(sigma)
         if group:
-            scale = torch.tensor(0.3, requires_grad=True)
+            # brms R2D2M2 and horseshoe on sd: sd_g is the shrinkage scale.
             z = torch.tensor([-0.5, 0.4], requires_grad=True)
-            sites |= {"sigma_g_Intercept": scale, "z_g_Intercept": z}
-            mean += scale * z[observations["g_idx"]]
-            density += torch.distributions.HalfNormal(scales[2]).log_prob(scale)
-            if bounded:
-                mass = 2 * (
-                    standard.cdf(0.9 / scales[2]) - standard.cdf(0.1 / scales[2])
-                )
-                density -= mass.log()
+            sites |= {"z_g_Intercept": z}
+            mean += scales[2] * z[observations["g_idx"]]
             density += torch.distributions.Normal(0.0, 1.0).log_prob(z).sum()
-            parameters.extend((scale, z))
+            parameters.append(z)
         density += (
             torch.distributions.Normal(mean, sigma).log_prob(observations["y"]).sum()
         )

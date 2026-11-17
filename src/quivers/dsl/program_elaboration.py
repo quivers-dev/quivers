@@ -225,6 +225,7 @@ from quivers.dsl.pure_builtins import (
     _REDUCTIONS,
     _ROWWISE,
     HOST_ONLY_BUILTINS,
+    MATRIX_FUNCTIONS,
     PURE_BUILTINS,
     SHAPE_BUILTINS,
 )
@@ -2221,7 +2222,9 @@ def _unify_free_shapes(
                 if shapes[0] and rank(node.args[0]) == len(shapes[0]):
                     return shapes[0][:-1]
                 return shapes[0]
-            if node.func in _ROWWISE and len(node.args) == 1:
+            if (node.func in _ROWWISE or node.func in MATRIX_FUNCTIONS) and len(
+                node.args
+            ) == 1:
                 if shapes[0] is None:
                     reduced.update(bare(node.args[0]))
                 return shapes[0]

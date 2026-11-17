@@ -16,8 +16,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from quivers.formulas import BayesianFit as _BayesianFit
+    from quivers.formulas import MultivariateFit as _MultivariateFit
 else:
     _BayesianFit = object
+    _MultivariateFit = object
 
 
 import torch
@@ -262,7 +264,7 @@ def _validate_recorded(
 
 
 def save_fit(
-    fitted: ModelFit | _BayesianFit,
+    fitted: ModelFit | _BayesianFit | _MultivariateFit,
     path: str | Path,
     *,
     factories: Mapping[str, ArtifactFactory] | None = None,
@@ -271,7 +273,7 @@ def save_fit(
 
     Parameters
     ----------
-    fitted : ModelFit or BayesianFit
+    fitted : ModelFit or BayesianFit or MultivariateFit
         Original checked model, posterior, deterministic module state, and recipe.
     path : str or pathlib.Path
         Destination checkpoint. An existing file is replaced only after success.
@@ -297,12 +299,20 @@ def save_fit(
         from quivers.formulas._fit import BayesianFit
         from quivers.formulas._artifact import _formula_state
 
-        if not isinstance(fitted, BayesianFit):
+        # Joint (multivariate) formula fits share this storage format.
+        from quivers.formulas._joint_fit import MultivariateFit
+        from quivers.formulas._joint_artifact import joint_state
+
+        if isinstance(fitted, MultivariateFit):
+            codec = _Codec(factories, formula=True)
+            manifest = joint_state(fitted, codec)
+        elif not isinstance(fitted, BayesianFit):
             raise TypeError(
                 "save_fit requires a source ModelFit or formula BayesianFit"
             )
-        codec = _Codec(factories, formula=True)
-        manifest = _formula_state(fitted, codec)
+        else:
+            codec = _Codec(factories, formula=True)
+            manifest = _formula_state(fitted, codec)
     manifest.update(
         format=_FORMAT, producer={"package": "quivers", "version": __version__}
     )
@@ -383,7 +393,7 @@ def load_fit(
     *,
     factories: Mapping[str, ArtifactFactory] | None = None,
     map_location: str | torch.device = "cpu",
-) -> ModelFit | _BayesianFit:
+) -> ModelFit | _BayesianFit | _MultivariateFit:
     """Reconstruct a fit without optimization or replacement posterior draws.
 
     Parameters
@@ -397,7 +407,7 @@ def load_fit(
 
     Returns
     -------
-    ModelFit or BayesianFit
+    ModelFit or BayesianFit or MultivariateFit
         Independent checked binding, posterior, and reconstructed live recipe.
         Loading a reference-owned recipe shares its newly loaded data, not the
         original process's memory. Saving always captures values at write time.
@@ -425,6 +435,7 @@ def load_fit(
     if manifest.get("format") != _FORMAT or manifest.get("kind") not in {
         "source",
         "formula",
+        "formula_joint",
     }:
         raise ValueError("unsupported fitted artifact format or kind")
     tensors, digests = payload["tensors"], payload["digests"]
@@ -437,12 +448,18 @@ def load_fit(
     for name, value in tensors.items():
         if not isinstance(value, torch.Tensor) or tensor_digest(value) != digests[name]:
             raise ValueError(f"artifact tensor integrity check failed for {name!r}")
-    codec = _Codec(factories, tensors, formula=manifest["kind"] == "formula")
+    codec = _Codec(
+        factories, tensors, formula=manifest["kind"] in {"formula", "formula_joint"}
+    )
     from quivers._rng import seeded_rng
 
     with seeded_rng(0, devices=[value.device for value in tensors.values()]):
         if manifest["kind"] == "source":
             return _restore_source(manifest, codec)
+        if manifest["kind"] == "formula_joint":
+            from quivers.formulas._joint_artifact import restore_joint
+
+            return restore_joint(manifest, codec)
         from quivers.formulas._artifact import _restore_formula
 
         return _restore_formula(manifest, codec)

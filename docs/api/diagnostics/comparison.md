@@ -14,3 +14,15 @@ one, without correcting variational approximation error. The
 [shared analysis API](posterior.md) describes the retained tensors.
 
 ::: quivers.diagnostics.comparison
+
+## Bridge sampling
+
+`quivers.diagnostics.bridge` estimates marginal likelihoods by bridge sampling
+[@meng1996simulating] as the R `bridgesampling` package does
+[@gronau2017tutorial; @gronau2020bridgesampling], with the normal and warp-3
+[@meng2002warp] proposals, the package's effective sample size, iteration and
+restart, and the approximate relative mean-squared error of
+@fruhwirth2004estimating. The fit methods are described in the
+[analysis guide](../../guides/analysis-fitting-and-diagnostics.md#marginal-likelihoods-by-bridge-sampling).
+
+::: quivers.diagnostics.bridge

@@ -149,6 +149,40 @@ gives a `Module` that compiles to the same program.
 - **Interactions** `x:z` (elementwise product, one coefficient) and
   `x*z` (expands to `x + z + x:z`, three coefficients).
 
+### A single-response `bf`
+
+brms writes distributional and nonlinear parameter formulas inside
+`bf(y ~ x, sigma ~ z)` and passes the result wherever it accepts a formula.
+[`bf`](../api/formulas/index.md#quivers.formulas.bf) for one response does the same:
+`fit`, `get_prior`, `formula_to_qvr`, `default_prior`, and `validate_prior`
+accept it and read its family, parameter formulas, response roles, and
+`center`, `decomp`, `cmc`, `sparse`, and `unused` options as the keywords of
+the same names. The fit is the fit of the keyword form, a
+[`BayesianFit`](../api/formulas/index.md#quivers.formulas.BayesianFit). An
+option given both in `bf` and as a keyword with different values raises an
+error.
+
+<!-- python: run -->
+```python
+import numpy as np
+import pandas as pd
+
+from quivers.formulas import bf, fit, get_prior
+
+rows = np.arange(20)
+data = pd.DataFrame({"x": np.sin(rows), "z": np.cos(2 * rows)})
+data["y"] = 1.0 + 0.5 * data["x"] + 0.2 * np.sin(5 * rows)
+
+authored = bf("y ~ x", "sigma ~ z")
+assert get_prior(authored, data=data) == get_prior(
+    "y ~ x", data=data, distributional={"sigma": "~ z"}
+)
+fitted = fit(authored, data=data, method="svi", num_steps=5, seed=1)
+assert list(fitted.variables(num_samples=2)) == [
+    "b_Intercept", "b_sigma_Intercept", "b_x", "b_sigma_z",
+]
+```
+
 ### Nonlinear parameter predictors
 
 The `nonlinear` mapping assigns additive formulas or deterministic
@@ -1568,19 +1602,17 @@ matrix. In the latter case, `fit` subtracts the reference-category logit
 before combining the predictor with formula terms. A binary categorical
 predictor may also return shape `(N,)`.
 
-### Gaussian mixture regressions
+### Mixture regressions
 
 In a mixture each response comes from one of several component distributions, and the
 likelihood sums their weighted densities, so fitting need not assign a component to
-each observation. The mixture family represents each response as a finite Gaussian mixture.
-`mixture_components` sets the number of components, while the formula's
-linear predictor shifts every component location for a row. Component
-weights are shared across rows, location offsets are centered to separate
-them from the formula intercept, and every component has its own positive
-scale. The `K - 1` free logits and offsets are mapped to sum-to-zero `K`-vectors through
-an orthonormal Helmert basis, a set of `K - 1` orthonormal contrasts, so the default
-isotropic normal priors give distributions on those vectors that are symmetric under
-permuting the components and have no redundant common direction:
+each observation. `family="mixture"` with `mixture_components=K` is brms's
+`mixture(gaussian, nmix = K)`: every component has its own coefficients and scale, the
+mixing proportions share one Dirichlet simplex, and the component intercepts are ordered
+to remove the relabelled modes [@stephens2000labels].
+[`mixture`](../api/formulas/index.md#quivers.formulas.mixture) builds mixtures of other and
+of different families, with component formulas, predicted or fixed proportions, and
+`pp_mixture`; the [mixture guide](formula-mixtures.md) gives the full correspondence with brms.
 
 <!-- python: skip -->
 ```python
@@ -1590,19 +1622,13 @@ mixture_fit = fit(
     family="mixture",
     mixture_components=3,
     priors={
-        "mixture_logit": "Normal(0.0, 0.5)",
-        "mixture_offset": "Normal(0.0, 2.0)",
-        "mixture_scale": "HalfNormal(1.0)",
+        "theta": "Dirichlet(concentration=[2.0, 2.0, 2.0])",
+        "mixture_intercept_spacing": "HalfNormal(2.0)",
+        "sigma1": "HalfNormal(1.0)",
     },
     method="nuts",
 )
 ```
-
-`MixtureNormal` sums over the component assignments in the likelihood, and centering
-separates the shared regression location from the component offsets. Permuting the
-component labels leaves the likelihood unchanged, so posterior draws can switch labels
-[@stephens2000labels]: summaries should use quantities that do not depend on the labels,
-or align the labels first.
 
 ### Ordinal families, thresholds, and category-specific effects
 

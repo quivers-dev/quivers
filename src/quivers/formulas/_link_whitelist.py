@@ -2,7 +2,7 @@
 
 Location links follow the ``links`` entries of the brms family lists
 (``R/family-lists.R``) and auxiliary links follow ``links_dpars``
-(``R/families.R``), both at brms 2.23.0. QVR names brms's ``1/mu^2`` link
+(``R/families.R``). QVR names brms's ``1/mu^2`` link
 ``inverse_square`` and the compositional ``logit`` link ``softmax``; both
 spellings are admitted. `LOCATION_EXTENSIONS` records the stated QVR
 extensions beyond brms. A family missing from `LOCATION_LINKS` is refused

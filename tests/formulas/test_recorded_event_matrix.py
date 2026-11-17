@@ -384,27 +384,32 @@ def _oracle(name: str, formula: str, frame, fitted, lower, upper):
 def _mixture_oracle(fitted, frame, formula, lower, upper):
     """Component-wise truncation as in brms: sum_k w_k P_k(event) / P_k(bounds).
 
-    The two-component Helmert coordinates are those printed by the compiled
-    QVR source: component k has offset and logit ``c_k`` times the sampled
-    contrast, with ``c = (1, -1) / sqrt(2)``.
+    The default ``mixture`` family is ``mixture(gaussian, gaussian)`` with
+    ordered intercepts: ``mu_k = intercept_k + beta_k x`` where the second
+    intercept is the first plus the sampled positive gap, one scale per
+    component, and Dirichlet weights ``theta``.
     """
     draws = {site: value.detach().numpy() for site, value in fitted.draws().items()}
-    contrast = np.array([1.0, -1.0]) / math.sqrt(2.0)
     x, y = frame.x.to_numpy(), frame.y.to_numpy()
     up = frame.up.to_numpy()
     status = frame.st.to_numpy() if "cens" in formula else np.zeros(len(frame), int)
     low_t = -np.inf if lower is None else lower
     high_t = np.inf if upper is None else upper
-    chains, count = draws["intercept"].shape[:2]
+    chains, count = draws["dpar_mu1_intercept"].shape[:2]
     out = np.empty((chains, count, len(frame)))
     for c in range(chains):
         for d in range(count):
-            eta = draws["intercept"][c, d] + draws["beta_x"][c, d] * x
-            loc = eta[:, None] + contrast * draws["mixture_offset"][c, d].reshape(-1)[0]
-            scale = draws["mixture_scale"][c, d].reshape(-1)
-            logits = contrast * draws["mixture_logit"][c, d].reshape(-1)[0]
-            weights = np.exp(logits - logits.max())
-            weights = weights / weights.sum()
+            first = draws["dpar_mu1_intercept"][c, d]
+            gap = draws["mixture_intercept_spacing"][c, d].reshape(-1)[0]
+            loc = np.stack(
+                (
+                    first + draws["dpar_mu1_beta_x"][c, d] * x,
+                    first + gap + draws["dpar_mu2_beta_x"][c, d] * x,
+                ),
+                axis=-1,
+            )
+            scale = np.array([draws["sigma1"][c, d], draws["sigma2"][c, d]])
+            weights = draws["theta"][c, d].reshape(-1)
 
             def cdf(value):
                 return stats.norm.cdf(value, loc, scale)

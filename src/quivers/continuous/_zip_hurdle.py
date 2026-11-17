@@ -42,6 +42,8 @@ class ZeroInflatedPoisson(_InflatedCount):
     Reference: [Lambert 1992](https://doi.org/10.2307/1269547).
     """
 
+    _semantic_family = "ZeroInflatedPoisson"
+
     arg_constraints = {
         "zero_prob": _constraints.unit_interval,
         "rate": _constraints.nonnegative,
@@ -74,6 +76,8 @@ class HurdlePoisson(_CountCDF, Distribution):
 
     Reference: [Mullahy 1986](https://doi.org/10.1016/0304-4076(86)90002-3).
     """
+
+    _semantic_family = "HurdlePoisson"
 
     arg_constraints = {
         "zero_prob": _constraints.unit_interval,

@@ -1230,19 +1230,23 @@ class Restrict(Measure):
                     iterations=80,
                 ).floor()
             else:
-                try:
-                    if not bool(((probability > 0) & (probability < 1)).all()):
-                        raise NotImplementedError(
-                            "the inverse CDF needs representable probabilities"
-                        )
-                    draws = self.base.icdf(probability)
-                except NotImplementedError:
-                    draws = invert_log_cdf(
+                # The closed-form inverse CDF needs representable probabilities.
+                closed_form = None
+                if bool(((probability > 0) & (probability < 1)).all()):
+                    try:
+                        closed_form = self.base.icdf(probability)
+                    except NotImplementedError:
+                        closed_form = None
+                draws = (
+                    closed_form
+                    if closed_form is not None
+                    else invert_log_cdf(
                         lambda point: _log_tails(base, point)[0],
                         log_probability,
                         low,
                         high,
                     )
+                )
         except NotImplementedError:
             return None
         if not bool((~active | (torch.isfinite(draws) & self._inside(draws))).all()):
@@ -1683,6 +1687,71 @@ class Mixture(Measure):
                 for component in self.components
             ]
         )
+
+    # mixtures: moments of the normalized mixture from component moments.
+    def _selection_probabilities(self) -> Tensor:
+        """Normalized probabilities of selecting each component.
+
+        Returns
+        -------
+        Tensor
+            ``w_k Z_k / sum_j w_j Z_j`` on the batch and component axes,
+            where ``Z_k`` is the raw mass of component ``k``.
+        """
+        return torch.softmax(self._component_logits(), dim=-1)
+
+    @property
+    def mean(self) -> Tensor:
+        """Mean of the normalized mixture, ``sum_k p_k E_k[Y]``.
+
+        Returns
+        -------
+        Tensor
+            The mean on the batch and event axes.
+
+        Raises
+        ------
+        NotImplementedError
+            If a component has no analytic mean.
+        """
+        probabilities = self._selection_probabilities()
+        means = torch.stack(
+            torch.broadcast_tensors(*(component.mean for component in self.components)),
+            dim=-1,
+        )
+        for _ in self.event_shape:
+            probabilities = probabilities.unsqueeze(-2)
+        return (probabilities * means).sum(-1)
+
+    @property
+    def variance(self) -> Tensor:
+        """Variance of the normalized mixture by the law of total variance.
+
+        Returns
+        -------
+        Tensor
+            ``sum_k p_k (Var_k + E_k^2) - E^2`` on the batch and event axes.
+
+        Raises
+        ------
+        NotImplementedError
+            If a component has no analytic mean or variance.
+        """
+        probabilities = self._selection_probabilities()
+        means = torch.stack(
+            torch.broadcast_tensors(*(component.mean for component in self.components)),
+            dim=-1,
+        )
+        variances = torch.stack(
+            torch.broadcast_tensors(
+                *(component.variance for component in self.components)
+            ),
+            dim=-1,
+        )
+        for _ in self.event_shape:
+            probabilities = probabilities.unsqueeze(-2)
+        second = (probabilities * (variances + means.square())).sum(-1)
+        return second - self.mean.square()
 
     def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
         """Add raw component event masses, including any point atoms.

@@ -1023,8 +1023,21 @@ def builtin_spelling(target: str, func: str, arity: int) -> BuiltinSpelling | No
     ------
     UnsupportedConstruct
         If the target has no table, or its table has no entry for the
-        builtin.
+        builtin, or the builtin factors matrices, which no target lowering
+        reads.
     """
+    spec = BUILTIN_REGISTRY.get(func)
+    if (
+        spec is not None
+        and spec.qiec_form == "matrix"
+        and target not in (NEUTRAL_TARGET, RUNTIME_TARGET)
+    ):
+        raise _refused(
+            target,
+            func,
+            "the planner lowers let expressions entry by entry, and a matrix "
+            "factorization reads every entry of its matrix at once",
+        )
     if MATH_BUILTINS.get(func) != arity or target in (NEUTRAL_TARGET, RUNTIME_TARGET):
         return None
     table = BUILTIN_SPELLINGS.get(target)
