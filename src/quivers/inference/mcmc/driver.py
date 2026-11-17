@@ -107,7 +107,9 @@ MCMCCallback = Callable[[int, int, KernelState, MCMCPhase], None]
 after every transition with the chain's index, the transition's index
 within its phase (counted from zero), the state it produced, and the
 phase. It runs in the sampling loop; it should not draw from the
-chain's generator or modify the state."""
+chain's generator or modify the state. The state of a recorded draw
+has its log-density evaluated; after a warmup or thinned-out transition
+that ended in a Gibbs sweep it may not (`KernelState.has_density`)."""
 
 
 class MCMCResult(ValueModel):
@@ -1587,13 +1589,18 @@ class MCMC:
             evaluations = potential.num_evaluations
             gradients = potential.num_gradient_evaluations
             record.state = self._transition(record.state, potential)
+            phase: MCMCPhase = "warmup" if record.phase == "warmup" else "sampling"
+            if phase == "sampling" and (record.iteration + 1) % self.thin == 0:
+                # A draw records the log-density, which a transition
+                # ending in a Gibbs sweep leaves for its reader.
+                record.state = record.state.evaluated(
+                    _conditioned(potential, record.state)
+                )
+                self._record_draw(setup, record)
             record.evaluations += potential.num_evaluations - evaluations
             record.gradient_evaluations += (
                 potential.num_gradient_evaluations - gradients
             )
-            phase: MCMCPhase = "warmup" if record.phase == "warmup" else "sampling"
-            if phase == "sampling" and (record.iteration + 1) % self.thin == 0:
-                self._record_draw(setup, record)
             if self.callback is not None:
                 self.callback(chain, record.iteration, record.state, phase)
             record.iteration += 1
@@ -1620,9 +1627,10 @@ class MCMC:
         setup : _RunSetup
             The run's structures.
         record : _ChainRecord
-            The chain's record.
+            The chain's record, whose state has its density evaluated.
         """
         state = record.state
+        log_density, _ = state.density()
         if state.diverged:
             record.divergences += 1
         for name, value in self._to_constrained(setup.registry, state.position).items():
@@ -1631,7 +1639,7 @@ class MCMC:
             record.draws[name].append(
                 setup.gibbs_layout[name].draw(state.gibbs_values[name])
             )
-        record.log_densities.append(float(state.log_density))
+        record.log_densities.append(float(log_density))
         record.stats.append(dict(state.stats))
 
     def _write(
@@ -1783,9 +1791,7 @@ class MCMC:
         KernelState
             The next state.
         """
-        if state.gibbs_values:
-            potential = potential.condition(state.gibbs_values)
-        return self.kernel.step(state, potential)
+        return self.kernel.step(state, _conditioned(potential, state))
 
     @staticmethod
     def _initial_gibbs_values(
@@ -2107,6 +2113,27 @@ def _component_acceptance(
             rates.append(sum(values) / len(values) if values else float("nan"))
         out[key.removesuffix(".accepted")] = torch.tensor(rates)
     return out
+
+
+def _conditioned(potential: PotentialFn, state: KernelState) -> PotentialFn:
+    """The potential a chain's state is scored under.
+
+    Parameters
+    ----------
+    potential : PotentialFn
+        The run's potential.
+    state : KernelState
+        The chain's state.
+
+    Returns
+    -------
+    PotentialFn
+        The potential conditioned on the state's Gibbs values, or the
+        potential itself when the state has none.
+    """
+    if state.gibbs_values:
+        return potential.condition(state.gibbs_values)
+    return potential
 
 
 def _begin_sampling(state: KernelState) -> KernelState:

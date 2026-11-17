@@ -785,11 +785,12 @@ class _HamiltonianKernel(MCMCKernel):
         """
         assert self._mass is not None
         p = self._mass.sample_momentum(generator=self._generator)
-        h0 = float(-state.log_density + self._mass.kinetic(p))
+        log_density, grad = state.density()
+        h0 = float(-log_density + self._mass.kinetic(p))
         _, p1, ld1, _ = _leapfrog(
             state.position,
             p,
-            state.grad_log_density,
+            grad,
             step_size,
             1,
             potential,
@@ -1052,8 +1053,7 @@ class HMCKernel(_HamiltonianKernel):
         assert self._mass is not None, "HMCKernel.init was not called"
         state = self._prepare_transition(state, potential)
         z0 = state.position
-        ld0 = state.log_density
-        g0 = state.grad_log_density
+        ld0, g0 = state.density()
         p0 = self._mass.sample_momentum(generator=self._generator)
         h0 = -ld0 + self._mass.kinetic(p0)
         eps = self.step_size
@@ -1477,8 +1477,7 @@ class NUTSKernel(_HamiltonianKernel):
         assert self._mass is not None, "NUTSKernel.init was not called"
         state = self._prepare_transition(state, potential)
         z = state.position
-        ld = state.log_density
-        g = state.grad_log_density
+        ld, g = state.density()
         p = self._mass.sample_momentum(generator=self._generator)
         h0 = float(-ld + self._mass.kinetic(p))
         eps = self.step_size

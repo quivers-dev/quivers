@@ -37,7 +37,6 @@ from its ``initial_values``, since the program has no draw of them.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-import math
 
 import torch
 from torch.distributions import constraints as _constraints
@@ -331,11 +330,14 @@ class GibbsKernel(MCMCKernel):
         Returns
         -------
         KernelState
-            The state with the block's new values, and the log-density
-            and gradient of the flat vector under the potential
-            conditioned on them. ``stats["accepted"]`` is ``1.0`` when
-            the sweep changed a value; ``stats["accept_prob"]`` is
-            ``1.0``.
+            The state with the block's new values.
+            ``stats["accepted"]`` is ``1.0`` when the sweep changed a
+            value; ``stats["accept_prob"]`` is ``1.0``. A sweep that
+            changed a value leaves the log-density and gradient
+            unevaluated, for the transition that next reads them to
+            evaluate under the potential conditioned on the new values
+            (`KernelState.evaluated`); a sweep that changed nothing
+            passes on the density it was given.
 
         Raises
         ------
@@ -380,18 +382,11 @@ class GibbsKernel(MCMCKernel):
             not torch.equal(proposed[name], current[name]) for name in self._sites
         )
         gibbs_values = {**state.gibbs_values, **proposed}
-        log_density, grad = potential.condition(gibbs_values).value_and_grad(
-            state.position
-        )
-        if not math.isfinite(float(log_density)):
-            raise RuntimeError(
-                "GibbsKernel: the chain's log-density is not finite after the "
-                f"update of {sorted(self._sites)}"
-            )
+        keeps_density = state.has_density and not changed
         return KernelState(
             position=state.position,
-            log_density=log_density,
-            grad_log_density=grad,
+            log_density=state.log_density if keeps_density else None,
+            grad_log_density=state.grad_log_density if keeps_density else None,
             step_count=state.step_count + 1,
             accept_count=state.accept_count + int(changed),
             diverged=False,

@@ -13,9 +13,13 @@ Every component sees the same chain state and the same chain-local
 generator. The state carries the log-density and gradient at the
 current position, under the potential conditioned on the current
 `KernelState.gibbs_values`, so a gradient kernel that follows a
-Metropolis move or a Gibbs sweep reuses the gradient its predecessor
-left. Each component receives the potential conditioned on the Gibbs
-values it starts from.
+Metropolis move reuses the gradient its predecessor left. A Gibbs
+sweep that changes a value leaves them unevaluated, and the next
+component that reads them evaluates them once, so a run of Gibbs
+blocks costs one density-and-gradient evaluation however many blocks
+it holds, and none when nothing reads the density before the values
+change again. Each component receives the potential conditioned on
+the Gibbs values it starts from.
 """
 
 from __future__ import annotations

@@ -378,6 +378,15 @@ print(result.samples["side"].shape)    # (2, 500): Gibbs sites are in the sample
 print(result.component_acceptance)     # {"nuts": ..., "side": ..., "walk": ...}
 ```
 
+The chain's state carries the log-density and gradient at its position,
+which a gradient kernel reuses from the component before it. A Gibbs
+sweep that changes a value leaves them unevaluated, and the next
+component that reads them, or the draw the driver records, evaluates
+them once. A cycle of several Gibbs blocks followed by NUTS thus pays one
+density-and-gradient evaluation for the whole run of blocks, a sweep that
+changes nothing pays none, and `KernelState.has_density` tells a callback
+whether the state it sees has been evaluated.
+
 A transition's statistics are in `KernelState.stats`, each component's
 under its name (`"nuts.tree_depth"`), and
 [`MCMCResult`](../api/inference/mcmc.md#quivers.inference.mcmc.MCMCResult)
