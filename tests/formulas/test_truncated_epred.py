@@ -83,6 +83,31 @@ def _plain(name: str, fitted, frame):
     ).with_(posterior=fitted.posterior)
 
 
+def _plain_log_density(plain, frame, row: int, points: np.ndarray) -> torch.Tensor:
+    """Score the untruncated density of one row at quadrature nodes.
+
+    Parameters
+    ----------
+    plain
+        The untruncated fit carrying the pinned posterior draws.
+    frame
+        The data frame the fit was built from.
+    row : int
+        The row whose predictors the nodes take.
+    points : np.ndarray
+        The response values to score.
+
+    Returns
+    -------
+    torch.Tensor
+        Log density with shape ``(1, draws, len(points))``.
+    """
+    scorer = matrix._NodeScorer(plain, frame)
+    scorer(row, points)
+    scorer.score()
+    return scorer(row, points)
+
+
 def _reference(name: str, fitted, frame, lower, upper) -> torch.Tensor:
     """Truncated means from the untruncated density, shape (1, draws, rows).
 
@@ -116,11 +141,11 @@ def _reference(name: str, fitted, frame, lower, upper) -> torch.Tensor:
                 ]
                 points = np.concatenate([rule[0] for rule in rules])
                 weights = np.concatenate([rule[1] for rule in rules])
-            density = matrix._plain_log_density(plain, frame, row, points)[0, draw]
+            density = _plain_log_density(plain, frame, row, points)[0, draw]
             weighted = density.exp() * torch.tensor(weights)
             mass = weighted.sum()
             if name in matrix.ATOM_AT_ZERO and low <= 0 <= high:
-                atom = matrix._plain_log_density(plain, frame, row, np.array([0.0]))
+                atom = _plain_log_density(plain, frame, row, np.array([0.0]))
                 mass = mass + atom[0, draw, 0].exp()
             result[0, draw, row] = (weighted * torch.tensor(points)).sum() / mass
     return result
