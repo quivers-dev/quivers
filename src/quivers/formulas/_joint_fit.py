@@ -1504,10 +1504,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 view = self._response_fit(name)
                 family = view.family
                 categories = (
-                    len(view.category_labels)
-                    if family.observe_family == "Categorical"
-                    or family.response_ordinal() is not None
-                    else 0
+                    len(view.category_labels) if family.category_response else 0
                 )
                 site = response.names[_qvr_name(response.formula.response_name)]
                 value = expected_response(

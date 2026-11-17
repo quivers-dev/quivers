@@ -84,11 +84,15 @@ class Link(dx.Model):
     intermediates : tuple[Binding, ...]
         Shared quantities bound, in order, before the inverse; each name
         and expression may use ``{eta}`` and ``{name}``.
+    brms_intercept_prior : str or None
+        brms's default prior of a centered location intercept under this
+        link, where it is not the response-scaled Student-t.
     """
 
     name: str
     inverse_expr: str
     intermediates: tuple[Binding, ...] = ()
+    brms_intercept_prior: str | None = None
 
 
 class OrdinalSpec(dx.Model):
@@ -214,6 +218,11 @@ class AuxParam(dx.Model):
     fixed_default : float or None
         Optional constant used unless the parameter is explicitly regressed,
         fixed, or given a prior. Ordinal discrimination defaults to one.
+    brms_class : str or None
+        brms parameter class when it differs from `name`.
+    brms_prior : str or None
+        brms's default prior where it is specific to this family's parameter;
+        otherwise the default of the parameter's brms class applies.
     domain : Domain
         Values the parameter may take; the positive half-line by default. A
         fixed value is checked against it, and a prior is restricted to a
@@ -225,6 +234,8 @@ class AuxParam(dx.Model):
     link: Link
     fixed_default: float | None = None
     domain: Domain = Domain()
+    brms_class: str | None = None
+    brms_prior: str | None = None
 
 
 class ResponseSpec(dx.Model):
@@ -379,6 +390,12 @@ class Family(ValueModel):
         Native constructor parameter that accepts the location on the log
         scale. Under a log location link the linear predictor is passed to it
         directly, so a rate too large to exponentiate still scores.
+    circular : bool
+        Whether the response is an angle, for which an expectation needs an
+        angular convention and no arithmetic mean is defined.
+    log_response : bool
+        Whether the location and scale parameterize the logarithm of the
+        response, so default prior scales are taken on the log response.
     response_domain : Domain or None
         Interval every observed response must lie in, stated only where the
         native support depends on parameters or the family narrows it;
@@ -411,6 +428,8 @@ class Family(ValueModel):
     observe_args: tuple[str | float, ...] = ("mu",)
     exposure: Exposure | None = None
     log_location_argument: str | None = None
+    circular: bool = False
+    log_response: bool = False
     response_domain: Domain | None = None
     decision_event: str | None = None
 
@@ -551,6 +570,29 @@ class Family(ValueModel):
         if self.mixture is not None:
             return self.mixture.components[0].ordinal
         return self.ordinal
+
+    @property
+    def unordered_categories(self) -> bool:
+        """Whether the response is an unordered category code.
+
+        Returns
+        -------
+        bool
+            True for a scalar categorical response.
+        """
+        return self.response is not None and self.response.kind == "categorical"
+
+    @property
+    def category_response(self) -> bool:
+        """Whether the response is a category code with class probabilities.
+
+        Returns
+        -------
+        bool
+            True for ordinal and unordered categorical responses, and for a
+            mixture of ordinal components.
+        """
+        return self.response_ordinal() is not None or self.unordered_categories
 
     def with_reference(self, reference: int | str | None) -> Family:
         """Select the reference component of a joint categorical predictor.
@@ -713,6 +755,8 @@ class Family(ValueModel):
             observe_args=self.observe_args,
             exposure=self.exposure,
             log_location_argument=self.log_location_argument,
+            circular=self.circular,
+            log_response=self.log_response,
             response_domain=self.response_domain,
             decision_event=self.decision_event,
             trials_parameter=self.trials_parameter,
@@ -799,7 +843,11 @@ links: Mapping[str, Link] = {
         intermediates=(Binding(name="{name}_link_positive", expr=_SOFTPLUS_EXPR),),
         inverse_expr="{name}_link_positive / (1.0 + {name}_link_positive)",
     ),
-    "tan_half": Link(name="tan_half", inverse_expr="2.0 * atan({eta})"),
+    "tan_half": Link(
+        name="tan_half",
+        inverse_expr="2.0 * atan({eta})",
+        brms_intercept_prior="StudentT(1.0, 0.0, 1.0)",
+    ),
 }
 """The built-in inverse links, keyed by link name."""
 
@@ -859,7 +907,12 @@ families: Mapping[str, Family] = FamilyRegistry({
             Binding(name="negative_binomial_probs", expr="mu / (mu + negative_binomial_shape)"),
         ),
         observe_args=("negative_binomial_shape", "negative_binomial_probs"),
-        aux_params=(AuxParam(name="sigma", prior="Gamma(0.4, 0.3)", link=_LOG),),
+        aux_params=(AuxParam(
+                name="sigma",
+                prior="Gamma(0.4, 0.3)",
+                link=_LOG,
+                brms_prior="Gamma(0.4, 0.3)",
+            ),),
     ),
     "skew_normal": Family(
         name="skew_normal",
@@ -881,6 +934,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="shifted_lognormal",
         location_link=_IDENTITY,
         observe_family="ShiftedLogNormal",
+        log_response=True,
         response_domain=Domain(),
         observe_args=("mu", "sigma", "ndt"),
         aux_params=(
@@ -1021,6 +1075,8 @@ families: Mapping[str, Family] = FamilyRegistry({
                 name="disp",
                 prior="Gamma(2.0, 2.0)",
                 link=_LOG,
+                brms_class="shape",
+                brms_prior="InverseGamma(0.4, 0.3)",
             ),
         ),
     ),
@@ -1168,7 +1224,12 @@ families: Mapping[str, Family] = FamilyRegistry({
         ),
         observe_args=("zi", "shape", "negative_binomial_probs"),
         aux_params=(
-            AuxParam(name="shape", prior="Gamma(2.0, 2.0)", link=_LOG),
+            AuxParam(
+                name="shape",
+                prior="Gamma(2.0, 2.0)",
+                link=_LOG,
+                brms_prior="InverseGamma(0.4, 0.3)",
+            ),
             AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),
         ),
     ),
@@ -1204,7 +1265,12 @@ families: Mapping[str, Family] = FamilyRegistry({
         ),
         observe_args=("hu", "shape", "negative_binomial_probs"),
         aux_params=(
-            AuxParam(name="shape", prior="Gamma(2.0, 2.0)", link=_LOG),
+            AuxParam(
+                name="shape",
+                prior="Gamma(2.0, 2.0)",
+                link=_LOG,
+                brms_prior="InverseGamma(0.4, 0.3)",
+            ),
             AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),
         ),
     ),
@@ -1225,6 +1291,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="hurdle_lognormal",
         location_link=_IDENTITY,
         observe_family="HurdleLogNormal",
+        log_response=True,
         observe_args=("hu", "mu", "sigma"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
@@ -1249,7 +1316,12 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("mu", "phi", "kappa"),
         aux_params=(
             AuxParam(name="phi", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="kappa", prior="Gamma(0.01, 0.01)", link=_LOG),
+            AuxParam(
+                name="kappa",
+                prior="Gamma(0.01, 0.01)",
+                link=_LOG,
+                brms_prior="Gamma(0.01, 0.01)",
+            ),
         ),
     ),
     "zero_one_inflated_beta": Family(
@@ -1281,6 +1353,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="lognormal",
         location_link=_IDENTITY,
         observe_family="LogNormal",
+        log_response=True,
         observe_args=("mu", "sigma"),
         aux_params=(AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),),
     ),
@@ -1352,6 +1425,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="von_mises",
         location_link=links["tan_half"],
         observe_family="VonMises",
+        circular=True,
         observe_args=("mu", "kappa"),
         aux_params=(AuxParam(name="kappa", prior="Gamma(2.0, 2.0)", link=_LOG),),
     ),

@@ -63,7 +63,7 @@ def formula_r2(
         raise ValueError("R-squared method must be auto, model, or residual")
     if observed is not None and not isinstance(observed, torch.Tensor):
         raise TypeError("R-squared observed responses must be a real tensor")
-    if fit.family.observe_family == "Categorical" and fit.family.ordinal is None:
+    if fit.family.unordered_categories:
         raise ValueError(
             "bayes_R2 is not defined for unordered categorical models, as in "
             "brms: unordered categories have no residual"

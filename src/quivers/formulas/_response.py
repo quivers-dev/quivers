@@ -299,7 +299,7 @@ def expected_response(
     """
     from quivers.inference._response import category_probabilities, response_mean
 
-    if family.observe_family == "VonMises":
+    if family.circular:
         raise TypeError(
             "a circular response expectation requires an angular convention"
         )
@@ -311,11 +311,7 @@ def expected_response(
         value = (
             distribution.choice_probs if decision else distribution.mean_response_time
         )
-    elif family.observe_family == "Categorical":
-        if not isinstance(distribution, torch.distributions.Categorical):
-            raise TypeError(
-                "the categorical response has no native class probabilities"
-            )
+    elif isinstance(distribution, torch.distributions.Categorical):
         value = distribution.probs
     elif family.response_ordinal() is not None:
         value = category_probabilities(distribution, categories)

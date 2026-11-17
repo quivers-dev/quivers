@@ -1806,9 +1806,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         for target in targets:
             rule = brms_default_rule(
                 target,
-                family=self._family.name,
-                location_link=self._family.location_link.name,
-                dpar_links={aux.name: aux.link.name for aux in self._family.aux_params},
+                family=self._family,
                 response=response,
                 offset_means=offset_means,
                 centered=centered,

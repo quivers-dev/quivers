@@ -1389,7 +1389,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             raise ValueError(
                 "decision probabilities require a decision response modifier"
             )
-        if self.family.observe_family == "VonMises":
+        if self.family.circular:
             raise TypeError(
                 "a circular response expectation requires an angular convention"
             )
@@ -1409,12 +1409,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         draws = self.draws(num_samples=num_samples, seed=seed)
         rows = context.rows
         response = _qvr_name(self.formula.response_name)
-        categories = (
-            len(self.category_labels)
-            if self.family.observe_family == "Categorical"
-            or self.family.response_ordinal() is not None
-            else 0
-        )
+        categories = len(self.category_labels) if self.family.category_response else 0
         if component == "decision":
             categories = 2
 
