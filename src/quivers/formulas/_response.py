@@ -303,7 +303,7 @@ def expected_response(
         raise TypeError(
             "a circular response expectation requires an angular convention"
         )
-    if decision or family.name == "wiener":
+    if decision or family.decision_event is not None:
         from quivers.continuous._wiener import Wiener
 
         if not isinstance(distribution, Wiener):

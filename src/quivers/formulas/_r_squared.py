@@ -133,7 +133,7 @@ def formula_r2(
         for recorded in replay(fit, draws, shape, context=context):
             law = response_distribution(recorded, response)
             try:
-                if fit.family.name == "wiener":
+                if fit.family.decision_event is not None:
                     from quivers.continuous._wiener import Wiener
 
                     assert isinstance(law, Wiener)

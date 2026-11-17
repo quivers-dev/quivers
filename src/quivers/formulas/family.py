@@ -112,6 +112,79 @@ class OrdinalSpec(dx.Model):
     thresholds: Literal["flexible", "equidistant", "sum_to_zero"] = "flexible"
 
 
+class Domain(dx.Model):
+    """The interval of values a family parameter may take.
+
+    Attributes
+    ----------
+    lower : float or None
+        Lower endpoint, or None when unbounded below.
+    upper : float or None
+        Upper endpoint, or None when unbounded above.
+    closed : bool
+        Whether the finite endpoints belong to the interval.
+    """
+
+    lower: float | None = 0.0
+    upper: float | None = None
+    closed: bool = False
+
+    def contains(self, value: float) -> bool:
+        """Test membership of one finite value.
+
+        Parameters
+        ----------
+        value : float
+            Candidate parameter value.
+
+        Returns
+        -------
+        bool
+            True when the value lies in the interval.
+        """
+        above = self.lower is None or (
+            value >= self.lower if self.closed else value > self.lower
+        )
+        below = self.upper is None or (
+            value <= self.upper if self.closed else value < self.upper
+        )
+        return above and below
+
+    def requirement(self) -> str:
+        """Describe the interval as the completion of "must ...".
+
+        Returns
+        -------
+        str
+            A verb phrase stating the constraint.
+        """
+        if self.lower is None and self.upper is None:
+            return "be a real number"
+        if self.upper is None:
+            if self.lower == 0:
+                return "be nonnegative" if self.closed else "be strictly positive"
+            return (
+                f"be at least {self.lower:g}"
+                if self.closed
+                else f"exceed {self.lower:g}"
+            )
+        if self.lower is None:
+            return (
+                f"be at most {self.upper:g}"
+                if self.closed
+                else f"be below {self.upper:g}"
+            )
+        if self.closed:
+            return f"be in [{self.lower:g}, {self.upper:g}]"
+        return f"be strictly between {self.lower:g} and {self.upper:g}"
+
+
+_REAL = Domain(lower=None)
+_NONNEGATIVE = Domain(closed=True)
+_UNIT_OPEN = Domain(upper=1.0)
+_UNIT_CLOSED = Domain(upper=1.0, closed=True)
+
+
 class AuxParam(dx.Model):
     """An auxiliary family parameter (scale, dispersion, etc.).
 
@@ -128,12 +201,17 @@ class AuxParam(dx.Model):
     fixed_default : float or None
         Optional constant used unless the parameter is explicitly regressed,
         fixed, or given a prior. Ordinal discrimination defaults to one.
+    domain : Domain
+        Values the parameter may take; the positive half-line by default. A
+        fixed value is checked against it, and a prior is restricted to a
+        lower endpoint above zero.
     """
 
     name: str
     prior: str
     link: Link
     fixed_default: float | None = None
+    domain: Domain = Domain()
 
 
 class ResponseSpec(dx.Model):
@@ -596,14 +674,9 @@ class Family(ValueModel):
             response=self.response,
             baseline=self.baseline,
             aux_params=tuple(
-                AuxParam(
-                    name=aux.name,
-                    prior=aux.prior,
-                    link=links[parameters[aux.name]]
-                    if aux.name in parameters
-                    else aux.link,
-                    fixed_default=aux.fixed_default,
-                )
+                aux.with_(link=links[parameters[aux.name]])
+                if aux.name in parameters
+                else aux
                 for aux in self.aux_params
             ),
         )
@@ -694,8 +767,8 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("bs", "ndt", "bias", "mu"),
         aux_params=(
             AuxParam(name="bs", prior="Gamma(1.0, 1.0)", link=_LOG),
-            AuxParam(name="ndt", prior="LogNormal(-2.0, 0.5)", link=_LOG),
-            AuxParam(name="bias", prior="Beta(1.0, 1.0)", link=_LOGIT),
+            AuxParam(name="ndt", prior="LogNormal(-2.0, 0.5)", link=_LOG, domain=_NONNEGATIVE),
+            AuxParam(name="bias", prior="Beta(1.0, 1.0)", link=_LOGIT, domain=_UNIT_OPEN),
         ),
     ),
     "com_poisson": Family(
@@ -720,8 +793,8 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("zi", "mu", "sigma", "quantile"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="quantile", prior="Beta(2.0, 2.0)", link=_LOGIT),
-            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT),
+            AuxParam(name="quantile", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_OPEN),
+            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),
         ),
     ),
     "negbinomial2": Family(
@@ -754,7 +827,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("skew_location", "skew_scale", "alpha"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="alpha", prior="Normal(0.0, 4.0)", link=_IDENTITY),
+            AuxParam(name="alpha", prior="Normal(0.0, 4.0)", link=_IDENTITY, domain=_REAL),
         ),
     ),
     "shifted_lognormal": Family(
@@ -764,7 +837,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("mu", "sigma", "ndt"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="ndt", prior="Uniform(0.0, response_min)", link=_LOG),
+            AuxParam(name="ndt", prior="Uniform(0.0, response_min)", link=_LOG, domain=_NONNEGATIVE),
         ),
     ),
     "frechet": Family(
@@ -780,6 +853,7 @@ families: Mapping[str, Family] = FamilyRegistry({
                 name="nu",
                 prior="Restrict(base=Gamma(concentration=2.0, rate=0.1), low=1.0)",
                 link=links["logm1"],
+                domain=Domain(lower=1.0),
             ),
         ),
     ),
@@ -790,7 +864,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("mu", "sigma", "xi"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="xi", prior="Normal(0.0, 0.3)", link=_IDENTITY),
+            AuxParam(name="xi", prior="Normal(0.0, 0.3)", link=_IDENTITY, domain=_REAL),
         ),
     ),
     "gaussian": Family(
@@ -973,7 +1047,7 @@ families: Mapping[str, Family] = FamilyRegistry({
             AuxParam(
                 name="disc", prior="LogNormal(0.0, 1.0)", link=_LOG, fixed_default=1.0
             ),
-            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT),
+            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),
         ),
     ),
     "acat": Family(
@@ -1019,6 +1093,7 @@ families: Mapping[str, Family] = FamilyRegistry({
                 name="zi",
                 prior="Beta(2.0, 2.0)",
                 link=_LOGIT,
+                domain=_UNIT_CLOSED,
             ),
         ),
     ),
@@ -1032,6 +1107,7 @@ families: Mapping[str, Family] = FamilyRegistry({
                 name="hu",
                 prior="Beta(2.0, 2.0)",
                 link=_LOGIT,
+                domain=_UNIT_CLOSED,
             ),
         ),
     ),
@@ -1045,7 +1121,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("zi", "shape", "negative_binomial_probs"),
         aux_params=(
             AuxParam(name="shape", prior="Gamma(2.0, 2.0)", link=_LOG),
-            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT),
+            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),
         ),
     ),
     "zero_inflated_binomial": Family(
@@ -1054,7 +1130,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_family="ZeroInflatedBinomial",
         observe_args=("zi", "trials", "mu"),
         trials_parameter="total_count",
-        aux_params=(AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT),),
+        aux_params=(AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),),
     ),
     "zero_inflated_beta_binomial": Family(
         name="zero_inflated_beta_binomial",
@@ -1068,7 +1144,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         trials_parameter="total_count",
         aux_params=(
             AuxParam(name="phi", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT),
+            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),
         ),
     ),
     "hurdle_negbinomial": Family(
@@ -1081,7 +1157,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("hu", "shape", "negative_binomial_probs"),
         aux_params=(
             AuxParam(name="shape", prior="Gamma(2.0, 2.0)", link=_LOG),
-            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT),
+            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),
         ),
     ),
     "hurdle_gamma": Family(
@@ -1094,7 +1170,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("hu", "shape", "hurdle_gamma_rate"),
         aux_params=(
             AuxParam(name="shape", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT),
+            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),
         ),
     ),
     "hurdle_lognormal": Family(
@@ -1104,7 +1180,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("hu", "mu", "sigma"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT),
+            AuxParam(name="hu", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),
         ),
     ),
     "zero_inflated_beta": Family(
@@ -1114,7 +1190,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("mu", "phi", "zi", 0.0),
         aux_params=(
             AuxParam(name="phi", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT),
+            AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),
         ),
     ),
     "xbeta": Family(
@@ -1142,11 +1218,13 @@ families: Mapping[str, Family] = FamilyRegistry({
                 name="zoi",
                 prior="Beta(2.0, 2.0)",
                 link=_LOGIT,
+                domain=_UNIT_CLOSED,
             ),
             AuxParam(
                 name="coi",
                 prior="Beta(2.0, 2.0)",
                 link=_LOGIT,
+                domain=_UNIT_CLOSED,
             ),
         ),
     ),
@@ -1164,7 +1242,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("mu", "sigma", "quantile"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="quantile", prior="Beta(2.0, 2.0)", link=_LOGIT),
+            AuxParam(name="quantile", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_OPEN),
         ),
     ),
     "exgaussian": Family(
@@ -1255,6 +1333,7 @@ one registered family.
 
 __all__ = [
     "Binding",
+    "Domain",
     "Exposure",
     "Link",
     "AuxParam",

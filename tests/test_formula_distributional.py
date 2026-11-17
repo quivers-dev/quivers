@@ -554,7 +554,7 @@ def test_fixed_parameters_refuse_invalid_or_conflicting_contracts(
 
 @pytest.mark.parametrize("quantile", [0.0, 1.0, -0.5, 1.5])
 def test_fixed_quantile_refuses_boundary_or_invalid_probabilities(data, quantile):
-    with pytest.raises(ValueError, match="strictly between zero and one"):
+    with pytest.raises(ValueError, match="strictly between 0 and 1"):
         formula_to_qvr(
             "y ~ x",
             data=data,

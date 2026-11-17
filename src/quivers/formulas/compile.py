@@ -112,7 +112,7 @@ from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.family_schemas import family_parameter_names, family_parameterizations
 from quivers.formulas._design import SymbolicColumn
-from quivers.formulas.family import Family, Link, links
+from quivers.formulas.family import Domain, Family, Link, links
 from quivers.formulas._recorded_event_families import check_recorded_event_family
 
 # brms mu<c>: category-specific predictors of categorical and simplex families.
@@ -1015,24 +1015,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 raise ValueError(
                     f"fixed parameter {name!r} must be a finite real number"
                 )
-            if name in {"quantile", "bias"}:
-                if not 0 < value < 1:
-                    raise ValueError(
-                        f"fixed parameter {name!r} must be strictly between zero and one"
-                    )
-            elif name in {"zi", "zoi", "coi", "hu"}:
-                if not 0 <= value <= 1:
-                    raise ValueError(f"fixed parameter {name!r} must be in [0, 1]")
-            elif name in {"alpha", "xi"}:
-                pass
-            elif name == "ndt":
-                if value < 0:
-                    raise ValueError("fixed parameter 'ndt' must be nonnegative")
-            elif name == "nu" and family.name == "frechet":
-                if value <= 1:
-                    raise ValueError("frechet fixed parameter 'nu' must exceed one")
-            elif value <= 0:
-                raise ValueError(f"fixed parameter {name!r} must be strictly positive")
+            domain = next(
+                (aux.domain for aux in family.aux_params if aux.name == name),
+                Domain(),
+            )
+            if not domain.contains(value):
+                raise ValueError(
+                    f"fixed parameter {name!r} must {domain.requirement()}"
+                )
         unknown = self._distributional.keys() - auxiliary_names
         # Category-specific locations mu<c> are checked against the labels.
         unknown = {
@@ -1464,9 +1454,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             ndt = self._fixed_parameters.get("ndt")
             if ndt is not None and np.any(response <= ndt):
                 raise ValueError("shifted_lognormal responses must exceed fixed ndt")
-        if formula.modifiers.decision is not None and self._family.name != "wiener":
+        if formula.modifiers.decision is not None and (
+            self._family.decision_event is None
+        ):
             raise ValueError("a decision response modifier requires the wiener family")
-        if self._family.name == "wiener":
+        if self._family.decision_event is not None:
             decision = formula.modifiers.decision
             response = np.asarray(formula.response_values)
             if decision is None:
@@ -5724,9 +5716,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 draw = self._prior_draw(
                     aux.name,
                     prior,
-                    lower=1.0
-                    if self._family.name == "frechet" and aux.name == "nu"
-                    else None,
+                    lower=aux.domain.lower if aux.domain.lower else None,
                 )
                 if vector_sigma:
                     draw = draw.with_(index=TypeName(name="FormulaCategoryLogit"))
