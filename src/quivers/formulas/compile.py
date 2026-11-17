@@ -141,6 +141,7 @@ from quivers.formulas._mixture import (
     validate_mixture_options,
 )
 from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
+from quivers.formulas._group_law import GroupBlockLaw, plan_group_blocks
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._ast import (
     _bind,
@@ -1043,6 +1044,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._random_scale_prior = random_scale_prior
         self._set_prior_configuration(user_priors)
         self._group_layouts: list[GroupBlockLayout] = []
+        self._group_laws: tuple[GroupBlockLaw, ...] = ()
         conflicting = (
             self._distributional.keys() | expression_roots
         ) & self._named_prior_inputs.keys()
@@ -1165,6 +1167,17 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Immutable group blocks shared with retained prediction plans.
         """
         return tuple(self._group_layouts)
+
+    @property
+    def group_laws(self) -> tuple[GroupBlockLaw, ...]:
+        """Return the planned law of each emitted group block.
+
+        Returns
+        -------
+        tuple[GroupBlockLaw, ...]
+            Joint blocks, then independent blocks in predictor order.
+        """
+        return self._group_laws
 
     def _observe_argument(
         self, argument: str | float, scale: Mapping[str, LetExprNode]
@@ -4577,6 +4590,34 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             offset += width
         return result
 
+    def _transition_axis(self, formula: Formula) -> tuple[str, int] | None:
+        """Read the axis of category-specific group coefficients.
+
+        Parameters
+        ----------
+        formula : Formula
+            Response categories and predictors.
+
+        Returns
+        -------
+        tuple[str, int] or None
+            The transition axis and its width, or None when no predictor
+            has a category-specific group coefficient.
+        """
+        if not any(
+            term.column is not None and term.column.category_specific
+            for _, _, predictor in self._predictor_items(formula)
+            for term in predictor.random_terms
+        ):
+            return None
+        transitions = self._category_count(formula, family=self._family.name) - 1
+        if (
+            self._family.ordinal is not None
+            and self._family.ordinal.kind == "hurdle_cumulative"
+        ):
+            transitions -= 1
+        return "FormulaCutpoint", transitions
+
     def _append_correlations(
         self,
         formula: Formula,
@@ -4614,6 +4655,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         # brms gr(by =, dist = "student"): by axes and Student-t mixing scales.
         append_group_options(self, self._predictor_items(formula), statements, steps)
+        self._group_laws = plan_group_blocks(
+            self._predictor_items(formula),
+            levels=formula.group_levels,
+            covariances=self._group_covariances,
+            parameterization=self._reparameterize,
+            component_axes=coordinate_axes or {},
+            transition_axis=self._transition_axis(formula),
+            supplied=supplied or {},
+        )
         blocks = joint_group_blocks(
             self._predictor_items(formula), self._group_covariances, supplied or {}
         )
