@@ -465,11 +465,12 @@ class StandardErrorSpec(ValueModel):
     column : FixedColumn
         Finite nonnegative standard errors in response units.
     sigma : bool
-        Whether to include the estimated residual scale in quadrature.
+        Whether to include the estimated residual scale in quadrature. The
+        default False matches brms: known errors alone scale the likelihood.
     """
 
     column: FixedColumn = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    sigma: bool = True
+    sigma: bool = False
 
 
 class RowSelection(ValueModel):

@@ -1119,6 +1119,61 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         """
         return tuple(self._group_layouts)
 
+    def _append_known_error_scale(
+        self, formula: Formula, program_steps: list[ProgramStep]
+    ) -> None:
+        """Bind ``formula_sigma``, the response scale under known errors.
+
+        With ``se(e)`` (brms ``sigma = FALSE``) the scale is the known error;
+        with ``se(e, sigma=True)`` it is ``sqrt(e**2 + sigma**2)``, formed
+        relative to the larger term so neither square overflows.
+
+        Parameters
+        ----------
+        formula : Formula
+            Formula whose response roles include known standard errors.
+        program_steps : list[ProgramStep]
+            Program body receiving the scale bindings.
+
+        Raises
+        ------
+        ValueError
+            If the formula has no known standard errors.
+        """
+        error = formula.modifiers.standard_error
+        if error is None:
+            raise ValueError("a known-error scale requires an se() response term")
+        if not error.sigma:
+            program_steps.append(_let("formula_sigma", _var("formula_standard_error")))
+        else:
+            row = _var("response")
+            se = _index("formula_standard_error", row)
+            sigma = (
+                _index("sigma", row)
+                if "sigma" in self._distributional
+                else _var("sigma")
+            )
+            program_steps.append(
+                _let(
+                    "formula_error_reference",
+                    _factor((("response", "Resp"),), body=_call("max", se, sigma)),
+                )
+            )
+            scale = _index("formula_error_reference", row)
+            combined = _mul(
+                scale,
+                _call(
+                    "sqrt",
+                    _add(
+                        _call("pow", _div(se, scale), LetExprLiteral(value=2.0)),
+                        _call("pow", _div(sigma, scale), LetExprLiteral(value=2.0)),
+                    ),
+                ),
+            )
+            program_steps.append(
+                _let("formula_sigma", _factor((("response", "Resp"),), body=combined))
+            )
+
     def forward(self, formula: Formula, /) -> tuple[Module, FormulaData]:
         """Compile one formula through the shared response emitter.
 
@@ -1370,7 +1425,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             error = formula.modifiers.standard_error
             if self._family.name not in {"gaussian", "student_t", "skew_normal"}:
                 raise ValueError(
-                    "se requires gaussian, student_t, or skew_normal responses"
+                    f"response term se() is not supported for family "
+                    f"{self._family.name!r}; families admitting se() are "
+                    "['gaussian', 'skew_normal', 'student_t']"
                 )
             if not error.sigma and (
                 "sigma" in self._distributional
@@ -1378,7 +1435,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 or "sigma" in self._user_priors
             ):
                 raise ValueError(
-                    "se(sigma=False) excludes a separate residual sigma; remove its formula, fixed value, or prior"
+                    "se() without sigma=True excludes a separate residual sigma; remove its formula, fixed value, or prior, or write se(error, sigma=True)"
                 )
         check_recorded_event_family(
             self._family.name,
@@ -5652,6 +5709,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
                 obs_args = ("ordinal_logits",)
         elif self._family.name == "skew_normal":
+            # brms forms the mean parameterization from the total scale, so
+            # known errors enter before the skew location and scale.
+            scale_name = "sigma"
+            if formula.modifiers.standard_error is not None:
+                self._append_known_error_scale(formula, program_steps)
+                scale_name = "formula_sigma"
             program_steps.extend(
                 [
                     _let(
@@ -5668,7 +5731,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     _let(
                         "skew_scale",
                         _div(
-                            _var("sigma"),
+                            _var(scale_name),
                             _call(
                                 "sqrt",
                                 _sub(
@@ -5937,42 +6000,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     ),
                 )
             )
-        if formula.modifiers.standard_error is not None:
-            error = formula.modifiers.standard_error
-            if not error.sigma:
-                program_steps.append(
-                    _let("formula_sigma", _var("formula_standard_error"))
-                )
-            else:
-                row = _var("response")
-                se = _index("formula_standard_error", row)
-                sigma = (
-                    _index("sigma", row)
-                    if "sigma" in self._distributional
-                    else _var("sigma")
-                )
-                program_steps.append(
-                    _let(
-                        "formula_error_reference",
-                        _factor((("response", "Resp"),), body=_call("max", se, sigma)),
-                    )
-                )
-                scale = _index("formula_error_reference", row)
-                combined = _mul(
-                    scale,
-                    _call(
-                        "sqrt",
-                        _add(
-                            _call("pow", _div(se, scale), LetExprLiteral(value=2.0)),
-                            _call("pow", _div(sigma, scale), LetExprLiteral(value=2.0)),
-                        ),
-                    ),
-                )
-                program_steps.append(
-                    _let(
-                        "formula_sigma", _factor((("response", "Resp"),), body=combined)
-                    )
-                )
+        if (
+            formula.modifiers.standard_error is not None
+            and self._family.name != "skew_normal"
+        ):
+            self._append_known_error_scale(formula, program_steps)
             observation = observation.with_(
                 args=tuple(
                     argument.with_(value=_to_draw_arg("formula_sigma"))

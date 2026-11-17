@@ -341,7 +341,7 @@ def bind_roles(
                 bindings["weights_scale"] = True
             bindings["weights"] = column(role, values)
         else:
-            sigma = sources.get("se_sigma", True)
+            sigma = sources.get("se_sigma", False)
             if type(sigma) is not bool:
                 raise ValueError("se sigma must be a Boolean literal")
             if not sigma and np.any(values == 0):

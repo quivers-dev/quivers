@@ -225,7 +225,7 @@ def test_fresh_known_errors_are_required_and_validated_before_posterior_draws():
 def test_compiled_known_error_combination_is_stable_and_preserves_scale_gradient():
     errors = [0.0, 0.3, 1e200]
     frame = pd.DataFrame({"y": [0.0, 0.0, 0.0], "se": errors})
-    parsed = formula_from_data("y | se(se) ~ 1", frame)
+    parsed = formula_from_data("y | se(se, sigma=True) ~ 1", frame)
     lens = FormulaToQVRModule(families["gaussian"])
     module, _ = lens.forward(parsed)
     sigma = torch.tensor(0.8, dtype=torch.float64, requires_grad=True)

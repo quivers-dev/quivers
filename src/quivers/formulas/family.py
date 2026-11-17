@@ -22,6 +22,7 @@ import didactic.api as dx
 from quivers._splines import MSplineBasis
 from quivers.formulas._survival import BaselineSpec
 from quivers.formulas._custom_types import CustomFamilySpec
+from quivers.formulas._link_whitelist import check_family_links
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 
 
@@ -357,8 +358,10 @@ class Family(ValueModel):
         Raises
         ------
         ValueError
-            If a parameter or link is unknown. Categorical models require
-            their multinomial softmax location link.
+            If a parameter or link is unknown, or if brms does not admit the
+            link for that family parameter; the error lists the admissible
+            links. Categorical models require their multinomial softmax
+            location link.
         """
         known = {"mu", *(aux.name for aux in self.aux_params)}
         unknown = parameters.keys() - known
@@ -410,9 +413,16 @@ class Family(ValueModel):
                 allowed.remove("softit")
             if requested not in allowed:
                 raise ValueError(
-                    f"{ordinal.kind} ordinal models support links {sorted(allowed)}"
+                    f"link {requested!r} is not supported for parameter 'mu' of "
+                    f"family {self.name!r}; admissible links are {sorted(allowed)}"
                 )
             ordinal = ordinal.with_(link=requested)
+        if self.custom is None:
+            # Ordinal families check the link their thresholds will use.
+            effective = dict(parameters)
+            if ordinal is not None and "mu" in parameters:
+                effective["mu"] = ordinal.link
+            check_family_links(self.name, effective)
         location_link = (
             links[parameters["mu"]] if "mu" in parameters else self.location_link
         )

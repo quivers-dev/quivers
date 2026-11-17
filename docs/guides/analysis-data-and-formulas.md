@@ -318,10 +318,12 @@ truncated row is
 $\log\sum_k w_k\,P_k(\text{event})/P_k(\text{lb}\leq Y\leq\text{ub})$, and
 truncated predictions draw a component and then its truncated Normal law.
 
-`se(error)` supports Gaussian, Student-t, and skew-normal responses.
-By default, known errors combine with residual `sigma` through
-$\sqrt{\text{error}^2+\sigma^2}$; `se(error, sigma=False)` uses strictly
-positive known errors alone and omits the residual-scale latent and prior.
+`se(error)` supports Gaussian, Student-t, and skew-normal responses and is
+refused, naming the family, elsewhere. As in brms, the known errors alone
+scale the likelihood by default: `se(error)` requires strictly positive
+errors and omits the residual-scale latent and prior.
+`se(error, sigma=True)` keeps the residual `sigma` and combines the two
+through $\sqrt{\text{error}^2+\sigma^2}$.
 `trials(n)` shares the finite-trial family's checked $0\ldots2^{53}$
 integer contract and must agree with any `binomial_trials` keyword.
 `weights(w, scale=True)` normalizes retained weights to the included row
@@ -1433,7 +1435,17 @@ parameter names for other predictors. For instance,
 `families["bernoulli"].with_links(mu="probit")` chooses probit regression.
 The link registry includes `identity`, `logit`, `log`, `softmax`, `inverse`,
 `probit`, `probit_approx`, `cloglog`, `cauchit`, `sqrt`, `inverse_square`, `logm1`,
-`log1p`, `softplus`, `squareplus`, `softit`, and `tan_half`. Link names describe the forward link;
+`log1p`, `softplus`, `squareplus`, `softit`, and `tan_half`. Each family
+parameter admits exactly the links brms admits for it: the location links of
+the brms family lists and the `links_dpars` table for auxiliary parameters
+(for instance `log`, `identity`, `softplus`, and `squareplus` for `sigma`).
+Any other choice is refused with an error naming the family, the parameter,
+and the admissible links, so `families["lognormal"].with_links(mu="log")`
+fails while `families["gaussian"].with_links(mu="logit")` is accepted, as in
+brms. As a stated extension beyond brms, the real-valued location of
+`gaussian`, `student_t`, and `skew_normal` also admits `log1p`, `sqrt`,
+`inverse_square`, `logm1`, and `tan_half`, whose inverses are real-valued.
+Link names describe the forward link;
 the compiler emits its inverse. `sqrt` thus squares the predictor, while
 `inverse_square` emits its reciprocal square root. Positive and probability
 parameters must still lie in their distribution's support. Categorical models
