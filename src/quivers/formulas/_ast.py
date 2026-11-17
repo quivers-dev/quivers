@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
+from quivers.dsl._value_expressions import _parse_value_expression
+from quivers.dsl.let_expr_traversal import substitute_let_expr
 from quivers.dsl.ast_nodes import (
     LetStep,
     Module,
@@ -20,6 +24,48 @@ from quivers.dsl.ast_nodes import (
     LetFactorCase,
     TypeName,
 )
+
+
+@lru_cache(maxsize=None)
+def _expression(text: str) -> LetExprNode:
+    """Parse one declared QVR expression, once per distinct text.
+
+    Parameters
+    ----------
+    text : str
+        A deterministic QVR expression over named quantities.
+
+    Returns
+    -------
+    LetExprNode
+        The parsed expression.
+
+    Raises
+    ------
+    ValueError
+        If the text is not exactly one expression.
+    """
+    return _parse_value_expression(text)
+
+
+def _bind(text: str, **values: LetExprNode) -> LetExprNode:
+    """Instantiate a declared expression at the given named quantities.
+
+    Parameters
+    ----------
+    text : str
+        A deterministic QVR expression over named quantities.
+    **values : LetExprNode
+        Replacement for each named quantity; other names are kept.
+
+    Returns
+    -------
+    LetExprNode
+        The expression with every named quantity replaced.
+    """
+    return (
+        substitute_let_expr(_expression(text), values) if values else _expression(text)
+    )
 
 
 def _let(name: str, value: LetExprNode) -> LetStep:

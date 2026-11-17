@@ -1347,10 +1347,7 @@ class SinglePostprocess(_PostprocessCore):
             True for ordinal and categorical families.
         """
         fit = self._pp_fit()
-        return (
-            fit.family.response_ordinal() is not None
-            or fit.family.observe_family == "Categorical"
-        )
+        return fit.family.category_response
 
     def predict(
         self,
@@ -2002,7 +1999,7 @@ class SinglePostprocess(_PostprocessCore):
             For unordered categorical responses.
         """
         fit = self._pp_fit()
-        if fit.family.observe_family == "Categorical" and fit.family.ordinal is None:
+        if fit.family.unordered_categories:
             raise ValueError("loo_R2 is not defined for unordered categorical models")
         if "loo_R2" in fit.criteria:
             values = cast(torch.Tensor, fit.criteria["loo_R2"])
@@ -2482,10 +2479,7 @@ class JointPostprocess(_PostprocessCore):
             True for ordinal and categorical families.
         """
         family = self._pp_fit()._response_fit(name).family
-        return (
-            family.response_ordinal() is not None
-            or family.observe_family == "Categorical"
-        )
+        return family.category_response
 
     def predict(
         self,
@@ -3244,10 +3238,7 @@ class JointPostprocess(_PostprocessCore):
         values: dict[str, torch.Tensor] = {}
         for name in fit._selection(resp):
             view = fit._response_fit(name)
-            if (
-                view.family.observe_family == "Categorical"
-                and view.family.ordinal is None
-            ):
+            if view.family.unordered_categories:
                 raise ValueError(
                     "bayes_R2 is not defined for unordered categorical models"
                 )
@@ -3310,10 +3301,7 @@ class JointPostprocess(_PostprocessCore):
         values: dict[str, torch.Tensor] = {}
         for index, name in enumerate(fit._selection(resp)):
             view = fit._response_fit(name)
-            if (
-                view.family.observe_family == "Categorical"
-                and view.family.ordinal is None
-            ):
+            if view.family.unordered_categories:
                 raise ValueError(
                     "loo_R2 is not defined for unordered categorical models"
                 )

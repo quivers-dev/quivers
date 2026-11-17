@@ -46,6 +46,9 @@ from quivers.formulas.formula import (
 from quivers.formulas.family import (
     Link,
     AuxParam,
+    Binding,
+    Domain,
+    Exposure,
     OrdinalSpec,
     ResponseSpec,
     BaselineSpec,
@@ -186,6 +189,9 @@ __all__ = [
     # family
     "Link",
     "AuxParam",
+    "Binding",
+    "Domain",
+    "Exposure",
     "OrdinalSpec",
     "ResponseSpec",
     "BaselineSpec",

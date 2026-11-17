@@ -19,6 +19,33 @@ distinguishes a distributional predictor's link from a scalar auxiliary
 prior, and the [formal definition](../../semantics/programs.md#inverse-links-as-value-maps)
 states their value-map semantics.
 
+## What a family declares
+
+A `Family` states everything the compiler needs to emit it, so a new
+family is a new value and not a new branch in the compiler.
+
+- **Native parameterization.** `Family.observe_lets` binds quantities
+  derived from `mu` and the auxiliary parameters, and
+  `Family.observe_args` lists the native constructor arguments in order.
+  `families["gamma"]`, for instance, binds `gamma_rate = shape / mu` and
+  passes `(shape, gamma_rate)`.
+- **Links.** A `Link` carries its inverse as a QVR expression in
+  `Link.inverse_expr`, with any shared `Link.intermediates`; the emitted
+  program contains exactly that expression.
+- **Parameter ranges.** Each `AuxParam` has a `Domain`. A fixed value
+  outside it is refused, and a prior is restricted to a lower endpoint
+  above zero.
+- **Response support.** `Family.response_interval` is the interval a
+  continuous scalar response must lie in. It comes from the support and
+  atoms of the native distribution, reached through `Family.native`,
+  unless `Family.response_domain` states it. Every such family checks its
+  response before inference.
+- **Exposure.** `Family.exposure` gives the distribution of a count over a
+  `rate()` denominator. A family without one refuses `rate()`.
+- **Log-scale location.** `Family.log_location_argument` names a native
+  parameter that takes the location on the log scale; under a log link
+  the linear predictor is passed to it without exponentiation.
+
 ## Ordinal configuration
 
 `Family.ordinal` retains an `OrdinalSpec` for cumulative, adjacent-category,

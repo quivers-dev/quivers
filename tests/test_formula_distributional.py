@@ -126,6 +126,12 @@ def test_distributional_only_group_is_bound_and_seed_restored(data):
 def test_distributional_parameters_compile_for_every_auxiliary_family(
     data, family, parameter
 ):
+    # The shared response is real-valued; each family scores a response in
+    # its own support.
+    if families[family].native.discrete:
+        data = data.assign(y=[0, 2, 1, 3])
+    elif families[family].response_interval != families["gaussian"].response_interval:
+        data = data.assign(y=[0.1, 0.9, 0.5, 0.7])
     source = formula_to_qvr(
         "y ~ x", data=data, family=family, distributional={parameter: "~ z"}
     )
@@ -554,7 +560,7 @@ def test_fixed_parameters_refuse_invalid_or_conflicting_contracts(
 
 @pytest.mark.parametrize("quantile", [0.0, 1.0, -0.5, 1.5])
 def test_fixed_quantile_refuses_boundary_or_invalid_probabilities(data, quantile):
-    with pytest.raises(ValueError, match="strictly between zero and one"):
+    with pytest.raises(ValueError, match="strictly between 0 and 1"):
         formula_to_qvr(
             "y ~ x",
             data=data,

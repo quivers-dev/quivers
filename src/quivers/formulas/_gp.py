@@ -535,7 +535,7 @@ def sdgp_prior(response: npt.NDArray[np.generic], family: Family) -> str:
         A QVR prior expression.
     """
     link = family.location_link.name
-    if family.name in {"lognormal", "shifted_lognormal", "hurdle_lognormal"}:
+    if family.log_response:
         link = "log"
     scale = 2.5
     values = np.asarray(response)

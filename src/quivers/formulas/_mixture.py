@@ -97,50 +97,6 @@ if TYPE_CHECKING:
 
 _Value = TypeVar("_Value")
 
-#: brms 2.23 ``no_mixture``: categorical, multinomial, simplex and continuous
-#: hurdle laws (``is_cont_hurdle``: hurdle_gamma, hurdle_lognormal,
-#: zero_inflated_beta, zero_one_inflated_beta).
-_NO_MIXTURE = frozenset(
-    {
-        "categorical",
-        "multinomial",
-        "dirichlet_multinomial",
-        "dirichlet",
-        "dirichlet2",
-        "logistic_normal",
-        "hurdle_gamma",
-        "hurdle_lognormal",
-        "zero_inflated_beta",
-        "zero_one_inflated_beta",
-    }
-)
-
-#: Families with integer support in brms (``family_info(., "type") == "int"``).
-_INTEGER = frozenset(
-    {
-        "bernoulli",
-        "binomial",
-        "beta_binomial",
-        "poisson",
-        "negative_binomial",
-        "negbinomial2",
-        "geometric",
-        "discrete_weibull",
-        "com_poisson",
-        "hurdle_poisson",
-        "hurdle_negbinomial",
-        "hurdle_cumulative",
-        "zero_inflated_poisson",
-        "zero_inflated_negbinomial",
-        "zero_inflated_binomial",
-        "zero_inflated_beta_binomial",
-        "cumulative",
-        "sratio",
-        "cratio",
-        "acat",
-    }
-)
-
 #: Components this mixture construction refuses, with the reason.
 _UNSUPPORTED = {
     "wiener": "its signed decision response is not a scalar mixture event",
@@ -192,12 +148,6 @@ def _component_family(value: str | Family) -> Family:
         raise TypeError("mixture components must be family names or Family values")
     if value.mixture is not None or value.name == "mixture":
         raise ValueError("mixture: a component cannot itself be a mixture")
-    if value.name in _NO_MIXTURE:
-        raise ValueError(
-            f"mixture: family {value.name!r} is not allowed in mixture models: "
-            "brms 2.23 refuses categorical, multinomial, simplex, and continuous "
-            "hurdle and zero-inflated families as mixture components"
-        )
     if value.name in _UNSUPPORTED:
         raise ValueError(
             f"mixture: family {value.name!r} is not supported as a mixture "
@@ -209,7 +159,8 @@ def _component_family(value: str | Family) -> Family:
         )
     if value.response is not None:
         raise ValueError(
-            f"mixture: family {value.name!r} is not allowed in mixture models"
+            f"mixture: family {value.name!r} is not allowed in mixture models: "
+            "a component must have a scalar response event"
         )
     if any(aux.name == "theta" for aux in value.aux_params):
         raise ValueError("mixture: parameter name 'theta' is reserved in mixtures")
@@ -281,7 +232,7 @@ def mixture(
     )
     if len(expanded) < 2:
         raise ValueError("mixture: expecting at least 2 mixture components")
-    integer = {family.name in _INTEGER for family in expanded}
+    integer = {family.native.discrete for family in expanded}
     if len(integer) > 1:
         raise ValueError("mixture: cannot mix families with real and integer support")
     ordinal = {family.ordinal is not None for family in expanded}
@@ -1532,7 +1483,7 @@ def emit_mixture(
     assert spec is not None
     count = len(spec.components)
     trials = lens._binomial_trials
-    if spec.components[0].name in _INTEGER:
+    if spec.components[0].native.discrete:
         values = np.asarray(formula.response_values, dtype=np.float64)
         if (
             not np.isfinite(values).all()
