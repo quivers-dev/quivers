@@ -338,8 +338,7 @@ class _InflatedCount(_CountCDF, Distribution):
         return inflated_count_tails(
             self.zero_prob,
             value,
-            base.log_cdf(value),
-            base.log_survival_function(value),
+            *base._count_log_tails(value),
         )
 
     def _count_log_tails(self, value):
@@ -767,8 +766,7 @@ class HurdleNegativeBinomial(ZeroInflatedNegativeBinomial):
         second = first + torch.log1p((self.total_count + 1) * self.probs / 2)
         lc, ls = positive_count_log_tails(
             value,
-            base.log_cdf(value),
-            base.log_survival_function(value),
+            *base._count_log_tails(value),
             log_zero,
             first,
             second,

@@ -54,6 +54,10 @@ def _fit_with(
     """Fit with a tiny run of one inference method."""
     if method == "svi":
         return fit(formula, data=frame, method="svi", num_steps=3, seed=2, **extra)
+    if method == "nuts":
+        # Callers check shapes, finiteness and refusals, not posterior
+        # accuracy, so each transition is capped at seven leapfrog steps.
+        extra = {"control": {"max_treedepth": 3}} | extra
     return fit(
         formula,
         data=frame,

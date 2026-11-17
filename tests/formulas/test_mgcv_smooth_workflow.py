@@ -125,6 +125,11 @@ def test_every_inference_method_predicts_fresh_rows_through_retained_bases(metho
         if method == "svi"
         else {"num_warmup": 2, "num_samples": 2, "num_chains": 1}
     )
+    if method == "nuts":
+        # The checks below concern shapes, finiteness and replay consistency,
+        # not posterior accuracy, so each transition is capped at seven
+        # leapfrog steps.
+        options["control"] = {"max_treedepth": 3}
     fitted = fit(
         FORMULA, data=_frame(), family="gaussian", method=method, seed=2, **options
     )

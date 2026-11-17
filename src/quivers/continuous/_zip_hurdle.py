@@ -124,8 +124,7 @@ class HurdlePoisson(_CountCDF, Distribution):
         second = first + torch.log1p(rate / 2)
         lc, ls = positive_count_log_tails(
             value,
-            base.log_cdf(value),
-            base.log_survival_function(value),
+            *base._count_log_tails(value),
             -rate,
             first,
             second,

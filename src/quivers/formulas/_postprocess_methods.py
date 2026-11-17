@@ -92,7 +92,7 @@ from quivers.inference.guides.base import Guide
 from quivers.inference.mcmc.driver import MCMCResult
 from quivers.inference.prior import PriorDraws
 from quivers.inference.pathfinder import PathfinderDraws, draw_provenance
-from quivers.formulas._fit_types import Fit
+from quivers.formulas._fit_types import Fit, JointFit, SingleFit
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
@@ -2104,7 +2104,7 @@ class SinglePostprocess(_PostprocessCore):
         num_samples: int | None = None,
         seed: int = 0,
         kfold_options: Mapping[str, object] | None = None,
-    ) -> BayesianFit:
+    ) -> SingleFit:
         """Return the fit with criteria stored, as brms ``add_criterion``.
 
         Parameters
@@ -3419,7 +3419,7 @@ class JointPostprocess(_PostprocessCore):
         num_samples: int | None = None,
         seed: int = 0,
         kfold_options: Mapping[str, object] | None = None,
-    ) -> MultivariateFit:
+    ) -> JointFit:
         """Return the joint fit with criteria stored, as brms ``add_criterion``.
 
         Parameters

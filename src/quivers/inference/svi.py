@@ -169,11 +169,13 @@ class SVI:
             # non-finite first objective is drawn again, as a sampler redraws
             # a non-finite initial position.
             attempts = INITIAL_ATTEMPTS if index == 0 else 1
-            for attempt in range(1, attempts + 1):
+            attempt = 1
+            while True:
                 try:
                     loss = self.step(x, dict(bindings))
                 except _NonFiniteObjective as exc:
                     if attempt < attempts:
+                        attempt += 1
                         continue
                     tried = f" after {attempt} draws" if attempts > 1 else ""
                     raise ValueError(

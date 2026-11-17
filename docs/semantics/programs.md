@@ -2479,8 +2479,12 @@ column scales, and a row that is not a latitude in $[-90,90]$ and a longitude
 in $[-180,360]$ is refused. A Duchon spline `bs = "ds"` over
 $x\in\mathbb R^d$ with derivative order $m$ and weight exponent $s$ has the
 penalty [@duchon1977splines]
-$$J_{m,s}(f)=\int_{\mathbb R^d}\lVert\tau\rVert^{2s}\sum_{|\alpha|=m}
-\frac{m!}{\alpha!}\,\bigl|\widehat{D^\alpha f}(\tau)\bigr|^2\,d\tau ,$$
+
+$$
+J_{m,s}(f)=\int_{\mathbb R^d}\lVert\tau\rVert^{2s}\sum_{|\alpha|=m}
+\frac{m!}{\alpha!}\,\bigl|\widehat{D^\alpha f}(\tau)\bigr|^2\,d\tau ,
+$$
+
 with $\widehat{g}$ the Fourier transform of $g$, $-d/2<s<d/2$, and
 $m+s>d/2$. Its kernel is $E(x,x')=c\,r^{p}$ for odd $p=2m+2s-d$ and
 $c\,r^{p}\log r$ for even $p$, with $r=\lVert x-x'\rVert$ and the sign

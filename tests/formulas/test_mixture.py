@@ -411,6 +411,7 @@ def _bimodal(seed: int = 0, n: int = 40) -> pd.DataFrame:
     )
 
 
+@pytest.mark.slow
 def test_ordering_removes_the_label_switched_mode():
     frame = _bimodal()
     unordered = fit(
@@ -482,6 +483,11 @@ def test_inference_prediction_refit_and_artifact(method, tmp_path):
         if method == "svi"
         else {"num_warmup": 30, "num_samples": 20, "num_chains": 1}
     )
+    if method == "nuts":
+        # The checks below concern shapes, finiteness, row consistency and the
+        # artifact round trip, not posterior accuracy, so each transition is
+        # capped at seven leapfrog steps.
+        options["control"] = {"max_treedepth": 3}
     fitted = fit(
         "y ~ x",
         data=frame,

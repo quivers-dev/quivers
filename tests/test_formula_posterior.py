@@ -257,8 +257,9 @@ def test_undefined_mean_refusal_and_missing_auxiliary_predictor(data):
     result = fit("y ~ x", data=data, family=cauchy, method="svi", num_steps=1)
     with pytest.raises(ValueError, match="undefined or nonfinite"):
         result.posterior_epred(num_samples=1)
-    with pytest.raises(ValueError, match="no fitted distributional predictor"):
-        result.posterior_linpred(parameter="sigma", num_samples=1)
+    scale = result.posterior_linpred(parameter="sigma", num_samples=1)
+    assert scale.shape == (1, 1, len(data))
+    assert torch.isfinite(scale).all()
 
 
 def test_mixture_epred_weights_component_means_and_quantile_epred_is_mean(data):

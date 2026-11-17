@@ -13,6 +13,7 @@ warns.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from functools import update_wrapper
 from types import MethodType
 from typing import Concatenate, Literal, Unpack, cast, overload
 
@@ -219,9 +220,8 @@ def _pooled[**P, R](
         """
         return cast(R, getattr(self.pooled, name)(*args, **kwargs))
 
-    call.__name__ = name
+    update_wrapper(call, method)
     call.__qualname__ = f"MultipleFit.{name}"
-    call.__doc__ = method.__doc__
     return call
 
 

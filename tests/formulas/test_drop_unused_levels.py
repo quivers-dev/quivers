@@ -89,6 +89,11 @@ def test_kept_levels_fit_predict_refit_and_round_trip(
         else {"num_warmup": 20, "num_samples": 5, "num_chains": 1}
     )
     options: FormulaFitOptions = {**budget, "method": method, "seed": 4}
+    if method == "nuts":
+        # The checks below concern variable names, shapes and the artifact
+        # round trip, not posterior accuracy, so each transition is capped at
+        # seven leapfrog steps.
+        options["control"] = {"max_treedepth": 3}
     fitted = fit(FORMULA, data=frame, drop_unused_levels=False, **options)
     names = set(fitted.variables(num_samples=2))
     assert {"b_fc", "b_hc", "b_x:fc", "r_g[w,Intercept]"} <= names

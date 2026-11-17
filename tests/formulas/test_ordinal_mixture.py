@@ -510,6 +510,11 @@ def test_ordinal_mixtures_fit_predict_refit_and_restore(method, tmp_path):
     if method == "hmc":
         # Static HMC needs a step size that keeps the thresholds ordered.
         options["control"] = {"stepsize": 0.02}
+    if method == "nuts":
+        # The checks below concern shapes, finiteness and the artifact round
+        # trip, not posterior accuracy, so each transition is capped at seven
+        # leapfrog steps; an uncapped tree costs up to 1023 gradients.
+        options["control"] = {"max_treedepth": 3}
     fitted = fit(
         "y ~ x + (1 | g)",
         data=frame,

@@ -1305,10 +1305,10 @@ class TestFamilyLinkDefaults:
         module, complement = lens.forward(parsed)
         assert lens.backward(module, complement) == parsed
 
-    def test_categorical_rejects_noncontiguous_categories(self):
+    def test_categorical_codes_observed_labels_as_factor_levels(self):
         df = pd.DataFrame({"y": [0, 2, 0, 2], "x": np.arange(4.0)})
-        with pytest.raises(ValueError, match="contiguous category labels"):
-            formula_to_qvr("y ~ x", data=df, family="categorical")
+        result = fit("y ~ x", data=df, family="categorical", method="svi", num_steps=1)
+        assert result.posterior_epred(num_samples=1).shape == (1, 1, 4, 2)
 
     def test_categorical_centered_random_effects_use_direct_coefficients(
         self, categorical_df

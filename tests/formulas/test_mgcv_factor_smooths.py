@@ -224,6 +224,11 @@ def test_factor_smooths_fit_predict_refit_and_restore(method, tmp_path):
         if method == "svi"
         else {"num_warmup": 15, "num_samples": 8, "num_chains": 1}
     )
+    if method == "nuts":
+        # The checks below concern shapes, finiteness and replay consistency,
+        # not posterior accuracy, so each transition is capped at seven
+        # leapfrog steps.
+        options["control"] = {"max_treedepth": 3}
     formula = 'y ~ s(x, g, bs = "fs", k = 5) + z'
     fitted = fit(formula, data=TRAIN, method=method, seed=2, **options)
     linpred = fitted.posterior_linpred(new_data=SEEN, num_samples=3)
