@@ -195,6 +195,15 @@ inside the prior support: positive scales exceed zero, bounded values exclude
 both endpoints, and simplex coordinates are positive and sum to one. Unknown
 names, observed sites, and incompatible shapes raise before sampling.
 
+A name may also be a site a [Gibbs block](#composing-kernels) updates. Those
+sites sit outside the latent vector, so the chain starts at the given value in
+place of a draw from the program, whatever `init_strategy` is. The value has the
+shape of one draw of the site in `MCMCResult.samples` (a scalar broadcasts), and
+it must be finite and inside the site's support, whose boundary is allowed here
+since no bijector is inverted: `initial_values={"side": 1}` starts a
+`Categorical(probs=[0.5, 0.5])` site at its second category. The Gibbs sites
+left unnamed are drawn from the program given the named ones.
+
 The driver detaches and copies the supplied tensors, so later changes to the
 caller's mapping or tensors do not change its initialization. Named values are
 part of [checkpoint compatibility](#checkpoints-budgets-and-sampler-statistics):

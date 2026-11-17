@@ -65,6 +65,10 @@ from quivers.inference.mcmc.kernel import (
     _NonFiniteInitialDensity,
     _with_generator,
 )
+from quivers.inference._initialization import (
+    natural_initial_value,
+    unconstrained_initial_values,
+)
 from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
 
@@ -472,8 +476,11 @@ class _RunSetup:
         The potential.
     gibbs_sites : frozenset[str]
         The kernel's Gibbs sites.
-    gibbs_morphisms : dict[str, ContinuousMorphism]
-        Each Gibbs site's distribution.
+    gibbs_layout : dict[str, _GibbsSite]
+        Each Gibbs site's layout.
+    gibbs_start : tuple[dict[str, torch.Tensor], ...]
+        For each chain, the trace-side starting values the caller gave
+        for Gibbs sites.
     site_names : tuple[str, ...]
         Every sampled site, the registry's first.
     """
@@ -485,7 +492,8 @@ class _RunSetup:
         "registry",
         "potential",
         "gibbs_sites",
-        "gibbs_morphisms",
+        "gibbs_layout",
+        "gibbs_start",
         "site_names",
     )
 
@@ -497,7 +505,8 @@ class _RunSetup:
         registry: LatentRegistry,
         potential: PotentialFn,
         gibbs_sites: frozenset[str],
-        gibbs_morphisms: dict[str, ContinuousMorphism],
+        gibbs_layout: dict[str, _GibbsSite],
+        gibbs_start: tuple[dict[str, torch.Tensor], ...],
     ) -> None:
         self.model = model
         self.x = x
@@ -505,18 +514,25 @@ class _RunSetup:
         self.registry = registry
         self.potential = potential
         self.gibbs_sites = gibbs_sites
-        self.gibbs_morphisms = gibbs_morphisms
+        self.gibbs_layout = gibbs_layout
+        self.gibbs_start = gibbs_start
         self.site_names = (*registry.names, *sorted(gibbs_sites))
 
-    def fingerprint(self) -> str:
+    def fingerprint(self, gibbs: dict[str, torch.Tensor]) -> str:
         """A digest of the model and data the run samples.
 
         It covers the registry's layout, the Gibbs sites, the input,
         every datum by content (through `observation_digest`, which
         renders tensors, numbers, arrays, and nested sequences of tokens
         alike), and the potential's value at two fixed positions under
-        Gibbs values drawn from a fixed generator, so a change to a
-        prior, a likelihood, or the data changes it.
+        the given Gibbs values, so a change to a prior, a likelihood, or
+        the data changes it.
+
+        Parameters
+        ----------
+        gibbs : dict[str, torch.Tensor]
+            Trace-side values of the Gibbs sites to probe the potential
+            at, the same for every call that must agree.
 
         Returns
         -------
@@ -524,13 +540,6 @@ class _RunSetup:
             The hexadecimal digest.
         """
         dim = self.registry.total_unconstrained_dim
-        gibbs = MCMC._initial_gibbs_values(
-            self.model,
-            self.x,
-            self.observations,
-            self.gibbs_sites,
-            torch.Generator().manual_seed(0),
-        )
         probe = self.potential.condition(gibbs) if gibbs else self.potential
         with torch.no_grad():
             values: list[StateValue] = [
@@ -603,7 +612,11 @@ class MCMC:
         They replace the configured strategy's corresponding coordinates
         in every chain and are included in checkpoint compatibility. A
         sequence of ``num_chains`` mappings gives each chain its own values,
-        as brms's ``init`` list does.
+        as brms's ``init`` list does. A name may also be a site a
+        `GibbsKernel` updates: the chain then starts at that value
+        instead of a draw from the program, and the value, at the shape
+        of one draw in `MCMCResult.samples`, must be finite and inside
+        the site's support, its boundary included.
     thin : int
         Keep every ``thin``-th post-warmup transition; each chain runs
         ``num_samples * thin`` sampling transitions and keeps
@@ -785,14 +798,12 @@ class MCMC:
             If ``init_strategy="guide"`` has no guide.
         """
         position = self._strategy_position(setup, guide, generator)
-        named = (
-            self.chain_initial_values[chain]
-            if self.chain_initial_values
-            else self.initial_values
-        )
+        named = {
+            name: value
+            for name, value in self._named_initial_values(chain).items()
+            if name not in setup.gibbs_sites
+        }
         if named:
-            from quivers.inference._initialization import unconstrained_initial_values
-
             for name, value in unconstrained_initial_values(
                 setup.registry, named
             ).items():
@@ -801,6 +812,24 @@ class MCMC:
                     value.reshape(-1)
                 )
         return position
+
+    def _named_initial_values(self, chain: int) -> dict[str, torch.Tensor]:
+        """The named initial values of one chain.
+
+        Parameters
+        ----------
+        chain : int
+            The chain's index.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            The chain's own values when they were given per chain,
+            otherwise the values every chain shares.
+        """
+        if self.chain_initial_values:
+            return self.chain_initial_values[chain]
+        return self.initial_values
 
     def _strategy_position(
         self, setup: _RunSetup, guide: Guide | None, generator: torch.Generator
@@ -1037,13 +1066,16 @@ class MCMC:
             model, x, observations, "MCMC.resume", stored_header.run_seed
         )
         header = self._header(setup, stored_header.run_seed)
+        # The run settings come first: initial values of Gibbs sites also
+        # enter the model fingerprint's probes, and a change to them is a
+        # change of settings.
         for field_name, what in (
-            ("model_fingerprint", "a different model or data"),
-            ("kernel_fingerprint", "a different kernel configuration"),
             (
                 "run_fingerprint",
                 "different run settings (warmup, samples, chains, or initialization)",
             ),
+            ("model_fingerprint", "a different model or data"),
+            ("kernel_fingerprint", "a different kernel configuration"),
         ):
             if getattr(header, field_name) != getattr(stored_header, field_name):
                 raise ValueError(
@@ -1102,7 +1134,8 @@ class MCMC:
         ------
         ValueError
             If the input has several rows, the data are outside their
-            support, or the kernel's Gibbs sites do not fit the model.
+            support, the kernel's Gibbs sites do not fit the model, or
+            an initial value of a Gibbs site does not fit the site.
         """
         _require_one_run(x, consumer)
         _check_observed_support(model, observations, consumer)
@@ -1123,11 +1156,29 @@ class MCMC:
             )
             raise
         gibbs_sites = self.kernel.gibbs_sites
-        gibbs_morphisms = _check_gibbs_sites(recorded, gibbs_sites)
+        gibbs_layout = {
+            name: _GibbsSite.of_program_site(name, recorded.sites[name].value, morphism)
+            for name, morphism in _check_gibbs_sites(recorded, gibbs_sites).items()
+        }
+        gibbs_start = tuple(
+            {
+                name: gibbs_layout[name].trace_value(value)
+                for name, value in sorted(self._named_initial_values(chain).items())
+                if name in gibbs_layout
+            }
+            for chain in range(self.num_chains)
+        )
         registry = LatentRegistry.from_trace(model, recorded, exclude=gibbs_sites)
         potential = PotentialFn(model, registry, x, observations)
         return _RunSetup(
-            model, x, observations, registry, potential, gibbs_sites, gibbs_morphisms
+            model,
+            x,
+            observations,
+            registry,
+            potential,
+            gibbs_sites,
+            gibbs_layout,
+            gibbs_start,
         )
 
     def _header(self, setup: _RunSetup, run_seed: int) -> _CheckpointHeader:
@@ -1168,7 +1219,9 @@ class MCMC:
         return _CheckpointHeader(
             format_version=CHECKPOINT_FORMAT_VERSION,
             library="quivers",
-            model_fingerprint=setup.fingerprint(),
+            model_fingerprint=setup.fingerprint(
+                self._initial_gibbs_values(setup, 0, torch.Generator().manual_seed(0))
+            ),
             kernel_fingerprint=_digest(self.kernel.configuration()),
             run_fingerprint=_digest(settings),
             run_seed=run_seed,
@@ -1184,7 +1237,8 @@ class MCMC:
         """Draw a chain's start until its log-density is finite.
 
         Each attempt draws an initial position and the Gibbs-updated sites'
-        initial values from the chain's stream and scores them with
+        initial values (those the caller did not give) from the chain's
+        stream and scores them with
         `PotentialFn.check_initial`. A position that scores without error
         but with a non-finite log-density is discarded and the next attempt
         draws afresh, up to `INITIAL_ATTEMPTS` attempts. The first attempt
@@ -1226,9 +1280,7 @@ class MCMC:
                     f"MCMC.run: chain {chain} initial_position must contain "
                     "only finite values"
                 )
-            gibbs_values = self._initial_gibbs_values(
-                setup.model, setup.x, setup.observations, setup.gibbs_sites, generator
-            )
+            gibbs_values = self._initial_gibbs_values(setup, chain, generator)
             chain_potential = (
                 setup.potential.condition(gibbs_values)
                 if gibbs_values
@@ -1454,7 +1506,7 @@ class MCMC:
             record.draws[name].append(value)
         for name in setup.gibbs_sites:
             record.draws[name].append(
-                _gibbs_draw(state.gibbs_values[name], setup.gibbs_morphisms[name])
+                setup.gibbs_layout[name].draw(state.gibbs_values[name])
             )
         record.log_densities.append(float(state.log_density))
         record.stats.append(dict(state.stats))
@@ -1578,7 +1630,7 @@ class MCMC:
         setup : _RunSetup
             The run's structures.
         record : _ChainRecord
-            A chain's record, whose state gives a Gibbs site's shape.
+            A chain's record, whose state gives a Gibbs site's dtype.
         name : str
             The site.
 
@@ -1588,9 +1640,7 @@ class MCMC:
             A tensor of shape ``(0, *site_shape)``.
         """
         if name in setup.gibbs_sites:
-            draw = _gibbs_draw(
-                record.state.gibbs_values[name], setup.gibbs_morphisms[name]
-            )
+            draw = setup.gibbs_layout[name].draw(record.state.gibbs_values[name])
             return torch.empty((0, *draw.shape), dtype=draw.dtype)
         return torch.empty((0, *setup.registry[name].constrained_shape))
 
@@ -1616,43 +1666,174 @@ class MCMC:
 
     @staticmethod
     def _initial_gibbs_values(
-        model: MonadicProgram,
-        x: torch.Tensor,
-        observations: dict[str, torch.Tensor],
-        gibbs_sites: frozenset[str],
-        generator: torch.Generator,
+        setup: _RunSetup, chain: int, generator: torch.Generator
     ) -> dict[str, torch.Tensor]:
-        """Draw a chain's starting values of the Gibbs sites.
+        """A chain's starting values of the Gibbs sites.
 
-        The values come from one run of the model at the data, drawn
-        from the chain's generator: each Gibbs site from its prior given
-        the sites drawn before it.
+        A site the caller gave an initial value starts there. The others
+        come from one run of the model at the data and the given values,
+        drawn from the chain's generator: each from its prior given the
+        sites before it.
 
         Parameters
         ----------
-        model : MonadicProgram
-            The model.
-        x : torch.Tensor
-            The one-row input.
-        observations : dict[str, torch.Tensor]
-            The data.
-        gibbs_sites : frozenset[str]
-            The Gibbs sites.
+        setup : _RunSetup
+            The run's structures.
+        chain : int
+            The chain's index, selecting the values the caller gave it.
         generator : torch.Generator
             The chain's generator.
 
         Returns
         -------
         dict[str, torch.Tensor]
-            Trace-side values of the Gibbs sites; empty when there are
-            none, in which case the generator is not used.
+            Trace-side values of the Gibbs sites. The generator is not
+            used when the caller gave every one, or there are none.
         """
-        if not gibbs_sites:
-            return {}
+        given = setup.gibbs_start[chain]
+        if all(name in given for name in setup.gibbs_sites):
+            return {name: given[name].clone() for name in setup.gibbs_sites}
         recorded = _with_generator(
-            generator, lambda: trace(model, x, observations=observations)
+            generator,
+            lambda: trace(
+                setup.model, setup.x, observations={**setup.observations, **given}
+            ),
         )
-        return {name: recorded.sites[name].value.detach() for name in gibbs_sites}
+        return {
+            name: (
+                given[name].clone()
+                if name in given
+                else recorded.sites[name].value.detach()
+            )
+            for name in setup.gibbs_sites
+        }
+
+
+class _GibbsSite(ValueModel):
+    """The layout of one Gibbs site's values.
+
+    Attributes
+    ----------
+    name : str
+        The site.
+    trace_shape : tuple[int, ...]
+        The shape of the site's trace-side value, as
+        `KernelState.gibbs_values` holds it.
+    draw_shape : tuple[int, ...]
+        The shape of one draw of the site in `MCMCResult.samples`.
+    dtype : torch.dtype
+        The dtype of the site's values.
+    support : Constraint | None
+        The site's support; ``None`` when it depends on other sites.
+    """
+
+    name: str
+    trace_shape: tuple[int, ...]
+    draw_shape: tuple[int, ...]
+    dtype: torch.dtype = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    support: _constraints.Constraint | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    @classmethod
+    def of_program_site(
+        cls, name: str, value: torch.Tensor, morphism: ContinuousMorphism
+    ) -> "_GibbsSite":
+        """The layout of a sample site of the program.
+
+        Parameters
+        ----------
+        name : str
+            The site.
+        value : torch.Tensor
+            The site's trace-side value in a run of the program.
+        morphism : ContinuousMorphism
+            The site's distribution.
+
+        Returns
+        -------
+        _GibbsSite
+            The layout.
+        """
+        support = _site_support(morphism)
+        return cls(
+            name=name,
+            trace_shape=tuple(value.shape),
+            draw_shape=tuple(_gibbs_draw(value, morphism).shape),
+            dtype=value.dtype,
+            support=(
+                support
+                if isinstance(support, _constraints.Constraint)
+                and not _constraints.is_dependent(support)
+                else None
+            ),
+        )
+
+    def draw(self, value: torch.Tensor) -> torch.Tensor:
+        """One draw of the site from its trace-side value.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            The trace-side value.
+
+        Returns
+        -------
+        torch.Tensor
+            The same elements at ``draw_shape``.
+        """
+        return value.reshape(self.draw_shape)
+
+    def trace_value(self, value: torch.Tensor | float) -> torch.Tensor:
+        """The trace-side value of a caller-given natural-scale value.
+
+        Parameters
+        ----------
+        value : torch.Tensor | float
+            The value: a scalar, which broadcasts, or a tensor at
+            ``draw_shape``.
+
+        Returns
+        -------
+        torch.Tensor
+            The value at ``trace_shape`` in the site's dtype.
+
+        Raises
+        ------
+        ValueError
+            If the value is Boolean or complex, has another shape, is
+            not finite, lies outside the support, or is not
+            representable in the site's dtype.
+        """
+        natural = natural_initial_value(self.name, value, self.draw_shape, self.support)
+        cast = natural.to(self.dtype)
+        if not torch.equal(cast.to(natural.dtype), natural):
+            raise ValueError(
+                f"initial value for {self.name!r} is not representable in the "
+                f"site's dtype {self.dtype}"
+            )
+        return cast.reshape(self.trace_shape).clone()
+
+
+def _site_support(
+    morphism: ContinuousMorphism,
+) -> _constraints.Constraint | None:
+    """The elementwise support a site's distribution declares.
+
+    Parameters
+    ----------
+    morphism : ContinuousMorphism
+        The site's distribution.
+
+    Returns
+    -------
+    Constraint | None
+        The support of the distribution, or of a plate's family;
+        ``None`` when the distribution declares none.
+    """
+    family = morphism.family if isinstance(morphism, PlateDraw) else morphism
+    support = getattr(family, "support", None)
+    return support if isinstance(support, _constraints.Constraint) else None
 
 
 def _gibbs_draw(value: torch.Tensor, morphism: ContinuousMorphism) -> torch.Tensor:
@@ -1728,17 +1909,9 @@ def _check_gibbs_sites(
         )
     discrete = []
     for label, record in latent.items():
-        morphism = record.morphism
-        support = (
-            morphism.family.support
-            if isinstance(morphism, PlateDraw)
-            else getattr(morphism, "support", None)
-        )
-        if (
-            isinstance(support, _constraints.Constraint)
-            and support.is_discrete
-            and label not in gibbs_sites
-        ):
+        assert record.morphism is not None
+        support = _site_support(record.morphism)
+        if support is not None and support.is_discrete and label not in gibbs_sites:
             discrete.append(label)
     if discrete:
         raise ValueError(
