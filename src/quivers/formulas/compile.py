@@ -3649,36 +3649,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             cell_terms.append(_index(self._predictor_name, predictor_index))
 
         correlated = dict(correlated or {})
-        blocks: dict[tuple[str, str], list[tuple[str, RandomTerm]]] = {}
-        for term in formula.random_terms:
-            if (
-                term.correlation_id is not None or term.group in self._group_covariances
-            ) and (prefix, term.group, term.slope) not in correlated:
-                identity = (
-                    f"independent_{_qvr_name(term.group)}_{_qvr_name(term.slope)}"
-                    if term.correlation_id is None
-                    else f"shared_{term.correlation_id}"
-                    if term.shared
-                    else term.correlation_id
-                )
-                blocks.setdefault((term.group, identity), []).append((prefix, term))
-        for (group, identity), members in blocks.items():
-            correlated.update(
-                self._append_indexed_correlations(
-                    formula,
-                    group,
-                    identity,
-                    members,
-                    statements,
-                    program_steps,
-                    coordinate_axis=logit_index,
-                    coordinate_count=n_logits,
-                    correlate=any(
-                        term.correlation_id is not None for _, term in members
-                    ),
-                )
-            )
-
         for term in formula.random_terms:
             if (prefix, term.group, term.slope) in (correlated or {}):
                 continue
