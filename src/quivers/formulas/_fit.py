@@ -1202,11 +1202,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             raise ValueError(
                 "ordinal probabilities depend on thresholds; use posterior_epred"
             )
-        retained_log_rate = (
-            (self.family.name == "com_poisson" or self.family.baseline is not None)
-            and self.family.location_link.name == "log"
-            and parameter == "mu"
-        )
+        retained_log_rate = self.family.retains_log_location and parameter == "mu"
         binding = (
             ("mu" if transform and not retained_log_rate else "eta")
             if parameter == "mu"

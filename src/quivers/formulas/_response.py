@@ -94,18 +94,9 @@ def response_dtype(formula: Formula, family: Family | None = None) -> torch.dtyp
     torch.dtype
         Canonical Int64/Bool carriers, or the established real precision.
     """
-    from quivers.qiec.families import family as semantic_family
     from quivers.qiec.types import BOOL, INT
 
-    element = (
-        (
-            family.custom.catalog[family.observe_family]
-            if family.custom is not None
-            else semantic_family(family.observe_family)
-        ).element
-        if family is not None
-        else None
-    )
+    element = family.native.element if family is not None else None
     if (
         element == INT
         or family is None

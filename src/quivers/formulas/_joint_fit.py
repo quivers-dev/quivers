@@ -2445,11 +2445,7 @@ def _linpred_binding(
         raise ValueError(
             "ordinal probabilities depend on thresholds; use posterior_epred"
         )
-    retained_log_rate = (
-        (view.family.name == "com_poisson" or view.family.baseline is not None)
-        and view.family.location_link.name == "log"
-        and parameter == "mu"
-    )
+    retained_log_rate = view.family.retains_log_location and parameter == "mu"
     binding = (
         ("mu" if transform and not retained_log_rate else "eta")
         if parameter == "mu"

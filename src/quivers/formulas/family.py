@@ -25,6 +25,8 @@ from quivers.formulas._custom_types import CustomFamilySpec
 from quivers.formulas._link_whitelist import check_family_links
 from quivers.formulas._family_registry import FamilyRegistry
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.qiec.families import DistributionFamily
+from quivers.qiec.families import family as semantic_family
 
 
 class Binding(dx.Model):
@@ -40,6 +42,29 @@ class Binding(dx.Model):
 
     name: str
     expr: str
+
+
+class Exposure(dx.Model):
+    """The law of a count accumulated over ``exposure`` unit denominators.
+
+    A family carrying one is closed under summing independent unit-exposure
+    counts, which is what a ``rate()`` response term requires.
+
+    Attributes
+    ----------
+    observe_lets : tuple[Binding, ...]
+        Quantities bound after the family's own, written over the formula
+        parameters, the family's bindings and ``exposure``.
+    observe_args : tuple[str or float, ...]
+        Native constructor arguments of the accumulated count; ``"exposure"``
+        names the denominator itself.
+    observe_family : str or None
+        Native law of the accumulated count when it leaves the family's own.
+    """
+
+    observe_lets: tuple[Binding, ...] = ()
+    observe_args: tuple[str | float, ...]
+    observe_family: str | None = None
 
 
 class Link(dx.Model):
@@ -256,6 +281,13 @@ class Family(ValueModel):
         Native constructor arguments in schema order: names of formula
         parameters or of `observe_lets`, literal constants, or ``"trials"``
         for the per-row trial counts of a family with `trials_parameter`.
+    exposure : Exposure or None
+        Law of the count over a ``rate()`` denominator; None when the family
+        is not closed under summing unit-exposure counts.
+    log_location_argument : str or None
+        Native constructor parameter that accepts the location on the log
+        scale. Under a log location link the linear predictor is passed to it
+        directly, so a rate too large to exponentiate still scores.
     decision_event : str or None
         Expression forming the scored event from ``formula_response`` and
         the binary ``formula_decision`` of a ``dec()`` term. None for a
@@ -282,7 +314,41 @@ class Family(ValueModel):
     observe_family: str
     observe_lets: tuple[Binding, ...] = ()
     observe_args: tuple[str | float, ...] = ("mu",)
+    exposure: Exposure | None = None
+    log_location_argument: str | None = None
     decision_event: str | None = None
+
+    @property
+    def native(self) -> DistributionFamily:
+        """The semantic record of the observed native law.
+
+        Support, element type, discreteness, atoms and event rank are read
+        from it; the family does not restate them.
+
+        Returns
+        -------
+        DistributionFamily
+            The record registered under `observe_family`, from the custom
+            catalog of a custom family.
+        """
+        if self.custom is not None:
+            return self.custom.catalog[self.observe_family]
+        return semantic_family(self.observe_family)
+
+    @property
+    def retains_log_location(self) -> bool:
+        """Whether the observation takes the linear predictor on the log scale.
+
+        Returns
+        -------
+        bool
+            True when the native law accepts a log-scale location and the
+            location link is the logarithm.
+        """
+        return (
+            self.log_location_argument is not None and self.location_link.name == "log"
+        )
+
     aux_params: tuple[AuxParam, ...] = ()
     trials_parameter: str | None = None
     ordinal: OrdinalSpec | None = None
@@ -522,6 +588,8 @@ class Family(ValueModel):
             else self.observe_family,
             observe_lets=self.observe_lets,
             observe_args=self.observe_args,
+            exposure=self.exposure,
+            log_location_argument=self.log_location_argument,
             decision_event=self.decision_event,
             trials_parameter=self.trials_parameter,
             ordinal=ordinal,
@@ -634,6 +702,7 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="com_poisson",
         location_link=_LOG,
         observe_family="COMPoisson",
+        log_location_argument="log_rate",
         observe_args=("mu", "shape"),
         aux_params=(AuxParam(name="shape", prior="Gamma(0.01, 0.01)", link=_LOG),),
     ),
@@ -659,6 +728,12 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="negbinomial2",
         location_link=_LOG,
         observe_family="NegativeBinomial",
+        exposure=Exposure(
+            observe_lets=(
+                Binding(name="rate_shape", expr="negative_binomial_shape * exposure"),
+            ),
+            observe_args=("rate_shape", "negative_binomial_probs"),
+        ),
         observe_lets=(
             Binding(name="negative_binomial_shape", expr="1.0 / sigma"),
             Binding(name="negative_binomial_probs", expr="mu / (mu + negative_binomial_shape)"),
@@ -802,11 +877,19 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="poisson",
         location_link=_LOG,
         observe_family="Poisson",
+        exposure=Exposure(
+            observe_lets=(Binding(name="rate_mu", expr="mu * exposure"),),
+            observe_args=("rate_mu",),
+        ),
     ),
     "negative_binomial": Family(
         name="negative_binomial",
         location_link=_LOG,
         observe_family="NegativeBinomial",
+        exposure=Exposure(
+            observe_lets=(Binding(name="rate_shape", expr="disp * exposure"),),
+            observe_args=("rate_shape", "negative_binomial_probs"),
+        ),
         observe_lets=(
             Binding(name="negative_binomial_probs", expr="mu / (mu + disp)"),
         ),
@@ -1118,6 +1201,11 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="geometric",
         location_link=_LOG,
         observe_family="Geometric",
+        exposure=Exposure(
+            observe_family="NegativeBinomial",
+            observe_lets=(Binding(name="rate_probs", expr="mu / (1.0 + mu)"),),
+            observe_args=("exposure", "rate_probs"),
+        ),
         observe_lets=(
             Binding(name="geometric_probs", expr="1.0 / (1.0 + mu)"),
         ),
@@ -1144,6 +1232,8 @@ families: Mapping[str, Family] = FamilyRegistry({
         name="cox",
         location_link=_LOG,
         observe_family="BernsteinHazard",
+        observe_args=("baseline_breaks", "baseline_controls", "mu"),
+        log_location_argument="log_rate",
         baseline=BaselineSpec(),
     ),
     # Expanded by quivers.formulas._mixture to mixture(gaussian, ...).
@@ -1165,6 +1255,7 @@ one registered family.
 
 __all__ = [
     "Binding",
+    "Exposure",
     "Link",
     "AuxParam",
     "OrdinalSpec",

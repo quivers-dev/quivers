@@ -6005,13 +6005,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             self, formula, statements, program_steps, eta_expr
         )
         program_steps.append(_let("eta", eta_expr))
-        retained_log_rate = (
-            self._family.name == "com_poisson" or self._family.baseline is not None
-        ) and self._family.location_link.name == "log"
-        # A COM log-rate remains useful even when exp(eta) overflows. Its
-        # inverse-link prediction is evaluated on request, not as an unused
-        # part of every density or native response-mean computation.
-        if not retained_log_rate:
+        # A log-scale location remains useful even when exp(eta) overflows.
+        # Its inverse-link prediction is evaluated on request, not as an
+        # unused part of every density or native response-mean computation.
+        retained_log_location = self._family.retains_log_location
+        if not retained_log_location:
             _append_link(
                 program_steps,
                 "mu",
@@ -6021,9 +6019,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 else self._family.location_link,
             )
 
-        if self._family.baseline is not None:
-            obs_args = ("baseline_breaks", "baseline_controls", "mu")
-        elif self._family.ordinal is not None:
+        if self._family.ordinal is not None:
             assert cutpoints_name is not None
             if (
                 self._family.ordinal.kind == "cumulative"
@@ -6057,8 +6053,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     formula, cutpoints_name, statements, program_steps
                 )
                 obs_args = ("ordinal_logits",)
-        elif retained_log_rate:
-            obs_args = ("eta", "shape")
         else:
             # The family states its own map to the native constructor. Under
             # known errors the total scale stands wherever it names sigma.
@@ -6106,27 +6100,19 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             if formula.modifiers.weights is not None
             else None,
         )
-        if self._family.baseline is not None:
+        if retained_log_location:
+            assert self._family.log_location_argument is not None
+            location = _to_draw_arg("mu")
             observation = observation.with_(
-                args=(
+                args=tuple(
                     DrawArgNamed(
-                        parameter="breaks", value=_to_draw_arg("baseline_breaks")
-                    ),
-                    DrawArgNamed(
-                        parameter="controls", value=_to_draw_arg("baseline_controls")
-                    ),
-                    DrawArgNamed(
-                        parameter="log_rate" if retained_log_rate else "rate",
-                        value=_to_draw_arg("eta" if retained_log_rate else "mu"),
-                    ),
-                ),
-            )
-        elif retained_log_rate:
-            observation = observation.with_(
-                args=(
-                    DrawArgNamed(parameter="log_rate", value=_to_draw_arg("eta")),
-                    DrawArgNamed(parameter="dispersion", value=_to_draw_arg("shape")),
-                ),
+                        parameter=self._family.log_location_argument,
+                        value=_to_draw_arg("eta"),
+                    )
+                    if isinstance(argument, DrawArgNamed) and argument.value == location
+                    else argument
+                    for argument in observation.args or ()
+                )
             )
         if (
             self._family.ordinal is not None
