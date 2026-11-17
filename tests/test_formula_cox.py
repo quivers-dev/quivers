@@ -420,9 +420,14 @@ def test_structural_group_coding_reuses_effect_coding_without_adding_terms():
     assert structural.group_levels == effects.group_levels == {"g": ("a", "z")}
     assert structural.group_indices == effects.group_indices == {"g": (1, 0, 1)}
     assert structural.random_terms == ()
-    for invalid in [frame.drop(columns="g"), frame.assign(g=["a", None, "b"])]:
-        with pytest.raises(ValueError, match="grouping factor"):
-            formula_from_data("y~1", invalid, groups=("g",))
+    with pytest.raises(ValueError, match="grouping factor"):
+        formula_from_data("y~1", frame.drop(columns="g"), groups=("g",))
+    with pytest.warns(UserWarning, match="g"):
+        incomplete = formula_from_data(
+            "y~1", frame.assign(g=["a", None, "b"]), groups=("g",)
+        )
+    assert incomplete.group_levels == {"g": ("a", "b")}
+    assert incomplete.group_indices == {"g": (0, 1)}
 
 
 def test_censored_knot_selection_uses_exact_events_and_full_followup_span():
