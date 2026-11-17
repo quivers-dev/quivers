@@ -302,6 +302,7 @@ class ExprMorphismCall(Expr):
 
     callee: str
     args: tuple[str, ...]
+    static_args: tuple[str, ...] = ()
     line: int = 0
     col: int = 0
     kind: Literal["expr_morphism_call"] = "expr_morphism_call"

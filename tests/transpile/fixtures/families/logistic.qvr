@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the Logistic family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program logistic_fixture : Obs -> Obs
+    observe y : Obs <- Logistic(loc=0.0, scale=1.0)
+    return y
+export logistic_fixture

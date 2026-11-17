@@ -8,6 +8,7 @@ from quivers.lsp.document import DocumentState
 from quivers.lsp.server import (
     _find_references,
     _qiec_local_completion_items,
+    _render_hover,
     build_server,
 )
 
@@ -232,3 +233,134 @@ def test_server_publishes_and_dynamically_refreshes_target_diagnostics() -> None
         for diagnostic in published[-1].diagnostics
         if str(diagnostic.code).startswith("qiec:capability:")
     ]
+
+
+PROGRAM_SOURCE = """\
+object Row : FinSet _
+object Out : Real 1
+program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let mu = b * x
+    observe y : Row <- Normal(loc=mu, scale=1.0)
+    return b
+program second(x : Tensor[Real]([Row])) : Row -> Out
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let mu = b * x
+    observe z : Row <- Normal(loc=mu, scale=1.0)
+    return b
+export regression
+"""
+
+
+def test_program_runtime_parameters_have_lexical_declaration_identity() -> None:
+    document = DocumentState(uri="file:///tmp/program-parameters.qvr")
+    document.update(source=PROGRAM_SOURCE, version=1)
+    assert document.diagnostics == []
+    first = document.find_decl("x", line=4, col=17)
+    second = document.find_decl("x", line=9, col=17)
+    assert type(first).__name__ == "QiecValueParameter"
+    assert getattr(first, "line", 0) == 3
+    assert getattr(second, "line", 0) == 8
+    assert _reference_positions(document, "x", line=4, col=17) == {(2, 19), (4, 17)}
+    assert _reference_positions(document, "x", line=9, col=17) == {(7, 15), (9, 17)}
+    # An observed response is a use of the header value, not a second binder.
+    response = document.find_decl("y", line=5, col=12)
+    assert getattr(response, "line", 0) == 3
+    hover = _render_hover(document, "x", line=4, col=17)
+    assert hover is not None
+    assert "x : Tensor[Real]([Row])" in hover
+    assert "program regression" not in hover
+    items = {
+        item.label: item
+        for item in _qiec_local_completion_items(document, "", line=4, col=17)
+    }
+    assert items["x"].detail == "x : Tensor[Real]([Row])"
+    assert items["y"].kind == lsp.CompletionItemKind.Variable
+
+
+def test_program_parameter_telescope_visibility_follows_source_order() -> None:
+    document = DocumentState(uri="file:///tmp/program-telescope.qvr")
+    document.update(
+        source="""object One : FinSet 1
+object Out : Real 1
+program p[n : Nat](x : Tensor[Real]([n])) : One -> Out
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let mu = b * x
+    return b
+export p
+""",
+        version=1,
+    )
+    assert document.diagnostics == []
+    names_before_x = {
+        item.label
+        for item in _qiec_local_completion_items(document, "", line=2, col=18)
+    }
+    assert "n" in names_before_x
+    assert "x" not in names_before_x
+    items = {
+        item.label: item
+        for item in _qiec_local_completion_items(document, "", line=4, col=17)
+    }
+    assert {"n", "x"} <= items.keys()
+    assert items["n"].kind == lsp.CompletionItemKind.TypeParameter
+    assert items["n"].detail == "n : Nat"
+
+
+def test_program_static_object_and_runtime_scalar_share_lexical_tools() -> None:
+    document = DocumentState(uri="file:///tmp/program-stages.qvr")
+    document.update(
+        source="""object Out : Real 1
+program p[K : FinSet](spread : Real) : K -> Out
+    sample z : K <- Normal(loc=0.0, scale=1.0)
+    let scaled = spread * z
+    return scaled
+""",
+        version=1,
+    )
+    assert document.diagnostics == []
+    items = {
+        item.label: item
+        for item in _qiec_local_completion_items(document, "", line=3, col=25)
+    }
+    assert items["K"].detail == "K : FinSet"
+    assert items["K"].kind == lsp.CompletionItemKind.TypeParameter
+    assert items["spread"].detail == "spread : Real"
+    assert items["spread"].kind == lsp.CompletionItemKind.Variable
+    assert _reference_positions(document, "K", line=2, col=15) == {
+        (1, 10),
+        (1, 39),
+        (2, 15),
+    }
+
+
+def test_observation_weight_option_uses_its_lexical_header_parameter() -> None:
+    source = """object Row : FinSet 3
+object Out : Real 1
+program first(w : Tensor[Real]([Row])) : Row -> Out
+    observe y : Row <- Normal(loc=0.0, scale=1.0) [weights=w]
+    return y
+program second(w : Real) : Row -> Out
+    observe y : Row <- Normal(loc=0.0, scale=1.0) [weights=w]
+    return y
+export first
+"""
+    document = DocumentState(uri="file:///tmp/weighted-observation.qvr")
+    document.update(source=source, version=1)
+    use = source.splitlines()[3].rindex("w]")
+    second_use = source.splitlines()[6].rindex("w]")
+    declaration = document.find_decl("w", line=3, col=use)
+    assert type(declaration).__name__ == "QiecValueParameter"
+    assert getattr(declaration, "line", 0) == 3
+    assert _reference_positions(document, "w", line=3, col=use) == {(2, 14), (3, use)}
+    assert _reference_positions(document, "w", line=6, col=second_use) == {
+        (5, 15),
+        (6, second_use),
+    }
+    hover = _render_hover(document, "w", line=3, col=use)
+    assert hover is not None and "w : Tensor[Real]([Row])" in hover
+    items = {
+        item.label: item
+        for item in _qiec_local_completion_items(document, "", line=3, col=use)
+    }
+    assert items["w"].detail == "w : Tensor[Real]([Row])"

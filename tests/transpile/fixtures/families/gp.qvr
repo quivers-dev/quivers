@@ -1,9 +1,8 @@
 # Hand-written GP fixture (function-space family).
-# The kernel option chooses the covariance family; length_scale
-# initialises the kernel's hyperparameter (positive, learnable).
+# The native constructor supplies its default RBF covariance.
 object Idx : FinSet 8
 object Obs : Real 1
-morphism gp_kernel : Idx -> Obs [role=kernel, kernel=rbf, length_scale=1.0] ~ GP
+morphism gp_kernel : Idx -> Obs [role=kernel] ~ GP
 program gp_fixture : Idx -> Obs
     sample f <- gp_kernel
     return f

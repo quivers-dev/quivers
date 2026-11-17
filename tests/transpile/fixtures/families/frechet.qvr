@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the Frechet family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program frechet_fixture : Obs -> Obs
+    observe y : Obs <- Frechet(scale=1.3, concentration=3.0)
+    return y
+export frechet_fixture

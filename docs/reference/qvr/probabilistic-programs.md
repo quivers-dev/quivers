@@ -14,7 +14,7 @@ and scalar parameters become value parameters of the computation.
 ```qvr
 object Row : FinSet 100
 
-program regression : Row -> Row [effects=[Sample, Score]]
+program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Row [effects=[Sample, Score]]
     sample sigma <- HalfNormal(scale=1.0)
     sample intercept <- Normal(loc=0.0, scale=5.0)
     sample slope <- Normal(loc=0.0, scale=2.0)
@@ -53,7 +53,140 @@ an expression reads but no step binds is a data input of the program, not a glob
 
 ## Data inputs {#host-data}
 
-A *data input* is a name the program reads but does not bind, given at run time with the
+Optional typed parameters in the program header use QIEC types, such as
+`x : Tensor[Real]([Row])` or `index : Tensor[Int]([Row])`. Each parameter is
+in scope throughout the body, and every use must agree with its declared type.
+Declaring a parameter performs no random draw or score. In particular, the
+parameter `y` above becomes an observation because the body uses `observe y`;
+its type annotation alone does not determine that role.
+An observation can also score a value bound earlier in the body:
+
+```qvr
+object Row : FinSet 3
+program centered(raw : Tensor[Real]([Row])) : Row -> Row
+    let y = raw - 2.0
+    observe y : Row <- Normal(loc=0.0, scale=1.0)
+    return y
+export centered
+```
+
+Here `raw` is the external input, and `y` is computed before it is scored.
+Guides and MCMC kernels allocate no latent coordinate for `y`. The observation
+uses the same row axes, weights, and density rules as an externally supplied
+response. It introduces no automatic change-of-variables correction; modeling
+a transformed measurement may require an explicit Jacobian score.
+
+`object Row : FinSet _` requests specialization from supplied checked shapes or
+direct index evidence. See [data binding and fitting](../../guides/model-data-and-fitting.md)
+for the inference rules and [interactive inspection](../../guides/repl-and-lsp.md#checked-parameters-in-interactive-tools)
+for symbolic checking, completion, and notebook use.
+
+### Static and runtime parameters
+
+A program has the same two parameter lists as a `define` computation:
+
+```text
+program NAME[STATIC_PARAMETERS](VALUE_PARAMETERS) : DOMAIN -> CODOMAIN
+    STEPS
+    return VALUE
+```
+
+The static telescope in `[...]` binds QIEC types, indices, or effects, and program
+objects or morphisms used when specializing the program. The runtime telescope in `(...)` accepts values used
+by the body. Later parameter types may refer to earlier static parameters, so a
+signature can express that two inputs have the same shape. A typed value
+parameter is not by itself a request to specialize a template.
+
+A static `Nat` is an index extent, not a runtime integer term. A family
+argument such as `Binomial(total_count=n, probs=p)` thus needs
+`n` as a runtime value, for instance `(n : Nat)`. The current checker
+does not implicitly convert `[n : Nat]` into a scalar value for that call.
+
+For instance, `program model[Row : FinSet](x : Tensor[Real]([Row])) : Row -> Out`
+abstracts over a finite row object and receives a tensor over that object.
+`model[Rows](values)` supplies the object separately from its values. A scalar
+hyperparameter, such as `scale : Real`, belongs in the runtime list even when a
+caller happens to supply a literal. The [parameter reference](index.md#parameter-telescopes)
+explains this convention across declarations and its distinction from family indices.
+
+Source program calls currently accept names or signed numeric literals as
+static actuals, as in `model[Rows](values)` or `prior[3]()`. The signature's
+kinds then check those actuals. Arbitrary structured types, applied effects,
+or index-constructor expressions are not accepted in that program-call
+position, even when the shared checked telescope can represent their sorts.
+Typed `define` calls retain their own QIEC static-argument syntax.
+
+A runtime `(count : Nat)` accepts a nonnegative integer. The checked program
+retains that restriction alongside its integer arithmetic type, and both native
+and reference execution validate it when inputs are supplied. A static
+`[n : Nat]` instead selects an index used by the specialized types.
+A program call can supply a nonnegative integer literal or a runtime input
+already constrained as `Nat`. An arbitrary computed or sampled `Int` is
+rejected: the checker does not yet prove that an integer expression is nonnegative.
+
+Bare parameters, as in `program f(a, b) : A * B -> C`, remain shorthand for
+the components of the declared domain. Typed external values are additional
+inputs; declaring them does not change the program's domain or add an execution axis.
+One runtime header uses either bare domain names or typed value parameters;
+the two forms are not mixed in one list. An explicit `()` declares no runtime
+parameters.
+
+A static natural number can itself index a finite plate:
+
+<!-- compile: qiec -->
+```qvr
+object Out : Real 1
+
+program regression[n : Nat](
+    x : Tensor[Real]([n]),
+    y : Tensor[Real]([n]),
+) : n -> Out
+    sample slope <- Normal(loc=0.0, scale=1.0)
+    let mean = slope * x
+    observe y : n <- Normal(loc=mean, scale=1.0)
+    return slope
+
+export regression
+```
+
+In a finite-object position, `n` denotes the canonical zero-based ordinal
+$\{0,\ldots,n-1\}$. In a tensor shape it denotes the same extent. The shared
+binder thus relates the input shapes, plate, and domain without introducing a
+module-level object for each size. Symbolic checking verifies this dependency
+before a concrete size is supplied; executor support for specialization is
+checked separately.
+
+The Python factory can specialize only the static telescope and leave runtime
+inputs to be supplied with data:
+
+```python
+from quivers.dsl import loads
+
+static_family = loads("""
+object Out : Real 1
+program sub[n : Nat](scale : Real) : n -> Out
+    sample z : n <- Normal(loc=0.0, scale=scale)
+    return z
+export sub
+""")
+specialized = static_family.sub(n=3)
+contract = specialized.morphism.input_contract
+assert contract.telescope == ()
+assert tuple(parameter.name for parameter in contract.parameters) == ("scale",)
+```
+
+Here `n=3` fixes the plate's extent, while `scale` remains a checked runtime
+input. Named scalar partial application, such as `.sub(n=3, scale=0.7)`, may
+also fix a runtime value; it preserves that value's runtime parameter stage.
+Supply tensor values through `Model.bind` or the execution data interface.
+Standalone specialization keeps the source's site names, so an observation
+authored as `y` is supplied under `"y"`. Calls inside the specialized body
+still introduce their own namespaces; two calls can thus observe distinct
+`a$y` and `b$y` sites. Substitution freshens a local when needed to avoid
+capturing an actual argument.
+
+A *data input* is an external value the body reads, declared as a typed header
+parameter or inferred from an otherwise unbound name, given at run time with the
 observations, as a variable of Stan's `data` block is [@carpenter2017stan]. Each data input has one
 checked type, which `qvr check` and `entry_points()` list and every transpile target declares. The
 type is inferred from the name's uses:
@@ -63,7 +196,7 @@ type is inferred from the name's uses:
 | fills a family parameter of a draw over a plate directly, as in `Normal(loc=theta, scale=x)` or `OrderedLogistic(predictor=eta, cutpoints=x)` | one value per row: the plate's first batch axis, then one open extent per axis of the parameter, as `Tensor[Real]([6, x_extent])` for cutpoints |
 | subscripted, as in `x[i]` or `x[i, j]`, and read no other way | a table with one open extent per index, plus one per axis of a row when the gathered rows fill a vector parameter (several index vectors in one subscript select one entry per position, `x[i[n], j[n]]`) |
 | combined entry by entry with a value of known shape, as in `x * resid` | that value's shape |
-| read by a `let` that a plated `sample`, `observe`, or `marginalize` step consumes | a vector over the plate's first batch axis |
+| read by a `let` that a plated `sample`, `observe`, or `marginalize` step consumes, when the surrounding types determine one batch axis | a vector over that axis |
 | used as an index, or gathered from in an index position as in `E[tokens[q], k]` | a tensor of `Int` |
 | none of the above | a scalar `Real`, or `Int` for an index |
 
@@ -73,10 +206,20 @@ independent copies, and its *event axes* belong to one joint value [@pyroTensorS
 
 The rule applies to `let` and `score` expressions alike. A data input that a reduction or a rowwise
 operation consumes, but whose shape no use fixes, as in `score s = sum(weight)`, is refused at the
-step that reads it, since nothing gives its number of entries. Its extent is fixed by combining it
+step that reads it, since nothing gives its number of entries. Declare a typed
+header parameter, such as `weight : Tensor[Real]([Item])`, to state the intended
+extent. The extent can also be fixed by combining it
 entry by entry with a value over the intended object, or by reading it entrywise in a factor, as in
 `sum(factor i : Item in weight[i] * resid[i])`. A name whose uses fix two different shapes is
 refused the same way.
+
+Grouped blocks distinguish the group axis from each observation's row axis.
+A typed group covariate preserves its group axis through a `let`, and the
+observation's `via` map pulls it back to rows. An undeclared input whose axis
+cannot be determined from its uses requires a header annotation; the compiler
+does not choose an axis because two extents happen to agree. For instance,
+declare `x : Tensor[Real]([Group])` when `let center = mu[c] + x` uses one
+covariate per group ([grouped marginalization](#exact-marginalization)).
 
 A data input that fills a family parameter of a draw over a plate directly may also be given without the
 plate axis: a scalar `sigma` for `scale=sigma`, or one cutpoint vector of shape `(cuts_extent,)` for
@@ -141,6 +284,64 @@ target that takes only probabilities requires `Categorical(probs=softmax(scores)
 A family whose value is a vector takes it in one named parameter.
 `Dirichlet(concentration=[1.0, 2.0, 3.0])` gives an explicit vector, and a single literal,
 `Dirichlet(concentration=1.0)`, is a symmetric concentration over a fixed output extent.
+
+## Observation weights {#observation-weights}
+
+An observation can raise each response likelihood to a finite nonnegative
+power. The option `[weights=w]` reads the weights from a named value;
+`[weights=0.5]` applies one constant power to every observation.
+
+<!-- compile: qiec -->
+```qvr
+object Row : FinSet _
+object Out : Real 1
+
+program weighted_regression(
+    x : Tensor[Real]([Row]),
+    y : Tensor[Real]([Row]),
+    w : Tensor[Real]([Row]),
+) : Row -> Out
+    sample slope <- Normal(loc=0.0, scale=1.0)
+    let mean = slope * x
+    observe y : Row <- Normal(loc=mean, scale=1.0) [weights=w]
+    return slope
+
+export weighted_regression
+```
+
+Each row contributes `w[row] * log_prob(y[row])` before the observation rows
+are summed. A zero weight contributes zero even when the raw log density is
+negative infinity; its likelihood contribution has zero parameter gradient.
+The prior on `slope` retains its original score. Weights remain at the supplied
+scale, and the number of response rows is unchanged.
+
+An undeclared `w` is inferred as a `Tensor[Real]` over the observation's batch
+axes, or a scalar `Real` when there are no batch axes. An explicitly declared
+`w : Real` broadcasts one scalar over the batch axes. A tensor weight must
+match the batch shape exactly: components of one multivariate event share one
+weight. Value validation rejects
+Boolean, negative, and nonfinite weights. The option accepts a name or a
+numeric literal; bind a computed expression with `let` and name that binding.
+
+Inside `marginalize`, each component's observed log density is weighted before
+row or group reduction and latent aggregation. With subsampling, the selected
+rows select their corresponding weights, then the sampling correction is
+applied once. Declaring a weight parameter alone performs no scoring; the
+observation option selects this likelihood treatment.
+
+At fixed model parameters, sampling and prediction use the original response
+distribution. Fitting the weighted target may change the posterior and thus its
+posterior predictive results. Raw pointwise
+[`ModelFit.log_likelihood`](../../guides/model-data-and-fitting.md#extract-pointwise-log-likelihoods)
+remains unweighted. The [semantics](../../semantics/programs.md#observation-weights)
+defines the zero-weight convention and order of reductions.
+
+The native executor and QIEC reference machine support weighted observations.
+All eleven external transpilation targets currently refuse this source form
+with `qiec:weighted-observe:<program>`, where the final component names the
+entry. Authored calls of the checked weight primitives have their own
+[capability boundary](computations.md#built-in-values-and-distributions);
+the [measured support matrix](../../transpile-support.md) records both cases.
 
 ## Open input extents
 
@@ -238,7 +439,7 @@ such a call is refused with the same error when it is instantiated:
 | an `if` whose branches draw or score | its set of sites depends on the branch taken | draw outside the conditional and choose between values with `select` |
 | a callee that handles an effect in its body (`with instance`, `handle`) | the compiled runtime does not run handlers or resumptions | a callee with no handler |
 | a `case` on a family value | the compiled runtime does not run case analysis | a callee with no `case` |
-| a call with static arguments, as `identity[Int](4)` | the compiled runtime does not specialize | a callee with no static binders |
+| a `define`-computation call with static arguments, as `identity[Int](4)` | the compiled runtime does not specialize computation calls | a computation with no static binders |
 | a program called as a computation, `let y <- sub(...)` | a program is drawn from, not called | `sample y <- sub(...)` |
 
 Dynamic transpile targets emit every reachable call, Stan accepts a callee that is a closed,
@@ -256,11 +457,12 @@ object Item : FinSet 3
 object Row : FinSet 6
 object Component : FinSet 2
 
-program mixture : Row -> Row
+program mixture(x : Tensor[Real]([Item])) : Row -> Row
     sample probs <- Dirichlet(concentration=2.0) [over=Component]
     sample mean : Component <- Normal(loc=0.0, scale=3.0)
     marginalize z : Component <- Categorical(probs=probs) [over=Item, reduction=logsumexp]
-        observe y : Row <- Normal(loc=mean[z], scale=1.0) [via=item_idx]
+        let center = mean[z] + x
+        observe y : Row <- Normal(loc=center, scale=1.0) [via=item_idx]
     return mean
 
 export mixture
@@ -270,7 +472,7 @@ export mixture
 observation rows to items. For an item $g$ with rows $\iota^{-1}(g)$, the block adds
 
 $$
-\log \sum_{k} \pi_k \prod_{n \in \iota^{-1}(g)} \mathcal{N}(y_n; \mu_k, 1)
+\log \sum_{k} \pi_k \prod_{n \in \iota^{-1}(g)} \mathcal{N}(y_n; \mu_k + x_g, 1)
 $$
 
 to the log joint, where $\iota$ is the index map, $\pi$ is `probs`, $\mu$ is `mean`, and
@@ -279,6 +481,22 @@ rows of one item thus share one assignment, and their likelihoods are multiplied
 components ([grouped marginalization](../../guides/programs-hierarchical.md)). For product groups,
 write `[over=[School, Subject]]` and `[via=[school_idx, subject_idx]]`. The product is flattened in
 row-major order, the last factor varying fastest.
+
+The latent's values are component codes, but the latent itself is indexed by
+the grouping object. Here `z` has three entries, one per `Item`, each
+selecting one of two `Component` values. The `let` combines `mean[z]` with
+the item-indexed covariate `x`, so `center` is also indexed by `Item`.
+An observation with `[via=item_idx]` gathers `center` at each row's item
+before scoring that row. For instance, the map
+`item_idx = [2, 0, 2, 1, 0, 1]` uses centers
+`[center[2], center[0], center[2], center[1], center[0], center[1]]`.
+Each observation uses its own map.
+
+`Row`, `Item`, and `Component` remain distinct even if two have the same
+number of elements. A `let` that combines unrelated row-indexed and
+item-indexed values requires an explicit index map. The `via` option applies
+at its observation; it does not implicitly reindex other expressions in the
+block ([grouped semantics](../../semantics/programs.md#27-grouped-marginalize-with-multi-observe-fibration)).
 
 The values of the latent are the elements of its declared index object, here the two elements of
 `Component`, numbered from zero. Every target enumerates exactly those values, whatever form the
@@ -296,10 +514,23 @@ The reductions are:
 | `sum` | the arithmetic sum of the block's weights |
 | `mean` | the arithmetic mean of the block's weights |
 
-A nested grouped block returns one aggregate per group to the enclosing block. The inner grouping
-must coincide with the enclosing one or refine it by a projection of a product. A `sample` inside a
-block that reads nothing the block binds is hoisted and drawn once. A draw that depends on the
-summed latent is refused, because it would change the finite sum the block states.
+A nested grouped block retains a separate class axis for each enclosing
+latent. An inner likelihood may depend on both an outer and an inner class,
+including through chained `let` bindings; the inner reduction removes only
+its own class axis. Two or three class sets may have different cardinalities.
+Each observation's `via` map still gathers group-indexed values to that
+observation's rows before their scores are aggregated.
+
+The inner block returns one aggregate per group to the enclosing block.
+Equal checked group extents align positionwise, even with distinct object
+names. An inner product grouping can refine the enclosing grouping by
+projection, but its likelihood parameters must satisfy the inner checked
+shape. An outer-group vector does not implicitly become a tensor over the
+inner product group; an incompatible use is refused
+([nested grouped semantics](../../semantics/programs.md#27-grouped-marginalize-with-multi-observe-fibration)).
+A `sample` inside a block that reads nothing the block binds is hoisted and
+drawn once. A draw that depends on the summed latent is refused, because it
+would change the finite sum the block states.
 
 ## Scans
 

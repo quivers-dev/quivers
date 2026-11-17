@@ -12,18 +12,35 @@ point of a reference.
 
 from __future__ import annotations
 
+from quivers._quadrature_constants import _NODES_16, _WEIGHTS_16
+
 from collections.abc import Callable, Mapping, Sequence
 import math
 import random
 
 from quivers.qiec._onion import onion_cholesky_rows
+from quivers.qiec._sampling import (
+    _log_standard_gamma,
+    _dirichlet_weights,
+    _binomial_sample as _sample_binomial_count,
+    _trial_count,
+)
+from quivers.qiec._count_mixtures import (
+    _negative_binomial_log_mass,
+    _poisson as _sample_poisson_count,
+    _poisson_log_mass,
+    _require_sample_capacity as _require_count_sample_capacity,
+    _beta_binomial_log_mass,
+    _validate_beta_concentrations,
+    _log_gamma_increment,
+)
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.reference_support import (
     Density,
     DistributionError,
     Sampler,
     finite_value,
-    log_choose,
+    _integer_observation,
     log_probabilities,
     normal_log_prob,
     probability,
@@ -73,24 +90,7 @@ def relaxation_temperature(a: Mapping[str, object], family: str) -> float:
 
 #: Standard Gauss-Legendre nodes and weights on ``[-1, 1]`` for the
 #: horseshoe marginal, mapped to ``[0, 1]`` where they are used.
-_GAUSS_LEGENDRE_16: tuple[tuple[float, float], ...] = (
-    (-0.9894009349916499, 0.0271524594117541),
-    (-0.9445750230732326, 0.0622535239386479),
-    (-0.8656312023878318, 0.0951585116824928),
-    (-0.7554044083550030, 0.1246289712555339),
-    (-0.6178762444026438, 0.1495959888165767),
-    (-0.4580167776572274, 0.1691565193950025),
-    (-0.2816035507792589, 0.1826034150449236),
-    (-0.0950125098376374, 0.1894506104550685),
-    (0.0950125098376374, 0.1894506104550685),
-    (0.2816035507792589, 0.1826034150449236),
-    (0.4580167776572274, 0.1691565193950025),
-    (0.6178762444026438, 0.1495959888165767),
-    (0.7554044083550030, 0.1246289712555339),
-    (0.8656312023878318, 0.0951585116824928),
-    (0.9445750230732326, 0.0622535239386479),
-    (0.9894009349916499, 0.0271524594117541),
-)
+_GAUSS_LEGENDRE_16 = tuple(zip(_NODES_16, _WEIGHTS_16, strict=True))
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +536,12 @@ def _cholesky(matrix: Matrix, subject: str) -> Matrix:
     size = len(matrix)
     if any(len(row) != size for row in matrix):
         raise DistributionError(f"{subject} is not square")
+    if any(
+        not math.isclose(matrix[i][j], matrix[j][i], rel_tol=1e-5, abs_tol=1e-6)
+        for i in range(size)
+        for j in range(i)
+    ):
+        raise DistributionError(f"{subject} is not symmetric")
     factor = [[0.0] * size for _ in range(size)]
     for i in range(size):
         for j in range(i + 1):
@@ -1101,30 +1107,6 @@ def _positive_parameter(a: Mapping[str, object], name: str, family: str) -> floa
     if not value > 0.0:
         raise DistributionError(f"{family} needs a positive {name}, got {value!r}")
     return value
-
-
-def _log_standard_gamma(shape: float, rng: random.Random) -> float:
-    """Draw ``log(G)`` for ``G ~ Gamma(shape, 1)`` without forming ``G``.
-
-    The draw is ``log G' + log(U) / shape`` for independent ``G' ~
-    Gamma(shape + 1, 1)`` and ``U ~ Uniform(0, 1]``, the shape
-    augmentation of Marsaglia and Tsang, which stays finite for shapes
-    far below the point where a Gamma draw underflows.
-
-    Parameters
-    ----------
-    shape : float
-        The positive Gamma shape.
-    rng : random.Random
-        The generator to draw from.
-
-    Returns
-    -------
-    float
-        One log-Gamma draw.
-    """
-    boosted = rng.gammavariate(shape + 1.0, 1.0)
-    return math.log(boosted) + math.log(1.0 - rng.random()) / shape
 
 
 def _loggamma_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -2007,14 +1989,10 @@ def _negativebinomial_sample(a: Mapping[str, object], rng: random.Random) -> obj
     """
     total = real_parameter(a, "total_count", "NegativeBinomial")
     success = probability(a, "NegativeBinomial")
+    if total == 0 or success == 0:
+        return 0
     rate = rng.gammavariate(total, success / (1.0 - success))
-    limit = math.exp(-rate)
-    count = 0
-    product = rng.random()
-    while product > limit:
-        count += 1
-        product *= rng.random()
-    return count
+    return _sample_poisson_count(rate, rng)
 
 
 def _negativebinomial_density(a: Mapping[str, object], value: object) -> float:
@@ -2035,20 +2013,12 @@ def _negativebinomial_density(a: Mapping[str, object], value: object) -> float:
         count is waited on, as the torch convention has it. A
         ``total_count`` of zero is the point mass at zero.
     """
-    count = int(finite_value(value, "NegativeBinomial"))
+    count = _integer_observation(value, "NegativeBinomial", float64=True)
+    if count is None:
+        return -math.inf
     total = real_parameter(a, "total_count", "NegativeBinomial")
     log_success, log_failure = log_probabilities(a, "NegativeBinomial")
-    if count < 0:
-        return -math.inf
-    if total == 0.0:
-        return 0.0 if count == 0 else -math.inf
-    return (
-        math.lgamma(total + count)
-        - math.lgamma(count + 1)
-        - math.lgamma(total)
-        + total * log_failure
-        + (0.0 if count == 0 else count * log_success)
-    )
+    return _negative_binomial_log_mass(total, count, log_success, log_failure)
 
 
 def _betabinomial_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -2066,12 +2036,16 @@ def _betabinomial_sample(a: Mapping[str, object], rng: random.Random) -> object:
     object
         The drawn count, from a binomial whose probability is a beta draw.
     """
-    total = int(real_parameter(a, "total_count", "BetaBinomial"))
-    success = rng.betavariate(
+    total = _trial_count(a.get("total_count"))
+    concentrations = (
         real_parameter(a, "concentration1", "BetaBinomial"),
         real_parameter(a, "concentration0", "BetaBinomial"),
     )
-    return sum(1 for _ in range(total) if rng.random() < success)
+    _validate_beta_concentrations(*concentrations)
+    if total == 0:
+        return 0
+    success = _dirichlet_weights(concentrations, rng)[0]
+    return _sample_binomial_count(total, success, rng)
 
 
 def _betabinomial_density(a: Mapping[str, object], value: object) -> float:
@@ -2089,63 +2063,79 @@ def _betabinomial_density(a: Mapping[str, object], value: object) -> float:
     float
         The log probability, ``-inf`` outside ``0..total_count``.
     """
-    count = int(finite_value(value, "BetaBinomial"))
-    total = real_parameter(a, "total_count", "BetaBinomial")
+    count = _integer_observation(value, "BetaBinomial", float64=True)
+    if count is None:
+        return -math.inf
+    total = _trial_count(a.get("total_count"))
     first = real_parameter(a, "concentration1", "BetaBinomial")
     second = real_parameter(a, "concentration0", "BetaBinomial")
-    if not 0 <= count <= total:
-        return -math.inf
-    return (
-        log_choose(total, count)
-        + _log_beta(first + count, second + total - count)
-        - _log_beta(first, second)
-    )
+    return _beta_binomial_log_mass(total, count, first, second)
 
 
-def _ordered_probabilities(
-    a: Mapping[str, object], family: str, link: Callable[[float], float]
+def _ordered_log_probabilities(
+    a: Mapping[str, object], family: str, link: str
 ) -> tuple[float, ...]:
-    """The category probabilities of an ordered regression family.
+    """Evaluate cumulative ordinal masses with the native log-space identities.
 
     Parameters
     ----------
     a : Mapping[str, object]
-        The family's named parameters: ``eta`` and the sorted ``cutpoints``.
+        Finite predictor and strictly increasing cutpoints.
     family : str
-        The family, for the diagnostic.
-    link : Callable[[float], float]
-        The distribution function of the latent noise.
+        Native family for diagnostics.
+    link : str
+        Logit or probit cumulative link.
 
     Returns
     -------
     tuple[float, ...]
-        One probability per category, ``len(cutpoints) + 1`` of them:
-        ``F(c_0 - eta)``, the differences of consecutive ``F(c_k - eta)``,
-        and ``1 - F(c_last - eta)``.
+        Log probability of every ordered category.
 
     Raises
     ------
     DistributionError
-        If no cutpoint is given.
+        If the predictor, cutpoints, or link are invalid.
     """
+    from quivers.qiec.primitives import _log1mexp, _log_ndtr
+
     eta = real_parameter(a, "eta", family)
     cutpoints = vector_parameter(a, "cutpoints", family)
     if not cutpoints:
         raise DistributionError(f"{family} needs at least one cutpoint")
-    cumulative = [link(cut - eta) for cut in cutpoints]
-    probabilities = [cumulative[0]]
-    probabilities.extend(
-        cumulative[index] - cumulative[index - 1] for index in range(1, len(cumulative))
-    )
-    probabilities.append(1.0 - cumulative[-1])
-    return tuple(probabilities)
+    if not math.isfinite(eta) or not all(math.isfinite(cut) for cut in cutpoints):
+        raise DistributionError(f"{family} predictor and cutpoints must be finite")
+    if any(high <= low for low, high in zip(cutpoints, cutpoints[1:])):
+        raise DistributionError(f"{family} cutpoints must be strictly increasing")
+    z = tuple(cut - eta for cut in cutpoints)
+    if link == "logit":
+        cdf = tuple(_log_sigmoid(value) for value in z)
+        sf = tuple(_log_sigmoid(-value) for value in z)
+        middle = tuple(
+            cdf[i + 1] + sf[i] + _log1mexp(z[i] - z[i + 1]) for i in range(len(z) - 1)
+        )
+    elif link == "probit":
+        cdf = tuple(_log_ndtr(value) for value in z)
+        sf = tuple(_log_ndtr(-value) for value in z)
+        middle_values = []
+        for i in range(len(z) - 1):
+            # Mirror positive-tail intervals before subtracting log masses.
+            high, low = (
+                (sf[i], sf[i + 1]) if cdf[i] > -math.log(2) else (cdf[i + 1], cdf[i])
+            )
+            middle_values.append(
+                high + _log1mexp(low - high) if math.isfinite(high) else -math.inf
+            )
+        middle = tuple(middle_values)
+    else:
+        raise DistributionError(f"unsupported ordinal cumulative link {link!r}")
+    return (cdf[0], *middle, sf[-1])
 
 
 def _ordered_sample(
     a: Mapping[str, object],
     rng: random.Random,
     family: str,
-    link: Callable[[float], float],
+    link: str,
 ) -> int:
     """Draw one category from an ordered regression family.
 
@@ -2157,26 +2147,26 @@ def _ordered_sample(
         The generator to draw from.
     family : str
         The family, for the diagnostic.
-    link : Callable[[float], float]
-        The distribution function of the latent noise.
+    link : str
+        Logit or probit cumulative link.
 
     Returns
     -------
     int
         The drawn category.
     """
-    probabilities = _ordered_probabilities(a, family, link)
+    log_probabilities = _ordered_log_probabilities(a, family, link)
     uniform = rng.random()
     total = 0.0
-    for index, item in enumerate(probabilities):
-        total += item
+    for index, item in enumerate(log_probabilities):
+        total += math.exp(item)
         if uniform < total:
             return index
-    return len(probabilities) - 1
+    return len(log_probabilities) - 1
 
 
 def _ordered_density(
-    a: Mapping[str, object], value: object, family: str, link: Callable[[float], float]
+    a: Mapping[str, object], value: object, family: str, link: str
 ) -> float:
     """The log probability of one category of an ordered regression family.
 
@@ -2188,20 +2178,26 @@ def _ordered_density(
         The category.
     family : str
         The family, for the diagnostic.
-    link : Callable[[float], float]
-        The distribution function of the latent noise.
+    link : str
+        Logit or probit cumulative link.
 
     Returns
     -------
     float
         The log probability, ``-inf`` outside the categories.
+
+    Raises
+    ------
+    DistributionError
+        If the category is boolean or nonnumeric, or parameters are invalid.
     """
-    category = int(finite_value(value, family))
-    probabilities = _ordered_probabilities(a, family, link)
-    if not 0 <= category < len(probabilities):
+    if isinstance(value, bool):
+        raise DistributionError(f"{family} response categories cannot be boolean")
+    category = _integer_observation(value, family)
+    log_probabilities = _ordered_log_probabilities(a, family, link)
+    if category is None or not 0 <= category < len(log_probabilities):
         return -math.inf
-    mass = probabilities[category]
-    return math.log(mass) if mass > 0.0 else -math.inf
+    return log_probabilities[category]
 
 
 def _orderedlogistic_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -2219,7 +2215,7 @@ def _orderedlogistic_sample(a: Mapping[str, object], rng: random.Random) -> obje
     object
         The drawn category.
     """
-    return _ordered_sample(a, rng, "OrderedLogistic", _sigmoid)
+    return _ordered_sample(a, rng, "OrderedLogistic", "logit")
 
 
 def _orderedlogistic_density(a: Mapping[str, object], value: object) -> float:
@@ -2237,7 +2233,7 @@ def _orderedlogistic_density(a: Mapping[str, object], value: object) -> float:
     float
         The log probability, ``-inf`` outside the categories.
     """
-    return _ordered_density(a, value, "OrderedLogistic", _sigmoid)
+    return _ordered_density(a, value, "OrderedLogistic", "logit")
 
 
 def _orderedprobit_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -2255,7 +2251,7 @@ def _orderedprobit_sample(a: Mapping[str, object], rng: random.Random) -> object
     object
         The drawn category.
     """
-    return _ordered_sample(a, rng, "OrderedProbit", _normal_cdf)
+    return _ordered_sample(a, rng, "OrderedProbit", "probit")
 
 
 def _orderedprobit_density(a: Mapping[str, object], value: object) -> float:
@@ -2273,7 +2269,7 @@ def _orderedprobit_density(a: Mapping[str, object], value: object) -> float:
     float
         The log probability, ``-inf`` outside the categories.
     """
-    return _ordered_density(a, value, "OrderedProbit", _normal_cdf)
+    return _ordered_density(a, value, "OrderedProbit", "probit")
 
 
 # ---------------------------------------------------------------------------
@@ -2619,6 +2615,164 @@ def _mixturenormal_density(a: Mapping[str, object], value: object) -> float:
     )
 
 
+def _gaussian_parameters(a: Mapping[str, object], family: str) -> tuple[Vector, Matrix]:
+    """Validate the shared location and Gaussian factor geometry.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Gaussian location and lower Cholesky factor.
+    family : str
+        Law name retained in located parameter diagnostics.
+
+    Returns
+    -------
+    tuple[Vector, Matrix]
+        Nonempty location and matching positive-diagonal lower factor.
+
+    Raises
+    ------
+    DistributionError
+        If the Gaussian dimensions or Cholesky constraints fail.
+    """
+    if (
+        sum(
+            name in a
+            for name in ("scale_tril", "covariance_matrix", "precision_matrix")
+        )
+        != 1
+    ):
+        raise DistributionError(f"{family} requires exactly one scale representation")
+    loc = vector_parameter(a, "loc", family)
+    factor = _covariance_factor(a, family)
+    d = len(loc)
+    if (
+        not d
+        or len(factor) != d
+        or any(len(row) != d for row in factor)
+        or any(not math.isfinite(v) for v in loc)
+        or any(
+            not math.isfinite(v) or (i < j and v != 0) or (i == j and v <= 0)
+            for i, row in enumerate(factor)
+            for j, v in enumerate(row)
+        )
+    ):
+        raise DistributionError(
+            f"{family} requires matching finite location and lower Cholesky factor"
+        )
+    return loc, factor
+
+
+def _alr_reference(a: Mapping[str, object], width: int) -> int:
+    """Resolve an optional discrete reference component before indexing.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Native named parameters.
+    width : int
+        Complete simplex width.
+
+    Returns
+    -------
+    int
+        Reference component, final by default.
+
+    Raises
+    ------
+    DistributionError
+        If the selector is not an in-range integer.
+    """
+    reference = a.get("reference", width - 1)
+    if (
+        isinstance(reference, bool)
+        or not isinstance(reference, int | float)
+        or not math.isfinite(reference)
+        or reference != int(reference)
+        or not 0 <= reference < width
+    ):
+        raise DistributionError(
+            "AdditiveLogRatioNormal reference must be an integer component index"
+        )
+    return int(reference)
+
+
+def _alr_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw an interior simplex from correlated Gaussian log ratios.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Gaussian parameters.
+    rng : random.Random
+        Random generator.
+
+    Returns
+    -------
+    object
+        Simplex coordinates with the final coordinate as reference.
+
+    Raises
+    ------
+    DistributionError
+        If floating point cannot represent the sampled interior point.
+    """
+    loc, factor = _gaussian_parameters(a, "AdditiveLogRatioNormal")
+    reference = _alr_reference(a, len(loc) + 1)
+    ratios_list = list(_draw_mvn(loc, factor, rng))
+    ratios_list.insert(reference, 0.0)
+    ratios = tuple(ratios_list)
+    peak = max(ratios)
+    weights = tuple(math.exp(v - peak) for v in ratios)
+    total = math.fsum(weights)
+    if not all(v > 0 for v in weights):
+        raise DistributionError(
+            "AdditiveLogRatioNormal draw underflowed the simplex interior"
+        )
+    return tuple(v / total for v in weights)
+
+
+def _alr_density(a: Mapping[str, object], value: object) -> float:
+    """Score an ALR simplex with the full change-of-variables Jacobian.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Gaussian parameters.
+    value : object
+        Candidate simplex point.
+
+    Returns
+    -------
+    float
+        Log density, or negative infinity outside the simplex interior.
+
+    Raises
+    ------
+    DistributionError
+        If the event has the wrong number of components.
+    """
+    loc, factor = _gaussian_parameters(a, "AdditiveLogRatioNormal")
+    reference = _alr_reference(a, len(loc) + 1)
+    point = _as_vector(value, "AdditiveLogRatioNormal point")
+    if len(point) != len(loc) + 1:
+        raise DistributionError(
+            "AdditiveLogRatioNormal event has the wrong component count"
+        )
+    if any(not math.isfinite(v) or v <= 0 for v in point) or not math.isclose(
+        math.fsum(point), 1.0, rel_tol=0, abs_tol=1e-6
+    ):
+        return -math.inf
+    logs = tuple(math.log(v) for v in point)
+    return _mvn_log_prob(
+        tuple(
+            v - logs[reference] for index, v in enumerate(logs) if index != reference
+        ),
+        loc,
+        factor,
+    ) - math.fsum(logs)
+
+
 def _mvn_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``MultivariateNormal``.
 
@@ -2634,11 +2788,8 @@ def _mvn_sample(a: Mapping[str, object], rng: random.Random) -> object:
     object
         The drawn vector.
     """
-    return _draw_mvn(
-        vector_parameter(a, "loc", "MultivariateNormal"),
-        _covariance_factor(a, "MultivariateNormal"),
-        rng,
-    )
+    loc, factor = _gaussian_parameters(a, "MultivariateNormal")
+    return _draw_mvn(loc, factor, rng)
 
 
 def _mvn_density(a: Mapping[str, object], value: object) -> float:
@@ -2656,10 +2807,76 @@ def _mvn_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density.
     """
-    return _mvn_log_prob(
-        _as_vector(value, "MultivariateNormal point"),
-        vector_parameter(a, "loc", "MultivariateNormal"),
-        _covariance_factor(a, "MultivariateNormal"),
+    loc, factor = _gaussian_parameters(a, "MultivariateNormal")
+    return _mvn_log_prob(_as_vector(value, "MultivariateNormal point"), loc, factor)
+
+
+def _mvstudent_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Sample one shared Student radial scale around the Gaussian geometry.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Degrees of freedom, location, and one scale representation.
+    rng : random.Random
+        Explicit host random stream.
+
+    Returns
+    -------
+    object
+        One vector draw on the native event carrier.
+
+    Raises
+    ------
+    DistributionError
+        If parameters are invalid or a draw exceeds finite host capacity.
+    """
+    df = _positive_parameter(a, "df", "MultivariateStudentT")
+    loc, factor = _gaussian_parameters(a, "MultivariateStudentT")
+    noise = _draw_mvn(tuple(0.0 for _ in loc), factor, rng)
+    log_scale = (math.log(df / 2) - _log_standard_gamma(df / 2, rng)) / 2
+    if log_scale > _LOG_FLOAT_MAX:
+        raise DistributionError(
+            "MultivariateStudentT draw exceeds finite host capacity"
+        )
+    scale = math.exp(log_scale)
+    return tuple(mean + scale * value for mean, value in zip(loc, noise, strict=True))
+
+
+def _mvstudent_density(a: Mapping[str, object], value: object) -> float:
+    """Score a marginal Student vector without latent radial augmentation.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Degrees of freedom, location, and one scale representation.
+    value : object
+        Vector observation in retained event order.
+
+    Returns
+    -------
+    float
+        Marginal log density.
+
+    Raises
+    ------
+    DistributionError
+        If the Gaussian geometry, degrees of freedom, or event width is invalid.
+    """
+    df = _positive_parameter(a, "df", "MultivariateStudentT")
+    loc, factor = _gaussian_parameters(a, "MultivariateStudentT")
+    point = _as_vector(value, "MultivariateStudentT point")
+    if len(point) != len(loc):
+        raise DistributionError("MultivariateStudentT point has the wrong event width")
+    residual = tuple(x - mean for x, mean in zip(point, loc, strict=True))
+    whitened = _solve_lower(factor, residual)
+    squared = math.fsum(x * x for x in whitened)
+    width = len(loc)
+    return (
+        _log_gamma_increment(df / 2, width / 2)
+        - width / 2 * (math.log(df) + math.log(math.pi))
+        - _log_det_from_cholesky(factor) / 2
+        - (df + width) / 2 * math.log1p(squared / df)
     )
 
 
@@ -2955,6 +3172,50 @@ def _inversewishart_density(a: Mapping[str, object], value: object) -> float:
     ) - (len(point) + 1) * _log_det_from_cholesky(point_factor)
 
 
+def _matrixnormal_factor(a: Mapping[str, object], axis: str, size: int) -> Matrix:
+    """Read one covariance or its validated lower factor.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Checked constructor arguments.
+    axis : str
+        Row or column parameter prefix.
+    size : int
+        Corresponding location event extent.
+
+    Returns
+    -------
+    Matrix
+        Lower Cholesky factor, without covariance reconstruction.
+
+    Raises
+    ------
+    DistributionError
+        If the parameterization, shape, or triangular factor is invalid.
+    """
+    covariance, factor = axis + "_covariance", axis + "_scale_tril"
+    if (covariance in a) == (factor in a):
+        raise DistributionError(
+            f"MatrixNormal requires exactly one {axis} covariance or factor"
+        )
+    value = _matrix_parameter(a, factor if factor in a else covariance, "MatrixNormal")
+    if len(value) != size or any(len(row) != size for row in value):
+        raise DistributionError(
+            f"MatrixNormal {axis} matrix disagrees with location extent"
+        )
+    if factor in a:
+        if any(
+            value[i][i] <= 0 or any(value[i][j] != 0 for j in range(i + 1, size))
+            for i in range(size)
+        ):
+            raise DistributionError(
+                f"MatrixNormal {factor} must be lower triangular with positive diagonal"
+            )
+        return value
+    return _cholesky(value, f"{axis} covariance of MatrixNormal")
+
+
 def _matrixnormal_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``MatrixNormal``.
 
@@ -2972,14 +3233,8 @@ def _matrixnormal_sample(a: Mapping[str, object], rng: random.Random) -> object:
         ``A``, ``B`` the Cholesky factors of the row and column covariances.
     """
     loc = _matrix_parameter(a, "loc", "MatrixNormal")
-    rows = _cholesky(
-        _matrix_parameter(a, "row_covariance", "MatrixNormal"),
-        "row covariance of MatrixNormal",
-    )
-    columns = _cholesky(
-        _matrix_parameter(a, "col_covariance", "MatrixNormal"),
-        "column covariance of MatrixNormal",
-    )
+    rows = _matrixnormal_factor(a, "row", len(loc))
+    columns = _matrixnormal_factor(a, "col", len(loc[0]))
     noise = tuple(tuple(rng.gauss(0.0, 1.0) for _ in loc[0]) for _ in loc)
     shaped = _matmul(_matmul(rows, noise), _transpose(columns))
     return tuple(
@@ -3015,14 +3270,8 @@ def _matrixnormal_density(a: Mapping[str, object], value: object) -> float:
     n, p = len(loc), len(loc[0]) if loc else 0
     if len(point) != n or any(len(row) != p for row in point):
         raise DistributionError("MatrixNormal is scored at a matrix of the wrong size")
-    row_factor = _cholesky(
-        _matrix_parameter(a, "row_covariance", "MatrixNormal"),
-        "row covariance of MatrixNormal",
-    )
-    column_factor = _cholesky(
-        _matrix_parameter(a, "col_covariance", "MatrixNormal"),
-        "column covariance of MatrixNormal",
-    )
+    row_factor = _matrixnormal_factor(a, "row", n)
+    column_factor = _matrixnormal_factor(a, "col", p)
     residual = tuple(
         tuple(x - m for x, m in zip(row, loc_row, strict=True))
         for row, loc_row in zip(point, loc, strict=True)
@@ -3354,9 +3603,25 @@ def _mixture_density(a: Mapping[str, object], value: object) -> float:
     components = _components(a, "Mixture")
     if len(components) != len(weights):
         raise DistributionError("Mixture weights and components differ in number")
+    from quivers.qiec._atoms import atom_reference, atomicity, log_atom_mass
+
+    if isinstance(value, tuple):
+        kinds = {atomicity(c) for c in components}
+        if len(kinds) != 1 or "mixed" in kinds:
+            raise DistributionError(
+                "mixed vector mixtures require a common stratified reference measure"
+            )
+        atomic = False
+    else:
+        atomic = any(atom_reference(c, value) for c in components)
     return _logsumexp(
         [
-            math.log(weight) + float(component.log_prob(value))  # type: ignore[attr-defined]
+            math.log(weight)
+            + (
+                log_atom_mass(component, value)
+                if atomic
+                else float(component.log_prob(value))
+            )
             for weight, component in zip(weights, components, strict=True)
             if weight > 0.0
         ]
@@ -3433,19 +3698,17 @@ def _reinterpreted(a: Mapping[str, object], base: object) -> int:
     Raises
     ------
     DistributionError
-        If the count is not the base's batch rank: the reference machine
-        scores a plated draw as one event or as independent batch
-        positions, and a base with more batch axes than are reinterpreted
-        would leave batch positions no single point can be scored at.
+        If the count is not an actual nonnegative integer or exceeds the
+        base's batch rank. Leading batch axes remain independently scored.
     """
-    count = int(real_parameter(a, "reinterpreted_batch_ndims", "Independent"))
-    batch = getattr(base, "batch", ())
-    if count != len(batch):
-        raise DistributionError(
-            f"Independent reinterprets {count} batch axes of a base with "
-            f"{len(batch)}; the reference machine joins a base's whole plate"
+    from quivers._independent import independent_ndims
+
+    try:
+        return independent_ndims(
+            a["reinterpreted_batch_ndims"], len(getattr(base, "batch", ()))
         )
-    return count
+    except (KeyError, TypeError, ValueError) as error:
+        raise DistributionError(str(error)) from error
 
 
 def _independent_density(a: Mapping[str, object], value: object) -> float:
@@ -3628,6 +3891,10 @@ def _transformed_density(a: Mapping[str, object], value: object) -> float:
             current = forward(current)
     except ValueError, OverflowError, ZeroDivisionError:
         return -math.inf
+    from quivers.qiec._atoms import atom_reference, log_atom_mass
+
+    if atom_reference(base, point):
+        return log_atom_mass(base, point)
     return float(base.log_prob(point)) - log_derivative  # type: ignore[attr-defined]
 
 
@@ -3745,10 +4012,10 @@ def _truncated_density(a: Mapping[str, object], value: object) -> float:
     point = finite_value(value, "Truncated")
     if not low <= point <= high:
         return -math.inf
-    mass = _truncated_mass(base, low, high)
-    if mass <= 0.0:
-        return -math.inf
-    return float(base.log_prob(point)) - math.log(mass)  # type: ignore[attr-defined]
+    log_mass = _restrict_log_mass_of(base, low, high)
+    return (
+        float(base.log_prob(point)) - log_mass if math.isfinite(log_mass) else -math.inf
+    )  # type: ignore[attr-defined]
 
 
 def _zip_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -3769,34 +4036,7 @@ def _zip_sample(a: Mapping[str, object], rng: random.Random) -> object:
     if rng.random() < real_parameter(a, "zero_prob", "ZeroInflatedPoisson"):
         return 0
     rate = real_parameter(a, "rate", "ZeroInflatedPoisson")
-    limit = math.exp(-rate)
-    count = 0
-    product = rng.random()
-    while product > limit:
-        count += 1
-        product *= rng.random()
-    return count
-
-
-def _poisson_log_mass(count: int, rate: float) -> float:
-    """The Poisson log mass at a count.
-
-    Parameters
-    ----------
-    count : int
-        The count.
-    rate : float
-        The rate.
-
-    Returns
-    -------
-    float
-        ``count log rate - rate - lgamma(count + 1)``, with
-        ``0 log 0 = 0``: a rate of zero is the point mass at zero.
-    """
-    if rate == 0.0:
-        return 0.0 if count == 0 else -math.inf
-    return count * math.log(rate) - rate - math.lgamma(count + 1)
+    return _sample_poisson_count(rate, rng)
 
 
 def _log(value: float) -> float:
@@ -3831,13 +4071,13 @@ def _zip_density(a: Mapping[str, object], value: object) -> float:
         ``log(pi + (1 - pi) e^-rate)`` at zero, ``log(1 - pi)`` plus the
         Poisson log mass elsewhere, ``-inf`` below zero.
     """
-    count = int(finite_value(value, "ZeroInflatedPoisson"))
+    count = _integer_observation(value, "ZeroInflatedPoisson", float64=True)
     zero_prob = real_parameter(a, "zero_prob", "ZeroInflatedPoisson")
     rate = real_parameter(a, "rate", "ZeroInflatedPoisson")
-    if count < 0:
+    if count is None or count < 0:
         return -math.inf
     if count == 0:
-        return math.log(zero_prob + (1.0 - zero_prob) * math.exp(-rate))
+        return _logsumexp((_log(zero_prob), _log(1.0 - zero_prob) - rate))
     return _log(1.0 - zero_prob) + _poisson_log_mass(count, rate)
 
 
@@ -3893,11 +4133,8 @@ def _hurdle_sample(a: Mapping[str, object], rng: random.Random) -> object:
         if rate <= 8
         else rate + math.log1p(u * math.expm1(-rate))
     )
-    count = 1
-    elapsed = rng.expovariate(1.0)
-    while elapsed < remaining:
-        count += 1
-        elapsed += rng.expovariate(1.0)
+    count = 1 + _sample_poisson_count(remaining, rng)
+    _require_count_sample_capacity(count)
     return count
 
 
@@ -3917,9 +4154,9 @@ def _hurdle_density(a: Mapping[str, object], value: object) -> float:
         ``log pi`` at zero, ``log(1 - pi)`` plus the zero-truncated
         Poisson log mass elsewhere, ``-inf`` below zero.
     """
-    count = int(finite_value(value, "HurdlePoisson"))
+    count = _integer_observation(value, "HurdlePoisson", float64=True)
     zero_prob, rate = _hurdle_parameters(a)
-    if count < 0:
+    if count is None or count < 0:
         return -math.inf
     if count == 0:
         return _log(zero_prob)
@@ -3927,10 +4164,8 @@ def _hurdle_density(a: Mapping[str, object], value: object) -> float:
         return _log(1.0 - zero_prob) if count == 1 else -math.inf
     return (
         _log(1.0 - zero_prob)
-        + (count - 1) * math.log(rate)
-        - rate
-        - math.lgamma(count + 1)
-        + math.log(rate / -math.expm1(-rate))
+        + _poisson_log_mass(count, rate)
+        - math.log(-math.expm1(-rate))
     )
 
 
@@ -4041,17 +4276,24 @@ def _optional_bound(a: Mapping[str, object], name: str, family: str) -> float | 
     """
     if name not in a:
         return None
-    bound = real_parameter(a, name, family)
-    return None if math.isinf(bound) else bound
+    return real_parameter(a, name, family)
 
 
-def _within(point: float, low: float | None, high: float | None) -> bool:
+def _within(
+    point: object,
+    low: float | None,
+    high: float | None,
+    *,
+    lower_closed: bool = True,
+    upper_closed: bool = True,
+) -> bool:
     """Whether a point lies in a closed interval with optional ends.
 
     Parameters
     ----------
-    point : float
-        The point.
+    point : object
+        A scalar point or nested tuple of coordinates, all of which must
+        satisfy the same interval bounds.
     low : float | None
         The lower end, or ``None`` for none.
     high : float | None
@@ -4062,7 +4304,23 @@ def _within(point: float, low: float | None, high: float | None) -> bool:
     bool
         True when the point is inside.
     """
-    return (low is None or point >= low) and (high is None or point <= high)
+    if isinstance(point, tuple):
+        return all(
+            _within(
+                coordinate,
+                low,
+                high,
+                lower_closed=lower_closed,
+                upper_closed=upper_closed,
+            )
+            for coordinate in point
+        )
+    if not isinstance(point, bool):
+        finite_value(point, "Restrict")
+    assert isinstance(point, int | float)
+    return (low is None or point > low or lower_closed and point == low) and (
+        high is None or point < high or upper_closed and point == high
+    )
 
 
 def _base_is_discrete(base: object) -> bool:
@@ -4085,7 +4343,14 @@ def _base_is_discrete(base: object) -> bool:
     return FAMILIES[name].discrete
 
 
-def _restrict_log_mass_of(base: object, low: float | None, high: float | None) -> float:
+def _restrict_log_mass_of(
+    base: object,
+    low: float | None,
+    high: float | None,
+    *,
+    lower_closed: bool = True,
+    upper_closed: bool = True,
+) -> float:
     """The log mass a base places on an interval.
 
     Parameters
@@ -4105,24 +4370,11 @@ def _restrict_log_mass_of(base: object, low: float | None, high: float | None) -
         mass over the integers in the interval, an open upper end summed
         until the tail is negligible.
     """
-    if _base_is_discrete(base):
-        start = 0 if low is None else int(math.ceil(low))
-        stop = high if high is not None else None
-        total = 0.0
-        count = start
-        tail = 0
-        while stop is None or count <= stop:
-            mass = math.exp(float(base.log_prob(count)))  # type: ignore[attr-defined]
-            total += mass
-            tail = tail + 1 if mass < 1e-16 * max(total, 1e-300) else 0
-            if stop is None and tail > 50 and count > 50:
-                break
-            count += 1
-        return math.log(total) if total > 0.0 else -math.inf
-    mass = _truncated_mass(
-        base, -math.inf if low is None else low, math.inf if high is None else high
+    from quivers.qiec._interval import log_interval_mass
+
+    return log_interval_mass(
+        base, low, high, lower_closed=lower_closed, upper_closed=upper_closed
     )
-    return math.log(mass) if mass > 0.0 else -math.inf
 
 
 def _restrict_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -4146,12 +4398,24 @@ def _restrict_sample(a: Mapping[str, object], rng: random.Random) -> object:
         If the base places so little mass on the interval that no draw
         lands in it within the attempt budget.
     """
+    from quivers.qiec._interval import _closed
+
     base = _sampleable(a, "base", "Restrict")
     low = _optional_bound(a, "low", "Restrict")
     high = _optional_bound(a, "high", "Restrict")
+    if not math.isfinite(_restrict_log_mass(a)):
+        raise DistributionError(
+            "Restrict sampling requires finite positive interval mass"
+        )
     for _ in range(100_000):
-        draw = finite_value(base.sample(rng), "Restrict base")  # type: ignore[attr-defined]
-        if _within(draw, low, high):
+        draw = base.sample(rng)  # type: ignore[attr-defined]
+        if _within(
+            draw,
+            low,
+            high,
+            lower_closed=_closed(a, "lower_closed"),
+            upper_closed=_closed(a, "upper_closed"),
+        ):
             return draw
     raise DistributionError("Restrict found no base draw inside its interval")
 
@@ -4173,11 +4437,18 @@ def _restrict_density(a: Mapping[str, object], value: object) -> float:
         the restriction is a sub-probability measure, and ``Normalize``
         divides by its mass.
     """
+    from quivers.qiec._interval import _closed
+
     base = _sampleable(a, "base", "Restrict")
     low = _optional_bound(a, "low", "Restrict")
     high = _optional_bound(a, "high", "Restrict")
-    point = finite_value(value, "Restrict")
-    if not _within(point, low, high):
+    if not _within(
+        value,
+        low,
+        high,
+        lower_closed=_closed(a, "lower_closed"),
+        upper_closed=_closed(a, "upper_closed"),
+    ):
         return -math.inf
     return float(base.log_prob(value))  # type: ignore[attr-defined]
 
@@ -4195,11 +4466,15 @@ def _restrict_log_mass(a: Mapping[str, object]) -> float:
     float
         The log mass.
     """
+    from quivers.qiec._interval import _closed
+
     base = _sampleable(a, "base", "Restrict")
-    return _log_mass_of(base) + _restrict_log_mass_of(
+    return _restrict_log_mass_of(
         base,
         _optional_bound(a, "low", "Restrict"),
         _optional_bound(a, "high", "Restrict"),
+        lower_closed=_closed(a, "lower_closed"),
+        upper_closed=_closed(a, "upper_closed"),
     )
 
 
@@ -4260,7 +4535,7 @@ def _pointmass_sample(a: Mapping[str, object], rng: random.Random) -> object:
         The point.
     """
     del rng
-    return real_parameter(a, "value", "PointMass")
+    return a["value"]
 
 
 def _pointmass_density(a: Mapping[str, object], value: object) -> float:
@@ -4279,9 +4554,7 @@ def _pointmass_density(a: Mapping[str, object], value: object) -> float:
         Zero at the point, ``-inf`` elsewhere: the Dirac measure's
         density against counting measure at its point.
     """
-    point = finite_value(value, "PointMass")
-    atom = real_parameter(a, "value", "PointMass")
-    return 0.0 if math.isclose(point, atom, rel_tol=1e-12, abs_tol=1e-12) else -math.inf
+    return 0.0 if value == a["value"] else -math.inf
 
 
 def _transformed_log_mass(a: Mapping[str, object]) -> float:
@@ -4313,7 +4586,9 @@ def _independent_log_mass(a: Mapping[str, object]) -> float:
     float
         The base's log mass, which a plated base totals over its plate.
     """
-    return _log_mass_of(_sampleable(a, "base", "Independent"))
+    base = _sampleable(a, "base", "Independent")
+    _reinterpreted(a, base)
+    return _log_mass_of(base)
 
 
 #: Log masses of the families that are not probability measures, or are
@@ -4355,7 +4630,9 @@ SAMPLERS: Mapping[str, Sampler] = {
     "RelaxedOneHotCategorical": _relaxedonehot_sample,
     "LogisticNormal": _logisticnormal_sample,
     "MixtureNormal": _mixturenormal_sample,
+    "AdditiveLogRatioNormal": _alr_sample,
     "MultivariateNormal": _mvn_sample,
+    "MultivariateStudentT": _mvstudent_sample,
     "LowRankMVN": _lowrankmvn_sample,
     "GP": _gp_sample,
     "Wishart": _wishart_sample,
@@ -4403,7 +4680,9 @@ DENSITIES: Mapping[str, Density] = {
     "RelaxedOneHotCategorical": _relaxedonehot_density,
     "LogisticNormal": _logisticnormal_density,
     "MixtureNormal": _mixturenormal_density,
+    "AdditiveLogRatioNormal": _alr_density,
     "MultivariateNormal": _mvn_density,
+    "MultivariateStudentT": _mvstudent_density,
     "LowRankMVN": _lowrankmvn_density,
     "GP": _gp_density,
     "Wishart": _wishart_density,

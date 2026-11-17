@@ -7,6 +7,10 @@ from collections.abc import Mapping
 
 import didactic.api as dx
 
+from quivers._family_schemas import (
+    _select_parameterization,
+    _semantic_parameterizations,
+)
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 
@@ -86,6 +90,8 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     LogDensity,
+    LogMass,
+    ConditionalValue,
     Perform,
     PrimitiveApplication,
     Projection,
@@ -117,6 +123,7 @@ from quivers.qiec.canonical import (
     tensor_type,
 )
 from quivers.qiec.families import FAMILIES, DistributionFamily, FamilyParameter
+from quivers.qiec.family_shapes import match_family_shapes
 from quivers.qiec.primitives import PRIMITIVES
 from quivers.qiec.types import (
     IndexTerm,
@@ -131,6 +138,7 @@ from quivers.qiec.types import (
     EqualityType,
     FunctionType,
     IndexConstructor,
+    IndexSum,
     IndexLiteral,
     IndexVariable,
     ShapeIndex,
@@ -324,6 +332,57 @@ class ComputationSignature(QiecModel):
     effects: EffectRow = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
+class _DistributionContracts(Mapping[str, DistributionFamily]):
+    """Lookup a small immutable extension without copying the builtin catalog.
+
+    Parameters
+    ----------
+    definitions : tuple[DistributionFamily, ...]
+        Checked compilation-local contracts.
+    """
+
+    def __init__(self, definitions: tuple[DistributionFamily, ...]) -> None:
+        self.definitions = definitions
+
+    def __getitem__(self, name: str) -> DistributionFamily:
+        """Look up a contract.
+
+        Parameters
+        ----------
+        name : str
+            Family name.
+
+        Returns
+        -------
+        DistributionFamily
+            Custom or builtin contract.
+        """
+        for item in self.definitions:
+            if item.name == name:
+                return item
+        return FAMILIES[name]
+
+    def __iter__(self):
+        """Iterate over known family names.
+
+        Returns
+        -------
+        Iterator[str]
+            Builtin and compilation-local names.
+        """
+        return iter((*FAMILIES, *(item.name for item in self.definitions)))
+
+    def __len__(self) -> int:
+        """Count known family names.
+
+        Returns
+        -------
+        int
+            Total number of contracts.
+        """
+        return len(FAMILIES) + len(self.definitions)
+
+
 class KernelRegistry(QiecModel):
     """Resolved declarations used by the reference checker.
 
@@ -332,6 +391,8 @@ class KernelRegistry(QiecModel):
 
     Parameters
     ----------
+    distribution_families
+        Compilation-local distribution contracts, extending the builtin table.
     families
         Indexed data families by identity.
     constructors
@@ -352,6 +413,9 @@ class KernelRegistry(QiecModel):
         rows in diagnostics.
     """
 
+    distribution_families: tuple[DistributionFamily, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
     families: dict[FamilyId, FamilyDecl] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -376,6 +440,19 @@ class KernelRegistry(QiecModel):
     instance_names: dict[EffectInstanceId, str] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+
+    @property
+    def distributions(self) -> Mapping[str, DistributionFamily]:
+        """Builtin and explicitly retained custom distribution contracts.
+
+        Returns
+        -------
+        Mapping[str, DistributionFamily]
+            Read-only contract lookup for this checking context.
+        """
+        if not self.distribution_families:
+            return FAMILIES
+        return _DistributionContracts(self.distribution_families)
 
     def _record_type_constructor(self, constructor: TypeConstructorRef) -> None:
         """Remember one type constructor's telescope, or confirm it.
@@ -430,6 +507,10 @@ class KernelRegistry(QiecModel):
             self._record_type_constructors(term.left)
             self._record_type_constructors(term.right)
             return
+        if isinstance(term, IndexSum):
+            for argument in term.terms:
+                self._record_type_constructors(argument)
+            return
         if isinstance(term, EffectRef | IndexConstructor):
             for argument in term.arguments:
                 self._record_type_constructors(argument)
@@ -473,6 +554,10 @@ class KernelRegistry(QiecModel):
                 raise KernelError(
                     f"invalid application of effect interface {term.name!r}"
                 )
+            return
+        if isinstance(term, IndexSum):
+            for argument in term.terms:
+                self._validate_effect_references(argument, additional)
             return
         if isinstance(term, TypeApplication | IndexConstructor):
             for argument in term.arguments:
@@ -1338,7 +1423,13 @@ def check_static(
         check_static(term.left, scope)
         check_static(term.right, scope)
         if isinstance(term.kind, (NatSort, ShapeSort, ContextSort, UserIndexSort)):
-            index_nodes = (IndexVariable, IndexLiteral, IndexConstructor, ShapeIndex)
+            index_nodes = (
+                IndexVariable,
+                IndexLiteral,
+                IndexConstructor,
+                IndexSum,
+                ShapeIndex,
+            )
             if not isinstance(term.left, index_nodes) or not isinstance(
                 term.right, index_nodes
             ):
@@ -1366,6 +1457,10 @@ def check_static(
                 )
             if term.name not in scope.effects:
                 raise KernelError(f"unbound effect variable {term.name!r}")
+        return
+    if isinstance(term, IndexSum):
+        for argument in term.terms:
+            check_static(argument, scope)
         return
     if isinstance(term, IndexConstructor):
         for argument in term.arguments:
@@ -1462,7 +1557,7 @@ def _check_binder_argument(
     if isinstance(binder, IndexBinder):
         if not isinstance(
             argument,
-            (IndexVariable, IndexLiteral, IndexConstructor, ShapeIndex),
+            (IndexVariable, IndexLiteral, IndexConstructor, IndexSum, ShapeIndex),
         ):
             raise KernelError(f"{subject} must be an index argument")
         if not _sort_matches(binder.sort, index_sort(argument)):
@@ -1642,6 +1737,12 @@ def _static_variable_identities(
     """
     if isinstance(term, TypeVariable | IndexVariable | EffectVariable):
         return (term.identity,) if term.identity is not None else ()
+    if isinstance(term, IndexSum):
+        return tuple(
+            identity
+            for argument in term.terms
+            for identity in _static_variable_identities(argument)
+        )
     if isinstance(term, TypeApplication | EffectRef | IndexConstructor):
         return tuple(
             identity
@@ -1745,7 +1846,10 @@ def _checked_computation_type(
 
 
 def _parameter_expectation(
-    parameter: FamilyParameter, actual: TypeExpr, plate: PlateShape = PlateShape()
+    parameter: FamilyParameter,
+    actual: TypeExpr,
+    plate: PlateShape = PlateShape(),
+    event_rank: int = 0,
 ) -> str | None:
     """Explain why a value's type does not fit a family parameter.
 
@@ -1760,6 +1864,9 @@ def _parameter_expectation(
         The plate the family is constructed over. A parameter may carry
         leading dimensions following a suffix of the plate's axes and
         broadcast over the rest.
+    event_rank : int
+        Native distribution event rank. Its trailing plate event dimensions
+        belong to each variate, not to the parameter's leading batch axes.
 
     Returns
     -------
@@ -1799,8 +1906,13 @@ def _parameter_expectation(
         element = INT
     else:
         element = REAL
-    axes = tuple(axis.size for axis in (*plate.batch, *plate.event))
-    if actual == element and (parameter.rank == 0 or axes):
+    native = min(event_rank, len(plate.event))
+    event_batch = plate.event[:-native] if native else plate.event
+    axes = tuple(axis.size for axis in (*plate.batch, *event_batch))
+    if actual == element and (
+        parameter.rank == 0
+        or (parameter.scalar_broadcast and (plate.batch or plate.event))
+    ):
         return None
     shape = tensor_shape(actual)
     if shape is not None and shape[0] == element:
@@ -1823,6 +1935,8 @@ def _plated_sample_type(
     value: DistributionValue,
     family: DistributionFamily,
     argument_types: Mapping[str, TypeExpr],
+    *,
+    families: Mapping[str, DistributionFamily] = FAMILIES,
 ) -> TypeExpr:
     """The sample type of a construction, from its plate and arguments.
 
@@ -1876,52 +1990,77 @@ def _plated_sample_type(
             if inner is not None:
                 element = inner
             break
+    inherited: tuple[IndexTerm, ...] = ()
+    if family.compositional:
+        from quivers.qiec._distribution_axes import distribution_axes
+
+        try:
+            distribution_axes(value, families=families)
+        except (TypeError, ValueError) as error:
+            raise KernelError(str(error), "qiec-distribution") from error
+        shape = tensor_shape(element)
+        if shape is not None:
+            element, inherited = shape
     element_name = (
         element.constructor.name
         if isinstance(element, TypeApplication)
         else repr(element)
     )
     plate = value.plate
-    natural: tuple[IndexTerm, ...] | None = None
-    supplied = family.event_argument(argument_types.items())
-    source_name = supplied[0] if supplied is not None else None
-    if supplied is not None and family.event_rank > 0:
-        source_shape = tensor_shape(supplied[1])
-        if source_shape is not None and len(source_shape[1]) >= family.event_rank:
-            natural = tuple(source_shape[1][len(source_shape[1]) - family.event_rank :])
+    actual_shapes: dict[str, tuple[IndexTerm, ...]] = {}
+    for parameter in family.parameters:
+        actual = argument_types.get(parameter.name)
+        shape = tensor_shape(actual) if actual is not None else None
+        if parameter.rank == 0:
+            if actual is not None:
+                actual_shapes[parameter.name] = ()
+        elif shape is not None and len(shape[1]) >= parameter.rank:
+            actual_shapes[parameter.name] = tuple(shape[1][-parameter.rank :])
     event_axes = tuple(axis.size for axis in plate.event)
-    if family.event_rank > 0:
-        if len(event_axes) >= family.event_rank:
-            trailing = event_axes[len(event_axes) - family.event_rank :]
-            if natural is not None and tuple(natural) != tuple(trailing):
-                raise KernelError(
-                    f"family {value.name!r} samples the trailing shape of "
-                    f"{source_name!r}, {natural!r}, but its plate's "
-                    f"event axes end in {trailing!r}",
-                    "qiec-distribution",
-                )
-            event: tuple[IndexTerm, ...] = event_axes
-        elif natural is not None and not event_axes:
-            event = natural
-        else:
+    if family.event_rank and event_axes and len(event_axes) < family.event_rank:
+        raise KernelError(
+            f"family {value.name!r} needs {family.event_rank} native event axes",
+            "qiec-distribution",
+        )
+    declared = (
+        event_axes[-family.event_rank :] if family.event_rank and event_axes else None
+    )
+    if family.event_rank == 0:
+        declared = ()
+    signature = family.effective_shape_signature
+    try:
+        try:
+            natural = match_family_shapes(signature, actual_shapes, declared)
+        except ValueError as error:
+            if (
+                "requires further extent evidence" not in str(error)
+                or family.event_sources
+                or declared is not None
+            ):
+                raise
             claimed = sampled_element(value.result_type)
             shape = tensor_shape(claimed) if claimed is not None else None
             if (
                 shape is None
                 or shape[0] != element
                 or len(shape[1]) != len(plate.batch) + family.event_rank
-                or family.event_sources
             ):
-                raise KernelError(
-                    f"family {value.name!r} samples a Tensor[{element_name}] of "
-                    f"rank {family.event_rank}, not {render_static(value.result_type)}",
-                    "qiec-distribution",
-                )
-            event = tuple(shape[1][len(plate.batch) :])
-    else:
-        event = event_axes
+                raise ValueError(
+                    f"family event requires a Tensor[{element_name}] of rank {family.event_rank}"
+                ) from error
+            natural = match_family_shapes(
+                signature, actual_shapes, tuple(shape[1][len(plate.batch) :])
+            )
+    except (ValueError, TypeError) as error:
+        raise KernelError(
+            f"parameters {', '.join(argument_types)} of {family.name!r} have incompatible event extents: {error}",
+            "qiec-distribution",
+        ) from error
+    event: tuple[IndexTerm, ...] = (
+        event_axes if event_axes or not family.event_rank else natural
+    )
     batch = tuple(axis.size for axis in plate.batch)
-    dimensions = (*batch, *event)
+    dimensions = (*batch, *event, *inherited)
     if not dimensions:
         return sampleable_type(element)
     return sampleable_type(tensor_type(element, dimensions))
@@ -2275,7 +2414,7 @@ def _infer_distribution(
         shape cannot be read off the argument that determines it, or the
         claimed result type disagrees with the family's sample type.
     """
-    family = FAMILIES.get(value.name)
+    family = registry.distributions.get(value.name)
     if family is None:
         raise KernelError(
             f"unknown distribution family {value.name!r}", "qiec-distribution"
@@ -2303,7 +2442,18 @@ def _infer_distribution(
                 "qiec-distribution",
             ) from error
         actual = infer_value(argument, registry, context)
-        expectation = _parameter_expectation(parameter, actual, value.plate)
+        parameter_plate = value.plate
+        if family.compositional:
+            from quivers.qiec._distribution_axes import distribution_axes
+
+            try:
+                batch, event = distribution_axes(value, families=registry.distributions)
+                parameter_plate = PlateShape(batch=batch, event=event)
+            except (TypeError, ValueError) as error:
+                raise KernelError(str(error), "qiec-distribution") from error
+        expectation = _parameter_expectation(
+            parameter, actual, parameter_plate, family.event_rank
+        )
         if expectation is not None:
             raise KernelError(
                 f"parameter {name!r} of {value.name!r} has type {render_static(actual)}; it "
@@ -2316,7 +2466,17 @@ def _infer_distribution(
             f"family {value.name!r} is constructed with no parameters",
             "qiec-distribution",
         )
-    expected = _plated_sample_type(value, family, argument_types)
+    try:
+        _select_parameterization(
+            family.name,
+            tuple(name for name, _ in value.arguments),
+            _semantic_parameterizations(family.name, family.parameter_names),
+        )
+    except TypeError as error:
+        raise KernelError(str(error), "qiec-distribution") from error
+    expected = _plated_sample_type(
+        value, family, argument_types, families=registry.distributions
+    )
     if value.result_type != expected:
         raise KernelError(
             f"family {value.name!r} produces {render_static(expected)}, not the claimed "
@@ -2445,6 +2605,20 @@ def infer_value(
                 "qiec-primitive",
             )
         return expected_result
+    if isinstance(value, ConditionalValue):
+        condition = infer_value(value.condition, registry, context)
+        if condition != BOOL:
+            raise KernelError(
+                "conditional value requires a scalar Bool condition", "qiec-primitive"
+            )
+        then = infer_value(value.then, registry, context)
+        otherwise = infer_value(value.otherwise, registry, context)
+        if then != otherwise or then != value.result_type:
+            raise KernelError(
+                "conditional value branches must agree with its result type",
+                "qiec-primitive",
+            )
+        return then
     if isinstance(value, DistributionValue):
         return _infer_distribution(value, registry, context)
     if isinstance(value, SiteValue):
@@ -2462,15 +2636,20 @@ def infer_value(
         registry.validate_type(value.result_type)
         _check_static_variable_scope(value.result_type, context, subject="site type")
         return value.result_type
-    if isinstance(value, LogDensity):
+    if isinstance(value, LogDensity | LogMass):
+        query = "log_prob" if isinstance(value, LogDensity) else "log_mass"
         sampleable = infer_value(value.sampleable, registry, context)
         element = sampled_element(sampleable)
         if element is None:
             raise KernelError(
-                f"log_prob takes a Sampleable, not {sampleable!r}",
+                f"{query} takes a Sampleable, not {sampleable!r}",
                 "qiec-distribution",
             )
-        actual = infer_value(value.value, registry, context)
+        actual = (
+            infer_value(value.value, registry, context)
+            if isinstance(value, LogDensity)
+            else element
+        )
         if actual != element:
             raise KernelError(
                 f"log_prob evaluates a distribution over {render_static(element)} at a value "
@@ -2479,12 +2658,15 @@ def infer_value(
             )
         if not value.batch:
             return LOG_WEIGHT
+        from quivers.qiec._distribution_axes import distribution_axes
+
         if not (
             isinstance(value.sampleable, DistributionValue)
-            and value.sampleable.plate.batch == value.batch
+            and distribution_axes(value.sampleable, families=registry.distributions)[0]
+            == value.batch
         ):
             raise KernelError(
-                "log_prob keeps its weights apart over batch axes only for a "
+                f"{query} keeps its weights apart over batch axes only for a "
                 "construction plated over those axes",
                 "qiec-distribution",
             )

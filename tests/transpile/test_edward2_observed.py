@@ -8,6 +8,10 @@ no data draws one value per row.
 
 from __future__ import annotations
 
+import ast
+
+import pytest
+
 from quivers.dsl.parser import parse
 from quivers.transpile import transpile
 from tests.transpile.fixtures import _load
@@ -48,3 +52,49 @@ def test_an_observation_over_a_called_value_carries_its_plate() -> None:
 
 def test_a_latent_carries_no_value() -> None:
     assert "value=" not in _line(READS_OBSERVATION, "mu")
+
+
+def _relaxed_source(parameterization, row_temperature):
+    prefix = (
+        "    observe tau : Row <- LogNormal(loc=0.0,scale=0.2)\n"
+        if row_temperature
+        else ""
+    )
+    temperature = "tau" if row_temperature else "0.7"
+    return f"""
+object Row : FinSet 2
+object Category : FinSet 3
+program prog : Row -> Row
+{prefix}    observe v : Row <- RelaxedOneHotCategorical(temperature={temperature}, {parameterization}) [over=Category]
+    return v
+export prog
+"""
+
+
+@pytest.mark.parametrize(
+    "parameterization", ["probs=[0.2,0.3,0.5]", "logits=[0.2,-0.4,0.7]"]
+)
+@pytest.mark.parametrize("row_temperature", [False, True])
+def test_relaxed_category_shape_uses_argument_identity(
+    parameterization, row_temperature
+):
+    source = _relaxed_source(parameterization, row_temperature)
+    rendered = transpile(parse(source), target="edward2").decode()
+    tree = ast.parse(rendered)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "RelaxedOneHotCategorical"
+    ]
+    (constructor,) = calls
+    keywords = {keyword.arg: keyword.value for keyword in constructor.keywords}
+    if row_temperature:
+        assert isinstance(keywords["temperature"], ast.Name)
+        assert keywords["temperature"].id == "tau"
+        assert "sample_shape" not in keywords
+    else:
+        assert isinstance(keywords["temperature"], ast.Constant)
+        assert keywords["temperature"].value == 0.7
+        assert ast.literal_eval(keywords["sample_shape"]) == [2]

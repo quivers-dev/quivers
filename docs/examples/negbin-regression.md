@@ -152,7 +152,7 @@ oracle = (
 compiled = model.log_joint(x_in, {**truth, **observations}).sum()
 print(f"compiled log joint: {float(compiled):.4f}")
 print(f"torch log joint:    {float(oracle):.4f}")
-assert torch.allclose(compiled, oracle, rtol=1e-5)
+assert torch.allclose(compiled.double(), oracle.double(), rtol=1e-5)
 ```
 
 ### SVI fit

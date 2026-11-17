@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the OrderedLogistic family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program orderedlogistic_fixture : Obs -> Obs
+    observe y : Obs <- OrderedLogistic(predictor=0.2, cutpoints=[-1.0, 1.0])
+    return y
+export orderedlogistic_fixture

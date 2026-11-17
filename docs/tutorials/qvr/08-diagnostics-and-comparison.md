@@ -191,4 +191,4 @@ linear        1      -0.19  1.22     0.56  |elpd_diff| < 4  1 k̂ > 0.57  3.23 -
 
 ## Next
 
-[Chapter 9](09-indexed-data.md) declares finite index types and indexed families and runs total functions over them.
+[Chapter 9](09-indexed-data.md) declares closed index sorts and indexed families and runs total functions over them.

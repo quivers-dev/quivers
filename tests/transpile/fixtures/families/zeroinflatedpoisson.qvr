@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the ZeroInflatedPoisson family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program zeroinflatedpoisson_fixture : Obs -> Obs
+    observe y : Obs <- ZeroInflatedPoisson(zero_prob=0.25, rate=2.0)
+    return y
+export zeroinflatedpoisson_fixture

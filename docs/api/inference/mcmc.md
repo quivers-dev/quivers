@@ -33,7 +33,16 @@ and the type aliases that parameterize the kernels and the runner.
 [Tempered sequential Monte Carlo](../../guides/inference-mcmc.md#tempered-sequential-monte-carlo)
 moves a population from the prior to the posterior, rejuvenating it with
 any of the kernels above, and estimates the evidence
-[@delmoral2006sequential].
+[@delmoral2006sequential]. Typed score roles determine the temperature
+path: prior potentials remain in the prior term, while observations and
+likelihood scores are tempered. `SMC.run` initializes through the shared
+ancestral prior projection and refuses unknown prior-potential normalizers.
+Its log normalizing constant is ordinary model evidence only when the
+sampling and prior factors have that interpretation. Both `SMC.run` and
+`TemperedPotential` refuse opaque `MonadicProgram.log_joint` overrides,
+which expose no prior/likelihood roles. Factor callbacks inside typed `Score`
+steps retain those roles. This restriction does not change ordinary
+`PotentialFn` scoring of overridden joints.
 
 ::: quivers.inference.smc
 

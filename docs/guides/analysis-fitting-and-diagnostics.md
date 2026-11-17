@@ -61,8 +61,53 @@ result = fit(
 )
 ```
 
-A prior's key is the latent's name in the generated QVR source, which `formula_to_qvr`
-shows before fitting.
+An existing mapping override uses the latent name shown by `formula_to_qvr`.
+Typed `PriorSpec`/`PriorSet` rules also select parameter classes, coefficients,
+groups, distributional parameters, and nonlinear leaves through retained
+metadata. The [selector workflow](analysis-data-and-formulas.md#prior-selectors-and-shared-shrinkage)
+covers precedence, normalized bounds, and shared shrinkage without requiring
+generated site names.
+
+### Prior-only fitting and independent prior draws
+
+Both formula `fit` and source `Model.fit` accept `sample_prior="no"`, `"yes"`,
+or `"only"`. The default fits the posterior. `"yes"` fits the same posterior
+and retains an independent prior stream; `"only"` runs the selected inference
+method with observation likelihoods disabled. Data-dependent priors, support
+constraints, and authored score potentials remain active. Compiler-generated
+marginal likelihood factors follow the observation policy as well.
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+training = pd.DataFrame({"x": [-1.0, 0.0, 1.0], "y": [0.2, -0.1, 0.8]})
+result = fit(
+    "y ~ x", data=training, method="svi", num_steps=2, seed=23,
+    sample_prior="yes", num_prior_samples=4, prior_seed=19,
+)
+prior = result.prior_view()
+expected = prior.posterior_epred()
+replicated = prior.posterior_predict(seed=18)
+assert expected.shape == replicated.shape == (1, 4, 3)
+```
+
+`prior_view()` reuses retained samples; `prior_view(num_samples=100, seed=7)`
+draws a fresh independent stream. Source fits expose the same view, and a bound
+source model or formula fit also offers `prior_draws`. Priors are drawn through
+the original conditional laws, rather than by reinitializing a fitted guide.
+Separate prior seeds preserve posterior draws, optimization losses, and the
+caller's CPU random state. Independent prior samples carry no MCMC diagnostics.
+
+An authored score potential can couple otherwise ancestral draws. Independent
+sampling refuses that case instead of treating weighted draws as independent
+samples from a normalized law. Use `prior_draws(method=MCMC(...))` or
+`prior_view(method=MCMC(...))` with an explicitly configured driver for
+factor-conditioned prior-only inference. Raw recorded-event likelihoods remain
+available through `log_likelihood`, including from prior views; weights and the
+fitting score policy do not change their definition. See
+[prior sampling](../api/inference/prior.md) and the
+[observation scoring policy](../api/effects/observation_scoring.md).
 
 ## Diagnostics: `quivers.diagnostics`
 
@@ -88,10 +133,69 @@ asks whether replicated means tend to fall above or below the observed mean, and
 near one half can coexist with a poor fit to the variance, so the statistics should be
 the features the model is meant to explain.
 
+Both source and formula fits expose `analysis(num_samples=100, seed=7)`.
+The returned object retains posterior draws and raw response likelihoods for
+`summary`, `waic`, `loo`, and `to_datatree`, without replaying the model for
+each operation. Recorded MCMC chains supply convergence diagnostics;
+variational draws supply uncertainty summaries without convergence claims.
+The [executable workflow](analysis-data-and-formulas.md#raw-likelihoods-and-retained-analysis)
+shows the shared interface. Lower-level samplers can use the adapters below
+when they need custom coordinates or predictive groups.
+
+Joint parameter dependence uses the same retained analysis. `covariance`
+returns covariance and correlation together; it does not draw again. Site
+names and event indices remain separate, including when labels contain
+punctuation:
+
+```python
+import torch
+from quivers.diagnostics import PosteriorAnalysis
+
+retained = PosteriorAnalysis(
+    samples={
+        "intercept": torch.tensor([[0.1, 0.3, 0.2, 0.5]]),
+        "slope": torch.tensor([[[0.2, 0.5], [0.4, 0.6], [0.1, 0.3], [0.6, 0.8]]]),
+    },
+    log_likelihood={}, kind="variational",
+)
+dependence = retained.covariance(
+    dims={"slope": ["condition"]},
+    coords={"condition": ["control", "treatment"]},
+)
+assert dependence.covariance.shape == dependence.correlation.shape == (3, 3)
+assert dependence.coordinates == (("intercept", ()), ("slope", (0,)), ("slope", (1,)))
+assert dependence.coordinate_labels == ((), ("control",), ("treatment",))
+```
+
+For a fitted model, replace `retained` with either source or formula
+`result.analysis(...)`. The default pools posterior chains and draws;
+`chainwise=True` retains one matrix per chain. `ddof=1` uses sample covariance.
+Missing values fail explicitly, and constant coordinates have NaN correlations.
+These matrices describe dependence among draws; they do not establish MCMC
+convergence. The [API reference](../api/diagnostics/posterior.md#joint-covariance-and-correlation)
+states the coordinate and numeric-capacity policies.
+
+A derived contrast can use those same retained tensors. Pass its
+`(chain, draw, *event)` tensor to `hypothesis_summary`, optionally with jointly
+constructed prior contrasts. The result separates below, equal, and above
+frequencies from posterior region odds and prior-corrected region Bayes factors.
+Compute a contrast within each joint draw; independently rearranging parameter
+draws would change their dependence. Exact equality is descriptive, without a
+point-null density estimate. The
+[contrast API](../api/diagnostics/hypothesis.md) states the prior assumptions,
+coordinate labels, and empirical zero-frequency policy.
+
 The [diagnostics adapter](../api/diagnostics/index.md) converts quivers' inference
 records for [ArviZ](https://python.arviz.org/) and returns an
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)
-with ArviZ-compatible groups.
+with ArviZ-compatible groups. A formula fit's `posterior_predict` method
+supplies replicated responses on its retained training rows, or on a `new_data`
+frame evaluated with fitted transforms and known group levels. It includes response
+noise and preserves separate chain and draw axes. The
+[new-row workflow](analysis-data-and-formulas.md#predictions-on-new-rows)
+shows prediction without response or weight columns. The
+[posterior workflow](analysis-data-and-formulas.md#posterior-coefficients-and-predictions)
+distinguishes these draws from linear predictors and expected responses.
 
 <!-- python: skip -->
 ```python
@@ -100,6 +204,7 @@ from quivers.diagnostics import (
     to_datatree, compare, loo, posterior_predictive_check,
 )
 
+pp_a = fit_a.posterior_predict(seed=7)
 idata_a = to_datatree(
     fit_a.posterior,
     observed_data={"y": y_obs},
@@ -155,6 +260,41 @@ computes the posterior predictive p-value for a chosen
 optionally grouped by a named dim.
 
 ArviZ computes LOO, comparison, and the predictive checks.
+
+### Score recorded fresh outcomes
+
+`BayesianFit.log_likelihood(new_data=...)` evaluates recorded outcomes under
+retained posterior draws. It reuses the fitted response transformation and
+categorical level order, predictor encodings, group-effect policies, and native
+observation scorer. The output preserves `(chain, draw, row)`; vector event
+components are reduced within a row. Fitting weights are excluded, so fresh rows
+need no weight column.
+
+<!-- python: run -->
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+training = pd.DataFrame({"y": [0.2, 0.9, 1.1], "x": [0.0, 1.0, 2.0]})
+fitted = fit("y ~ x", data=training, method="svi", num_steps=2, seed=7)
+held_out = pd.DataFrame({"y": [1.0, 1.4], "x": [2.5, 3.0]})
+scores = fitted.log_likelihood(new_data=held_out, num_samples=3, seed=8)
+assert scores["y"].shape == (1, 3, 2)
+```
+
+The small optimization budget illustrates the interface; inference still needs
+the checks described above. Supply the response and any authored censoring,
+truncation, measurement-error, decision, subset, or trial columns. Subsets select
+fresh rows before response evaluation, and neural `predictor_data` follows the
+same selection. Vector count responses infer fresh row totals; an explicit
+`trials` declaration must agree with their component sums. Categorical outcomes
+retain the training level order even when a fresh batch omits some levels.
+
+`re_formula`, `allow_new_levels`, and `sample_new_levels` have the same meanings
+as in posterior prediction. These scores condition on the selected group-effect
+policy; they are not an integration over every possible new group. Omitting
+`new_data` scores the fitted outcomes. Source `ModelFit.log_likelihood(data=...)`
+uses its existing checked rebinding interface for the corresponding operation.
 
 ### Convergence diagnostics for any draws
 

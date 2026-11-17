@@ -64,7 +64,7 @@ Linear regression ([chapter 1](01-first-model.md)) is the case with identity lin
 | `sum(x)`, `prod(x)`, `logsumexp(x)` | $\mathbb{R}^K$ | $\mathbb{R}$ | reduce the last axis |
 | `cumsum(x)` | $\mathbb{R}^K$ | $\mathbb{R}^K$ | cumulative sum along the last axis |
 
-The [checked primitive reference](../../guides/dsl-programs-and-lets.md#checked-primitive-reference) lists the rest. Fit the model as in chapter 1:
+The [checked primitive reference](../../guides/dsl-programs-and-lets.md#checked-primitive-reference) lists the rest. The following component-level fit exposes the SVI machinery. [Checked model fitting](00-model-interface.md) packages the guide, optimizer, and training loop and infers the external names from QVR:
 
 ```python
 import torch
@@ -165,8 +165,8 @@ The fitting code is the logistic code with this source and count data in place o
 
 ## Common mistakes
 
-1. **A data input missing from `observed_names`.** If the body reads `x_design` and the guide receives `observed_names={"y"}`, guide construction or the first run fails for want of a value. `loads` cannot detect this, because it records free names as [data inputs](01-first-model.md#data-inputs-and-the-observations-dict). Every name that the body reads and no `sample`, `let`, or `marginalize` step binds belongs in `observed_names`.
-2. **A data input of the wrong length.** If `x_design` has shape `(200,)` and `Item` has size 100, broadcasting over `Item` fails with a PyTorch shape error at the first run. The compiler does not know the tensor's shape, so compare tensor lengths with the sizes of the declared objects.
+1. **A missing data input.** `Model.bind` reports missing checked inputs before fitting. The component-level `AutoNormalGuide` workflow above also needs every external name in `observed_names`; the reusable interface derives this list from the program.
+2. **A data input of the wrong length or element type.** `Model.bind` validates the checked shape and dtype. Use `object Item : FinSet _` to infer the row count. Bernoulli observations have checked element type `Bool`, so pass a boolean tensor through the checked interface.
 3. **Rebinding a name.** A name bound by `sample` cannot be bound again: `let beta_0 = beta_0 + 1` fails with `variable 'beta_0' already bound in program`. Use a fresh name.
 
 ## Comparison with Pyro and NumPyro
@@ -177,7 +177,7 @@ The fitting code is the logistic code with this source and count data in place o
 
 ## Try this
 
-- Add an exposure offset to the Poisson model, `let log_rate = beta_0 + beta_1 * x_design + offset`. The compiler records `offset` as a second data input, so add it to `observed_names` and to `observations`.
+- Add an exposure offset to the Poisson model, `let log_rate = beta_0 + beta_1 * x_design + offset`. The compiler records `offset` as a second data input, so include it in the data mapping. `Model.bind` derives its role; the component-level guide also needs it in `observed_names`.
 - Replace the Bernoulli likelihood with `Binomial(total_count=n_trials, probs=p)`, where `n_trials` is a data input.
 - Fit the logistic model with the No-U-Turn Sampler (NUTS) instead of stochastic variational inference (SVI), as in [chapter 6](06-inference-zoo.md#step-1-vi-mcmc-or-hybrid).
 

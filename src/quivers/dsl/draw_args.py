@@ -23,6 +23,7 @@ index regex consumes, via `encode_index`.
 
 from __future__ import annotations
 
+from quivers._family_schemas import _select_parameterization
 from quivers.dsl.ast_nodes import (
     DrawArg,
     DrawArgDist,
@@ -37,7 +38,7 @@ from quivers.dsl.family_schemas import (
     render_parameterizations,
 )
 
-Atom = str | float
+Atom = str | int | float
 
 
 def argument_parameter(arg: DrawArg) -> str | None:
@@ -54,14 +55,39 @@ def bind_family_arguments(
     family: str,
     args: tuple[DrawArg, ...],
     canonical: tuple[str, ...] = (),
+    *,
+    allow_defaults: bool = True,
 ) -> tuple[tuple[str, DrawArg], ...]:
     """Validate and order one keyword-only family construction.
 
     The AST retains the names authors wrote. This boundary matches those
     names against one complete schema and returns values in that schema's
     canonical order, so positional target APIs never depend on source order.
+
+    Parameters
+    ----------
+    family : str
+        Authored family name, including any surface alias.
+    args : tuple[DrawArg, ...]
+        Authored constructor arguments.
+    canonical : tuple[str, ...]
+        Fallback schema for a family without a registered surface schema.
+    allow_defaults : bool
+        Whether an empty argument list delegates to the caller's existing
+        default-construction policy. Explicit nested values require a complete
+        schema instead.
+
+    Returns
+    -------
+    tuple[tuple[str, DrawArg], ...]
+        Named values in the selected schema's canonical order.
+
+    Raises
+    ------
+    TypeError
+        If arguments are positional, repeated, or do not match a complete schema.
     """
-    if not args:
+    if not args and allow_defaults:
         return ()
     schemas = family_parameterizations(family, canonical)
     rendered = render_parameterizations(schemas)
@@ -79,12 +105,7 @@ def bind_family_arguments(
                 f"family {family!r} is given parameter {argument.parameter!r} twice"
             )
         bound[argument.parameter] = argument.value
-    selected = next((schema for schema in schemas if set(schema) == set(bound)), None)
-    if selected is None:
-        raise TypeError(
-            f"family {family!r} requires exactly one complete parameter schema "
-            f"{rendered}; got ({', '.join(bound)})"
-        )
+    selected = _select_parameterization(family, tuple(bound), schemas)
     return tuple((name, bound[name]) for name in selected)
 
 

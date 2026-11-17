@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the SkewNormal family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program skewnormal_fixture : Obs -> Obs
+    observe y : Obs <- SkewNormal(loc=0.2, scale=1.1, skewness=0.7)
+    return y
+export skewnormal_fixture

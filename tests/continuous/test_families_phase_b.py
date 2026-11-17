@@ -77,11 +77,26 @@ class TestConditionalBetaBinomial:
         with pytest.raises(NotImplementedError, match="rsample is not supported"):
             f.rsample(torch.tensor([0, 1]))
 
-    def test_rejects_nonpositive_total_count(self) -> None:
+    @pytest.mark.parametrize("count", [-1, 0.5, True])
+    def test_rejects_invalid_total_count(self, count) -> None:
         a = FinSet(name="A", cardinality=2)
         y = Euclidean(name="y", dim=1)
-        with pytest.raises(ValueError, match="total_count must be >= 1"):
-            ConditionalBetaBinomial(a, y, total_count=0)
+        with pytest.raises(ValueError, match="total_count"):
+            ConditionalBetaBinomial(a, y, total_count=count)
+
+    def test_zero_total_count_is_a_point_mass_at_zero(self) -> None:
+        a = FinSet(name="A", cardinality=2)
+        y = Euclidean(name="y", dim=1)
+        family = ConditionalBetaBinomial(a, y, total_count=0)
+        inputs = torch.tensor([0, 1])
+        density = family.log_prob(inputs, torch.zeros(2, 1))
+        assert density.eq(0).all()
+        assert family.sample(inputs).eq(0).all()
+        density.sum().backward()
+        assert all(
+            parameter.grad is not None and parameter.grad.eq(0).all()
+            for parameter in family.parameters()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -363,10 +378,41 @@ class TestFamilyMetaWiring:
             assert meta.quivers_class is quivers_cls
             assert meta.distribution_class.__name__ == qvr_name
 
-    def test_registry_size_unchanged(self) -> None:
-        # A registered family is one a target can be asked to emit, so
-        # the count is pinned: a family arriving without its per-target
-        # names, or leaving, changes what `transpile` accepts.
+    def test_catalog_size_and_new_response_family_wiring(self) -> None:
         from quivers.transpile.family_meta import FAMILY_META
 
-        assert len(FAMILY_META) == 60
+        added = {
+            "AsymmetricLaplace",
+            "ExGaussian",
+            "InverseGaussian",
+            "HurdleGamma",
+            "HurdleLogNormal",
+            "ZeroInflatedNegativeBinomial",
+            "ZeroInflatedBinomial",
+            "ZeroInflatedBetaBinomial",
+            "HurdleNegativeBinomial",
+            "SkewNormal",
+            "ShiftedLogNormal",
+            "Frechet",
+            "GeneralizedExtremeValue",
+            "DiscreteWeibull",
+            "ZeroInflatedAsymmetricLaplace",
+        }
+        assert added <= FAMILY_META.keys()
+        for family in added:
+            meta = FAMILY_META[family]
+            assert meta.distribution_class.__name__ == family
+            assert meta.quivers_class is not None
+            assert meta.quivers_class.__name__ == f"Conditional{family}"
+        assert "GP" in FAMILY_META
+        from quivers.qiec.families import FAMILIES
+        from quivers.continuous.family_spec import FAMILY_REGISTRY
+
+        assert set(FAMILY_META) == set(FAMILIES)
+        assert FAMILY_REGISTRY.keys() <= FAMILY_META.keys()
+        assert {
+            "COMPoisson",
+            "Multinomial",
+            "DirichletMultinomial",
+            "AdditiveLogRatioNormal",
+        } <= FAMILY_META.keys()

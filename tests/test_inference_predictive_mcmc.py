@@ -103,7 +103,7 @@ def test_predictive_rejects_zero_num_samples() -> None:
 
     model = _normal_normal_model()
     guide = AutoNormalGuide(model, observed_names={"y"})
-    with pytest.raises(ValueError, match="num_samples must be >= 1"):
+    with pytest.raises(ValueError, match="num_samples must be a positive integer"):
         Predictive(model, guide, num_samples=0)
 
 
@@ -112,8 +112,31 @@ def test_predictive_negative_num_samples_rejected() -> None:
 
     model = _normal_normal_model()
     guide = AutoNormalGuide(model, observed_names={"y"})
-    with pytest.raises(ValueError, match="num_samples must be >= 1"):
+    with pytest.raises(ValueError, match="num_samples must be a positive integer"):
         Predictive(model, guide, num_samples=-5)
+
+
+@pytest.mark.parametrize("invalid", [True, False, 1.5, float("nan"), "2"])
+@pytest.mark.parametrize("recorded", [False, True])
+def test_predictive_rejects_noninteger_budgets_before_posterior_sampling(
+    invalid, recorded
+) -> None:
+    model = _normal_normal_model()
+    if recorded:
+        posterior = MCMCResult(
+            samples={"mu": torch.zeros(2, 3)},
+            log_densities=torch.zeros(2, 3),
+            acceptance_rates=torch.ones(2),
+            divergence_counts=torch.zeros(2, dtype=torch.int64),
+            num_warmup=0,
+            num_samples=3,
+        )
+    else:
+        posterior = AutoNormalGuide(model, observed_names={"y"})
+    state = torch.random.get_rng_state().clone()
+    with pytest.raises(ValueError, match="num_samples must be a positive integer"):
+        Predictive(model, posterior, num_samples=invalid)
+    assert torch.equal(torch.random.get_rng_state(), state)
 
 
 def test_predictive_with_guide_default_num_samples() -> None:
@@ -215,10 +238,27 @@ def test_predictive_rejects_an_mcmc_result_for_another_model() -> None:
 # Arguments for an observe site of each discrete family, built from
 # `a ~ Normal`, `q = sigmoid(a)`, `r = exp(a)`, a 3-simplex `pc`, and the
 # observed cutpoint plate `cuts`; ``None`` marks a family with no literal form.
-_DISCRETE_ARGUMENTS: dict[str, tuple[str, str | None, list[float]]] = {
+_DISCRETE_ARGUMENTS: dict[
+    str, tuple[str, str | None, list[float] | list[list[int]]]
+] = {
     "Bernoulli": ("probs=q", "probs=0.3", [0, 1, 1, 0, 1, 1]),
     "Categorical": ("probs=pc", "probs=[0.2, 0.3, 0.5]", [0, 1, 2, 1, 0, 2]),
     "Poisson": ("rate=r", "rate=2.0", [0, 2, 1, 3, 0, 1]),
+    "COMPoisson": (
+        "log_rate=a, dispersion=r",
+        "rate=2.0, dispersion=1.3",
+        [0, 2, 1, 3, 0, 1],
+    ),
+    "Multinomial": (
+        "total_count=5, probs=pc",
+        "total_count=5, probs=[0.2, 0.3, 0.5]",
+        [[0, 0, 5], [1, 1, 3], [2, 0, 3], [0, 3, 2], [0, 1, 4], [1, 0, 4]],
+    ),
+    "DirichletMultinomial": (
+        "total_count=5, concentration=alpha",
+        "total_count=5, concentration=[1.0, 2.0, 3.0]",
+        [[0, 0, 5], [1, 1, 3], [2, 0, 3], [0, 3, 2], [0, 1, 4], [1, 0, 4]],
+    ),
     "Geometric": ("probs=q", "probs=0.3", [0, 2, 1, 3, 0, 1]),
     "Binomial": ("total_count=5.0, probs=q", None, [0, 2, 5, 3, 1, 4]),
     "NegativeBinomial": (
@@ -233,6 +273,31 @@ _DISCRETE_ARGUMENTS: dict[str, tuple[str, str | None, list[float]]] = {
     ),
     "ZeroInflatedPoisson": ("zero_prob=q, rate=r", None, [0, 2, 0, 3, 0, 1]),
     "HurdlePoisson": ("zero_prob=q, rate=r", None, [0, 2, 0, 3, 0, 1]),
+    "ZeroInflatedNegativeBinomial": (
+        "zero_prob=q, total_count=3.0, probs=q",
+        "zero_prob=0.2, total_count=3.0, probs=0.4",
+        [0, 2, 0, 3, 0, 1],
+    ),
+    "HurdleNegativeBinomial": (
+        "zero_prob=q, total_count=3.0, probs=q",
+        "zero_prob=0.2, total_count=3.0, probs=0.4",
+        [0, 2, 0, 3, 0, 1],
+    ),
+    "ZeroInflatedBinomial": (
+        "zero_prob=q, total_count=5.0, probs=q",
+        "zero_prob=0.2, total_count=5.0, probs=0.4",
+        [0, 2, 0, 3, 0, 1],
+    ),
+    "ZeroInflatedBetaBinomial": (
+        "zero_prob=q, total_count=5.0, concentration1=r, concentration0=1.0",
+        "zero_prob=0.2, total_count=5.0, concentration1=2.0, concentration0=1.0",
+        [0, 2, 0, 3, 0, 1],
+    ),
+    "DiscreteWeibull": (
+        "probs=q, concentration=r",
+        "probs=0.4, concentration=1.3",
+        [0, 2, 0, 3, 0, 1],
+    ),
     "OrderedLogistic": ("predictor=a, cutpoints=cuts", None, [0, 1, 2, 1, 0, 2]),
     "OrderedProbit": (
         "eta=a, cutpoints=cuts",
@@ -260,8 +325,11 @@ def _discrete_program(family: str, arguments: str):
         "    sample pc : Cat <- Dirichlet(concentration=1.0)\n"
         "    let q = sigmoid(a)\n"
         "    let r = exp(a)\n"
-        f"    observe y : Resp <- {family}({arguments})\n"
-        "    return a\n"
+        "    let alpha = pc * r\n"
+        f"    observe y : Resp <- {family}({arguments})"
+        + (" [over=Cat]" if family in {"Multinomial", "DirichletMultinomial"} else "")
+        + "\n"
+        + "    return a\n"
         "export p\n"
     ).morphism
 

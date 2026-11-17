@@ -2,8 +2,8 @@
 rule with ascii turnstile
 ==================
 
-rule app (X, Y) : X / Y, Y |- X
-rule comp (X, Y, Z) : X / Y, Y / Z |- X / Z
+rule app [X, Y] : X / Y, Y |- X
+rule comp [X, Y, Z] : X / Y, Y / Z |- X / Z
 
 ---
 
@@ -46,7 +46,7 @@ rule comp (X, Y, Z) : X / Y, Y / Z |- X / Z
 rule with unicode turnstile
 ==================
 
-rule lift (A, B) : A ⊢ B / (A \ B)
+rule lift [A, B] : A ⊢ B / (A \ B)
 
 ---
 
@@ -71,7 +71,7 @@ rule lift (A, B) : A ⊢ B / (A \ B)
 rule with effect application
 ==================
 
-rule scope_take (X, Y) : Cont(X / Y), Y |- Cont(X)
+rule scope_take [X, Y] : Cont(X / Y), Y |- Cont(X)
 
 ---
 

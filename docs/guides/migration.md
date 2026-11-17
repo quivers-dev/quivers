@@ -8,6 +8,60 @@ produces source that the target grammar accepts or stops with a diagnostic. Pars
 checks the syntax only. Checking and running the migrated model, with `qvr check` and
 a few representative runs, tests its types and behavior.
 
+## Static and runtime parameter syntax
+
+The parameter migration separates static substitution from runtime application.
+Programs use bracketed static arguments and parenthesized runtime values,
+following `define` computations. For instance, a program written in the
+released 0.64.2 syntax:
+
+```text
+program random_intercepts(G : FinSet, prior_scale : Real) : G -> Out
+    ...
+sample effects <- random_intercepts(Subject, 1.0)
+```
+
+becomes:
+
+```text
+program random_intercepts[G : FinSet](prior_scale : Real) : G -> Out
+    ...
+sample effects <- random_intercepts[Subject](1.0)
+```
+
+Object and morphism parameters move to the static telescope with their call
+arguments. Scalar hyperparameters remain runtime values in parentheses.
+Static and runtime arguments retain their relative order within each list.
+
+Rule and schema category variables also use brackets, since matching substitutes
+types for them before applying the resulting rule instance:
+
+| Released syntax | Current syntax |
+| --- | --- |
+| `schema app(X, Y : Cat) : (X / Y) * Y -> X` | `schema app[X, Y : Cat] : (X / Y) * Y -> X` |
+| `rule app(X, Y) : X / Y, Y |- X` | `rule app[X, Y] : X / Y, Y |- X` |
+
+Run `qvr migrate --from v0.64.2 --dry-run models/` to inspect the conversion
+before writing it. The converter changes the released syntax; it does not
+infer additional model inputs or invent type annotations.
+
+An earlier, unreleased feature-branch draft used body declarations such as
+`data x : Tensor[Real]([Row])`. This form was not part of released 0.64.2.
+For source written against that draft, move the annotation into the runtime
+header:
+
+```text
+program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out
+    ...
+    observe y : Row <- Normal(loc=mean, scale=1.0)
+    ...
+```
+
+The parameter annotation checks the type of `y`; `observe` determines its
+likelihood role. The [parameter reference](../reference/qvr/index.md#parameter-telescopes)
+explains this separation across language constructs, including the deliberate
+static family-index notation `Vec[A](n)`.
+
 ## What `qvr migrate` does {#what-qvr-migrate-does}
 
 For each file, the migrator parses the source with the grammar of the source revision,
@@ -182,22 +236,34 @@ it does not parse there. The message names the release whose hop needs a convert
 
 ## Maintaining the migration chain
 
-When a release changes the grammar:
+Prepare a grammar change on its feature branch before preparing the release:
 
-1. Tag the release in git.
-2. Rebuild the schema history with `python grammars/qvr/vcs/build_schemas.py`, which
-   adds a commit only when the tagged `grammars/qvr/grammar.js` differs from the
-   previous tag's.
-3. Rebuild the parser of each revision with `python grammars/qvr/vcs/build_parsers.py`.
-   The wheel build compiles the current parser and every stored revision again for the
-   target platform and records which source each library was built from.
-4. Append the revision to `CHAIN` in `src/quivers/cli/migrations/__init__.py`.
-5. If the grammar changed structurally, write a hop module `vP_Q_R_to_vX_Y_Z.py` with
+1. Regenerate the current grammar assets and their packaged mirrors.
+2. Index the working-tree schema with
+   `python grammars/qvr/vcs/build_schemas.py --revision HEAD`.
+   This appends the current untagged schema without rebuilding immutable
+   tagged history. Existing release tags and their `SCHEMA_COMMITS` identities
+   must remain unchanged; do not use `--reset` for feature development.
+3. Build the development parser with
+   `python grammars/qvr/vcs/build_parsers.py --revision HEAD`.
+   Rebuild required historical parsers with the same script's tagged revision
+   selection, or omit `--revision` to build the complete chain. The wheel build
+   compiles the current parser and stored revisions for its target platform.
+4. Register the development revision and its hop in `CHAIN` and `MIGRATORS`
+   in `src/quivers/cli/migrations/__init__.py`.
+5. If the grammar changed structurally, write a hop module with
    one converter per changed declaration kind and a `SOURCE_RULE_COVERAGE` frozenset
-   of the source rules it handles, and register it in `MIGRATORS`.
+   of the source rules it handles.
 6. If the grammar is byte-identical to the previous release, register
    `_identity.migrator(previous, current)` in `MIGRATORS`.
 7. Run `qvr migrate --check` to confirm that the new hop covers every removed rule.
+
+Commit the feature changes first, then make a separate version and changelog
+preparation commit and open the pull request. The release tag comes only after
+merging and successful main-branch CI, as part of the authorized release.
+Development grammar preparation does not create a release tag. After the
+release is tagged, appending its schema and parser records its tagged
+historical snapshots.
 
 The migrators do not read the grammar history to perform a migration: they walk the
 parsed source. The history serves `--check` and the blame message.

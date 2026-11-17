@@ -1,6 +1,6 @@
 # Exercises SchemaDecl (parameterized morphism family).
 category S, NP, VP
-schema Arrow(X, Y : S) : NP -> VP
+schema Arrow[X, Y : S] : NP -> VP
 object Resp : FinSet 4
 program prog : Resp -> Resp
     sample x <- Bernoulli(probs=0.5)

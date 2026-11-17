@@ -31,6 +31,8 @@ import pathlib
 import panproto
 
 from quivers.dsl.ast_nodes import Expr, MorphismDecl
+from quivers.transpile._builtin_spellings import _probability_builtins_used
+
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import EmitPretty, target_protocol
 from quivers.transpile.renderers._ranks import name_rank_map
@@ -64,6 +66,7 @@ from quivers.transpile.renderers._python_helpers import (
 from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
 from quivers.transpile.ir import (
     CSBoolean,
+    CSInteger,
     CSIntegerInterval,
     CSInterval,
     CSNonnegativeInteger,
@@ -165,8 +168,8 @@ class _Edward2Ctx(RenderContext):
 #: ``IRArgNumber(0)`` under the ``"loc"`` arg name so TFP sees a
 #: complete (loc, scale) pair. The injected ``loc=0`` is the standard
 #: half-distribution origin and matches the QVR-side semantics for
-#: HalfCauchy / HalfNormal.
-_PREPEND_LOC_ZERO: frozenset[str] = frozenset({"HalfCauchy"})
+#: HalfCauchy / HalfStudentT.
+_PREPEND_LOC_ZERO: frozenset[str] = frozenset({"HalfCauchy", "HalfStudentT"})
 
 
 #: Edward2-local argument renames layered on top of
@@ -292,16 +295,20 @@ class Edward2Renderer(RendererBase):
         # directly when a marginalize is present. A score or a call
         # needs the factor helper, a TFP distribution.
         factors = _ir_has_factor(ir.body)
+        probability = _probability_builtins_used(ir.body)
         if (
             _ir_has_marginalize(ir.body)
             or ir_uses_family(ir.body, "MixtureNormal")
             or qiec_families_used(ir)
             or factors
+            or probability
         ):
             self._emit_tfp_import(py)
-        if factors:
+        if factors or probability:
+            from quivers.transpile._runtime_sources import python_runtime_source
+
             graft_python_statements(
-                sb, _FACTOR_HELPER.read_text(), "mod", "qiec_factor"
+                sb, python_runtime_source(_FACTOR_HELPER).decode(), "mod", "qiec_factor"
             )
         body_vid = py.v(py.fresh("body"), "block")
         if not ir.body:
@@ -847,7 +854,7 @@ class Edward2Renderer(RendererBase):
                             py,
                             arg,
                             expected_arg_event=expected_event,
-                            arg_position=slot,
+                            arg_name=observe.arg_names[slot],
                             meta=meta,
                             input_specs=input_specs,
                             bindings=bindings,
@@ -1283,19 +1290,6 @@ class Edward2Renderer(RendererBase):
                 callee_chain=callee_chain,
             )
 
-        # ``HalfStudentT`` has no TFP class. A half-Student-t with
-        # ``(df, scale)`` is the fold of ``StudentT(df, 0, scale)`` onto
-        # the nonnegative half-line; its density there is
-        # ``StudentT(df, 0, scale)`` scaled by 2, so the two agree up to
-        # the additive constant ``log 2`` on the family's positive
-        # support. The renderer emits the location-scale StudentT and
-        # relies on the fold being an additive-constant shift.
-        if family == "HalfStudentT":
-            dist_class = "StudentT"
-            args = (args[0], IRArgNumber(value=0.0), *args[1:])
-            arg_names = (arg_names[0], "loc", *arg_names[1:])
-            meta = self._lookup_meta("StudentT")
-
         callee = attribute(py, (*callee_chain, dist_class))
         aliases = {
             **meta.arg_aliases.get(_TARGET, {}),
@@ -1320,7 +1314,7 @@ class Edward2Renderer(RendererBase):
                 py,
                 a,
                 expected_arg_event=target_event_shape,
-                arg_position=i,
+                arg_name=arg_names[i],
                 meta=meta,
                 input_specs=input_specs,
                 bindings=bindings,
@@ -1363,7 +1357,7 @@ class Edward2Renderer(RendererBase):
             py,
             plate,
             family,
-            carried=self._carried_batch_keys(args, meta, bindings),
+            carried=self._carried_batch_keys(args, arg_names, meta, bindings),
             observed=observed_name is not None,
         )
         if sample_shape is not None:
@@ -1419,7 +1413,7 @@ class Edward2Renderer(RendererBase):
                 py,
                 arg,
                 expected_arg_event=expected_event,
-                arg_position=position,
+                arg_name=("weights", "loc", "scale")[position],
                 meta=meta,
                 input_specs=input_specs,
                 bindings=bindings,
@@ -1490,7 +1484,7 @@ class Edward2Renderer(RendererBase):
             py,
             args[0],
             expected_arg_event=(),
-            arg_position=0,
+            arg_name="concentration",
             meta=self._lookup_meta("LKJCholesky"),
             input_specs=input_specs,
             bindings=bindings,
@@ -1503,7 +1497,7 @@ class Edward2Renderer(RendererBase):
             plate,
             "LKJCholesky",
             carried=self._carried_batch_keys(
-                args, self._lookup_meta("LKJCholesky"), bindings
+                args, ("concentration",), self._lookup_meta("LKJCholesky"), bindings
             ),
             observed=observed_name is not None,
         )
@@ -1555,7 +1549,7 @@ class Edward2Renderer(RendererBase):
                 py,
                 arg,
                 expected_arg_event=event,
-                arg_position=i,
+                arg_name=("loc", "row_covariance", "col_covariance")[i],
                 meta=meta,
                 input_specs=input_specs,
                 bindings=bindings,
@@ -1571,7 +1565,9 @@ class Edward2Renderer(RendererBase):
             py,
             plate,
             "MatrixNormal",
-            carried=self._carried_batch_keys(args, meta, bindings),
+            carried=self._carried_batch_keys(
+                args, ("loc", "row_covariance", "col_covariance"), meta, bindings
+            ),
             observed=observed_name is not None,
         )
         if sample_shape is not None:
@@ -1585,7 +1581,7 @@ class Edward2Renderer(RendererBase):
         arg: IRArg,
         *,
         expected_arg_event: tuple[int, ...],
-        arg_position: int,
+        arg_name: str,
         meta: FamilyMeta,
         input_specs: dict[str, ConstraintSpec],
         bindings: dict[str, _Binding],
@@ -1605,7 +1601,7 @@ class Edward2Renderer(RendererBase):
                 py,
                 arg,
                 expected_arg_event,
-                arg_position,
+                arg_name,
                 meta,
                 input_specs,
                 bindings,
@@ -1615,7 +1611,7 @@ class Edward2Renderer(RendererBase):
                 py,
                 arg,
                 expected_arg_event,
-                arg_position,
+                arg_name,
                 meta,
                 input_specs,
                 bindings,
@@ -1637,14 +1633,12 @@ class Edward2Renderer(RendererBase):
         py: PyCtx,
         arg: IRArgNumber,
         expected_arg_event: tuple[int, ...],
-        arg_position: int,
+        arg_name: str,
         meta: FamilyMeta,
         input_specs: dict[str, ConstraintSpec],
         bindings: dict[str, _Binding],
     ) -> str:
-        target_shape = self._broadcast_target_for(
-            arg_position, meta, expected_arg_event
-        )
+        target_shape = self._broadcast_target_for(arg_name, meta, expected_arg_event)
         if target_shape is None:
             return number_literal(py, arg.value)
         return self._broadcast(py, arg, target_shape, input_specs, bindings)
@@ -1654,14 +1648,12 @@ class Edward2Renderer(RendererBase):
         py: PyCtx,
         arg: IRArgRef,
         expected_arg_event: tuple[int, ...],
-        arg_position: int,
+        arg_name: str,
         meta: FamilyMeta,
         input_specs: dict[str, ConstraintSpec],
         bindings: dict[str, _Binding],
     ) -> str:
-        target_shape = self._broadcast_target_for(
-            arg_position, meta, expected_arg_event
-        )
+        target_shape = self._broadcast_target_for(arg_name, meta, expected_arg_event)
         if target_shape is None:
             return self._ref_expr(py, arg)
         # Broadcast only when the referenced value is scalar (an
@@ -1907,6 +1899,7 @@ class Edward2Renderer(RendererBase):
     def _carried_batch_keys(
         self,
         args: tuple[IRArg, ...],
+        arg_names: tuple[str, ...],
         meta: FamilyMeta,
         bindings: dict[str, _Binding],
     ) -> tuple[str, ...] | None:
@@ -1919,10 +1912,10 @@ class Edward2Renderer(RendererBase):
         the per-argument batch shapes; the widest tuple is returned.
         """
         carried: tuple[str, ...] = ()
-        for position, arg in enumerate(args):
+        for arg_name, arg in zip(arg_names, args, strict=True):
             keys = self._arg_batch_keys(
                 arg,
-                arg_event_rank=_arg_event_rank(meta, position),
+                arg_event_rank=_arg_event_rank(meta, arg_name),
                 bindings=bindings,
             )
             if keys is None:
@@ -1979,12 +1972,12 @@ class Edward2Renderer(RendererBase):
 
     def _broadcast_target_for(
         self,
-        arg_position: int,
+        arg_name: str,
         meta: FamilyMeta,
         plate_event: tuple[int, ...],
     ) -> tuple[int, ...] | None:
         """Return the broadcast target shape for the arg at
-        `arg_position` of `meta`, or ``None`` when the arg position
+        `arg_name` of `meta`, or ``None`` when the arg position
         does not require a broadcast.
 
         Reads `meta.distribution_class.arg_constraints` to detect
@@ -1993,31 +1986,14 @@ class Edward2Renderer(RendererBase):
         real-matrix forms; combines them with the plate's
         `event_dims` to compute the target shape.
         """
-        cls_attr = meta.distribution_class.arg_constraints
-        if not isinstance(cls_attr, dict):
-            return None
-        items = list(cls_attr.items())
-        if arg_position >= len(items):
-            return None
-        _, constraint = items[arg_position]
-        if is_real_simplex(constraint):
-            return plate_event[-1:] if plate_event else None
-        if is_real_vector(constraint):
-            return plate_event[-1:] if plate_event else None
-        if is_real_cov_matrix(constraint) or is_real_matrix(constraint):
+        rank = _arg_event_rank(meta, arg_name)
+        if rank == 1 and plate_event:
+            return plate_event[-1:]
+        if rank == 2:
             if len(plate_event) >= 2:
                 return plate_event[-2:]
             if len(plate_event) == 1:
                 return (plate_event[0], plate_event[0])
-            return None
-        # `IndependentConstraint(base, n>=1)` not covered above.
-        rank = int(getattr(constraint, "event_dim", 0))
-        if rank == 0:
-            return None
-        if rank == 1 and plate_event:
-            return plate_event[-1:]
-        if rank == 2 and len(plate_event) >= 2:
-            return plate_event[-2:]
         return None
 
     def _is_scalar_ref(
@@ -2150,9 +2126,9 @@ def _drop_event_axes(extents: tuple[str, ...], event_rank: int) -> tuple[str, ..
     return extents[: max(0, len(extents) - event_rank)]
 
 
-def _arg_event_rank(meta: FamilyMeta, arg_position: int) -> int:
+def _arg_event_rank(meta: FamilyMeta, arg_name: str) -> int:
     """Return the number of event axes the family's constructor slot at
-    `arg_position` consumes, read off the torch distribution's
+    `arg_name` consumes, read off the torch distribution's
     ``arg_constraints``.
 
     A simplex or real-vector slot consumes one axis, a covariance or
@@ -2162,10 +2138,9 @@ def _arg_event_rank(meta: FamilyMeta, arg_position: int) -> int:
     cls_attr = meta.distribution_class.arg_constraints
     if not isinstance(cls_attr, dict):
         return 0
-    items = list(cls_attr.items())
-    if arg_position >= len(items):
+    constraint = cls_attr.get(arg_name)
+    if constraint is None:
         return 0
-    _, constraint = items[arg_position]
     if is_real_simplex(constraint) or is_real_vector(constraint):
         return 1
     if is_real_cov_matrix(constraint) or is_real_matrix(constraint):
@@ -2193,6 +2168,7 @@ _SCALAR_CONSTRAINT_CLASSES: tuple[type, ...] = (
     CSUnitInterval,
     CSInterval,
     CSBoolean,
+    CSInteger,
     CSIntegerInterval,
     CSNonnegativeInteger,
     CSPositiveInteger,

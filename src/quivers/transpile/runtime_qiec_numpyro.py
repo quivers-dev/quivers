@@ -14,6 +14,7 @@ discrete family can index its probabilities with it.
 
 import jax as _qvr_qiec_jax
 import jax.scipy.special as _qvr_qiec_jax_special
+from jax.experimental import io_callback as _qvr_qiec_io_callback
 
 
 def _qvr_qiec_nested(value):
@@ -44,6 +45,24 @@ def _qvr_qiec_point(value):
 
 def _qvr_qiec_log_density(distribution, value):
     return distribution.log_prob(_qvr_qiec_point(value))
+
+
+def _qvr_qiec_log_mass(distribution, retained=0, shape=()):
+    normalizer = getattr(distribution, "log_normalizer", None)
+    mass = jnp.asarray(normalizer() if callable(normalizer) else 0.0)
+    shape = tuple(shape) or tuple(distribution.batch_shape)
+    mass = jnp.broadcast_to(mass, shape)
+    if (
+        isinstance(retained, bool)
+        or not isinstance(retained, int)
+        or not 0 <= retained <= mass.ndim
+    ):
+        raise ValueError("log_mass retained axes must be within the batch rank")
+    return (
+        jnp.sum(mass, axis=tuple(range(retained, mass.ndim)))
+        if mass.ndim > retained
+        else mass
+    )
 
 
 def _qvr_qiec_site_names():
@@ -83,8 +102,41 @@ def _qvr_qiec_native_operations(
     }
 
 
+def _qvr_qiec_jax_observation_weight(value):
+    tensor = jnp.asarray(value)
+    if not jnp.issubdtype(tensor.dtype, jnp.floating):
+        raise ValueError(
+            "observation weights must be finite and nonnegative real values"
+        )
+    valid = jnp.all(jnp.isfinite(tensor) & (tensor >= 0))
+
+    def require_valid(flag):
+        if not bool(flag):
+            raise ValueError("observation weights must be finite and nonnegative")
+
+    if isinstance(tensor, _qvr_qiec_jax.core.Tracer):
+        # Validation is an IO effect rather than an elidable debug callback.
+        # Only a stopped Boolean crosses the host boundary, leaving the
+        # checked tensor's identity derivative intact. Independent checks
+        # need no ordering, which also permits vmap over the computation.
+        _qvr_qiec_io_callback(
+            require_valid, None, _qvr_qiec_jax.lax.stop_gradient(valid), ordered=False
+        )
+    else:
+        require_valid(valid)
+    return tensor
+
+
+def _qvr_qiec_jax_scale_weight(coefficient, density):
+    coefficient, density = jnp.asarray(coefficient), jnp.asarray(density)
+    safe = jnp.where(coefficient == 0, jnp.zeros_like(density), density)
+    return coefficient * safe
+
+
 _qvr_qiec_host_math.update(
     {
+        "observation_weight": _qvr_qiec_jax_observation_weight,
+        "scale_weight": _qvr_qiec_jax_scale_weight,
         "min_real": jnp.minimum,
         "max_real": jnp.maximum,
         "pow_real": jnp.power,
@@ -135,5 +187,29 @@ _qvr_qiec_host_math.update(
         "softplus": _qvr_qiec_jax.nn.softplus,
         "logsigmoid": _qvr_qiec_jax.nn.log_sigmoid,
         "softsign": _qvr_qiec_jax.nn.soft_sign,
+    }
+)
+
+
+# qvr-shared-probability:numpyro:start
+# qvr-shared-probability:numpyro:end
+
+
+_qvr_qiec_host_math.update(
+    {
+        "log_probability": _qvr_log_probability,
+        "log1mexp": _qvr_log1mexp,
+        "log_ndtr": _qvr_log_ndtr,
+    }
+)
+
+
+_qvr_qiec_host_math["positive_parameter"] = _qvr_positive_parameter
+
+
+_qvr_qiec_host_math.update(
+    {
+        "observation_status": _qvr_observation_status,
+        "interval_upper": _qvr_interval_upper,
     }
 )

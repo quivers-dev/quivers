@@ -16,31 +16,50 @@ site to and from an unconstrained space.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from typing import cast
 
 import torch
 import torch.distributions as D
 from torch import Tensor
 from torch.distributions import constraints
 from torch.distributions.transforms import Transform
+from torch.distributions.utils import lazy_property
+
+
+def _tensor_lazy_property[Owner](getter: Callable[[Owner], Tensor]) -> Tensor:
+    """Expose a Torch lazy Tensor property with its instance-facing type.
+
+    Parameters
+    ----------
+    getter : Callable
+        Computation cached by Torch's existing lazy descriptor.
+
+    Returns
+    -------
+    torch.Tensor
+        Descriptor whose instance access returns the computed Tensor.
+    """
+    return cast(Tensor, lazy_property(getter))
 
 
 class InverseWishart(D.Distribution):
     """The inverse of a Wishart draw.
 
-     With ``W ~ Wishart(df, scale_tril=L)``, the matrix ``Sigma = W^-1``
-     has density ``p_W(Sigma^-1) |det Sigma|^-(d + 1)``, the second factor
-     the Jacobian of matrix inversion on ``d x d`` symmetric matrices
+    With ``W ~ Wishart(df, scale_tril=L)``, the matrix ``Sigma = W^-1``
+    has density ``p_W(Sigma^-1) |det Sigma|^-(d + 1)``, the second factor
+    the Jacobian of matrix inversion on ``d x d`` symmetric matrices
     . In the conventional parameterization
-     ``IW(df, Psi)`` the scale is ``Psi = (L L^T)^-1``.
+    ``IW(df, Psi)`` the scale is ``Psi = (L L^T)^-1``.
 
-     Parameters
-     ----------
-     df : torch.Tensor
+    Parameters
+    ----------
+    df : torch.Tensor
          Degrees of freedom, greater than ``d - 1``.
-     scale_tril : torch.Tensor
+    scale_tril : torch.Tensor
          The lower Cholesky factor of the scale of the Wishart whose
          inverse is drawn, ``(..., d, d)``.
-     validate_args : bool | None
+    validate_args : bool | None
          Whether to validate the arguments and values.
     """
 
@@ -121,10 +140,13 @@ class MatrixNormal(D.Distribution):
     ----------
     loc : torch.Tensor
         The mean, ``(..., n, p)``.
-    row_covariance : torch.Tensor
-        The row covariance ``U``, ``(..., n, n)``.
-    col_covariance : torch.Tensor
-        The column covariance ``V``, ``(..., p, p)``.
+    row_covariance : torch.Tensor or None
+        The row covariance ``U``, ``(..., n, n)``; exclusive with its factor.
+    col_covariance : torch.Tensor or None
+        The column covariance ``V``, ``(..., p, p)``; exclusive with its factor.
+    row_scale_tril, col_scale_tril : torch.Tensor or None
+        Lower Cholesky factors of the respective covariances. Supplying factors
+        avoids covariance construction and factorization during scoring.
     validate_args : bool | None
         Whether to validate the arguments and values.
     """
@@ -133,30 +155,167 @@ class MatrixNormal(D.Distribution):
         "loc": constraints.independent(constraints.real, 2),
         "row_covariance": constraints.positive_definite,
         "col_covariance": constraints.positive_definite,
+        "row_scale_tril": constraints.lower_cholesky,
+        "col_scale_tril": constraints.lower_cholesky,
     }
+    _atomless = True
+    _batch_parameter_ranks = {"loc": 2, "row_scale_tril": 2, "col_scale_tril": 2}
     support: constraints.Constraint = constraints.independent(constraints.real, 2)
     has_rsample = True
 
     def __init__(
         self,
         loc: Tensor,
-        row_covariance: Tensor,
-        col_covariance: Tensor,
+        row_covariance: Tensor | None = None,
+        col_covariance: Tensor | None = None,
         validate_args: bool | None = None,
+        *,
+        row_scale_tril: Tensor | None = None,
+        col_scale_tril: Tensor | None = None,
     ) -> None:
-        self.loc = loc
-        self.row_covariance = row_covariance
-        self.col_covariance = col_covariance
-        self._row_tril = torch.linalg.cholesky(row_covariance)
-        self._col_tril = torch.linalg.cholesky(col_covariance)
+        if (row_covariance is None) == (row_scale_tril is None):
+            raise ValueError(
+                "MatrixNormal requires exactly one row covariance or factor"
+            )
+        if (col_covariance is None) == (col_scale_tril is None):
+            raise ValueError(
+                "MatrixNormal requires exactly one column covariance or factor"
+            )
+        if loc.ndim < 2:
+            raise ValueError("MatrixNormal loc must have two event axes")
+        rows, cols = loc.shape[-2:]
+        row = row_covariance if row_covariance is not None else row_scale_tril
+        col = col_covariance if col_covariance is not None else col_scale_tril
+        assert row is not None and col is not None
+        if row.shape[-2:] != (rows, rows) or col.shape[-2:] != (cols, cols):
+            raise ValueError(
+                "MatrixNormal row/column matrices must match loc event axes"
+            )
         batch_shape = torch.broadcast_shapes(
-            loc.shape[:-2], row_covariance.shape[:-2], col_covariance.shape[:-2]
+            loc.shape[:-2], row.shape[:-2], col.shape[:-2]
         )
+        dtype = torch.promote_types(
+            loc.dtype, torch.promote_types(row.dtype, col.dtype)
+        )
+        self.loc = loc.to(dtype=dtype).expand(*batch_shape, rows, cols)
+        # Keep parameter batches unbroadcast: a shared covariance is factored
+        # once even when the location supplies many observation batches.
+        row = row.to(dtype=dtype)
+        col = col.to(dtype=dtype)
+        if row_covariance is not None:
+            self.row_covariance = row
+        else:
+            self.row_scale_tril = row
+        if col_covariance is not None:
+            self.col_covariance = col
+        else:
+            self.col_scale_tril = col
         super().__init__(
             batch_shape=batch_shape,
-            event_shape=loc.shape[-2:],
+            event_shape=torch.Size((rows, cols)),
             validate_args=validate_args,
         )
+        # Validation precedes factorization and lazy properties retain the authored
+        # parameterization. In particular, factor inputs never form covariance products.
+        self._row_tril = self.row_scale_tril
+        self._col_tril = self.col_scale_tril
+
+    @_tensor_lazy_property
+    def row_covariance(self) -> Tensor:
+        """The row covariance, materialized only when requested.
+
+        Returns
+        -------
+        torch.Tensor
+            The corresponding batched matrix values.
+        """
+        return self.row_scale_tril @ self.row_scale_tril.transpose(-1, -2)
+
+    @_tensor_lazy_property
+    def col_covariance(self) -> Tensor:
+        """The column covariance, materialized only when requested.
+
+        Returns
+        -------
+        torch.Tensor
+            The corresponding batched matrix values.
+        """
+        return self.col_scale_tril @ self.col_scale_tril.transpose(-1, -2)
+
+    @_tensor_lazy_property
+    def row_scale_tril(self) -> Tensor:
+        """The row Cholesky factor, computed once for covariance inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            The corresponding batched matrix values.
+        """
+        return torch.linalg.cholesky(self.row_covariance)
+
+    @_tensor_lazy_property
+    def col_scale_tril(self) -> Tensor:
+        """The column Cholesky factor, computed once for covariance inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            The corresponding batched matrix values.
+        """
+        return torch.linalg.cholesky(self.col_covariance)
+
+    @property
+    def mean(self) -> Tensor:
+        """The broadcast mean matrix.
+
+        Returns
+        -------
+        torch.Tensor
+            The corresponding batched matrix values.
+        """
+        return self.loc
+
+    @property
+    def variance(self) -> Tensor:
+        """Entrywise variances from the two factor row norms.
+
+        Returns
+        -------
+        torch.Tensor
+            The corresponding batched matrix values.
+        """
+        variance = self._row_tril.square().sum(-1).unsqueeze(
+            -1
+        ) * self._col_tril.square().sum(-1).unsqueeze(-2)
+        return variance.expand(self.batch_shape + self.event_shape)
+
+    def expand(self, batch_shape, _instance=None):
+        """Expand batch axes without factoring or materializing covariances.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size
+            Requested batch dimensions.
+        _instance : MatrixNormal or None
+            Optional distribution instance used by Torch expansion.
+
+        Returns
+        -------
+        MatrixNormal
+            A distribution sharing the existing parameter tensors.
+        """
+        new = self._get_checked_instance(MatrixNormal, _instance)
+        batch_shape = torch.Size(batch_shape)
+        rows, cols = self.event_shape
+        new.loc = self.loc.expand(*batch_shape, rows, cols)
+        new.row_scale_tril = self._row_tril.expand(*batch_shape, rows, rows)
+        new.col_scale_tril = self._col_tril.expand(*batch_shape, cols, cols)
+        new._row_tril, new._col_tril = new.row_scale_tril, new.col_scale_tril
+        super(MatrixNormal, new).__init__(
+            batch_shape, self.event_shape, validate_args=False
+        )
+        new._validate_args = self._validate_args
+        return new
 
     def rsample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         """Draw ``M + A Z B^T``.

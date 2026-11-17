@@ -1,0 +1,6 @@
+object Row : FinSet 3
+object Category : FinSet 3
+program model : Row -> Row
+    observe y : Row <- DirichletMultinomial(total_count=5, concentration=[1.0, 2.0, 3.0]) [over=Category]
+    return y
+export model

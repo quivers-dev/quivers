@@ -141,6 +141,7 @@ nav:
       - Editor support and syntax highlighting: getting-started/highlighting.md
     - Tutorial overview: tutorials/index.md
     - QVR tutorials:
+      - Checked model fitting: tutorials/qvr/00-model-interface.md
       - 1. Your first model: tutorials/qvr/01-first-model.md
       - 2. Generalized linear models: tutorials/qvr/02-glms.md
       - 3. Hierarchical models: tutorials/qvr/03-hierarchical.md
@@ -176,6 +177,8 @@ nav:
       - DSL Programs and Let-Expressions: guides/dsl-programs-and-lets.md
       - DSL Contractions: guides/dsl-contractions.md
       - Probabilistic Programs: guides/programs.md
+      - Model Data and Fitting: guides/model-data-and-fitting.md
+      - Updating and Refitting: guides/model-refits.md
       - Hierarchical Programs: guides/programs-hierarchical.md
       - Continuous Spaces and Morphisms: guides/continuous-spaces.md
       - Continuous Distribution Families: guides/continuous-families.md
@@ -191,7 +194,9 @@ nav:
       - "Tree and Graph Autoencoders: Signatures and Encoders": guides/structural-compression-signatures-and-encoders.md
       - "Tree and Graph Autoencoders: Decoders and Losses": guides/structural-compression-decoders-and-losses.md
       - "Analysis: Data and Formulas": guides/analysis-data-and-formulas.md
+      - Structured Predictor Terms: guides/formula-special-predictors.md
       - "Analysis: Fitting and Diagnostics": guides/analysis-fitting-and-diagnostics.md
+      - Conditional Effects: guides/conditional-effects.md
       - "Interactive tools: REPL, kernel, and language server": guides/repl-and-lsp.md
       - Migrating .qvr source between grammar revisions: guides/migration.md
     - Language reference:
@@ -403,22 +408,32 @@ nav:
       - MCMC (HMC / NUTS): api/inference/mcmc.md
       - Bayesian Lifts: api/inference/lifts.md
       - Predictive: api/inference/predictive.md
+      - Prior sampling: api/inference/prior.md
     - Data:
       - Overview: api/data/index.md
       - Dataset Schema: api/data/schema.md
       - Column Encoding: api/data/encoding.md
     - Diagnostics:
       - Overview: api/diagnostics/index.md
+      - Shared Posterior Analysis: api/diagnostics/posterior.md
+      - Conditional Effects: api/diagnostics/conditional.md
+      - Regression Variance Ratios: api/diagnostics/regression.md
+      - Contrast Summaries and Region Evidence: api/diagnostics/hypothesis.md
+      - Density Ordinates and Point-Null Evidence: api/diagnostics/density.md
       - Convergence Diagnostics: api/diagnostics/convergence.md
       - Simulation-Based Calibration: api/diagnostics/calibration.md
       - ArviZ DataTree Adapter: api/diagnostics/arviz_io.md
       - Model Comparison: api/diagnostics/comparison.md
+      - Refit Cross-Validation: api/diagnostics/cross_validation.md
       - Predictive Checks: api/diagnostics/predictive_checks.md
+    - Model Binding and Fitting: api/modeling.md
+    - Custom Distribution Catalogs: api/family-catalog.md
     - Formulas:
       - Overview: api/formulas/index.md
       - Parsed Formula IR: api/formulas/formula.md
       - Formula → Module Lens: api/formulas/compile.md
       - Families & Links: api/formulas/family.md
+      - Custom Response Families: api/formulas/custom.md
       - Fit Entry Point: api/formulas/fit.md
     - Analysis:
       - Overview: api/analysis/index.md
@@ -438,6 +453,7 @@ nav:
       - Sampleables: api/effects/sites.md
       - Traces: api/effects/trace.md
       - Trace types: api/effects/trace_types.md
+      - Observation scoring: api/effects/observation_scoring.md
       - Handlers: api/effects/handlers.md
       - Collapse: api/effects/collapse.md
       - Conjugate marginals: api/effects/conjugate.md
@@ -482,6 +498,7 @@ nav:
   - Develop:
     - Overview: developer/contributing.md
     - Public API and Exports: developer/public-api.md
+    - Model Interface Capability Audit: developer/model-interface-roadmap.md
     - Quivers Indexed Effect Core: developer/qiec.md
     - Changelog: developer/changelog.md
     - Inference benchmark results: developer/inference-benchmarks.md

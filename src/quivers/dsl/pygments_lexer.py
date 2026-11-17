@@ -54,8 +54,8 @@ from quivers.dsl.pure_builtins import PURE_BUILTINS
 #
 # The keyword / operator / builtin sets below are derived from the
 # authoritative grammar JSON (see ``_grammar_introspection``) so a grammar
-# edit propagates here automatically. The only hand-curated set is
-# `_EFFECT_TOKENS`: effects ride as identifier values inside
+# edit propagates here automatically. Static index operations and effect
+# names ride as identifiers rather than grammar literals. Effects occur inside
 # ``[effects=[...]]`` option blocks rather than as grammar literals, so
 # the grammar walker has no way to surface them.
 
@@ -86,10 +86,16 @@ _ALGEBRA_NAMES = frozenset(
 _COMPOSITION_LEVEL_NAMES = frozenset({"algebra", "semigroupoid", "magmoid", "rule"})
 
 _KEYWORD_TOKENS = _GRAMMAR_KEYWORDS
+_STATIC_INDEX_FUNCTION_TOKENS = frozenset({"nat_add"})
 _BUILTIN_FUNCTION_TOKENS = frozenset(
-    (*_GRAMMAR_BUILTIN_FUNCTIONS, *PURE_BUILTINS, "traverse")
+    (
+        *_GRAMMAR_BUILTIN_FUNCTIONS,
+        *PURE_BUILTINS,
+        *_STATIC_INDEX_FUNCTION_TOKENS,
+        "traverse",
+    )
 )
-_BUILTIN_TYPE_TOKENS = _GRAMMAR_BUILTIN_TYPES
+_BUILTIN_TYPE_TOKENS = frozenset((*_GRAMMAR_BUILTIN_TYPES, *DISTRIBUTION_FAMILIES))
 _OPERATOR_TOKENS = _GRAMMAR_OPERATORS
 
 
@@ -131,7 +137,10 @@ def _node_kind_to_pygments_token(
             return Name.Builtin if text == "traverse" else Name.Function
         if parent_kind == "let_call" and field_name == "func":
             return Name.Builtin if text in PURE_BUILTINS else Name.Function
-        if text in _BUILTIN_FUNCTION_TOKENS:
+        if text in _STATIC_INDEX_FUNCTION_TOKENS:
+            if parent_kind == "qiec_index_application":
+                return Name.Builtin
+        elif text in _BUILTIN_FUNCTION_TOKENS:
             return Name.Builtin
         if text in DISTRIBUTION_FAMILIES:
             return Name.Class
@@ -166,6 +175,7 @@ def _node_kind_to_pygments_token(
             return Name.Class
         if parent_kind in {
             "qiec_index_constructor",
+            "qiec_index_application",
             "qiec_constructor_decl",
             "qiec_constructor_value",
             "qiec_case_branch",

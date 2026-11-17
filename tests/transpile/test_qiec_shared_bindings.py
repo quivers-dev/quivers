@@ -10,6 +10,7 @@ collection's length, and evaluates to the reference machine's value.
 
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
 import subprocess
@@ -84,7 +85,12 @@ def test_python_runtime_binds_each_accumulator_once() -> None:
     source = transpile(parse(SHARED), target="pyro").decode()
     # One assignment expression per intermediate accumulator and one for
     # the shared argument: the source grows linearly in the length.
-    assert source.count(":=") == LENGTH
+    body = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "qiec_body_shared"
+    )
+    assert sum(isinstance(node, ast.NamedExpr) for node in ast.walk(body)) == LENGTH
     namespace: dict[str, object] = {}
     exec(source, namespace)
     assert namespace["qiec_shared"](_POINT) == pytest.approx(  # type: ignore[operator]

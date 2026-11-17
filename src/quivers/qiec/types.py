@@ -168,6 +168,160 @@ class IndexConstructor(QiecModel):
                 )
 
 
+def _summand_key(term: IndexVariable) -> tuple[int, str]:
+    """Order Nat summands by declaration name or rigid nominal identity.
+
+    Parameters
+    ----------
+    term : IndexVariable
+        Natural-number variable.
+
+    Returns
+    -------
+    tuple[int, str]
+        A deterministic key separating declared names and rigid identities.
+    """
+    return (0, term.name) if term.identity is None else (1, term.identity.digest)
+
+
+class IndexSum(QiecModel):
+    """A canonical sum of natural-number variables and a constant.
+
+    Parameters
+    ----------
+    terms : tuple[IndexVariable, ...]
+        Nat variables, sorted by nominal identity; repeated summands remain.
+    constant : int
+        Nonnegative constant part. Use `add_indices` or `shift_index` to fold
+        literals, flatten sums, and collapse zero or singleton expressions.
+    tag : str
+        Serialization discriminator, always ``"index_sum"``.
+    """
+
+    terms: tuple[IndexVariable, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    constant: int = 0
+    tag: Literal["index_sum"] = "index_sum"
+
+    @property
+    def sort(self) -> NatSort:
+        """The intrinsic natural-number sort of this sum.
+
+        Returns
+        -------
+        NatSort
+            The closed Nat sort, independent of every summand's name.
+        """
+        return NAT
+
+    @dx.model_validator()
+    def _validate_record(self) -> None:
+        """Reject noncanonical records and non-Nat summands.
+
+        Raises
+        ------
+        ValueError
+            If the constant, summand order, or noncollapsed shape is invalid.
+        TypeError
+            If any summand is not a Nat variable.
+        """
+        if (
+            isinstance(self.constant, bool)
+            or not isinstance(self.constant, int)
+            or self.constant < 0
+        ):
+            raise ValueError("an index sum requires a nonnegative integer constant")
+        if not self.terms or (len(self.terms) == 1 and self.constant == 0):
+            raise ValueError(
+                "use add_indices to collapse closed or singleton index sums"
+            )
+        if any(
+            not isinstance(term, IndexVariable) or term.sort != NAT
+            for term in self.terms
+        ):
+            raise TypeError("index sums require Nat-variable summands")
+        if tuple(sorted(self.terms, key=_summand_key)) != self.terms:
+            raise ValueError("index-sum summands must use canonical nominal order")
+
+
+def add_indices(*terms: IndexTerm) -> IndexTerm:
+    """Add Nat indices, folding constants and flattening nested sums.
+
+    Parameters
+    ----------
+    *terms : IndexTerm
+        Natural-number indices. An empty sum denotes zero.
+
+    Returns
+    -------
+    IndexTerm
+        A canonical literal, variable, or `IndexSum`. Rigid identities survive.
+
+    Raises
+    ------
+    TypeError
+        If a term is not a Nat literal, Nat variable, or Nat sum.
+    """
+    variables = []
+    constant = 0
+    for term in terms:
+        if isinstance(term, IndexSum):
+            variables.extend(term.terms)
+            constant += term.constant
+        elif isinstance(term, IndexVariable) and term.sort == NAT:
+            variables.append(term)
+        elif (
+            isinstance(term, IndexLiteral)
+            and term.sort == NAT
+            and not isinstance(term.value, bool)
+        ):
+            constant += int(term.value)
+        else:
+            raise TypeError("natural-number addition requires Nat indices")
+    if not variables:
+        return IndexLiteral(value=constant, sort=NAT)
+    variables.sort(key=_summand_key)
+    if len(variables) == 1 and constant == 0:
+        return variables[0]
+    return IndexSum(terms=tuple(variables), constant=constant)
+
+
+def shift_index(term: IndexTerm, offset: int) -> IndexTerm:
+    """Shift a Nat extent, removing only a provably present constant part.
+
+    Parameters
+    ----------
+    term : IndexTerm
+        A natural-number extent.
+    offset : int
+        Integer shift. A negative shift must be absorbed by a literal or the
+        existing constant part of a sum; no unconstrained predecessor exists.
+
+    Returns
+    -------
+    IndexTerm
+        The canonical shifted extent, retaining every symbolic identity.
+
+    Raises
+    ------
+    TypeError
+        If the extent is not Nat or the offset is not an integer.
+    ValueError
+        If a negative shift cannot be proved nonnegative.
+    """
+    if isinstance(offset, bool) or not isinstance(offset, int):
+        raise TypeError("an index offset must be an integer")
+    canonical = add_indices(term)
+    if offset >= 0:
+        return add_indices(canonical, IndexLiteral(value=offset, sort=NAT))
+    if isinstance(canonical, IndexLiteral) and int(canonical.value) + offset >= 0:
+        return IndexLiteral(value=int(canonical.value) + offset, sort=NAT)
+    if isinstance(canonical, IndexSum) and canonical.constant + offset >= 0:
+        return add_indices(
+            *canonical.terms, IndexLiteral(value=canonical.constant + offset, sort=NAT)
+        )
+    raise ValueError("cannot remove an unproved natural-number extent offset")
+
+
 class ShapeIndex(QiecModel):
     """A shape given by its dimensions.
 
@@ -183,7 +337,7 @@ class ShapeIndex(QiecModel):
     tag: Literal["shape_index"] = "shape_index"
 
 
-type IndexTerm = IndexVariable | IndexLiteral | IndexConstructor | ShapeIndex
+type IndexTerm = IndexVariable | IndexLiteral | IndexConstructor | IndexSum | ShapeIndex
 """A static index: a variable, a literal, a constructor application, or a shape."""
 
 
@@ -568,7 +722,13 @@ def validate_static_argument(term: StaticArgument) -> None:
         validate_static_argument(term.left)
         validate_static_argument(term.right)
         index_kinds = (NatSort, ShapeSort, ContextSort, UserIndexSort)
-        index_nodes = (IndexVariable, IndexLiteral, IndexConstructor, ShapeIndex)
+        index_nodes = (
+            IndexVariable,
+            IndexLiteral,
+            IndexConstructor,
+            IndexSum,
+            ShapeIndex,
+        )
         if isinstance(term.kind, index_kinds):
             if not isinstance(term.left, index_nodes) or not isinstance(
                 term.right, index_nodes
@@ -585,6 +745,10 @@ def validate_static_argument(term: StaticArgument) -> None:
         return
     if isinstance(term, EffectRef):
         for argument in term.arguments:
+            validate_static_argument(argument)
+        return
+    if isinstance(term, IndexSum):
+        for argument in term.terms:
             validate_static_argument(argument)
         return
     if isinstance(term, IndexConstructor):
@@ -699,6 +863,14 @@ def render_static(term: StaticArgument) -> str:
         return term.name
     if isinstance(term, IndexLiteral):
         return str(term.value)
+    if isinstance(term, IndexSum):
+        parts = [render_static(variable) for variable in term.terms]
+        if term.constant:
+            parts.append(str(term.constant))
+        rendered = parts[0]
+        for part in parts[1:]:
+            rendered = f"nat_add({rendered}, {part})"
+        return rendered
     if isinstance(term, IndexConstructor):
         if not term.arguments:
             return term.name
@@ -740,6 +912,9 @@ __all__ = [
     "FunctionType",
     "INT",
     "IndexConstructor",
+    "IndexSum",
+    "add_indices",
+    "shift_index",
     "IndexLiteral",
     "IndexTerm",
     "IndexVariable",

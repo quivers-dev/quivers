@@ -37,7 +37,8 @@ from quivers.data.encoding import (
     MissingPolicy,
     encode_column,
 )
-from quivers.dsl import loads
+from quivers.dsl import loads, parse
+from quivers.dsl.ast_nodes import ObjectDecl
 
 
 class DatasetSchema(ValueModel):
@@ -237,12 +238,12 @@ def compose(qvr_body: str, schema: DatasetSchema, **kwargs):
         Forwarded to `quivers.dsl.loads` (e.g. ``data=...`` for
         ``from_data`` lookups).
     """
-    body_declares: set[str] = set()
-    for line in qvr_body.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("object "):
-            after = stripped[len("object ") :].split(":")[0].split("=")[0]
-            body_declares.add(after.strip())
+    body_declares = {
+        name
+        for declaration in parse(qvr_body).statements
+        if isinstance(declaration, ObjectDecl)
+        for name in declaration.names
+    }
 
     prelude_lines = []
     for _, obj_name in sorted(schema.objects.items(), key=lambda kv: kv[1]):

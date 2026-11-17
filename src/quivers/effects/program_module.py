@@ -1200,6 +1200,23 @@ class _Builder:
         assert morphism is not None
         label = _step_sites(spec)
         reads = _arg_reads(spec.args)
+        if isinstance(spec, Observe):
+            reads = tuple(
+                dict.fromkeys(
+                    (
+                        *reads,
+                        *(
+                            name
+                            for name in spec.names
+                            if frame.lookup(name) is not None
+                        ),
+                    )
+                )
+            )
+        if isinstance(spec, Observe) and isinstance(spec.weights, str | Indexed):
+            reads = tuple(dict.fromkeys((*reads, *_arg_reads((spec.weights,)))))
+        if isinstance(spec, Observe) and spec.event is not None:
+            reads = tuple(dict.fromkeys((*reads, *spec.event.names())))
         categorical = extract_morphism(morphism)
         if categorical is not None and not isinstance(morphism, ContinuousMorphism):
             # A categorical morphism is deterministic: its tensor is

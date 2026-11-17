@@ -13,6 +13,7 @@ it like any other before it runs.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from numbers import Integral
 
 import didactic.api as dx
 
@@ -60,8 +61,9 @@ from quivers.qiec.terms import (
 from quivers.qiec.types import (
     REAL,
     IndexLiteral,
+    IndexSum,
+    IndexTerm,
     IndexVariable,
-    ShapeIndex,
     StaticArgument,
     TypeApplication,
     TypeExpr,
@@ -621,33 +623,41 @@ def static_arguments_for(
             f"program {entry.name!r} binds {len(entry.telescope)} extent(s); "
             f"{len(given)} static argument(s) were given"
         )
+    affine_equations: list[tuple[IndexTerm, int]] = []
+    for parameter in entry.parameters:
+        shape = tensor_shape(parameter.type)
+        if shape is None or parameter.name not in data:
+            continue
+        for depth, dimension in enumerate(shape[1]):
+            if isinstance(dimension, IndexSum | IndexVariable):
+                try:
+                    observed = _extent_of(data[parameter.name], depth)
+                except KeyError as error:
+                    raise KeyError(
+                        f"cannot infer extent from input {parameter.name!r}: {error}"
+                    ) from error
+                affine_equations.append((dimension, observed))
+    inferred: dict[str, int] = {}
+    if affine_equations or given:
+        from quivers.qiec.index_arithmetic import infer_index_extents
+
+        supplied_extents = {
+            binder.name: int(value.value)
+            for binder, value in zip(entry.telescope, given)
+            if isinstance(binder, IndexBinder)
+            and isinstance(value, IndexLiteral)
+            and isinstance(value.value, int)
+        }
+        try:
+            inferred = infer_index_extents(affine_equations, supplied_extents)
+        except (TypeError, ValueError) as error:
+            raise KeyError(
+                f"program {entry.name!r} has invalid shape evidence: {error}"
+            ) from error
     arguments: list[StaticArgument] = []
     for position, binder in enumerate(entry.telescope):
         supplied = given[position] if given else None
-        found: int | None = None
-        for parameter in entry.parameters:
-            type_ = parameter.type
-            if not isinstance(type_, TypeApplication) or len(type_.arguments) != 2:
-                continue
-            shape = type_.arguments[1]
-            if not isinstance(shape, ShapeIndex):
-                continue
-            for depth, dimension in enumerate(shape.dimensions):
-                if (
-                    isinstance(dimension, IndexVariable)
-                    and dimension.name == binder.name
-                ):
-                    try:
-                        found = _extent_of(data[parameter.name], depth)
-                    except KeyError as error:
-                        raise KeyError(
-                            f"parameter {parameter.name!r} of program "
-                            f"{entry.name!r} does not fix its extent "
-                            f"{binder.name!r}: {error.args[0]}"
-                        ) from error
-                    break
-            if found is not None:
-                break
+        found: int | None = inferred.get(binder.name)
         if found is None:
             if supplied is None:
                 raise KeyError(
@@ -991,6 +1001,22 @@ def _run_wrapped(
     ExecutionFailure
         If the run fails.
     """
+    for parameter in entry.parameters:
+        if parameter.constraint != "nonnegative" or parameter.name not in data:
+            continue
+        value = data[parameter.name]
+        if getattr(value, "shape", None) == () and callable(
+            getattr(value, "item", None)
+        ):
+            value = value.item()
+        if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+            raise ExecutionFailure(
+                ExecutionDiagnostic(
+                    code="qiec-run-type",
+                    message=f"datum {parameter.name!r} must be a nonnegative integer",
+                    computation=entry.name,
+                )
+            )
     data = broadcast_shared_data(entry, data)
     _refuse_unmapped_data(module, entry, data)
     arguments = tuple(data[parameter.name] for parameter in entry.parameters)

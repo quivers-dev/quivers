@@ -31,7 +31,8 @@ from pygls.protocol.language_server import LanguageServerProtocol, lsp_method
 from lsprotocol import types as lsp
 
 from quivers import __version__
-from quivers.analysis.scope import ScopedRef, resolve_scoped_path
+from quivers.analysis.scope import ScopedRef, resolve_scoped_path, top_level_bindings
+from quivers._family_schemas import _family_signature
 from quivers.cli.repl_complete import all_completions
 from quivers.cli.repl_highlight import (
     SEMANTIC_TOKEN_MODIFIERS,
@@ -50,6 +51,8 @@ from quivers.dsl.ast_nodes import (
     MorphismDecl,
     ObjectDecl,
     ProgramDecl,
+    ProgramParam,
+    ScalarParam,
     Statement,
     TypeFromExpr,
     TypeInitializer,
@@ -68,7 +71,12 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecTypeName,
     QiecValueParameter,
 )
-from quivers.dsl.emit import _emit_qiec_binder, _emit_qiec_type, module_to_source
+from quivers.dsl.emit import (
+    _emit_program_param,
+    _emit_qiec_binder,
+    _emit_qiec_type,
+    module_to_source,
+)
 from quivers.dsl.qiec_tooling import (
     call_site_at,
     call_sites,
@@ -480,6 +488,11 @@ def _env_kinds_for(doc: DocumentState) -> dict[str, str]:
     kinds: dict[str, str] = qiec_env_kinds(doc.module)
     if compiler is None:
         return kinds
+    for ref in top_level_bindings(compiler):
+        if ref.kind in {"object", "space"}:
+            kinds[ref.name] = "type"
+        elif ref.kind == "program":
+            kinds[ref.name] = "function"
     for name in getattr(compiler, "objects", {}):
         kinds[name] = "type"
     for name in getattr(compiler, "spaces", {}):
@@ -778,18 +791,17 @@ def _render_hover(
     if decl is None:
         if name in doc.env:
             return f"```\n{name} :: {type(doc.env[name]).__name__}\n```"
-        return None
-    qvr = _slice_source(doc, decl)
-    if isinstance(decl, QiecBinder | QiecValueParameter | QiecLocalBinding) or (
-        isinstance(decl, QiecTypeName) and qiec_local is decl
-    ):
-        source_lines = doc.source.splitlines()
-        source_line = max(0, getattr(decl, "line", 1) - 1)
-        qvr = (
-            source_lines[source_line].strip()
-            if source_line < len(source_lines)
-            else name
+        family = _family_signature(name)
+        return (
+            f"**Distribution parameters**\n\n```text\n{family}\n```"
+            if family is not None
+            else None
         )
+    qvr = _slice_source(doc, decl)
+    if isinstance(
+        decl, QiecBinder | QiecValueParameter | QiecLocalBinding | ProgramParam
+    ) or (isinstance(decl, QiecTypeName) and qiec_local is decl):
+        qvr = _qiec_local_signature(decl)
     if qvr is None:
         if isinstance(decl, Statement):
             qvr = module_to_source(type(doc.module)(statements=(decl,))).rstrip()
@@ -1374,6 +1386,8 @@ def _qiec_local_signature(local: object) -> str:
     """Render one lexical QIEC binder for hover and completion details."""
 
     name = str(getattr(local, "name", ""))
+    if isinstance(local, ProgramParam):
+        return _emit_program_param(local)
     if isinstance(local, QiecBinder):
         return _emit_qiec_binder(local)
     if isinstance(local, QiecValueParameter):
@@ -1411,6 +1425,10 @@ def _qiec_local_completion_items(
             kind=(
                 lsp.CompletionItemKind.TypeParameter
                 if isinstance(local, QiecBinder | QiecTypeName)
+                or (
+                    isinstance(local, ProgramParam)
+                    and not isinstance(local, ScalarParam)
+                )
                 else lsp.CompletionItemKind.Variable
             ),
             detail=_qiec_local_signature(local),
@@ -1468,6 +1486,7 @@ def _completion_kind(kind: str) -> lsp.CompletionItemKind:
         "keyword": lsp.CompletionItemKind.Keyword,
         "type": lsp.CompletionItemKind.Class,
         "function": lsp.CompletionItemKind.Function,
+        "option": lsp.CompletionItemKind.Property,
         "namespace": lsp.CompletionItemKind.Module,
         "path": lsp.CompletionItemKind.File,
     }.get(kind, lsp.CompletionItemKind.Text)

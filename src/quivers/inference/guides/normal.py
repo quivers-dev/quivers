@@ -8,6 +8,7 @@ observed plate's leading batch axis.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import torch
 import torch.distributions as D
 import torch.nn as nn
@@ -15,7 +16,7 @@ import torch.nn as nn
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.subsample import active_subsets, subsampled_rows
 from quivers.inference.guides.base import Guide
-from quivers.inference.registry import LatentSite
+from quivers.inference.registry import LatentRegistry, LatentSite
 
 
 def _kept_rows(
@@ -68,6 +69,11 @@ class AutoNormalGuide(Guide):
         Initial scale (in unconstrained space) of every latent.
         Default ``0.1``; small enough to keep the guide near its
         prior at the start of optimisation.
+    initial_values : Mapping[str, torch.Tensor or float] or None
+        Optional natural-scale initial centers keyed by latent site. Scalars
+        broadcast to a site's shape; arrays must match it. Values must be
+        strictly inside the site's support. Other centers remain zero in
+        unconstrained space.
 
     Notes
     -----
@@ -88,11 +94,61 @@ class AutoNormalGuide(Guide):
         *,
         x: torch.Tensor | None = None,
         observations: dict[str, torch.Tensor] | None = None,
+        initial_values: Mapping[str, torch.Tensor | float] | None = None,
     ) -> None:
         super().__init__()
-        self._registry = self.build_registry(
+        registry = self.build_registry(
             model, observed_names, x=x, observations=observations
         )
+        self._initialize_registry(registry, init_scale, initial_values)
+
+    @classmethod
+    def from_registry(
+        cls,
+        registry: LatentRegistry,
+        *,
+        init_scale: float = 0.1,
+        initial_values: Mapping[str, torch.Tensor | float] | None = None,
+    ) -> AutoNormalGuide:
+        """Initialize parameters against an already checked latent registry.
+
+        Parameters
+        ----------
+        registry : LatentRegistry
+            Existing model, site supports, and declared event geometry.
+        init_scale : float
+            Initial unconstrained Normal scale, as in the ordinary constructor.
+        initial_values : Mapping[str, torch.Tensor or float] or None
+            Optional natural-scale parameter centers.
+
+        Returns
+        -------
+        AutoNormalGuide
+            A fresh guide without tracing or sampling the model.
+        """
+        guide = cls.__new__(cls)
+        nn.Module.__init__(guide)
+        guide._initialize_registry(registry, init_scale, initial_values)
+        return guide
+
+    def _initialize_registry(
+        self,
+        registry: LatentRegistry,
+        init_scale: float,
+        initial_values: Mapping[str, torch.Tensor | float] | None,
+    ) -> None:
+        """Share parameter initialization between checked-registry constructors.
+
+        Parameters
+        ----------
+        registry : LatentRegistry
+            Registry used by every guide operation.
+        init_scale : float
+            Initial unconstrained Normal scale.
+        initial_values : Mapping[str, torch.Tensor or float] or None
+            Optional constrained centers, checked by the shared initializer.
+        """
+        self._registry = registry
         init_log_scale = float(torch.tensor(init_scale).log().item())
 
         for site in self._registry.sites.values():
@@ -104,18 +160,62 @@ class AutoNormalGuide(Guide):
                 f"log_scale_{site.name}",
                 nn.Parameter(torch.full(site.unconstrained_shape, init_log_scale)),
             )
+        if initial_values:
+            from quivers.inference._initialization import unconstrained_initial_values
+
+            with torch.no_grad():
+                for name, value in unconstrained_initial_values(
+                    self._registry, initial_values
+                ).items():
+                    self._loc(name).copy_(value)
 
     # ------------------------------------------------------------------
     # Variational parameter access
     # ------------------------------------------------------------------
 
     def _loc(self, name: str) -> torch.Tensor:
+        """Return one site's unconstrained Normal center.
+
+        Parameters
+        ----------
+        name : str
+            Checked latent site name.
+
+        Returns
+        -------
+        torch.Tensor
+            Site parameters retaining the guide's autograd connection.
+        """
         return getattr(self, f"loc_{name}")
 
     def _log_scale(self, name: str) -> torch.Tensor:
+        """Return one site's unconstrained log scale.
+
+        Parameters
+        ----------
+        name : str
+            Checked latent site name.
+
+        Returns
+        -------
+        torch.Tensor
+            Site parameters retaining the guide's autograd connection.
+        """
         return getattr(self, f"log_scale_{name}")
 
     def _scale(self, name: str) -> torch.Tensor:
+        """Return one site's numerically bounded positive Normal scale.
+
+        Parameters
+        ----------
+        name : str
+            Checked latent site name.
+
+        Returns
+        -------
+        torch.Tensor
+            Site parameters retaining the guide's autograd connection.
+        """
         return self._log_scale(name).exp().clamp(min=1e-6)
 
     # ------------------------------------------------------------------
@@ -125,8 +225,20 @@ class AutoNormalGuide(Guide):
     def _sample_site(
         self, site: LatentSite, batch: int
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return ``(z, v)`` for a single site: unconstrained
-        Normal sample and the matching constrained value."""
+        """Draw one site's unconstrained and constrained values.
+
+        Parameters
+        ----------
+        site : LatentSite
+            Checked support and declared site geometry.
+        batch : int
+            Number of execution runs.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            Unconstrained Normal sample and its constrained image.
+        """
         loc = self._loc(site.name)
         scale = self._scale(site.name)
         if site.is_plate:
@@ -136,13 +248,22 @@ class AutoNormalGuide(Guide):
             loc_b = loc.unsqueeze(0).expand(batch, *site.unconstrained_shape)
             scale_b = scale.unsqueeze(0).expand(batch, *site.unconstrained_shape)
             z = D.Normal(loc_b, scale_b).rsample()
-        v = site.bijector(z)
-        if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
-            v = v.squeeze(-1)
+        v, _ = site.constrain(z)
         return z, v
 
     def rsample(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Reparameterized mean-field Normal-then-bijector sample."""
+        """Draw a reparameterized mean-field Normal-then-bijector sample.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Execution input whose leading axis gives the number of runs.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            Values indexed by checked latent names.
+        """
         batch = x.shape[0]
         result: dict[str, torch.Tensor] = {}
         for site in self._registry.sites.values():
@@ -170,6 +291,18 @@ class AutoNormalGuide(Guide):
         that a [`subsample`][quivers.effects.subsample] block is
         active for is scored at the subset's rows, times the plate's
         size over the subset's.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Execution input carrying the leading run axis.
+        sites : dict[str, torch.Tensor]
+            Constrained latent values to score.
+
+        Returns
+        -------
+        torch.Tensor
+            One variational log density per execution run.
         """
         batch = x.shape[0]
         total = torch.zeros(batch, device=x.device)
@@ -178,16 +311,13 @@ class AutoNormalGuide(Guide):
             if site.name not in sites:
                 continue
             v = sites[site.name]
-            if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 1):
-                v = v.unsqueeze(-1)
-            z = site.bijector.inv(v)
+            z, log_abs_det = site.unconstrain(v)
             loc = self._loc(site.name)
             scale = self._scale(site.name)
             if site.is_plate:
                 # Plate latent: single shared sample, scalar density
                 # broadcast against the batch accumulator.
                 log_q_z = D.Normal(loc, scale).log_prob(z)
-                log_abs_det = site.bijector.inv.log_abs_det_jacobian(v, z)
                 plate_shape = site.plate_shape or (site.plate_index_size,)
                 kept = (
                     subsampled_rows(
@@ -213,7 +343,6 @@ class AutoNormalGuide(Guide):
                 loc_b = loc.unsqueeze(0).expand(batch, *site.unconstrained_shape)
                 scale_b = scale.unsqueeze(0).expand(batch, *site.unconstrained_shape)
                 log_q_z = D.Normal(loc_b, scale_b).log_prob(z)
-                log_abs_det = site.bijector.inv.log_abs_det_jacobian(v, z)
                 while log_q_z.dim() > 1:
                     log_q_z = log_q_z.sum(dim=-1)
                 while log_abs_det.dim() > 1:
@@ -223,6 +352,13 @@ class AutoNormalGuide(Guide):
 
     @property
     def latent_names(self) -> list[str]:
+        """Return checked latent names in their registry order.
+
+        Returns
+        -------
+        list[str]
+            Site labels, including individual scan occurrences.
+        """
         return list(self._registry.names)
 
 

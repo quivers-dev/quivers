@@ -34,6 +34,7 @@ type PrimitiveCapability = Literal[
     "special",
     "activation",
     "weight",
+    "probability",
 ]
 """The feature a target must support to render a primitive."""
 
@@ -51,12 +52,16 @@ class PrimitiveSignature(QiecModel):
         The result type.
     capability
         The feature a target must support to render the primitive.
+    total
+        Whether all well-typed arguments satisfy its domain. This proof
+        permits eager branch selection; unproved primitives default to false.
     """
 
     name: str
     parameters: tuple[TypeExpr, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     capability: PrimitiveCapability
+    total: bool = False
 
     @property
     def id(self) -> PrimitiveId:
@@ -70,6 +75,197 @@ class PrimitiveSignature(QiecModel):
             module.
         """
         return PrimitiveId.derive("builtin", self.name)
+
+
+def _observation_weight(value: float) -> float:
+    """Validate a finite, nonnegative observation weight.
+
+    Parameters
+    ----------
+    value : float
+        The coefficient multiplying one observation's log density.
+
+    Returns
+    -------
+    float
+        The supplied coefficient, unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the coefficient is negative, nonfinite, or boolean.
+    """
+    if isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise ValueError("observation weights must be finite and nonnegative")
+    return value
+
+
+def _observation_status(value: int) -> int:
+    """Validate one recorded-outcome event code.
+
+    Parameters
+    ----------
+    value : int
+        Code minus one left, zero exact, one right, or two interval.
+
+    Returns
+    -------
+    int
+        The validated code unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the value is not a nonboolean integer in the code set.
+    """
+    if type(value) is not int or value not in {-1, 0, 1, 2}:
+        raise ValueError("observation_status requires integer codes -1, 0, 1, or 2")
+    return value
+
+
+def _interval_upper(lower: float, upper: float) -> float:
+    """Validate an active interval's finite, strictly larger upper endpoint.
+
+    Parameters
+    ----------
+    lower, upper : float
+        Real endpoints; the lower endpoint may be infinite.
+
+    Returns
+    -------
+    float
+        The upper endpoint unchanged.
+
+    Raises
+    ------
+    ValueError
+        If an endpoint is boolean or nonreal, lower is NaN, or upper is
+        nonfinite or does not exceed lower.
+    """
+    if (
+        any(
+            isinstance(value, bool) or not isinstance(value, int | float)
+            for value in (lower, upper)
+        )
+        or math.isnan(lower)
+        or not math.isfinite(upper)
+        or upper <= lower
+    ):
+        raise ValueError(
+            "interval_upper requires a finite upper endpoint greater than its lower endpoint"
+        )
+    return upper
+
+
+def _positive_parameter(value: float) -> float:
+    """Validate a finite, strictly positive scalar parameter.
+
+    Parameters
+    ----------
+    value : float
+        Candidate natural-scale parameter.
+
+    Returns
+    -------
+    float
+        The supplied parameter unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the value is boolean, nonfinite, zero, or negative.
+    """
+    if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+        raise ValueError(
+            "positive_parameter requires a finite strictly positive real value"
+        )
+    return value
+
+
+def _log_probability(value: float) -> float:
+    """Log a probability, retaining the zero-mass endpoint.
+
+    Parameters
+    ----------
+    value : float
+        Finite probability in the closed unit interval.
+
+    Returns
+    -------
+    float
+        Its logarithm, negative infinity at zero.
+
+    Raises
+    ------
+    ValueError
+        If the value is boolean, nonfinite, or outside the unit interval.
+    """
+    if isinstance(value, bool) or not math.isfinite(value) or not 0 <= value <= 1:
+        raise ValueError("log_probability requires a finite real value in [0, 1]")
+    return math.log(value) if value else -math.inf
+
+
+def _log1mexp(value: float) -> float:
+    """Log a complementary exponential without cancellation.
+
+    Parameters
+    ----------
+    value : float
+        Nonpositive logarithm, including negative infinity.
+
+    Returns
+    -------
+    float
+        Log(1-exp(value)), negative infinity at zero and zero at -infinity.
+
+    Raises
+    ------
+    ValueError
+        If the value is boolean, NaN, or positive.
+    """
+    if isinstance(value, bool) or math.isnan(value) or value > 0:
+        raise ValueError("log1mexp requires a nonpositive real value")
+    if value == 0:
+        return -math.inf
+    if value > -math.log(2):
+        return math.log(-math.expm1(value))
+    return math.log1p(-math.exp(value))
+
+
+def _log_ndtr(value: float) -> float:
+    """Standard normal log CDF with a standard-library negative-tail kernel.
+
+    Parameters
+    ----------
+    value : float
+        Real argument, including either infinity.
+
+    Returns
+    -------
+    float
+        Standard normal log CDF. A Mills-ratio continued fraction avoids
+        erfc underflow in the far negative tail.
+
+    Raises
+    ------
+    ValueError
+        If the value is boolean or NaN.
+    """
+    if isinstance(value, bool) or math.isnan(value):
+        raise ValueError("log_ndtr requires a real value other than NaN")
+    if value == math.inf:
+        return 0.0
+    if value == -math.inf:
+        return -math.inf
+    if value < -10:
+        x = -value
+        denominator = x
+        for numerator in range(64, 0, -1):
+            denominator = x + numerator / denominator
+        return -0.5 * x * x - 0.5 * math.log(2 * math.pi) - math.log(denominator)
+    if value > 0:
+        return math.log1p(-0.5 * math.erfc(value / math.sqrt(2)))
+    return math.log(0.5 * math.erfc(-value / math.sqrt(2)))
 
 
 def _truncating_division(dividend: int, divisor: int) -> int:
@@ -314,6 +510,8 @@ def _signature(
     result: TypeExpr,
     capability: PrimitiveCapability,
     implementation: Callable[..., object],
+    *,
+    total: bool = False,
 ) -> tuple[PrimitiveSignature, Callable[..., object]]:
     """Pair a signature with its reference implementation.
 
@@ -329,6 +527,8 @@ def _signature(
         The feature tag.
     implementation : Callable[..., object]
         The reference implementation over host values.
+    total : bool
+        Whether the primitive has no additional argument-domain restriction.
 
     Returns
     -------
@@ -336,31 +536,53 @@ def _signature(
         The signature and implementation, ready for the tables below.
     """
     return PrimitiveSignature(
-        name=name, parameters=parameters, result=result, capability=capability
+        name=name,
+        parameters=parameters,
+        result=result,
+        capability=capability,
+        total=total or capability in {"comparison", "boolean", "string"},
     ), implementation
 
 
 _ENTRIES: tuple[tuple[PrimitiveSignature, Callable[..., object]], ...] = (
-    _signature("add_int", (INT, INT), INT, "arithmetic", lambda a, b: a + b),
-    _signature("sub_int", (INT, INT), INT, "arithmetic", lambda a, b: a - b),
-    _signature("mul_int", (INT, INT), INT, "arithmetic", lambda a, b: a * b),
+    _signature(
+        "add_int", (INT, INT), INT, "arithmetic", lambda a, b: a + b, total=True
+    ),
+    _signature(
+        "sub_int", (INT, INT), INT, "arithmetic", lambda a, b: a - b, total=True
+    ),
+    _signature(
+        "mul_int", (INT, INT), INT, "arithmetic", lambda a, b: a * b, total=True
+    ),
     _signature("div_int", (INT, INT), INT, "arithmetic", _truncating_division),
     _signature("mod_int", (INT, INT), INT, "arithmetic", _truncating_remainder),
-    _signature("neg_int", (INT,), INT, "arithmetic", lambda a: -a),
-    _signature("abs_int", (INT,), INT, "arithmetic", abs),
-    _signature("min_int", (INT, INT), INT, "arithmetic", min),
-    _signature("max_int", (INT, INT), INT, "arithmetic", max),
-    _signature("add_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a + b),
-    _signature("sub_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a - b),
-    _signature("mul_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a * b),
+    _signature("neg_int", (INT,), INT, "arithmetic", lambda a: -a, total=True),
+    _signature("abs_int", (INT,), INT, "arithmetic", abs, total=True),
+    _signature("min_int", (INT, INT), INT, "arithmetic", min, total=True),
+    _signature("max_int", (INT, INT), INT, "arithmetic", max, total=True),
+    _signature(
+        "add_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a + b, total=True
+    ),
+    _signature(
+        "sub_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a - b, total=True
+    ),
+    _signature(
+        "mul_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a * b, total=True
+    ),
     _signature("div_real", (REAL, REAL), REAL, "arithmetic", lambda a, b: a / b),
-    _signature("neg_real", (REAL,), REAL, "arithmetic", lambda a: -a),
-    _signature("abs_real", (REAL,), REAL, "arithmetic", abs),
-    _signature("min_real", (REAL, REAL), REAL, "arithmetic", min),
-    _signature("max_real", (REAL, REAL), REAL, "arithmetic", max),
+    _signature("neg_real", (REAL,), REAL, "arithmetic", lambda a: -a, total=True),
+    _signature("abs_real", (REAL,), REAL, "arithmetic", abs, total=True),
+    _signature("min_real", (REAL, REAL), REAL, "arithmetic", min, total=True),
+    _signature("max_real", (REAL, REAL), REAL, "arithmetic", max, total=True),
     _signature("pow_real", (REAL, REAL), REAL, "math", math.pow),
     _signature("exp", (REAL,), REAL, "math", math.exp),
     _signature("log", (REAL,), REAL, "math", math.log),
+    _signature("log_probability", (REAL,), REAL, "probability", _log_probability),
+    _signature("positive_parameter", (REAL,), REAL, "probability", _positive_parameter),
+    _signature("observation_status", (INT,), INT, "probability", _observation_status),
+    _signature("interval_upper", (REAL, REAL), REAL, "probability", _interval_upper),
+    _signature("log1mexp", (REAL,), REAL, "probability", _log1mexp),
+    _signature("log_ndtr", (REAL,), REAL, "probability", _log_ndtr),
     _signature("sqrt", (REAL,), REAL, "math", math.sqrt),
     _signature("eq_int", (INT, INT), BOOL, "comparison", lambda a, b: a == b),
     _signature("ne_int", (INT, INT), BOOL, "comparison", lambda a, b: a != b),
@@ -441,13 +663,18 @@ _ENTRIES: tuple[tuple[PrimitiveSignature, Callable[..., object]], ...] = (
     _signature("softplus", (REAL,), REAL, "activation", _softplus),
     _signature("logsigmoid", (REAL,), REAL, "activation", lambda a: -_softplus(-a)),
     _signature("softsign", (REAL,), REAL, "activation", lambda a: a / (1.0 + abs(a))),
+    _signature("observation_weight", (REAL,), REAL, "weight", _observation_weight),
     _signature("as_weight", (REAL,), LOG_WEIGHT, "weight", float),
     _signature("weight_value", (LOG_WEIGHT,), REAL, "weight", float),
     _signature(
         "add_weight", (LOG_WEIGHT, LOG_WEIGHT), LOG_WEIGHT, "weight", lambda a, b: a + b
     ),
     _signature(
-        "scale_weight", (REAL, LOG_WEIGHT), LOG_WEIGHT, "weight", lambda a, b: a * b
+        "scale_weight",
+        (REAL, LOG_WEIGHT),
+        LOG_WEIGHT,
+        "weight",
+        lambda a, b: 0.0 if a == 0 else a * b,
     ),
 )
 

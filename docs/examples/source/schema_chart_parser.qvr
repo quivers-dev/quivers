@@ -27,9 +27,9 @@ object Atoms : {N, NP, S}
 object Cat : FreeResiduated(Atoms)
 object Token : {the, dog, cat, sleeps}
 
-schema fwd_app (X, Y : Cat) : (X / Y) * Y -> X
-schema bwd_app (X, Y : Cat) : Y * (X \ Y) -> X
-schema perm (X, Y : Cat) : X / Y -> X \ Y
+schema fwd_app[X, Y : Cat] : (X / Y) * Y -> X
+schema bwd_app[X, Y : Cat] : Y * (X \ Y) -> X
+schema perm[X, Y : Cat] : X / Y -> X \ Y
 
 bundle lp_rules : [fwd_app, bwd_app, perm]
 

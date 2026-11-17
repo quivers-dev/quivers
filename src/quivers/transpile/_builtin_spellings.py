@@ -38,7 +38,7 @@ for the name it emits.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
+from typing import Literal, TYPE_CHECKING
 
 import didactic.api as dx
 
@@ -54,14 +54,27 @@ from quivers.dsl.ast_nodes.let_expressions import LetBinaryOperator
 from quivers.dsl.pure_builtins import BUILTIN_REGISTRY
 from quivers.transpile._api import UnsupportedConstruct
 
+if TYPE_CHECKING:
+    from quivers.transpile.ir import IRNode
+
+
 #: The pointwise math builtins a let expression may apply: every scalar
 #: primitive of the builtin registry except the conversions between
-#: integers, reals, and weights, which the planner reads structurally.
+#: integers, reals, and weights, and the checked weight operations, which
+#: the planner keeps as canonical QIEC runtime terms.
 MATH_BUILTINS: Mapping[str, int] = {
     name: min(spec.qiec_arities)
     for name, spec in sorted(BUILTIN_REGISTRY.items())
     if spec.qiec_form == "primitive"
-    and name not in {"int", "real", "weight", "weight_value"}
+    and name
+    not in {
+        "int",
+        "real",
+        "weight",
+        "weight_value",
+        "observation_weight",
+        "scale_weight",
+    }
 }
 
 
@@ -459,7 +472,7 @@ _PYMC: dict[str, BuiltinSpelling] = {
     "max": _pmath("maximum"),
     "min": _pmath("minimum"),
     "pow": _pt("pow"),
-    "select": _pmath("switch"),
+    "select": _native("_qvr_select"),
 }
 
 
@@ -592,6 +605,17 @@ _STAN: dict[str, BuiltinSpelling] = {
 def _julia(root: str) -> dict[str, BuiltinSpelling]:
     special = (root, "Distributions", "SpecialFunctions")
     return {
+        **{
+            name: _native("_qvr_" + name)
+            for name in (
+                "log_probability",
+                "log1mexp",
+                "log_ndtr",
+                "positive_parameter",
+                "observation_status",
+                "interval_upper",
+            )
+        },
         **_same_name(
             "abs",
             "acos",
@@ -646,6 +670,12 @@ def _julia(root: str) -> dict[str, BuiltinSpelling]:
 #: under the bare name.
 WEBPPL_RUNTIME_BUILTINS: frozenset[str] = frozenset(
     {
+        "log_probability",
+        "log1mexp",
+        "log_ndtr",
+        "positive_parameter",
+        "observation_status",
+        "interval_upper",
         "acos",
         "acosh",
         "asin",
@@ -691,6 +721,12 @@ _WEBPPL: dict[str, BuiltinSpelling] = {
 #: the QVR name prefixed by `qvr-`.
 CHURCH_RUNTIME_BUILTINS: frozenset[str] = frozenset(
     {
+        "log_probability",
+        "log1mexp",
+        "log_ndtr",
+        "positive_parameter",
+        "observation_status",
+        "interval_upper",
         "abs",
         "acos",
         "acosh",
@@ -823,6 +859,99 @@ _BUGS: dict[str, BuiltinSpelling] = {
         *_ACTIVATIONS,
     ),
 }
+
+
+_PROBABILITY_BUILTINS = frozenset(
+    {
+        "log_probability",
+        "log1mexp",
+        "log_ndtr",
+        "positive_parameter",
+        "observation_status",
+        "interval_upper",
+    }
+)
+for _table in (_PYRO, _NUMPYRO, _PYMC, _EDWARD2):
+    _table.update({name: _native("_qvr_" + name) for name in _PROBABILITY_BUILTINS})
+_STAN.update({name: _native("qvr_" + name) for name in _PROBABILITY_BUILTINS})
+_BUGS.update(
+    _refuse(
+        "the deterministic scalar subset cannot retain checked domains and stable probability tails",
+        *_PROBABILITY_BUILTINS,
+    )
+)
+
+
+def _probability_builtins_used(
+    body: tuple[IRNode, ...], *, include_boolean: bool = False
+) -> frozenset[str]:
+    """Find probability calls in deterministic and score expressions.
+
+    Parameters
+    ----------
+    body : tuple[IRNode, ...]
+        Ordinary statements, including nested marginalization scopes.
+    include_boolean : bool
+        Also find PyMC helpers that preserve scalar and symbolic Booleans.
+
+    Returns
+    -------
+    frozenset[str]
+        Checked probability builtins whose standalone helpers are needed.
+    """
+    from quivers.dsl.ast_nodes.let_expressions import (
+        LetExprIndex,
+        LetExprList,
+        LetExprLambda,
+        LetExprFactor,
+        LetExprMethodCall,
+    )
+    from quivers.transpile.ir import IRDeterministic, IRScore, IRMarginalize
+
+    found: set[str] = set()
+
+    def expression(node: LetExprNode) -> None:
+        if isinstance(node, LetExprCall):
+            if node.func in _PROBABILITY_BUILTINS or (
+                include_boolean and node.func == "select"
+            ):
+                found.add(node.func)
+            for argument in node.args:
+                expression(argument)
+        elif isinstance(node, LetExprBinOp):
+            expression(node.left)
+            expression(node.right)
+        elif isinstance(node, LetExprUnaryOp):
+            if include_boolean and node.op == "not":
+                found.add("bool_not")
+            expression(node.operand)
+        elif isinstance(node, LetExprIndex):
+            expression(node.array)
+            for index in node.indices:
+                expression(index)
+        elif isinstance(node, LetExprList):
+            for item in node.items:
+                expression(item)
+        elif isinstance(node, LetExprLambda):
+            expression(node.body)
+        elif isinstance(node, LetExprMethodCall):
+            expression(node.receiver)
+            for argument in node.args:
+                expression(argument)
+        elif isinstance(node, LetExprFactor):
+            if node.body is not None:
+                expression(node.body)
+            for case in node.cases:
+                expression(case.value)
+
+    for node in body:
+        if isinstance(node, (IRDeterministic, IRScore)):
+            expression(node.expr)
+        elif isinstance(node, IRMarginalize):
+            found.update(
+                _probability_builtins_used(node.scope, include_boolean=include_boolean)
+            )
+    return frozenset(found)
 
 
 #: How every target meets each builtin the elaboration writes out.

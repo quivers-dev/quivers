@@ -38,6 +38,7 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecIndexDecl,
 )
 from quivers.dsl.compiler import Compiler, CompileError
+from quivers.dsl._data_inference import has_inferred_objects
 from quivers.dsl.emit import module_to_source, static_argument_to_source
 from quivers.dsl.qiec_lowering import (
     QIEC_STATEMENT_TYPES,
@@ -238,6 +239,7 @@ def analyze_module(
     *,
     module_name: str,
     file_path: str | None = None,
+    compile_categorical: bool = True,
 ) -> ToolingAnalysis:
     """Run the QIEC lowerer and existing compiler without conflating them.
 
@@ -255,6 +257,10 @@ def analyze_module(
         what the rest of the pipeline uses.
     file_path : str or None
         Path recorded on diagnostics, or None when the source has no file.
+    compile_categorical : bool
+        Also compile ordinary declarations. A caller with an independently
+        established family-shape error may disable this pass while retaining
+        QIEC diagnostics from the shared analyzer.
 
     Returns
     -------
@@ -290,7 +296,13 @@ def analyze_module(
         compiler = Compiler(non_qiec_module, lower_qiec=False)
     compile_error: CompileError | None = None
     try:
-        env = compiler.compile_env()
+        env = (
+            compiler.compile_env(defer_unresolved=has_inferred_objects(module))
+            if compile_categorical
+            else {}
+        )
+        if compile_categorical:
+            compiler._compile_exports()
     except CompileError as error:
         compile_error = error
         env = {}
@@ -304,6 +316,60 @@ def analyze_module(
         qiec_diagnostics=tuple(qiec_diags),
         compile_error=compile_error,
     )
+
+
+def target_diagnostics(
+    checked: QiecModule, source: Module, target: str
+) -> tuple[QiecToolingDiagnostic, ...]:
+    """Check a target against an already checked source module.
+
+    Capability diagnostics take precedence over target-plan refusals. The
+    authoritative transpile preflights perform both checks; this adapter only
+    translates their results into the diagnostic record shared by tools.
+    It neither parses nor elaborates the source again. A request-local
+    preparation shares the checked module's structural projection between
+    capability checking and planning.
+
+    Parameters
+    ----------
+    checked : QiecModule
+        The checked QIEC projection of ``source``.
+    source : Module
+        The corresponding parsed source module.
+    target : str
+        The transpile target.
+
+    Returns
+    -------
+    tuple[QiecToolingDiagnostic, ...]
+        Capability failures with their source origins, or plan refusals with
+        the original structured kinds and messages. An empty tuple means
+        these preflights admitted the module; rendering may impose further
+        restrictions.
+    """
+    from quivers.transpile._api import UnsupportedConstruct
+    from quivers.transpile.plan import _TargetPreparation
+    from quivers.transpile.qiec_ir import analyze_qiec_capabilities
+
+    preparation = _TargetPreparation(checked, source, target)
+    capabilities = analyze_qiec_capabilities(preparation.projection, target)
+    if capabilities:
+        return tuple(
+            QiecToolingDiagnostic(
+                message=diagnostic.message,
+                code=diagnostic.kind,
+                line=(diagnostic.origin.line or 0) if diagnostic.origin else 0,
+                col=(diagnostic.origin.column or 0) if diagnostic.origin else 0,
+            )
+            for diagnostic in capabilities
+        )
+    try:
+        preparation.checked_program_plan()
+    except UnsupportedConstruct as error:
+        return tuple(
+            QiecToolingDiagnostic(message=str(error), code=kind) for kind in error.kinds
+        )
+    return ()
 
 
 def qiec_diagnostic(error: Exception) -> QiecToolingDiagnostic:

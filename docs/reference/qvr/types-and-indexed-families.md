@@ -13,25 +13,38 @@ each branch.
 ## Kinds and binders
 
 A *telescope* is an ordered list of binders in which later types may mention earlier binders
-[@debruijn1991telescopic]. QVR writes static binders in square brackets and runtime binders in
-round brackets:
+[@debruijn1991telescopic]. Computations and programs write static binders in square
+brackets and runtime binders in round brackets. Family declarations additionally
+use round brackets for their refinable static indices:
 
 | Form | Meaning | Used by |
 | --- | --- | --- |
-| `[A : Type]` | static type binder | families, constructors, effects, [handlers](effects-and-handlers.md#handler-declarations), computations |
-| `[n : Nat]` | static index binder | constructors, operations, computations |
-| `[E : Effect]` | static binder for an effect interface | declarations that abstract over an effect |
+| `[A : Type]` | static type binder | families, constructors, effects, operations, [handlers](effects-and-handlers.md#handler-declarations), computations, programs |
+| `[n : Nat]` | static index binder | families, constructors, effects, operations, handlers, computations, programs |
+| `[Row : FinSet]`, `[f : Mor[A, B]]` | static object or morphism binder | programs |
+| `[E : Effect]` | static binder for an effect interface | declarations, including programs, that abstract over an effect |
 | `(n : Nat)` | family index, refined by case analysis | family declarations and case motives |
-| `(x : T)` | runtime value parameter | computations and handler clauses |
+| `(x : T)` | runtime value parameter | computations, programs, and handler clauses |
 
 Static arguments are written in brackets, as in `length[Real, S(Z)](xs)`, and runtime values in
 parentheses. An integer literal may fill a `Nat` static binder, so `window[32](xs)` is valid when
 `window` binds `[n : Nat]`.
 
+The distinction is semantic: a static argument determines the specialized types,
+whereas a runtime argument inhabits those types. Whether an argument is written
+explicitly or inferred is independent of that distinction. The
+[cross-construct parameter reference](index.md#parameter-telescopes) relates
+program inputs to constructors, effects, handlers, and family indices.
+
 The built-in value types are `Unit`, `Bool`, `Int`, `Real`, `String`, `LogWeight`,
 `Tensor[A]([d1, ...])`, `Sampleable[A]`, and `Site[A]`. A
 [product type](../../guides/core.md#productset-and-coproductset) is written `A * B`. A tuple value
 is written `(a, b)`, and `pair[0]` and `pair[1]` project its components.
+
+In a program runtime header, `(count : Nat)` additionally restricts the integer
+carrier `Int` to nonnegative values. The checked input contract preserves this
+restriction and execution validates supplied values. This use differs from a
+static extent `[n : Nat]` and from the inductive index declaration below.
 
 ## Index types
 
@@ -46,6 +59,43 @@ index Availability = Observed | Missing
 A constructor may be nullary or recursive. No constructor can be added after the declaration, so
 the checker knows every constructor a `case` must cover. Index values are static terms, not runtime
 integers. A `Nat` literal stands for an index only where a declaration binds a `Nat`.
+
+## Natural-number extent addition
+
+The built-in Nat sort admits `nat_add(a, b)` in index positions. It states
+an exact shape relation, rather than adding runtime integer values:
+
+<!-- compile: qiec -->
+```qvr
+define keep_padded[n : Nat](
+    x : Tensor[Real]([nat_add(n, 1)]),
+) : Tensor[Real]([nat_add(1, n)]) !{} =
+    return x
+```
+
+The checker folds closed additions, flattens nested sums, and preserves
+nominal variable identities. Thus the two types above agree before `n`
+is specialized. A supplied static `n=2` gives a vector of length three.
+A program header may use the same shape relation; binding can infer `n`
+from exact tensor-length evidence. Coupled equations such as
+`n + m = 5` and `n + 2m = 8` determine both extents, while one equation
+`n + m = 5` leaves them underdetermined. Conflicting, negative, and
+nonintegral solutions are refused.
+
+A Nat used only in tensor shapes may specialize to zero. It does not
+introduce a finite-set object; using it in a categorical finite-object
+position retains that position's cardinality requirements. Nat addition
+neither creates an axis nor identifies two unrelated axes. There is no
+unconstrained Nat subtraction: cancellation may remove a constant already
+present in a checked sum, but `n - 1` requires evidence absent from a bare
+Nat binder.
+
+This uses the existing index-application grammar. In a user-defined index
+sort, a constructor named `nat_add` remains a nominal constructor; it is
+not reinterpreted as arithmetic. Program calls retain their current
+restriction to names and numeric literals as explicit static actuals;
+this addition extends checked index expressions, without changing that
+call grammar or converting indices into runtime values.
 
 ## Family declarations
 
@@ -203,6 +253,9 @@ and so is `in`, which is a keyword only between a factor's binders and its body.
 List literals build tensors. `[1, 2, 3]` has integer elements, `[1.0, 2.0, 3.0]` has real
 elements, and nested lists add dimensions. A distribution family application builds a `Sampleable`
 value, `site("x")` builds a typed site, and `log_prob(distribution, value)` returns a `LogWeight`.
+`log_mass(distribution)` returns its total log mass without introducing
+a scoring effect; raw restrictions retain their mass until explicitly
+normalized ([mass queries](computations.md#built-in-values-and-distributions)).
 
 ## Common failures
 

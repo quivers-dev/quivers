@@ -15,7 +15,12 @@ The simulation-based calibration tools (`sbc`, `sbc_ranks`,
 the program it targets; they also need only torch, and are bound on
 first access because they build on the inference layer.
 
-The remaining functions convert quivers fits into the
+Retained uncertainty, covariance, contrast-region evidence, and regression
+variance ratios also need only torch. They describe supplied or retained
+draws with explicit provenance; they do not infer convergence diagnostics
+for a variational approximation.
+
+The ArviZ adapters convert quivers fits into the
 [`xarray.DataTree`](https://docs.xarray.dev/en/stable/generated/xarray.DataTree.html)
 data model of [ArviZ](https://python.arviz.org/) and wrap the
 canonical ArviZ entry points (`arviz.compare`, `arviz.loo`,
@@ -45,11 +50,49 @@ from quivers.diagnostics.convergence import (
 if TYPE_CHECKING:
     import numpy as np
 
+    from quivers.diagnostics.cross_validation import (
+        FoldLabel,
+        FoldSplit,
+        FoldPlan,
+        FoldPrediction,
+        CrossValidationResult,
+        fold_plan,
+        cross_validate,
+    )
+
     from quivers.diagnostics.arviz_io import (
         to_datatree,
         to_datatree_any,
         to_datatree_from_sbc,
         to_datatree_from_svi,
+    )
+    from quivers.diagnostics.posterior import (
+        PosteriorAnalysis,
+        PosteriorCovariance,
+        PosteriorSummary,
+        WAICResult,
+        waic,
+    )
+    from quivers.diagnostics.regression import bayesian_r2
+    from quivers.diagnostics.conditional import (
+        GridValue,
+        PredictionGrid,
+        ConditionalEffects,
+        prediction_grid,
+    )
+    from quivers.diagnostics.density import (
+        PointNullAssumptions,
+        PointNullSpec,
+        DensityOrdinate,
+        DensityRatio,
+        log_density_ordinate,
+        density_ratio,
+    )
+    from quivers.diagnostics.contrast import ContrastExpression
+    from quivers.diagnostics.hypothesis import (
+        HypothesisSummary,
+        RegionEvidence,
+        hypothesis_summary,
     )
     from quivers.diagnostics.comparison import compare, loo
     from quivers.diagnostics.predictive_checks import (
@@ -70,6 +113,33 @@ if TYPE_CHECKING:
     )
 
 _LAZY_EXPORTS: dict[str, str] = {
+    "FoldLabel": "quivers.diagnostics.cross_validation",
+    "FoldSplit": "quivers.diagnostics.cross_validation",
+    "FoldPlan": "quivers.diagnostics.cross_validation",
+    "FoldPrediction": "quivers.diagnostics.cross_validation",
+    "CrossValidationResult": "quivers.diagnostics.cross_validation",
+    "fold_plan": "quivers.diagnostics.cross_validation",
+    "cross_validate": "quivers.diagnostics.cross_validation",
+    "GridValue": "quivers.diagnostics.conditional",
+    "PredictionGrid": "quivers.diagnostics.conditional",
+    "ConditionalEffects": "quivers.diagnostics.conditional",
+    "prediction_grid": "quivers.diagnostics.conditional",
+    "PointNullAssumptions": "quivers.diagnostics.density",
+    "PointNullSpec": "quivers.diagnostics.density",
+    "DensityOrdinate": "quivers.diagnostics.density",
+    "DensityRatio": "quivers.diagnostics.density",
+    "log_density_ordinate": "quivers.diagnostics.density",
+    "density_ratio": "quivers.diagnostics.density",
+    "ContrastExpression": "quivers.diagnostics.contrast",
+    "hypothesis_summary": "quivers.diagnostics.hypothesis",
+    "HypothesisSummary": "quivers.diagnostics.hypothesis",
+    "RegionEvidence": "quivers.diagnostics.hypothesis",
+    "bayesian_r2": "quivers.diagnostics.regression",
+    "PosteriorAnalysis": "quivers.diagnostics.posterior",
+    "PosteriorSummary": "quivers.diagnostics.posterior",
+    "PosteriorCovariance": "quivers.diagnostics.posterior",
+    "WAICResult": "quivers.diagnostics.posterior",
+    "waic": "quivers.diagnostics.posterior",
     "sbc": "quivers.diagnostics.calibration",
     "sbc_ranks": "quivers.diagnostics.calibration",
     "sbc_uniformity": "quivers.diagnostics.calibration",
@@ -129,6 +199,33 @@ def __getattr__(name: str) -> _LazyExport:
 
 
 __all__ = [
+    "FoldLabel",
+    "FoldSplit",
+    "FoldPlan",
+    "FoldPrediction",
+    "CrossValidationResult",
+    "fold_plan",
+    "cross_validate",
+    "GridValue",
+    "PredictionGrid",
+    "ConditionalEffects",
+    "prediction_grid",
+    "PointNullAssumptions",
+    "PointNullSpec",
+    "DensityOrdinate",
+    "DensityRatio",
+    "log_density_ordinate",
+    "density_ratio",
+    "ContrastExpression",
+    "hypothesis_summary",
+    "HypothesisSummary",
+    "RegionEvidence",
+    "bayesian_r2",
+    "PosteriorAnalysis",
+    "PosteriorSummary",
+    "PosteriorCovariance",
+    "WAICResult",
+    "waic",
     "rhat",
     "ess",
     "mcse",

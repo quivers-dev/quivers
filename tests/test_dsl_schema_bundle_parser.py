@@ -131,7 +131,7 @@ def test_bundle_with_unknown_member_raises_at_parser_use_site() -> None:
         object Cat : FreeResiduated(Atoms)
         object Token : FinSet 2
 
-        schema fwd_app (X, Y : Cat) : (X / Y) * Y -> X
+        schema fwd_app [X, Y : Cat] : (X / Y) * Y -> X
 
         bundle broken : [fwd_app, missing_rule]
 

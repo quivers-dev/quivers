@@ -36,6 +36,13 @@ NumPyro's [distributions](https://num.pyro.ai/en/stable/distributions.html) foll
 
 In each case $\pi_{F, \mathsf{NumPyro}}$ is the identity and $c_{F, \mathsf{NumPyro}} = 0$.
 
+The emitted `OneHotCategorical` helper reuses NumPyro's categorical law for
+probability/logit conversion and sampling. Its score sums the selected normalized
+log probabilities over the event axis. Raw logits are normalized with
+`logsumexp`; treating them as already normalized would change the measure by a
+parameter-dependent factor. Zero entries contribute zero even when the
+corresponding category has log probability negative infinity.
+
 ## Emitted constructs
 
 **`sample` and `observe`.** `numpyro.sample("x", <dist>)` for a latent variable and

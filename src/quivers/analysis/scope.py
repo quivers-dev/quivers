@@ -14,7 +14,8 @@ contractions / categories / compositions). Each subsequent segment
 is looked up against the previous binding's *scope view*, a
 ``Mapping[str, ScopedRef]`` derived from its AST shape:
 
-* A ``program lda(α, β) : ...`` exposes its typed parameters and
+* A ``program lda(alpha : Real, beta : Real) : ...`` exposes its static
+  and runtime parameters and
   every step (``sample`` / ``observe`` / ``let`` / ``marginalize`` /
   ``score`` / ``return``) by the names they bind.
 * A ``marginalize z : T <- F [over=G]`` exposes its inner body
@@ -52,11 +53,16 @@ import didactic.api as dx
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.dsl.ast_nodes import (
     BundleDecl,
+    ContinuousConstructor,
     LetStep,
     MarginalizeStep,
     ObserveStep,
+    ObjectDecl,
+    ProgramDecl,
+    QiecValueParameter,
     ReturnStep,
     SampleStep,
+    TypeFromExpr,
 )
 
 ScopeKind = Literal[
@@ -76,6 +82,7 @@ ScopeKind = Literal[
     "category",
     # Sub-scopes
     "param",  # program parameter
+    "data-input",
     "sample-site",
     "observe-site",
     "let-site",
@@ -212,6 +219,28 @@ def top_level_bindings(compiler) -> tuple[ScopedRef, ...]:  # type: ignore[no-un
             out.append(
                 ScopedRef(name=name, kind=kind, path=name, parent_kind=None, node=node)
             )
+    # Symbolic finite objects are checked before data can specialize them.
+    # Their source declarations still supply inspectable scopes.
+    for statement in getattr(getattr(compiler, "_module", None), "statements", ()):
+        if isinstance(statement, ObjectDecl | ProgramDecl):
+            names = (
+                statement.names
+                if isinstance(statement, ObjectDecl)
+                else (statement.name,)
+            )
+            kind = "object" if isinstance(statement, ObjectDecl) else "program"
+            if (
+                isinstance(statement, ObjectDecl)
+                and isinstance(statement.init, TypeFromExpr)
+                and isinstance(statement.init.expr, ContinuousConstructor)
+            ):
+                kind = "space"
+            for name in names:
+                if name not in seen:
+                    seen.add(name)
+                    out.append(
+                        ScopedRef(name=name, kind=kind, path=name, node=statement)
+                    )
     return tuple(out)
 
 
@@ -230,17 +259,7 @@ def _top_level_lookup(compiler, name: str) -> ScopedRef | None:  # type: ignore[
     ScopedRef | None
         The binding `top_level_bindings` gives the name, or ``None``.
     """
-    for attr, kind in TOP_LEVEL_ACCESSORS:
-        mapping = getattr(compiler, attr, None) or {}
-        if name in mapping:
-            return ScopedRef(
-                name=name,
-                kind=kind,
-                path=name,
-                parent_kind=None,
-                node=mapping[name],
-            )
-    return None
+    return next((ref for ref in top_level_bindings(compiler) if ref.name == name), None)
 
 
 # ---------------------------------------------------------------------------
@@ -296,8 +315,14 @@ def _scope_for_program(ref: ScopedRef) -> Mapping[str, ScopedRef]:
     """
     decl = ref.node
     out: dict[str, ScopedRef] = {}
-    # Type parameters: alpha : Real, beta : Real, etc.
-    for p in getattr(decl, "type_params", None) or ():
+    from quivers.dsl.program_templates import (
+        static_program_parameters,
+        runtime_program_parameters,
+    )
+
+    static = static_program_parameters(decl) if isinstance(decl, ProgramDecl) else ()
+    runtime = runtime_program_parameters(decl) if isinstance(decl, ProgramDecl) else ()
+    for p in static:
         pname = getattr(p, "name", None)
         if isinstance(pname, str) and pname:
             out[pname] = ScopedRef(
@@ -307,6 +332,14 @@ def _scope_for_program(ref: ScopedRef) -> Mapping[str, ScopedRef]:
                 parent_kind=ref.kind,
                 node=p,
             )
+    for parameter in runtime:
+        out[parameter.name] = ScopedRef(
+            name=parameter.name,
+            kind="data-input" if isinstance(parameter, QiecValueParameter) else "param",
+            path=f"{ref.path}::{parameter.name}",
+            parent_kind=ref.kind,
+            node=parameter,
+        )
     # Bare-name params (the param list shape on programs that
     # don't carry type annotations).
     for n in getattr(decl, "params", None) or ():
@@ -327,13 +360,16 @@ def _scope_for_program(ref: ScopedRef) -> Mapping[str, ScopedRef]:
         bound = _step_bound_name(step)
         if bound is None:
             continue
-        out[bound] = ScopedRef(
-            name=bound,
-            kind=kind,
-            path=f"{ref.path}::{bound}",
-            parent_kind=ref.kind,
-            node=step,
-        )
+        # Observation sites use supplied parameters; retain their declarations
+        # as navigation targets when the two share a name.
+        if bound not in out or out[bound].kind != "data-input":
+            out[bound] = ScopedRef(
+                name=bound,
+                kind=kind,
+                path=f"{ref.path}::{bound}",
+                parent_kind=ref.kind,
+                node=step,
+            )
     # ``ProgramDecl.return_vars`` stores the return clause as a
     # plain tuple of names rather than a ``ReturnStep`` AST node.
     # Surface it under ``return`` so the scope path

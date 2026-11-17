@@ -15,6 +15,18 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 VSCODE = ROOT / "editors" / "vscode-qvr"
 ZED = ROOT / "editors" / "zed-extension-qvr"
+COUNT_FAMILIES = (
+    "ZeroInflatedNegativeBinomial",
+    "ZeroInflatedBinomial",
+    "ZeroInflatedBetaBinomial",
+    "HurdleNegativeBinomial",
+)
+SHAPE_FAMILIES = (
+    "SkewNormal",
+    "ShiftedLogNormal",
+    "Frechet",
+    "GeneralizedExtremeValue",
+)
 
 
 def _repository() -> dict[str, object]:
@@ -56,6 +68,89 @@ def test_textmate_recognizes_every_distribution_family() -> None:
 
     pattern = re.compile(_repository()["distribution-family"]["match"])
     assert all(pattern.fullmatch(name) for name in DISTRIBUTION_FAMILIES)
+
+
+def test_textmate_recognizes_every_checked_pure_builtin() -> None:
+    from quivers.dsl.pure_builtins import PURE_BUILTINS
+
+    pattern = re.compile(_repository()["builtin-function"]["match"])
+    assert all(pattern.fullmatch(name) for name in PURE_BUILTINS)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "observation_weight",
+        "scale_weight",
+        "log_probability",
+        "log1mexp",
+        "log_ndtr",
+        "positive_parameter",
+    ],
+)
+def test_checked_builtins_are_repl_completion_candidates(name: str) -> None:
+    from quivers.cli.repl_complete import all_completions
+    from quivers.cli.repl_session import ReplSession
+
+    assert any(
+        item.text == name and item.kind == "function"
+        for item in all_completions(ReplSession(), name[:5])
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        *COUNT_FAMILIES,
+        *SHAPE_FAMILIES,
+        "DiscreteWeibull",
+        "COMPoisson",
+        "Wiener",
+        "Multinomial",
+        "DirichletMultinomial",
+        "AdditiveLogRatioNormal",
+        "ZeroInflatedAsymmetricLaplace",
+    ),
+)
+def test_response_families_are_repl_and_lsp_completion_candidates(name: str) -> None:
+    from lsprotocol import types as lsp
+
+    from quivers.cli.repl_complete import all_completions
+    from quivers.cli.repl_session import ReplSession
+    from quivers.lsp.server import build_server
+    from tests.transpile.fixtures._generate_families import fixture_sources
+
+    prefix = name[:10]
+    assert any(
+        item.text == name and item.kind == "type"
+        for item in all_completions(ReplSession(), prefix)
+    )
+    source = fixture_sources()[name]
+    fixture = ROOT / f"tests/transpile/fixtures/families/{name.lower()}.qvr"
+    assert fixture.read_text() == source
+    server = build_server()
+    server.text_document_publish_diagnostics = lambda params: None
+    uri = f"file:///tmp/{name}.qvr"
+    server.protocol.fm.features[lsp.TEXT_DOCUMENT_DID_OPEN](
+        lsp.DidOpenTextDocumentParams(
+            text_document=lsp.TextDocumentItem(
+                uri=uri, language_id="qvr", version=1, text=source
+            )
+        )
+    )
+    lines = source.splitlines()
+    row = next(index for index, line in enumerate(lines) if f"<- {name}(" in line)
+    line = lines[row]
+    completion = server.protocol.fm.features[lsp.TEXT_DOCUMENT_COMPLETION](
+        lsp.CompletionParams(
+            text_document=lsp.TextDocumentIdentifier(uri=uri),
+            position=lsp.Position(line=row, character=line.index(name) + len(prefix)),
+        )
+    )
+    assert any(
+        item.label == name and item.kind == lsp.CompletionItemKind.Class
+        for item in completion.items
+    )
 
 
 def test_zed_uses_an_immutable_grammar_revision() -> None:
@@ -111,6 +206,25 @@ _CORPUS = (
     "    sample location <- Normal(loc=0.0, scale=2.0)\n"
     "    observe y : Row <- Normal(loc=location, scale=1.0)\n"
     "    return y\n"
+    "\n"
+    "define checked(w : Real) : Real !{} =\n"
+    "    return observation_weight(w)\n"
+    "define scaled(w : Real, ell : Real) : Real !{} =\n"
+    "    return weight_value(scale_weight(w, weight(ell)))\n"
+    "\n"
+    "object CountRow : FinSet 2\n"
+    "program counts : CountRow -> CountRow\n"
+    "    observe a : CountRow <- ZeroInflatedNegativeBinomial(zero_prob=0.2, total_count=2.0, probs=0.5)\n"
+    "    observe b : CountRow <- ZeroInflatedBinomial(zero_prob=0.2, total_count=4.0, probs=0.5)\n"
+    "    observe c : CountRow <- ZeroInflatedBetaBinomial(zero_prob=0.2, total_count=4.0, concentration1=2.0, concentration0=2.0)\n"
+    "    observe d : CountRow <- HurdleNegativeBinomial(zero_prob=0.2, total_count=2.0, probs=0.5)\n"
+    "    observe e : CountRow <- SkewNormal(loc=0.2, scale=1.1, skewness=0.7)\n"
+    "    observe f : CountRow <- ShiftedLogNormal(loc=0.2, scale=0.5, shift=0.1)\n"
+    "    observe g : CountRow <- Frechet(scale=1.3, concentration=3.0)\n"
+    "    observe h : CountRow <- GeneralizedExtremeValue(loc=0.2, scale=1.1, concentration=0.1)\n"
+    "    observe i : CountRow <- DiscreteWeibull(probs=0.4, concentration=1.3)\n"
+    "    observe j : CountRow <- ZeroInflatedAsymmetricLaplace(zero_prob=0.2, loc=0.1, scale=0.7, quantile=0.35)\n"
+    "    return a\n"
 )
 
 #: Each token of interest by position, with the class every highlighter
@@ -139,6 +253,18 @@ _EXPECTED: dict[tuple[int, str], str] = {
     (19, "observe"): "keyword",
     (19, "Normal"): "type",
     (20, "return"): "keyword",
+    (23, "observation_weight"): "function",
+    (25, "scale_weight"): "function",
+    (29, "ZeroInflatedNegativeBinomial"): "type",
+    (30, "ZeroInflatedBinomial"): "type",
+    (31, "ZeroInflatedBetaBinomial"): "type",
+    (32, "HurdleNegativeBinomial"): "type",
+    (33, "SkewNormal"): "type",
+    (34, "ShiftedLogNormal"): "type",
+    (35, "Frechet"): "type",
+    (36, "GeneralizedExtremeValue"): "type",
+    (37, "DiscreteWeibull"): "type",
+    (38, "ZeroInflatedAsymmetricLaplace"): "type",
 }
 
 #: The tree-sitter capture names and Pygments token families that stand
@@ -306,6 +432,13 @@ def test_highlighters_classify_the_corpus_alike() -> None:
         if key in textmate:
             assert textmate[key] == expected, key
     assert {key for key, value in _EXPECTED.items() if value == "keyword"} <= set(
+        textmate
+    )
+    assert {(23, "observation_weight"), (25, "scale_weight")} <= set(textmate)
+    assert {(29 + index, name) for index, name in enumerate(COUNT_FAMILIES)} <= set(
+        textmate
+    )
+    assert {(33 + index, name) for index, name in enumerate(SHAPE_FAMILIES)} <= set(
         textmate
     )
 

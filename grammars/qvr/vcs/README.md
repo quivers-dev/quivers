@@ -29,13 +29,19 @@ grammars/qvr/vcs/
 Grammar work is prepared under the explicit `HEAD` revision. A release then
 freezes that revision under its git tag. The complete workflow is:
 
-1. While developing, regenerate the current parser with `python
+1. While developing, append the working-tree schema with
+   `python grammars/qvr/vcs/build_schemas.py --revision HEAD`. This preserves
+   immutable tagged history. Do not use `--reset` or rewrite historical
+   `SCHEMA_COMMITS` entries. Regenerate the current parser with `python
    grammars/qvr/vcs/build_parsers.py --revision HEAD --force`. Update the
    migration manifest and test the previous release to `HEAD` path.
-2. Tag the git release only after the `HEAD` source, parser snapshot,
-   migrations, editor assets, and package tests are green.
+2. Commit the tested feature changes, then make a separate version and
+   changelog preparation commit and open the pull request. Tag the git release
+   only after merging and successful main-branch CI, as part of the authorized
+   release. Development preparation creates no release tag.
 3. Run `python grammars/qvr/vcs/build_schemas.py`. The script tags an existing
-   untagged content commit when the release freezes the prior `HEAD`, appends
+   untagged content commit when the release freezes the prior `HEAD`, preserves
+   existing tagged schema identities, appends
    only genuinely new authored grammars, and is idempotent. History is keyed
    by `grammar.js`; regenerated `grammar.json` serialization alone does not
    constitute a language revision.

@@ -32,6 +32,41 @@ def _qvr_qiec_log_density(distribution, value):
     return distribution.log_prob(_qvr_qiec_array(value))
 
 
+def _qvr_qiec_log_mass(distribution, retained=0, shape=()):
+    normalizer = getattr(distribution, "log_normalizer", None)
+    if callable(normalizer):
+        mass = tf.convert_to_tensor(normalizer())
+    else:
+        parameters = [
+            value
+            for value in distribution.parameters.values()
+            if tf.is_tensor(value) and value.dtype.is_floating
+        ]
+        mass = (
+            tf.add_n(
+                [
+                    tf.reduce_sum(tf.where(tf.math.is_finite(value), value, 0)) * 0
+                    for value in parameters
+                ]
+            )
+            if parameters
+            else tf.constant(0.0)
+        )
+    shape = tuple(shape) or tuple(distribution.batch_shape)
+    mass = tf.broadcast_to(mass, shape)
+    if (
+        isinstance(retained, bool)
+        or not isinstance(retained, int)
+        or not 0 <= retained <= len(shape)
+    ):
+        raise ValueError("log_mass retained axes must be within the batch rank")
+    return (
+        tf.reduce_sum(mass, axis=tuple(range(retained, len(shape))))
+        if len(shape) > retained
+        else mass
+    )
+
+
 def _qvr_qiec_site_names():
     # Site labels a helper's draws and scores carry, counted so the n-th
     # occurrence of a label in one run of the model is "<label>@<n>", as
@@ -100,8 +135,41 @@ def _qvr_qiec_tf_trunc(value):
     return tf.math.sign(tensor) * tf.floor(tf.abs(tensor))
 
 
+def _qvr_qiec_tf_observation_weight(value):
+    tensor = tf.convert_to_tensor(value)
+    if not tensor.dtype.is_floating:
+        raise ValueError(
+            "observation weights must be finite and nonnegative real values"
+        )
+    finite = tf.debugging.assert_all_finite(
+        tensor, "observation weights must be finite and nonnegative"
+    )
+    nonnegative = tf.debugging.assert_non_negative(
+        finite, message="observation weights must be finite and nonnegative"
+    )
+    dependencies = [] if nonnegative is None else [nonnegative]
+    with tf.control_dependencies(dependencies):
+        return tf.identity(finite)
+
+
+def _qvr_qiec_tf_scale_weight(coefficient, density):
+    coefficient, density = _qvr_qiec_tensors((coefficient, density))
+    # Preserve explicit float64 host inputs alongside ordinary float32
+    # literals. Other real host dtypes compute in at least float32.
+    dtype = (
+        tf.float64
+        if coefficient.dtype == tf.float64 or density.dtype == tf.float64
+        else tf.float32
+    )
+    coefficient, density = tf.cast(coefficient, dtype), tf.cast(density, dtype)
+    safe = tf.where(coefficient == 0, tf.zeros_like(density), density)
+    return coefficient * safe
+
+
 _qvr_qiec_host_math.update(
     {
+        "observation_weight": _qvr_qiec_tf_observation_weight,
+        "scale_weight": _qvr_qiec_tf_scale_weight,
         "min_real": _qvr_qiec_tf("minimum"),
         "max_real": _qvr_qiec_tf("maximum"),
         "pow_real": _qvr_qiec_tf("pow"),
@@ -157,5 +225,29 @@ _qvr_qiec_host_math.update(
         "softplus": _qvr_qiec_tf("nn.softplus"),
         "logsigmoid": _qvr_qiec_tf("math.log_sigmoid"),
         "softsign": _qvr_qiec_tf("nn.softsign"),
+    }
+)
+
+
+# qvr-shared-probability:edward2:start
+# qvr-shared-probability:edward2:end
+
+
+_qvr_qiec_host_math.update(
+    {
+        "log_probability": _qvr_log_probability,
+        "log1mexp": _qvr_log1mexp,
+        "log_ndtr": _qvr_log_ndtr,
+    }
+)
+
+
+_qvr_qiec_host_math["positive_parameter"] = _qvr_positive_parameter
+
+
+_qvr_qiec_host_math.update(
+    {
+        "observation_status": _qvr_observation_status,
+        "interval_upper": _qvr_interval_upper,
     }
 )

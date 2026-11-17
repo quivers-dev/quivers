@@ -11,6 +11,8 @@ from collections.abc import Callable, Mapping, Sequence
 import math
 import random
 
+from quivers._count_capacity import _check_scalar_count_capacity
+
 
 class DistributionError(ValueError):
     """A distribution could not be constructed, sampled, or scored."""
@@ -186,15 +188,29 @@ def simplex(arguments: Mapping[str, object], family: str) -> tuple[float, ...]:
     Raises
     ------
     DistributionError
-        If neither parameterization is supplied.
+        If neither parameterization is supplied or weights are invalid.
     """
     if "probs" in arguments:
         probs = vector_parameter(arguments, "probs", family)
-        total = sum(probs)
-        return tuple(item / total for item in probs)
+        if not probs or any(not math.isfinite(item) or item < 0 for item in probs):
+            raise DistributionError(
+                f"{family} probs must be finite nonnegative weights"
+            )
+        largest = max(probs)
+        if largest <= 0:
+            raise DistributionError(f"{family} probs must have a positive total")
+        scaled = tuple(item / largest for item in probs)
+        total = sum(scaled)
+        return tuple(item / total for item in scaled)
     if "logits" in arguments:
         logits = vector_parameter(arguments, "logits", family)
+        if not logits or any(math.isnan(item) or item == math.inf for item in logits):
+            raise DistributionError(
+                f"{family} logits must be finite or negative infinity"
+            )
         peak = max(logits)
+        if peak == -math.inf:
+            raise DistributionError(f"{family} logits must include a finite category")
         weights = [math.exp(item - peak) for item in logits]
         total = sum(weights)
         return tuple(item / total for item in weights)
@@ -272,6 +288,42 @@ def finite_value(value: object, family: str) -> float:
     if not isinstance(value, int | float):
         raise DistributionError(f"{family} is scored at a non-numeric value {value!r}")
     return float(value)
+
+
+def _integer_observation(
+    value: object, family: str, *, float64: bool = False
+) -> int | None:
+    """Read an integral observation without truncating or rounding integers.
+
+    Parameters
+    ----------
+    value : object
+        Scalar response candidate, including Boolean zero/one values.
+    family : str
+        Native family name for nonnumeric-value diagnostics.
+    float64 : bool
+        Require exact Float64 count capacity before an arithmetic count kernel.
+
+    Returns
+    -------
+    int or None
+        The exact integer, or None for fractional or nonfinite observations.
+        The caller applies its support bounds and scores None at minus infinity.
+
+    Raises
+    ------
+    DistributionError
+        If the observation is not numeric or exceeds the requested count capacity.
+    """
+    if float64 and isinstance(value, int | float):
+        try:
+            _check_scalar_count_capacity(value, label="count observations", signed=True)
+        except ValueError as error:
+            raise DistributionError(str(error)) from error
+    if isinstance(value, int):
+        return int(value)
+    point = finite_value(value, family)
+    return int(point) if math.isfinite(point) and point.is_integer() else None
 
 
 __all__ = [

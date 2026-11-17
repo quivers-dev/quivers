@@ -46,6 +46,7 @@ from quivers.dsl.ast_nodes._shared import (
     OptionValue,
 )
 from quivers.dsl.ast_nodes.expressions import Expr
+from quivers.dsl.ast_nodes.qiec import QiecBinder, QiecValueParameter
 from quivers.dsl.ast_nodes.let_expressions import LetExprNode
 from quivers.dsl.ast_nodes.program_steps import DrawArg, ProgramStep
 from quivers.dsl.ast_nodes.structural import (
@@ -127,7 +128,7 @@ class CategoryDecl(Statement):
 
 
 class RuleDecl(Statement):
-    """``rule NAME(variables) : premises |- conclusion`` declaration.
+    """``rule NAME[variables] : premises |- conclusion`` declaration.
 
     Premises and conclusion are `ObjectExpr` patterns drawn from
     the unified type-expression family.
@@ -158,7 +159,7 @@ class SchemaParameter(dx.Model):
 
 
 class SchemaDecl(Statement):
-    """``schema NAME(parameters) : DOM -> COD`` declaration."""
+    """``schema NAME[parameters] : DOM -> COD`` declaration."""
 
     name: str
     parameters: tuple[SchemaParameter, ...]
@@ -615,11 +616,11 @@ class LossDecl(Statement):
 
 
 class ProgramParam(dx.TaggedUnion, discriminator="kind"):
-    """Sum of typed-program-parameter variants (parametric programs)."""
+    """Program-specific specialization and scalar-application metadata."""
 
 
 class ObjectParam(ProgramParam):
-    """Object-typed program parameter: ``G : FinSet`` / ``Space`` / ``Object``."""
+    """Static object parameter: ``G : FinSet`` / ``Space`` / ``Object``."""
 
     name: str
     universe: Literal["FinSet", "Space", "Object"]
@@ -629,7 +630,11 @@ class ObjectParam(ProgramParam):
 
 
 class ScalarParam(ProgramParam):
-    """Scalar-typed program parameter: ``s : Real`` / ``Nat``."""
+    """Runtime scalar metadata for ``s : Real`` or ``s : Nat``.
+
+    The checked runtime declaration is recorded in ``value_parameters``;
+    this metadata also supports named scalar partial application.
+    """
 
     name: str
     scalar_kind: Literal["Real", "Nat"]
@@ -639,7 +644,7 @@ class ScalarParam(ProgramParam):
 
 
 class MorphismParam(ProgramParam):
-    """Morphism-typed program parameter: ``f : Mor[A, B]``."""
+    """Static morphism parameter: ``f : Mor[A, B]``."""
 
     name: str
     domain: ObjectExpr
@@ -650,17 +655,20 @@ class MorphismParam(ProgramParam):
 
 
 class ProgramDecl(Statement):
-    """``program NAME[(params)] : DOM -> COD [options] : body``.
+    """A program's static binders, runtime interface, and effectful body.
 
-    Body is a sequence of program steps (``sample``, ``observe``,
-    ``marginalize``, ``let``) terminated by a ``return`` step.
-    Effects, posterior-modifier (``posterior_of=<model>``), and
-    parametric/concrete type-params live in the option block.
+    ``binders`` holds the shared QIEC static telescope. ``type_params``
+    records object/morphism specialization and scalar partial application.
+    ``value_parameters`` declares checked runtime values; ``params`` names
+    domain factors when their types are inferred from the domain instead.
+    The body contains executable steps and a terminal return.
     """
 
     name: str
     params: tuple[str, ...] | None = None
     type_params: tuple[ProgramParam, ...] | None = None
+    binders: tuple[QiecBinder, ...] = ()
+    value_parameters: tuple[QiecValueParameter, ...] = ()
     domain: ObjectExpr
     codomain: ObjectExpr
     options: tuple[OptionEntry, ...] = ()

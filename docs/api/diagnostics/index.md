@@ -11,4 +11,22 @@ records of quivers into `xarray.DataTree` objects for the ArviZ functions that a
 including `plot_trace`, `plot_forest`, `plot_ppc`, `loo`, `compare`, and `hdi`, and need the
 `diagnostics` extra.
 
+[Shared posterior analysis](posterior.md) retains draws and raw response scores
+from either source or formula fits. Its uncertainty summaries and empirical WAIC
+need only PyTorch; MCMC convergence diagnostics require recorded chains.
+DataTree conversion and PSIS-LOO use the optional ArviZ dependency.
+
+[Refit cross-validation](cross_validation.md) retains explicit random, grouped, or
+stratified partitions and scores held-out likelihoods from existing fitters.
+It supports selected folds and joint response, fold, or group prediction units
+without requiring ArviZ.
+
+[Contrast summaries](hypothesis.md) analyze derived retained draws, reporting
+strict-region probabilities and posterior odds separately from prior-corrected
+region Bayes factors. Equality frequencies remain descriptive.
+
+[Density ordinates](density.md) estimate Gaussian KDE log densities from retained
+continuous contrasts. Posterior-to-prior ratios have a point-null Bayes-factor
+interpretation only under explicit proper-prior and compatible-null declarations.
+
 ::: quivers.diagnostics

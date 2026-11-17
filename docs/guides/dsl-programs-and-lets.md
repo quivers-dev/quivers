@@ -35,6 +35,14 @@ program with_params(a, b) : Y * Z -> Y
     return y
 ```
 
+An `observe` step may score a value from an earlier `let`. For instance,
+`let centered = raw - 2.0` followed by
+`observe centered : Row <- Normal(loc=mean, scale=1.0)` treats `raw` as
+the external measurement and computes the scored response inside the
+program. The computed response adds no latent coordinate. The
+[observation semantics](../semantics/programs.md#22-observe) specify the
+score and its reference measure.
+
 A program without `observe` or `score` steps defines a Markov kernel from its input
 to its output, the composite of its draws in the [Kleisli category](https://ncatlab.org/nlab/show/Kleisli+category)
 of the Giry monad. `observe` and `score` multiply each execution by a nonnegative
@@ -171,13 +179,15 @@ result = MCMC(NUTSKernel(), num_warmup=300, num_samples=500, seed=0).run(
 result.samples["effects$z"].shape  # (chains, draws, 4)
 ```
 
-A call whose steps depend on the values it receives cannot be compiled this way:
-recursion, an `if` whose branches draw or score, a callee that handles an effect,
-`case`, and static arguments. Such a program still runs on the reference machine
-(`Program.run`), and every fitting entry point raises a
+The compiled runtime currently refuses `define`-computation calls that recurse,
+draw or score inside a conditional, handle an effect, use `case`, or require
+static arguments. Such calls still run on the reference machine (`Program.run`),
+and every fitting entry point raises a
 [`CompileError`](../api/dsl/compiler.md#quivers.dsl.compiler.CompileError) at the call
 saying why and what to write instead
 ([which calls are fit](../reference/qvr/probabilistic-programs.md#which-calls-are-fit)).
+Program calls with static arguments use the specialization described under
+[parametric programs](#parametric-programs).
 
 ### Draws {#kleisli-bind-syntax}
 
@@ -320,22 +330,32 @@ program p : Out -> Out
 
 ### Parametric programs
 
-A program whose parameter list declares typed parameters is a template, one program
-for each value of its parameters. The kinds are:
+A program's static telescope in brackets uses the QIEC type, effect, and index
+binders, extended with object and morphism kinds. Its runtime telescope in parentheses receives values at
+the specialized types. The relevant forms are:
 
 | Kind | Stands for |
 |---|---|
-| `FinSet`, `Space`, `Object` | an object, such as the index set of a plate |
-| `Real`, `Nat` | a number, such as a hyperparameter |
-| `Mor[A, B]` | a morphism `A -> B`, passed by name |
+| `[G : FinSet]`, `[X : Space]`, `[X : Object]` | a static object, such as a plate's index set |
+| `[k : Mor[A, B]]` | a static morphism `A -> B`, passed by name |
+| `[n : Nat]` | a static extent |
+| `[A : Type]`, `[E : Effect]` | a static QIEC type or effect interface; executor support is checked separately |
+| `(scale : Real)`, `(count : Nat)` | a runtime scalar, such as a hyperparameter |
+| `(x : Tensor[Real]([G]))` | a runtime tensor over the specialized object `G` |
 
 The compiler does not build a `MonadicProgram` for a template by itself. It inlines the
-template at each call, `sample v <- template(arg1, arg2, ...)`, substituting the
-arguments for the parameters and renaming the template's internal names with the prefix
+template at each call, `sample v <- template[static_args](value_args)`, substituting the
+static arguments and binding runtime values, then renaming the template's internal names with the prefix
 `v$` and its returned value to `v`, as α-renaming in the
 [lambda calculus](https://en.wikipedia.org/wiki/Lambda_calculus) does. Each call thus
 adds its own latent variables to the caller's joint, and two calls never share one by
 accident.
+
+A typed runtime parameter does not itself make a program a static template.
+It may declare a covariate, response, or scalar input, and its uses determine its
+role. This is the same two-stage interface used by a `define` computation; the
+[parameter reference](../reference/qvr/index.md#parameter-telescopes) explains
+the corresponding conventions for effects, handlers, and indexed families.
 
 The substitution reaches every position a name can occupy in a `let` or `score`
 expression and in the arguments of a computation call: the array and the indices of
@@ -350,13 +370,13 @@ object Out : Real 1
 
 # One HalfNormal scale and a Normal(0, sigma) plate over the grouping
 # object G, with the half-normal scale as a parameter.
-program random_intercepts (G : FinSet, prior_scale : Real) : G -> Real 1
+program random_intercepts[G : FinSet](prior_scale : Real) : G -> Real 1
     sample sigma <- HalfNormal(scale=prior_scale)
     sample v : G <- Normal(loc=0.0, scale=sigma)
     return v
 
 program uses : Out -> Out
-    sample a <- random_intercepts(Subject, 1.0)
+    sample a <- random_intercepts[Subject](1.0)
     return a
 ```
 
@@ -536,7 +556,17 @@ every transpile target read the primitives in
 this way, and a [contraction declaration](dsl-contractions.md) reduces over a named
 axis.
 
-**Conversions and weights**: `real`, `int`, `weight`, `weight_value`.
+**Conversions and weights**: `real`, `int`, `weight`, `weight_value`,
+`observation_weight`, `scale_weight`.
+
+`observation_weight(w)` checks a finite nonnegative `Real` and returns it.
+`scale_weight(w, ell)` takes a `Real` and a `LogWeight`, returning zero when
+`w` is zero and their product otherwise. These are checked QIEC primitives;
+their validation and zero-weight rule are part of their meaning. For a `Real`
+log density, write
+`weight_value(scale_weight(observation_weight(w), weight(ell)))`.
+The [observation option](../reference/qvr/probabilistic-programs.md#observation-weights)
+uses the same operations before reducing rows or groups.
 
 **Arithmetic and comparisons**: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`,
 `>=`, `&&`, `||`, and the call forms `pow`, `abs`, `min`, and `max`. The

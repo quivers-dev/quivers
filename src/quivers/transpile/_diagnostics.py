@@ -545,6 +545,18 @@ def _render_family_kind(backend: str, tail: str, explained: bool) -> str:
             f"`tau * lambda * z` with `lambda ~ HalfCauchy(1.0)` and "
             f"`z ~ Normal(0.0, 1.0)`, which every target expresses."
         )
+    if detail == "plated":
+        headline = (
+            f"the {_language(backend)} `{family}` distribution scores one "
+            f"event, so a `{family}` site under a plate has no form on this "
+            f"target"
+        )
+        if explained:
+            return headline
+        return (
+            f"{headline}. Draw or observe a single event, or write the plated "
+            f"site with a family this target scores row by row."
+        )
     if explained:
         return _cannot(backend, f"score a draw from `{family}`")
     if not detail:
@@ -785,10 +797,12 @@ def _render_call_kind(backend: str, tail: str) -> str:
             f"stochastic and deterministic relations between named nodes, "
             f"with no statement that runs a computation, draws under a "
             f"site name it computes, or scores a weight it accumulates. A "
-            f"pure computation whose body is a chain of bindings is inlined "
-            f"before the plan reaches this target, so `{callee}` is either "
-            f"effectful or recursive. Write its draws and scores as steps of "
-            f"the program, or transpile to a target with a host runtime."
+            f"pure computation is inlined only when this target can preserve "
+            f"its operations and control flow. In particular, eager branch "
+            f"selection requires both branches to have total operations; "
+            f"a guarded logarithm or division must remain lazy. This call "
+            f"cannot be safely inlined. Write supported draws and scores as "
+            f"program steps, or choose a target with a host runtime."
         )
     return f"{_cannot(backend, 'transpile this call')}: {tail}"
 
@@ -1219,6 +1233,13 @@ def _render_dim_kind(backend: str, tail: str, explained: bool) -> str:
     from, so the kind names the variant and the message names the two
     that work.
     """
+    if tail.startswith("model-local:"):
+        _, binding, consumer = tail.split(":", 2)
+        return (
+            f"{_cannot(backend, f'declare `{consumer}` with a size from model-local binding `{binding}`')}. "
+            "Stan requires data-only sizes for top-level declarations; "
+            "use a size available from the declared data interface."
+        )
     variant = tail.removeprefix("unknown:").partition(":")[0].strip() or tail
     if variant:
         headline = _cannot(backend, f"size {_dim_surface(variant)}")

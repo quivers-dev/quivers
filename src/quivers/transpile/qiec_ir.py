@@ -27,6 +27,7 @@ from quivers.qiec import terms as tm
 from quivers.qiec import types as ty
 from quivers.qiec.identifiers import SourceOrigin, StableId
 from quivers.qiec.primitives import PRIMITIVES
+from quivers.qiec.families import FAMILIES, DistributionFamily
 
 
 type IRScalar = None | bool | int | float | str
@@ -381,6 +382,24 @@ class IRQiecIndexConstructor(IRQiecStatic):
     arguments: tuple[IRQiecStatic, ...]
     sort: IRQiecIndexSort
     kind: Literal["index-constructor"] = "index-constructor"
+
+
+class IRQiecIndexSum(IRQiecStatic):
+    """A canonical natural-number sum in the portable checked core.
+
+    Parameters
+    ----------
+    terms : tuple[IRQiecStatic, ...]
+        Nominal Nat-variable summands, with repetitions retained.
+    constant : int
+        Nonnegative constant part.
+    kind : str
+        Discriminator, always ``"index-sum"``.
+    """
+
+    terms: tuple[IRQiecStatic, ...]
+    constant: int = 0
+    kind: Literal["index-sum"] = "index-sum"
 
 
 class IRQiecShapeIndex(IRQiecStatic):
@@ -1013,6 +1032,49 @@ class IRQiecDistributionValue(IRQiecValue):
     origin: IRQiecSourceOrigin
     plate: IRQiecPlateShape = IRQiecPlateShape()
     kind: Literal["distribution"] = "distribution"
+
+
+class IRQiecConditionalValue(IRQiecValue):
+    """One lazily selected pure value with a shared checked result type.
+
+    Parameters
+    ----------
+    condition
+        Scalar Boolean selecting the active branch.
+    then, otherwise
+        Equally typed branches; only the selected branch is evaluated.
+    result_type
+        Common branch type.
+    kind
+        Discriminator, always ``conditional_value``.
+    """
+
+    condition: IRQiecValue
+    then: IRQiecValue
+    otherwise: IRQiecValue
+    result_type: IRQiecStatic
+    kind: Literal["conditional_value"] = "conditional_value"
+
+
+class IRQiecLogMass(IRQiecValue):
+    """Total measure mass, retaining independent batch axes.
+
+    Parameters
+    ----------
+    sampleable
+        The measure queried.
+    origin
+        Query source location.
+    batch
+        Retained batch axes; empty for a scalar total log weight.
+    kind
+        Discriminator, always ``"log_mass"``.
+    """
+
+    sampleable: IRQiecValue
+    origin: IRQiecSourceOrigin
+    batch: tuple[IRQiecPlateAxis, ...] = ()
+    kind: Literal["log_mass"] = "log_mass"
 
 
 class IRQiecLogDensity(IRQiecValue):
@@ -1898,6 +1960,8 @@ class IRQiecProgramParameter(dx.Model):
     per_row
         Whether its leading axis is the plate of the draw it fills, so
         that a value without that axis is shared by every row.
+    constraint
+        A checked value restriction, retained through lowering and recovery.
     """
 
     name: str
@@ -1905,6 +1969,7 @@ class IRQiecProgramParameter(dx.Model):
     type: IRQiecStatic
     axes: tuple[str, ...] = ()
     per_row: bool = False
+    constraint: str | None = None
 
 
 class IRQiecProgramSite(dx.Model):
@@ -1972,6 +2037,7 @@ class IRQiecModule(dx.Model):
 
     module: str
     source_protocol: str
+    distribution_families: tuple[DistributionFamily, ...] = ()
     index_sorts: tuple[IRQiecUserIndexSort, ...] = ()
     families: tuple[IRQiecFamilyDecl, ...] = ()
     constructors: tuple[IRQiecConstructorDecl, ...] = ()
@@ -2066,6 +2132,8 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
         return value
     if isinstance(value, tuple):
         return tuple(_convert(item) for item in value)
+    if isinstance(value, DistributionFamily):
+        return value
     if isinstance(value, ids.SourceOrigin):
         return IRQiecSourceOrigin(
             module=value.module,
@@ -2140,6 +2208,11 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
             name=value.name,
             arguments=cast(tuple[IRQiecStatic, ...], _convert(value.arguments)),
             sort=cast(IRQiecIndexSort, _convert(value.sort)),
+        )
+    if isinstance(value, ty.IndexSum):
+        return IRQiecIndexSum(
+            terms=cast(tuple[IRQiecStatic, ...], _convert(value.terms)),
+            constant=value.constant,
         )
     if isinstance(value, ty.ShapeIndex):
         return IRQiecShapeIndex(
@@ -2267,6 +2340,19 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
             result_type=cast(IRQiecStatic, _convert(value.result_type)),
             origin=cast(IRQiecSourceOrigin, _convert(value.origin)),
             plate=cast(IRQiecPlateShape, _convert(value.plate)),
+        )
+    if isinstance(value, tm.ConditionalValue):
+        return IRQiecConditionalValue(
+            condition=cast(IRQiecValue, _convert(value.condition)),
+            then=cast(IRQiecValue, _convert(value.then)),
+            otherwise=cast(IRQiecValue, _convert(value.otherwise)),
+            result_type=cast(IRQiecStatic, _convert(value.result_type)),
+        )
+    if isinstance(value, tm.LogMass):
+        return IRQiecLogMass(
+            sampleable=cast(IRQiecValue, _convert(value.sampleable)),
+            origin=cast(IRQiecSourceOrigin, _convert(value.origin)),
+            batch=cast(tuple[IRQiecPlateAxis, ...], _convert(value.batch)),
         )
     if isinstance(value, tm.LogDensity):
         return IRQiecLogDensity(
@@ -2588,8 +2674,10 @@ type QiecFeature = Literal[
     "tuple",
     "tensor",
     "distribution",
+    "native-family",
     "plate",
     "log-density",
+    "log-mass",
     "site",
     "gather",
     "segment-sum",
@@ -2605,6 +2693,7 @@ type QiecFeature = Literal[
     "special",
     "activation",
     "weight",
+    "probability",
     "evidence",
     "transport",
     "attachment",
@@ -2728,10 +2817,12 @@ _GENERIC_RUNTIME = QiecTargetCapabilities(
             "tensor",
             "distribution",
             "log-density",
+            "log-mass",
             "site",
             "special",
             "activation",
             "weight",
+            "probability",
             "gather",
             "segment-sum",
             "reduction",
@@ -2907,10 +2998,22 @@ def _body_features(node: IRQiecComputation) -> set[QiecFeature]:
                 value(entry)
         elif isinstance(item, IRQiecDistributionValue):
             required.add("distribution")
+            if item.name not in FAMILIES:
+                required.add("native-family")
             if item.plate.batch or item.plate.event:
                 required.add("plate")
             for argument in item.arguments:
                 value(argument.value)
+        elif isinstance(item, IRQiecConditionalValue):
+            required.add("if")
+            value(item.condition)
+            value(item.then)
+            value(item.otherwise)
+        elif isinstance(item, IRQiecLogMass):
+            required.add("log-mass")
+            if item.batch:
+                required.add("plate")
+            value(item.sampleable)
         elif isinstance(item, IRQiecLogDensity):
             required.add("log-density")
             if item.batch:
@@ -3484,6 +3587,7 @@ __all__ = [
     "IRQiecIndexVariable",
     "IRQiecIndexLiteral",
     "IRQiecIndexConstructor",
+    "IRQiecIndexSum",
     "IRQiecShapeIndex",
     "IRQiecTypeVariable",
     "IRQiecTypeConstructor",
@@ -3523,6 +3627,8 @@ __all__ = [
     "IRQiecPlateShape",
     "IRQiecDistributionValue",
     "IRQiecLogDensity",
+    "IRQiecLogMass",
+    "IRQiecConditionalValue",
     "IRQiecGather",
     "IRQiecWeightSum",
     "IRQiecSegmentSum",

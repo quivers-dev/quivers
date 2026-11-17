@@ -32,7 +32,7 @@ quivers, which has indexed families, effect rows, and effect handlers.
    with their composition, tensor product, and marginalization.
 6. **[Expressions](expressions.md):** the expression combinators (`>>`, `@`, `.marginalize`,
    `fan`, `repeat`, `stack`, `scan`, the parser combinators, and others).
-7. **[Programs as kernels](programs.md):** `program` blocks and their steps (`sample`,
+7. **[Programs as kernels](programs.md):** static and runtime parameter telescopes, `program` blocks and their steps (`sample`,
    `observe`, `let`, `score`, `marginalize`, `return`) as kernels into probability and
    s-finite measures.
 8. **[Weighted deduction](grammar.md):** `deduction` declarations as weighted deduction systems,

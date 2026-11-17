@@ -8,13 +8,15 @@ calls, and wrapper families inline their referenced distribution.
 
 from __future__ import annotations
 
+from quivers.transpile._resolve import source_declarations
+
 import pathlib
 from collections.abc import Mapping
 from typing import Callable
 
 import panproto
 
-from quivers.dsl.ast_nodes import Expr, DefineDecl, Module, MorphismDecl
+from quivers.dsl.ast_nodes import Module
 from quivers.dsl.ast_nodes.let_expressions import (
     LetFactorCase,
     LetExprBinOp,
@@ -265,7 +267,7 @@ class WebPPLRenderer(RendererBase):
         assert_no_dropped_param_map(ir, self.target)
         proto = self.target_protocol()
         sb = proto.schema()
-        morphisms, lets = self._resolve_morphisms_and_lets()
+        morphisms, lets = source_declarations(self._source_module)
         ctx = RenderContext(sb=sb, morphisms=morphisms, defines=lets)
         # Reset per-render state.
         self._fresh_n = 0
@@ -2540,28 +2542,6 @@ class WebPPLRenderer(RendererBase):
     # Morphism / let resolution for IRArgFamilyRef.
     # ------------------------------------------------------------------
 
-    def _resolve_morphisms_and_lets(
-        self,
-    ) -> tuple[dict[str, MorphismDecl], dict[str, Expr]]:
-        """Build the morphism / let tables from the source module.
-
-        Used by `IRArgFamilyRef` resolution. Empty when the
-        renderer was constructed without a source module; in that
-        case `IRArgFamilyRef` rendering raises with a precise
-        kind tag.
-        """
-        if self._source_module is None:
-            return {}, {}
-        morphisms: dict[str, MorphismDecl] = {}
-        lets: dict[str, Expr] = {}
-        for stmt in self._source_module.statements:
-            if isinstance(stmt, MorphismDecl):
-                for name in stmt.names:
-                    morphisms[name] = stmt
-            elif isinstance(stmt, DefineDecl):
-                lets[stmt.name] = stmt.expr
-        return morphisms, lets
-
 
 def _free_names_in_let_expr(expr: LetExprNode) -> tuple[str, ...]:
     """Return the variable names referenced anywhere in ``expr``, in
@@ -2743,9 +2723,7 @@ def _reduce_last_axis(
             right=_reduce_last_axis(expr.right, ranks, full_ranks),
         )
     if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(
-            operand=_reduce_last_axis(expr.operand, ranks, full_ranks)
-        )
+        return expr.with_(operand=_reduce_last_axis(expr.operand, ranks, full_ranks))
     if isinstance(expr, LetExprCall):
         args = tuple(_reduce_last_axis(a, ranks, full_ranks) for a in expr.args)
         if (
@@ -2938,12 +2916,12 @@ def _vectorize_let_expr(expr: LetExprNode, ranks: Mapping[str, int]) -> LetExprN
             return LetExprCall(
                 func="_qvr_bcast",
                 args=(
-                    LetExprString(value="-"),
-                    LetExprLiteral(value=0.0),
-                    operand,
+                    LetExprString(value="not" if expr.op == "not" else "-"),
+                    operand if expr.op == "not" else LetExprLiteral(value=0.0),
+                    LetExprLiteral(value=0.0) if expr.op == "not" else operand,
                 ),
             )
-        return LetExprUnaryOp(operand=operand)
+        return expr.with_(operand=operand)
     if isinstance(expr, LetExprCall):
         return LetExprCall(
             func=expr.func,
@@ -3322,9 +3300,11 @@ def _load_runtime_webppl_schema() -> tuple[panproto.Schema, str, tuple[str, ...]
     the per-render `program` so the emit's top-level statements
     appear in the original file's layout.
     """
+    from quivers.transpile._runtime_sources import javascript_runtime_source
+
     schema = parser_registry().parse_with_protocol(
         "javascript",
-        _RUNTIME_WEBPPL_PATH.read_bytes(),
+        javascript_runtime_source(_RUNTIME_WEBPPL_PATH),
         str(_RUNTIME_WEBPPL_PATH),
     )
     src_id = next(

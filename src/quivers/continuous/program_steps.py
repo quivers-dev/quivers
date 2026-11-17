@@ -39,6 +39,7 @@ import didactic.api as dx
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
+from quivers._observation import ObservationEvent
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.core.morphisms import Morphism
 
@@ -185,7 +186,9 @@ class Observe(Step):
     [`Draw`][quivers.continuous.program_steps.Draw] does; its value is
     supplied under its name through ``observations`` when sampling and
     through the intermediates when scoring, and its log density joins
-    the log joint.
+    the log joint. If an earlier binding already supplies the name,
+    the observation scores that value. It adds no latent coordinate;
+    a computed plated value retains the plate's row and event axes.
 
     Attributes
     ----------
@@ -196,6 +199,12 @@ class Observe(Step):
     args : tuple[StepArgument, ...] | None
         The bindings the morphism reads, or ``None`` for the program
         input.
+    weights : float | StepArgument | None
+        A nonnegative finite power-likelihood weight, or a binding with one
+        weight per observation row. It changes scoring and leaves sampling
+        and the underlying response density unchanged.
+    event : ObservationEvent or None
+        Recording and truncation roles, resolved from the same environment as arguments.
     kind : Literal["observe"]
         The variant tag.
     """
@@ -207,6 +216,10 @@ class Observe(Step):
     args: tuple[StepArgument, ...] | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    weights: float | StepArgument | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    event: ObservationEvent | None = None
     kind: Literal["observe"] = "observe"
 
 
@@ -229,7 +242,9 @@ class Let(Step):
     """
 
     name: str
-    value: float | str | StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    value: int | float | str | StepFunction = dx.field(
+        opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     kind: Literal["let"] = "let"
 
 
@@ -247,12 +262,17 @@ class Score(Step):
         The name bound.
     score : StepFunction
         The contribution, of shape ``(batch,)``.
+    role : {"potential", "likelihood"}
+        Explicit potentials are retained under prior-only inference. A
+        compiler-generated marginalized response likelihood is classified
+        separately so the common observation policy can omit it.
     kind : Literal["score"]
         The variant tag.
     """
 
     name: str
     score: StepFunction = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    role: Literal["potential", "likelihood"] = "potential"
     kind: Literal["score"] = "score"
 
 

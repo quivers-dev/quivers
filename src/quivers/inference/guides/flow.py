@@ -156,9 +156,7 @@ class AutoNormalizingFlow(Guide):
             z_site = per_site[site.name]
             if not site.is_plate:
                 z_site = z_site.unsqueeze(0).expand(batch, *site.unconstrained_shape)
-            v = site.bijector(z_site)
-            if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
-                v = v.squeeze(-1)
+            v, _ = site.constrain(z_site)
             result[site.name] = v
         return result
 
@@ -177,17 +175,11 @@ class AutoNormalizingFlow(Guide):
                     f"{type(self).__name__}.log_prob: missing site {site.name!r}"
                 )
             v = sites[site.name]
-            if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 1):
-                v_e = v.unsqueeze(-1)
-            else:
-                v_e = v
-            if not site.is_plate and v_e.dim() == len(site.unconstrained_shape) + 1:
-                v_e = v_e[0]
-            z_site = site.bijector.inv(v_e)
+            if not site.is_plate and v.dim() == len(site.constrained_shape) + 1:
+                v = v[0]
+            z_site, log_det = site.unconstrain(v)
             unconstrained_per_site[site.name] = z_site
-            bijector_log_det = bijector_log_det + (
-                site.bijector.inv.log_abs_det_jacobian(v_e, z_site).sum()
-            )
+            bijector_log_det = bijector_log_det + log_det.sum()
 
         z_K = self._registry.flatten_unconstrained(unconstrained_per_site)
         z_0, flow_log_det = self._inverse(z_K)

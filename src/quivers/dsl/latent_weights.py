@@ -31,6 +31,7 @@ from quivers.dsl.ast_nodes import (
     CallStep,
     DefineDecl,
     Expr,
+    ExprIdent,
     LetStep,
     MarginalizeStep,
     Module,
@@ -49,7 +50,7 @@ from quivers.dsl.ast_nodes import (
 )
 from quivers.dsl.let_expr_traversal import free_let_callees, free_let_names
 from quivers.dsl.parser import parse
-from quivers.dsl.step_resolution import _expr_ident_names
+from quivers.dsl.step_resolution import _draw_arg_value_names, _expr_ident_names
 
 #: The default standard deviation of a latent weight's Normal prior.
 DEFAULT_PRIOR_SCALE = 1.0
@@ -213,20 +214,42 @@ def latent_morphisms(module: Module) -> dict[str, MorphismDecl]:
     return found
 
 
-def _step_names(steps: tuple[ProgramStep, ...]) -> frozenset[str]:
-    """Every morphism, define, or program name a body refers to."""
+def _step_names(
+    steps: tuple[ProgramStep, ...], bound: frozenset[str] = frozenset()
+) -> frozenset[str]:
+    """Every nonlocal morphism, define, or program name a body refers to.
+
+    Parameters
+    ----------
+    steps : tuple[ProgramStep, ...]
+        Body whose dependencies are traversed by the existing argument walker.
+    bound : frozenset[str]
+        Lexical input names taking precedence over module declarations.
+
+    Returns
+    -------
+    frozenset[str]
+        Module dependencies, including nested sampleable references.
+    """
     names: set[str] = set()
+    local = set(bound)
     for step in steps:
-        if isinstance(step, SampleStep | ObserveStep):
-            names.add(step.morphism)
+        if isinstance(step, SampleStep | ObserveStep | MarginalizeStep):
+            if step.morphism not in local:
+                names.add(step.morphism)
+            for argument in step.args or ():
+                names |= _draw_arg_value_names(argument) - local
         if isinstance(step, MarginalizeStep):
-            names.add(step.morphism)
-            names |= _step_names(step.scope)
+            names |= _step_names(step.scope, frozenset(local | {step.var}))
         if isinstance(step, LetStep | ScoreStep):
-            names |= set(free_let_callees(step.value))
-            names |= set(free_let_names(step.value))
+            names |= set(free_let_callees(step.value)) - local
+            names |= set(free_let_names(step.value)) - local
         if isinstance(step, CallStep):
             names.add(step.call.callee)
+        if isinstance(step, LetStep):
+            local.add(step.name)
+        if isinstance(step, SampleStep | ObserveStep):
+            local.update(step.vars)
     return frozenset(names)
 
 
@@ -279,6 +302,10 @@ def _refuse_composite_uses(module: Module, latent: Mapping[str, MorphismDecl]) -
     """
     for statement in module.statements:
         if isinstance(statement, DefineDecl):
+            # A nominal alias retains the original kernel and its drawn
+            # weights; it does not compose or evaluate that kernel.
+            if isinstance(statement.expr, ExprIdent):
+                continue
             expr, line, col, owner = (
                 statement.expr,
                 statement.line,
@@ -311,7 +338,11 @@ def _references(module: Module) -> dict[str, frozenset[str]]:
     graph: dict[str, frozenset[str]] = {}
     for statement in module.statements:
         if isinstance(statement, ProgramDecl):
-            graph[statement.name] = _step_names(statement.draws)
+            graph[statement.name] = _step_names(
+                statement.draws,
+                frozenset(statement.params or ())
+                | frozenset(p.name for p in statement.value_parameters),
+            )
         elif isinstance(statement, DefineDecl):
             graph[statement.name] = _expr_ident_names(statement.expr)
         elif isinstance(statement, MorphismDecl) and statement.init_expr is not None:

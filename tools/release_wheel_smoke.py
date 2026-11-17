@@ -7,6 +7,8 @@ from pathlib import Path
 import sys
 import tempfile
 
+import torch
+
 import quivers
 from quivers.cli.migrations import CHAIN, compose_migration, vcs_coverage_report
 from quivers.cli.migrations import _grammar as migration_grammar
@@ -16,6 +18,7 @@ from quivers.dsl.pygments_lexer import QvrLexer
 from quivers.cli import check_file as check_one
 from quivers.dsl import Compiler
 from quivers.qiec import invoke_entry
+from quivers.modeling import Model
 from quivers.transpile import available_targets, transpile
 
 
@@ -108,6 +111,96 @@ def main() -> None:
         )
         if run.value != 0.5 or run.log_joint is None:
             raise SystemExit("installed-wheel program run returned the wrong value")
+        symbolic = (
+            path.read_text()
+            .replace("FinSet 4", "FinSet _")
+            .replace("program prog :", "program prog(y : Tensor[Real]([Obs])) :")
+        )
+        model = Model(symbolic)
+        bound = model.bind({"y": torch.tensor([0.1, 0.2, 0.3, 0.4])})
+        if bound.schema.describe()["y"] != {
+            "role": "observation",
+            "type": "Tensor[Real]([4])",
+        }:
+            raise SystemExit("installed-wheel model lost its specialized data contract")
+        recorded = bound.trace({"a": torch.tensor([0.5])})
+        if (
+            recorded.output.item() != 0.5
+            or not torch.isfinite(recorded.log_joint).all()
+        ):
+            raise SystemExit("installed-wheel model trace returned an invalid result")
+        dependent = Model(
+            "object Out : Real 1\n"
+            "program dependent[n : Nat](count : Nat, y : Tensor[Real]([n])) : n -> Out\n"
+            "    sample a <- Normal(loc=0.0, scale=1.0)\n"
+            "    let mean = a + count\n"
+            "    observe y : n <- Normal(loc=mean, scale=1.0)\n"
+            "    return a\n"
+            "export dependent\n"
+        )
+        dependent_data = {"count": torch.tensor(2), "y": torch.ones(3)}
+        bound = dependent.bind(dependent_data)
+        if bound.schema.describe()["count"].get("constraint") != "nonnegative":
+            raise SystemExit("installed-wheel model lost its runtime Nat constraint")
+        if bound.schema.describe()["y"]["type"] != "Tensor[Real]([3])":
+            raise SystemExit("installed-wheel model did not infer its static extent")
+        if not torch.isfinite(bound.trace({"a": torch.zeros(1)}).log_joint).all():
+            raise SystemExit(
+                "installed-wheel dependent program returned invalid density"
+            )
+        try:
+            dependent.bind({**dependent_data, "count": torch.tensor(-1)})
+        except TypeError, ValueError:
+            pass
+        else:
+            raise SystemExit("installed-wheel runtime accepted a negative Nat input")
+
+    count_source = """object Row : FinSet _
+program counts(trials: Tensor[Int]([Row]), p: Real, y: Tensor[Int]([Row])) : Row -> Row
+    observe y : Row <- ZeroInflatedBinomial(zero_prob=0.25, total_count=trials, probs=p)
+    return y
+export counts
+"""
+    probability = torch.tensor(0.5, requires_grad=True)
+    count_data = {
+        "trials": torch.tensor([0, 3]),
+        "p": probability,
+        "y": torch.tensor([0, 1]),
+    }
+    count_model = Model(count_source)
+    count_trace = count_model.bind(count_data).trace()
+    expected = torch.tensor(9 / 32, dtype=torch.float64).log()
+    torch.testing.assert_close(count_trace.log_joint.reshape(()), expected)
+    torch.testing.assert_close(
+        torch.autograd.grad(count_trace.log_joint.sum(), probability)[0],
+        torch.tensor(-2.0),
+    )
+    checked_counts = Compiler(
+        parse(count_source.replace("FinSet _", "FinSet 2"))
+    ).qiec_module
+    if checked_counts is None:
+        raise SystemExit("installed-wheel count program has no checked entry")
+    count_run = invoke_entry(checked_counts, "counts", ((0, 3), 0.5, (0, 1)))
+    if (
+        count_run.log_joint is None
+        or abs(count_run.log_joint - expected.item()) > 1e-12
+    ):
+        raise SystemExit("installed-wheel native/reference count scores disagree")
+    try:
+        count_model.bind({**count_data, "trials": torch.tensor([0, 2**53 + 1])}).trace()
+    except ValueError as error:
+        if "2**53" not in str(error):
+            raise
+    else:
+        raise SystemExit("installed-wheel count kernel rounded an unsupported integer")
+    exact_module = Compiler(
+        parse("define exact_integer() : Int !{} =\n    return 9007199254740993\n")
+    ).qiec_module
+    if (
+        exact_module is None
+        or invoke_entry(exact_module, "exact_integer").value != 2**53 + 1
+    ):
+        raise SystemExit("installed-wheel compiler rounded an exact integer literal")
 
     available = set(migration_grammar.available_revisions())
     missing = set(CHAIN) - available

@@ -35,8 +35,6 @@ from typing import Literal
 import didactic.api as dx
 
 from quivers.dsl import (
-    CompileError,
-    Compiler,
     ParseError,
     non_qiec_projection,
     parse,
@@ -44,13 +42,10 @@ from quivers.dsl import (
 from quivers.dsl.compiler._validate import validate_family_arg_shapes
 from quivers.dsl.constraints import check_constraints
 from quivers.dsl.qiec_tooling import (
-    has_qiec_surface,
-    qiec_diagnostic,
+    analyze_module,
     qiec_module_name,
+    target_diagnostics,
 )
-from quivers.transpile import UnsupportedConstruct
-from quivers.transpile.plan import checked_program_plan
-from quivers.transpile.qiec_ir import analyze_qiec_capabilities
 
 type CheckSeverity = Literal["error", "warning", "note"]
 """The severity of a `CheckDiagnostic`."""
@@ -157,40 +152,6 @@ def check_file(path: Path, *, target: str | None = None) -> list[CheckDiagnostic
         return diags
 
     compiler_module = non_qiec_projection(module)
-    try:
-        compiler = Compiler(
-            module,
-            module_name=qiec_module_name(path),
-            file_path=str(path),
-        )
-        qiec_module = compiler.qiec_module
-        if qiec_module is not None and qiec_module.gap:
-            diags.append(
-                CheckDiagnostic(
-                    file=str(path),
-                    line=0,
-                    col=0,
-                    severity="error",
-                    code="qiec-program-gap",
-                    message=qiec_module.gap,
-                )
-            )
-    except Exception as error:
-        if not has_qiec_surface(module):
-            raise
-        diagnostic = qiec_diagnostic(error)
-        diags.append(
-            CheckDiagnostic(
-                file=str(path),
-                line=diagnostic.line,
-                col=diagnostic.col,
-                severity="error",
-                code=diagnostic.code,
-                message=diagnostic.message,
-            )
-        )
-        compiler = Compiler(compiler_module, lower_qiec=False)
-
     # Constraint solver runs before compile so users see structural
     # diagnostics even when compilation would also fail.
     diags.extend(
@@ -224,14 +185,30 @@ def check_file(path: Path, *, target: str | None = None) -> list[CheckDiagnostic
     has_family_shape_error = any(
         d.code == "family-arg-shape" and d.severity == "error" for d in family_diags
     )
+    analysis = analyze_module(
+        module,
+        module_name=qiec_module_name(path),
+        file_path=str(path),
+        compile_categorical=not has_family_shape_error,
+    )
+    diags[:0] = [
+        CheckDiagnostic(
+            file=str(path),
+            line=diagnostic.line,
+            col=diagnostic.col,
+            severity="error",
+            code=diagnostic.code,
+            message=diagnostic.message,
+        )
+        for diagnostic in analysis.qiec_diagnostics
+    ]
     if has_family_shape_error:
         # Skip compile: the wider compiler would crash on shape-mismatched
         # args before we get a useful diagnostic.
         return diags
 
-    try:
-        compiler.compile()
-    except CompileError as error:
+    if analysis.compile_error is not None:
+        error = analysis.compile_error
         diags.append(
             CheckDiagnostic(
                 file=str(path),
@@ -243,35 +220,18 @@ def check_file(path: Path, *, target: str | None = None) -> list[CheckDiagnostic
             )
         )
 
-    if target is not None and compiler.qiec_module is not None:
-        capabilities = analyze_qiec_capabilities(compiler.qiec_module, target)
-        for capability in capabilities:
-            origin = capability.origin
-            diags.append(
-                CheckDiagnostic(
-                    file=str(path),
-                    line=(origin.line or 0) if origin is not None else 0,
-                    col=(origin.column or 0) if origin is not None else 0,
-                    severity="error",
-                    code=capability.kind,
-                    message=capability.message,
-                )
+    if target is not None and analysis.qiec_module is not None:
+        diags.extend(
+            CheckDiagnostic(
+                file=str(path),
+                line=diagnostic.line,
+                col=diagnostic.col,
+                severity="error",
+                code=diagnostic.code,
+                message=diagnostic.message,
             )
-        if not capabilities:
-            try:
-                checked_program_plan(compiler.qiec_module, module, target)
-            except UnsupportedConstruct as error:
-                diags.extend(
-                    CheckDiagnostic(
-                        file=str(path),
-                        line=0,
-                        col=0,
-                        severity="error",
-                        code=kind,
-                        message=str(error),
-                    )
-                    for kind in error.kinds
-                )
+            for diagnostic in target_diagnostics(analysis.qiec_module, module, target)
+        )
 
     return diags
 

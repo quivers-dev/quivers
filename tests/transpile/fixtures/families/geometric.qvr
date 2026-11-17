@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the Geometric family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program geometric_fixture : Obs -> Obs
+    observe y : Obs <- Geometric(probs=0.5)
+    return y
+export geometric_fixture

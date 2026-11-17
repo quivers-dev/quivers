@@ -14,13 +14,58 @@ from typing import Literal
 import didactic.api as dx
 import torch
 import torch.distributions as td
+
+from quivers.continuous._closed_probability import ClosedGeometric
 import torch.distributions.constraints as c
 from torch.distributions.distribution import Distribution
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers.continuous.families import (
+    ConditionalZeroInflatedNegativeBinomial,
+    ConditionalZeroInflatedBinomial,
+    ConditionalZeroInflatedBetaBinomial,
+    ConditionalHurdleNegativeBinomial,
+)
+from quivers.continuous._zero_inflated_count import (
+    ZeroInflatedNegativeBinomial,
+    ZeroInflatedBinomial,
+    ZeroInflatedBetaBinomial,
+    HurdleNegativeBinomial,
+)
+from quivers.continuous._generalized_pareto import GeneralizedPareto
+from quivers.continuous._shape_families import (
+    ShiftedLogNormal,
+    Frechet,
+    GeneralizedExtremeValue,
+)
+from quivers.continuous._skew_normal import SkewNormal
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
+from quivers.continuous._com_poisson import COMPoisson
+from quivers.continuous._bernstein_hazard import BernsteinHazard
+from quivers.continuous.families import ExtendedBeta, ConditionalExtendedBeta
+from quivers.continuous._additive_log_ratio import AdditiveLogRatioNormal
+from quivers.continuous._closed_probability import _ValidatedCategorical
+from quivers.continuous._discrete_weibull import DiscreteWeibull
+from quivers.continuous._wiener import Wiener
+from quivers.continuous._zero_inflated_asymmetric_laplace import (
+    ZeroInflatedAsymmetricLaplace,
+)
+from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
+from quivers.continuous._response_time import ExGaussian, InverseGaussian
+from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
 from quivers.continuous.measure import Normalize, PointMass, Restrict
 from quivers.continuous.families import (
+    ConditionalAdditiveLogRatioNormal,
+    ConditionalBernsteinHazard,
+    ConditionalCOMPoisson,
+    ConditionalDiscreteWeibull,
+    ConditionalWiener,
+    ConditionalZeroInflatedAsymmetricLaplace,
+    ConditionalAsymmetricLaplace,
+    ConditionalExGaussian,
+    ConditionalHurdleGamma,
+    ConditionalHurdleLogNormal,
+    ConditionalInverseGaussian,
     ConditionalBernoulli,
     ConditionalBeta,
     ConditionalBetaBinomial,
@@ -30,9 +75,18 @@ from quivers.continuous.families import (
     ConditionalChi2,
     ConditionalContinuousBernoulli,
     ConditionalDirichlet,
+    Multinomial,
+    DirichletMultinomial,
+    ConditionalMultinomial,
+    ConditionalDirichletMultinomial,
     ConditionalExponential,
     ConditionalFisherSnedecor,
     ConditionalGamma,
+    ConditionalGeneralizedPareto,
+    ConditionalSkewNormal,
+    ConditionalShiftedLogNormal,
+    ConditionalFrechet,
+    ConditionalGeneralizedExtremeValue,
     ConditionalGaussianProcess,
     ConditionalGeometric,
     ConditionalGumbel,
@@ -57,6 +111,8 @@ from quivers.continuous.families import (
     ConditionalMixture,
     ConditionalMixtureNormal,
     ConditionalMultivariateNormal,
+    ConditionalMultivariateStudentT,
+    MultivariateStudentT,
     ConditionalNegativeBinomial,
     ConditionalNormal,
     ConditionalOneHotCategorical,
@@ -81,6 +137,7 @@ from quivers.continuous._zip_hurdle import (
     ZeroOneInflatedBeta,
 )
 from quivers.continuous.log_space import LogGamma, LogitBeta
+from quivers.continuous._zero_inflated_count import BetaBinomial
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.ordered import (
     ConditionalOrderedLogistic,
@@ -138,80 +195,6 @@ class FamilyMeta(ValueModel):
 # runtime behaviour lives in the `quivers_class` `ContinuousMorphism`
 # subclass paired in FAMILY_META.
 # ---------------------------------------------------------------------------
-
-
-class BetaBinomial(Distribution):
-    """Beta-Binomial: `Binomial(n, p)` with `p ~ Beta(c1, c0)`.
-
-    The marginal pmf is
-
-        p(k; n, a, b) = C(n, k) * B(a + k, b + n - k) / B(a, b),
-
-    where `B(.,.)` is the beta function. `log_prob` evaluates this
-    in log space via `torch.lgamma`. `sample` draws p ~ Beta(a, b)
-    then k ~ Binomial(n, p), matching the generative definition.
-    """
-
-    arg_constraints: dict[str, c.Constraint] = {
-        "total_count": c.nonnegative_integer,
-        "concentration1": c.positive,
-        "concentration0": c.positive,
-    }
-    support: c.Constraint = c.nonnegative_integer
-    has_rsample: bool = False
-
-    def __init__(
-        self,
-        total_count: torch.Tensor,
-        concentration1: torch.Tensor,
-        concentration0: torch.Tensor,
-        validate_args: bool | None = None,
-    ) -> None:
-        self.total_count = total_count
-        self.concentration1 = concentration1
-        self.concentration0 = concentration0
-        super().__init__(validate_args=validate_args)
-
-    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
-        """``log p(value; n, a, b)`` via the closed-form Beta-Binomial pmf."""
-        n = self.total_count.to(value.dtype)
-        a = self.concentration1.to(value.dtype)
-        b = self.concentration0.to(value.dtype)
-        k = value.to(value.dtype)
-        log_comb = (
-            torch.lgamma(n + 1.0) - torch.lgamma(k + 1.0) - torch.lgamma(n - k + 1.0)
-        )
-        log_beta_post = (
-            torch.lgamma(a + k) + torch.lgamma(b + n - k) - torch.lgamma(a + b + n)
-        )
-        log_beta_prior = torch.lgamma(a) + torch.lgamma(b) - torch.lgamma(a + b)
-        return log_comb + log_beta_post - log_beta_prior
-
-    def sample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
-        """Two-stage draw: ``p ~ Beta(a, b)``; ``k ~ Binomial(n, p)``."""
-        p = torch.distributions.Beta(self.concentration1, self.concentration0).sample(
-            sample_shape
-        )
-        return torch.distributions.Binomial(
-            total_count=self.total_count, probs=p
-        ).sample()
-
-    @property
-    def mean(self) -> torch.Tensor:
-        """``E[K] = n * a / (a + b)``."""
-        return (
-            self.total_count
-            * self.concentration1
-            / (self.concentration1 + self.concentration0)
-        )
-
-    @property
-    def variance(self) -> torch.Tensor:
-        """Closed-form Beta-Binomial variance."""
-        n = self.total_count
-        a = self.concentration1
-        b = self.concentration0
-        return n * a * b * (a + b + n) / ((a + b) ** 2 * (a + b + 1.0))
 
 
 class OrderedLogistic(Distribution):
@@ -560,6 +543,20 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "jags": {"scale": "tau"},
         },
     ),
+    "Multinomial": FamilyMeta(
+        qvr_name="Multinomial",
+        event_rank=1,
+        distribution_class=Multinomial,
+        quivers_class=ConditionalMultinomial,
+        target_names={},
+    ),
+    "DirichletMultinomial": FamilyMeta(
+        qvr_name="DirichletMultinomial",
+        event_rank=1,
+        distribution_class=DirichletMultinomial,
+        quivers_class=ConditionalDirichletMultinomial,
+        target_names={},
+    ),
     "Dirichlet": FamilyMeta(
         qvr_name="Dirichlet",
         event_rank=1,
@@ -611,6 +608,66 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "pymc": {"loc": "alpha", "scale": "beta"},
             "webppl": {"loc": "location"},
         },
+    ),
+    "HurdleGamma": FamilyMeta(
+        qvr_name="HurdleGamma",
+        distribution_class=HurdleGamma,
+        quivers_class=ConditionalHurdleGamma,
+        target_names={},
+    ),
+    "HurdleLogNormal": FamilyMeta(
+        qvr_name="HurdleLogNormal",
+        distribution_class=HurdleLogNormal,
+        quivers_class=ConditionalHurdleLogNormal,
+        target_names={},
+    ),
+    "ExGaussian": FamilyMeta(
+        qvr_name="ExGaussian",
+        distribution_class=ExGaussian,
+        quivers_class=ConditionalExGaussian,
+        target_names={},
+    ),
+    "InverseGaussian": FamilyMeta(
+        qvr_name="InverseGaussian",
+        distribution_class=InverseGaussian,
+        quivers_class=ConditionalInverseGaussian,
+        target_names={},
+    ),
+    "BernsteinHazard": FamilyMeta(
+        qvr_name="BernsteinHazard",
+        distribution_class=BernsteinHazard,
+        quivers_class=ConditionalBernsteinHazard,
+        target_names={},
+    ),
+    "COMPoisson": FamilyMeta(
+        qvr_name="COMPoisson",
+        distribution_class=COMPoisson,
+        quivers_class=ConditionalCOMPoisson,
+        target_names={},
+    ),
+    "Wiener": FamilyMeta(
+        qvr_name="Wiener",
+        distribution_class=Wiener,
+        quivers_class=ConditionalWiener,
+        target_names={},
+    ),
+    "DiscreteWeibull": FamilyMeta(
+        qvr_name="DiscreteWeibull",
+        distribution_class=DiscreteWeibull,
+        quivers_class=ConditionalDiscreteWeibull,
+        target_names={},
+    ),
+    "ZeroInflatedAsymmetricLaplace": FamilyMeta(
+        qvr_name="ZeroInflatedAsymmetricLaplace",
+        distribution_class=ZeroInflatedAsymmetricLaplace,
+        quivers_class=ConditionalZeroInflatedAsymmetricLaplace,
+        target_names={},
+    ),
+    "AsymmetricLaplace": FamilyMeta(
+        qvr_name="AsymmetricLaplace",
+        distribution_class=AsymmetricLaplace,
+        quivers_class=ConditionalAsymmetricLaplace,
+        target_names={},
     ),
     "Laplace": FamilyMeta(
         qvr_name="Laplace",
@@ -1014,6 +1071,27 @@ FAMILY_META: dict[str, FamilyMeta] = {
             sample_constraint_kind="real_vector",
         ),
     ),
+    "MultivariateStudentT": FamilyMeta(
+        qvr_name="MultivariateStudentT",
+        event_rank=1,
+        distribution_class=MultivariateStudentT,
+        quivers_class=ConditionalMultivariateStudentT,
+        target_names={},
+        structured_lowering=StructuredSampleLowering(
+            args=(
+                StructuredDataArg(
+                    arg_name="loc", axis_indices=(0,), constraint_kind="real_vector"
+                ),
+                StructuredDataArg(
+                    arg_name="scale_tril",
+                    axis_indices=(0, 0),
+                    constraint_kind="real_matrix",
+                ),
+            ),
+            event_axis_source=OverOrCodomainAxes(axis_count=1),
+            sample_constraint_kind="real_vector",
+        ),
+    ),
     "LowRankMVN": FamilyMeta(
         qvr_name="LowRankMVN",
         event_rank=1,
@@ -1129,6 +1207,16 @@ FAMILY_META: dict[str, FamilyMeta] = {
                     axis_indices=(1, 1),
                     constraint_kind="positive_definite",
                 ),
+                StructuredDataArg(
+                    arg_name="row_scale_tril",
+                    axis_indices=(0, 0),
+                    constraint_kind="real_matrix",
+                ),
+                StructuredDataArg(
+                    arg_name="col_scale_tril",
+                    axis_indices=(1, 1),
+                    constraint_kind="real_matrix",
+                ),
             ),
             event_axis_source=OverOrCodomainAxes(axis_count=2),
             sample_constraint_kind="real_matrix",
@@ -1196,7 +1284,7 @@ FAMILY_META: dict[str, FamilyMeta] = {
     ),
     "Categorical": FamilyMeta(
         qvr_name="Categorical",
-        distribution_class=td.Categorical,
+        distribution_class=_ValidatedCategorical,
         quivers_class=ConditionalCategorical,
         target_names={
             "stan": "categorical",
@@ -1262,7 +1350,7 @@ FAMILY_META: dict[str, FamilyMeta] = {
     ),
     "Geometric": FamilyMeta(
         qvr_name="Geometric",
-        distribution_class=td.Geometric,
+        distribution_class=ClosedGeometric,
         quivers_class=ConditionalGeometric,
         target_names={
             "numpyro": "Geometric",
@@ -1312,6 +1400,13 @@ FAMILY_META: dict[str, FamilyMeta] = {
         arg_aliases={
             "pymc": {"loc": "mu", "concentration": "kappa"},
         },
+    ),
+    "AdditiveLogRatioNormal": FamilyMeta(
+        qvr_name="AdditiveLogRatioNormal",
+        event_rank=1,
+        distribution_class=AdditiveLogRatioNormal,
+        quivers_class=ConditionalAdditiveLogRatioNormal,
+        target_names={},
     ),
     "LogisticNormal": FamilyMeta(
         qvr_name="LogisticNormal",
@@ -1432,6 +1527,30 @@ FAMILY_META: dict[str, FamilyMeta] = {
             "pymc": {"base_distribution": "dist"},
         },
     ),
+    "ZeroInflatedNegativeBinomial": FamilyMeta(
+        qvr_name="ZeroInflatedNegativeBinomial",
+        distribution_class=ZeroInflatedNegativeBinomial,
+        quivers_class=ConditionalZeroInflatedNegativeBinomial,
+        target_names={},
+    ),
+    "ZeroInflatedBinomial": FamilyMeta(
+        qvr_name="ZeroInflatedBinomial",
+        distribution_class=ZeroInflatedBinomial,
+        quivers_class=ConditionalZeroInflatedBinomial,
+        target_names={},
+    ),
+    "ZeroInflatedBetaBinomial": FamilyMeta(
+        qvr_name="ZeroInflatedBetaBinomial",
+        distribution_class=ZeroInflatedBetaBinomial,
+        quivers_class=ConditionalZeroInflatedBetaBinomial,
+        target_names={},
+    ),
+    "HurdleNegativeBinomial": FamilyMeta(
+        qvr_name="HurdleNegativeBinomial",
+        distribution_class=HurdleNegativeBinomial,
+        quivers_class=ConditionalHurdleNegativeBinomial,
+        target_names={},
+    ),
     "ZeroInflatedPoisson": FamilyMeta(
         qvr_name="ZeroInflatedPoisson",
         distribution_class=ZeroInflatedPoisson,
@@ -1445,6 +1564,12 @@ FAMILY_META: dict[str, FamilyMeta] = {
     "ZeroOneInflatedBeta": FamilyMeta(
         qvr_name="ZeroOneInflatedBeta",
         distribution_class=ZeroOneInflatedBeta,
+        target_names={},
+    ),
+    "ExtendedBeta": FamilyMeta(
+        qvr_name="ExtendedBeta",
+        distribution_class=ExtendedBeta,
+        quivers_class=ConditionalExtendedBeta,
         target_names={},
     ),
     "Restrict": FamilyMeta(
@@ -1779,3 +1904,36 @@ __all__ = [
     "finite_enumerable_at_call_site",
     "marginalize_support",
 ]
+
+
+FAMILY_META["GeneralizedPareto"] = FamilyMeta(
+    qvr_name="GeneralizedPareto",
+    distribution_class=GeneralizedPareto,
+    quivers_class=ConditionalGeneralizedPareto,
+    target_names={},
+)
+
+FAMILY_META["SkewNormal"] = FamilyMeta(
+    qvr_name="SkewNormal",
+    distribution_class=SkewNormal,
+    quivers_class=ConditionalSkewNormal,
+    target_names={},
+)
+FAMILY_META["ShiftedLogNormal"] = FamilyMeta(
+    qvr_name="ShiftedLogNormal",
+    distribution_class=ShiftedLogNormal,
+    quivers_class=ConditionalShiftedLogNormal,
+    target_names={},
+)
+FAMILY_META["Frechet"] = FamilyMeta(
+    qvr_name="Frechet",
+    distribution_class=Frechet,
+    quivers_class=ConditionalFrechet,
+    target_names={},
+)
+FAMILY_META["GeneralizedExtremeValue"] = FamilyMeta(
+    qvr_name="GeneralizedExtremeValue",
+    distribution_class=GeneralizedExtremeValue,
+    quivers_class=ConditionalGeneralizedExtremeValue,
+    target_names={},
+)

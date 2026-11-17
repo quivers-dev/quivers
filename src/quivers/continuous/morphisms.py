@@ -265,6 +265,111 @@ class ContinuousMorphism(nn.Module, ABC):
         """Source space."""
         return self._domain
 
+    def sampling_distribution(
+        self, x: torch.Tensor, event: dict[str, object] | None = None
+    ) -> torch.distributions.Distribution:
+        """Construct the sampling law, including optional response truncation.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Resolved family parameters.
+        event : dict[str, object] or None
+            Bound observation roles; censoring describes recording rather than sampling.
+
+        Returns
+        -------
+        torch.distributions.Distribution
+            The underlying law, normalized on any truncation interval.
+
+        Raises
+        ------
+        NotImplementedError
+            If the morphism does not expose a distribution constructor.
+        """
+        builder = getattr(self, "_get_dist", None)
+        if not callable(builder):
+            raise NotImplementedError(
+                f"{type(self).__name__} does not expose a native response distribution"
+            )
+        base = builder(x)
+        event = {} if event is None else event
+        lower, upper = event.get("trunc_lower"), event.get("trunc_upper")
+        if lower is None and upper is None:
+            return base
+        truncated = getattr(base, "componentwise_truncation", None)
+        if callable(truncated):
+            return truncated(lower, upper)
+        from quivers.continuous.measure import Normalize, Restrict
+
+        return Normalize(Restrict(base, lower, upper))
+
+    def log_prob_event(
+        self, x: torch.Tensor, y: torch.Tensor, event: dict[str, object]
+    ) -> torch.Tensor:
+        """Score a recorded response event before any plate or weight reduction.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Resolved family parameters.
+        y : torch.Tensor
+            Exact responses or recorded censoring endpoints.
+        event : dict[str, object]
+            Status, interval endpoint, and truncation tensors.
+
+        Returns
+        -------
+        torch.Tensor
+            Unweighted scores at the distribution batch layout.
+        """
+        from quivers.continuous._observation_events import event_log_prob
+
+        return event_log_prob(self.sampling_distribution(x), y, **event)
+
+    def rsample_event(
+        self,
+        x: torch.Tensor,
+        sample_shape: torch.Size,
+        event: dict[str, object] | None,
+    ) -> torch.Tensor:
+        """Draw the underlying response, respecting truncation and recording no censoring.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Resolved family parameters.
+        sample_shape : torch.Size
+            Leading sample dimensions.
+        event : dict[str, object] or None
+            Bound observation roles.
+
+        Returns
+        -------
+        torch.Tensor
+            Response draws under the sampling law.
+        """
+        if event is None or (
+            event.get("trunc_lower") is None and event.get("trunc_upper") is None
+        ):
+            return self.rsample(x, sample_shape)
+        law = self.sampling_distribution(x, event)
+        if not law.batch_shape and not law.event_shape:
+            coordinates = getattr(self.codomain, "dim", None)
+            batch = (
+                (x.shape[0],) if coordinates is None else (x.shape[0], int(coordinates))
+            )
+            law = law.expand(torch.Size(batch))
+        draw = (
+            law.rsample(sample_shape) if law.has_rsample else law.sample(sample_shape)
+        )
+        if (
+            getattr(self.codomain, "dim", None) is not None
+            and draw.ndim == len(sample_shape) + 1
+        ):
+            draw = draw.unsqueeze(-1)
+        return draw
+
     @property
     def codomain(self) -> AnySpace:
         """Target space."""
@@ -635,6 +740,61 @@ class MarginalizedFactor(ContinuousMorphism):
     ) -> torch.Tensor:
         """Sample from the base family (forward behaviour is preserved)."""
         return self.base.rsample(x, sample_shape)
+
+    def sampling_distribution(self, x, event=None):
+        """Retain the base sampling law while its score is integrated elsewhere.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved parameters at the current ancestral latent draw.
+        event : dict[str, object] or None
+            Bound recording and truncation roles.
+
+        Returns
+        -------
+        Distribution
+            The base response law on any declared truncation interval.
+        """
+        return self.base.sampling_distribution(x, event)
+
+    def rsample_event(self, x, sample_shape, event):
+        """Preserve event-aware ancestral sampling without adding a second score.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response parameters.
+        sample_shape : torch.Size
+            Leading sampling dimensions.
+        event : dict[str, object] or None
+            Bound recording and truncation roles.
+
+        Returns
+        -------
+        Tensor
+            Ancestral draws from the underlying truncated response law.
+        """
+        return self.base.rsample_event(x, sample_shape, event)
+
+    def log_prob_event(self, x, y, event):
+        """Leave event likelihoods entirely to the block's integrated score.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response parameters.
+        y : Tensor
+            Recorded outcomes.
+        event : dict[str, object]
+            Bound recording roles, already scored inside the finite marginal.
+
+        Returns
+        -------
+        Tensor
+            Zero, preventing repeated likelihood contributions.
+        """
+        return self.log_prob(x, y)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Report a zero log-density.

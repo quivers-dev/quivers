@@ -52,6 +52,15 @@ so its samples lie inside that support, and its `log_prob` includes the log abso
 determinant of the
 [Jacobian](https://en.wikipedia.org/wiki/Jacobian_matrix_and_determinant).
 
+Guides and named initialization use the same
+[`LatentSite`](../api/inference/guide.md#quivers.inference.registry.LatentSite)
+geometry. Unconstrained coordinates are flat within each site; constrained
+values retain their declared event axes, including rectangular matrices and
+singleton matrix dimensions. The shared transform reduces Jacobians over the
+support's event axes while retaining run and plate axes. Thus a matrix event
+does not acquire extra independent observations when a guide evaluates its
+density, and subsampling still selects the declared plate rows.
+
 ### AutoNormalGuide
 
 A diagonal Gaussian approximation with one bijector per site, which maps
@@ -85,6 +94,49 @@ latents = guide.rsample(x)  # {name: (batch, *constrained_shape)}; plates: const
 # Log probability under guide (with Jacobian correction)
 log_q = guide.log_prob(x, latents)
 ```
+
+#### Named initial centers
+
+`AutoNormalGuide(initial_values={...})` accepts natural-scale values keyed by
+latent site name. A supplied value $v_i$ sets the unconstrained Normal location
+to $T_i^{-1}(v_i)$; the transformed guide's expectation can differ from $v_i$.
+Unspecified locations remain zero, and `init_scale` sets the unconstrained
+standard deviations, with default `0.1`.
+
+```python
+import torch
+
+from quivers.dsl import loads
+from quivers.inference import AutoNormalGuide, ELBO, SVI
+
+model = loads("""
+object Obs : FinSet 3
+program model : Obs -> Obs
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    sample sigma <- HalfNormal(scale=1.0)
+    observe y : Obs <- Normal(loc=mu, scale=sigma)
+    return mu
+export model
+""").morphism
+
+observations = {"y": torch.tensor([0.1, 0.4, 0.8])}
+guide = AutoNormalGuide(
+    model,
+    observed_names={"y"},
+    initial_values={"mu": 0.4, "sigma": 0.5},
+)
+optimizer = torch.optim.Adam(guide.parameters(), lr=0.01)
+svi = SVI(model, guide, optimizer, ELBO())
+loss = svi.step(torch.zeros(1, 1), observations)
+assert torch.isfinite(torch.tensor(loss))
+```
+
+The same [support and shape rules as MCMC](inference-mcmc.md#named-initial-values)
+apply: scalars broadcast, tensors match the site's complete declared shape,
+and values lie strictly inside its support. The guide detaches and copies the
+values into trainable parameters; it retains no gradient connection to the
+caller's tensors. This constructor option belongs to `AutoNormalGuide`; other
+guide families have their own initialization interfaces.
 
 ### AutoDeltaGuide
 

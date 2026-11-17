@@ -19,15 +19,18 @@ from __future__ import annotations
 from collections.abc import Hashable, Mapping
 from typing import Literal, cast
 
+from quivers.qiec.families import FAMILIES, DistributionFamily
 from quivers.qiec._models import QiecModel
 
 from quivers.dsl.ast_nodes import TypeName
 from quivers.dsl.ast_nodes.let_expressions import (
     LetExprBinOp,
+    LetExprBool,
     LetExprCall,
     LetExprFactor,
     LetExprIndex,
     LetExprList,
+    LetExprLambda,
     LetExprLiteral,
     LetExprNode,
     LetExprString,
@@ -36,7 +39,7 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetFactorBinder,
 )
 from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS, PRIMITIVE_OPERATORS
-from quivers.qiec.canonical import tensor_shape, tensor_type
+from quivers.qiec.canonical import sampled_element, tensor_shape, tensor_type
 from quivers.qiec.identifiers import SourceOrigin
 from quivers.qiec.module import NamedComputation
 from quivers.qiec.primitives import primitive
@@ -56,6 +59,8 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     LogDensity,
+    LogMass,
+    ConditionalValue,
     NewInstance,
     Perform,
     PrimitiveApplication,
@@ -73,6 +78,7 @@ from quivers.qiec.types import (
     INT,
     REAL,
     IndexLiteral,
+    IndexSum,
     IndexTerm,
     IndexVariable,
     TypeExpr,
@@ -164,6 +170,10 @@ def replace_locals(value: Value, replacements: Mapping[Local, Value]) -> Value:
 #: ...)``. The ``$`` keeps it apart from every function a source can
 #: call.
 LOG_PROB_CALL = "$log_prob"
+LOG_MASS_CALL = "$log_mass"
+DISTRIBUTION_CALL = "$distribution"
+CONDITIONAL_CALL = "$conditional"
+APPLY_CALL = "$apply"
 
 
 #: Primitives that are conversions the target's arithmetic performs on
@@ -340,6 +350,12 @@ class _LetFloater:
             for binding in value.bindings:
                 inner, bound = self.value(binding.value, scope)
                 hoisted.extend(inner)
+                if sampled_element(binding.binder.type) is not None:
+                    # Distribution construction is pure syntax; keep it at
+                    # its consumers instead of transporting a host object
+                    # through tensor-valued deterministic program sites.
+                    scope[binding.binder] = bound
+                    continue
                 local = Local(
                     name=self.fresh(binding.binder.name), type=binding.binder.type
                 )
@@ -347,6 +363,17 @@ class _LetFloater:
                 scope[binding.binder] = Var(local=local)
             inner, body = self.value(value.body, scope)
             return (*hoisted, *inner), body
+        if isinstance(value, ConditionalValue):
+            condition_bindings, condition = self.value(value.condition, renamed)
+            branches = {}
+            for field in ("then", "otherwise"):
+                inner, branch = self.value(getattr(value, field), renamed)
+                branches[field] = (
+                    LetValue(bindings=inner, body=branch, result_type=value.result_type)
+                    if inner
+                    else branch
+                )
+            return condition_bindings, value.with_(condition=condition, **branches)
         if isinstance(value, Comprehension):
             inner, body = self.value(value.body, renamed)
             if not inner:
@@ -527,7 +554,11 @@ def _row_reduction(value: Value) -> tuple[str, Value] | None:
 
 
 def _log_prob_call(
-    density: LogDensity, cards: dict[str, int], program: str
+    density: LogDensity,
+    cards: dict[str, int],
+    program: str,
+    *,
+    families: Mapping[str, DistributionFamily] = FAMILIES,
 ) -> LetExprNode:
     """A family's log density at a value, as the compiled runtime reads it.
 
@@ -543,34 +574,35 @@ def _log_prob_call(
     Returns
     -------
     LetExprNode
-        ``$log_prob("Family", value, "parameter", argument, ...)``,
-        summed over the family's plate when it has one.
+        Raw checked distribution construction, response, and retained batch
+        rank, shared with measure-mass queries.
 
     Raises
     ------
     UnsupportedConstruct
         If the density is not of a family construction.
     """
-    sampleable = density.sampleable
-    if not isinstance(sampleable, DistributionValue):
-        raise UnsupportedConstruct(
-            f"qvr-{RUNTIME_TARGET}", [f"qiec:expression:log_density:{program}"]
-        )
-    arguments: list[LetExprNode] = [
-        LetExprString(value=sampleable.name),
-        _expression(density.value, cards, RUNTIME_TARGET, program),
-    ]
-    for parameter, value in sampleable.arguments:
-        arguments.append(LetExprString(value=parameter))
-        arguments.append(_expression(value, cards, RUNTIME_TARGET, program))
-    call = LetExprCall(func=LOG_PROB_CALL, args=tuple(arguments))
-    if sampleable.plate.batch or sampleable.plate.event:
-        return LetExprCall(func="sum", args=(call,))
-    return call
+    return LetExprCall(
+        func=LOG_PROB_CALL,
+        args=(
+            _expression(
+                density.sampleable, cards, RUNTIME_TARGET, program, families=families
+            ),
+            _expression(
+                density.value, cards, RUNTIME_TARGET, program, families=families
+            ),
+            LetExprLiteral(value=len(density.batch), integral=True),
+        ),
+    )
 
 
 def _expression(
-    value: Value, cards: dict[str, int], target: str, program: str
+    value: Value,
+    cards: dict[str, int],
+    target: str,
+    program: str,
+    *,
+    families: Mapping[str, DistributionFamily] = FAMILIES,
 ) -> LetExprNode:
     """A pure value as a let expression.
 
@@ -599,33 +631,63 @@ def _expression(
         return LetExprVar(name=value.local.name)
     if isinstance(value, LiteralValue):
         if isinstance(value.value, bool):
-            return LetExprLiteral(value=float(value.value), integral=True)
+            if target == RUNTIME_TARGET:
+                return LetExprBool(value=value.value)
+            return LetExprLiteral(value=int(value.value), integral=True)
         if isinstance(value.value, int | float):
             return LetExprLiteral(
-                value=float(value.value), integral=isinstance(value.value, int)
+                value=value.value, integral=isinstance(value.value, int)
             )
         if isinstance(value.value, str):
             return LetExprString(value=value.value)
     if isinstance(value, PrimitiveApplication):
+        if primitive(value.name).capability == "probability":
+            return LetExprCall(
+                func=value.name,
+                args=tuple(
+                    _expression(argument, cards, target, program, families=families)
+                    for argument in value.arguments
+                ),
+            )
+        if value.name in {"observation_weight", "scale_weight"}:
+            if target == RUNTIME_TARGET:
+                return LetExprCall(
+                    func=value.name,
+                    args=tuple(
+                        _expression(argument, cards, target, program, families=families)
+                        for argument in value.arguments
+                    ),
+                )
+            # These checked weight operations retain canonical runtime
+            # semantics; they are not unchecked target math-library calls.
+            return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
         if value.name == "int_to_real" and target in _INTEGRAL_ARITHMETIC_TARGETS:
             return LetExprBinOp(
                 op="*",
                 left=LetExprLiteral(value=1.0),
-                right=_expression(value.arguments[0], cards, target, program),
+                right=_expression(
+                    value.arguments[0], cards, target, program, families=families
+                ),
             )
         if value.name == "int_to_real" and target in _STRICT_DTYPE_TARGETS:
             return LetExprCall(
                 func="real",
-                args=(_expression(value.arguments[0], cards, target, program),),
+                args=(
+                    _expression(
+                        value.arguments[0], cards, target, program, families=families
+                    ),
+                ),
             )
         if value.name in _TRANSPARENT:
-            return _expression(value.arguments[0], cards, target, program)
+            return _expression(
+                value.arguments[0], cards, target, program, families=families
+            )
         truncating = _TRUNCATING_CALLS.get(value.name)
         if truncating is not None and target not in _INTEGRAL_ARITHMETIC_TARGETS:
             return LetExprCall(
                 func=truncating,
                 args=tuple(
-                    _expression(argument, cards, target, program)
+                    _expression(argument, cards, target, program, families=families)
                     for argument in value.arguments
                 ),
             )
@@ -634,14 +696,16 @@ def _expression(
             left, right = value.arguments
             return LetExprBinOp(
                 op=operator,
-                left=_expression(left, cards, target, program),
-                right=_expression(right, cards, target, program),
+                left=_expression(left, cards, target, program, families=families),
+                right=_expression(right, cards, target, program, families=families),
             )
         unary = _UNARY_OPERATORS.get(value.name)
         if unary is not None and len(value.arguments) == 1:
             return LetExprUnaryOp(
                 op=unary,
-                operand=_expression(value.arguments[0], cards, target, program),
+                operand=_expression(
+                    value.arguments[0], cards, target, program, families=families
+                ),
             )
         if value.name in _BOOL_CONVERSIONS:
             # A Boolean read as a number is one where it holds and zero
@@ -650,7 +714,13 @@ def _expression(
             return spell_builtin(
                 target,
                 "select",
-                (_expression(value.arguments[0], cards, target, program), one, zero),
+                (
+                    _expression(
+                        value.arguments[0], cards, target, program, families=families
+                    ),
+                    one,
+                    zero,
+                ),
             )
         builtin = PRIMITIVE_BUILTINS.get(value.name)
         if builtin is not None:
@@ -658,13 +728,13 @@ def _expression(
                 target,
                 builtin,
                 tuple(
-                    _expression(argument, cards, target, program)
+                    _expression(argument, cards, target, program, families=families)
                     for argument in value.arguments
                 ),
             )
     if isinstance(value, Gather):
-        array = _expression(value.value, cards, target, program)
-        index = _expression(value.index, cards, target, program)
+        array = _expression(value.value, cards, target, program, families=families)
+        index = _expression(value.index, cards, target, program, families=families)
         if isinstance(array, LetExprIndex):
             # Nested gathers read back as one multi-index subscript.
             return LetExprIndex(array=array.array, indices=(*array.indices, index))
@@ -672,29 +742,31 @@ def _expression(
     if isinstance(value, TensorValue):
         return LetExprList(
             items=tuple(
-                _expression(item, cards, target, program) for item in value.items
+                _expression(item, cards, target, program, families=families)
+                for item in value.items
             )
         )
     if isinstance(value, Reduction):
         return LetExprCall(
             func=value.operator,
-            args=(_expression(value.value, cards, target, program),),
+            args=(_expression(value.value, cards, target, program, families=families),),
         )
     rowwise = _row_reduction(value)
     if rowwise is not None:
         operator, reduced = rowwise
         return LetExprCall(
-            func=operator, args=(_expression(reduced, cards, target, program),)
+            func=operator,
+            args=(_expression(reduced, cards, target, program, families=families),),
         )
     if isinstance(value, Rowwise):
         return LetExprCall(
             func=value.operator,
-            args=(_expression(value.value, cards, target, program),),
+            args=(_expression(value.value, cards, target, program, families=families),),
         )
     if isinstance(value, Comprehension):
         axis = _axis_name_of(value.extent, cards)
         binder = LetFactorBinder(var=value.binder.name, index=TypeName(name=axis))
-        body = _expression(value.body, cards, target, program)
+        body = _expression(value.body, cards, target, program, families=families)
         if isinstance(body, LetExprFactor) and body.body is not None:
             # Nested comprehensions read back as one factor over
             # every binder.
@@ -702,10 +774,89 @@ def _expression(
         return LetExprFactor(binders=(binder,), body=body)
     if isinstance(value, WeightSum):
         return LetExprCall(
-            func="sum", args=(_expression(value.value, cards, target, program),)
+            func="sum",
+            args=(_expression(value.value, cards, target, program, families=families),),
         )
+    if isinstance(value, DistributionValue) and target == RUNTIME_TARGET:
+        from quivers.qiec.canonical import sampled_element, tensor_shape
+
+        element = sampled_element(value.result_type)
+        split = tensor_shape(element) if element is not None else None
+        rank = families[value.name].event_rank
+        dimensions = () if split is None or not rank else split[1][-rank:]
+
+        def extent(size: IndexTerm) -> int:
+            if isinstance(size, IndexLiteral) and isinstance(size.value, int):
+                return size.value
+            if isinstance(size, IndexVariable) and size.name in cards:
+                return cards[size.name]
+            if isinstance(size, IndexSum):
+                return sum(extent(term) for term in size.terms)
+            raise UnsupportedConstruct(
+                f"qvr-{target}", [f"qiec:measure-shape:{render_static(size)}:{program}"]
+            )
+
+        event = tuple(extent(size) for size in dimensions)
+        plate = tuple(
+            extent(axis.size) for axis in (*value.plate.batch, *value.plate.event)
+        )
+        arguments: list[LetExprNode] = [
+            LetExprString(value=value.name),
+            LetExprList(
+                items=tuple(LetExprLiteral(value=size, integral=True) for size in event)
+            ),
+            LetExprList(
+                items=tuple(LetExprLiteral(value=size, integral=True) for size in plate)
+            ),
+        ]
+        for name, argument in value.arguments:
+            arguments.extend(
+                (
+                    LetExprString(value=name),
+                    _expression(argument, cards, target, program, families=families),
+                )
+            )
+        return LetExprCall(func=DISTRIBUTION_CALL, args=tuple(arguments))
+    if isinstance(value, LetValue):
+        if target != RUNTIME_TARGET:
+            return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
+        result = _expression(value.body, cards, target, program, families=families)
+        for binding in reversed(value.bindings):
+            result = LetExprCall(
+                func=APPLY_CALL,
+                args=(
+                    LetExprLambda(param=binding.binder.name, body=result),
+                    _expression(
+                        binding.value, cards, target, program, families=families
+                    ),
+                ),
+            )
+        return result
+    if isinstance(value, ConditionalValue):
+        if target == RUNTIME_TARGET:
+            return LetExprCall(
+                func=CONDITIONAL_CALL,
+                args=tuple(
+                    _expression(item, cards, target, program, families=families)
+                    for item in (value.condition, value.then, value.otherwise)
+                ),
+            )
+        return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
+    if isinstance(value, LogMass) and target == RUNTIME_TARGET:
+        call = LetExprCall(
+            func=LOG_MASS_CALL,
+            args=(
+                _expression(
+                    value.sampleable, cards, target, program, families=families
+                ),
+                LetExprLiteral(value=len(value.batch), integral=True),
+            ),
+        )
+        return call
+    if isinstance(value, LogMass):
+        return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
     if isinstance(value, LogDensity) and target == RUNTIME_TARGET:
-        return _log_prob_call(value, cards, program)
+        return _log_prob_call(value, cards, program, families=families)
     if isinstance(value, LogDensity):
         raise UnsupportedConstruct(
             f"qvr-{target}",
@@ -718,8 +869,8 @@ def _expression(
     if isinstance(value, Projection):
         # A component of a product, as the source subscripts a tuple.
         return LetExprIndex(
-            array=_expression(value.value, cards, target, program),
-            indices=(LetExprLiteral(value=float(value.position)),),
+            array=_expression(value.value, cards, target, program, families=families),
+            indices=(LetExprLiteral(value=value.position, integral=True),),
         )
     raise UnsupportedConstruct(
         f"qvr-{target}",
@@ -845,6 +996,38 @@ def _bound_names(term: Computation | Value) -> set[str]:
     return found
 
 
+def _total_value(value: Value) -> bool:
+    """Prove eager evaluation safe using the closed primitive domain contracts.
+
+    Parameters
+    ----------
+    value : Value
+        Checked pure expression, including any sequential local bindings.
+
+    Returns
+    -------
+    bool
+        True only when every operation is certified total. Distribution
+        construction, queries, indexing and unproved operations remain lazy.
+    """
+    if isinstance(value, Var | LiteralValue):
+        return True
+    if isinstance(value, PrimitiveApplication):
+        return primitive(value.name).total and all(
+            _total_value(argument) for argument in value.arguments
+        )
+    if isinstance(value, LetValue):
+        return all(
+            _total_value(binding.value) for binding in value.bindings
+        ) and _total_value(value.body)
+    if isinstance(value, ConditionalValue):
+        return all(
+            _total_value(branch)
+            for branch in (value.condition, value.then, value.otherwise)
+        )
+    return False
+
+
 def _select(
     condition: Value,
     then: Value,
@@ -853,7 +1036,7 @@ def _select(
     owner: str,
     term: If,
 ) -> Value:
-    """A conditional between two pure values, as ``select``.
+    """Retain scalar control flow when both computation branches are pure.
 
     Parameters
     ----------
@@ -873,57 +1056,26 @@ def _select(
     Returns
     -------
     Value
-        ``select(condition, then, otherwise)``, entrywise over a tensor.
-
-    Raises
-    ------
-    CallNotLowered
-        If the branches return neither real nor integer values.
+        A total numeric select when both branches have a domain proof;
+        otherwise a lazy conditional at the common checked result type.
     """
-    split = tensor_shape(result_type)
-    element = result_type if split is None else split[0]
-    if element == REAL:
-        name = "select_real"
-    elif element == INT:
-        name = "select_int"
-    else:
-        raise CallNotLowered(
-            f"runs an `if` in `{owner}`{origin_line(term)} whose branches return "
-            f"{render_static(result_type)}, which `select` cannot choose "
-            f"between: it chooses between real or integer values"
+    if result_type in (REAL, INT) and _total_value(then) and _total_value(otherwise):
+        signature = primitive("select_real" if result_type == REAL else "select_int")
+        return PrimitiveApplication(
+            primitive=signature.id,
+            name=signature.name,
+            arguments=(condition, then, otherwise),
+            result_type=result_type,
+            origin=_first_origin(term)
+            or SourceOrigin(
+                module=owner,
+                structural_path=("if",),
+                role="primitive",
+                source_protocol="qiec-lowering",
+            ),
         )
-    signature = primitive(name)
-    return PrimitiveApplication(
-        primitive=signature.id,
-        name=name,
-        arguments=(condition, then, otherwise),
-        result_type=result_type,
-        origin=_origin_of(condition),
-    )
-
-
-def _origin_of(value: Value) -> SourceOrigin:
-    """The origin a lowered conditional records: its condition's.
-
-    Parameters
-    ----------
-    value : Value
-        The condition.
-
-    Returns
-    -------
-    SourceOrigin
-        The condition's own origin when it records one, else an origin
-        naming the lowering.
-    """
-    found = _first_origin(value)
-    if found is not None:
-        return found
-    return SourceOrigin(
-        module="lowered",
-        structural_path=("if",),
-        role="primitive",
-        source_protocol="qiec-lowering",
+    return ConditionalValue(
+        condition=condition, then=then, otherwise=otherwise, result_type=result_type
     )
 
 
@@ -1042,7 +1194,7 @@ def computation_value(
     CallNotLowered
         If the term makes a request (``effects`` set), reenters a
         computation, handles an effect, branches with ``case``, or
-        chooses between values ``select`` cannot.
+        chooses between computations with unsupported effects.
     """
     bindings: list[LetBinding] = []
     node = term
@@ -1215,8 +1367,8 @@ def pure_call_bindings(
     The analysis both the planner and the runtime compiler inline a
     pure call with: the callee's body at the arguments, with every pure
     computation it calls inlined in turn and every ``if`` between pure
-    branches read as ``select`` (`inline_call`), its bindings hoisted to
-    fresh names by ``floater``.
+    branches read as lazy conditional values (`inline_call`). Bindings are
+    hoisted to fresh names within their original evaluation scope by ``floater``.
 
     Parameters
     ----------

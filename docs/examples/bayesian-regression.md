@@ -124,6 +124,27 @@ print(f"torch log joint:    {float(oracle):.4f}")
 assert torch.allclose(compiled, oracle, rtol=1e-5)
 ```
 
+### Fit through the checked interface
+
+The same data can be bound without listing observed names or constructing a
+guide. For an inferred row count, replace `object Resp : FinSet 64` with `object Resp : FinSet _` in the source, then inspect `bound.schema` before
+inference. The [binding guide](../guides/model-data-and-fitting.md) gives a full
+source example.
+
+```python
+from pathlib import Path
+from quivers.modeling import Model, VariationalMethod
+
+specification = Model(Path("docs/examples/source/bayesian_regression.qvr").read_text())
+bound = specification.bind(observations)
+fit = bound.infer(VariationalMethod(num_steps=2000, seed=7))
+posterior = fit.draws(num_samples=500)
+replicated = fit.predict(num_samples=100)
+```
+
+The following sections expose the guide and sampler components for the numerical
+checks used by this example.
+
 ### SVI fit
 
 A [mean-field](../guides/inference-svi.md) [`AutoNormalGuide`](../api/inference/guide.md) is fit by

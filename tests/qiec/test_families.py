@@ -19,12 +19,21 @@ import torch.distributions.constraints as c
 
 from quivers.qiec import BOOL, INT, REAL
 from quivers.continuous._zip_hurdle import _OpenUnitInterval
+from quivers.continuous._closed_probability import _PositiveUnitInterval
 from quivers.qiec.families import FAMILIES, DistributionFamily, family
 from quivers.qiec.identifiers import DistributionId
 from quivers.transpile.family_meta import FAMILY_META
 
 _MANUAL_PARAMETERS = {
+    "MultivariateStudentT": (
+        "df",
+        "loc",
+        "covariance_matrix",
+        "precision_matrix",
+        "scale_tril",
+    ),
     "Uniform": ("low", "high"),
+    "Wiener": ("boundary", "ndt", "bias", "drift"),
     "Wishart": ("df", "covariance_matrix", "precision_matrix", "scale_tril"),
 }
 
@@ -39,7 +48,7 @@ _COMPOSITIONAL_EXTRAS = {
     "Independent": ("base", "reinterpreted_batch_ndims"),
     "Transformed": ("base", "transforms"),
     "Truncated": ("base",),
-    "Restrict": ("base", "low", "high"),
+    "Restrict": ("base", "low", "high", "lower_closed", "upper_closed"),
     "Normalize": ("base",),
     "PointMass": ("value",),
 }
@@ -92,6 +101,8 @@ def _symbolic(constraint: object) -> tuple[str, int]:
         return "unit_interval_half_open", rank
     if isinstance(constraint, _OpenUnitInterval):
         return "unit_interval_open", rank
+    if isinstance(constraint, _PositiveUnitInterval):
+        return "unit_interval_open_left", rank
     if isinstance(constraint, c._Interval):
         return "unit_interval", rank
     return "dependent", rank
@@ -218,3 +229,23 @@ def test_registry_models_freeze_spellings_and_validate_immutable_updates() -> No
         record.with_(element="Real")
     with pytest.raises(dx.ValidationError):
         record.parameters[0].with_(rank="scalar")
+
+
+def test_wiener_dependent_support_and_instance_parameter_contract():
+    """Its reaction-time support depends on nondecision delay, not a fixed half-line."""
+    from quivers.continuous import Wiener
+    from torch import tensor
+
+    native = Wiener(1.0, 0.2, 0.4, 0.7)
+    record = family("Wiener")
+    for parameter in record.parameters:
+        assert (parameter.constraint, parameter.rank) == _symbolic(
+            native.arg_constraints[parameter.name]
+        )
+    assert record.support == "dependent"
+    assert native.support.check(tensor([-0.3, -0.1, 0.1, 0.3])).tolist() == [
+        True,
+        False,
+        False,
+        True,
+    ]

@@ -116,6 +116,29 @@ beta_x    (true 2.0): 2.031 ± 0.036
 
 The `±` values are standard deviations of the guide's draws, the spread of the approximation. Whether that spread is accurate needs a reference, such as a well-mixed NUTS fit of the same model.
 
+### Predict on new rows
+
+Pass a frame of covariates to predict without a response column:
+
+```python
+future = pd.DataFrame({"x": [-1.0, 0.0, 1.0]})
+future_mean = result.posterior_epred(new_data=future, num_samples=20, seed=7)
+future_response = result.posterior_predict(new_data=future, num_samples=20, seed=7)
+assert future_mean.shape == future_response.shape == (1, 20, 3)
+```
+
+The first result contains expected responses; the second adds response noise.
+`posterior_linpred` instead exposes the linear predictor, with
+`transform=True` for its inverse-link value. New rows reuse fitted transforms
+and contrasts. Grouped models accept fitted group levels in any row order.
+New or missing group identities require `allow_new_levels=True`;
+`sample_new_levels` selects joint donor or fitted Gaussian/LKJ effects.
+`re_formula="~0"` excludes varying effects by setting them to zero.
+Responses and likelihood weights are unnecessary; offsets, exposures,
+auxiliary predictors, and per-row trials still require
+their columns. The [new-row guide](../../guides/analysis-data-and-formulas.md#predictions-on-new-rows)
+gives a grouped distributional example and the neural-input contract.
+
 ## Random effects: hierarchical model under SVI
 
 Eight groups, each with its own intercept offset, and twelve rows per group:
@@ -220,6 +243,16 @@ result = fit(
 ```
 
 The response labels must be consecutive integers starting at zero. The generated program exponentiates log spacings, sums them cumulatively, and centers each rater's thresholds, so the thresholds are ordered in every draw, the rater intercept is a shift of location, and the thresholds describe how each rater uses the scale.
+
+This combines one centered shape with one varying location per rater. The
+compiler reuses the formula's rater intercept, or supplies it when absent;
+a binary cumulative model needs only that location coordinate.
+`result.posterior_thresholds(num_samples=100)` exposes the effective row
+profiles with chain, draw, row, and threshold axes. For nonproportional
+`cs(expr)` terms, the compiler additionally constrains spacing to preserve
+training-row ordering and retains fitted cutpoints during prediction.
+The [ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)
+explains the conditional slack priors and explicit new-group support policies.
 
 ### Training with a neural predictor
 
@@ -349,43 +382,29 @@ res_intercept = fit(
 )
 ```
 
-PSIS-LOO needs the log likelihood of each observation under each posterior draw [@vehtari2017loo]:
+PSIS-LOO needs the log likelihood of each observation under each posterior draw
+[@vehtari2017loo]. `analysis` retains these raw response scores together with the
+draws, so the likelihood calculation uses the model's checked response family:
 
 ```python
-y_obs = torch.as_tensor(y, dtype=torch.float32)
-x_t = torch.as_tensor(x, dtype=torch.float32)
-
-def per_row_log_lik(res, y_obs, x_t):
-    samples = res.posterior.samples
-    ic = samples["intercept"]                         # (chain, draw)
-    bx = samples.get("beta_x", torch.zeros_like(ic))  # zero if intercept-only
-    logits = ic[..., None] + bx[..., None] * x_t
-    p = torch.sigmoid(logits)
-    return y_obs * torch.log(p + 1e-12) + (1 - y_obs) * torch.log(1 - p + 1e-12)
-
-ll_with_x = per_row_log_lik(res_with_x, y_obs, x_t)
-ll_intercept = per_row_log_lik(res_intercept, y_obs, x_t)
+analysis_with_x = res_with_x.analysis()
+analysis_intercept = res_intercept.analysis()
+y_obs = analysis_with_x.observed_data["y"]
+ll_with_x = analysis_with_x.log_likelihood["y"]
+ll_intercept = analysis_intercept.log_likelihood["y"]
 ```
 
 Convert each posterior to a `DataTree` with an observed data group and a log likelihood group:
 
 ```python
-idata_with_x = to_datatree(
-    res_with_x.posterior,
-    observed_data={"y": y_obs},
-    log_likelihood={"y": ll_with_x},
-)
-idata_intercept = to_datatree(
-    res_intercept.posterior,
-    observed_data={"y": y_obs},
-    log_likelihood={"y": ll_intercept},
-)
+idata_with_x = analysis_with_x.to_datatree()
+idata_intercept = analysis_intercept.to_datatree()
 ```
 
 [`compare`](../../api/diagnostics/comparison.md) ranks the fits by PSIS-LOO and computes stacking weights [@yao2018stacking]:
 
 ```python
-table = compare({"with_x": idata_with_x, "intercept_only": idata_intercept}, round_to=2)
+table = compare({"with_x": analysis_with_x, "intercept_only": analysis_intercept}, round_to=2)
 print(table.to_string())
 ```
 
@@ -399,13 +418,10 @@ The model with the predictor ranks first and takes most of the stacking weight. 
 
 ## Posterior predictive checks
 
-[`posterior_predictive_check`](../../api/diagnostics/predictive_checks.md) computes the posterior predictive p-value $\Pr(T(y^{\text{rep}}) \ge T(y))$ of a test statistic $T$ [@gelman1996predictive]. Draw replicated responses under each posterior draw of the intercept and slope, and compare their mean with the observed mean:
+[`posterior_predictive_check`](../../api/diagnostics/predictive_checks.md) computes the posterior predictive p-value $\Pr(T(y^{\text{rep}}) \ge T(y))$ of a test statistic $T$ [@gelman1996predictive]. `BayesianFit.posterior_predict` draws replicated responses from the fitted native model on its retained training rows. It keeps separate chain and draw axes and includes response noise. Compare the replicated mean with the observed mean:
 
 ```python
-samples = res_with_x.posterior.samples
-ic, bx = samples["intercept"], samples["beta_x"]
-p_pp = torch.sigmoid(ic[..., None] + bx[..., None] * x_t)
-pp = torch.bernoulli(p_pp).float()         # (chain, draw, N) replicated y's
+pp = res_with_x.posterior_predict(seed=7)  # (chain, draw, row)
 
 idata = to_datatree(
     res_with_x.posterior,
@@ -421,7 +437,7 @@ print(f"ppp (mean):    {ppc['ppp']:.3f}")
 ```text
 observed mean: 0.312
 predictive mean: 0.314
-ppp (mean):    0.540
+ppp (mean):    0.527
 ```
 
 A p-value near 0.5 puts the observed mean in the middle of the replicated distribution. Values near 0 or 1 suggest that the model misses the statistic. The mean of a Bernoulli outcome is a weak test, since a model with an intercept tends to reproduce it. The built-in statistics are `mean`, `median`, `sd`, `var`, `min`, `max`, `q05`, and `q95`, and a callable is also accepted. `by=` computes the check separately for each level of a named dimension of the data.

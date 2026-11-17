@@ -26,6 +26,7 @@ components weighs each by its mass.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from functools import lru_cache
 from types import MappingProxyType
 
 import didactic.api as dx
@@ -35,6 +36,12 @@ from quivers.qiec._models import validate_shape
 from quivers.qiec.identifiers import DistributionId
 from quivers.qiec.terms import LiteralData
 from quivers.qiec.types import BOOL, INT, REAL, TypeExpr
+from quivers.qiec.family_shapes import (
+    FamilyShapeSignature,
+    legacy_family_shape_signature,
+)
+from quivers.qiec.kinds import NAT, IndexBinder
+from quivers.qiec.types import IndexVariable, shift_index
 
 type ParameterConstraint = str
 """A symbolic constraint on a parameter value, such as ``"positive"``,
@@ -48,6 +55,31 @@ samples."""
 type SupportKind = str
 """A symbolic description of where samples live, in the same vocabulary as
 the parameter constraints."""
+
+
+@lru_cache(maxsize=512)
+def _legacy_shapes(parameters, event_rank, event_sources, event_offsets):
+    """Cache immutable registry shorthand without repeated model construction.
+
+    Parameters
+    ----------
+    parameters : tuple[tuple[str, int, tuple[int or None, ...]], ...]
+        Names, ranks, and event-axis correspondences.
+    event_rank : int
+        Native sample event rank.
+    event_sources : tuple[str, ...]
+        Parameter names supplying native event dimensions.
+    event_offsets : tuple[int, ...]
+        Nonnegative parameter-to-event dimension offsets.
+
+    Returns
+    -------
+    FamilyShapeSignature
+        The shared checked dependent contract for these immutable fields.
+    """
+    return legacy_family_shape_signature(
+        parameters, event_rank, event_sources, event_offsets
+    )
 
 
 class FamilyParameter(dx.Model):
@@ -68,12 +100,32 @@ class FamilyParameter(dx.Model):
         sample's shape does not fix it; empty when no dimension is tied
         to the sample. A multivariate normal's ``scale_tril`` is
         ``(0, 0)``: a square matrix over the sample's one axis.
+    scalar_broadcast
+        Whether a scalar may broadcast over a plated tensor parameter. False
+        for structural tables whose dimensions must be supplied explicitly.
     """
 
     name: str
     constraint: ParameterConstraint
     rank: int
     event_dims: tuple[int | None, ...] = ()
+    scalar_broadcast: bool = True
+
+    @dx.model_validator()
+    def _validate_parameter(self) -> None:
+        """Check intrinsic rank and scalar-broadcast policy.
+
+        Raises
+        ------
+        ValueError
+            If rank is not a nonnegative integer.
+        TypeError
+            If scalar_broadcast is not Boolean.
+        """
+        if type(self.rank) is not int or self.rank < 0:
+            raise ValueError("family parameter rank must be a nonnegative integer")
+        if type(self.scalar_broadcast) is not bool:
+            raise TypeError("scalar_broadcast must be Boolean")
 
 
 class DistributionFamily(ValueModel):
@@ -109,9 +161,16 @@ class DistributionFamily(ValueModel):
         morphisms rather than from tensor parameters alone.
     targets
         The spelling each transpile target uses for the family.
+    event_offsets
+        Nonnegative offsets from parameter event dimensions to sample
+        dimensions, or empty for identity extents. An additive log-ratio
+        normal has one more simplex component than Gaussian coordinates.
     finite_support
         The finite set of values a sample ranges over, when the family
         has one independent of its parameters.
+    shape_signature
+        Explicit dependent parameter/event shape contract. Legacy event-shape
+        fields are otherwise translated to the same representation.
     """
 
     name: str
@@ -131,6 +190,19 @@ class DistributionFamily(ValueModel):
     finite_support: tuple[LiteralData, ...] | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    event_offsets: tuple[int, ...] = ()
+    shape_signature: FamilyShapeSignature | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    atom_locations: tuple[float, ...] | None = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    """Fixed scalar atom carrier; None means a constructor-dependent carrier.
+
+    Empty locations declare an atomless non-discrete, noncompositional law.
+    Integer laws use the global integer counting reference, including cells
+    with zero mass. Compositions derive carriers from their components.
+    """
 
     @dx.model_validator()
     def _validate_family(self) -> None:
@@ -145,8 +217,19 @@ class DistributionFamily(ValueModel):
             parameter or has a rank below the event rank, or a
             parameter ties a dimension to one the sample does not have.
         """
+        if self.atom_locations is not None and (
+            not isinstance(self.atom_locations, tuple)
+            or any(not isinstance(value, int | float) for value in self.atom_locations)
+        ):
+            raise TypeError(
+                "atom_locations must be a tuple of real coordinates or None"
+            )
         validate_shape(self.parameters, tuple[FamilyParameter, ...], path="parameters")
         validate_shape(self.element, TypeExpr, path="element")
+        validate_shape(self.event_offsets, tuple[int, ...], path="event_offsets")
+        validate_shape(
+            self.shape_signature, FamilyShapeSignature | None, path="shape_signature"
+        )
         validate_shape(
             self.finite_support, tuple[LiteralData, ...] | None, path="finite_support"
         )
@@ -155,33 +238,77 @@ class DistributionFamily(ValueModel):
             for key, value in self.targets.items()
         ):
             raise TypeError("targets must map target names to family spellings")
+        if type(self.event_rank) is not int or self.event_rank < 0:
+            raise ValueError("family event rank must be a nonnegative integer")
         names = [parameter.name for parameter in self.parameters]
         if len(set(names)) != len(names):
             raise ValueError(f"family {self.name!r} repeats a parameter name")
-        for source in self.event_sources:
-            if source not in names:
+        if any(source not in names for source in self.event_sources):
+            raise ValueError("family event source must name one of its parameters")
+        if self.shape_signature is None:
+            _legacy_shapes(
+                tuple((p.name, p.rank, p.event_dims) for p in self.parameters),
+                self.event_rank,
+                self.event_sources,
+                self.event_offsets,
+            )
+        if self.shape_signature is not None:
+            if self.event_offsets or any(p.event_dims for p in self.parameters):
                 raise ValueError(
-                    f"family {self.name!r} names event source "
-                    f"{source!r}, which is not a parameter"
+                    "explicit family shape signature cannot duplicate legacy event dimensions or offsets"
                 )
-            if self.parameters[names.index(source)].rank < self.event_rank:
-                raise ValueError(
-                    f"family {self.name!r} names event source {source!r}, of "
-                    f"rank below the family's event rank {self.event_rank}"
-                )
-        for parameter in self.parameters:
-            dims = parameter.event_dims
-            if dims and (
-                len(dims) != parameter.rank
-                or any(
-                    dim is not None and not 0 <= dim < self.event_rank for dim in dims
-                )
+            if {name for name, _ in self.shape_signature.parameter_shapes} != set(
+                names
             ):
                 raise ValueError(
-                    f"family {self.name!r} ties parameter {parameter.name!r} "
-                    f"to sample dimensions {dims!r}, which do not fit its rank "
-                    f"{parameter.rank} and the event rank {self.event_rank}"
+                    "family shape signature must describe exactly its parameters"
                 )
+            if len(self.shape_signature.event_shape) != self.event_rank:
+                raise ValueError("family event rank disagrees with its shape signature")
+            for parameter in self.parameters:
+                if (
+                    len(self.shape_signature.parameter_shape(parameter.name))
+                    != parameter.rank
+                ):
+                    raise ValueError(
+                        "family parameter rank disagrees with its shape signature"
+                    )
+
+    @property
+    def effective_atomicity(self) -> str:
+        """Classify the family's reference measure from its semantic contract.
+
+        Returns
+        -------
+        str
+            Discrete, composite, mixed, or atomless reference category.
+        """
+        if self.compositional:
+            return "composite"
+        if self.discrete:
+            return "discrete"
+        return (
+            "mixed"
+            if self.atom_locations is None or self.atom_locations
+            else "atomless"
+        )
+
+    @property
+    def effective_shape_signature(self) -> FamilyShapeSignature:
+        """Return the dependent contract, translating legacy shorthand once.
+
+        Returns
+        -------
+        FamilyShapeSignature
+            Intrinsic parameter and native event dimensions under local Nat
+            binders. Every checking path consumes this contract.
+        """
+        return self.shape_signature or _legacy_shapes(
+            tuple((p.name, p.rank, p.event_dims) for p in self.parameters),
+            self.event_rank,
+            self.event_sources,
+            self.event_offsets,
+        )
 
     @property
     def id(self) -> DistributionId:
@@ -356,6 +483,45 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
+        name="Multinomial",
+        parameters=(
+            FamilyParameter(
+                name="total_count", constraint="nonnegative_integer", rank=0
+            ),
+            FamilyParameter(
+                name="probs", constraint="simplex", rank=1, event_dims=(0,)
+            ),
+            FamilyParameter(name="logits", constraint="real", rank=1, event_dims=(0,)),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=1,
+        event_sources=("probs", "logits"),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="DirichletMultinomial",
+        parameters=(
+            FamilyParameter(
+                name="total_count", constraint="nonnegative_integer", rank=0
+            ),
+            FamilyParameter(
+                name="concentration", constraint="positive", rank=1, event_dims=(0,)
+            ),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=1,
+        event_sources=("concentration",),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="Dirichlet",
         parameters=(
             FamilyParameter(
@@ -409,6 +575,193 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
             "turing": "Cauchy",
             "webppl": "Cauchy",
         },
+    ),
+    DistributionFamily(
+        name="HurdleGamma",
+        atom_locations=(0.0,),
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
+            FamilyParameter(name="rate", constraint="positive", rank=0),
+        ),
+        support="nonnegative",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="HurdleLogNormal",
+        atom_locations=(0.0,),
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+        ),
+        support="nonnegative",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="ExGaussian",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="rate", constraint="positive", rank=0),
+        ),
+        support="real",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="InverseGaussian",
+        parameters=(
+            FamilyParameter(name="mu", constraint="positive", rank=0),
+            FamilyParameter(name="shape", constraint="positive", rank=0),
+        ),
+        support="positive",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="BernsteinHazard",
+        parameters=(
+            FamilyParameter(
+                name="breaks", constraint="real", rank=1, scalar_broadcast=False
+            ),
+            FamilyParameter(
+                name="controls", constraint="positive", rank=2, scalar_broadcast=False
+            ),
+            FamilyParameter(name="rate", constraint="positive", rank=0),
+            FamilyParameter(name="log_rate", constraint="real", rank=0),
+        ),
+        shape_signature=FamilyShapeSignature(
+            telescope=(
+                IndexBinder(name="segments", sort=NAT),
+                IndexBinder(name="controls", sort=NAT),
+            ),
+            parameter_shapes=(
+                ("breaks", (shift_index(IndexVariable(name="segments", sort=NAT), 1),)),
+                (
+                    "controls",
+                    (
+                        IndexVariable(name="segments", sort=NAT),
+                        IndexVariable(name="controls", sort=NAT),
+                    ),
+                ),
+                ("rate", ()),
+                ("log_rate", ()),
+            ),
+            event_shape=(),
+        ),
+        support="nonnegative",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="COMPoisson",
+        parameters=(
+            FamilyParameter(name="rate", constraint="nonnegative", rank=0),
+            FamilyParameter(name="dispersion", constraint="positive", rank=0),
+            FamilyParameter(name="log_rate", constraint="real", rank=0),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="Wiener",
+        parameters=(
+            FamilyParameter(name="boundary", constraint="positive", rank=0),
+            FamilyParameter(name="ndt", constraint="nonnegative", rank=0),
+            FamilyParameter(name="bias", constraint="unit_interval_open", rank=0),
+            FamilyParameter(name="drift", constraint="real", rank=0),
+        ),
+        support="dependent",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="DiscreteWeibull",
+        parameters=(
+            FamilyParameter(name="probs", constraint="unit_interval_half_open", rank=0),
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="ZeroInflatedAsymmetricLaplace",
+        atom_locations=(0.0,),
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="quantile", constraint="unit_interval_open", rank=0),
+        ),
+        support="real",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="AsymmetricLaplace",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="quantile", constraint="unit_interval_open", rank=0),
+        ),
+        support="real",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
     ),
     DistributionFamily(
         name="Laplace",
@@ -720,6 +1073,85 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
+        name="SkewNormal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="skewness", constraint="real", rank=0),
+        ),
+        support="real",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="ShiftedLogNormal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="shift", constraint="nonnegative", rank=0),
+        ),
+        support="dependent",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="Frechet",
+        parameters=(
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="concentration", constraint="positive", rank=0),
+        ),
+        support="positive",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="GeneralizedExtremeValue",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="concentration", constraint="real", rank=0),
+        ),
+        support="dependent",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="GeneralizedPareto",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=0),
+            FamilyParameter(name="scale", constraint="positive", rank=0),
+            FamilyParameter(name="concentration", constraint="real", rank=0),
+        ),
+        support="dependent",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="Pareto",
         parameters=(
             FamilyParameter(name="scale", constraint="positive", rank=0),
@@ -884,6 +1316,39 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
+        name="MultivariateStudentT",
+        parameters=(
+            FamilyParameter(name="df", constraint="positive", rank=0),
+            FamilyParameter(name="loc", constraint="real", rank=1, event_dims=(0,)),
+            FamilyParameter(
+                name="covariance_matrix",
+                constraint="positive_definite",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="precision_matrix",
+                constraint="positive_definite",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="scale_tril",
+                constraint="lower_cholesky",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+        ),
+        support="real",
+        element=REAL,
+        event_rank=1,
+        event_sources=("loc",),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="LowRankMVN",
         parameters=(
             FamilyParameter(name="loc", constraint="real", rank=1, event_dims=(0,)),
@@ -1025,6 +1490,18 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
             FamilyParameter(
                 name="col_covariance",
                 constraint="positive_definite",
+                rank=2,
+                event_dims=(1, 1),
+            ),
+            FamilyParameter(
+                name="row_scale_tril",
+                constraint="lower_cholesky",
+                rank=2,
+                event_dims=(0, 0),
+            ),
+            FamilyParameter(
+                name="col_scale_tril",
+                constraint="lower_cholesky",
                 rank=2,
                 event_dims=(1, 1),
             ),
@@ -1199,7 +1676,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     DistributionFamily(
         name="Geometric",
         parameters=(
-            FamilyParameter(name="probs", constraint="unit_interval", rank=0),
+            FamilyParameter(name="probs", constraint="unit_interval_open_left", rank=0),
             FamilyParameter(name="logits", constraint="real", rank=0),
         ),
         support="nonnegative_integer",
@@ -1270,6 +1747,41 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
+        name="AdditiveLogRatioNormal",
+        parameters=(
+            FamilyParameter(name="loc", constraint="real", rank=1),
+            FamilyParameter(
+                name="scale_tril",
+                constraint="lower_cholesky",
+                rank=2,
+            ),
+            FamilyParameter(name="reference", constraint="nonnegative_integer", rank=0),
+        ),
+        support="simplex",
+        element=REAL,
+        event_rank=1,
+        event_sources=("loc",),
+        shape_signature=FamilyShapeSignature(
+            telescope=(IndexBinder(name="coordinate", sort=NAT),),
+            parameter_shapes=(
+                ("loc", (IndexVariable(name="coordinate", sort=NAT),)),
+                (
+                    "scale_tril",
+                    (
+                        IndexVariable(name="coordinate", sort=NAT),
+                        IndexVariable(name="coordinate", sort=NAT),
+                    ),
+                ),
+                ("reference", ()),
+            ),
+            event_shape=(shift_index(IndexVariable(name="coordinate", sort=NAT), 1),),
+        ),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="LogisticNormal",
         parameters=(
             FamilyParameter(name="loc", constraint="real", rank=0),
@@ -1336,7 +1848,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         name="Mixture",
         parameters=(
             FamilyParameter(name="weights", constraint="simplex", rank=1),
-            FamilyParameter(name="component", constraint="sampleable", rank=0),
+            FamilyParameter(name="component", constraint="sampleable", rank=1),
         ),
         support="dependent",
         element=REAL,
@@ -1444,6 +1956,75 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         },
     ),
     DistributionFamily(
+        name="ZeroInflatedNegativeBinomial",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="total_count", constraint="nonnegative", rank=0),
+            FamilyParameter(name="probs", constraint="unit_interval_half_open", rank=0),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="ZeroInflatedBinomial",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(
+                name="total_count", constraint="nonnegative_integer", rank=0
+            ),
+            FamilyParameter(name="probs", constraint="unit_interval", rank=0),
+        ),
+        support="dependent",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="ZeroInflatedBetaBinomial",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(
+                name="total_count", constraint="nonnegative_integer", rank=0
+            ),
+            FamilyParameter(name="concentration1", constraint="positive", rank=0),
+            FamilyParameter(name="concentration0", constraint="positive", rank=0),
+        ),
+        support="dependent",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
+        name="HurdleNegativeBinomial",
+        parameters=(
+            FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
+            FamilyParameter(name="total_count", constraint="positive", rank=0),
+            FamilyParameter(name="probs", constraint="unit_interval_half_open", rank=0),
+        ),
+        support="nonnegative_integer",
+        element=INT,
+        event_rank=0,
+        event_sources=(),
+        discrete=True,
+        reparameterizable=False,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="ZeroInflatedPoisson",
         parameters=(
             FamilyParameter(name="zero_prob", constraint="unit_interval", rank=0),
@@ -1475,6 +2056,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     ),
     DistributionFamily(
         name="ZeroOneInflatedBeta",
+        atom_locations=(0.0, 1.0),
         parameters=(
             FamilyParameter(name="mu", constraint="unit_interval_open", rank=0),
             FamilyParameter(name="phi", constraint="positive", rank=0),
@@ -1491,11 +2073,30 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
         targets={},
     ),
     DistributionFamily(
+        name="ExtendedBeta",
+        atom_locations=(0.0, 1.0),
+        parameters=(
+            FamilyParameter(name="mu", constraint="unit_interval_open", rank=0),
+            FamilyParameter(name="phi", constraint="positive", rank=0),
+            FamilyParameter(name="kappa", constraint="nonnegative", rank=0),
+        ),
+        support="unit_interval",
+        element=REAL,
+        event_rank=0,
+        event_sources=(),
+        discrete=False,
+        reparameterizable=True,
+        compositional=False,
+        targets={},
+    ),
+    DistributionFamily(
         name="Restrict",
         parameters=(
             FamilyParameter(name="base", constraint="sampleable", rank=0),
             FamilyParameter(name="low", constraint="real", rank=0),
             FamilyParameter(name="high", constraint="real", rank=0),
+            FamilyParameter(name="lower_closed", constraint="boolean", rank=0),
+            FamilyParameter(name="upper_closed", constraint="boolean", rank=0),
         ),
         support="dependent",
         element=REAL,
@@ -1520,6 +2121,7 @@ _FAMILIES: tuple[DistributionFamily, ...] = (
     ),
     DistributionFamily(
         name="PointMass",
+        atom_locations=None,
         parameters=(FamilyParameter(name="value", constraint="numeric", rank=0),),
         support="dependent",
         element=REAL,

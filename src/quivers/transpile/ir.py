@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Literal
 
 import didactic.api as dx
+import math
 import torch.distributions.constraints as _constraints
 from torch.distributions.constraints import Constraint
 
@@ -294,6 +295,28 @@ class CSBoolean(ConstraintSpec):
         return _constraints.boolean
 
 
+class CSInteger(ConstraintSpec):
+    """An integer carrier without a nonnegative or finite-interval refinement.
+
+    Parameters
+    ----------
+    kind : Literal["integer"]
+        The serialization discriminator.
+    """
+
+    kind: Literal["integer"] = "integer"
+
+    def to_constraint(self) -> Constraint:
+        """Materialise the whole integer line.
+
+        Returns
+        -------
+        Constraint
+            The integer interval with infinite bounds.
+        """
+        return _constraints.integer_interval(-math.inf, math.inf)
+
+
 class CSIntegerInterval(ConstraintSpec):
     """`IntegerInterval(lower, upper)`."""
 
@@ -383,6 +406,8 @@ def from_constraint(c: Constraint) -> ConstraintSpec:
     if isinstance(c, _constraints._Boolean):
         return CSBoolean()
     if isinstance(c, _constraints._IntegerInterval):
+        if not math.isfinite(c.lower_bound) and not math.isfinite(c.upper_bound):
+            return CSInteger()
         return CSIntegerInterval(lower=int(c.lower_bound), upper=int(c.upper_bound))
     if isinstance(c, _constraints._IntegerGreaterThan):
         if int(c.lower_bound) == 0:
@@ -680,7 +705,7 @@ def is_int_bit(c: Constraint) -> bool:
     if isinstance(c, _constraints._Boolean):
         return True
     if isinstance(c, _constraints._IntegerInterval):
-        return int(c.lower_bound) == 0 and int(c.upper_bound) == 1
+        return c.lower_bound == 0 and c.upper_bound == 1
     return False
 
 
@@ -698,6 +723,8 @@ def is_int_category(c: Constraint) -> bool:
         Whether ``c`` is a finite range of category indices.
     """
     if not isinstance(c, _constraints._IntegerInterval):
+        return False
+    if not math.isfinite(c.lower_bound) or not math.isfinite(c.upper_bound):
         return False
     lo = int(c.lower_bound)
     hi = int(c.upper_bound)
@@ -775,9 +802,9 @@ class IRArg(dx.TaggedUnion, discriminator="kind"):
 
 
 class IRArgNumber(IRArg):
-    """A numeric literal."""
+    """A numeric literal preserving its integer or real carrier."""
 
-    value: float
+    value: int | float
     kind: Literal["number"] = "number"
 
 
@@ -1065,7 +1092,9 @@ class IRCall(IRNode):
     The callee is rendered from the module as a host function; the
     call runs it under the target's own draw and score primitives for
     the program's `random` and `score` instances, whose stable
-    identities the node carries so the renderer can attach them.
+    identities the node carries so the renderer can attach them. The
+    ``constraint`` records the checked result's scalar carrier independently
+    of its plate axes.
     """
 
     name: str
@@ -1075,6 +1104,7 @@ class IRCall(IRNode):
     random_instance: str
     score_instance: str
     plate: Plate
+    constraint: ConstraintSpec
     kind: Literal["call"] = "call"
 
 
@@ -1116,6 +1146,7 @@ class IRProgram(dx.Model):
 __all__ = [
     "CSBoolean",
     "CSCorrCholesky",
+    "CSInteger",
     "CSIntegerInterval",
     "CSInterval",
     "CSLowerCholesky",

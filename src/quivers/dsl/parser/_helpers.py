@@ -81,7 +81,9 @@ def _walk_draw_arg(t: _Tree, vid: str) -> DrawArg:
     if k == "identifier":
         return DrawArgName(text=t.text(vid))
     if k in ("signed_number", "integer", "float"):
-        return DrawArgScalar(value=float(t.text(vid)))
+        text = t.text(vid)
+        value = float(text) if any(char in text for char in ".eE") else int(text)
+        return DrawArgScalar(value=value)
     if k == "bracket_index_arg":
         nv = t.field(vid, "name")
         iv = t.field(vid, "index")

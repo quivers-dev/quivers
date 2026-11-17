@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the ExtendedBeta family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program extendedbeta_fixture : Obs -> Obs
+    observe y : Obs <- ExtendedBeta(mu=0.3, phi=4.0, kappa=0.2)
+    return y
+export extendedbeta_fixture

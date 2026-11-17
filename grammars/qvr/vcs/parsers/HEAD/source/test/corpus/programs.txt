@@ -22,10 +22,10 @@ program p : A -> B
       (identifier))))
 
 ==================
-program with typed and untyped parameters
+program with static and typed runtime parameters
 ==================
 
-program q (alpha, beta : Real, n : Nat, s : FinSet, sp : Space, ob : Object, m : Mor[A, B * C]) : A -> B [n_steps=4]
+program q[s : FinSet, sp : Space, ob : Object, m : Mor[A, B * C]](alpha : Real, beta : Real, n : Nat) : A -> B [n_steps=4]
     sample x <- f
     return x
 
@@ -34,13 +34,6 @@ program q (alpha, beta : Real, n : Nat, s : FinSet, sp : Space, ob : Object, m :
 (source_file
   (program_decl
     (identifier)
-    (identifier)
-    (typed_program_param
-      (identifier)
-      (scalar_kind))
-    (typed_program_param
-      (identifier)
-      (scalar_kind))
     (typed_program_param
       (identifier)
       (object_kind))
@@ -60,6 +53,18 @@ program q (alpha, beta : Real, n : Nat, s : FinSet, sp : Space, ob : Object, m :
             (identifier))
           (object_atom
             (identifier)))))
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
     (object_atom
       (identifier))
     (object_atom
@@ -241,9 +246,10 @@ program scored (alpha : Real) : A -> B
 (source_file
   (program_decl
     (identifier)
-    (typed_program_param
+    (qiec_value_parameter
       (identifier)
-      (scalar_kind))
+      (qiec_type_name
+        (identifier)))
     (object_atom
       (identifier))
     (object_atom

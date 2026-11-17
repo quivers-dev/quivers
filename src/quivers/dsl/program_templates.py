@@ -13,12 +13,17 @@ latents.
 The renaming follows one convention on every runtime: a local ``z`` of a
 program drawn under the binder ``theta`` becomes ``theta$z``, and the
 name the program returns becomes the binder itself, so ``sample theta <-
-school_effects(0.6, School)`` binds ``theta`` to the returned value and
+school_effects[School](0.6)`` binds ``theta`` to the returned value and
 contributes the site ``theta$z``. A parenthesized pattern maps the
 program's returned names onto its own positionally, and a single binder
 taking a pair binds the pair of the renamed components. ``$`` is no
 character of a source identifier, so a renamed name never collides with
 one the source declares.
+
+A standalone Python factory or define application specializes the program
+without adding a calling scope. Its source addresses remain unchanged,
+except where an actual argument requires capture-avoiding freshening;
+calls inside the specialized body retain the convention above.
 """
 
 from __future__ import annotations
@@ -30,6 +35,12 @@ import didactic.api as dx
 from quivers.dsl.ast_nodes import (
     AxisSpec,
     CallStep,
+    QiecBinder,
+    QiecValueParameter,
+    QiecIndexBinder,
+    QiecTypeBinder,
+    QiecEffectBinder,
+    MorphismParam,
     DrawArg,
     DrawArgDist,
     DrawArgIndex,
@@ -39,15 +50,28 @@ from quivers.dsl.ast_nodes import (
     DrawArgScalar,
     LetExprFactor,
     LetExprLiteral,
+    LetExprBool,
+    LetExprUnit,
+    LetExprList,
+    LetExprIndex,
     LetExprNode,
     LetExprTuple,
     LetExprVar,
     LetStep,
     MarginalizeStep,
     ObjectExpr,
+    ObjectCoproduct,
+    ObjectSlash,
+    ObjectEffectApply,
+    ContinuousConstructor,
+    DiscreteConstructor,
     ObjectParam,
     ObjectProduct,
     ObserveStep,
+    OptionEntry,
+    OptionName,
+    OptionList,
+    OptionNumber,
     ProgramDecl,
     ProgramStep,
     ReturnStep,
@@ -56,7 +80,31 @@ from quivers.dsl.ast_nodes import (
     ScoreStep,
     TypeName,
 )
-from quivers.dsl.let_expr_traversal import map_let_expr, substitute_let_expr
+from quivers.dsl.let_expr_traversal import (
+    free_let_names,
+    map_let_expr,
+    substitute_let_expr,
+)
+
+
+def _is_standalone_application(program: ProgramDecl) -> bool:
+    """Identify the compiler's transparent application wrapper.
+
+    The reserved ``$`` separator cannot occur in an authored identifier.
+    A standalone specialization keeps its source addresses; an invocation
+    inside its body still introduces a fresh namespace.
+
+    Parameters
+    ----------
+    program : ProgramDecl
+        The enclosing compiler-generated or authored declaration.
+
+    Returns
+    -------
+    bool
+        Whether its reserved name marks a standalone specialization.
+    """
+    return program.name.startswith("__tmpl_apply$")
 
 
 class TemplateError(Exception):
@@ -81,87 +129,185 @@ class TemplateBindings(dx.Model):
     objects : dict[str, str]
         The object each object parameter takes.
     values : dict[str, LetExprNode]
-        The expression each scalar parameter takes.
+        The expression each runtime value parameter takes.
     morphisms : dict[str, str]
         The declared morphism each morphism parameter takes.
+    statics : dict[str, DrawArg]
+        The authored argument each dependent static binder takes.
     """
 
     objects: dict[str, str]
     values: dict[str, LetExprNode]
     morphisms: dict[str, str]
+    statics: dict[str, DrawArg] = {}
+
+
+def static_program_parameters(
+    template: ProgramDecl,
+) -> tuple[QiecBinder | ObjectParam | MorphismParam, ...]:
+    """Return static binders in authored telescope order."""
+    return tuple(
+        sorted(
+            (
+                *template.binders,
+                *(
+                    p
+                    for p in template.type_params or ()
+                    if isinstance(p, ObjectParam | MorphismParam)
+                ),
+            ),
+            key=lambda parameter: (parameter.line, parameter.col),
+        )
+    )
+
+
+def runtime_program_parameters(
+    template: ProgramDecl,
+) -> tuple[QiecValueParameter | ScalarParam, ...]:
+    """Return typed runtime parameters without scalar metadata duplicates."""
+    if template.value_parameters:
+        return template.value_parameters
+    return tuple(p for p in template.type_params or () if isinstance(p, ScalarParam))
+
+
+def validate_program_application(
+    template: ProgramDecl,
+    arguments: tuple[DrawArg, ...],
+    *,
+    static_arguments: tuple[DrawArg, ...] = (),
+) -> None:
+    """Check argument stages before any source substitution occurs."""
+    for stage, parameters, supplied in (
+        ("static", static_program_parameters(template), static_arguments),
+        ("runtime", runtime_program_parameters(template), arguments),
+    ):
+        if len(supplied) != len(parameters):
+            raise TemplateError(
+                f"program {template.name!r} takes {len(parameters)} {stage} "
+                f"argument(s); the {stage} application supplies {len(supplied)}"
+            )
+        for parameter, argument in zip(parameters, supplied, strict=True):
+            if stage == "static":
+                if isinstance(
+                    parameter, ObjectParam | MorphismParam
+                ) and not isinstance(argument, DrawArgName):
+                    raise TemplateError(
+                        f"static parameter {parameter.name!r} takes "
+                        + (
+                            "an object"
+                            if isinstance(parameter, ObjectParam)
+                            else "a declared morphism"
+                        )
+                    )
+                if (
+                    isinstance(parameter, QiecIndexBinder)
+                    and isinstance(argument, DrawArgScalar)
+                    and (
+                        argument.value < 0
+                        or (
+                            isinstance(argument.value, float)
+                            and not argument.value.is_integer()
+                        )
+                    )
+                ):
+                    raise TemplateError(
+                        f"static index {parameter.name!r} requires a natural number"
+                    )
+            elif isinstance(argument, DrawArgNamed):
+                raise TemplateError(
+                    f"runtime parameters of program {template.name!r} are positional values"
+                )
+
+
+def draw_argument_expression(argument: DrawArg) -> LetExprNode:
+    """Represent a value argument with the existing pure expression tree."""
+    if isinstance(argument, DrawArgScalar):
+        return LetExprLiteral(
+            value=argument.value,
+            integral=isinstance(argument.value, int),
+            line=argument.line,
+            col=argument.col,
+        )
+    if isinstance(argument, DrawArgName):
+        if argument.text in {"true", "false"}:
+            return LetExprBool(
+                value=argument.text == "true", line=argument.line, col=argument.col
+            )
+        if argument.text == "unit":
+            return LetExprUnit(line=argument.line, col=argument.col)
+        return LetExprVar(name=argument.text, line=argument.line, col=argument.col)
+    if isinstance(argument, DrawArgList):
+        return LetExprList(
+            items=tuple(draw_argument_expression(item) for item in argument.items)
+        )
+    if isinstance(argument, DrawArgIndex):
+
+        def index_expression(index: str) -> LetExprNode:
+            try:
+                return LetExprLiteral(value=int(index), integral=True)
+            except ValueError:
+                return LetExprVar(name=index)
+
+        return LetExprIndex(
+            array=LetExprVar(name=argument.name),
+            indices=tuple(index_expression(index) for index in argument.indices),
+        )
+    raise TemplateError(
+        f"a runtime program argument must be a value, not {argument.kind!r}"
+    )
 
 
 def template_bindings(
     template: ProgramDecl,
     arguments: tuple[DrawArg, ...],
     bound: Mapping[str, LetExprNode],
+    *,
+    static_arguments: tuple[DrawArg, ...] = (),
 ) -> TemplateBindings:
-    """The substitutions a draw's arguments fix for a program's parameters.
+    """Substitute separately checked static and runtime program arguments.
 
-    Parameters
-    ----------
-    template : ProgramDecl
-        The program drawn from.
-    arguments : tuple[DrawArg, ...]
-        The draw's arguments, in the program's parameter order.
-    bound : Mapping[str, LetExprNode]
-        Every name bound in the caller, each as the expression a
-        reference to it denotes.
-
-    Returns
-    -------
-    TemplateBindings
-        The object each object parameter takes, the expression each
-        scalar parameter takes, and the morphism each morphism
-        parameter takes.
-
-    Raises
-    ------
-    TemplateError
-        If the argument count differs from the parameter count or an
-        argument does not fit its parameter.
+    The binding records syntax only. The caller checks declared runtime types
+    in its typed context before executing the instantiated body.
     """
-    parameters = template.type_params or ()
-    if len(arguments) != len(parameters):
-        raise TemplateError(
-            f"program {template.name!r} takes {len(parameters)} template "
-            f"parameter(s); the draw supplies {len(arguments)}"
-        )
+    validate_program_application(template, arguments, static_arguments=static_arguments)
     objects: dict[str, str] = {}
     values: dict[str, LetExprNode] = {}
     morphisms: dict[str, str] = {}
-    for argument, parameter in zip(arguments, parameters, strict=True):
+    statics: dict[str, DrawArg] = {}
+    for parameter, argument in zip(
+        static_program_parameters(template), static_arguments, strict=True
+    ):
         if isinstance(parameter, ObjectParam):
-            if not isinstance(argument, DrawArgName):
-                raise TemplateError(
-                    f"parameter {parameter.name!r} of program {template.name!r} "
-                    f"takes an object"
-                )
+            assert isinstance(argument, DrawArgName)
             objects[parameter.name] = argument.text
-        elif isinstance(parameter, ScalarParam):
-            if isinstance(argument, DrawArgScalar):
-                values[parameter.name] = LetExprLiteral(value=argument.value)
-            elif isinstance(argument, DrawArgName) and argument.text in bound:
-                values[parameter.name] = bound[argument.text]
-            else:
-                raise TemplateError(
-                    f"parameter {parameter.name!r} of program {template.name!r} "
-                    f"takes a number or a bound name"
-                )
-        else:
-            if not isinstance(argument, DrawArgName):
-                raise TemplateError(
-                    f"parameter {parameter.name!r} of program {template.name!r} "
-                    f"takes a declared morphism"
-                )
+        elif isinstance(parameter, MorphismParam):
+            assert isinstance(argument, DrawArgName)
             morphisms[parameter.name] = argument.text
-    return TemplateBindings(objects=objects, values=values, morphisms=morphisms)
+        else:
+            assert isinstance(
+                parameter, QiecIndexBinder | QiecTypeBinder | QiecEffectBinder
+            )
+            statics[parameter.name] = argument
+            if isinstance(parameter, QiecIndexBinder):
+                values[parameter.name] = draw_argument_expression(argument)
+    for parameter, argument in zip(
+        runtime_program_parameters(template), arguments, strict=True
+    ):
+        expression = draw_argument_expression(argument)
+        if isinstance(expression, LetExprVar) and expression.name in bound:
+            expression = bound[expression.name]
+        values[parameter.name] = expression
+    return TemplateBindings(
+        objects=objects, values=values, morphisms=morphisms, statics=statics
+    )
 
 
 def instantiate_program(
     template: ProgramDecl,
     binders: tuple[str, ...],
     bindings: TemplateBindings,
+    *,
+    preserve_names: bool = False,
 ) -> tuple[ProgramStep, ...]:
     """The steps a draw from a program runs in the caller.
 
@@ -174,6 +320,9 @@ def instantiate_program(
     bindings : TemplateBindings
         What the draw's arguments substitute for the program's
         parameters.
+    preserve_names : bool
+        Keep body addresses for a standalone specialization. Nested calls
+        still instantiate under their own binding patterns.
 
     Returns
     -------
@@ -189,22 +338,54 @@ def instantiate_program(
         the program returns.
     """
     returned = template.return_vars
+    body_bound = set(_bound_names(template.draws)) - bindings.values.keys()
+    aliases: list[tuple[str, str]] = []
     prefix = "_".join(binders)
+    actual_names = (
+        {name for value in bindings.values.values() for name in free_let_names(value)}
+        if preserve_names
+        else set()
+    )
     rename: dict[str, str] = {}
     if len(binders) == len(returned):
         for name, binder in zip(returned, binders, strict=True):
-            rename[name] = binder
+            if name in body_bound and name not in rename:
+                rename[name] = binder
+            else:
+                aliases.append((binder, name))
     elif len(binders) != 1:
         raise TemplateError(
             f"pattern ({', '.join(binders)}) destructures {len(binders)} names, "
             f"but program {template.name!r} returns {len(returned)}"
         )
     for name in _bound_names(template.draws):
-        rename.setdefault(name, f"{prefix}${name}")
+        if name not in bindings.values:
+            rename.setdefault(
+                name,
+                name
+                if preserve_names and name not in actual_names
+                else f"{prefix}${name}",
+            )
     steps = tuple(
         _rename_step(step, bindings, rename)
         for step in template.draws
         if not isinstance(step, ReturnStep)
+    )
+    steps = (
+        *steps,
+        *(
+            LetStep(
+                name=binder,
+                value=_rename_expr(
+                    LetExprVar(name=name), bindings.objects, bindings.values, rename
+                ),
+            )
+            for binder, name in aliases
+            if not (
+                isinstance(bindings.values.get(name), LetExprVar)
+                and bindings.values[name].name == binder
+            )
+        ),
     )
     if len(binders) == 1 and len(returned) != 1:
         steps = (
@@ -212,7 +393,15 @@ def instantiate_program(
             LetStep(
                 name=binders[0],
                 value=LetExprTuple(
-                    items=tuple(LetExprVar(name=rename[name]) for name in returned)
+                    items=tuple(
+                        _rename_expr(
+                            LetExprVar(name=name),
+                            bindings.objects,
+                            bindings.values,
+                            rename,
+                        )
+                        for name in returned
+                    )
                 ),
             ),
         )
@@ -278,17 +467,39 @@ def _rename_step(
         If a scalar parameter is drawn through where only a number or
         a name fits.
     """
-    objects, values, morphisms = bindings.objects, bindings.values, bindings.morphisms
+    objects = {
+        **{
+            name: actual.text
+            for name, actual in bindings.statics.items()
+            if isinstance(actual, DrawArgName)
+        },
+        **bindings.objects,
+    }
+    values, morphisms = bindings.values, bindings.morphisms
     if isinstance(step, (SampleStep, ObserveStep)):
+        variables: list[str] = []
+        for name in step.vars:
+            if isinstance(step, ObserveStep) and name in values:
+                actual = values[name]
+                if not isinstance(actual, LetExprVar):
+                    raise TemplateError(
+                        f"observed parameter {name!r} requires a named runtime value"
+                    )
+                variables.append(actual.name)
+            else:
+                variables.append(rename.get(name, name))
         return step.with_(
-            vars=tuple(rename.get(name, name) for name in step.vars),
+            vars=tuple(variables),
+            static_args=_rename_static_args(step.static_args, bindings),
             morphism=_rename_morphism(step.morphism, morphisms, rename),
             args=_rename_args(step.args, values, rename),
             index=None if step.index is None else _rename_object(step.index, objects),
             axes=_rename_axes(step.axes, objects),
+            options=_rename_step_options(step.options, objects, values, rename),
         )
     if isinstance(step, MarginalizeStep):
         return step.with_(
+            static_args=_rename_static_args(step.static_args, bindings),
             var=rename.get(step.var, step.var),
             morphism=_rename_morphism(step.morphism, morphisms, rename),
             args=_rename_args(step.args, values, rename),
@@ -317,6 +528,86 @@ def _rename_step(
             ),
         )
     return step
+
+
+def _rename_step_options(
+    options: tuple[OptionEntry, ...],
+    objects: Mapping[str, str],
+    values: Mapping[str, LetExprNode],
+    rename: Mapping[str, str],
+) -> tuple[OptionEntry, ...]:
+    """Substitute static axes and runtime weights at their respective stages.
+
+    Parameters
+    ----------
+    options : tuple[OptionEntry, ...]
+        The draw's authored options.
+    objects : Mapping[str, str]
+        Actual static object names replacing formal axes.
+    values : Mapping[str, LetExprNode]
+        Actual runtime values replacing formal parameter names.
+    rename : Mapping[str, str]
+        Fresh names replacing locals of the instantiated body.
+
+    Returns
+    -------
+    tuple[OptionEntry, ...]
+        Options with static axes and weight dependencies substituted.
+
+    Raises
+    ------
+    TemplateError
+        If an actual weight expression has not been captured as a name or number.
+    """
+    result: list[OptionEntry] = []
+    for entry in options:
+        option = entry.value
+        if entry.key in {"over", "iid_over"}:
+            if isinstance(option, OptionName):
+                option = option.with_(value=objects.get(option.value, option.value))
+            elif isinstance(option, OptionList):
+                option = option.with_(
+                    items=tuple(
+                        item.with_(value=objects.get(item.value, item.value))
+                        if isinstance(item, OptionName)
+                        else item
+                        for item in option.items
+                    )
+                )
+            entry = entry.with_(value=option)
+        from quivers._observation import EVENT_OPTIONS
+
+        if entry.key in {"weights", *EVENT_OPTIONS} and isinstance(option, OptionName):
+            actual = values.get(option.value)
+            if actual is None:
+                option = option.with_(value=rename.get(option.value, option.value))
+            elif isinstance(actual, LetExprVar):
+                option = option.with_(value=actual.name)
+            elif isinstance(actual, LetExprLiteral):
+                option = OptionNumber(value=actual.value)
+            else:
+                raise TemplateError(
+                    f"observation {entry.key} requires a named value or number"
+                )
+            entry = entry.with_(value=option)
+        result.append(entry)
+    return tuple(result)
+
+
+def _rename_static_args(
+    arguments: tuple[DrawArg, ...], bindings: TemplateBindings
+) -> tuple[DrawArg, ...]:
+    """Substitute static names without moving runtime values across stages."""
+    names = {**bindings.objects, **bindings.morphisms}
+    rewritten: list[DrawArg] = []
+    for argument in arguments:
+        if isinstance(argument, DrawArgName):
+            if argument.text in names:
+                argument = argument.with_(text=names[argument.text])
+            else:
+                argument = bindings.statics.get(argument.text, argument)
+        rewritten.append(argument)
+    return tuple(rewritten)
 
 
 def _rename_morphism(
@@ -399,15 +690,36 @@ def _rename_args(
         elif isinstance(argument, DrawArgIndex):
             out.append(
                 argument.with_(
-                    name=rename.get(argument.name, argument.name),
+                    name=_argument_name(argument.name, values, rename),
                     indices=tuple(
-                        rename.get(index, index) for index in argument.indices
+                        _argument_name(index, values, rename, index=True)
+                        for index in argument.indices
                     ),
                 )
             )
         else:
             out.append(argument)
     return tuple(out)
+
+
+def _argument_name(
+    name: str,
+    values: Mapping[str, LetExprNode],
+    rename: Mapping[str, str],
+    *,
+    index: bool = False,
+) -> str:
+    """Substitute an index or array name in the restricted draw syntax."""
+    replacement = values.get(name)
+    if replacement is None:
+        return rename.get(name, name)
+    if isinstance(replacement, LetExprVar):
+        return replacement.name
+    if index and isinstance(replacement, LetExprLiteral):
+        numeric = replacement.value
+        if isinstance(numeric, int) or numeric.is_integer():
+            return str(int(numeric))
+    raise TemplateError(f"indexed parameter {name!r} requires a named value")
 
 
 def _draw_argument(value: LetExprNode, argument: DrawArgName) -> DrawArg:
@@ -431,9 +743,7 @@ def _draw_argument(value: LetExprNode, argument: DrawArgName) -> DrawArg:
         If the expression is neither.
     """
     if isinstance(value, LetExprLiteral):
-        return DrawArgScalar(
-            value=float(value.value), line=argument.line, col=argument.col
-        )
+        return DrawArgScalar(value=value.value, line=argument.line, col=argument.col)
     if isinstance(value, LetExprVar):
         return DrawArgName(text=value.name, line=argument.line, col=argument.col)
     raise TemplateError(
@@ -441,29 +751,80 @@ def _draw_argument(value: LetExprNode, argument: DrawArgName) -> DrawArg:
     )
 
 
-def _rename_object(expr: ObjectExpr, objects: Mapping[str, str]) -> ObjectExpr:
-    """An object expression under the object substitution.
+def substitute_program_object(
+    expression: ObjectExpr, substitutions: Mapping[str, ObjectExpr]
+) -> ObjectExpr:
+    """Substitute static objects throughout categorical type syntax.
 
-    Parameters
-    ----------
-    expr : ObjectExpr
-        The expression.
-    objects : Mapping[str, str]
-        The object each object parameter takes.
-
-    Returns
-    -------
-    ObjectExpr
-        The rewritten expression.
+    Substitution is simultaneous: actual expressions are inserted unchanged
+    except for the reference's source span. Constructor dimensions and effect
+    names require a named actual; object operators accept arbitrary expressions.
     """
-    if isinstance(expr, TypeName):
-        replacement = objects.get(expr.name)
-        return expr if replacement is None else expr.with_(name=replacement)
-    if isinstance(expr, ObjectProduct):
-        return expr.with_(
-            components=tuple(_rename_object(item, objects) for item in expr.components)
+    if not substitutions:
+        return expression
+    if isinstance(expression, TypeName):
+        replacement = substitutions.get(expression.name)
+        return (
+            expression
+            if replacement is None
+            else replacement.with_(line=expression.line, col=expression.col)
         )
-    return expr
+    if isinstance(expression, ObjectProduct | ObjectCoproduct):
+        return expression.with_(
+            components=tuple(
+                substitute_program_object(item, substitutions)
+                for item in expression.components
+            )
+        )
+    if isinstance(expression, ObjectSlash):
+        return expression.with_(
+            result=substitute_program_object(expression.result, substitutions),
+            argument=substitute_program_object(expression.argument, substitutions),
+        )
+
+    def name_actual(name: str) -> str:
+        replacement = substitutions.get(name)
+        if replacement is None:
+            return name
+        if not isinstance(replacement, TypeName):
+            raise TemplateError(
+                f"static constructor dimension or effect {name!r} requires a named object or literal"
+            )
+        return replacement.name
+
+    if isinstance(expression, ObjectEffectApply):
+        return expression.with_(
+            effect=name_actual(expression.effect),
+            args=tuple(
+                substitute_program_object(item, substitutions)
+                for item in expression.args
+            ),
+        )
+    if isinstance(expression, DiscreteConstructor | ContinuousConstructor):
+
+        def option_actual(value: float | int | str) -> float | int | str:
+            if not isinstance(value, str) or value not in substitutions:
+                return value
+            rewritten = name_actual(value)
+            try:
+                return int(rewritten)
+            except ValueError:
+                return rewritten
+
+        return expression.with_(
+            args=tuple(name_actual(item) for item in expression.args),
+            kwargs={
+                key: option_actual(value) for key, value in expression.kwargs.items()
+            },
+        )
+    raise TypeError(f"object substitution does not cover {type(expression).__name__}")
+
+
+def _rename_object(expr: ObjectExpr, objects: Mapping[str, str]) -> ObjectExpr:
+    """Substitute named objects while preserving authored source spans."""
+    return substitute_program_object(
+        expr, {name: TypeName(name=actual) for name, actual in objects.items()}
+    )
 
 
 def _rename_axes(axes: AxisSpec | None, objects: Mapping[str, str]) -> AxisSpec | None:

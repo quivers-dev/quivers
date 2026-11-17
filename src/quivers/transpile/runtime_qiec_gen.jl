@@ -37,6 +37,18 @@ function _qvr_qiec_log_density(distribution, value)
     end
     return Gen.logpdf(distribution.distribution, point, distribution.arguments...)
 end
+function _qvr_qiec_log_mass(distribution, retained=0, shape=())
+    distribution = distribution isa _QvrQiecShifted ? distribution.distribution : distribution
+    # Mapped Gen distributions are normalized; raw measures must supply
+    # an explicit normalizer rather than a density-at-a-point surrogate.
+    mass = hasproperty(distribution, :log_normalizer) ? distribution.log_normalizer() : 0.0
+    0 <= retained <= length(shape) || error("log_mass retained axes must be within the batch rank")
+    isempty(shape) && return mass
+    values = mass isa Number ? fill(mass, shape) : reshape(mass, (ntuple(_ -> 1, length(shape)-ndims(mass))..., size(mass)...)) .+ zeros(shape)
+    retained == length(shape) && return values
+    retained == 0 && return sum(values)
+    return dropdims(sum(values; dims=Tuple(retained+1:length(shape))); dims=Tuple(retained+1:length(shape)))
+end
 function _qvr_qiec_site_names()
     # Site labels a helper's draws and scores carry, counted so the n-th
     # occurrence of a label in one run of the model is "<label>@<n>", as

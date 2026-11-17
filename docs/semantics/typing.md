@@ -81,7 +81,7 @@ A program declaration fixes a domain and a codomain and introduces its body:
 ```qvr
 object Row : FinSet 8
 
-program regression : Row -> Row
+program regression(offset : Real, y : Tensor[Real]([Row])) : Row -> Row
     sample location <- Normal(loc=0.0, scale=2.0)
     sample scale <- HalfNormal(scale=1.0)
     let mean = location + offset
@@ -93,16 +93,148 @@ The source checker classifies the names in a body:
 
 | A name that is | Becomes |
 | --- | --- |
-| a declared parameter of the program | an explicit value or scalar parameter |
+| declared in the static telescope `[...]` | a type, effect, index, object, or morphism parameter in $\Delta$ |
+| declared with a type in the runtime telescope `(...)` | an external value parameter in $\Gamma_v$ |
+| declared as a bare domain parameter | a projection of the declared domain |
 | bound by `sample`, a call, or `let` | a local binding in $\Phi$ |
 | the response of an `observe` | an observation input |
 | given by `via` | an index map, an integer input (role `index_map` in the API) |
 | read and bound nowhere | a data input |
 
-Elaboration records `offset` above as a typed parameter of the entry point. Its value is given when the
-program runs, and the extents of tensors given as data inputs are checked then.
+Elaboration records `offset` and `y` above as typed parameters of the entry point.
+Their annotations are checked against every use. The value of `offset` is given
+when the program runs; `observe y` assigns `y` its observation role. The same
+checked parameter is inferred when its annotation is omitted and the body
+determines its type. An input whose type remains ambiguous requires an annotation.
+
+The static and runtime telescopes have different judgments. If $\Delta$ is
+well formed and $\Delta\vdash T:\mathsf{Type}$, a runtime binder extends
+$\Gamma_v$ with $x:T$. It does not extend the effect row. The body is then
+checked under $\Delta;\Gamma_v$, and specialization substitutes a static
+valuation into both its input types and result type. Thus declarations of
+external values and ordinary computation parameters use the same rule.
+
+A static `[n : Nat]` may index `Tensor[Real]([n])` and act as the finite
+ordinal in a domain or plate annotation. These occurrences share one binder,
+so specialization at $n=k$ substitutes the same $k$ into every shape and
+finite-object position. A module-level object cannot refer to a binder local
+to one program; the scope is the program signature and its body.
+
+Natural-number addition has the static rule
+
+$$
+\frac{\Delta\vdash a:\mathsf{Nat}\qquad\Delta\vdash b:\mathsf{Nat}}
+     {\Delta\vdash\mathsf{nat\_add}(a,b):\mathsf{Nat}}.
+$$
+
+It introduces no term into $\Gamma_v$ and no effect. Under valuation
+$\delta$, its denotation is $\llbracket a\rrbracket_\delta+
+\llbracket b\rrbracket_\delta$. Canonical sums collect constants and
+nominal summands, including repeated variables. Substitution rebuilds
+that normal form while leaving rigid skolems untouched; a sum cannot
+hide an escaping skolem from the ordinary scope checks. Unproved Nat
+subtraction is absent. An exact affine solution must have nonnegative
+integer coefficients and constant before it becomes a symbolic Nat term.
+
+Binding solves exact affine equations from checked shapes. It rejects
+conflicting evidence and forced negative or fractional extents, while
+underdetermined extents remain parameters requiring further evidence.
+A shape-only zero extent does not require an inhabitable categorical
+finite-set object. The
+[index reference](../reference/qvr/types-and-indexed-families.md#natural-number-extent-addition)
+distinguishes this arithmetic from user-defined index constructors.
+
+A distribution construction first selects one complete parameter schema.
+Its supplied parameter names must equal one declared alternative, with no
+repeated names. This check rules out missing parameters and simultaneous
+exclusive alternatives before the constructor's result is accepted. Named
+source draws and positional computation calls resolve to these same semantic
+parameter identities; a runtime library's optional defaults do not extend the
+checked constructor contract.
+
+Distribution shape signatures use the same dependent context. Their local
+Nat telescope quantifies parameter and sample-event dimensions; each
+application freshens those binders before collecting exact shape equations.
+Known parameter shapes and any declared event shape are checked jointly;
+for instance, $n+m=5$ and $n+2m=8$ determine $n=2,m=3$ without requiring
+either equation to determine one variable alone. Source programs, pure
+computation constructors, and kernel checking use the same signature.
+For instance, an additive log-ratio normal with Gaussian coordinate extent
+$d$ takes a location tensor of shape $[d]$ and a Cholesky tensor of shape
+$[d,d]$, and returns an event of shape $[d+1]$. The optional reference
+component changes coordinate order without changing these extents.
+
+These are dimensions of one parameter value and one sample event, before
+leading plate batch axes. Parameter-to-parameter relations apply even when
+the sample is scalar. Source inference may solve its own open extents,
+while the kernel solves only fresh signature variables; neither operation
+binds a caller's rigid skolem by its display name. Existing event-axis
+metadata is shorthand for this contract, rather than a separate typing rule.
+
+A runtime `(count : Nat)` has a different judgment: it extends $\Gamma_v$
+with an integer-valued input subject to the restriction $count\geq 0$. Its
+lowered parameter uses the arithmetic carrier `Int` and carries the checked
+constraint `nonnegative`. This constraint survives serialization and is
+validated at native and reference execution boundaries; it does not turn the
+value into a static index.
+At a program call, a nonnegative integer literal or an input carrying this
+constraint satisfies a runtime `Nat` formal. A computed or sampled `Int` does
+not establish the restriction; without a refinement proof mechanism, the
+checker conservatively refuses that actual argument.
+
+The common rule across declarations concerns the stage of a binding,
+rather than one universal interpretation of parentheses. A `define` or
+`program` static telescope extends $\Delta$; its value telescope extends
+$\Gamma_v$. Rule and schema brackets instead bind static pattern variables,
+whose substitution fixes a morphism's types before its arguments are used.
+In `family Vec[A : Type](n : Nat) : Type`, both `A` and `n` belong to
+static information: `n` is an index that constructors and case analysis
+may refine. Constructor fields are values. Likewise, an effect interface's
+type and index parameters are static, while operation arguments and resumed
+values are runtime terms. Contraction inputs and encoder attachments supply
+components under their own elaboration rules; they do not quantify new
+index variables merely because their names occur in a header.
+
+Distribution parameter names also bind no static indices. In
+`Frechet(scale=s, concentration=nu)`, `nu` is a runtime real parameter,
+even though it changes the response's tail and moment domains. An
+annotation `(nu : Real)` checks its carrier; family validation checks the
+admissible parameter range. Inferring a carrier or axis from use does not
+infer whether a real parameter denotes a mean, a log-location, or a scale.
+The selected family and any explicit regression parameter map determine
+that interpretation. None of these declarations alone extends an effect row.
+
+Checked scalar operations refine execution domains without introducing
+new static binders. `positive_parameter(x)` checks finite positivity;
+`log_probability(p)` checks a finite probability; `log1mexp(x)` checks
+a nonpositive logarithm; and `log_ndtr(x)` computes a Normal log CDF.
+Their checked signatures are `Real -> Real`; a carrier judgment alone
+does not prove their domains. An active invalid argument raises explicitly.
+A conditional that protects a partial operation must retain its branch
+boundary: eager evaluation of both branches would change its semantics.
+An executor that cannot preserve symbolic branching must refuse it.
 
 ### 3.1 Program steps
+
+A mass query has a polymorphic structural rule, rather than a
+monomorphic scalar-primitive signature:
+
+$$
+\frac{\Gamma;\Phi\vdash d : \mathrm{Sampleable}[T]}
+     {\Gamma;\Phi\vdash \operatorname{log\_mass}(d) : \mathrm{LogWeight}}.
+$$
+
+For a measure $\mu_d$, its denotation is $\log \mu_d(\Omega)$, with
+$\log 0=-\infty$. This operation introduces no effect. The `LogMass`
+core node records its source origin and any retained batch axes; with
+retained dimensions $\bar b$, the result is
+$\mathrm{Tensor}[\mathrm{LogWeight}](\bar b)$, summing the log masses
+of independent event factors within each batch. A nonempty retained
+batch must match the distribution construction's declared batch axes.
+Intrinsic family event axes are interpreted by the distribution itself.
+Restriction preserves raw measure mass; normalization changes that
+mass to one. Neither operation may infer a normalizer from the density
+at an arbitrary outcome.
 
 The main rules are
 
@@ -152,6 +284,27 @@ Inside a grouped `marginalize`, `via=group_idx` requires one index map for each 
 groups the positions are flattened in row major order, the last factor varying fastest. The values of an
 index map are data inputs and must be valid integer indices when the program runs.
 
+#### Observation weight checking
+
+For `observe y : Row <- F(...) [weights=w]`, the weight has type `Real` or
+`Tensor[Real]` over exactly the observation's batch axes. A declared scalar
+broadcasts across those axes. The observation's event coordinates are excluded
+from the weight shape: one multivariate observation receives one power after its
+joint log density is formed. An otherwise unbound weight name is inferred as
+a tensor over the batch axes, or a scalar `Real` when no batch axis is present.
+
+The shape and element type are checked before execution; finiteness and
+nonnegativity are checked on the supplied or computed values when the program
+runs. Booleans are refused. The checked pure primitive `observation_weight`
+retains the value after validation, and `scale_weight` applies it to the
+observation's `LogWeight` before `WeightSum` or `SegmentSum`.
+`scale_weight` implements the zero-weight branch defined in the
+[observation semantics](programs.md#observation-weights).
+
+A weight parameter is an ordinary input annotation and adds no effect. Its use
+by `observe` retains the observation's `Score` effect; weighting does not
+introduce another sampling request or modify the prior.
+
 ### 3.3 Effect annotations
 
 The program option `[effects=[...]]` accepts `Sample`, `Score`, `Marginal`, and `Pure`. A `sample`
@@ -164,8 +317,13 @@ computes ([Programs as kernels §2.8](programs.md#28-effect-signatures)).
 
 A *kind* classifies static arguments as a type classifies run-time values. Static parameters, written in
 square brackets, are used in checking and specialization, and range over `Type`, an index sort, `Nat`, or
-`Effect`. Run-time parameters, in parentheses, are values passed when the computation runs. In a telescope
-such as `[A : Type](xs : Vec[A](n))`, the element type `A` is in scope when `xs` is checked.
+`Effect`. Programs additionally abstract over objects and morphisms in their static
+telescopes. Run-time parameters, in parentheses on a program or computation, are
+values passed when it runs. Family declarations use parentheses for refinable
+static indices instead; punctuation is interpreted with its declaration form.
+In a telescope
+such as `[A : Type, n : Nat](xs : Vec[A](n))`, both the element type `A`
+and index `n` are in scope when `xs` is checked.
 
 | Kind | Inhabitants |
 | --- | --- |

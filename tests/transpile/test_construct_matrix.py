@@ -42,6 +42,7 @@ from quivers.transpile._api import (
     STRUCTURAL_QIEC,
 )
 from tests.transpile.fixtures import _load
+from tests.transpile.fixtures._capabilities import PARAMETERIZATION_REFUSALS
 
 
 _BACKENDS = sorted(available_targets())
@@ -106,6 +107,39 @@ def _expected_unsupported_kinds(fixture: _load.Fixture, backend: str) -> set[str
 # entry. A regression surfaces because the raised kinds match a
 # different prefix; either update the entry or fix the renderer.
 _EXPECTED_ORTHOGONAL_RAISES: dict[tuple[str, str, str], str] = {
+    # Native-only count/compositional laws retain their canonical family
+    # identity through alternative parameterizations. None of the external
+    # renderers has a measured implementation of these four laws.
+    **{
+        (backend, "steps", fixture): (
+            f"family:no-target-name:{family}"
+            if backend in {"jags", "numpyro"}
+            else f"family:no-stan-target:{family}"
+            if backend == "stan"
+            else f"family:no-webppl-target:{family}"
+            if backend == "webppl"
+            else f"family:{family}"
+        )
+        for fixture, family in (
+            ("observe_multinomial_logits", "Multinomial"),
+            ("observe_dirichlet_multinomial", "DirichletMultinomial"),
+            ("observe_alr_reference", "AdditiveLogRatioNormal"),
+            ("observe_com_poisson_log_rate", "COMPoisson"),
+        )
+        for backend in _BACKENDS
+    },
+    # Weighted observations retain their site metadata in native execution;
+    # external targets currently refuse this observation capability explicitly.
+    **{
+        (backend, "steps", "observe_weighted"): "qiec:weighted-observe:"
+        for backend in _BACKENDS
+    },
+    # Authored checked-weight primitives have dynamic host implementations,
+    # but these static targets lack the weight capability.
+    **{
+        (backend, "statements", "qiec_weight_primitives"): "qiec:capability:weight"
+        for backend in ("bugs", "jags", "stan")
+    },
     # Static graphical targets preserve only the closed, monomorphic,
     # effect-free scalar QIEC fragment.
     ("stan", "statements", "qiec_effectful_computation"): "qiec:",
@@ -578,6 +612,13 @@ for _backend in _BACKENDS:
         _EXPECTED_ORTHOGONAL_RAISES[(_backend, "statements", _fixture)] = (
             "qiec:capability:neural-attachment"
         )
+
+
+# Numerical and structural matrices assert the same independently listed cells.
+_EXPECTED_ORTHOGONAL_RAISES.update(
+    ((target, *fixture.split("/", 1)), kind)
+    for (fixture, target), kind in PARAMETERIZATION_REFUSALS.items()
+)
 
 
 def _construct_fixtures() -> list[_load.Fixture]:

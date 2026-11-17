@@ -106,7 +106,7 @@ def _literal(value: int) -> LetExprLiteral:
     LetExprLiteral
         The literal, marked integral.
     """
-    return LetExprLiteral(value=float(value), integral=True)
+    return LetExprLiteral(value=value, integral=True)
 
 
 def fold_integers(expr: LetExprNode) -> LetExprNode:

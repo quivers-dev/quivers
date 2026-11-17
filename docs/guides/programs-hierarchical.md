@@ -24,7 +24,7 @@ object Subject : FinSet 200
 object Verb : FinSet 100
 object Resp : FinSet 5000
 
-program random_intercepts (G : FinSet, prior_scale : Real) : G -> Real 1
+program random_intercepts[G : FinSet](prior_scale : Real) : G -> Real 1
     sample sigma <- HalfNormal(scale=prior_scale)
     sample v : G <- Normal(loc=0.0, scale=sigma)
     return v
@@ -32,8 +32,8 @@ program random_intercepts (G : FinSet, prior_scale : Real) : G -> Real 1
 program crossed : Resp -> Resp
     sample intercept <- Normal(loc=0.0, scale=1.0)
 
-    sample by_subject <- random_intercepts(Subject, 1.0)
-    sample by_verb    <- random_intercepts(Verb,    1.0)
+    sample by_subject <- random_intercepts[Subject](1.0)
+    sample by_verb    <- random_intercepts[Verb](1.0)
 
     let eta = intercept + by_subject[subject_idx] + by_verb[verb_idx]
     observe response : Resp <- Bernoulli(logits=eta)
@@ -42,7 +42,9 @@ program crossed : Resp -> Resp
 export crossed
 ```
 
-The template `random_intercepts` takes a grouping object `G` and a prior scale. Each
+The template `random_intercepts` takes a static grouping object `G` in brackets
+and a runtime prior scale in parentheses. This separates the object that fixes
+the latent plate's type from the value used in its prior. Each
 call inlines a copy of its body with its names prefixed by the bound name
 (`by_subject$sigma`, `by_subject$v`, and so on), so the two grouping factors share the
 template's structure but not its latent variables. The responses and the index arrays

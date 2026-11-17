@@ -102,9 +102,7 @@ class _MVNCommon(Guide):
             z_site = per_site[site.name]
             if not site.is_plate:
                 z_site = z_site.unsqueeze(0).expand(batch, *site.unconstrained_shape)
-            v = site.bijector(z_site)
-            if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
-                v = v.squeeze(-1)
+            v, _ = site.constrain(z_site)
             result[site.name] = v
         return result
 
@@ -137,26 +135,11 @@ class _MVNCommon(Guide):
                     f"{type(self).__name__}.log_prob: missing site {site.name!r}"
                 )
             v = sites[site.name]
-            if site.constrained_dim == 1:
-                if site.is_plate:
-                    if v.dim() == 1:
-                        v_e = v.unsqueeze(-1)
-                    else:
-                        v_e = v
-                else:
-                    if v.dim() == 1:
-                        v_e = v.unsqueeze(-1)
-                    else:
-                        v_e = v
-            else:
-                v_e = v
-            if not site.is_plate and v_e.dim() == len(site.unconstrained_shape) + 1:
-                v_e = v_e[0]
-            z_site = site.bijector.inv(v_e)
+            if not site.is_plate and v.dim() == len(site.constrained_shape) + 1:
+                v = v[0]
+            z_site, log_det = site.unconstrain(v)
             unconstrained_per_site[site.name] = z_site
-            log_det_total = log_det_total + (
-                site.bijector.inv.log_abs_det_jacobian(v_e, z_site).sum()
-            )
+            log_det_total = log_det_total + log_det.sum()
 
         z_flat = self._registry.flatten_unconstrained(unconstrained_per_site)
         log_q_z = self._base_dist().log_prob(z_flat)

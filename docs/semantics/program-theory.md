@@ -44,6 +44,13 @@ computation. Its `parameter` children carry the role of each parameter (`domain`
 `score` edges the built-in instances that its draws and scores address. When the elaboration of a
 module's programs fails, the root carries the diagnostic as a `gap` constraint.
 
+An explicit runtime header parameter and an inferred external input both
+produce checked entry parameters. The source annotation constrains the type;
+uses such as `observe` and `via` determine its role. Static specialization and
+runtime value binding are distinct stages even when a static extent is inferred
+from a supplied tensor. The extracted graph describes the checked interface,
+rather than introducing a data-declaration step into the probabilistic body.
+
 A program and a computation that calls it are vertices of one kind, joined by the same `calls` edge,
 so a module that mixes them has one call graph.
 

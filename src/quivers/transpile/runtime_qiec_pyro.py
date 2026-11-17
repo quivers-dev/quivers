@@ -33,6 +33,35 @@ def _qvr_qiec_log_density(distribution, value):
     return distribution.log_prob(_qvr_qiec_array(value))
 
 
+def _qvr_qiec_log_mass(distribution, retained=0, shape=()):
+    # Query raw measures through their own normalizer. Host probability
+    # distributions are normalized by definition; never estimate at a point.
+    normalizer = getattr(distribution, "log_normalizer", None)
+    if callable(normalizer):
+        mass = torch.as_tensor(normalizer())
+    else:
+        parameters = [
+            value
+            for name in distribution.arg_constraints
+            if isinstance(value := distribution.__dict__.get(name), torch.Tensor)
+        ]
+        anchor = sum(
+            torch.where(torch.isfinite(point), point, 0) * 0
+            for value in parameters
+            for point in (value[(0,) * value.ndim] if value.numel() else value.sum(),)
+        )
+        mass = torch.as_tensor(anchor)
+    shape = tuple(shape) or tuple(distribution.batch_shape)
+    mass = mass.expand(shape)
+    if (
+        isinstance(retained, bool)
+        or not isinstance(retained, int)
+        or not 0 <= retained <= mass.ndim
+    ):
+        raise ValueError("log_mass retained axes must be within the batch rank")
+    return mass.sum(tuple(range(retained, mass.ndim))) if mass.ndim > retained else mass
+
+
 def _qvr_qiec_site_names():
     # Site labels a helper's draws and scores carry, counted so the n-th
     # occurrence of a label in one run of the model is "<label>@<n>", as
@@ -77,8 +106,49 @@ def _qvr_qiec_torch(function):
     )
 
 
+def _qvr_qiec_torch_observation_weight(value):
+    tensor = _qvr_qiec_torch_module.as_tensor(value)
+    if not tensor.is_floating_point() or not bool(
+        (_qvr_qiec_torch_module.isfinite(tensor) & (tensor >= 0)).all()
+    ):
+        raise ValueError(
+            "observation weights must be finite and nonnegative real values"
+        )
+    return tensor
+
+
+def _qvr_qiec_torch_weight_array(value, device):
+    if isinstance(value, tuple):
+        if not value:
+            return _qvr_qiec_torch_module.empty((0,), device=device)
+        # as_tensor(tuple_of_live_tensors) copies their scalar values and
+        # severs autograd. Stack the checked tensor positions instead.
+        return _qvr_qiec_torch_module.stack(
+            tuple(_qvr_qiec_torch_weight_array(item, device) for item in value)
+        )
+    return _qvr_qiec_torch_module.as_tensor(value, device=device)
+
+
+def _qvr_qiec_torch_scale_weight(coefficient, density):
+    device = (
+        density.device
+        if isinstance(density, _qvr_qiec_torch_module.Tensor)
+        else coefficient.device
+        if isinstance(coefficient, _qvr_qiec_torch_module.Tensor)
+        else None
+    )
+    coefficient = _qvr_qiec_torch_weight_array(coefficient, device)
+    density = _qvr_qiec_torch_weight_array(density, device)
+    safe = _qvr_qiec_torch_module.where(
+        coefficient == 0, _qvr_qiec_torch_module.zeros_like(density), density
+    )
+    return coefficient * safe
+
+
 _qvr_qiec_host_math.update(
     {
+        "observation_weight": _qvr_qiec_torch_observation_weight,
+        "scale_weight": _qvr_qiec_torch_scale_weight,
         "min_real": _qvr_qiec_torch(_qvr_qiec_torch_module.minimum),
         "max_real": _qvr_qiec_torch(_qvr_qiec_torch_module.maximum),
         "pow_real": _qvr_qiec_torch(_qvr_qiec_torch_module.pow),
@@ -139,5 +209,29 @@ _qvr_qiec_host_math.update(
         "softplus": _qvr_qiec_torch(_qvr_qiec_torch_module.nn.functional.softplus),
         "logsigmoid": _qvr_qiec_torch(_qvr_qiec_torch_module.nn.functional.logsigmoid),
         "softsign": _qvr_qiec_torch(_qvr_qiec_torch_module.nn.functional.softsign),
+    }
+)
+
+
+# qvr-shared-probability:pyro:start
+# qvr-shared-probability:pyro:end
+
+
+_qvr_qiec_host_math.update(
+    {
+        "log_probability": _qvr_log_probability,
+        "log1mexp": _qvr_log1mexp,
+        "log_ndtr": _qvr_log_ndtr,
+    }
+)
+
+
+_qvr_qiec_host_math["positive_parameter"] = _qvr_positive_parameter
+
+
+_qvr_qiec_host_math.update(
+    {
+        "observation_status": _qvr_observation_status,
+        "interval_upper": _qvr_interval_upper,
     }
 )

@@ -53,7 +53,7 @@ object School : FinSet 40
 object Effect : Real 1
 object Mean : Real 1
 
-program school_effects(spread : Real, K : FinSet) : K -> Effect
+program school_effects[K : FinSet](spread : Real) : K -> Effect
     sample z : K <- Normal(loc=0.0, scale=1.0)
     let effect = spread * z
     return effect
@@ -61,21 +61,21 @@ program school_effects(spread : Real, K : FinSet) : K -> Effect
 program pooled : School -> Effect * Mean
     sample mu <- Normal(loc=0.0, scale=10.0)
     sample tau <- HalfCauchy(scale=5.0)
-    sample theta <- school_effects(tau, School)
+    sample theta <- school_effects[School](tau)
     let school_mean = mu + theta
     observe y : School <- Normal(loc=school_mean, scale=se)
     return (effects: theta, mean: mu)
 
 program pooled_tight : School -> Effect * Mean
     sample mu <- Normal(loc=0.0, scale=10.0)
-    sample theta <- school_effects(2.0, School)
+    sample theta <- school_effects[School](2.0)
     let school_mean = mu + theta
     observe y : School <- Normal(loc=school_mean, scale=se)
     return (effects: theta, mean: mu)
 
 program pooled_loose : School -> Effect * Mean
     sample mu <- Normal(loc=0.0, scale=10.0)
-    sample theta <- school_effects(20.0, School)
+    sample theta <- school_effects[School](20.0)
     let school_mean = mu + theta
     observe y : School <- Normal(loc=school_mean, scale=se)
     return (effects: theta, mean: mu)
@@ -93,7 +93,13 @@ The standard errors `se` are input data, as in Rubin's analysis, where each scho
 
 ## Walkthrough
 
-`school_effects` is a parametric program: its parameter list carries typed parameters rather than data parameters, so it is a computation over the extent of `K` and the real `spread`. The draw `sample theta <- school_effects(tau, School)` substitutes `tau` for `spread` and `School` for `K`, then runs an alpha-renamed copy of the body in the host program: the local `z` becomes `theta$z` and the return variable `effect` becomes `theta` itself, on the [reference machine](../developer/qiec.md#reference-evaluator), the torch runtime, and every transpile target alike. An argument may be a literal, as in the two fixed-spread hosts, or a value sampled earlier in the host, as in `pooled`.
+`school_effects` separates its static grouping object `K` from the runtime
+scalar `spread`. The draw `sample theta <- school_effects[School](tau)`
+specializes `K` to `School`, binds `spread` to `tau`, and runs an alpha-renamed
+copy of the body. The local `z` becomes `theta$z` and the returned `effect`
+becomes `theta` on the [reference machine](../developer/qiec.md#reference-evaluator),
+the torch runtime, and transpile targets. A runtime argument may be a literal,
+as in the fixed-spread hosts, or a value sampled earlier, as in `pooled`.
 
 The non-centered form routes `spread` through the `let` arithmetic (`effect = spread * z`) rather than through the scale of a plate draw, so the sampled latent is the standardized `z` and the effect is a deterministic function of it. With few or noisy schools, the posterior of $\tau$ often reaches near zero, where the centered form $\theta_j \sim \mathcal{N}(0, \tau^2)$ produces a funnel that is hard to sample. The non-centered form can improve this geometry when the data weakly constrain the effects [@papaspiliopoulos2007parametrization].
 
@@ -105,8 +111,8 @@ The non-centered form routes `spread` through the `let` arithmetic (`effect = sp
 
 ## DSL features
 
-- **Typed program parameters**: `(spread : Real, K : FinSet)` declares a parametric template. Admissible parameter kinds are `Real`, `Nat`, `FinSet`, `Space`, `Object`, and `Mor[A, B]`.
-- **Template instantiation**: `sample v <- template(args)` inlines the substituted, alpha-renamed body at the call site, with literal or sampled arguments.
+- **Parameter telescopes**: `[K : FinSet](spread : Real)` separates static object specialization from runtime values, using the convention shared with computations.
+- **Template instantiation**: `sample v <- template[Object](value)` inlines the specialized, alpha-renamed body at the call site, with a literal or sampled runtime argument.
 - **Labeled return tuple**: `return (label: var, ...)` names the program's outputs on the compiled output path.
 - **`export`**: selects the module's exported morphism among the declared candidates.
 

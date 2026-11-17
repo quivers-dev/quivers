@@ -171,7 +171,10 @@ def test_a_vector_family_takes_its_event_shape_from_its_source_parameter() -> No
             lambda: DistributionValue(
                 family=family("Normal").id,
                 name="Normal",
-                arguments=(("loc", LiteralValue(value=0.0, type=REAL)),),
+                arguments=(
+                    ("loc", LiteralValue(value=0.0, type=REAL)),
+                    ("scale", LiteralValue(value=1.0, type=REAL)),
+                ),
                 result_type=sampleable_type(INT),
                 origin=ORIGIN,
             ),

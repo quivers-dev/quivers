@@ -1,6 +1,6 @@
 # Exercises RuleDecl (typed inference rule at the top level).
 category S, NP, VP
-rule combine(X, Y) : NP, VP |- S
+rule combine[X, Y] : NP, VP |- S
 object Resp : FinSet 4
 program prog : Resp -> Resp
     sample x <- Bernoulli(probs=0.5)

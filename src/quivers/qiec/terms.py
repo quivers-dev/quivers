@@ -523,6 +523,28 @@ class Comprehension(QiecModel):
     tag: Literal["comprehension"] = "comprehension"
 
 
+class ConditionalValue(QiecModel):
+    """Evaluate exactly one pure branch selected by a scalar Boolean.
+
+    Parameters
+    ----------
+    condition
+        Scalar Boolean deciding which branch is evaluated.
+    then, otherwise
+        Equally typed branches; the inactive branch is not evaluated.
+    result_type
+        The common branch type, including its tensor or sampleable indices.
+    tag
+        Serialization discriminator, always ``conditional_value``.
+    """
+
+    condition: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    then: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    otherwise: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["conditional_value"] = "conditional_value"
+
+
 class LetBinding(QiecModel):
     """One binding of a :class:`LetValue`.
 
@@ -669,6 +691,30 @@ class SiteValue(QiecModel):
     tag: Literal["site"] = "site"
 
 
+class LogMass(QiecModel):
+    """Total mass of a sampleable, preserving declared batch axes.
+
+    Parameters
+    ----------
+    sampleable
+        The measure, of type ``Sampleable[A]``.
+    origin
+        Source location of the query.
+    batch
+        Independent batch axes retained in the result; empty for one total
+        ``LogWeight``. Event axes are always reduced.
+    tag
+        Serialization discriminator, always ``"log_mass"``.
+    """
+
+    sampleable: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    origin: SourceOrigin = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    batch: tuple[PlateAxis, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    tag: Literal["log_mass"] = "log_mass"
+
+
 class LogDensity(QiecModel):
     """Evaluation of a distribution's log density at a value.
 
@@ -710,6 +756,7 @@ type Value = (
     | TensorValue
     | Projection
     | DistributionValue
+    | LogMass
     | LogDensity
     | SiteValue
     | Gather
@@ -721,6 +768,7 @@ type Value = (
     | Reduction
     | Rowwise
     | Comprehension
+    | ConditionalValue
     | LetValue
 )
 """A value term: every pure, effect-free term a computation may mention."""

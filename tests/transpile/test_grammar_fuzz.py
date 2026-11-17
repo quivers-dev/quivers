@@ -165,11 +165,11 @@ def _random_leaf(
     spells one, so every target renders it as an integer literal.
     """
     if force_literal:
-        return LetExprLiteral(value=float(rng.randint(1, 9)), integral=True)
+        return LetExprLiteral(value=rng.randint(1, 9), integral=True)
     if force_var:
         return LetExprVar(name=rng.choice(_VAR_NAMES))
     if rng.random() < 0.5:
-        return LetExprLiteral(value=float(rng.randint(1, 9)), integral=True)
+        return LetExprLiteral(value=rng.randint(1, 9), integral=True)
     return LetExprVar(name=rng.choice(_VAR_NAMES))
 
 

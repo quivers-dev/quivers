@@ -55,7 +55,7 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetFactorBinder,
     LetFactorCase,
 )
-from quivers.dsl.let_expr_traversal import walk_let_expr
+from quivers.dsl.let_expr_traversal import let_expr_children
 from quivers.transpile._resolve import build_let_table, build_morphism_table
 from quivers.transpile._python_calls import PYTHON_TARGETS, python_call_renderable
 from quivers.qiec import QiecModule, validate_module
@@ -102,7 +102,6 @@ from quivers.dsl.qiec_lowering import (
 from quivers.qiec.canonical import sampled_element, tensor_shape
 from quivers.qiec.families import FAMILIES
 from quivers.qiec.types import (
-    INT,
     IndexLiteral,
     IndexTerm,
     IndexVariable,
@@ -142,6 +141,7 @@ from quivers.transpile.ir import (
     IRMarginalize,
     IRNode,
     IRObserve,
+    IRQiecValueExpr,
     IRProgram,
     IRReturn,
     IRSample,
@@ -170,8 +170,14 @@ from quivers.transpile.lower import (
     _retarget_alphabet_arg,
     object_shapes,
     pick_program,
+    scalar_carrier_constraint,
 )
-from quivers.transpile.qiec_ir import IRQiecStatic, _convert, lower_qiec_ir
+from quivers.transpile.qiec_ir import (
+    IRQiecModule,
+    IRQiecStatic,
+    _convert,
+    lower_qiec_ir,
+)
 from quivers.transpile._pure_calls import (
     _VALUE_TYPES,
     _TRANSPARENT,
@@ -186,25 +192,85 @@ from quivers.transpile._pure_calls import (
 _REGISTRY_NAMES: dict[str, dict[str, str]] = {"GP": {"covariance_matrix": "kernel"}}
 
 
-class _Planner:
-    """Derive one program's plan from the checked module.
+class _TargetPreparation:
+    """Retain one checked source and its projection within a target request.
+
+    The projection is constructed here, never supplied by a caller. Both
+    capability analysis and planning thus read the same checked module, while
+    a separate request or revised source owns a separate preparation.
 
     Parameters
     ----------
     module : QiecModule
-        The checked module.
+        The checked module corresponding to ``source``.
     source : Module
-        The expanded source, read for object cardinalities and bounds,
-        morphism declarations, and the morphism each site draws
-        through.
+        The original parsed source, retained by identity for this request.
     target : str
-        The transpile target the plan serves, named in diagnostics.
+        The selected target.
     """
 
     def __init__(self, module: QiecModule, source: Module, target: str) -> None:
         self.module = module
         self.source = source
         self.target = target
+        self._projection: IRQiecModule | None = None
+
+    @property
+    def projection(self) -> IRQiecModule:
+        """The structural projection of this request's checked module.
+
+        Returns
+        -------
+        IRQiecModule
+            The module, projected at most once during this preparation.
+        """
+        if self._projection is None:
+            self._projection = lower_qiec_ir(self.module)
+        return self._projection
+
+    def checked_program_plan(self) -> IRProgram | None:
+        """Derive the selected program's plan from this request's source.
+
+        Returns
+        -------
+        IRProgram | None
+            The plan, or ``None`` when the source declares no program.
+
+        Raises
+        ------
+        UnsupportedConstruct
+            If the program records an elaboration gap or cannot be planned.
+        """
+        if not any(
+            isinstance(statement, ProgramDecl) for statement in self.source.statements
+        ):
+            return None
+        expanded = expand_composite_lets(self.source, target="stan")
+        program = pick_program(expanded)
+        if self.module.gap:
+            kind = self.module.gap.partition("; ")[0]
+            raise UnsupportedConstruct(f"qvr-{self.target}", [kind])
+        return _Planner(self, expanded).plan(program)
+
+
+class _Planner:
+    """Derive one program's plan from the checked module.
+
+    Parameters
+    ----------
+    preparation : _TargetPreparation
+        The request's checked module, target, and owned projection.
+    source : Module
+        The expanded source, read for object cardinalities and bounds,
+        morphism declarations, and the morphism each site draws
+        through.
+    """
+
+    def __init__(self, preparation: _TargetPreparation, source: Module) -> None:
+        self.preparation = preparation
+        self.module = module = preparation.module
+        self.source = source
+        self.target = preparation.target
         self.computations = {item.name: item for item in module.computations}
         self.entries = {entry.name: entry for entry in module.entries}
         shapes = object_shapes(source)
@@ -281,7 +347,7 @@ class _Planner:
             name=program.name,
             inputs=tuple(_spelled(item) for item in inputs),
             body=tuple(_spelled(item) for item in body),
-            module=lower_qiec_ir(self.module),
+            module=self.preparation.projection,
             cards=dict(self.cards),
         )
 
@@ -318,6 +384,16 @@ class _ProgramWalk:
         self.ctx = ctx
         self.site_steps: dict[str, SampleStep | ObserveStep | MarginalizeStep] = {}
         _collect_site_steps(program.draws, self.site_steps)
+        from quivers._observation import EVENT_OPTIONS
+
+        for step in self.site_steps.values():
+            if isinstance(step, ObserveStep) and any(
+                option.key in EVENT_OPTIONS for option in step.options
+            ):
+                raise UnsupportedConstruct(
+                    f"qvr-{planner.target}",
+                    [f"qiec:recorded-event-observe:{program.name}"],
+                )
         self.factor_axes: dict[str, tuple[str, ...]] = {}
         _collect_factor_axes(program.draws, self.factor_axes)
         self.observed: dict[str, IRObserve] = {}
@@ -534,6 +610,11 @@ class _ProgramWalk:
                 )
             via = index.local.name
             density = density.value
+        if isinstance(density, PrimitiveApplication) and density.name == "scale_weight":
+            raise UnsupportedConstruct(
+                f"qvr-{self.planner.target}",
+                [f"qiec:weighted-observe:{self.program.name}"],
+            )
         if isinstance(density, LogDensity) and isinstance(density.value, Var):
             observation = density.value.local.name
             if isinstance(density.sampleable, DistributionValue):
@@ -590,7 +671,7 @@ class _ProgramWalk:
         yield IRDeterministic(
             name=binder.name,
             expr=self._expr(value),
-            constraint=CSReal(),
+            constraint=scalar_carrier_constraint(binder.type),
             plate=plate,
         )
 
@@ -875,7 +956,10 @@ class _ProgramWalk:
             self.ctx.bound_kinds[binder.name] = "deterministic"
             nodes.append(
                 IRDeterministic(
-                    name=binder.name, expr=result, constraint=CSReal(), plate=plate
+                    name=binder.name,
+                    expr=result,
+                    constraint=scalar_carrier_constraint(binder.type),
+                    plate=plate,
                 )
             )
             yield from nodes
@@ -899,6 +983,7 @@ class _ProgramWalk:
             random_instance=str(self.entry.random_instance),
             score_instance=str(self.entry.score_instance),
             plate=plate,
+            constraint=scalar_carrier_constraint(binder.type),
         )
 
     def _inlined(
@@ -971,7 +1056,12 @@ class _ProgramWalk:
             Whether every comprehension axis is an object of the source
             and, on a Python target, every call has a spelling.
         """
-        for node in walk_let_expr(expression):
+        pending = [expression]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, IRQiecValueExpr):
+                return False
+            pending.extend(let_expr_children(node))
             if isinstance(node, LetExprFactor):
                 for binder in node.binders:
                     index = binder.index
@@ -1305,12 +1395,15 @@ class _ProgramWalk:
         args, arg_names = self._parameterization(
             family, args, arg_names, marginalized=marginalized
         )
-        constraint = _apply_declared_bounds(
-            from_constraint(_resolve_support(meta, args, self.ctx, arg_names)),
-            plate,
-            self.ctx,
-            site,
-        )
+        support = _resolve_support(meta, args, self.ctx, arg_names)
+        try:
+            symbolic_support = from_constraint(support)
+        except ValueError as error:
+            raise UnsupportedConstruct(
+                f"qvr-{self.planner.target}",
+                [f"family:{family}:support:{type(support).__name__}: {error}"],
+            ) from error
+        constraint = _apply_declared_bounds(symbolic_support, plate, self.ctx, site)
         args, constraint = self._class_index(
             morphism, meta, args, arg_names, constraint, site
         )
@@ -1410,6 +1503,16 @@ class _ProgramWalk:
             self._tensor_parameter_input(distribution.name, name, value)
         if distribution.name in _FACTOR_FAMILIES and "scale_tril" in names:
             self._factor_scale(distribution.name, pre, names)
+        if distribution.name == "MatrixNormal":
+            for axis in ("row", "col"):
+                if axis + "_scale_tril" in names:
+                    self._factor_scale(
+                        distribution.name,
+                        pre,
+                        names,
+                        parameter=axis + "_scale_tril",
+                        covariance=axis + "_covariance",
+                    )
         if distribution.name == "InverseWishart" and "scale_tril" in names:
             self._inverse_wishart_scale(pre, names)
         ordered = _arg_names_for(meta, tuple(pre), self.ctx)
@@ -1420,7 +1523,7 @@ class _ProgramWalk:
             )
             names = [name for name, _ in pairs]
             pre = [arg for _, arg in pairs]
-        constraints = _resolve_arg_constraints(meta, tuple(pre), self.ctx)
+        constraints = _resolve_arg_constraints(meta, tuple(pre), self.ctx, tuple(names))
         event_axes = tuple(
             dim.name for dim in plate.event_dims if isinstance(dim, DimStatic)
         )
@@ -1614,7 +1717,15 @@ class _ProgramWalk:
         pre[position] = scale
         names[position] = "scale_matrix"
 
-    def _factor_scale(self, family: str, pre: list[IRArg], names: list[str]) -> None:
+    def _factor_scale(
+        self,
+        family: str,
+        pre: list[IRArg],
+        names: list[str],
+        *,
+        parameter: str = "scale_tril",
+        covariance: str = "covariance_matrix",
+    ) -> None:
         """Hand a Cholesky factor to the target as it reads it.
 
         A source writes the scale of a Wishart or the covariance of a
@@ -1627,18 +1738,20 @@ class _ProgramWalk:
         Parameters
         ----------
         family : str
-            The family, one of `_FACTOR_FAMILIES`.
+            Gaussian or Wishart family whose matrix factor is lowered.
         pre : list[IRArg]
             The call's wire arguments, rewritten in place.
         names : list[str]
             The parameter each argument fills, rewritten in place.
+        parameter, covariance : str
+            Authored factor slot and corresponding covariance slot.
 
         Raises
         ------
         UnsupportedConstruct
             If the factor is not a literal.
         """
-        position = names.index("scale_tril")
+        position = names.index(parameter)
         factor = pre[position]
         if isinstance(factor, IRArgMatrix) and all(
             isinstance(entry, IRArgNumber)
@@ -1659,15 +1772,18 @@ class _ProgramWalk:
                     for row in scale
                 )
             )
-            names[position] = "covariance_matrix"
+            names[position] = covariance
             return
-        if self.planner.target in _RUNTIME_FACTOR_TARGETS:
+        runtime_targets = (
+            _RUNTIME_FACTOR_TARGETS if parameter == "scale_tril" else frozenset({"ir"})
+        )
+        if self.planner.target in runtime_targets:
             # The target's library takes the factor itself.
             return
         raise UnsupportedConstruct(
             f"qvr-{self.planner.target}",
             [
-                f"family:{family}:scale_tril: the {family}'s scale_tril is a "
+                f"family:{family}:{parameter}: the {family}'s {parameter} is a "
                 f"Cholesky factor known only at run time, which "
                 f"{self.planner.target} has no Cholesky parameterization of "
                 f"{family} to take; write it as a matrix literal"
@@ -1709,14 +1825,23 @@ class _ProgramWalk:
         if isinstance(value, Var):
             return IRArgRef(name=value.local.name, indices=())
         if isinstance(value, LiteralValue) and isinstance(value.value, int | float):
-            return IRArgNumber(value=float(value.value))
+            return IRArgNumber(value=value.value)
         if isinstance(value, Comprehension):
             spread = _spread_literal(value)
             if spread is not None:
                 literal, shape = spread
                 return IRArgBroadcast(
-                    value=IRArgNumber(value=float(literal)), target_shape=shape
+                    value=IRArgNumber(value=literal), target_shape=shape
                 )
+            # A normalized product of measures retains its coordinate-wise
+            # construction inside comprehensions. Diagnose that unsupported
+            # distribution argument through the same path as a scalar one;
+            # the comprehension is not a numeric broadcast to erase.
+            body = value.body
+            while isinstance(body, Comprehension):
+                body = body.body
+            if isinstance(body, DistributionValue):
+                return self._arg(body, site, head, plate, morphism)
         if isinstance(value, TensorValue):
             if value.items and all(
                 isinstance(item, TensorValue) for item in value.items
@@ -2179,8 +2304,11 @@ class _ProgramWalk:
                 plate=plate,
             )
         plate = Plate(event_dims=(), batch_dims=dims)
-        element = _element_type(parameter.type)
-        constraint = CSNonnegativeInteger() if element == INT else CSReal()
+        constraint = (
+            CSNonnegativeInteger()
+            if parameter.constraint == "nonnegative"
+            else scalar_carrier_constraint(parameter.type)
+        )
         return IRDataInput(name=name, constraint=constraint, plate=plate)
 
 
@@ -2719,7 +2847,7 @@ def _structured(distribution: DistributionValue, meta: FamilyMeta) -> bool:
     )
 
 
-def _spread_literal(value: Comprehension) -> tuple[float, tuple[int, ...]] | None:
+def _spread_literal(value: Comprehension) -> tuple[int | float, tuple[int, ...]] | None:
     """A literal spread over a vector, as the literal and the shape.
 
     A single literal a construction spreads over a vector parameter,
@@ -2733,7 +2861,7 @@ def _spread_literal(value: Comprehension) -> tuple[float, tuple[int, ...]] | Non
 
     Returns
     -------
-    tuple[float, tuple[int, ...]] | None
+    tuple[int | float, tuple[int, ...]] | None
         The literal and the shape, or ``None`` when the body is not a
         literal or a spread itself, or an extent is open.
     """
@@ -2743,7 +2871,7 @@ def _spread_literal(value: Comprehension) -> tuple[float, tuple[int, ...]] | Non
         return None
     body = value.body
     if isinstance(body, LiteralValue) and isinstance(body.value, int | float):
-        return float(body.value), (value.extent.value,)
+        return body.value, (value.extent.value,)
     if isinstance(body, Comprehension):
         inner = _spread_literal(body)
         if inner is not None:
@@ -2996,10 +3124,11 @@ class Lower(dx.Mapping[Module, IRProgram]):
             # report the established precise ``program:absent`` error.
             pick_program(module)
             raise UnsupportedConstruct(f"qvr-{target}", ["program:absent"])
+        preparation = _TargetPreparation(qiec_module, module, target)
         if not any(
             isinstance(statement, ProgramDecl) for statement in module.statements
         ):
-            qiec_ir = lower_qiec_ir(qiec_module)
+            qiec_ir = preparation.projection
             return IRProgram(
                 name=qiec_ir.module, inputs=(), body=(), module=qiec_ir, cards={}
             )
@@ -3013,10 +3142,10 @@ class Lower(dx.Mapping[Module, IRProgram]):
                 name=program.name,
                 inputs=(),
                 body=(),
-                module=lower_qiec_ir(qiec_module),
+                module=preparation.projection,
                 cards={},
             )
-        plan = checked_program_plan(qiec_module, module, target)
+        plan = preparation.checked_program_plan()
         assert plan is not None
         return plan
 
@@ -3109,7 +3238,7 @@ def program_plan(
     IRProgram
         The plan.
     """
-    return _Planner(module, source, target).plan(program)
+    return _Planner(_TargetPreparation(module, source, target), source).plan(program)
 
 
 def checked_program_plan(
@@ -3141,14 +3270,7 @@ def checked_program_plan(
         If the program falls in an elaboration gap or its checked computation
         cannot be represented by the target plan.
     """
-    if not any(isinstance(statement, ProgramDecl) for statement in source.statements):
-        return None
-    expanded = expand_composite_lets(source, target="stan")
-    program = pick_program(expanded)
-    if module.gap:
-        kind = module.gap.partition("; ")[0]
-        raise UnsupportedConstruct(f"qvr-{target}", [kind])
-    return program_plan(module, expanded, program, target)
+    return _TargetPreparation(module, source, target).checked_program_plan()
 
 
 __all__ = [

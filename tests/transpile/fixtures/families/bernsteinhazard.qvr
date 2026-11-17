@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the BernsteinHazard family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program bernsteinhazard_fixture : Obs -> Obs
+    observe y : Obs <- BernsteinHazard(breaks=[0.0, 1.0], controls=[[1.0]], rate=1.0)
+    return y
+export bernsteinhazard_fixture

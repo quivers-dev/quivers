@@ -30,6 +30,11 @@ form reproduces the declared joint.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+
+import pytest
+
 from quivers.dsl.parser import parse
 from quivers.transpile import transpile
 
@@ -120,3 +125,42 @@ def test_logitnormal_runtime_helper_grafted() -> None:
     # data-dependent, so a `~` statement would drop it.
     assert "- log(y) - log1m(y)" in out
     assert _nospace("target += logit_normal_lpdf(theta | 0,1);") in _nospace(out)
+
+
+@pytest.mark.parametrize(
+    "family, arguments, bounds",
+    [
+        ("HalfNormal", "scale=1.0", "<lower=0>"),
+        ("HalfCauchy", "scale=1.0", "<lower=0>"),
+        ("HalfStudentT", "df=3.0, scale=1.0", "<lower=0>"),
+        ("Gamma", "concentration=2.0, rate=1.0", "<lower=0>"),
+        ("Beta", "concentration1=2.0, concentration0=3.0", "<lower=0,upper=1>"),
+        ("Uniform", "low=-2.0, high=3.0", "<lower=-2,upper=3>"),
+    ],
+)
+def test_promoted_component_vectors_retain_scalar_support(family, arguments, bounds):
+    """A vector consumer cannot remove the producer's componentwise support."""
+    source = f"""
+object Obs : FinSet 3
+object Comp : FinSet 2
+program components(concentration: Tensor[Real]([Comp])) : Obs -> Obs
+    sample weights <- Dirichlet(concentration=concentration) [over=Comp]
+    sample loc <- {family}({arguments}) [over=Comp]
+    sample scale <- HalfNormal(scale=1.0) [over=Comp]
+    observe y : Obs <- MixtureNormal(weights=weights, loc=loc, scale=scale)
+    return y
+export components
+"""
+    emitted = _stan(source)
+    compact = "".join(emitted.split())
+    assert f"vector{bounds}[2]loc;" in compact
+    assert "vector<lower=0>[2]scale;" in compact
+    binary = shutil.which("stanc")
+    if binary is not None:
+        done = subprocess.run(
+            [binary, "--info", "-"],
+            input=emitted.encode(),
+            capture_output=True,
+            check=False,
+        )
+        assert done.returncode == 0, done.stderr.decode()

@@ -110,12 +110,17 @@ and with `[effects=[Sample]]` it reports that the body uses `Score`. Pyro and Nu
 
 ## Data inputs and the observations dict
 
-`loads` accepts a program with a free data input, because the compiler cannot know which inference call will give its value. Two later steps must agree on the names:
+The [model interface](../../guides/model-data-and-fitting.md) derives input names,
+types, and observation roles from the checked program. `Model(source).bind(data)`
+checks the supplied values before fitting; neither a guide nor an extra list of
+observed names is required. `object Item : FinSet _` also permits the data to fix
+the number of rows, and optional typed parameters in the program header constrain external values.
 
-1. The guide must know which names are given rather than sampled. Pass them as `observed_names` to [`AutoNormalGuide`](../../api/inference/guide.md): both the observed response `y` and the data input `x_design`.
-2. Every SVI step and every MCMC run takes an `observations` dict with a tensor for each of those names.
-
-A name missing from `observed_names` or from `observations` raises at guide construction or at run time, before the model uses the value. [Data inputs](../../guides/inference-foundations.md#host-data-per-row-covariates-and-index-arrays) gives the full rules.
+The component-level workflow below constructs a guide and an optimizer explicitly
+to explain SVI. At this level, `AutoNormalGuide` still accepts `observed_names`,
+and each inference step receives an `observations` mapping. Both the response
+`y` and the covariate `x_design` belong in that mapping. For a complete example
+using the reusable interface, start with [checked model fitting](00-model-interface.md).
 
 ## Compile and fit
 

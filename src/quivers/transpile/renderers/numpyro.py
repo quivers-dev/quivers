@@ -7,12 +7,16 @@ with ``numpyro.factor``. Array broadcasts use ``jax.numpy.full``.
 
 from __future__ import annotations
 
+from quivers.transpile.renderers._ranks import classify_bindings
+
 import pathlib
 
 import panproto
 import torch.distributions.constraints as c
 
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
+from quivers.transpile._builtin_spellings import _probability_builtins_used
+
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.renderers._ranks import carries_event_dims, name_rank_map
 from quivers.transpile.renderers._python_helpers import (
@@ -24,6 +28,7 @@ from quivers.transpile.renderers._python_helpers import (
     factor_tower_names,
     float_literal,
     identifier,
+    import_module,
     marginal_support_size,
     marginal_weight_probs,
     marginalize_body,
@@ -41,12 +46,9 @@ from quivers.transpile.renderers._python_helpers import (
     string_literal,
     with_statement,
 )
-from quivers.transpile._pipeline import parser_registry, target_protocol
+from quivers.transpile._pipeline import target_protocol
+from quivers.transpile._runtime_sources import python_runtime_helpers
 from quivers.transpile.family_meta import FAMILY_META, FamilyMeta
-from quivers.dsl.ast_nodes.let_expressions import (
-    LetExprFactor,
-    LetExprList,
-)
 from quivers.transpile.ir import (
     ConstraintSpec,
     Dim,
@@ -71,7 +73,6 @@ from quivers.transpile.ir import (
     IRCall,
     IRScore,
     Plate,
-    event_dim_of,
 )
 from quivers.transpile.renderers._base import (
     marginalize_row_rank,
@@ -226,7 +227,7 @@ class NumPyroRenderer(RendererBase):
             factor_towers=factor_tower_names(ir),
             name_plates=name_plate_map(ir),
         )
-        scalar_refs, bound_refs = _classify_bindings(ir)
+        scalar_refs, bound_refs = classify_bindings(ir)
         ctx = _NumPyroCtx(
             sb=sb,
             morphisms={},
@@ -698,21 +699,13 @@ class NumPyroRenderer(RendererBase):
 
     def _emit_plain_import(self, py: PyCtx, chain: tuple[str, ...]) -> None:
         """Emit ``import <a>.<b>.<c>``."""
-        stmt = py.v(py.fresh("imp"), "import_statement")
-        name = self._dotted_name(py, chain)
-        py.e(stmt, name, "name")
-        py.e("mod", stmt, "child_of")
+        import_module(py, chain)
 
     def _emit_aliased_import(
         self, py: PyCtx, chain: tuple[str, ...], alias: str
     ) -> None:
         """Emit ``import <a>.<b> as <alias>``."""
-        stmt = py.v(py.fresh("imp"), "import_statement")
-        aliased = py.v(py.fresh("alias"), "aliased_import")
-        py.e(aliased, self._dotted_name(py, chain), "name")
-        py.e(aliased, identifier(py, alias), "alias")
-        py.e(stmt, aliased, "name")
-        py.e("mod", stmt, "child_of")
+        import_module(py, chain, alias)
 
     def _dotted_name(self, py: PyCtx, chain: tuple[str, ...]) -> str:
         """Build a ``dotted_name`` vertex from the chain segments."""
@@ -2006,54 +1999,6 @@ def _as_numpyro_ctx(ctx: RenderContext) -> _NumPyroCtx:
     return ctx
 
 
-def _is_scalar_shape(plate: Plate) -> bool:
-    """A binding whose plate carries neither batch nor event axes is
-    rank-0 in every replicated / joint dimension."""
-    return not plate.batch_dims and not plate.event_dims
-
-
-def _classify_bindings(
-    ir: IRProgram,
-) -> tuple[frozenset[str], frozenset[str]]:
-    """Classify every bindable name in `ir` as scalar and / or bound.
-
-    Returns ``(scalar_refs, bound_refs)``. A name is *bound* when the
-    program introduces it (a data input, sample, observe, deterministic
-    let, or marginalize latent). A bound name is *scalar* when it is
-    rank-0: an empty plate plus a scalar-support constraint for the
-    stochastic / input bindings, and an empty plate whose let-expression
-    is not a vector-producing list / factor construct for the
-    deterministic ones. A let-bound scalar literal thus lands in
-    `scalar_refs` exactly like a free scalar input, so the NumPyro
-    broadcast fires on both.
-    """
-    scalar: set[str] = set()
-    bound: set[str] = set()
-
-    def _record_stochastic(name: str, plate: Plate, constraint: ConstraintSpec) -> None:
-        bound.add(name)
-        if _is_scalar_shape(plate) and (event_dim_of(constraint.to_constraint()) == 0):
-            scalar.add(name)
-
-    def _visit(nodes: tuple[IRNode, ...]) -> None:
-        for node in nodes:
-            if isinstance(node, (IRDataInput, IRSample, IRObserve)):
-                _record_stochastic(node.name, node.plate, node.constraint)
-            elif isinstance(node, IRDeterministic):
-                bound.add(node.name)
-                if _is_scalar_shape(node.plate) and not isinstance(
-                    node.expr, (LetExprList, LetExprFactor)
-                ):
-                    scalar.add(node.name)
-            elif isinstance(node, IRMarginalize):
-                _record_stochastic(node.latent, node.plate, node.constraint)
-                _visit(node.scope)
-
-    _visit(ir.inputs)
-    _visit(ir.body)
-    return frozenset(scalar), frozenset(bound)
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -2082,82 +2027,11 @@ _RUNTIME_NUMPYRO_PATH = (
 )
 
 
-def _class_definition_name(schema: panproto.Schema, class_vid: str) -> str | None:
-    """The literal name of a `class_definition` vertex, or `None`."""
-    for edge in schema.edges:
-        if edge.src == class_vid and edge.kind == "name":
-            name_v = next(
-                (vv for vv in schema.vertices if vv.id == edge.tgt),
-                None,
-            )
-            if name_v is None:
-                continue
-            return next(
-                (
-                    c.value
-                    for c in schema.constraints_for(name_v.id)
-                    if c.sort == "literal-value"
-                ),
-                None,
-            )
-    return None
-
-
-def _subtree_vertex_ids(schema: panproto.Schema, root: str) -> set[str]:
-    """Every vertex id reachable from `root` via outgoing edges."""
-    seen: set[str] = {root}
-    frontier: list[str] = [root]
-    while frontier:
-        src = frontier.pop()
-        for edge in schema.edges:
-            if edge.src == src and edge.tgt not in seen:
-                seen.add(edge.tgt)
-                frontier.append(edge.tgt)
-    return seen
-
-
-def _load_runtime_numpyro_helpers() -> tuple[
-    panproto.Schema, dict[str, str], dict[str, set[str]]
-]:
-    """Parse [`runtime_numpyro.py`][quivers.transpile.runtime_numpyro]
-    through panproto's Python tree-sitter grammar at module-load time
-    and index every helper `class_definition` subtree by class name.
-
-    Returns the parsed schema, a map from class name to the
-    class-definition vertex id, and a map from class name to the set of
-    vertex ids in that class's subtree. The renderer's
-    `_emit_runtime_helper`
-    grafts a class subtree (vertex + all descendants + their
-    constraints + edges) into the per-render schema as a `child_of`
-    of the emitted module. The emit is a real Python class definition,
-    with no string literal, no `exec`, and no runtime self-injection.
-    """
-    schema = parser_registry().parse_with_protocol(
-        "python",
-        _RUNTIME_NUMPYRO_PATH.read_bytes(),
-        str(_RUNTIME_NUMPYRO_PATH),
-    )
-    roots: dict[str, str] = {}
-    for v in schema.vertices:
-        if v.kind == "class_definition":
-            name = _class_definition_name(schema, v.id)
-            if name is not None:
-                roots[name] = v.id
-    if not roots:
-        raise RuntimeError(
-            f"no helper `class` definitions found in {_RUNTIME_NUMPYRO_PATH}; "
-            "the renderer expects it as the source of truth for the "
-            "embedded NumPyro runtime helpers."
-        )
-    subtrees = {name: _subtree_vertex_ids(schema, root) for name, root in roots.items()}
-    return schema, roots, subtrees
-
-
 (
     _RUNTIME_NUMPYRO_HELPER_SCHEMA,
     _RUNTIME_NUMPYRO_HELPER_ROOTS,
     _RUNTIME_NUMPYRO_HELPER_SUBTREES,
-) = _load_runtime_numpyro_helpers()
+) = python_runtime_helpers(_RUNTIME_NUMPYRO_PATH)
 
 
 def _ir_helper_classes_used(body: tuple[IRNode, ...]) -> set[str]:
@@ -2171,7 +2045,10 @@ def _ir_helper_classes_used(body: tuple[IRNode, ...]) -> set[str]:
     whose NumPyro target name matches a `class` in
     [`runtime_numpyro.py`][quivers.transpile.runtime_numpyro].
     """
-    used: set[str] = set()
+    probability = _probability_builtins_used(body)
+    used: set[str] = {"_qvr_" + name for name in probability}
+    if probability:
+        used.add("_qvr_probability_check")
     for node in body:
         if isinstance(node, (IRSample, IRObserve)):
             if node.family in _NUMPYRO_RUNTIME_HELPER_FAMILIES:

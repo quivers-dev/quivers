@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from quivers.dsl.parser import parse
@@ -27,6 +29,10 @@ from quivers.transpile.ir import (
     LetExprAffineMap,
 )
 from quivers.transpile.plan import Lower
+from tests.transpile._gallery_data import (
+    _exported_value_parameters,
+    _scalar_program_arguments,
+)
 
 REGRESSION = """\
 object Resp : FinSet 5
@@ -287,22 +293,78 @@ def test_a_program_template_draw_is_planned_in_place() -> None:
     source = """\
 object School : FinSet 3
 object Effect : Real 1
-program effects(spread : Real, K : FinSet) : K -> Effect
+program effects[K : FinSet](spread : Real) : K -> Effect
     sample z : K <- Normal(loc=0.0, scale=1.0)
     let effect = spread * z
     return effect
 program prog : School -> Effect
-    sample theta <- effects(0.5, School)
+    sample theta <- effects[School](0.5)
     return theta
 export prog
 """
     ir = Lower().forward(parse(source))
     names = [getattr(node, "name", None) for node in ir.body]
-    assert names[:2] == ["theta__z", "theta"]
-    sample = ir.body[0]
-    assert isinstance(sample, IRSample)
+    samples = [node for node in ir.body if isinstance(node, IRSample)]
+    assert [sample.name for sample in samples] == ["theta__z"]
+    assert names.index("theta__z") < names.index("theta")
+    sample = samples[0]
     assert sample.family == "Normal"
     assert [dim.name for dim in sample.plate.batch_dims] == ["School"]
+
+
+def test_gallery_scalars_follow_runtime_positions_after_static_binders(
+    tmp_path: Path,
+) -> None:
+    """Static extents and nested tensor types must not shift a scalar's value."""
+    source = """\
+index Flag = Seen | Unseen
+family Tagged[
+    # Uniform family parameters are static.
+    A : Type,
+](
+    # Refinable family indices are static too.
+    tag : Flag,
+) : Type
+    constructor Present : A -> Tagged[A](Seen)
+define identity[
+    # Computation specialization.
+    A : Type,
+](
+    # Computation runtime value.
+    value : A,
+) : A !{} =
+    return value
+object Out : Real 1
+program model[
+    # Program specialization.
+    n : Nat,
+](
+    # The extent is static; these are runtime inputs.
+    x : Tensor[Real]([n, 2]),
+
+    # These scalars follow a tensor whose type contains a comma.
+    count : Nat,
+    scale : Real,
+) : n -> Out
+    sample b <- Normal(loc=0.0, scale=scale)
+    return b
+export model
+"""
+    path = tmp_path / "model.qvr"
+    path.write_text(source)
+    declared = _exported_value_parameters(path)
+    assert tuple(name for name, _ in declared["model"]) == ("x", "count", "scale")
+    for call in (
+        "fit = program.model([[1.0, 2.0]], 2, 0.5)",
+        "fit = program.model(count=2, scale=0.5)",
+    ):
+        bound = _scalar_program_arguments(call, path, declared)
+        assert bound == {"count": 2, "scale": 0.5}
+        assert isinstance(bound["count"], int)
+    with pytest.raises(RuntimeError, match="nonnegative integer"):
+        _scalar_program_arguments(
+            "fit=program.model(count=2.5, scale=0.5)", path, declared
+        )
 
 
 CALLS = """\

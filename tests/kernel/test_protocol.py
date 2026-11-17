@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import sys
+import os
+from pathlib import Path
 
 from jupyter_client import KernelManager
 import pytest
 
 from quivers import __version__
+import quivers
 
 
 @pytest.mark.timeout(90)
@@ -20,7 +23,14 @@ def test_kernel_protocol_executes_qiec_and_preserves_silent_errors(tmp_path) -> 
         "_run_f",
         "{connection_file}",
     ]
-    manager.start_kernel(cwd=str(tmp_path))
+    # The notebook changes directory; retain the package tested by this
+    # process even when PYTHONPATH contains a relative source directory.
+    package_root = str(Path(quivers.__file__).resolve().parent.parent)
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (package_root, environment.get("PYTHONPATH", ""))
+    )
+    manager.start_kernel(cwd=str(tmp_path), env=environment)
     client = manager.blocking_client()
     client.start_channels()
     try:
@@ -33,7 +43,75 @@ def test_kernel_protocol_executes_qiec_and_preserves_silent_errors(tmp_path) -> 
             reply=True,
             timeout=20,
         )["content"]
-        assert reply["status"] == "ok"
+        assert reply["status"] == "ok", reply
+        reply = client.execute(
+            "object Row : FinSet _\n"
+            "object Out : Real 1\n"
+            "program regression(x : Tensor[Real]([Row])) : Row -> Out\n"
+            "    sample b <- Normal(loc=0.0, scale=1.0)\n"
+            "    let mu = b * x\n"
+            "    observe y : Row <- Normal(loc=mu, scale=1.0)\n"
+            "    return b\n"
+            "export regression\n"
+            ":type regression::x\n"
+            ":run regression --data x=[1.0,2.0] --data y=[0.5,1.0]",
+            reply=True,
+            timeout=20,
+        )["content"]
+        assert reply["status"] == "ok", reply
+        inspected = client.inspect("regression::x", 13, reply=True, timeout=15)[
+            "content"
+        ]
+        assert inspected["found"]
+        assert "Tensor[Real]([Row])" in inspected["data"]["text/plain"]
+        reply = client.execute(
+            "object Closed : FinSet 2\n"
+            "morphism closed_arrow : Closed -> Closed [role=parameter]\n"
+            "define closed_composite = closed_arrow >> closed_arrow\n"
+            ":type closed_composite",
+            reply=True,
+            timeout=20,
+        )["content"]
+        assert reply["status"] == "ok", reply
+        inspected = client.inspect("closed_arrow", 12, reply=True, timeout=15)[
+            "content"
+        ]
+        assert inspected["found"]
+        assert "Closed -> Closed" in inspected["data"]["text/plain"]
+        reply = client.execute(
+            "define checked_tail() : Real !{} =\n"
+            "    return positive_parameter(0.5) + log_probability(0.5) + "
+            "log1mexp(-0.5) + log_ndtr(-1.0)\n"
+            ":run checked_tail",
+            reply=True,
+            timeout=20,
+        )["content"]
+        assert reply["status"] == "ok", reply
+        reply = client.execute(
+            "define invalid_probability() : Real !{} =\n"
+            "    return log_probability(1.5)\n:run invalid_probability",
+            reply=True,
+            timeout=20,
+        )["content"]
+        assert reply["status"] == "error"
+        assert "probability" in reply["evalue"]
+        reply = client.execute(
+            "object CountRows : FinSet 2\n"
+            "program count_model : CountRows -> CountRows\n"
+            "    observe count_y : CountRows <- COMPoisson(rate=2.0, dispersion=1.3)\n"
+            "    return count_y\nexport count_model\n"
+            ":run count_model --data count_y=[1,2]",
+            reply=True,
+            timeout=20,
+        )["content"]
+        assert reply["status"] == "ok", reply
+        for prefix, expected in (
+            ("COMPo", "COMPoisson"),
+            ("log_nd", "log_ndtr"),
+            ("positive_para", "positive_parameter"),
+        ):
+            completed = client.complete(prefix, reply=True, timeout=15)["content"]
+            assert expected in completed["matches"]
         reply = client.execute("@@@ invalid @@@", silent=True, reply=True, timeout=15)[
             "content"
         ]

@@ -20,7 +20,11 @@ identifier git uses.
 
 Usage:
 
-    python grammars/qvr/vcs/build_schemas.py [--reset]
+    python grammars/qvr/vcs/build_schemas.py --revision HEAD
+
+Feature work appends only the working grammar. Tagged history and its pinned
+identities are immutable; rebuilding the full store with ``--reset`` is reserved
+for deliberate history maintenance.
 """
 
 from __future__ import annotations
@@ -218,7 +222,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Wipe .panproto/ before rebuilding the schema chain.",
     )
+    parser.add_argument(
+        "--revision", choices=("HEAD",),
+        help="Index only the working-tree grammar, preserving historical snapshots.",
+    )
     args = parser.parse_args(argv)
+    if args.revision and args.reset:
+        parser.error("--revision HEAD cannot be combined with --reset")
 
     if args.reset:
         _reset_vcs()
@@ -227,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     protocol = _qvr_grammar_protocol()
     repo = panproto.Repository.open(str(_VCS_ROOT))
 
-    revisions = _distinct_grammar_revisions()
+    revisions = [] if args.revision else _distinct_grammar_revisions()
     existing_tags = {name: commit_id for name, commit_id in repo.list_tags()}
     for tag, grammar_json in revisions:
         if tag in existing_tags:

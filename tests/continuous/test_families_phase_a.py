@@ -313,9 +313,36 @@ def test_family_meta_carries_all_thirteen_phase_a_entries() -> None:
         assert qvr_name in FAMILY_META
 
 
-def test_family_meta_total_count_unchanged() -> None:
-    # A registered family is one a target can be asked to emit, so
-    # the count is pinned: a family arriving without its per-target
-    # names, or leaving, changes what `transpile` accepts, and this
-    # is where that shows up.
-    assert len(FAMILY_META) == 60
+def test_family_meta_catalog_count_includes_new_response_families() -> None:
+    # Preserve explicit response-law membership while checking the complete
+    # semantic/native catalog, including future independently registered laws.
+    added = {
+        "AsymmetricLaplace",
+        "ExGaussian",
+        "InverseGaussian",
+        "HurdleGamma",
+        "HurdleLogNormal",
+        "ZeroInflatedNegativeBinomial",
+        "ZeroInflatedBinomial",
+        "ZeroInflatedBetaBinomial",
+        "HurdleNegativeBinomial",
+        "SkewNormal",
+        "ShiftedLogNormal",
+        "Frechet",
+        "GeneralizedExtremeValue",
+        "DiscreteWeibull",
+        "ZeroInflatedAsymmetricLaplace",
+    }
+    assert added <= FAMILY_META.keys()
+    assert "GP" in FAMILY_META
+    from quivers.qiec.families import FAMILIES
+    from quivers.continuous.family_spec import FAMILY_REGISTRY
+
+    assert set(FAMILY_META) == set(FAMILIES)
+    assert FAMILY_REGISTRY.keys() <= FAMILY_META.keys()
+    assert {
+        "COMPoisson",
+        "Multinomial",
+        "DirichletMultinomial",
+        "AdditiveLogRatioNormal",
+    } <= FAMILY_META.keys()

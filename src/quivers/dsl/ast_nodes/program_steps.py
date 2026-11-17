@@ -1,4 +1,4 @@
-"""Program-block step AST nodes (). The
+"""Program-block step AST nodes. The
 parser emits one AST class per surface step keyword. The internal
 IR forms (``DrawStep``, ``PlateDrawStep``, ``VectorisedObserveStep``,
 ``GroupedLatentInitStep``, ``GroupedBodyObserveStep``,
@@ -28,6 +28,7 @@ Compiler-only IR (synthesized at compile time):
 from typing import Literal
 
 import didactic.api as dx
+from quivers._observation import ObservationEvent
 
 from quivers.dsl.ast_nodes._shared import AxisSpec, OptionEntry
 from quivers.dsl.ast_nodes.let_expressions import LetExprNode
@@ -92,9 +93,9 @@ class DrawArgIndex(DrawArg):
 
 
 class DrawArgScalar(DrawArg):
-    """Numeric literal in a draw step."""
+    """Numeric literal, preserving integer lexemes before numerical execution."""
 
-    value: float
+    value: int | float
     line: int = 0
     col: int = 0
     kind: Literal["scalar"] = "scalar"
@@ -158,7 +159,7 @@ def atom_to_draw_arg(value: str | float | int | DrawArg) -> DrawArg:
     if isinstance(value, str):
         return DrawArgName(text=value)
     if isinstance(value, (int, float)):
-        return DrawArgScalar(value=float(value))
+        return DrawArgScalar(value=value)
     raise TypeError(
         f"atom_to_draw_arg: expected str | float | DrawArg, got {type(value).__name__}"
     )
@@ -189,6 +190,7 @@ class SampleStep(ProgramStep):
     vars: tuple[str, ...]
     morphism: str
     args: tuple[DrawArg, ...] | None = None
+    static_args: tuple[DrawArg, ...] = ()
     index: ObjectExpr | None = None
     axes: AxisSpec | None = None
     options: tuple[OptionEntry, ...] = ()
@@ -210,6 +212,7 @@ class ObserveStep(ProgramStep):
     vars: tuple[str, ...]
     morphism: str
     args: tuple[DrawArg, ...] | None = None
+    static_args: tuple[DrawArg, ...] = ()
     index: ObjectExpr | None = None
     axes: AxisSpec | None = None
     via: str | None = None
@@ -235,6 +238,7 @@ class MarginalizeStep(ProgramStep):
     var: str
     morphism: str
     args: tuple[DrawArg, ...] | None = None
+    static_args: tuple[DrawArg, ...] = ()
     index: ObjectExpr | None = None
     over: str | None = None
     over_objs: tuple[str, ...] | None = None
@@ -385,6 +389,8 @@ class BindStep(ProgramStep):
     via: str | None = None
     via_axes: tuple[str, ...] | None = None
     reduction: str | None = None
+    weights: str | float | None = None
+    event: ObservationEvent | None = None
     line: int = 0
     col: int = 0
     kind: Literal["bind_step"] = "bind_step"
@@ -403,6 +409,8 @@ class DrawStep(ProgramStep):
     args: tuple[DrawArg, ...] | None = None
     is_observed: bool = False
     axes: AxisSpec | None = None
+    weights: str | float | None = None
+    event: ObservationEvent | None = None
     line: int = 0
     col: int = 0
     kind: Literal["draw_step"] = "draw_step"
@@ -444,6 +452,8 @@ class VectorisedObserveStep(ProgramStep):
     index_map_var: str | None = None
     index_map_axes: tuple[str, ...] | None = None
     axes: AxisSpec | None = None
+    weights: str | float | None = None
+    event: ObservationEvent | None = None
     line: int = 0
     col: int = 0
     kind: Literal["vectorized_observe_step"] = "vectorized_observe_step"
@@ -477,6 +487,8 @@ class GroupedBodyObserveStep(ProgramStep):
     index_map_var: str | None = None
     index_map_axes: tuple[str, ...] | None = None
     ll_slot: str = ""
+    weights: str | float | None = None
+    event: ObservationEvent | None = None
     line: int = 0
     col: int = 0
     kind: Literal["grouped_body_observe_step"] = "grouped_body_observe_step"

@@ -51,6 +51,8 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     LogDensity,
+    LogMass,
+    ConditionalValue,
     NewInstance,
     Perform,
     PrimitiveApplication,
@@ -2014,6 +2016,11 @@ class Evaluator:
         self._type_validator = type_validator
         self._computations: dict[ComputationId, NamedComputation] = {}
         self._handler_definitions: dict[HandlerId, HandlerDef] = {}
+        self._native_families = (
+            {item.name for item in module.distribution_families}
+            if module is not None
+            else set()
+        )
         if module is not None:
             self._computations = {item.id: item for item in module.computations}
             self._handler_definitions = {item.id: item for item in module.handlers}
@@ -2256,6 +2263,13 @@ class Evaluator:
             # The kernel has already checked the evidence.  Transport is erased
             # dynamically but remains explicit in serialized QIEC.
             return self._value(value.value, environment)
+        if isinstance(value, ConditionalValue):
+            condition = self._value(value.condition, environment)
+            if type(condition) is not bool:
+                raise EvaluationError("conditional value requires a scalar Boolean")
+            return self._value(
+                value.then if condition else value.otherwise, environment
+            )
         if isinstance(value, PrimitiveApplication):
             implementation = IMPLEMENTATIONS.get(value.name)
             if implementation is None:
@@ -2279,6 +2293,10 @@ class Evaluator:
                 )
             return source[value.position]
         if isinstance(value, DistributionValue):
+            if self._native_families and value.name in self._native_families:
+                raise EvaluationError(
+                    f"custom native family {value.name!r} requires its native executor; reference callbacks were not supplied"
+                )
             record = family(value.name)
             sampled = sampled_element(value.result_type)
             split = tensor_shape(sampled) if sampled is not None else None
@@ -2288,13 +2306,17 @@ class Evaluator:
                     _extent(PlateAxis(name="event", size=dimension))
                     for dimension in split[1][len(split[1]) - record.event_rank :]
                 )
+            arguments = {
+                name: self._value(argument, environment)
+                for name, argument in value.arguments
+            }
+            from quivers.qiec._distribution_axes import distribution_axes
+
+            batch = tuple(_extent(axis) for axis in distribution_axes(value)[0])
             return RuntimeDistribution(
                 family=value.name,
-                arguments={
-                    name: self._value(argument, environment)
-                    for name, argument in value.arguments
-                },
-                batch=tuple(_extent(axis) for axis in value.plate.batch),
+                arguments=arguments,
+                batch=batch,
                 event=tuple(_extent(axis) for axis in value.plate.event)[
                     : max(len(value.plate.event) - record.event_rank, 0)
                 ],
@@ -2303,6 +2325,16 @@ class Evaluator:
                 },
                 natural=natural,
             )
+        if isinstance(value, LogMass):
+            sampleable = self._value(value.sampleable, environment)
+            if not isinstance(sampleable, RuntimeDistribution):
+                raise EvaluationError(
+                    "log_mass was given a runtime value with no measure mass"
+                )
+            try:
+                return sampleable.log_mass(batch_axes=len(value.batch))
+            except (ArithmeticError, ValueError) as error:
+                raise EvaluationError(f"log_mass failed: {error}") from error
         if isinstance(value, LogDensity):
             sampleable = self._value(value.sampleable, environment)
             if not isinstance(sampleable, RuntimeDistribution):

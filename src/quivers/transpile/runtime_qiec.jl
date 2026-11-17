@@ -130,6 +130,12 @@ const _qvr_qiec_primitives = Dict{String, Any}(
     "bool_to_int" => a -> a ? 1 : 0,
     "select_real" => (c, a, b) -> ifelse(c, a, b),
     "select_int" => (c, a, b) -> ifelse(c, a, b),
+    "positive_parameter" => a -> _qvr_positive_parameter(a),
+    "observation_status" => a -> _qvr_observation_status(a),
+    "interval_upper" => (a, b) -> _qvr_interval_upper(a, b),
+    "log_probability" => a -> _qvr_log_probability(a),
+    "log1mexp" => a -> _qvr_log1mexp(a),
+    "log_ndtr" => a -> _qvr_log_ndtr(a),
     "expm1" => expm1,
     "log1p" => log1p,
     "log2" => log2,
@@ -173,7 +179,10 @@ const _qvr_qiec_primitives = Dict{String, Any}(
     "as_weight" => a -> Float64(a),
     "weight_value" => a -> Float64(a),
     "add_weight" => (a, b) -> a + b,
-    "scale_weight" => (a, b) -> a * b,
+    "scale_weight" => (a, b) -> iszero(a) ? 0.0 : a * b,
+    "observation_weight" => a ->
+        a isa Real && !(a isa Bool) && isfinite(a) && a >= 0 ? a :
+        error("observation weights must be finite and nonnegative"),
 )
 _qvr_qiec_sigmoid(value) = value >= 0.0 ? 1.0 / (1.0 + exp(-value)) : exp(value) / (1.0 + exp(value))
 _qvr_qiec_softplus(value) = max(value, 0.0) + log1p(exp(-abs(value)))
@@ -337,7 +346,26 @@ function _qvr_qiec_specialize(value, environment)
         static_key = identity === nothing ? get(value, "name", nothing) : identity
         haskey(environment, static_key) && return environment[static_key]
     end
-    return Dict(key => _qvr_qiec_specialize(item, environment) for (key, item) in value)
+    specialized = Dict(key => _qvr_qiec_specialize(item, environment) for (key, item) in value)
+    if get(specialized, "kind", nothing) == "index-sum"
+        terms = Any[]
+        constant = specialized["constant"]
+        for term in specialized["terms"]
+            if term["kind"] == "index-literal"
+                constant += term["value"]
+            elseif term["kind"] == "index-sum"
+                append!(terms, term["terms"])
+                constant += term["constant"]
+            else
+                push!(terms, term)
+            end
+        end
+        isempty(terms) && return Dict("kind" => "index-literal", "value" => constant, "sort" => Dict("kind" => "nat"))
+        length(terms) == 1 && constant == 0 && return terms[1]
+        sort!(terms; by=term -> get(term, "identity", nothing) === nothing ? (0, term["name"]) : (1, term["identity"]))
+        return Dict("kind" => "index-sum", "terms" => terms, "constant" => constant)
+    end
+    return specialized
 end
 const _qvr_qiec_ambient_key = :qvr_qiec_ambient_handlers
 _qvr_qiec_ambient_handlers() = get(task_local_storage(), _qvr_qiec_ambient_key, Any[])
@@ -656,4 +684,44 @@ function _qvr_qiec_run(build, operations)
         end
     end
     return _qvr_qiec_value(current.value)
+end
+
+function _qvr_log_probability(x)
+    x isa Real && !(x isa Bool) && isfinite(x) && 0 <= x <= 1 || error("log_probability requires a finite real in [0,1]")
+    return iszero(x) ? -Inf : log(x)
+end
+function _qvr_log1mexp(x)
+    x isa Real && !(x isa Bool) && !isnan(x) && x <= 0 || error("log1mexp requires a nonpositive real")
+    return iszero(x) ? -Inf : x > -log(2.0) ? log(-expm1(x)) : log1p(-exp(x))
+end
+function _qvr_log_ndtr(x)
+    x isa Real && !(x isa Bool) && !isnan(x) || error("log_ndtr requires a real other than NaN")
+    x == Inf && return zero(x)
+    x == -Inf && return -Inf
+    if abs(x) > 2.5
+        magnitude = abs(x)
+        denominator = magnitude
+        for k in 96:-1:1
+            denominator = magnitude + k / denominator
+        end
+        tail = -0.5 * magnitude * magnitude - 0.9189385332046727 - log(denominator)
+        return x < 0 ? tail : log1p(-exp(tail))
+    end
+    return log(0.5 * (1 + _qvr_qiec_erf(x / sqrt(2.0))))
+end
+
+function _qvr_positive_parameter(x)
+    x isa Real && !(x isa Bool) && isfinite(x) && x > 0 || error("positive_parameter requires a finite strictly positive real")
+    return x
+end
+
+
+function _qvr_observation_status(x)
+    x isa Integer && !(x isa Bool) && -1 <= x <= 2 || error("observation_status requires integer codes -1, 0, 1, or 2")
+    return x
+end
+
+function _qvr_interval_upper(lower, upper)
+    lower isa Real && !(lower isa Bool) && upper isa Real && !(upper isa Bool) && !isnan(lower) && isfinite(upper) && upper > lower || error("interval_upper requires a finite upper endpoint greater than its lower endpoint")
+    return upper
 end

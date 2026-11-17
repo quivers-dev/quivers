@@ -109,7 +109,7 @@ def _template(lets: str) -> str:
     return (
         HEAD
         + COMPUTATIONS
-        + "\nprogram full(tau : Real, G : FinSet) : Row -> Val"
+        + "\nprogram full[G : FinSet](tau : Real) : Row -> Val"
         + lets
         + OBSERVE
         + "\nexport full\n"
@@ -139,11 +139,11 @@ def _drawn(lets: str) -> str:
     return (
         HEAD
         + COMPUTATIONS
-        + "\nprogram part(tau : Real, G : FinSet) : Row -> Val"
+        + "\nprogram part[G : FinSet](tau : Real) : Row -> Val"
         + lets
         + "\n    return arith\n"
         + "\nprogram caller : Row -> Val\n"
-        + f"    sample a <- part({TAU}, Group)\n"
+        + f"    sample a <- part[Group]({TAU})\n"
         + OBSERVE.replace("loc=arith", "loc=a")
         + "\nexport caller\n"
     )
@@ -232,7 +232,7 @@ def test_instantiation_substitutes_through_every_let_expression_form() -> None:
     steps = compiler._instantiate_template(
         template,
         "a",
-        (DrawArgScalar(value=TAU), DrawArgName(text="Group")),
+        (DrawArgName(text="Group"), DrawArgScalar(value=TAU)),
         call_site,
     )
     actual = _bound_values(steps)

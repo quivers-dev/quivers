@@ -78,6 +78,13 @@ its connectives (by default the slashes `/` and `\`), nested up to depth `n`, as
 [@lambek1958mathematics; @moortgat1997categorial]. It then lowers the resulting rules to the same
 graph of search and weights as a deduction.
 
+A schema's category variables are static binders, written in brackets:
+`schema apply[X, Y : Cat] : (X / Y) * Y -> X`. A top-level rule uses the
+corresponding untyped pattern list, as in `rule apply[X, Y] : X / Y, Y |- X`.
+Matching substitutes categories for these variables before applying a rule
+instance. These declarations thus share the static-bracket convention of
+programs and computations, without introducing runtime value parameters.
+
 The compiled runtime's `ChartParser` and the QIEC entry share their lexical and rule weights and
 compute the same inside weight, bounded by `depth`. The `ChartParser` fits by batched PyTorch
 optimization, and the well-typed computation gives effect handling, entry point execution, stable

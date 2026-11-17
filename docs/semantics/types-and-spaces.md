@@ -33,6 +33,27 @@ arguments $\bar a$ and keyword arguments $\bar k$. In source, `*` writes $\times
 arguments are separated by spaces (`Real 3`), and keyword arguments go in braces
 (`Ball 3 {radius=2}`).
 
+A finite declaration may leave its cardinality open, as in `object Row : FinSet _`.
+This introduces a static extent to specialize before tensor execution, rather
+than a new probability distribution over finite sets. Exact checked tensor
+shapes constrain it by equality; direct gather indices constrain it by lower
+bounds. The [input specialization rules](programs.md#external-inputs-and-inferred-finite-objects)
+specify when those constraints determine a cardinality.
+
+The object language and QIEC value types serve different purposes. A program's
+`Row -> Out` declares the domain and codomain of its kernel, whereas
+`x : Tensor[Real]([Row])` in its runtime telescope declares an external value
+with one real entry per row. A static binder `[Row : FinSet]` can abstract over
+the object itself. These inputs do not add factors to the kernel's domain;
+their fixed valuation selects the kernel, as in
+[Programs as kernels §3.1](programs.md#31-static-and-runtime-telescopes).
+
+A program-local static natural binder `[n : Nat]` may occur in a finite-object
+position. At a valuation $n=k$, it denotes the canonical ordinal
+$\{0,\ldots,k-1\}$. The same binder in `Tensor[Real]([n])` fixes the tensor's
+extent. This interpretation connects an observation plate with its input type
+without placing a program-local binder in the module's object environment.
+
 The slashes $/$ and $\backslash$ and the effect application $T(\bar\tau)$ build
 [categorial types](schemas.md#3-residuated-type-formers), formulas such as `S / NP` that serve as
 syntactic categories in a grammar. They are elements of a finite set of formulas, not finite sets

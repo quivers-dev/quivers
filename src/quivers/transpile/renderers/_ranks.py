@@ -14,6 +14,10 @@ records for every bound name, which the plan reads off the checked types.
 
 from __future__ import annotations
 
+from quivers.dsl.ast_nodes.objects import DiscreteConstructor, ObjectExpr, TypeName
+from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.ir import ConstraintSpec, IRDataInput, event_dim_of
+
 from collections.abc import Mapping
 
 from quivers.dsl.ast_nodes import (
@@ -22,6 +26,8 @@ from quivers.dsl.ast_nodes import (
     LetExprFactor,
     LetExprIndex,
     LetExprList,
+    LetExprLiteral,
+    LetExprString,
     LetExprNode,
     LetExprUnaryOp,
     LetExprVar,
@@ -326,8 +332,160 @@ def several_axis_reductions(
     return tuple(found)
 
 
+def classify_bindings(
+    ir: IRProgram,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Classify every bindable name in an IR program as scalar and / or bound.
+
+    Returns ``(scalar_refs, bound_refs)``. A name is *bound* when the
+    program introduces it (a data input, sample, observe, deterministic
+    let, or marginalize latent). A bound name is *scalar* when it is
+    rank-0: an empty plate plus a scalar-support constraint for the
+    stochastic / input bindings, and an empty plate whose let-expression
+    is not a vector-producing list / factor construct for the
+    deterministic ones. A let-bound scalar literal thus lands in
+    `scalar_refs` exactly like a free scalar input. Renderers can thus
+    apply their broadcast policy to both.
+
+    Parameters
+    ----------
+    ir : IRProgram
+        Checked renderer plan, including nested marginal scopes.
+
+    Returns
+    -------
+    tuple[frozenset[str], frozenset[str]]
+        Scalar references and all bound references, respectively.
+    """
+    scalar: set[str] = set()
+    bound: set[str] = set()
+
+    def _record_stochastic(name: str, plate: Plate, constraint: ConstraintSpec) -> None:
+        bound.add(name)
+        if (not plate.batch_dims and not plate.event_dims) and (
+            event_dim_of(constraint.to_constraint()) == 0
+        ):
+            scalar.add(name)
+
+    def _visit(nodes: tuple[IRNode, ...]) -> None:
+        for node in nodes:
+            if isinstance(node, (IRDataInput, IRSample, IRObserve)):
+                _record_stochastic(node.name, node.plate, node.constraint)
+            elif isinstance(node, IRDeterministic):
+                bound.add(node.name)
+                if (
+                    not node.plate.batch_dims and not node.plate.event_dims
+                ) and not isinstance(node.expr, (LetExprList, LetExprFactor)):
+                    scalar.add(node.name)
+            elif isinstance(node, IRMarginalize):
+                _record_stochastic(node.latent, node.plate, node.constraint)
+                _visit(node.scope)
+
+    _visit(ir.inputs)
+    _visit(ir.body)
+    return frozenset(scalar), frozenset(bound)
+
+
+_EVENT_REDUCTIONS = frozenset({"sum", "mean", "prod", "max", "min"})
+
+
+def let_event_rank(expr: LetExprNode, ranks: Mapping[str, int]) -> int:
+    """Infer the event rank of a let-expression at emit time.
+
+    Leaf variables read their rank from the supplied event-rank map;
+    compound expressions share one structural walk across targets: binary operators broadcast to the wider
+    operand, unary minus and elementwise math preserve the rank, a
+    reducing primitive collapses to 0, and each index a subscript
+    supplies consumes one axis.
+
+    Parameters
+    ----------
+    expr : LetExprNode
+        Renderer expression.
+    ranks : Mapping[str, int]
+        Event-rank hints from checked bindings.
+
+    Returns
+    -------
+    int
+        Conservative event-rank hint used when selecting reduction syntax.
+    """
+    if isinstance(expr, (LetExprLiteral, LetExprString)):
+        return 0
+    if isinstance(expr, LetExprVar):
+        return ranks.get(expr.name, 0)
+    if isinstance(expr, LetExprBinOp):
+        return max(
+            let_event_rank(expr.left, ranks),
+            let_event_rank(expr.right, ranks),
+        )
+    if isinstance(expr, LetExprUnaryOp):
+        return let_event_rank(expr.operand, ranks)
+    if isinstance(expr, LetExprCall):
+        if expr.func in _EVENT_REDUCTIONS and len(expr.args) == 1:
+            return 0
+        return max((let_event_rank(a, ranks) for a in expr.args), default=0)
+    if isinstance(expr, LetExprIndex):
+        arr_rank = let_event_rank(expr.array, ranks)
+        return max(0, arr_rank - len(expr.indices))
+    if isinstance(expr, LetExprList):
+        return max(
+            (let_event_rank(item, ranks) for item in expr.items),
+            default=0,
+        )
+    return 0
+
+
+def factor_axis_name(obj: ObjectExpr, *, target: str) -> str:
+    """Resolve an `ObjectExpr` to the axis name a `cards` lookup wants.
+
+    Handles `TypeName` directly and
+    `DiscreteConstructor("FinSet", N)` as a literal anonymous axis
+    (the size is the integer arg).
+
+    Parameters
+    ----------
+    obj : ObjectExpr
+        Factor binder axis.
+    target : str
+        Backend name retained in capability diagnostics.
+
+    Returns
+    -------
+    str
+        Named axis or anonymous finite cardinality.
+
+    Raises
+    ------
+    UnsupportedConstruct
+        If the axis has no supported static name or literal extent.
+    """
+    if isinstance(obj, TypeName):
+        return obj.name
+    if isinstance(obj, DiscreteConstructor) and obj.constructor == "FinSet":
+        if len(obj.args) == 1 and obj.args[0].isdigit():
+            return obj.args[0]
+        raise UnsupportedConstruct(
+            f"qvr-{target}-helper",
+            [
+                f"let-expr:LetExprFactor:{target}: "
+                f"non-literal FinSet binder {obj.args!r}"
+            ],
+        )
+    raise UnsupportedConstruct(
+        f"qvr-{target}-helper",
+        [
+            f"let-expr:LetExprFactor:{target}: binder "
+            f"index {type(obj).__name__} not supported"
+        ],
+    )
+
+
 __all__ = [
     "LAST_AXIS_REDUCTIONS",
+    "classify_bindings",
+    "factor_axis_name",
+    "let_event_rank",
     "let_expr_rank",
     "name_rank_map",
     "reduces_last_of_several_axes",

@@ -491,12 +491,12 @@ def test_a_pattern_of_the_wrong_arity_is_reported_at_the_step() -> None:
 _TEMPLATE = """\
 object School : FinSet 8
 object Effect : Real 1
-program school_effects(spread : Real, K : FinSet) : K -> Effect
+program school_effects[K : FinSet](spread : Real) : K -> Effect
     sample z : K <- Normal(loc=0.0, scale=1.0)
     let effect = spread * z
     return effect
 program pooled : School -> Effect
-    sample theta <- school_effects(0.6, School)
+    sample theta <- school_effects[School](0.6)
     sample sigma <- LogNormal(loc=0.0, scale=0.5)
     observe y : School <- Normal(loc=theta, scale=sigma)
     return theta
@@ -551,12 +551,12 @@ def test_a_template_draw_preserves_categorical_parameterization(
     keyword that distinguishes categorical probabilities from logits."""
     source = f"""\
 object Class : FinSet 3
-program choice(K : FinSet) : K -> K
+program choice[K : FinSet] : K -> K
     sample scores : K <- Normal(loc=0.0, scale=1.0)
     sample z <- Categorical({parameter}=scores)
     return z
 program main : Class -> Class
-    sample outcome <- choice(Class)
+    sample outcome <- choice[Class]()
     return outcome
 export main
 """
@@ -567,11 +567,11 @@ _MORPHISM_TEMPLATE = """\
 object Subj : FinSet 5
 object UnitSpace : Real 1
 morphism my_prior : Subj -> UnitSpace [role=kernel] ~ Normal(loc=0.0, scale=1.0)
-program with_prior(G : FinSet, prior : Mor[Subj, UnitSpace]) : G -> Real 1
+program with_prior[G : FinSet, prior : Mor[Subj, UnitSpace]] : G -> Real 1
     sample v : G <- prior
     return v
 program demo : Subj -> Subj
-    sample by_subj <- with_prior(Subj, my_prior)
+    sample by_subj <- with_prior[Subj, my_prior]()
     return by_subj
 export demo
 """
@@ -581,7 +581,8 @@ def test_a_template_over_a_morphism_draws_through_the_morphism_it_is_given() -> 
     """A morphism parameter takes a declared morphism at the draw: the
     template's `sample v : G <- prior` becomes a draw through
     `my_prior` over `Subj`, named `by_subj` in the caller. The template
-    itself is no entry point, since a morphism is no static argument."""
+    itself is no entry point, since invocation cannot supply a declared morphism
+    through the runtime entry interface."""
     module = _module(_MORPHISM_TEMPLATE)
     assert [item.name for item in module.entries] == ["demo"]
     entry = program_entry(module, "demo")
@@ -610,7 +611,7 @@ def test_a_template_over_a_morphism_draws_through_the_morphism_it_is_given() -> 
     with pytest.raises(QiecDiagnosticError) as captured:
         _module(
             _MORPHISM_TEMPLATE.replace(
-                "with_prior(Subj, my_prior)", "with_prior(Subj, 2.0)"
+                "with_prior[Subj, my_prior]()", "with_prior[Subj, 2.0]()"
             )
         )
     assert "takes a declared morphism" in captured.value.message
@@ -618,13 +619,13 @@ def test_a_template_over_a_morphism_draws_through_the_morphism_it_is_given() -> 
 
 def test_a_template_draw_with_the_wrong_arguments_is_reported() -> None:
     source = _TEMPLATE.replace(
-        "sample theta <- school_effects(0.6, School)",
-        "sample theta <- school_effects(School, 0.6)",
+        "sample theta <- school_effects[School](0.6)",
+        "sample theta <- school_effects[0.6](School)",
     )
     with pytest.raises(QiecDiagnosticError) as captured:
         _module(source)
     assert captured.value.code == "qiec-program"
-    assert "takes a number or a bound name" in captured.value.message
+    assert "takes an object" in captured.value.message
 
 
 def test_an_input_without_a_plate_gets_a_static_extent() -> None:

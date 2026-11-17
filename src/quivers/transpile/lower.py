@@ -77,6 +77,8 @@ from quivers.dsl.ast_nodes.objects import (
     ObjectProduct,
     TypeName,
 )
+from quivers.qiec.canonical import tensor_shape
+from quivers.qiec.types import BOOL, INT, TypeExpr
 from quivers.qiec.families import FAMILIES
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.dsl.draw_args import (
@@ -91,6 +93,8 @@ from quivers.transpile.family_meta import (
 )
 from quivers.transpile.ir import (
     CSInterval,
+    CSBoolean,
+    CSInteger,
     CSPositive,
     CSPositiveDefinite,
     CSReal,
@@ -1260,6 +1264,28 @@ def free_names_in_arg(arg: IRArg) -> list[str]:
     return out
 
 
+def scalar_carrier_constraint(type_: TypeExpr) -> ConstraintSpec:
+    """Retain a checked scalar carrier independently of its tensor axes.
+
+    Parameters
+    ----------
+    type_ : TypeExpr
+        The checked scalar or tensor type.
+
+    Returns
+    -------
+    ConstraintSpec
+        Its Boolean, unrestricted integer, or real scalar carrier.
+    """
+    shape = tensor_shape(type_)
+    element = shape[0] if shape is not None else type_
+    if element == BOOL:
+        return CSBoolean()
+    if element == INT:
+        return CSInteger()
+    return CSReal()
+
+
 _DATA_CONSTRAINT_FACTORY: dict[str, Callable[[], ConstraintSpec]] = {
     "real_matrix": CSRealMatrix,
     "real_vector": CSRealVector,
@@ -1763,6 +1789,7 @@ def _resolve_arg_constraints(
     meta: FamilyMeta,
     args: tuple[IRArg, ...],
     ctx: _LowerCtx,
+    arg_names: tuple[str, ...] = (),
 ) -> dict[str, Constraint]:
     """Return the `arg_constraints` dict for `meta`, evaluating the
     sentinel instance when `arg_constraints` is a property rather
@@ -1770,7 +1797,7 @@ def _resolve_arg_constraints(
     cls_attr = meta.distribution_class.arg_constraints
     if isinstance(cls_attr, dict):
         return cls_attr
-    instance = _make_sentinel(meta, args, ctx)
+    instance = _make_sentinel(meta, args, ctx, arg_names)
     return dict(instance.arg_constraints)
 
 

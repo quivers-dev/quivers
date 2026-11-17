@@ -39,13 +39,13 @@ _EXAMPLE = (
 _POOLING_SRC = """
 object School : FinSet 8
 
-program school_effects(spread : Real, K : FinSet) : K -> K
+program school_effects[K : FinSet](spread : Real) : K -> K
     sample z : K <- Normal(loc=0.0, scale=1.0)
     let effect = spread * z
     return effect
 
 program pooled : School -> School
-    sample theta <- school_effects({spread}, School)
+    sample theta <- school_effects[School]({spread})
     sample sigma <- LogNormal(loc=0.0, scale=0.5)
     let total_effect = sum(theta)
     {score_line}
@@ -58,7 +58,7 @@ export pooled
 _TEMPLATE_ONLY_SRC = """
 object School : FinSet 8
 
-program school_effects(spread : Real, K : FinSet) : K -> K
+program school_effects[K : FinSet](spread : Real) : K -> K
     sample z : K <- Normal(loc=0.0, scale=1.0)
     let effect = spread * z
     return effect
@@ -236,7 +236,7 @@ def test_uninstantiated_template_domain_raises_typed_error() -> None:
     with pytest.raises(TypeError, match="codomain"):
         _ = prog.codomain
     # Instantiating the template at concrete arguments resolves it.
-    inst = prog.templates["school_effects"](0.6, "School")
+    inst = prog.templates["school_effects"](K="School", spread=0.6)
     assert isinstance(inst, Program)
     assert isinstance(inst.domain, FinSet)
     assert inst.domain.cardinality == 8

@@ -41,6 +41,34 @@ and the result is held to the deterministic serialization contract of the Python
 
 ## Serialized data and runtime attachments {#two-boundaries}
 
+### Parameter stages
+
+Program and computation headers share a static telescope and a runtime value
+telescope. For programs, object and morphism parameters live in `[...]`, while
+typed external tensors and scalar hyperparameters live in `(...)`. Elaboration
+places the former in the static context and the latter in the entry's checked
+value parameters, using the same core representation as `define`.
+
+An explicit input annotation and an inferred free input thus produce the same
+kind of parameter. Observation and index-map roles remain metadata derived from
+uses; the annotation does not add an operation to the effectful body. Binding
+may solve static extents from the runtime values before specialization, without
+making those extents runtime tensor axes or random variables. See the
+[formal parameter semantics](../semantics/programs.md#31-static-and-runtime-telescopes)
+and the [language-wide syntax reference](../reference/qvr/index.md#parameter-telescopes).
+
+Family parameters and indices retain their separate type-level notation:
+`Vec[A](n)` has a uniform parameter `A` and refinable index `n`, both static.
+This distinction must survive elaboration even though a family index uses
+parentheses at the source boundary.
+
+A program runtime `Nat` annotation lowers to the arithmetic carrier `Int` with
+`ProgramParameter.constraint="nonnegative"`. Preserve this field through IR
+conversion and serialization: both native and reference `run_program` and
+`sample_program` validate integer inputs and their nonnegative restriction. A
+static `Nat` remains an index-sort binder rather than a constrained runtime
+parameter.
+
 The serialized core contains only typed, deterministic data: kinds, telescopes,
 declarations of indexed families, effect interfaces, rows, handler signatures, value and computation
 terms, source provenance, and equality evidence. Python callables and mutable resources are
@@ -99,11 +127,19 @@ handler that declares forwarding passes operations it does not cover to an outer
 ## Stable serialization
 
 [`quivers.qiec.dumps`](../api/qiec/serialization.md) and `quivers.qiec.loads` encode the
-stable core in the `qiec-json/v1` envelope under the ABI identifier `qiec-core/v1alpha1`. The
+stable core in the `qiec-json/v2` envelope under the ABI identifier `qiec-core/v1alpha1`. The
 codec is an allowlist over QIEC records, identifiers, enums, tuples, bytes, and JSON scalars. It
 rejects unknown node tags, malformed records, non-finite floats, runtime attachments, and Python
 callables. Encoding is deterministic: the same core graph yields the same JSON text, and thus
 the same UTF-8 bytes.
+
+Version 2 records compilation-local custom distribution contracts on the module.
+The contracts reuse the checked family parameter and dependent-shape records;
+native factories remain runtime bindings and never enter the wire graph. This
+metadata extension preserves the existing ABI and stable identifiers. Readers require version 2 and every declared field. Older or future wire
+versions, missing or unknown fields, and incompatible ABIs are errors. Regenerate
+checked JSON from its authored source when upgrading; decoding never supplies
+missing contracts or invents a native implementation from a family name.
 
 The format and ABI identifiers belong to the serialized format. An authored effect
 declaration contains only its name, its static telescope, and its operation signatures.
@@ -267,9 +303,10 @@ than scores.
 
 #### Calls between programs
 
-A draw from another program, `sample theta <- school_effects(0.6, School)` or
+A draw from another program, `sample theta <- school_effects[School](0.6)` or
 `sample (u, v) <- sub`, runs that program's steps in place under names of the caller. The objects
-and scalars the draw names replace the callee's template parameters. The callee's local `z`
+in brackets specialize the callee, and parenthesized values fill its runtime
+parameters. The callee's local `z`
 becomes the site `theta$z`, and the name it returns becomes `theta` itself. This holds on the
 reference machine and on the compiled runtime alike, and a transpile target spells such a site
 `theta__z`. A program over object parameters is a computation whose telescope binds one index
@@ -283,7 +320,15 @@ A program's calls of computations are lowered to compiled steps before compilati
   uses to inline such calls (`quivers.transpile._pure_calls`, `inline_call`).
 - A callee whose only requests are the program's `Random` and `Score` runs in place. Its site
   `label` is named `y$label` under the binder `y`, and a log density it scores is evaluated by the
-  internal let call `$log_prob`.
+  internal let call `$log_prob`. Density and total-mass queries construct
+  raw native distributions through the same `$distribution` adapter,
+  reusing the registered family constructors and measure algebra.
+  `$log_mass` delegates to the existing measure normalizer and reduces
+  only unretained independent axes. Neither query normalizes a raw
+  restriction or clamps its parameters. Pure `Sampleable` construction
+  locals are substituted before let hoisting, while their numeric
+  intermediates remain shared; native tensor sites thus do not carry
+  distribution objects.
 - `traverse` maps a pure callee as a comprehension and a drawing callee as one
   [plated](https://en.wikipedia.org/wiki/Plate_notation) draw per site.
 
@@ -382,6 +427,21 @@ that number to the trace of the compiled runtime on the same models.
 
 A program body binds a call of a computation with `let x <- helper(args)`, and a computation calls
 a program by its name.
+
+An observation's `[weights=w]` option elaborates through existing value and
+weight operations. The pure primitive `observation_weight : Real -> Real`
+checks that each scalar weight is finite and nonnegative. The checked value
+and raw `LogDensity` result enter `scale_weight` before `WeightSum` or
+`SegmentSum`; a zero weight selects zero without forming an undefined
+product of zero and infinity. No new weight AST type or input effect is needed.
+Tensor weights follow the observation batch shape, excluding event axes.
+
+Grouped marginalization weights each component's observed log density before
+fiber summation and latent aggregation. Subsampling gathers the weights with
+the same row selection and applies its sampling factor once. Keep the raw
+response density available independently: `ModelFit.log_likelihood` exposes
+unweighted terms, and prediction samples the original response distribution
+at fixed parameters. Weighting an observation does not alter prior scores.
 
 <!-- compile: qiec -->
 ```qvr

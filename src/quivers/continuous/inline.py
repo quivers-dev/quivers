@@ -5,15 +5,16 @@ fixed literal values or direct variable values, without learned
 neural-network transformations. Used by the DSL compiler for inline
 draw steps like::
 
-    draw x ~ LogitNormal(0.0, 1.0)                 # all fixed
-    draw b ~ Bernoulli(x)                           # direct variable
-    draw r ~ TruncatedNormal(mu, sigma, 0.0, 1.0)  # mixed
+    sample x <- LogitNormal(mu=0.0, sigma=1.0)                   # fixed
+    sample b <- Bernoulli(probs=x)                              # variable
+    sample r <- TruncatedNormal(mu=mu, sigma=sigma, low=0.0, high=1.0)
 
 Terminology
 -----------
-- **Fixed**: all distribution parameters are float literals known at
+- **Fixed**: all distribution parameters are numeric literals known at
   compile time. The morphism has domain ``Unit`` (terminal object)
-  and ignores its input.
+  and ignores its input. Integer lexemes retain their exact integer
+  carriers until family-specific validation and conversion.
 - **Direct**: some or all parameters come from bound variables at
   runtime. The morphism uses the input tensor directly as
   distribution parameters (no learned neural-net transformation).
@@ -32,13 +33,21 @@ FamilySpec entry.
 from __future__ import annotations
 
 from typing import Literal
+from functools import partial
+from numbers import Integral, Real
 import math
 from collections.abc import Callable, Mapping
 import torch
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 from quivers.core.objects import ProductSet, Unit
-from quivers.continuous._closed_probability import ClosedBernoulli, ClosedPoisson
+from quivers.continuous._closed_probability import _check_trial_count_source
+from quivers.continuous._zero_inflated_count import BetaBinomial as _BetaBinomial
+from quivers.continuous._closed_probability import (
+    ClosedBernoulli,
+    ClosedGeometric,
+    _ValidatedCategorical,
+)
 from quivers.continuous._lkj import OnionLKJCholesky
 from quivers.continuous._truncated_normal import TruncatedNormal
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
@@ -68,6 +77,7 @@ from quivers.continuous.family_spec import (
 import quivers.continuous.param_transforms as parameter_domains
 from quivers.continuous.bijectors import BIJECTORS_BY_NAME, Bijector
 from quivers.continuous.program_steps import Indexed, StepArgument
+from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.families import FAMILIES
 from quivers.dsl.ast_nodes import (
     DrawArg,
@@ -202,11 +212,33 @@ def _to_event_shape(value: torch.Tensor, dist: D.Distribution) -> torch.Tensor:
     return value
 
 
+def _fixed_coordinate_shape(codomain: AnySpace) -> tuple[int, ...]:
+    """Read literal scalar-parameter axes from the declared output carrier.
+
+    Parameters
+    ----------
+    codomain : AnySpace
+        Output carrier; continuous events retain their declared tensor axes.
+
+    Returns
+    -------
+    tuple[int, ...]
+        Independent coordinate axes for scalar literal parameters.
+    """
+    if isinstance(codomain, ContinuousSpace):
+        return codomain.event_shape
+    return (int(getattr(codomain, "dim", 1)),)
+
+
 class FixedDistribution(ContinuousMorphism):
     """A distribution with all parameters fixed at construction time.
 
     The ``rsample`` input is used only for batch size and device
     inference; the distribution parameters themselves are constants.
+    An explicit Euclidean ``intrinsic_shape`` retains tensor event axes.
+    The constructor owns its native event suffix; remaining scalar coordinate
+    axes use the shared independent-product measure. Scores retain every
+    leading sample and execution axis.
 
     Parameters
     ----------
@@ -275,7 +307,45 @@ class FixedDistribution(ContinuousMorphism):
         torch.distributions.Distribution
             The distribution, with a batch shape of the input's rows.
         """
-        return self._make_dist_fn(x.shape[0], x.device)
+        return self._fixed_distribution(x.shape[0], x.device)
+
+    def _fixed_distribution(self, batch: int, device: torch.device) -> D.Distribution:
+        """Apply explicit event ownership at the shared fixed-constructor boundary.
+
+        Parameters
+        ----------
+        batch : int
+            Number of native execution rows.
+        device : torch.device
+            Device on which literal parameters are constructed.
+
+        Returns
+        -------
+        torch.distributions.Distribution
+            Native law with declared coordinate axes reinterpreted as events.
+
+        Raises
+        ------
+        ValueError
+            If the constructor's intrinsic event disagrees with the carrier.
+        """
+        dist = self._make_dist_fn(batch, device)
+        codomain = self.codomain
+        if not isinstance(codomain, Euclidean) or codomain.intrinsic_shape is None:
+            return dist
+        shape = codomain.intrinsic_shape
+        native = tuple(dist.event_shape)
+        if len(native) > len(shape) or native and shape[-len(native) :] != native:
+            raise ValueError(
+                f"native event shape {native} does not match declared event shape {shape}"
+            )
+        coordinates = shape[: len(shape) - len(native)]
+        expected_batch = torch.Size((batch, *coordinates))
+        if dist.batch_shape != expected_batch:
+            dist = dist.expand(expected_batch)
+        if coordinates:
+            dist = _MeasureIndependent(dist, len(coordinates))
+        return dist
 
     def rsample(
         self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
@@ -295,7 +365,7 @@ class FixedDistribution(ContinuousMorphism):
             Samples from the distribution.
         """
         batch = x.shape[0]
-        dist = self._make_dist_fn(batch, x.device)
+        dist = self._get_dist(x)
         shape = torch.Size(sample_shape)
         if not dist.batch_shape and not dist.event_shape:
             # A closed-form operator measure (the `Restrict` a
@@ -329,7 +399,13 @@ class FixedDistribution(ContinuousMorphism):
         Returns
         -------
         torch.Tensor
-            Log-probabilities. Shape ``(batch,)``.
+            One log density per leading sample and run position for explicitly
+            shaped events; legacy carriers retain their native batch layout.
+
+        Raises
+        ------
+        ValueError
+            If an explicitly shaped query has incompatible event axes.
         """
         if self._discrete:
             floating = (
@@ -349,19 +425,30 @@ class FixedDistribution(ContinuousMorphism):
         # shared prior across the program's response count, or read an
         # event coordinate as a batch row.
         device = value.device if value.dim() >= 1 else x.device
-        dist = self._make_dist_fn(1, device)
+        dist = self._fixed_distribution(1, device)
         # A `Measure` (an operator-algebra sub-distribution such as
         # the `Restrict` a desugared half-family produces) carries its
         # residual mass symbolically in ``log_normalizer``; the
         # sample / observe boundary is where the algebra collapses it
         # to a probability density, so we score the renormalised
         # log-density here rather than the raw sub-measure value.
-        value = _to_event_shape(value, dist)
+        codomain = self.codomain
+        event = codomain.intrinsic_shape if isinstance(codomain, Euclidean) else None
+        explicit = event is not None
+        if event is not None:
+            if len(event) and (
+                value.ndim < len(event) or tuple(value.shape[-len(event) :]) != event
+            ):
+                raise ValueError(
+                    f"expected trailing event shape {event}, got {tuple(value.shape)}"
+                )
+        else:
+            value = _to_event_shape(value, dist)
         if isinstance(dist, _Measure):
             lp = dist.log_prob_normalized(value)
         else:
             lp = dist.log_prob(value)
-        if lp.dim() > 1:
+        if not explicit and lp.dim() > 1:
             return lp.sum(dim=-1)
         return lp
 
@@ -369,7 +456,7 @@ class FixedDistribution(ContinuousMorphism):
 class MixedInlineDistribution(ContinuousMorphism):
     """General inline distribution with arbitrary literal/variable mix.
 
-    Handles any combination of literal float values and runtime variable
+    Handles any combination of literal numeric values and runtime variable
     inputs for any distribution family. At construction time, receives a
     specification of which parameter positions are fixed literals vs.
     variable inputs, plus a builder function that creates the PyTorch
@@ -378,10 +465,10 @@ class MixedInlineDistribution(ContinuousMorphism):
     This is the general mechanism underlying all inline distribution
     patterns in the DSL::
 
-        draw x ~ Normal(0.0, 1.0)           # all fixed (0 variable inputs)
-        draw y ~ Normal(mu, sigma)           # all variable (2 variable inputs)
-        draw z ~ Normal(mu, 0.5)             # mixed (1 variable input)
-        draw w ~ TruncatedNormal(mu, 0.5, 0.0, 1.0)  # mixed
+        sample x <- Normal(loc=0.0, scale=1.0)       # all fixed
+        sample y <- Normal(loc=mu, scale=sigma)     # all variable
+        sample z <- Normal(loc=mu, scale=0.5)       # mixed
+        sample w <- TruncatedNormal(mu=mu, sigma=0.5, low=0.0, high=1.0)
 
     Parameters
     ----------
@@ -395,7 +482,7 @@ class MixedInlineDistribution(ContinuousMorphism):
         - ``('var', dim)``: a variable read from the input, ``dim``
           columns wide, or ``None`` when its width is to be read off
           the stacked input (see ``_variable_widths``);
-        - ``('lit', value)``: a fixed literal float value;
+        - ``('lit', value)``: a fixed literal numeric value;
         - ``('const', tensor)``: a fixed literal tensor, a list literal
           such as a cutpoint vector, which every row shares.
     dist_builder : callable
@@ -414,6 +501,18 @@ class MixedInlineDistribution(ContinuousMorphism):
         For each parameter of rank two or more read from the input, the
         shape one row's value has, which its flat columns are laid out
         in; ``None`` elsewhere. Defaults to none.
+    param_integers : tuple[bool, ...], optional
+        Parameters constrained to integers. Literal and constant counts
+        retain float64 precision independently of the input's dtype.
+    param_constraints : tuple[str | None, ...] or None
+        Checked custom parameter constraints, distinguishing signed integers
+        and Boolean values from finite trial counts before numeric packing.
+    param_batch_ndims : tuple[int | None, ...] or None
+        Checked count of enclosing batch axes read by each parameter;
+        None leaves the legacy scalar/vector packing convention in effect.
+    structural_batch_ndims : int
+        Intrinsic base batch rank proved by a compositional constructor,
+        separate from the conditioning input's leading run axis.
     """
 
     def __init__(
@@ -426,12 +525,33 @@ class MixedInlineDistribution(ContinuousMorphism):
         support: _constraints.Constraint | None = None,
         param_event_ranks: tuple[int, ...] | None = None,
         param_shapes: tuple[tuple[int, ...] | None, ...] | None = None,
+        param_integers: tuple[bool, ...] | None = None,
+        param_constraints: tuple[str | None, ...] | None = None,
+        param_batch_ndims: tuple[int | None, ...] | None = None,
+        structural_batch_ndims: int = 0,
     ) -> None:
         super().__init__(domain, codomain)
         self._param_spec = param_spec
         self._dist_builder = dist_builder
         self._discrete = discrete
         self._support = support if support is not None else _constraints.real
+        self._param_integers = (
+            param_integers if param_integers is not None else (False,) * len(param_spec)
+        )
+        self._param_constraints = param_constraints or (None,) * len(param_spec)
+        if len(self._param_constraints) != len(param_spec):
+            raise ValueError("parameter constraints must match the packing slots")
+        if len(self._param_integers) != len(param_spec):
+            raise ValueError(
+                "MixedInlineDistribution: param_integers length must match param_spec"
+            )
+        for position, ((kind, value), integer) in enumerate(
+            zip(param_spec, self._param_integers, strict=True)
+        ):
+            if kind in {"lit", "const"} and (
+                integer or self._param_constraints[position] == "boolean"
+            ):
+                self.validate_parameter(position, value)
         # Per-position event rank. Position 0 = per-row scalar; >= 1 =
         # vector-shaped distribution parameter (cutpoints, mixture
         # weights / locations / scales). Each consumes the number of
@@ -448,6 +568,11 @@ class MixedInlineDistribution(ContinuousMorphism):
                 f"{len(self._param_event_ranks)} disagrees with "
                 f"param_spec length {len(param_spec)}"
             )
+        self._context_parameters: frozenset[int] = frozenset()
+        self._param_batch_ndims = param_batch_ndims or (None,) * len(param_spec)
+        if len(self._param_batch_ndims) != len(param_spec):
+            raise ValueError("parameter batch ranks must match parameter packing")
+        self._structural_batch_ndims = structural_batch_ndims
         self._param_shapes: tuple[tuple[int, ...] | None, ...] = (
             param_shapes
             if param_shapes is not None
@@ -508,7 +633,63 @@ class MixedInlineDistribution(ContinuousMorphism):
             discrete=self._discrete,
             support=self._support,
             param_event_ranks=self._param_event_ranks,
+            param_shapes=self._param_shapes,
+            param_integers=self._param_integers,
+            param_constraints=self._param_constraints,
+            param_batch_ndims=self._param_batch_ndims,
+            structural_batch_ndims=self._structural_batch_ndims,
         )
+
+    def validate_parameter(self, position: int, value: object) -> None:
+        """Validate discrete parameter slots before numeric packing can round them.
+
+        Parameters
+        ----------
+        position : int
+            Declared constructor slot.
+        value : object
+            Original literal or tensor, before concatenation with Real values.
+
+        Raises
+        ------
+        ValueError, TypeError
+            If a Boolean or signed integer violates its carrier, or an integer
+            exceeds this floating packed representation's exact capacity.
+        """
+        constraint = self._param_constraints[position]
+        if constraint == "boolean":
+            tensor = torch.as_tensor(value)
+            if tensor.dtype != torch.bool:
+                raise TypeError("Boolean family parameters require Bool values")
+        elif self._param_integers[position]:
+            if constraint != "integer":
+                _check_trial_count_source(value)
+                return
+            if isinstance(value, bool):
+                raise TypeError(
+                    "signed integer family parameters reject Boolean values"
+                )
+            if isinstance(value, int) and not -(2**53) <= value <= 2**53:
+                raise ValueError(
+                    "signed integer parameter exceeds exact packed capacity 2**53"
+                )
+            tensor = torch.as_tensor(value)
+            if (
+                tensor.dtype == torch.bool
+                or tensor.is_complex()
+                or not bool(
+                    (
+                        torch.isfinite(tensor)
+                        & (tensor >= -(2**53))
+                        & (tensor <= 2**53)
+                    ).all()
+                )
+                or tensor.is_floating_point()
+                and not bool((tensor == tensor.floor()).all())
+            ):
+                raise ValueError(
+                    "signed integer parameter requires integral values within exact packed capacity 2**53"
+                )
 
     def _resolve_params(self, x: torch.Tensor) -> list[torch.Tensor]:
         """Reconstruct full parameter list from input + stored literals.
@@ -554,9 +735,7 @@ class MixedInlineDistribution(ContinuousMorphism):
                 variables.append(block.reshape(*block.shape[:-1], *shape))
             else:
                 variables.append(x[..., var_offset : var_offset + dim])
-            batch_ranks.append(
-                variables[-1].dim() - (event_rank if event_rank >= 2 else 0)
-            )
+            batch_ranks.append(variables[-1].dim() - event_rank)
             var_offset += dim
         # A literal broadcasts against the widest variable parameter: a
         # per-row value, with a unit axis for each further axis a scalar
@@ -566,21 +745,42 @@ class MixedInlineDistribution(ContinuousMorphism):
         literal_shape = (x.shape[0],) + (1,) * (rank - 1)
         params: list[torch.Tensor] = []
         supplied = iter(variables)
-        for kind, value in self._param_spec:
+        for (kind, value), integer in zip(
+            self._param_spec, self._param_integers, strict=True
+        ):
+            dtype = (
+                torch.float64
+                if integer
+                else x.dtype
+                if x.is_floating_point()
+                else torch.get_default_dtype()
+            )
             if kind == "lit":
                 assert isinstance(value, int | float)
                 params.append(
                     torch.full(
-                        literal_shape, float(value), device=x.device, dtype=x.dtype
+                        literal_shape, float(value), device=x.device, dtype=dtype
                     )
                 )
             elif kind == "const":
                 assert isinstance(value, torch.Tensor)
-                constant = value.to(device=x.device, dtype=x.dtype)
+                constant_dtype = (
+                    value.dtype if value.is_floating_point() and not integer else dtype
+                )
+                constant = value.to(device=x.device, dtype=constant_dtype)
                 params.append(constant.expand(x.shape[0], *constant.shape))
             else:
                 params.append(next(supplied))
-        return params
+        return [
+            value.to(torch.bool)
+            if constraint == "boolean"
+            else value.to(torch.int64)
+            if constraint is not None and integer
+            else value
+            for value, constraint, integer in zip(
+                params, self._param_constraints, self._param_integers, strict=True
+            )
+        ]
 
     def _is_shared_vector(self, x: torch.Tensor) -> bool:
         """Whether a 1-D input is one shared vector rather than a column.
@@ -789,10 +989,18 @@ class MixedInlineDistribution(ContinuousMorphism):
                 whole_event = event_dim > 0 and tuple(
                     y_in.shape[y_in.dim() - event_dim :]
                 ) == tuple(dist.event_shape)
-                y_in = y_in.unsqueeze(0) if whole_event else y_in.unsqueeze(-1)
+                y_in = (
+                    y_in.unsqueeze(0)
+                    if whole_event or getattr(self, "_structural_batch_ndims", 0)
+                    else y_in.unsqueeze(-1)
+                )
             while y_in.dim() > target_dim and y_in.shape[-1] == 1:
                 y_in = y_in.squeeze(-1)
-        lp = dist.log_prob(y_in)
+        lp = (
+            dist.log_prob_normalized(y_in)
+            if isinstance(dist, _Measure)
+            else dist.log_prob(y_in)
+        )
         # Scalar parameters read one value per coordinate make the
         # coordinates independent draws of one value: their densities
         # sum, as a fixed distribution's do, leaving one per row.
@@ -817,10 +1025,13 @@ class MixedInlineDistribution(ContinuousMorphism):
         """
         widths = [
             int(t.shape[-1])
-            for t, (kind, _), rank in zip(
-                params, self._param_spec, self._param_event_ranks, strict=True
+            for position, (t, (kind, _), rank) in enumerate(
+                zip(params, self._param_spec, self._param_event_ranks, strict=True)
             )
-            if kind == "var" and rank < 1 and t.dim() >= 2
+            if position not in getattr(self, "_context_parameters", ())
+            and kind == "var"
+            and rank < 1
+            and t.dim() >= 2
         ]
         return max(widths, default=1)
 
@@ -844,11 +1055,11 @@ def make_fixed_logitnormal(
     FixedDistribution
         Distribution morphism sampling from LogitNormal(mu, sigma).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        mu_t = torch.full((batch, d), mu, device=device)
-        sigma_t = torch.full((batch, d), sigma, device=device)
+        mu_t = torch.full((batch, *coordinate_shape), mu, device=device)
+        sigma_t = torch.full((batch, *coordinate_shape), sigma, device=device)
         base = D.Normal(mu_t, sigma_t)
         return D.TransformedDistribution(base, [D.SigmoidTransform()])
 
@@ -874,11 +1085,11 @@ def make_fixed_uniform(
     FixedDistribution
         Distribution morphism sampling from Uniform(low, high).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        low_t = torch.full((batch, d), low, device=device)
-        high_t = torch.full((batch, d), high, device=device)
+        low_t = torch.full((batch, *coordinate_shape), low, device=device)
+        high_t = torch.full((batch, *coordinate_shape), high, device=device)
         return D.Uniform(low_t, high_t)
 
     return FixedDistribution(
@@ -905,11 +1116,11 @@ def make_fixed_normal(
     FixedDistribution
         Distribution morphism sampling from Normal(loc, scale).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        loc_t = torch.full((batch, d), loc, device=device)
-        scale_t = torch.full((batch, d), scale, device=device)
+        loc_t = torch.full((batch, *coordinate_shape), loc, device=device)
+        scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.Normal(loc_t, scale_t)
 
     return FixedDistribution(codomain, builder)
@@ -959,11 +1170,11 @@ def make_fixed_beta(
     FixedDistribution
         Distribution morphism sampling from Beta(a, b).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        a = torch.full((batch, d), concentration1, device=device)
-        b = torch.full((batch, d), concentration0, device=device)
+        a = torch.full((batch, *coordinate_shape), concentration1, device=device)
+        b = torch.full((batch, *coordinate_shape), concentration0, device=device)
         return D.Beta(a, b)
 
     return FixedDistribution(codomain, builder, support=_constraints.unit_interval)
@@ -1001,11 +1212,11 @@ def make_fixed_logit_beta(
     """
     _require_positive("LogitBeta", concentration1=concentration1)
     _require_positive("LogitBeta", concentration0=concentration0)
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        a = torch.full((batch, d), concentration1, device=device)
-        b = torch.full((batch, d), concentration0, device=device)
+        a = torch.full((batch, *coordinate_shape), concentration1, device=device)
+        b = torch.full((batch, *coordinate_shape), concentration0, device=device)
         return LogitBeta(a, b)
 
     return FixedDistribution(codomain, builder, support=_constraints.real)
@@ -1043,11 +1254,11 @@ def make_fixed_log_gamma(
     """
     _require_positive("LogGamma", concentration=concentration)
     _require_positive("LogGamma", rate=rate)
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        conc_t = torch.full((batch, d), concentration, device=device)
-        rate_t = torch.full((batch, d), rate, device=device)
+        conc_t = torch.full((batch, *coordinate_shape), concentration, device=device)
+        rate_t = torch.full((batch, *coordinate_shape), rate, device=device)
         return LogGamma(conc_t, rate_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.real)
@@ -1088,10 +1299,10 @@ def make_fixed_exponential(rate: float, codomain: AnySpace) -> FixedDistribution
     FixedDistribution
         Distribution morphism sampling from Exponential(rate).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        rate_t = torch.full((batch, d), rate, device=device)
+        rate_t = torch.full((batch, *coordinate_shape), rate, device=device)
         return D.Exponential(rate_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.positive)
@@ -1112,10 +1323,10 @@ def make_fixed_halfcauchy(scale: float, codomain: AnySpace) -> FixedDistribution
     FixedDistribution
         Distribution morphism sampling from HalfCauchy(scale).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        scale_t = torch.full((batch, d), scale, device=device)
+        scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.HalfCauchy(scale_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.positive)
@@ -1136,10 +1347,10 @@ def make_fixed_halfnormal(scale: float, codomain: AnySpace) -> FixedDistribution
     FixedDistribution
         Distribution morphism sampling from HalfNormal(scale).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        scale_t = torch.full((batch, d), scale, device=device)
+        scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.HalfNormal(scale_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.positive)
@@ -1164,11 +1375,11 @@ def make_fixed_lognormal(
     FixedDistribution
         Distribution morphism sampling from LogNormal(loc, scale).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        loc_t = torch.full((batch, d), loc, device=device)
-        scale_t = torch.full((batch, d), scale, device=device)
+        loc_t = torch.full((batch, *coordinate_shape), loc, device=device)
+        scale_t = torch.full((batch, *coordinate_shape), scale, device=device)
         return D.LogNormal(loc_t, scale_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.positive)
@@ -1193,11 +1404,11 @@ def make_fixed_gamma(
     FixedDistribution
         Distribution morphism sampling from Gamma(concentration, rate).
     """
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
-        conc_t = torch.full((batch, d), concentration, device=device)
-        rate_t = torch.full((batch, d), rate, device=device)
+        conc_t = torch.full((batch, *coordinate_shape), concentration, device=device)
+        rate_t = torch.full((batch, *coordinate_shape), rate, device=device)
         return D.Gamma(conc_t, rate_t)
 
     return FixedDistribution(codomain, builder, support=_constraints.positive)
@@ -1227,8 +1438,8 @@ def make_fixed_dirichlet(
         the (d-1)-simplex embedded in ``R^d``.
     """
     d = getattr(codomain, "dim", 1)
-    if d < 2:
-        raise ValueError(f"Dirichlet codomain must have dim >= 2, got dim={d}")
+    if d < 1:
+        raise ValueError(f"Dirichlet codomain must have positive dim, got dim={d}")
     if isinstance(concentration, (list, tuple)):
         if len(concentration) == 1:
             # Single-element sequence is treated as a scalar
@@ -1265,11 +1476,11 @@ def make_fixed_truncated_normal(
     codomain: AnySpace,
 ) -> FixedDistribution:
     """Create a fixed truncated normal with literal parameters."""
-    d = getattr(codomain, "dim", 1)
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         params = [
-            torch.full((batch, d), value, device=device)
+            torch.full((batch, *coordinate_shape), value, device=device)
             for value in (mu, sigma, low, high)
         ]
         return _truncated_normal_builder(params)
@@ -1282,28 +1493,51 @@ def make_fixed_truncated_normal(
 
 
 def make_fixed_categorical(
-    values: float | list[float],
+    values: object,
     codomain: AnySpace,
     *,
     parameterization: str,
 ) -> FixedDistribution:
-    """Create a literal categorical from probabilities or logits."""
+    """Create a literal categorical from probabilities or logits.
+
+    Parameters
+    ----------
+    values : object
+        Real scalar or sequence of real scalar weights. A scalar repeats
+        over the codomain; a scalar tensor retains its numeric value.
+    codomain : AnySpace
+        Existing finite response space fixing the number of categories.
+    parameterization : str
+        The selected ``probs`` or ``logits`` parameterization.
+
+    Returns
+    -------
+    FixedDistribution
+        Native categorical morphism with its ordinary support validation.
+
+    Raises
+    ------
+    TypeError
+        If a weight is not a real scalar literal.
+    ValueError
+        If a weight vector's length differs from the codomain cardinality.
+    """
     cardinality = int(getattr(codomain, "cardinality", getattr(codomain, "size", 2)))
     if isinstance(values, (list, tuple)):
-        vector = [float(value) for value in values]
+        vector = [float(_literal_scalar(value, "Categorical")) for value in values]
         if len(vector) != cardinality:
             raise ValueError(
                 f"Categorical {parameterization} vector has length "
                 f"{len(vector)} but codomain has cardinality={cardinality}"
             )
     else:
-        vector = [float(values)] * cardinality
+        vector = [float(_literal_scalar(values, "Categorical"))] * cardinality
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         parameter = torch.tensor(vector, device=device).expand(batch, cardinality)
         if parameterization == "logits":
-            return D.Categorical(logits=parameter)
-        return D.Categorical(probs=parameter)
+            return _ValidatedCategorical(logits=parameter)
+        return _ValidatedCategorical(probs=parameter)
 
     return FixedDistribution(
         codomain,
@@ -1417,8 +1651,8 @@ _FAMILY_SUPPORTS: dict[str, _constraints.Constraint] = {
 
 _OPERATOR_PARAM_NAMES: dict[str, tuple[str, ...]] = {
     "PointMass": ("value",),
-    "Restrict": ("base", "low", "high"),
-    "Truncate": ("base", "low", "high"),
+    "Restrict": ("base", "low", "high", "lower_closed", "upper_closed"),
+    "Truncate": ("base", "low", "high", "lower_closed", "upper_closed"),
     "Pushforward": ("base", "bijector"),
     "Mixture": ("weights", "components"),
     "Independent": ("base", "reinterpreted_batch_ndims"),
@@ -1426,7 +1660,9 @@ _OPERATOR_PARAM_NAMES: dict[str, tuple[str, ...]] = {
 }
 
 
-def get_inline_param_names(family: str) -> tuple[str, ...] | None:
+def get_inline_param_names(
+    family: str, families: FamilyCatalog | None = None
+) -> tuple[str, ...] | None:
     """Get the ordered parameter names for an inline family.
 
     Parameters
@@ -1439,6 +1675,8 @@ def get_inline_param_names(family: str) -> tuple[str, ...] | None:
     tuple[str, ...] or None
         Parameter names, or None if not an inline family.
     """
+    if families is not None and families.is_custom(family):
+        return families.parameter_names(family)
     if family in _OPERATOR_PARAM_NAMES:
         return _OPERATOR_PARAM_NAMES[family]
     if family in _FIXED_FACTORIES:
@@ -1637,98 +1875,12 @@ def _half_student_t_builder(params: list[torch.Tensor]) -> D.Distribution:
     return _HalfStudentT(df, scale)
 
 
-class _BetaBinomial(D.Distribution):
-    """Beta-Binomial: ``Binomial(n, p)`` with ``p ~ Beta(a, b)``.
-
-    The marginal pmf is
-
-        p(k; n, a, b) = C(n, k) * B(a + k, b + n - k) / B(a, b),
-
-    where ``B(.,.)`` is the beta function. `log_prob` evaluates this
-    in log space through `torch.lgamma`; `sample` draws ``p ~ Beta(a,
-    b)`` then ``k ~ Binomial(n, p)``, matching the generative
-    definition.
-
-    Defined here in the continuous layer so the inline builder carries
-    no dependency on the transpile layer.
-    """
-
-    arg_constraints = {
-        "total_count": _constraints.nonnegative_integer,
-        "concentration1": _constraints.positive,
-        "concentration0": _constraints.positive,
-    }
-    support = _constraints.nonnegative_integer
-    has_rsample = False
-
-    def __init__(
-        self,
-        total_count: torch.Tensor,
-        concentration1: torch.Tensor,
-        concentration0: torch.Tensor,
-        validate_args: bool | None = None,
-    ) -> None:
-        self.total_count = total_count
-        self.concentration1 = concentration1
-        self.concentration0 = concentration0
-        super().__init__(validate_args=validate_args)
-
-    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
-        """``log p(value; n, a, b)`` via the closed-form Beta-Binomial pmf.
-
-        The calculation promotes all inputs to a floating result dtype
-        and evaluates the ``lgamma`` terms in ``float64`` to limit
-        cancellation at large trial counts.
-        """
-        dtype = torch.promote_types(
-            torch.promote_types(
-                torch.promote_types(self.total_count.dtype, self.concentration1.dtype),
-                self.concentration0.dtype,
-            ),
-            torch.promote_types(value.dtype, torch.get_default_dtype()),
-        )
-        n = self.total_count.double()
-        a = self.concentration1.double()
-        b = self.concentration0.double()
-        k = value.double()
-        log_comb = (
-            torch.lgamma(n + 1.0) - torch.lgamma(k + 1.0) - torch.lgamma(n - k + 1.0)
-        )
-        log_beta_post = (
-            torch.lgamma(a + k) + torch.lgamma(b + n - k) - torch.lgamma(a + b + n)
-        )
-        log_beta_prior = torch.lgamma(a) + torch.lgamma(b) - torch.lgamma(a + b)
-        return (log_comb + log_beta_post - log_beta_prior).to(dtype)
-
-    def sample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
-        """Two-stage draw: ``p ~ Beta(a, b)``; ``k ~ Binomial(n, p)``."""
-        p = D.Beta(self.concentration1, self.concentration0).sample(sample_shape)
-        return D.Binomial(total_count=self.total_count, probs=p).sample()
-
-    @property
-    def mean(self) -> torch.Tensor:
-        """``E[K] = n * a / (a + b)``."""
-        return (
-            self.total_count
-            * self.concentration1
-            / (self.concentration1 + self.concentration0)
-        )
-
-    @property
-    def variance(self) -> torch.Tensor:
-        """Closed-form Beta-Binomial variance."""
-        n = self.total_count
-        a = self.concentration1
-        b = self.concentration0
-        return n * a * b * (a + b + n) / ((a + b) ** 2 * (a + b + 1.0))
-
-
 def _beta_binomial_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build a Beta-Binomial distribution from [total_count,
     concentration1, concentration0].
 
-    The distribution is the continuous-layer `_BetaBinomial`, whose
-    closed-form `log_prob` exposes `sample`, `mean`, and `variance`
+    The distribution is the shared native beta-binomial, whose
+    stable `log_prob` exposes `sample`, `mean`, and `variance`
     directly and keeps the inline path free of a transpile import. Zero
     trials is the point mass at zero. Negative or noninteger trial counts
     are refused.
@@ -1741,7 +1893,7 @@ def _beta_binomial_builder(params: list[torch.Tensor]) -> D.Distribution:
     return _BetaBinomial(total_count, a, b)
 
 
-_DIM_DEPENDENT_FAMILIES: frozenset[str] = frozenset({"LKJCholesky"})
+_DIM_DEPENDENT_FAMILIES: frozenset[str] = frozenset({"LKJCholesky", "Dirichlet"})
 
 
 def _dim_dependent_builder(
@@ -1751,12 +1903,29 @@ def _dim_dependent_builder(
     distribution needs the matrix / vector dimension at construction
     time.
 
-    Currently used for `LKJCholesky`, whose ``dim`` argument fixes the
-    Cholesky factor's shape; the closure resolves the dim from the
-    codomain (FinSet cardinality or Euclidean / CholeskyFactor dim)
-    and embeds it.
+    LKJ's dimension fixes its Cholesky factor's shape. Dirichlet uses
+    the codomain dimension to broadcast one symmetric concentration over
+    every simplex coordinate. The closures retain that dimension, with
+    expansion as a view so gradients return to the supplied concentration.
     """
     dim = _codomain_dim_or_raise(family, codomain)
+    if family == "Dirichlet":
+        if dim < 1:
+            raise ValueError("Dirichlet requires a positive event dimension")
+
+        def _dirichlet(params: list[torch.Tensor]) -> D.Distribution:
+            concentration = parameter_domains.positive_parameter(params[0])
+            if concentration.dim() == 0:
+                concentration = concentration.expand(dim)
+            elif concentration.shape[-1] == 1:
+                concentration = concentration.expand(*concentration.shape[:-1], dim)
+            elif concentration.shape[-1] != dim:
+                raise ValueError(
+                    f"Dirichlet concentration has width {concentration.shape[-1]}, but its event dimension is {dim}"
+                )
+            return D.Dirichlet(concentration)
+
+        return _dirichlet
     if family == "LKJCholesky":
 
         def _builder(params: list[torch.Tensor]) -> D.Distribution:
@@ -1916,20 +2085,33 @@ def _inverse_wishart_builder(params: list[torch.Tensor]) -> D.Distribution:
     return InverseWishart(params[0], params[1])
 
 
-def _matrix_normal_builder(params: list[torch.Tensor]) -> D.Distribution:
+def _matrix_normal_builder(
+    params: list[torch.Tensor],
+    *,
+    names: tuple[str, ...] = ("loc", "row_covariance", "col_covariance"),
+) -> D.Distribution:
     """Build MatrixNormal from ``[loc, row_covariance, col_covariance]``.
 
     Parameters
     ----------
     params : list[torch.Tensor]
-        The mean matrix and the row and column covariances.
+        The mean matrix and the row and column covariances or factors.
+    names : tuple[str, ...]
+        The complete checked constructor parameterization.
 
     Returns
     -------
     torch.distributions.Distribution
         The matrix-normal distribution.
     """
-    return MatrixNormal(params[0], params[1], params[2])
+    values = dict(zip(names, params, strict=True))
+    return MatrixNormal(
+        values["loc"],
+        row_covariance=values.get("row_covariance"),
+        col_covariance=values.get("col_covariance"),
+        row_scale_tril=values.get("row_scale_tril"),
+        col_scale_tril=values.get("col_scale_tril"),
+    )
 
 
 def _categorical_logits_builder(params: list[torch.Tensor]) -> D.Distribution:
@@ -1938,7 +2120,7 @@ def _categorical_logits_builder(params: list[torch.Tensor]) -> D.Distribution:
         raise ValueError(
             f"inline Categorical(logits=...) expects one tensor; got {len(params)}"
         )
-    return D.Categorical(logits=params[0])
+    return _ValidatedCategorical(logits=params[0])
 
 
 _FAMILY_BUILDERS: dict[str, tuple[tuple[str, ...], Callable, bool]] = {
@@ -2053,6 +2235,8 @@ def _unwrap_draw_arg(arg):
     round-trip unchanged; the operator dispatch above handles them.
     """
     if isinstance(arg, DrawArgName):
+        if arg.text in {"true", "false"}:
+            return arg.text == "true"
         return arg.text
     if isinstance(arg, DrawArgScalar):
         return arg.value
@@ -2082,7 +2266,7 @@ def _list_values(arg: DrawArgList) -> list[float] | list[list[float]]:
     values: list = []
     for item in arg.items:
         if isinstance(item, DrawArgScalar):
-            values.append(float(item.value))
+            values.append(item.value)
         elif isinstance(item, DrawArgList):
             values.append(_list_values(item))
         else:
@@ -2094,8 +2278,8 @@ def _list_values(arg: DrawArgList) -> list[float] | list[list[float]]:
 
 
 def _inline_argument(
-    arg: DrawArg | float | str | Indexed,
-) -> tuple[Literal["lit", "const", "var"], float | torch.Tensor | StepArgument]:
+    arg: DrawArg | int | float | str | Indexed,
+) -> tuple[Literal["lit", "const", "var"], int | float | torch.Tensor | StepArgument]:
     """Classify one inline family argument for the compiled runtime.
 
     Every draw argument kind the grammar has reaches this one function:
@@ -2109,13 +2293,13 @@ def _inline_argument(
 
     Parameters
     ----------
-    arg : DrawArg | float | str | Indexed
+    arg : DrawArg | int | float | str | Indexed
         The argument: a tagged draw argument, or its plain form (a
         number, a name, or an `Indexed` gather).
 
     Returns
     -------
-    tuple[Literal["lit", "const", "var"], float | torch.Tensor | StepArgument]
+    tuple[Literal["lit", "const", "var"], int | float | torch.Tensor | StepArgument]
         The argument's kind and its literal value or step argument.
 
     Raises
@@ -2127,9 +2311,9 @@ def _inline_argument(
     if isinstance(arg, DrawArgNamed):
         return _inline_argument(arg.value)
     if isinstance(arg, DrawArgScalar):
-        return "lit", float(arg.value)
+        return "lit", arg.value
     if isinstance(arg, int | float) and not isinstance(arg, bool):
-        return "lit", float(arg)
+        return "lit", arg
     if isinstance(arg, DrawArgList):
         return "const", torch.tensor(_list_values(arg))
     if isinstance(arg, DrawArgName):
@@ -2156,10 +2340,101 @@ def _normalize_inline_args(args):
     return tuple(_unwrap_draw_arg(a) for a in args)
 
 
+type _ConstructorValue = (
+    D.Distribution | torch.Tensor | int | float | bool | str | list[_ConstructorValue]
+)
+
+
+def _literal_scalar(value: object, family: str) -> int | float:
+    """Retain a literal's numeric carrier after checking scalar structure.
+
+    Parameters
+    ----------
+    value : object
+        Evaluated constructor argument, optionally a scalar tensor.
+    family : str
+        Family used in the diagnostic.
+
+    Returns
+    -------
+    int or float
+        Numeric scalar without integer-to-floating conversion.
+
+    Raises
+    ------
+    TypeError
+        If the argument is not a real scalar literal.
+    """
+    if isinstance(value, torch.Tensor) and value.ndim == 0:
+        value = value.item()
+    if isinstance(value, int | float):
+        return value
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        return float(value)
+    raise TypeError(f"{family}: expected a real scalar literal")
+
+
+def _distribution_argument(value: object, family: str) -> D.Distribution:
+    """Check the shared distribution-argument boundary of measure constructors.
+
+    Parameters
+    ----------
+    value : object
+        Evaluated base or mixture-component argument.
+    family : str
+        Measure constructor used in the diagnostic.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        Actual native law, including unnormalized measures.
+
+    Raises
+    ------
+    ValueError
+        If the base is not a native distribution.
+    """
+    if not isinstance(value, D.Distribution):
+        raise ValueError(
+            f"{family}: expected a Distribution argument, got {type(value).__name__}"
+        )
+    return value
+
+
+def _restriction_bound(value: object, family: str) -> torch.Tensor | float | None:
+    """Validate bound structure before the restriction's own numeric conversion.
+
+    Parameters
+    ----------
+    value : object
+        Scalar, numeric sequence, tensor, or absent endpoint.
+    family : str
+        Restriction constructor used in the diagnostic.
+
+    Returns
+    -------
+    torch.Tensor or float or None
+        Tensor preserving its gradients, or literal preserving its precision.
+        Numeric sequences use the restriction's Float64 arithmetic policy.
+
+    Raises
+    ------
+    TypeError
+        If an endpoint is not numeric.
+    """
+    if value is None or isinstance(value, torch.Tensor):
+        return value
+    if isinstance(value, list | tuple):
+        return torch.as_tensor(value, dtype=torch.float64)
+    return _literal_scalar(value, family)
+
+
 def _eval_draw_arg_value(
-    arg,
+    arg: object,
     variable_types,
-):
+) -> _ConstructorValue:
     """Evaluate a draw-arg to a Python value usable inside the
     measure-algebra constructors. Scalars become floats; numeric
     `DrawArgList`s become lists of floats; `DrawArgDist`s become
@@ -2170,118 +2445,52 @@ def _eval_draw_arg_value(
     must be resolved at trace time, which the operator dispatch
     handles by raising for the current implementation).
     """
+    if isinstance(arg, D.Distribution | torch.Tensor):
+        return arg
+    if isinstance(arg, tuple | list):
+        return [_eval_draw_arg_value(item, variable_types) for item in arg]
     if isinstance(arg, DrawArgNamed):
         return _eval_draw_arg_value(arg.value, variable_types)
     if isinstance(arg, DrawArgScalar):
         return arg.value
     if isinstance(arg, DrawArgName):
+        if arg.text in {"true", "false"}:
+            return arg.text == "true"
         return arg.text
     if isinstance(arg, DrawArgList):
         return [_eval_draw_arg_value(item, variable_types) for item in arg.items]
     if isinstance(arg, DrawArgDist):
         return _build_inner_distribution(arg, variable_types)
     if isinstance(arg, (int, float)):
-        return float(arg)
+        return arg
     if isinstance(arg, str):
         return arg
     raise TypeError(f"_eval_draw_arg_value: unexpected arg type {type(arg).__name__}")
 
 
-def _build_inner_distribution(
-    arg: DrawArgDist,
-    variable_types,
-):
-    """Recursively build a `torch.distributions.Distribution` (or
-    `Measure`) from a `DrawArgDist`, dispatching on the family name.
-    Used by the compositional measure algebra to evaluate
-    distribution-valued arguments before passing them to the outer
-    family's constructor.
+def _build_inner_distribution(arg: DrawArgDist, variable_types):
+    """Resolve a nested literal through the canonical native constructor.
 
-    Recognises every operator in `_OPERATOR_FAMILIES` plus the base
-    families registered in `_FIXED_FACTORIES` and `_FAMILY_BUILDERS`
-    (with all-literal args; variable-bound base families inside a
-    compositional expression are deferred to the operator's runtime
-    evaluation).
+    Parameters
+    ----------
+    arg : DrawArgDist
+        Structural family call retaining its keyword parameterization.
+    variable_types : dict or None
+        Existing source-value context for recursive literal evaluation.
+
+    Returns
+    -------
+    torch.distributions.Distribution
+        The same raw law used by dynamic constructors and pure values.
     """
-    family = arg.family
-    if family in _OPERATOR_FAMILIES:
-        return _build_operator_value(family, arg.args, variable_types)
-    if family in _BASE_DISTRIBUTION_BUILDERS:
-        bound_args, _ = _bind_inline_arguments(family, arg.args)
-        evaluated_args = [_eval_draw_arg_value(a, variable_types) for a in bound_args]
-        if any(isinstance(v, str) for v in evaluated_args):
-            raise ValueError(
-                f"Inline distribution {family}({arg.args}): "
-                "variable-bound base families inside a compositional "
-                "expression require the operator's runtime evaluation; "
-                "use the standalone form or a let-binding."
-            )
-        return _BASE_DISTRIBUTION_BUILDERS[family](evaluated_args)
-    raise ValueError(
-        f"unknown inline family {family!r} in compositional "
-        f"expression; operators: {sorted(_OPERATOR_FAMILIES)}; bases: "
-        f"{sorted(_BASE_DISTRIBUTION_BUILDERS)}"
+    values, names = _bind_inline_arguments(arg.family, arg.args)
+    return _raw_distribution_value(
+        arg.family,
+        {
+            name: _eval_draw_arg_value(value, variable_types)
+            for name, value in zip(names or (), values, strict=True)
+        },
     )
-
-
-# Closed-form constructors for base distributions used inside
-# compositional expressions. Each takes a list of evaluated args
-# (floats, after recursing through `_eval_draw_arg_value`) and
-# returns a `torch.distributions.Distribution` instance. Only the
-# families that compose naturally with the operator algebra are
-# listed; user-supplied families can be registered here at runtime.
-_BASE_DISTRIBUTION_BUILDERS: dict = {
-    "Normal": lambda a: D.Normal(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "Cauchy": lambda a: D.Cauchy(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "Laplace": lambda a: D.Laplace(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "StudentT": lambda a: D.StudentT(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]) if len(a) > 1 else torch.tensor(0.0),
-        torch.as_tensor(a[2]) if len(a) > 2 else torch.tensor(1.0),
-    ),
-    "Beta": lambda a: D.Beta(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "Gamma": lambda a: D.Gamma(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "Exponential": lambda a: D.Exponential(
-        torch.as_tensor(a[0]),
-    ),
-    "LogGamma": lambda a: LogGamma(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-        validate_args=True,
-    ),
-    "LogitBeta": lambda a: LogitBeta(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-        validate_args=True,
-    ),
-    "Poisson": lambda a: ClosedPoisson(torch.as_tensor(a[0])),
-    "Bernoulli": lambda a: ClosedBernoulli(probs=torch.as_tensor(a[0])),
-    "Uniform": lambda a: D.Uniform(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-    "HalfNormal": lambda a: D.HalfNormal(torch.as_tensor(a[0])),
-    "HalfCauchy": lambda a: D.HalfCauchy(torch.as_tensor(a[0])),
-    "LogNormal": lambda a: D.LogNormal(
-        torch.as_tensor(a[0]),
-        torch.as_tensor(a[1]),
-    ),
-}
 
 
 def _build_operator_value(
@@ -2291,7 +2500,7 @@ def _build_operator_value(
     *,
     bound: bool = False,
     parameter_names: tuple[str, ...] | None = None,
-):
+) -> D.Distribution:
     """Evaluate an operator-family call inside a compositional
     expression. Returns a `Distribution` / `Measure` value usable as
     a parameter to an enclosing operator.
@@ -2307,27 +2516,36 @@ def _build_operator_value(
             raise ValueError(f"PointMass: expected 1 arg, got {len(evaluated)}")
         return _MeasurePointMass(torch.as_tensor(evaluated[0]))
     if family in ("Restrict", "Truncate"):
-        if len(evaluated) < 2 or len(evaluated) > 3:
+        if len(evaluated) < 2 or len(evaluated) > 5:
             raise ValueError(
-                f"{family}: expected (base[, low, high]), got {len(evaluated)} args"
+                f"{family}: expected base, bounds, and optional endpoint flags, got {len(evaluated)} args"
             )
-        base = evaluated[0]
-        if not hasattr(base, "log_prob"):
-            raise ValueError(
-                f"{family}: first arg must be a Distribution, got {type(base).__name__}"
-            )
+        base = _distribution_argument(evaluated[0], family)
         named = dict(zip(names or (), evaluated, strict=False))
         low = named.get("low")
         high = named.get("high")
-        low_t = torch.as_tensor(low) if low is not None else None
-        high_t = torch.as_tensor(high) if high is not None else None
-        return _MeasureRestrict(base, low=low_t, high=high_t)
+        low_t = _restriction_bound(low, family)
+        high_t = _restriction_bound(high, family)
+        lower_closed = named.get("lower_closed", True)
+        upper_closed = named.get("upper_closed", True)
+        if not isinstance(lower_closed, bool | torch.Tensor) or not isinstance(
+            upper_closed, bool | torch.Tensor
+        ):
+            raise TypeError(f"{family}: endpoint flags must be Boolean")
+        return _MeasureRestrict(
+            base,
+            low=low_t,
+            high=high_t,
+            lower_closed=lower_closed,
+            upper_closed=upper_closed,
+        )
     if family == "Pushforward":
         if len(evaluated) != 2:
             raise ValueError(
                 f"Pushforward: expected (base, bijector), got {len(evaluated)} args"
             )
-        base, bij = evaluated
+        base = _distribution_argument(evaluated[0], family)
+        bij = evaluated[1]
         if isinstance(bij, str):
             bij_cls = BIJECTORS_BY_NAME.get(bij)
             if bij_cls is None:
@@ -2347,57 +2565,445 @@ def _build_operator_value(
                 f"Mixture: expected (weights, components), got {len(evaluated)} args"
             )
         weights_raw, components_raw = evaluated
-        weights = torch.as_tensor(weights_raw, dtype=torch.float32)
+        weights = torch.as_tensor(weights_raw)
         if not isinstance(components_raw, list):
             raise ValueError("Mixture: components must be a list literal")
-        return _MeasureMixture(weights, components_raw)
+        components: list[D.Distribution] = []
+        for component in components_raw:
+            components.append(_distribution_argument(component, family))
+        return _MeasureMixture(weights, components)
     if family == "Independent":
         if len(evaluated) != 2:
             raise ValueError(
                 "Independent: expected (base, reinterpreted_batch_ndims), "
                 f"got {len(evaluated)} args"
             )
-        base, n = evaluated
-        return _MeasureIndependent(base, int(n))
+        base = _distribution_argument(evaluated[0], family)
+        n = evaluated[1]
+        if not isinstance(n, int | torch.Tensor):
+            raise TypeError("Independent: reinterpreted_batch_ndims must be an integer")
+        return _MeasureIndependent(base, n)
     if family == "Normalize":
         if len(evaluated) != 1:
             raise ValueError(f"Normalize: expected 1 arg, got {len(evaluated)}")
-        return _MeasureNormalize(evaluated[0])
+        return _MeasureNormalize(_distribution_argument(evaluated[0], family))
     raise ValueError(f"unknown operator family {family!r}")
 
 
-def _make_operator_distribution(
-    family: str,
-    args,
-    codomain: AnySpace,
-    variable_types,
-    parameter_names: tuple[str, ...] | None,
-):
-    """Build a `FixedDistribution` wrapper around a compositional
-    measure expression. The expression has no free QVR variables;
-    all arguments are evaluated at compile time to a closed-form
-    `Distribution` / `Measure` instance.
+class _SupportOnlyDistribution(D.Distribution):
+    """Retain constructor support metadata without evaluating parameter heads.
+
+    Parameters
+    ----------
+    support : Constraint
+        Checked support of the underlying distribution.
+    batch_shape : tuple
+        Parameter batch axes retained by the constructor.
+    event_shape : tuple
+        Intrinsic event axes, independent of batch axes.
     """
-    fake_dist = _build_operator_value(
-        family,
-        tuple(args),
-        variable_types,
-        bound=True,
-        parameter_names=parameter_names,
+
+    def __init__(
+        self, support: _constraints.Constraint, batch_shape=(), event_shape=()
+    ):
+        self._support = support
+        self._atomless = not support.is_discrete
+        self._reference = torch.tensor(0.0)
+        super().__init__(
+            torch.Size(batch_shape), torch.Size(event_shape), validate_args=False
+        )
+
+    @property
+    def arg_constraints(self) -> dict[str, _constraints.Constraint]:
+        return {}
+
+    @property
+    def support(self) -> _constraints.Constraint:
+        return self._support
+
+    def expand(self, batch_shape, _instance=None):
+        return _SupportOnlyDistribution(self.support, batch_shape, self.event_shape)
+
+
+def _dynamic_distribution_arguments(arguments):
+    """Find free values recursively through the distribution argument AST.
+
+    Parameters
+    ----------
+    arguments : tuple
+        Existing source arguments, including nested constructor arguments.
+
+    Returns
+    -------
+    bool
+        Whether construction reads a runtime binding.
+    """
+    for argument in arguments:
+        if isinstance(argument, DrawArgNamed):
+            if _dynamic_distribution_arguments((argument.value,)):
+                return True
+        elif isinstance(argument, DrawArgDist):
+            if _dynamic_distribution_arguments(argument.args):
+                return True
+        elif isinstance(argument, DrawArgList):
+            if _dynamic_distribution_arguments(argument.items):
+                return True
+        elif isinstance(argument, DrawArgIndex | Indexed):
+            return True
+        elif isinstance(argument, DrawArgName | str):
+            name = argument.text if isinstance(argument, DrawArgName) else argument
+            if name not in {"true", "false"} and name not in BIJECTORS_BY_NAME:
+                return True
+    return False
+
+
+def _make_dynamic_operator_distribution(
+    family,
+    args,
+    codomain,
+    variable_types,
+    value_extents,
+    sampleable_references=None,
+    batch_ndims=0,
+    families=None,
+):
+    """Compose runtime distribution values using the shared inline packing plan.
+
+    Parameters
+    ----------
+    family : str
+        Existing measure operator at a sample or observation boundary.
+    args : tuple
+        Original named or positional constructor arguments.
+    codomain : AnySpace
+        Checked output space and intrinsic event dimensions.
+    variable_types : dict or None
+        Native spaces of values read by nested constructors.
+    value_extents : Mapping or None
+        Checked extents, retaining event dimensions independently of batch axes.
+    sampleable_references : Mapping or None
+        Actual registered native kernels consuming the original program input.
+        All references share one packed context slot and retain parameter identity.
+    batch_ndims : int
+        Explicit enclosing observation/array batch rank, independent of sizes.
+
+    Returns
+    -------
+    tuple
+        One mixed morphism and its ordinary source-value arguments.
+    """
+    specs, ranks, shapes, integers, names, consumed_ranks = [], [], [], [], [], []
+    parameter_constraints = []
+    references = {} if sampleable_references is None else sampleable_references
+    context_positions = {}
+    variable_types = {} if variable_types is None else dict(variable_types)
+
+    def reference_value(text):
+        """Retain one native kernel with a shared conditioning slot.
+
+        Parameters
+        ----------
+        text : str
+            Canonically resolved source reference.
+
+        Returns
+        -------
+        tuple
+            Runtime builder and metadata-only support prototype.
+        """
+        reference, input_name = references[text]
+        if input_name not in context_positions:
+            position = len(specs)
+            context_domain = reference.domain
+            context_positions[input_name] = (position, context_domain)
+            width = int(getattr(context_domain, "dim", 1))
+            specs.append(("var", width))
+            # The context is a row of conditioning features, not a shared
+            # tensor-valued distribution parameter. The existing per-row
+            # feature packing contract preserves all input batch rows.
+            ranks.append(0)
+            shapes.append(None)
+            integers.append(False)
+            parameter_constraints.append(None)
+            consumed_ranks.append(None)
+            names.append(input_name)
+            variable_types[input_name] = context_domain
+        elif reference.domain != context_positions[input_name][1]:
+            raise ValueError(
+                "sampleable kernel references sharing an input must consume the same domain"
+            )
+        position = context_positions[input_name][0]
+        support = reference.support
+        event_rank = support.event_dim
+        event = (
+            tuple(getattr(reference.codomain, "event_shape", ())) if event_rank else ()
+        )
+        if event_rank and not event:
+            if event_rank != 1:
+                raise ValueError(
+                    "a matrix-valued kernel reference requires explicit intrinsic event axes"
+                )
+            event = (reference.codomain.dim,)
+        if event_rank == 0 and isinstance(reference.codomain, ContinuousSpace):
+            event = tuple(reference.codomain.event_shape)
+            support = _constraints.independent(support, len(event))
+        prototype = _SupportOnlyDistribution(support, (), event)
+
+        def build(params):
+            """Construct the retained kernel law at its actual input.
+
+            Parameters
+            ----------
+            params : list[torch.Tensor]
+                Resolved inline features, including the conditioning block.
+
+            Returns
+            -------
+            torch.distributions.Distribution
+                Kernel value with input batch axes and output event axes.
+            """
+            context = params[position]
+            if context.ndim == 1:
+                context = context.unsqueeze(-1)
+            distribution = reference.sampling_distribution(context)
+            # Input batch axes are retained. Native independent output
+            # coordinates become the kernel value's event axes, exactly as
+            # ordinary named kernels reduce them when scoring one output.
+            output_rank = len(distribution.batch_shape) - (context.ndim - 1)
+            if output_rank < 0:
+                raise ValueError("a referenced kernel dropped an input batch axis")
+            return (
+                D.Independent(distribution, output_rank)
+                if output_rank
+                else distribution
+            )
+
+        return build, prototype
+
+    def value(argument, owner, name, rank, integer, reserve=None):
+        if isinstance(argument, DrawArgNamed):
+            argument = argument.value
+        if isinstance(argument, DrawArgDist):
+            return node(argument.family, argument.args, reserve)
+        if (
+            owner == "Independent"
+            and name == "reinterpreted_batch_ndims"
+            and isinstance(argument, DrawArgScalar)
+        ):
+            # This argument determines event structure; the shared constructor
+            # validates it unchanged rather than receiving a broadcast head.
+            return (lambda params: argument.value), argument.value
+        if isinstance(argument, DrawArgList) and any(
+            isinstance(item, DrawArgDist)
+            or isinstance(item, DrawArgName)
+            and item.text in references
+            for item in argument.items
+        ):
+            children = [
+                value(item, owner, name, rank, integer, reserve)
+                for item in argument.items
+            ]
+            return (
+                lambda params: [fn(params) for fn, _ in children],
+                [probe for _, probe in children],
+            )
+        if isinstance(argument, DrawArgName | str):
+            text = argument.text if isinstance(argument, DrawArgName) else argument
+            if text in references:
+                return reference_value(text)
+            if text in {"true", "false"} or text in BIJECTORS_BY_NAME:
+                literal = _eval_draw_arg_value(argument, variable_types)
+                return (lambda params: literal), literal
+        packing_rank = rank
+        consumed = None
+        if (
+            reserve is not None
+            and not (families if families is not None else FAMILIES)[
+                FAMILY_ALIASES.get(owner, owner) or owner
+            ].compositional
+        ):
+            from quivers._independent import reserved_parameter_axes
+
+            kind, payload = _inline_argument(argument)
+            checked = (
+                (value_extents or {}).get(payload)
+                if isinstance(payload, str)
+                else tuple(payload.shape)
+                if isinstance(payload, torch.Tensor)
+                else ()
+            )
+            if checked is not None:
+                consumed, retained = reserved_parameter_axes(
+                    tuple(checked), rank, batch_ndims, reserve
+                )
+                packing_rank = len(retained)
+        plan, own_shapes, own_names = _inline_parameter_layout(
+            owner,
+            (argument,),
+            (name,),
+            (packing_rank,),
+            variable_types,
+            value_extents,
+        )
+        if reserve is not None and packing_rank == 0 and plan[0][0] == "var":
+            plan[0] = ("var", 1)
+        position = len(specs)
+        specs.extend(plan)
+        ranks.append(packing_rank)
+        shapes.extend(own_shapes)
+        integers.append(integer)
+        parameter_constraints.append(
+            families[owner].parameter(name).constraint
+            if families is not None and families.is_custom(owner)
+            else None
+        )
+        consumed_ranks.append(consumed)
+        names.extend(own_names)
+        kind, payload = plan[0]
+        if kind == "const":
+            probe = payload
+        elif kind == "lit":
+            probe = payload
+        else:
+            shape = own_shapes[0] or (
+                (int(payload),) if payload and int(payload) > 1 else ()
+            )
+            probe = torch.ones(shape)
+        return (lambda params: params[position]), probe
+
+    def node(current, arguments, reserve=None):
+        bound, parameters = _bind_inline_arguments(
+            current, tuple(arguments), families=families
+        )
+        assert parameters is not None
+        if current == "Independent":
+            from quivers._independent import independent_ndims
+
+            raw = bound[parameters.index("reinterpreted_batch_ndims")]
+            if isinstance(raw, DrawArgNamed):
+                raw = raw.value
+            if not isinstance(raw, DrawArgScalar):
+                raise ValueError(
+                    "Independent requires a static integer reinterpreted_batch_ndims"
+                )
+            reserve = independent_ndims(raw.value) + (reserve or 0)
+        own_ranks = _registry_event_ranks(current, parameters, families)
+        own_integers = _registry_integer_parameters(current, parameters, families)
+        children = [
+            value(arg, current, name, rank, integer, reserve)
+            for arg, name, rank, integer in zip(
+                bound, parameters, own_ranks, own_integers, strict=True
+            )
+        ]
+        event_rank = (families if families is not None else FAMILIES)[
+            FAMILY_ALIASES.get(current, current) or current
+        ].event_rank
+        event_shape = tuple(getattr(codomain, "event_shape", ())) if event_rank else ()
+
+        def build(params):
+            values = {
+                name: fn(params)
+                for name, (fn, _) in zip(parameters, children, strict=True)
+            }
+            if reserve is not None:
+                for name, rank in zip(parameters, own_ranks, strict=True):
+                    item = values[name]
+                    if isinstance(item, torch.Tensor):
+                        missing = len(prototype.batch_shape) - (item.ndim - 1 - rank)
+                        if missing > 0:
+                            values[name] = item.reshape(
+                                item.shape[0], *((1,) * missing), *item.shape[1:]
+                            )
+            return _raw_distribution_value(
+                current,
+                values,
+                event_shape,
+                families=families,
+            )
+
+        probes = {
+            name: probe for name, (_, probe) in zip(parameters, children, strict=True)
+        }
+        if current in _OPERATOR_FAMILIES:
+            if current == "Normalize":
+                base = probes["base"]
+                prototype = _SupportOnlyDistribution(
+                    base.support, base.batch_shape, base.event_shape
+                )
+            elif current in {"Restrict", "Truncate"}:
+                static = {
+                    name: probe
+                    for name, probe, arg in zip(
+                        parameters, probes.values(), bound, strict=True
+                    )
+                    if name != "base" and not _dynamic_distribution_arguments((arg,))
+                }
+                base = probes["base"]
+                if static.get("low") is not None or static.get("high") is not None:
+                    prototype = _raw_distribution_value(
+                        current, {"base": base, **static}
+                    )
+                else:
+                    prototype = _SupportOnlyDistribution(
+                        base.support, base.batch_shape, base.event_shape
+                    )
+            else:
+                prototype = _raw_distribution_value(current, probes, families=families)
+        else:
+            support = (
+                families.support(current)
+                if families is not None and families.is_custom(current)
+                else _FAMILY_SUPPORTS.get(current, _constraints.real)
+            )
+            batch_shapes = [
+                tuple(
+                    torch.as_tensor(probe).shape[:-rank]
+                    if rank
+                    else torch.as_tensor(probe).shape
+                )
+                for (_, probe), rank in zip(children, own_ranks, strict=True)
+            ]
+            prototype = _SupportOnlyDistribution(
+                support, torch.broadcast_shapes(*batch_shapes), event_shape
+            )
+        return build, prototype
+
+    build, prototype = node(family, args)
+    support = prototype.support
+    assert isinstance(support, _constraints.Constraint)
+    if prototype.event_shape and isinstance(codomain, Euclidean):
+        codomain = codomain.with_(
+            dim=math.prod(prototype.event_shape),
+            intrinsic_shape=tuple(prototype.event_shape),
+        )
+    widths = tuple(
+        int(width) if width is not None else None
+        for kind, width in specs
+        if kind == "var"
     )
-    support = getattr(fake_dist, "support", _constraints.real)
-    discrete = isinstance(support, type(_constraints.nonnegative_integer))
-
-    def builder(batch: int, device: torch.device):
-        return fake_dist
-
-    morph = FixedDistribution(
+    domain = _infer_domain(names, variable_types, widths)
+    morph = MixedInlineDistribution(
+        domain,
         codomain,
-        builder,
-        discrete=discrete,
+        specs,
+        build,
+        discrete=support.is_discrete,
         support=support,
+        param_event_ranks=tuple(ranks),
+        param_shapes=tuple(shapes),
+        param_integers=tuple(integers),
+        param_constraints=tuple(parameter_constraints),
+        param_batch_ndims=tuple(consumed_ranks),
+        structural_batch_ndims=len(prototype.batch_shape),
     )
-    return (morph, None)
+    morph._context_parameters = frozenset(
+        position for position, _ in context_positions.values()
+    )
+    for i, reference in enumerate(
+        dict.fromkeys(value[0] for value in references.values())
+    ):
+        morph.add_module(f"_sampleable_reference_{i}", reference)
+    return morph, tuple(names) if names else None
 
 
 def _param_row_width(vtype: AnySpace, event_rank: int) -> int:
@@ -2444,175 +3050,168 @@ def _gathered_width(arg: Indexed, extents: tuple[int, ...]) -> int:
     return math.prod(extents[len(arg.indices) :])
 
 
-def make_inline_distribution(
+def _raw_distribution_value(
     family: str,
-    args: tuple,
-    codomain: AnySpace,
-    variable_types: dict[str, AnySpace] | None = None,
-    value_extents: Mapping[str, tuple[int, ...]] | None = None,
-) -> tuple[ContinuousMorphism, tuple[StepArgument, ...] | None]:
-    """Create an inline distribution from family name and mixed args.
-
-    Handles any combination of literal and variable arguments for any
-    registered distribution family. The general mechanism:
-
-    1. All literals → ``FixedDistribution`` (no variable input)
-    2. Any variables → ``MixedInlineDistribution`` with a param_spec
-       that records which positions are literals vs. variable slices
+    arguments: Mapping[str, object],
+    event_shape: tuple[int, ...] = (),
+    plate_shape: tuple[int, ...] = (),
+    *,
+    families: FamilyCatalog | None = None,
+) -> D.Distribution:
+    """Construct a checked distribution value before boundary normalization.
 
     Parameters
     ----------
     family : str
-        Distribution family name.
-    args : tuple of str | float
-        Arguments from the DSL. Strings are variable names,
-        floats are literal values.
-    codomain : AnySpace
-        The output space for the distribution.
-    variable_types : dict or None
-        Mapping of variable names to their space types (for domain
-        construction of direct distributions).
-    value_extents : Mapping[str, tuple[int, ...]] or None
-        The checked extents of the values the program binds, by name. A
-        gather ``mu[z]`` reads, per index, the value left after its
-        gathered axes: one entry of a vector, or one row of a matrix.
+        Nominal family identity from the checked semantic registry.
+    arguments : Mapping[str, object]
+        Named parameters, retaining tensors and their gradients.
+    event_shape : tuple[int, ...]
+        Intrinsic event dimensions supplied by checked shape elaboration.
+    plate_shape : tuple[int, ...]
+        Declared independent replication axes before intrinsic event axes.
 
     Returns
     -------
-    tuple of (ContinuousMorphism, tuple[str, ...] | None)
-        The inline distribution morphism, and the variable names
-        to pass as step input (None = use program input).
+    torch.distributions.Distribution
+        Raw probability distribution or unnormalized Measure.
 
     Raises
     ------
     ValueError
-        If a gather indexes more axes than its value's checked extents
-        have.
+        If no existing native constructor accepts the checked parameters.
     """
-    args, selected_parameters = _bind_inline_arguments(family, args)
-    if family in _OPERATOR_FAMILIES:
-        return _make_operator_distribution(
-            family,
-            args,
-            codomain,
-            variable_types,
-            selected_parameters,
-        )
-    args = _normalize_inline_args(args)
-    # An indexed reference counts as a variable reference for the
-    # purposes of picking the fixed vs mixed factory dispatch, alongside
-    # bare identifier strings.
-    var_names = [a for a in args if isinstance(a, str | Indexed)]
-    # A list literal filling a parameter of a family whose fixed factory
-    # takes numbers alone reads as a literal tensor of the general path
-    # below, as it does beside a variable argument.
-    literal_tensor = any(isinstance(a, DrawArgList) for a in args) and (
-        family not in _VECTOR_PARAM_FAMILIES and family != "Categorical"
-    )
-    fixed = not var_names and not (literal_tensor and family in _FAMILY_BUILDERS)
-    if fixed:
-        if family == "Categorical":
-            parameterization = (selected_parameters or ("probs",))[0]
-            if not isinstance(args[0], DrawArgList):
-                values = _eval_draw_arg_value(args[0], variable_types)
-                return (
-                    make_fixed_categorical(
-                        values, codomain, parameterization=parameterization
-                    ),
-                    None,
-                )
-            listed = _list_values(args[0])
-            weights = [entry for entry in listed if isinstance(entry, float)]
-            if len(weights) != len(listed):
-                raise ValueError(
-                    "inline Categorical takes one vector of class weights, "
-                    "not a nested list"
-                )
-            return (
-                make_fixed_categorical(
-                    weights, codomain, parameterization=parameterization
-                ),
-                None,
-            )
-        if family in _FIXED_FACTORIES:
-            factory_parameters, factory = _FIXED_FACTORIES[family]
-            if (
-                selected_parameters is not None
-                and selected_parameters != factory_parameters
+    values = dict(arguments)
+    if plate_shape:
+        from quivers.qiec.families import family as semantic_family
+
+        record = families[family] if families is not None else semantic_family(family)
+        ranks = {parameter.name: parameter.rank for parameter in record.parameters}
+        for name, value in tuple(values.items()):
+            if isinstance(value, D.Distribution):
+                continue
+            if isinstance(value, list | tuple) and any(
+                isinstance(item, D.Distribution) for item in value
             ):
-                return (
-                    _make_fixed_selected_parameters(
-                        family,
-                        args,
-                        selected_parameters,
-                        codomain,
-                    ),
-                    None,
-                )
-            # Vector-parameter families take a single ``list[float]``
-            # / ``tuple[float, ...]`` argument rather than splatting
-            # the literals. The parser surfaces ``Dirichlet([1, 2, 3])``
-            # as three positional float args (the grammar's draw-arg
-            # list flattens any bracket-bounded numeric sequence), so
-            # we re-bundle here when the factory's documented contract
-            # is a single vector argument.
-            if family in _VECTOR_PARAM_FAMILIES:
-                value = (
-                    _list_values(args[0])
-                    if isinstance(args[0], DrawArgList)
-                    else _eval_draw_arg_value(args[0], variable_types)
-                )
-                morph = factory(value, codomain)
-            else:
-                all_floats = [float(a) for a in args]
-                morph = factory(*all_floats, codomain)
-            return (morph, None)
-        if family not in _FAMILY_BUILDERS:
-            raise ValueError(f"no fixed factory for inline family {family!r}")
-    if family not in _FAMILY_BUILDERS:
-        raise ValueError(
-            f"no builder for inline family {family!r} with variable arguments"
+                continue
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int | float | torch.Tensor | list | tuple):
+                tensor = torch.as_tensor(value)
+                rank = ranks.get(name, 0)
+                intrinsic = tuple(tensor.shape[-rank:]) if rank else ()
+                values[name] = tensor.expand(*plate_shape, *intrinsic)
+    if families is not None and families.is_custom(family):
+        return families.build(
+            family,
+            {
+                name: value
+                if isinstance(value, torch.Tensor)
+                else torch.as_tensor(value)
+                for name, value in values.items()
+            },
         )
-    param_names, dist_builder, discrete = _FAMILY_BUILDERS[family]
-    if family == "Categorical" and selected_parameters == ("logits",):
-        param_names = ("logits",)
-        dist_builder = _categorical_logits_builder
-    elif selected_parameters is not None and selected_parameters != param_names:
-        spec = FAMILY_REGISTRY[family]
-        source_parameters = selected_parameters
-
-        def _selected_builder(
-            params: list[torch.Tensor],
-            _spec: FamilySpec = spec,
-            _parameters: tuple[str, ...] = source_parameters,
-        ) -> D.Distribution:
-            return _spec.dist_class(
-                **{
-                    name: _selected_clamp(_spec, name, value)
-                    for name, value in zip(_parameters, params, strict=True)
-                }
+    if family == "Truncated":
+        # The normalized source wrapper is the existing restriction algebra;
+        # keep raw Restrict itself unnormalized at query sites.
+        low, high = values["low"], values["high"]
+        return _MeasureNormalize(
+            _MeasureRestrict(
+                _distribution_argument(values["base"], family),
+                low=_restriction_bound(low, family),
+                high=_restriction_bound(high, family),
             )
-
-        param_names = selected_parameters
-        dist_builder = _ALTERNATIVE_BUILDERS.get(
-            (family, selected_parameters), _selected_builder
         )
-    if len(args) != len(param_names):
-        raise ValueError(
-            f"inline {family} expects {len(param_names)} args ({', '.join(param_names)}), got {len(args)}"
+    if family in _OPERATOR_FAMILIES:
+        return _build_operator_value(
+            family,
+            tuple(values.values()),
+            {},
+            bound=True,
+            parameter_names=tuple(values),
         )
-    fam_event_ranks = _PARAM_EVENT_RANKS.get(family) or _registry_event_ranks(
-        family, param_names
+    spec = FAMILY_REGISTRY.get(family)
+    if spec is not None:
+        return spec.dist_class(
+            **{
+                name: torch.as_tensor(value)
+                if isinstance(value, list | tuple)
+                else value
+                for name, value in values.items()
+            }
+        )
+    if family in _DIM_DEPENDENT_FAMILIES:
+        if not event_shape:
+            raise ValueError(f"{family} requires its checked intrinsic event shape")
+        builder = _dim_dependent_builder(
+            family, Euclidean(name="_measure_event", dim=event_shape[-1])
+        )
+        return builder([torch.as_tensor(value) for value in values.values()])
+    selected = next(
+        (
+            key
+            for key in _ALTERNATIVE_BUILDERS
+            if key[0] == family and set(key[1]) == set(values)
+        ),
+        None,
     )
+    if selected is not None:
+        return _ALTERNATIVE_BUILDERS[selected](
+            [torch.as_tensor(values[name]) for name in selected[1]]
+        )
+    existing = _FAMILY_BUILDERS.get(family)
+    if existing is None:
+        raise ValueError(f"{family} has no native distribution-value constructor")
+    names, builder, _ = existing
+    if set(names) != set(values):
+        # The semantic spelling eta names the native ordered-logit predictor.
+        if family == "OrderedLogistic" and "eta" in values:
+            values["predictor"] = values.pop("eta")
+        if set(names) != set(values):
+            raise ValueError(
+                f"{family} has no native constructor for parameters {tuple(arguments)}"
+            )
+    return builder([torch.as_tensor(values[name]) for name in names])
+
+
+def _inline_parameter_layout(
+    family,
+    args,
+    param_names,
+    fam_event_ranks,
+    variable_types,
+    value_extents,
+):
+    """Retain the checked parameter packing for direct and nested calls.
+
+    Parameters
+    ----------
+    family : str
+        Family whose parameter constraints govern the arguments.
+    args : tuple
+        Bound numeric arguments from the existing source AST.
+    param_names : tuple
+        Corresponding canonical parameter names.
+    fam_event_ranks : tuple
+        Intrinsic parameter ranks, excluding declared batch axes.
+    variable_types : Mapping or None
+        Native spaces of the bindings read by the arguments.
+    value_extents : Mapping or None
+        Checked binding extents, retaining nominal event dimensions.
+
+    Returns
+    -------
+    tuple
+        Packing specifications, intrinsic shapes, and runtime binding order.
+    """
     param_spec: list[tuple[str, int | float | torch.Tensor | None]] = []
     param_shapes: list[tuple[int, ...] | None] = []
     var_name_order: list[StepArgument] = []
-    total_var_dim = 0
     for i, arg in enumerate(args):
         kind, value = _inline_argument(arg)
         param_shapes.append(None)
         if kind == "lit" or kind == "const":
-            assert isinstance(value, float | torch.Tensor)
+            assert isinstance(value, int | float | torch.Tensor)
             param_spec.append((kind, value))
         else:
             assert isinstance(value, str | Indexed)
@@ -2665,7 +3264,212 @@ def make_inline_distribution(
                 )
             param_spec.append(("var", var_dim))
             var_name_order.append(arg)
-            total_var_dim += 1 if var_dim is None else var_dim
+    return param_spec, param_shapes, var_name_order
+
+
+def make_inline_distribution(
+    family: str,
+    args: tuple,
+    codomain: AnySpace,
+    variable_types: dict[str, AnySpace] | None = None,
+    value_extents: Mapping[str, tuple[int, ...]] | None = None,
+    *,
+    sampleable_references: Mapping[str, tuple[ContinuousMorphism, str]] | None = None,
+    batch_ndims: int = 0,
+    families: FamilyCatalog | None = None,
+) -> tuple[ContinuousMorphism, tuple[StepArgument, ...] | None]:
+    """Create an inline distribution from family name and mixed args.
+
+    Handles any combination of literal and variable arguments for any
+    registered distribution family. The general mechanism:
+
+    1. All literals → ``FixedDistribution`` (no variable input)
+    2. Any variables → ``MixedInlineDistribution`` with a param_spec
+       that records which positions are literals vs. variable slices
+
+    Parameters
+    ----------
+    family : str
+        Distribution family name.
+    args : tuple of str | float
+        Arguments from the DSL. Strings are variable names,
+        floats are literal values.
+    codomain : AnySpace
+        The output space for the distribution.
+    variable_types : dict or None
+        Mapping of variable names to their space types (for domain
+        construction of direct distributions).
+    value_extents : Mapping[str, tuple[int, ...]] or None
+        The checked extents of the values the program binds, by name. A
+        gather ``mu[z]`` reads, per index, the value left after its
+        gathered axes: one entry of a vector, or one row of a matrix.
+
+    sampleable_references : Mapping or None
+        Native kernel references in sampleable argument positions. Their
+        original input context is packed once, independently of scalar or
+        event-valued constructor parameters.
+    batch_ndims : int
+        Explicit enclosing batch rank retained by the checked observation layout.
+
+    Returns
+    -------
+    tuple of (ContinuousMorphism, tuple[str, ...] | None)
+        The inline distribution morphism, and the variable names
+        to pass as step input (None = use program input).
+
+    Raises
+    ------
+    ValueError
+        If a gather indexes more axes than its value's checked extents
+        have.
+    """
+    custom = families is not None and families.is_custom(family)
+    builders = _FAMILY_BUILDERS
+    if custom:
+        assert families is not None
+        record = families[family]
+        names = record.parameter_names
+
+        def custom_builder(values):
+            return families.build(family, dict(zip(names, values, strict=True)))
+
+        builders = {**builders, family: (names, custom_builder, record.discrete)}
+    if family in _OPERATOR_FAMILIES:
+        return _make_dynamic_operator_distribution(
+            family,
+            args,
+            codomain,
+            variable_types,
+            value_extents,
+            sampleable_references,
+            batch_ndims,
+            families,
+        )
+    args, selected_parameters = _bind_inline_arguments(family, args, families=families)
+    args = _normalize_inline_args(args)
+    # An indexed reference counts as a variable reference for the
+    # purposes of picking the fixed vs mixed factory dispatch, alongside
+    # bare identifier strings.
+    var_names = [a for a in args if isinstance(a, str | Indexed)]
+    # A list literal filling a parameter of a family whose fixed factory
+    # takes numbers alone reads as a literal tensor of the general path
+    # below, as it does beside a variable argument.
+    literal_tensor = any(isinstance(a, DrawArgList) for a in args) and (
+        family not in _VECTOR_PARAM_FAMILIES and family != "Categorical"
+    )
+    fixed = not var_names and not (literal_tensor and family in builders)
+    if fixed:
+        if family == "Categorical":
+            parameterization = (selected_parameters or ("probs",))[0]
+            if not isinstance(args[0], DrawArgList):
+                values = _eval_draw_arg_value(args[0], variable_types)
+                return (
+                    make_fixed_categorical(
+                        values, codomain, parameterization=parameterization
+                    ),
+                    None,
+                )
+            listed = _list_values(args[0])
+            weights = [
+                float(entry) for entry in listed if isinstance(entry, int | float)
+            ]
+            if len(weights) != len(listed):
+                raise ValueError(
+                    "inline Categorical takes one vector of class weights, "
+                    "not a nested list"
+                )
+            return (
+                make_fixed_categorical(
+                    weights, codomain, parameterization=parameterization
+                ),
+                None,
+            )
+        if family in _FIXED_FACTORIES:
+            factory_parameters, factory = _FIXED_FACTORIES[family]
+            if (
+                selected_parameters is not None
+                and selected_parameters != factory_parameters
+            ):
+                return (
+                    _make_fixed_selected_parameters(
+                        family,
+                        args,
+                        selected_parameters,
+                        codomain,
+                    ),
+                    None,
+                )
+            # Vector-parameter families take a single ``list[float]``
+            # / ``tuple[float, ...]`` argument rather than splatting
+            # the literals. The parser surfaces ``Dirichlet([1, 2, 3])``
+            # as three positional float args (the grammar's draw-arg
+            # list flattens any bracket-bounded numeric sequence), so
+            # we re-bundle here when the factory's documented contract
+            # is a single vector argument.
+            if family in _VECTOR_PARAM_FAMILIES:
+                value = (
+                    _list_values(args[0])
+                    if isinstance(args[0], DrawArgList)
+                    else _eval_draw_arg_value(args[0], variable_types)
+                )
+                morph = factory(value, codomain)
+            else:
+                morph = factory(*args, codomain)
+            return (morph, None)
+        if family not in builders:
+            raise ValueError(f"no fixed factory for inline family {family!r}")
+    if family not in builders:
+        raise ValueError(
+            f"no builder for inline family {family!r} with variable arguments"
+        )
+    param_names, dist_builder, discrete = builders[family]
+    if family == "Categorical" and selected_parameters == ("logits",):
+        param_names = ("logits",)
+        dist_builder = _categorical_logits_builder
+    elif selected_parameters is not None and selected_parameters != param_names:
+        spec = FAMILY_REGISTRY.get(family)
+        source_parameters = selected_parameters
+
+        def _selected_builder(
+            params: list[torch.Tensor],
+            _spec: FamilySpec | None = spec,
+            _parameters: tuple[str, ...] = source_parameters,
+            _family: str = family,
+        ) -> D.Distribution:
+            return _raw_distribution_value(
+                _family,
+                {
+                    name: _selected_clamp(_spec, name, value)
+                    if _spec is not None
+                    else value
+                    for name, value in zip(_parameters, params, strict=True)
+                },
+            )
+
+        param_names = selected_parameters
+        dist_builder = _ALTERNATIVE_BUILDERS.get(
+            (family, selected_parameters), _selected_builder
+        )
+    if len(args) != len(param_names):
+        raise ValueError(
+            f"inline {family} expects {len(param_names)} args ({', '.join(param_names)}), got {len(args)}"
+        )
+    fam_event_ranks = _PARAM_EVENT_RANKS.get(family) or _registry_event_ranks(
+        family, param_names, families
+    )
+    param_spec, param_shapes, var_name_order = _inline_parameter_layout(
+        family,
+        args,
+        param_names,
+        fam_event_ranks,
+        variable_types,
+        value_extents,
+    )
+    total_var_dim = sum(
+        1 if value is None else int(value)
+        for kind, value in param_spec
+        if kind == "var"
+    )
     if family == "MixtureNormal":
         # QIEC can currently retain the component width for an indexed draw
         # while conservatively typing a derived vector-valued ``let`` as
@@ -2691,19 +3495,23 @@ def make_inline_distribution(
                 for kind, value in param_spec
                 if kind == "var"
             )
-    if total_var_dim == 0:
-        domain = Euclidean(name="_inline_domain", dim=1)
-    elif len(var_name_order) == 1 and variable_types:
-        vtype = _argument_type(var_name_order[0], variable_types)
-        domain = (
-            vtype
-            if vtype is not None
-            else Euclidean(name="_inline_domain", dim=total_var_dim)
+    domain = (
+        _infer_domain(
+            var_name_order,
+            variable_types,
+            tuple(
+                int(width) if width is not None else None
+                for kind, width in param_spec
+                if kind == "var"
+            ),
         )
-    else:
-        domain = _infer_domain(var_name_order, variable_types)
-    fam_support: _constraints.Constraint = _FAMILY_SUPPORTS.get(
-        family, _constraints.real
+        if total_var_dim
+        else Euclidean(name="_inline_domain", dim=1)
+    )
+    fam_support: _constraints.Constraint = (
+        families.support(family)
+        if custom and families is not None
+        else _FAMILY_SUPPORTS.get(family, _constraints.real)
     )
     # TruncatedNormal / Uniform encode bounded supports via two literal
     # arguments; if both bounds are literal we can specialize the
@@ -2720,7 +3528,7 @@ def make_inline_distribution(
             fam_support = _constraints.interval(lit_args[-2], lit_args[-1])
     # Dimension-dependent families need the codomain's matrix / vector
     # size baked into the builder closure. The registered
-    # `_FAMILY_BUILDERS` entry carries a dim-agnostic builder; here we
+    # `builders` entry carries a dim-agnostic builder; here we
     # replace it with a closure that captures the codomain dim so the
     # resulting torch distribution has the right event_shape at
     # construction.
@@ -2735,11 +3543,35 @@ def make_inline_distribution(
         support=fam_support,
         param_event_ranks=fam_event_ranks,
         param_shapes=tuple(param_shapes),
+        param_integers=_registry_integer_parameters(family, param_names, families),
+        param_constraints=tuple(
+            families[family].parameter(name).constraint for name in param_names
+        )
+        if custom and families is not None
+        else None,
     )
     return (morph, tuple(var_name_order) if var_name_order else None)
 
 
-def _registry_event_ranks(family: str, parameters: tuple[str, ...]) -> tuple[int, ...]:
+def _registry_integer_parameters(
+    family: str, parameters: tuple[str, ...], families: FamilyCatalog | None = None
+) -> tuple[bool, ...]:
+    """Identify integer parameters from their checked family constraints."""
+    record = (families if families is not None else FAMILIES).get(
+        FAMILY_ALIASES.get(family, family)
+    )
+    aliases = PARAMETER_ALIASES.get(family, {})
+    return tuple(
+        record is not None
+        and aliases.get(name, name) in record.parameter_names
+        and "integer" in record.parameter(aliases.get(name, name)).constraint
+        for name in parameters
+    )
+
+
+def _registry_event_ranks(
+    family: str, parameters: tuple[str, ...], families: FamilyCatalog | None = None
+) -> tuple[int, ...]:
     """The rank of one value of each parameter, as the family registry records it.
 
     Parameters
@@ -2757,7 +3589,9 @@ def _registry_event_ranks(family: str, parameters: tuple[str, ...]) -> tuple[int
         surface aliases, and zero for a parameter the registry does not
         record.
     """
-    record = FAMILIES.get(FAMILY_ALIASES.get(family, family))
+    record = (families if families is not None else FAMILIES).get(
+        FAMILY_ALIASES.get(family, family)
+    )
     aliases = PARAMETER_ALIASES.get(family, {})
     ranks: list[int] = []
     for name in parameters:
@@ -2779,16 +3613,28 @@ def _make_fixed_selected_parameters(
     """Build a literal family through the parameterization named in QVR."""
     spec = FAMILY_REGISTRY[family]
     evaluated = [_eval_draw_arg_value(argument, None) for argument in args]
-    d = int(getattr(codomain, "dim", 1))
+    integers = _registry_integer_parameters(family, parameters)
+    for value, integer in zip(evaluated, integers, strict=True):
+        if integer:
+            _check_trial_count_source(
+                torch.as_tensor(value) if isinstance(value, (list, tuple)) else value
+            )
+    coordinate_shape = _fixed_coordinate_shape(codomain)
 
     def builder(batch: int, device: torch.device) -> D.Distribution:
         values: dict[str, torch.Tensor] = {}
-        for name, value in zip(parameters, evaluated, strict=True):
+        for name, value, integer in zip(parameters, evaluated, integers, strict=True):
+            dtype = torch.float64 if integer else torch.get_default_dtype()
             if isinstance(value, (list, tuple)):
-                literal = torch.as_tensor(value, device=device)
+                literal = torch.as_tensor(value, device=device, dtype=dtype)
                 tensor = literal.expand(batch, *literal.shape)
             else:
-                tensor = torch.full((batch, d), float(value), device=device)
+                tensor = torch.full(
+                    (batch, *coordinate_shape),
+                    float(_literal_scalar(value, family)),
+                    device=device,
+                    dtype=dtype,
+                )
             values[name] = _selected_clamp(spec, name, tensor)
         alternative = _ALTERNATIVE_BUILDERS.get((family, parameters))
         if alternative is not None:
@@ -2803,47 +3649,9 @@ def _make_fixed_selected_parameters(
     )
 
 
-class _LogitGeometric(D.Geometric):
-    """A geometric distribution scored from its logits in log space.
-
-    `torch.distributions.Geometric` scores through its probability,
-    whose complement rounds to zero once the logit passes about 17 in
-    single precision. With ``log p = -softplus(-l)`` and
-    ``log (1 - p) = -softplus(l)`` the count of failures ``k`` scores
-    ``k log (1 - p) + log p`` at every finite logit.
-
-    Parameters
-    ----------
-    logits : torch.Tensor
-        The log-odds of a success.
-    """
-
-    def __init__(self, logits: torch.Tensor) -> None:
-        super().__init__(logits=logits)
-
-    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
-        """The log mass at a count of failures.
-
-        Parameters
-        ----------
-        value : torch.Tensor
-            The counts.
-
-        Returns
-        -------
-        torch.Tensor
-            The log masses.
-        """
-        if self._validate_args:
-            self._validate_sample(value)
-        value, logits = torch.broadcast_tensors(value, self.logits)
-        failures = value * -torch.nn.functional.softplus(logits)
-        return failures - torch.nn.functional.softplus(-logits)
-
-
 def _logit_geometric_builder(params: list[torch.Tensor]) -> D.Distribution:
     """Build a geometric distribution from ``[logits]``."""
-    return _LogitGeometric(params[0])
+    return ClosedGeometric(logits=params[0])
 
 
 #: Builders for an alternative parameterization whose `torch.distributions`
@@ -2851,7 +3659,14 @@ def _logit_geometric_builder(params: list[torch.Tensor]) -> D.Distribution:
 #: source names.
 _ALTERNATIVE_BUILDERS: dict[
     tuple[str, tuple[str, ...]], Callable[[list[torch.Tensor]], D.Distribution]
-] = {("Geometric", ("logits",)): _logit_geometric_builder}
+] = {
+    ("Geometric", ("logits",)): _logit_geometric_builder,
+    **{
+        ("MatrixNormal", names): partial(_matrix_normal_builder, names=names)
+        for names in family_parameterizations("MatrixNormal", ())
+        if names != ("loc", "row_covariance", "col_covariance")
+    },
+}
 
 
 def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.Tensor:
@@ -2891,6 +3706,8 @@ def _selected_clamp(spec: FamilySpec, name: str, value: torch.Tensor) -> torch.T
 def _bind_inline_arguments(
     family: str,
     args: tuple,
+    *,
+    families: FamilyCatalog | None = None,
 ) -> tuple[tuple, tuple[str, ...] | None]:
     """Validate and order a keyword-only family construction.
 
@@ -2900,7 +3717,9 @@ def _bind_inline_arguments(
     """
     if not args:
         return args, None
-    bound = bind_family_arguments(family, args, get_inline_param_names(family) or ())
+    bound = bind_family_arguments(
+        family, args, get_inline_param_names(family, families) or ()
+    )
     return tuple(value for _, value in bound), tuple(name for name, _ in bound)
 
 
@@ -2928,7 +3747,9 @@ def _argument_type(
 
 
 def _infer_domain(
-    var_names: list[StepArgument], variable_types: dict[str, AnySpace] | None
+    var_names: list[StepArgument],
+    variable_types: dict[str, AnySpace] | None,
+    widths: tuple[int | None, ...] | None = None,
 ) -> AnySpace:
     """Infer a domain space from variable types.
 
@@ -2938,32 +3759,32 @@ def _infer_domain(
         The bound arguments used as input.
     variable_types : dict or None
         Known variable types.
+    widths : tuple[int or None, ...] or None
+        Checked per-argument feature widths; known widths take precedence
+        over conservative native spaces inferred for computed values.
 
     Returns
     -------
     AnySpace
         The inferred domain.
     """
-    if variable_types is None or not var_names:
-        return Euclidean(name="_inline_domain", dim=len(var_names))
-    if len(var_names) == 1:
-        vtype = _argument_type(var_names[0], variable_types)
-        if vtype is not None:
-            return vtype
-        return Euclidean(name="_inline_domain", dim=1)
     components = []
-    for vn in var_names:
+    for position, vn in enumerate(var_names):
         vtype = _argument_type(vn, variable_types)
-        if isinstance(vtype, Euclidean) and vtype.plate_rows is not None:
-            # A plate-row parameter contributes one row of its plate to
-            # each row of the stacked input, not the whole plate.
-            label = vn.name if isinstance(vn, Indexed) else vn
+        width = widths[position] if widths is not None else None
+        label = vn.name if isinstance(vn, Indexed) else vn
+        if width is not None and (vtype is None or _param_row_width(vtype, 0) != width):
+            components.append(Euclidean(name=f"_inline_{label}", dim=width))
+        elif isinstance(vtype, Euclidean) and vtype.plate_rows is not None:
             components.append(Euclidean(name=f"_inline_{label}", dim=vtype.row_width))
         elif vtype is not None:
             components.append(vtype)
         else:
-            label = vn.name if isinstance(vn, Indexed) else vn
             components.append(Euclidean(name=f"_inline_{label}", dim=1))
+    if not components:
+        return Euclidean(name="_inline_domain", dim=1)
+    if len(components) == 1:
+        return components[0]
     if any((isinstance(c, ContinuousSpace) for c in components)):
         return ProductSpace(components=tuple(components))
     return ProductSet(components=tuple(components))
@@ -2986,8 +3807,8 @@ def _build_generic_fixed_factory(spec: FamilySpec) -> Callable:
     """Return a fixed-factory callable matching the
     ``make_fixed_X(literal_args..., codomain)`` calling convention.
 
-    The factory broadcasts each scalar literal to ``(batch, d)``
-    where ``d = getattr(codomain, "dim", 1)`` and clamps the value
+    The factory broadcasts each scalar literal over the declared output
+    coordinate axes after the native execution batch and clamps the value
     by the per-parameter inline clamp before passing it to the
     underlying torch distribution.  Discrete families have their
     output cast to ``long`` by `FixedDistribution`.
@@ -3005,16 +3826,27 @@ def _build_generic_fixed_factory(spec: FamilySpec) -> Callable:
                 f"got {len(all_args)} args"
             )
         *literal_args, codomain = all_args
-        d = getattr(codomain, "dim", 1)
+        coordinate_shape = _fixed_coordinate_shape(codomain)
         clamped_floats = []
         for param, val in zip(spec.params, literal_args):
+            if param.kind == "integer":
+                _check_trial_count_source(val)
             f = float(val)
-            clamped_floats.append(float(param.inline_clamp(torch.tensor(f)).item()))
+            clamped_floats.append(
+                float(param.inline_clamp(torch.tensor(f, dtype=torch.float64)).item())
+            )
 
         def builder(batch: int, device: torch.device) -> D.Distribution:
             kwargs = {}
             for param, val in zip(spec.params, clamped_floats):
-                kwargs[param.name] = torch.full((batch, d), val, device=device)
+                kwargs[param.name] = torch.full(
+                    (batch, *coordinate_shape),
+                    val,
+                    device=device,
+                    dtype=torch.float64
+                    if param.kind == "integer"
+                    else torch.get_default_dtype(),
+                )
             return spec.dist_class(**kwargs)
 
         return FixedDistribution(

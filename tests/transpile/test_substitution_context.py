@@ -18,16 +18,42 @@ equal to the hand-built expected tree.
 
 from __future__ import annotations
 
+import pytest
+
 from quivers.dsl.ast_nodes import (
     LetExprBinOp,
+    LetExprBool,
     LetExprCall,
+    LetExprFactor,
     LetExprIndex,
+    LetExprLambda,
     LetExprLiteral,
     LetExprNode,
+    LetExprTuple,
     LetExprUnaryOp,
+    LetExprUnit,
     LetExprVar,
+    LetFactorBinder,
+    QiecConstructorValue,
+    QiecTypeName,
+    TypeName,
 )
-from quivers.transpile.renderers._stan_helpers import _substitute_let_expr
+from quivers.dsl.let_expr_traversal import free_let_names, map_let_expr
+from quivers.transpile.ir import LetAffineSource, LetExprAffineMap
+from quivers.transpile.ir import DimStatic, IRArgNumber, Plate
+from quivers.transpile.renderers._base import _substitute_latent_expr
+from quivers.transpile.renderers._bugs_helpers import (
+    _substitute as bugs_substitute,
+    collect_letexpr_vars,
+    index_letexpr_refs,
+    inline_letexpr,
+)
+from quivers.transpile.renderers._julia_helpers import _substitute as julia_substitute
+from quivers.transpile.renderers.gen import _rename_let_expr
+from quivers.transpile.renderers._let_expr_traversal import AFFINE_EXPRESSION
+from quivers.transpile.renderers._stan_helpers import (
+    _substitute_let_expr,
+)
 
 
 def _stan_substitute(expr: LetExprNode, name: str, value: int) -> LetExprNode:
@@ -266,3 +292,269 @@ def test_call_args_are_scalar_slots() -> None:
     assert isinstance(inner, LetExprBinOp)
     assert isinstance(inner.left, LetExprLiteral)
     assert inner.left.value == 0
+
+
+def test_boolean_negation_and_authored_locations_survive_substitution() -> None:
+    expression = LetExprUnaryOp(
+        op="not", operand=LetExprVar(name="flag"), line=7, col=13
+    )
+    result = _substitute_let_expr(
+        expression,
+        "flag",
+        index_value=LetExprBool(value=False),
+        scalar_value=LetExprBool(value=False),
+    )
+    assert result == expression.with_(operand=LetExprBool(value=False))
+
+
+@pytest.mark.parametrize(
+    "expression,expected",
+    [
+        (LetExprBool(value=True), LetExprBool(value=True)),
+        (LetExprUnit(), LetExprUnit()),
+        (
+            LetExprTuple(items=(LetExprVar(name="v"), LetExprUnit())),
+            LetExprTuple(items=(LetExprLiteral(value=0), LetExprUnit())),
+        ),
+        (
+            QiecConstructorValue(
+                constructor="Box",
+                fields=(LetExprVar(name="v"),),
+                result_type=QiecTypeName(name="Box"),
+                line=8,
+                col=4,
+            ),
+            QiecConstructorValue(
+                constructor="Box",
+                fields=(LetExprLiteral(value=0),),
+                result_type=QiecTypeName(name="Box"),
+                line=8,
+                col=4,
+            ),
+        ),
+    ],
+)
+def test_shared_expression_variants_reach_renderers_without_a_second_case_table(
+    expression, expected
+) -> None:
+    assert _python_substitute(expression, "v", 0) == expected
+
+
+@pytest.mark.parametrize("binder_kind", ["lambda", "factor"])
+def test_replacement_remains_free_under_a_capturing_renderer_binder(binder_kind):
+    body = LetExprTuple(items=(LetExprVar(name="v"), LetExprVar(name="j")))
+    expression = (
+        LetExprLambda(param="j", body=body)
+        if binder_kind == "lambda"
+        else LetExprFactor(
+            binders=(LetFactorBinder(var="j", index=TypeName(name="Row")),),
+            body=body,
+        )
+    )
+    replacement = LetExprVar(name="j")
+    result = _substitute_let_expr(
+        expression, "v", index_value=replacement, scalar_value=replacement
+    )
+    assert free_let_names(result) == ("j",)
+    assert result.body == LetExprTuple(
+        items=(LetExprVar(name="j"), LetExprVar(name="j_1"))
+    )
+    assert (result.param if binder_kind == "lambda" else result.binders[0].var) == "j_1"
+    # An explicitly shadowing binder remains untouched, including index slots.
+    assert (
+        _substitute_let_expr(
+            expression, "j", index_value=replacement, scalar_value=replacement
+        )
+        == expression
+    )
+
+
+def test_index_replacement_cannot_be_captured_by_an_enclosing_binder():
+    expression = LetExprLambda(
+        param="j",
+        body=LetExprIndex(array=LetExprVar(name="a"), indices=(LetExprVar(name="i"),)),
+    )
+    result = _substitute_let_expr(
+        expression,
+        "i",
+        index_value=LetExprVar(name="j"),
+        scalar_value=LetExprLiteral(value=0),
+    )
+    assert result.param == "j_1"
+    assert result.body.indices == (LetExprVar(name="j"),)
+    assert free_let_names(result) == ("a", "j")
+
+
+def test_affine_extension_preserves_layout_and_uses_canonical_capture_avoidance():
+    expression = LetExprAffineMap(
+        weight=LetExprIndex(
+            array=LetExprVar(name="w"), indices=(LetExprVar(name="v"),)
+        ),
+        bias=LetExprVar(name="v"),
+        sources=(
+            LetAffineSource(
+                value=LetExprLambda(param="j", body=LetExprVar(name="v")), width=3
+            ),
+        ),
+        row_offset=2,
+        rows=4,
+        transform="exp",
+    )
+    result = _substitute_let_expr(
+        expression,
+        "v",
+        index_value=LetExprLiteral(value=1),
+        scalar_value=LetExprVar(name="j"),
+    )
+    assert isinstance(result, LetExprAffineMap)
+    assert result.weight.indices == (LetExprLiteral(value=1),)
+    assert result.bias == LetExprVar(name="j")
+    assert result.sources[0].value.param == "j_1"
+    assert result.sources[0].value.body == LetExprVar(name="j")
+    assert (result.row_offset, result.rows, result.transform) == (2, 4, "exp")
+    assert result.sources[0].width == 3
+    assert free_let_names(result, extension=AFFINE_EXPRESSION) == ("w", "j")
+    assert (
+        map_let_expr(result, lambda node: node, extension=AFFINE_EXPRESSION) == result
+    )
+
+
+@pytest.mark.parametrize(
+    "rewrite",
+    [
+        lambda expr: julia_substitute(expr, "x", LetExprVar(name="y")),
+        lambda expr: inline_letexpr(expr, {"x": LetExprVar(name="y")}),
+        lambda expr: _rename_let_expr(expr, {"x": "y"}),
+    ],
+)
+def test_backend_adapters_share_capture_avoidance_and_keep_not(rewrite):
+    expr = LetExprLambda(
+        param="y",
+        body=LetExprTuple(
+            items=(
+                LetExprUnaryOp(op="not", operand=LetExprVar(name="x"), line=17, col=9),
+                LetExprVar(name="y"),
+                LetExprUnit(),
+            )
+        ),
+    )
+    actual = rewrite(expr)
+    assert actual.param == "y_1"
+    assert actual.body.items[0].op == "not"
+    assert actual.body.items[0].operand == LetExprVar(name="y")
+    assert (actual.body.items[0].line, actual.body.items[0].col) == (17, 9)
+    assert actual.body.items[1] == LetExprVar(name="y_1")
+    assert free_let_names(actual) == ("y",)
+
+
+def test_integer_factor_substitution_preserves_shadowing_and_large_integers():
+    integer = 2**53 + 1
+    expr = LetExprTuple(
+        items=(
+            LetExprVar(name="x"),
+            LetExprLambda(param="x", body=LetExprVar(name="x")),
+        )
+    )
+    actual = bugs_substitute(expr, {"x": integer})
+    assert actual.items[0].value == integer
+    assert isinstance(actual.items[0].value, int)
+    assert actual.items[1] == expr.items[1]
+
+
+def test_graph_free_name_collection_handles_all_constructors_and_bound_names():
+    expr = LetExprLambda(
+        param="bound",
+        body=LetExprTuple(
+            items=(
+                LetExprVar(name="bound"),
+                LetExprVar(name="outside"),
+                QiecConstructorValue(
+                    constructor="Some",
+                    fields=(LetExprVar(name="nested"),),
+                    result_type=QiecTypeName(name="Option"),
+                ),
+                LetExprBool(value=True),
+                LetExprUnit(),
+            )
+        ),
+    )
+    assert collect_letexpr_vars(expr) == frozenset({"outside", "nested"})
+
+
+def test_marginal_atom_substitution_keeps_not_and_simplifies_only_free_selection():
+    expr = LetExprTuple(
+        items=(
+            LetExprUnaryOp(
+                op="not",
+                operand=LetExprCall(
+                    func="equals", args=(LetExprVar(name="z"), LetExprLiteral(value=0))
+                ),
+                line=8,
+            ),
+            LetExprCall(
+                func="select",
+                args=(
+                    LetExprVar(name="z"),
+                    LetExprLiteral(value=7),
+                    LetExprLiteral(value=9),
+                ),
+            ),
+            LetExprLambda(
+                param="z",
+                body=LetExprCall(
+                    func="select",
+                    args=(
+                        LetExprVar(name="z"),
+                        LetExprLiteral(value=7),
+                        LetExprLiteral(value=9),
+                    ),
+                ),
+            ),
+        )
+    )
+    actual = _substitute_latent_expr(expr, "z", IRArgNumber(value=0))
+    assert actual.items[0].op == "not"
+    assert actual.items[0].line == 8
+    assert actual.items[0].operand.args[0].value == 0
+    assert actual.items[1].value == 9
+    assert actual.items[2] == expr.items[2]
+
+
+def test_graph_loop_indexing_preserves_not_tuple_and_gather_origins():
+    row = DimStatic(name="Row", size=3)
+    category = DimStatic(name="Category", size=2)
+    expr = LetExprTuple(
+        items=(
+            LetExprUnaryOp(op="not", operand=LetExprVar(name="flag"), line=12),
+            LetExprIndex(
+                array=LetExprVar(name="table"),
+                indices=(LetExprVar(name="group_idx"),),
+                line=13,
+            ),
+        )
+    )
+    plates = {
+        "flag": Plate(batch_dims=(row, category), event_dims=()),
+        "group_idx": Plate(batch_dims=(row,), event_dims=()),
+        "table": Plate(
+            batch_dims=(DimStatic(name="Group", size=4), category), event_dims=()
+        ),
+    }
+    actual = index_letexpr_refs(
+        expr, plates, Plate(batch_dims=(row, category), event_dims=()), ("i", "k")
+    )
+    assert actual.items[0].op == "not"
+    assert actual.items[0].line == 12
+    assert actual.items[0].operand.indices == (
+        LetExprVar(name="i"),
+        LetExprVar(name="k"),
+    )
+    gather = actual.items[1]
+    assert gather.array == LetExprVar(name="table")
+    assert gather.line == 13
+    assert gather.indices == (
+        LetExprIndex(
+            array=LetExprVar(name="group_idx"), indices=(LetExprVar(name="i"),)
+        ),
+        LetExprVar(name="k"),
+    )

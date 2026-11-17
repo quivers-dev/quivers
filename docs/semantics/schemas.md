@@ -116,13 +116,18 @@ inferences hold among the types is fixed by the rules a parser is given, not by 
 ## 5. Rule declarations {#5-rule-declarations}
 
 ```
-rule R(X_1, ..., X_k) : π_1, ..., π_m |- π
+rule R[X_1, ..., X_k] : π_1, ..., π_m |- π
 ```
 
 declares an inference rule over categorial types. The variables $X_1, \dots, X_k$ range over the
 categorial types $\llbracket \mathrm{Cat} \rrbracket$, and the patterns $\pi_1, \dots, \pi_m, \pi$ are object
 expressions built from the variables and the atoms in scope. The compiler accepts one or two
 premises, and a rule with three or more is a compile error.
+
+The bracketed variables are quantified static patterns. A matcher substitutes
+categorial types for them before interpreting a rule instance; a rule does
+not receive them as runtime values. This is the same staging distinction that
+program and computation headers express with static telescopes.
 
 For each substitution $\sigma : \{X_1, \dots, X_k\} \to \llbracket \mathrm{Cat} \rrbracket$, the rule
 contributes the rule instance
@@ -140,9 +145,9 @@ The rules of [combinatory categorial grammar](https://en.wikipedia.org/wiki/Comb
 
 | Rule | Declaration | Biclosed reading |
 |---|---|---|
-| Forward application | `fwd_app(X, Y) : X / Y, Y |- X` | $(X / Y) \otimes Y \to X$, evaluation of the right internal hom |
-| Backward application | `bwd_app(X, Y) : X, Y \ X |- Y` | $X \otimes (Y \backslash X) \to Y$, evaluation of the left internal hom |
-| Forward composition | `fwd_comp(X, Y, Z) : X / Y, Y / Z |- X / Z` | $(X / Y) \otimes (Y / Z) \to X / Z$, composition of right internal homs |
+| Forward application | `fwd_app[X, Y] : X / Y, Y |- X` | $(X / Y) \otimes Y \to X$, evaluation of the right internal hom |
+| Backward application | `bwd_app[X, Y] : X, Y \ X |- Y` | $X \otimes (Y \backslash X) \to Y$, evaluation of the left internal hom |
+| Forward composition | `fwd_comp[X, Y, Z] : X / Y, Y / Z |- X / Z` | $(X / Y) \otimes (Y / Z) \to X / Z$, composition of right internal homs |
 
 ## 6. Schema declarations {#6-schema-declarations}
 
@@ -152,7 +157,7 @@ denotation. A schema states one pattern for many categories, and the matcher fil
 where it fires.
 
 ```
-schema R(X_{1,1}, ..., X_{1,k_1} : τ_1, ..., X_{g,1}, ..., X_{g,k_g} : τ_g) : Dom -> Cod
+schema R[X_{1,1}, ..., X_{1,k_1} : τ_1, ..., X_{g,1}, ..., X_{g,k_g} : τ_g] : Dom -> Cod
 ```
 
 declares a family of morphisms indexed by its typed variables. Each group
@@ -166,6 +171,13 @@ $$
 
 a $\mathcal V$-matrix from the substituted domain to the substituted codomain for each assignment
 $\sigma$. One declaration gives the matrix at every $\sigma$.
+
+The brackets record this static substitution interface. They do not change
+the schema's dependent-family denotation or introduce effects. Typed schema
+variables and a program's static object parameters are specialized before the
+resulting morphism is applied to runtime values. The
+[parameter reference](../reference/qvr/index.md#parameter-telescopes) compares
+these forms with indexed families and effect operations.
 
 The number of premises of a schema in a chart follows from the shape of its domain:
 

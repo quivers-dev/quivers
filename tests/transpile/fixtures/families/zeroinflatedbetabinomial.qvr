@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the ZeroInflatedBetaBinomial family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program zeroinflatedbetabinomial_fixture : Obs -> Obs
+    observe y : Obs <- ZeroInflatedBetaBinomial(zero_prob=0.25, total_count=4.0, concentration1=2.0, concentration0=2.0)
+    return y
+export zeroinflatedbetabinomial_fixture

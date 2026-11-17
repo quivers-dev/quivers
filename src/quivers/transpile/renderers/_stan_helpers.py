@@ -49,9 +49,11 @@ from quivers.dsl.ast_nodes import (
     LetExprUnaryOp,
     LetExprVar,
 )
-from quivers.dsl.ast_nodes.let_expressions import LetFactorBinder, LetFactorCase
+from quivers.dsl.ast_nodes.let_expressions import LetFactorBinder
 from quivers.dsl.ast_nodes.objects import TypeName
+from quivers.dsl.let_expr_traversal import substitute_let_expr
 from quivers.transpile._api import UnsupportedConstruct
+from quivers.transpile.renderers._let_expr_traversal import AFFINE_EXPRESSION
 from quivers.transpile._builtin_spellings import native_path
 from quivers.transpile.renderers._one_based import one_based_subscript
 from quivers.transpile.renderers._ranks import let_expr_rank
@@ -447,7 +449,7 @@ def _emit_conditional(ctx, args: tuple[LetExprNode, ...]) -> tuple[str, str]:
 
 
 def _emit_prefix(ctx, expr: LetExprUnaryOp) -> tuple[str, str]:
-    """Emit a `prefix_op_expression` for the unary minus.
+    """Emit arithmetic or Boolean negation as a Stan prefix expression.
 
     The operand is routed through
     `_stan_maybe_paren`
@@ -458,7 +460,7 @@ def _emit_prefix(ctx, expr: LetExprUnaryOp) -> tuple[str, str]:
     """
     operand_vid, operand_kind = _stan_maybe_paren(ctx, _render(ctx, expr.operand))
     vid = ctx.vertex(ctx.fresh("uop"), "prefix_op_expression")
-    ctx.constraint(vid, "chose-alt-fingerprint", "-")
+    ctx.constraint(vid, "chose-alt-fingerprint", "!" if expr.op == "not" else "-")
     ctx.constraint(vid, "chose-alt-child-kinds", operand_kind)
     ctx.edge(vid, operand_vid, "child_of")
     return vid, "prefix_op_expression"
@@ -794,8 +796,8 @@ def _build_nested_array(
             subst = _substitute_let_expr(
                 subst,
                 binder.var,
-                index_value=LetExprLiteral(value=float(value), integral=True),
-                scalar_value=LetExprLiteral(value=float(value), integral=True),
+                index_value=LetExprLiteral(value=value, integral=True),
+                scalar_value=LetExprLiteral(value=value, integral=True),
             )
         return _render(ctx, subst)
     level = len(fixed)
@@ -833,227 +835,25 @@ def _substitute_let_expr(
     `LetExprIndex.indices` tuple, which matches Stan's semantics
     where every integer fed to `[ ]` is 1-based.
 
-    Shared substitution helper for every per-target renderer that
-    needs to unroll [`LetExprFactor`][quivers.dsl.ast_nodes.LetExprFactor]
-    by binding indices to integer literals. Lives in `_stan_helpers`
-    because Stan was the first target to need it; other helper
-    modules import from here when they grow the same need (one
-    source of truth for the walk).
+    This adapter retains the historical renderer API while delegating scope,
+    alpha-renaming, and source-node reconstruction to the canonical DSL
+    substitution. Its only structural extension is the binder-free affine
+    IR node; target index origins are supplied as a substitution policy.
     """
-    return _substitute_let_expr_walk(
-        expr,
-        name,
-        index_value=index_value,
-        scalar_value=scalar_value,
-        in_index_slot=False,
-    )
-
-
-def _substitute_let_expr_walk(
-    expr: LetExprNode,
-    name: str,
-    *,
-    index_value: LetExprNode,
-    scalar_value: LetExprNode,
-    in_index_slot: bool,
-) -> LetExprNode:
-    """Inner walk for
-    `_substitute_let_expr`
-    that carries the `in_index_slot` flag.
-
-    The flag is set to `True` only when descending into the
-    `indices` tuple of a `LetExprIndex`; every other recursive
-    descent (including the `array` child of `LetExprIndex` itself)
-    resets the flag to `False`. This matches Stan's grammar: the
-    body of `arr[i]` is `arr` in scalar position and `i` in index
-    position, and the helper substitutes accordingly.
-    """
-    if isinstance(expr, LetExprVar):
-        if expr.name != name:
-            return expr
-        return index_value if in_index_slot else scalar_value
-    if isinstance(expr, LetExprLiteral):
-        return expr
-    if isinstance(expr, LetExprString):
-        return expr
-    if isinstance(expr, LetExprBinOp):
-        return LetExprBinOp(
-            op=expr.op,
-            left=_substitute_let_expr_walk(
-                expr.left,
-                name,
-                index_value=index_value,
-                scalar_value=scalar_value,
-                in_index_slot=False,
-            ),
-            right=_substitute_let_expr_walk(
-                expr.right,
-                name,
-                index_value=index_value,
-                scalar_value=scalar_value,
-                in_index_slot=False,
-            ),
+    try:
+        return substitute_let_expr(
+            expr,
+            {name: scalar_value},
+            index_substitution=None
+            if index_value is scalar_value
+            else {name: index_value},
+            extension=AFFINE_EXPRESSION,
         )
-    if isinstance(expr, LetExprUnaryOp):
-        return LetExprUnaryOp(
-            operand=_substitute_let_expr_walk(
-                expr.operand,
-                name,
-                index_value=index_value,
-                scalar_value=scalar_value,
-                in_index_slot=False,
-            ),
-        )
-    if isinstance(expr, LetExprCall):
-        return LetExprCall(
-            func=expr.func,
-            args=tuple(
-                _substitute_let_expr_walk(
-                    a,
-                    name,
-                    index_value=index_value,
-                    scalar_value=scalar_value,
-                    in_index_slot=False,
-                )
-                for a in expr.args
-            ),
-        )
-    if isinstance(expr, LetExprIndex):
-        return LetExprIndex(
-            array=_substitute_let_expr_walk(
-                expr.array,
-                name,
-                index_value=index_value,
-                scalar_value=scalar_value,
-                in_index_slot=False,
-            ),
-            indices=tuple(
-                _substitute_let_expr_walk(
-                    i,
-                    name,
-                    index_value=index_value,
-                    scalar_value=scalar_value,
-                    in_index_slot=True,
-                )
-                for i in expr.indices
-            ),
-        )
-    if isinstance(expr, LetExprAffineMap):
-        return LetExprAffineMap(
-            weight=_substitute_let_expr_walk(
-                expr.weight,
-                name,
-                index_value=index_value,
-                scalar_value=scalar_value,
-                in_index_slot=False,
-            ),
-            bias=_substitute_let_expr_walk(
-                expr.bias,
-                name,
-                index_value=index_value,
-                scalar_value=scalar_value,
-                in_index_slot=False,
-            ),
-            sources=tuple(
-                LetAffineSource(
-                    value=_substitute_let_expr_walk(
-                        source.value,
-                        name,
-                        index_value=index_value,
-                        scalar_value=scalar_value,
-                        in_index_slot=False,
-                    ),
-                    width=source.width,
-                )
-                for source in expr.sources
-            ),
-            row_offset=expr.row_offset,
-            rows=expr.rows,
-            transform=expr.transform,
-        )
-    if isinstance(expr, LetExprList):
-        return LetExprList(
-            items=tuple(
-                _substitute_let_expr_walk(
-                    i,
-                    name,
-                    index_value=index_value,
-                    scalar_value=scalar_value,
-                    in_index_slot=False,
-                )
-                for i in expr.items
-            ),
-        )
-    if isinstance(expr, LetExprLambda):
-        if expr.param == name:
-            return expr
-        return LetExprLambda(
-            param=expr.param,
-            body=_substitute_let_expr_walk(
-                expr.body,
-                name,
-                index_value=index_value,
-                scalar_value=scalar_value,
-                in_index_slot=False,
-            ),
-        )
-    if isinstance(expr, LetExprFactor):
-        if any(b.var == name for b in expr.binders):
-            return expr
-        return LetExprFactor(
-            binders=expr.binders,
-            body=(
-                _substitute_let_expr_walk(
-                    expr.body,
-                    name,
-                    index_value=index_value,
-                    scalar_value=scalar_value,
-                    in_index_slot=False,
-                )
-                if expr.body is not None
-                else None
-            ),
-            cases=tuple(
-                LetFactorCase(
-                    label=c.label,
-                    value=_substitute_let_expr_walk(
-                        c.value,
-                        name,
-                        index_value=index_value,
-                        scalar_value=scalar_value,
-                        in_index_slot=False,
-                    ),
-                    line=c.line,
-                    col=c.col,
-                )
-                for c in expr.cases
-            ),
-        )
-    if isinstance(expr, LetExprMethodCall):
-        return LetExprMethodCall(
-            receiver=_substitute_let_expr_walk(
-                expr.receiver,
-                name,
-                index_value=index_value,
-                scalar_value=scalar_value,
-                in_index_slot=False,
-            ),
-            method=expr.method,
-            args=tuple(
-                _substitute_let_expr_walk(
-                    a,
-                    name,
-                    index_value=index_value,
-                    scalar_value=scalar_value,
-                    in_index_slot=False,
-                )
-                for a in expr.args
-            ),
-        )
-    raise UnsupportedConstruct(
-        "qvr-let-substitution",
-        [f"let-expr:{type(expr).__name__}: substitution unhandled"],
-    )
+    except TypeError as error:
+        raise UnsupportedConstruct(
+            "qvr-let-substitution",
+            [f"let-expr:{type(expr).__name__}: substitution unhandled"],
+        ) from error
 
 
 __all__ = ["render_let_expr_stan"]

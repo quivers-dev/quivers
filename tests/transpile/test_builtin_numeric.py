@@ -27,6 +27,8 @@ from quivers.dsl import loads
 from quivers.dsl.parser import parse
 from quivers.dsl.pure_builtins import BUILTIN_REGISTRY, PRIMITIVE_BUILTINS
 from quivers.transpile import UnsupportedConstruct, available_targets, transpile
+from quivers.qiec.primitives import PRIMITIVES
+from quivers.transpile.qiec_ir import capabilities_for_target
 from quivers.transpile._builtin_spellings import (
     BUILTIN_SPELLINGS,
     ELABORATED_BUILTINS,
@@ -62,6 +64,11 @@ _UNARY: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "gelu": F.gelu,
     "lgamma": torch.lgamma,
     "log": torch.log,
+    "log_probability": torch.log,
+    "positive_parameter": lambda x: x,
+    "observation_status": lambda x: (x > 1.0).to(x.dtype),
+    "log1mexp": lambda x: torch.log(-torch.expm1(x)),
+    "log_ndtr": torch.special.log_ndtr,
     "log10": torch.log10,
     "log1p": torch.log1p,
     "log2": torch.log2,
@@ -92,6 +99,7 @@ _BINARY: dict[str, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
     "max": torch.maximum,
     "min": torch.minimum,
     "pow": torch.pow,
+    "interval_upper": lambda x, upper: torch.broadcast_tensors(x, upper)[1],
 }
 
 #: Each three-argument pointwise builtin's independent ``torch`` meaning,
@@ -109,7 +117,13 @@ _THRESHOLD = 0.43
 #: operand a tenth of an observation (within 0.07), so every argument
 #: stays inside the domain. ``round`` sits on a tie, which a target
 #: rounding half up or away from zero gets wrong.
-_ARGUMENT: dict[str, float] = {"acosh": 1.5, "round": 2.5, "pow": 0.6}
+_ARGUMENT: dict[str, float] = {
+    "acosh": 1.5,
+    "round": 2.5,
+    "pow": 0.6,
+    "log1mexp": -1.0,
+    "observation_status": 1.0,
+}
 _DEFAULT_ARGUMENT = 0.4
 _EXPONENT = 1.5
 
@@ -171,6 +185,8 @@ def _application(name: str, shift: str) -> str:
         The call.
     """
     argument = f"{shift}{_argument(name)}"
+    if name == "observation_status":
+        return f"real(observation_status(select({argument} > 1.0, 1, 0)))"
     if name in _TERNARY:
         return f"{name}({argument} > {_THRESHOLD}, {argument}, 1.0 - ({argument}))"
     return (
@@ -305,7 +321,15 @@ def test_every_target_settles_every_surface_builtin() -> None:
     surface = {
         builtin
         for builtin in PRIMITIVE_BUILTINS.values()
-        if builtin not in {"int", "real", "weight", "weight_value"}
+        if builtin
+        not in {
+            "int",
+            "real",
+            "weight",
+            "weight_value",
+            "observation_weight",
+            "scale_weight",
+        }
     }
     assert set(MATH_BUILTINS) == surface
     assert set(_UNARY) | set(_BINARY) | set(_TERNARY) == surface
@@ -455,7 +479,12 @@ def _computation_oracle(names: list[str], mu: float) -> float:
 def test_stan_scores_every_builtin_a_named_computation_applies(
     scratch: pathlib.Path,
 ) -> None:
-    names = _spelled("stan")
+    names = [
+        name
+        for name in _spelled("stan")
+        if name not in PRIMITIVES
+        or capabilities_for_target("stan").supports(PRIMITIVES[name].capability)
+    ]
     source = _computation_source(names)
     rendered = transpile(parse(source), target="stan")
     assert b"functions {" in rendered and b"round(" not in rendered

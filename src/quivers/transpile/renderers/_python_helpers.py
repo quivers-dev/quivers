@@ -15,6 +15,8 @@ renderer to emit `let <name> = <expr>` as a deterministic
 
 from __future__ import annotations
 
+from quivers.transpile.renderers._ranks import let_event_rank
+
 import json
 from typing import TYPE_CHECKING
 
@@ -136,6 +138,7 @@ class PyCtx:
         # block, so only it drains this; the other backends assume their
         # framework runtime is already in scope.
         self.required_imports: set[tuple[tuple[str, ...], str]] = set()
+        self.imported_modules: set[tuple[tuple[str, ...], str | None]] = set()
 
     @property
     def builder(self) -> panproto.SchemaBuilder:
@@ -165,6 +168,35 @@ def identifier(ctx: PyCtx, text: str) -> str:
     vid = ctx.v(ctx.fresh("id"), "identifier")
     ctx.literal(vid, text)
     return vid
+
+
+def import_module(ctx: PyCtx, path: tuple[str, ...], alias: str | None = None) -> None:
+    """Emit one shared module import, retaining its optional local alias.
+
+    Parameters
+    ----------
+    ctx : PyCtx
+        Python target context with a module root named mod.
+    path : tuple[str, ...]
+        Nonempty dotted module path.
+    alias : str or None
+        Optional binding name; repeated identical imports are emitted once.
+    """
+    key = (path, alias)
+    if key in ctx.imported_modules:
+        return
+    ctx.imported_modules.add(key)
+    statement = ctx.v(ctx.fresh("imp"), "import_statement")
+    dotted = ctx.v(ctx.fresh("module"), "dotted_name")
+    for part in path:
+        ctx.e(dotted, identifier(ctx, part), "child_of")
+    name = dotted
+    if alias is not None:
+        name = ctx.v(ctx.fresh("alias"), "aliased_import")
+        ctx.e(name, dotted, "name")
+        ctx.e(name, identifier(ctx, alias), "alias")
+    ctx.e(statement, name, "name")
+    ctx.e("mod", statement, "child_of")
 
 
 def string_literal(ctx: PyCtx, text: str) -> str:
@@ -451,35 +483,6 @@ _POINTWISE_OPERAND_SYMBOLS: dict[str, tuple[str, ...]] = {
 _PYMC_TENSOR: tuple[str, ...] = ("pymc", "pytensorf", "pt", "as_tensor_variable")
 
 
-def _reads_a_name(expr: LetExprNode) -> bool:
-    """Whether an expression reads a bound name anywhere.
-
-    Parameters
-    ----------
-    expr : LetExprNode
-        The expression.
-
-    Returns
-    -------
-    bool
-        ``False`` for an expression of literals alone, which the
-        emitted program computes as a Python number or Boolean.
-    """
-    if isinstance(expr, LetExprVar):
-        return True
-    if isinstance(expr, LetExprBinOp):
-        return _reads_a_name(expr.left) or _reads_a_name(expr.right)
-    if isinstance(expr, LetExprUnaryOp):
-        return _reads_a_name(expr.operand)
-    if isinstance(expr, LetExprCall):
-        return any(_reads_a_name(argument) for argument in expr.args)
-    if isinstance(expr, LetExprIndex):
-        return True
-    if isinstance(expr, LetExprList):
-        return any(_reads_a_name(item) for item in expr.items)
-    return False
-
-
 def _symbolic_index(expr: LetExprNode) -> bool:
     """Whether an index expression calls a builtin, so PyMC builds it as a tensor.
 
@@ -598,7 +601,12 @@ def _render_python_operand(
     (``t[i + 1]``) keeps its integer spelling.
     """
     vid = render_let_expr_python(ctx, expr, index_slot=index_slot)
-    if isinstance(expr, (LetExprBinOp, LetExprUnaryOp)):
+    if (
+        isinstance(expr, LetExprBinOp)
+        and expr.op not in _PY_COMPARISONS
+        or isinstance(expr, LetExprUnaryOp)
+        and expr.op != "not"
+    ):
         return python_paren(ctx, vid)
     return vid
 
@@ -794,21 +802,25 @@ def render_let_expr_python(
         ctx.literal(v, json.dumps(expr.value))
         return v
     if isinstance(expr, LetExprBinOp) and expr.op in _PY_COMPARISONS:
-        # A comparison is Python's `comparison_operator`, whose operator
-        # field is plural (`operators`) because Python chains them; each
-        # array library compares entry by entry.
-        c = ctx.v(ctx.fresh("cmp"), "comparison_operator")
-        ctx.constraint(c, "field:operators", expr.op)
-        ctx.constraint(c, "chose-alt-fingerprint", expr.op)
-        ctx.e(
-            c, _render_python_operand(ctx, expr.left, index_slot=index_slot), "child_of"
+        # Python's operator functions preserve scalar precision and delegate
+        # tensor comparisons to the host. PyTensor requires explicit symbolic
+        # equality rather than TensorVariable.__eq__, which compares identity.
+        name = {"==": "eq", "!=": "ne", "<": "lt", "<=": "le", ">": "gt", ">=": "ge"}[
+            expr.op
+        ]
+        if ctx.target == "pymc":
+            path = ("pymc", "pytensorf", "pt", "neq" if name == "ne" else name)
+        else:
+            import_module(ctx, ("operator",), "_qvr_operator")
+            path = ("_qvr_operator", name)
+        return call(
+            ctx,
+            attribute(ctx, path),
+            positional=(
+                render_let_expr_python(ctx, expr.left, index_slot=index_slot),
+                render_let_expr_python(ctx, expr.right, index_slot=index_slot),
+            ),
         )
-        ctx.e(
-            c,
-            _render_python_operand(ctx, expr.right, index_slot=index_slot),
-            "child_of",
-        )
-        return c
     if isinstance(expr, LetExprBinOp):
         # Python tree-sitter's `binary_operator` has CHOICE alts per
         # operator (`+`, `-`, `*`, `**`, etc.). The walker discriminates
@@ -832,6 +844,32 @@ def render_let_expr_python(
         )
         return b
     if isinstance(expr, LetExprUnaryOp):
+        if expr.op == "not":
+            # Python's scalar `not` refuses multi-element host tensors, while
+            # `~` maps a Python Boolean to an integer. Host logical negation
+            # preserves both scalar and lifted Boolean semantics.
+            paths = {
+                "pyro": ("torch", "logical_not"),
+                "numpyro": ("jnp", "logical_not"),
+                "pymc": ("_qvr_bool_not",),
+                "edward2": ("tf", "logical_not"),
+            }
+            if ctx.target not in paths:
+                raise UnsupportedConstruct(
+                    f"qvr-{ctx.target}", ["let-expr:not:unknown-array-host"]
+                )
+            operand = _render_python_operand(ctx, expr.operand, index_slot=index_slot)
+            if ctx.target == "pyro":
+                operand = call(
+                    ctx, attribute(ctx, ("torch", "as_tensor")), positional=(operand,)
+                )
+            return call(
+                ctx,
+                identifier(ctx, paths[ctx.target][0])
+                if len(paths[ctx.target]) == 1
+                else attribute(ctx, paths[ctx.target]),
+                positional=(operand,),
+            )
         u = ctx.v(ctx.fresh("uop"), "unary_operator")
         ctx.constraint(u, "field:operator", "-")
         ctx.constraint(u, "chose-alt-fingerprint", "-")
@@ -899,23 +937,10 @@ def render_let_expr_python(
             or (pointwise and len(expr.args) == 2)
             else None
         )
-        for position, a in enumerate(expr.args):
+        for a in expr.args:
             rendered = render_let_expr_python(ctx, a)
             if operand is not None:
                 rendered = call(ctx, attribute(ctx, operand), positional=(rendered,))
-            elif (
-                ctx.target == "pymc"
-                and expr.func == "select"
-                and position == 0
-                and not _reads_a_name(a)
-            ):
-                # PyTensor refuses a Python Boolean as a tensor, and a
-                # comparison of numbers alone (a factor binder, unrolled,
-                # against a bound) is one; NumPy's array of it is
-                # accepted.
-                rendered = call(
-                    ctx, attribute(ctx, ("np", "asarray")), positional=(rendered,)
-                )
             ctx.e(args, rendered, "child_of")
         # A reducing primitive (``sum``, ``mean``, ...) collapses the
         # last axis of its argument. The renamed callee already targets
@@ -929,7 +954,7 @@ def render_let_expr_python(
             expr.func in _AXIS_REDUCING_CALLS
             and len(expr.args) == 1
             and (
-                _infer_event_rank(ctx, expr.args[0]) > 0
+                let_event_rank(expr.args[0], ctx.name_event_rank) > 0
                 or reduces_last_of_several_axes(expr, ctx.name_rank)
             )
         )
@@ -1137,64 +1162,6 @@ def _render_affine_map_python(ctx: PyCtx, expr: LetExprAffineMap) -> str:
     if expr.transform == "exp":
         return call(ctx, _resolve_python_call(ctx, "exp"), positional=(total,))
     return total
-
-
-def _infer_event_rank(ctx: PyCtx, expr: LetExprNode) -> int:
-    """Infer the event rank of a let-expression at emit time.
-
-    The rank of a leaf variable is ``len(plate.event_dims)`` for the
-    IRDataInput / IRSample / IRObserve / IRDeterministic it references,
-    read from `PyCtx.name_event_rank`; compound expressions propagate
-    the rank structurally:
-
-    - [`LetExprLiteral`][quivers.dsl.ast_nodes.LetExprLiteral] /
-      [`LetExprString`][quivers.dsl.ast_nodes.LetExprString] -> 0.
-    - [`LetExprVar`][quivers.dsl.ast_nodes.LetExprVar] ->
-      ``ctx.name_event_rank.get(name, 0)``.
-    - [`LetExprBinOp`][quivers.dsl.ast_nodes.LetExprBinOp] -> max of the
-      operand ranks (broadcasting lifts the lower-rank operand).
-    - [`LetExprUnaryOp`][quivers.dsl.ast_nodes.LetExprUnaryOp] -> the
-      operand rank (negation is shape-preserving).
-    - [`LetExprCall`][quivers.dsl.ast_nodes.LetExprCall] to a reducing
-      primitive -> 0 (the reduction collapses the event axis); any
-      other callee -> max of its arg ranks (treating element-wise math
-      like ``sigmoid`` / ``exp`` as shape-preserving).
-    - [`LetExprIndex`][quivers.dsl.ast_nodes.LetExprIndex] ->
-      ``max(0, arr.rank - len(indices))`` (each scalar index consumes
-      one event axis).
-    - [`LetExprList`][quivers.dsl.ast_nodes.LetExprList] -> max of the
-      element ranks.
-
-    Other node kinds are treated as scalar; the helper is conservative
-    and never lifts the rank when it is not certain.
-    """
-    if isinstance(expr, (LetExprLiteral, LetExprString)):
-        return 0
-    if isinstance(expr, LetExprVar):
-        return ctx.name_event_rank.get(expr.name, 0)
-    if isinstance(expr, LetExprBinOp):
-        return max(
-            _infer_event_rank(ctx, expr.left),
-            _infer_event_rank(ctx, expr.right),
-        )
-    if isinstance(expr, LetExprUnaryOp):
-        return _infer_event_rank(ctx, expr.operand)
-    if isinstance(expr, LetExprCall):
-        if expr.func in _AXIS_REDUCING_CALLS and len(expr.args) == 1:
-            return 0
-        return max(
-            (_infer_event_rank(ctx, a) for a in expr.args),
-            default=0,
-        )
-    if isinstance(expr, LetExprIndex):
-        arr_rank = _infer_event_rank(ctx, expr.array)
-        return max(0, arr_rank - len(expr.indices))
-    if isinstance(expr, LetExprList):
-        return max(
-            (_infer_event_rank(ctx, item) for item in expr.items),
-            default=0,
-        )
-    return 0
 
 
 def name_event_rank_map(ir: IRProgram) -> dict[str, int]:
@@ -1899,6 +1866,7 @@ __all__ = [
     "float_literal",
     "function_def",
     "identifier",
+    "import_module",
     "marginal_atom_axis",
     "marginal_support_size",
     "marginal_weight_probs",

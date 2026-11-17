@@ -8,7 +8,12 @@ effect instances, open rows, handlers, and graded resumptions.
 
 With `qvr-lsp` attached, Zed also receives parser and type-and-effect
 diagnostics, hovers, definitions, references, document symbols, completion,
-formatting, semantic tokens, and QIEC capability diagnostics.
+formatting, semantic tokens, and QIEC capability diagnostics. Typed external
+inputs such as `program model[n : Nat](x : Tensor[Real]([n])) : n -> Out`
+are local to their program. Static binders use `[...]`; typed runtime inputs
+use `(...)`. The same static convention applies to schema and rule parameters.
+`object Row : FinSet _` checks symbolically before data binding; completion,
+hover, and go-to-definition retain the declared input type.
 
 ## Prerequisite
 

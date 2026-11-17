@@ -8,7 +8,13 @@ The extension recognizes the complete current surface: categorical and
 probabilistic declarations, indexed families, constructors and motive-checked
 cases, `define` computations, lexical effect instances, row-polymorphic
 effects, handlers, graded resumptions, deductions, schema parsers, and
-structural encoder/decoder graphs.
+structural encoder/decoder graphs. Program headers separate static parameters
+in `[...]` from typed runtime inputs in `(...)`. Typed parameters receive
+completion, hover, navigation, and renaming in their lexical scope; tensor shapes
+may refer to preceding static binders. Schemas and rules also bind static
+parameters in `[...]`. `object Row : FinSet _` remains checkable before data
+fix the extent; the environment browser and scoped inspection in the shared
+REPL/kernel session retain the symbolic declaration.
 
 ## Install
 
@@ -19,13 +25,13 @@ pip install 'quivers[lsp]'
 qvr-lsp --help
 ```
 
-Then install `vscode-qvr-0.7.2.vsix` from the corresponding Quivers GitHub
+Then install `vscode-qvr-0.8.0.vsix` from the corresponding Quivers GitHub
 release:
 
 ```sh
-code --install-extension vscode-qvr-0.7.2.vsix
+code --install-extension vscode-qvr-0.8.0.vsix
 # or
-cursor --install-extension vscode-qvr-0.7.2.vsix
+cursor --install-extension vscode-qvr-0.8.0.vsix
 ```
 
 To package the extension from a checkout:
@@ -34,7 +40,7 @@ To package the extension from a checkout:
 cd editors/vscode-qvr
 npm ci
 npm run package
-code --install-extension vscode-qvr-0.7.2.vsix
+code --install-extension vscode-qvr-0.8.0.vsix
 ```
 
 ## Language features

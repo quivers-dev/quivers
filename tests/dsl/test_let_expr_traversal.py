@@ -74,7 +74,7 @@ def test_factor_substitution_renames_a_capturing_binder() -> None:
 def test_every_surface_variant_has_an_explicit_traversal_case() -> None:
     leaf = _var("x")
     samples: tuple[LetExprNode, ...] = (
-        LetExprLiteral(value=1.0, integral=True),
+        LetExprLiteral(value=1, integral=True),
         LetExprBool(value=True),
         LetExprUnit(),
         leaf,
@@ -156,3 +156,12 @@ def test_callee_substitution_renames_a_capturing_binder() -> None:
     assert isinstance(replaced, LetExprLambda)
     assert replaced.param == "g_1"
     assert replaced.body == LetExprCall(func="g", args=(_var("g_1"),))
+
+
+def test_a_replacement_expression_callee_stays_free_under_a_lambda() -> None:
+    expression = LetExprLambda(param="f", body=_var("x"))
+    replacement = LetExprCall(func="f", args=())
+    replaced = substitute_let_expr(expression, {"x": replacement})
+    assert replaced.param == "f_1"
+    assert replaced.body == replacement
+    assert free_let_names(replaced, include_callees=True) == ("f",)

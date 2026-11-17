@@ -81,7 +81,7 @@ def _tensor(value):
 
 def _cast_for_rv(rv, raw):
     """Cast ``raw`` to a tensor matching the random variable's dtype."""
-    return tf.constant(raw, dtype=rv.distribution.dtype)
+    return tf.cast(tf.convert_to_tensor(raw), rv.distribution.dtype)
 
 
 def _matches_value_shape(rv, raw_tensor) -> bool:

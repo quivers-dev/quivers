@@ -11,6 +11,7 @@ from quivers.dsl.emit import module_to_source
 from quivers.dsl.pure_builtins import (
     BUILTIN_REGISTRY,
     EAGER_BUILTIN_NAMES,
+    _MEASURE_QUERIES,
     HOST_ONLY_BUILTINS,
     PURE_BUILTINS,
     _BUILTIN_PRIMITIVES,
@@ -188,7 +189,9 @@ def test_every_checked_builtin_rejects_the_wrong_arity(name: str) -> None:
 
 
 def test_builtin_registry_is_the_complete_capability_inventory() -> None:
-    assert frozenset(BUILTIN_REGISTRY) == EAGER_BUILTIN_NAMES | _COLLECTION_BUILTINS
+    assert frozenset(BUILTIN_REGISTRY) == (
+        EAGER_BUILTIN_NAMES | _COLLECTION_BUILTINS | frozenset(_MEASURE_QUERIES)
+    )
     assert PURE_BUILTINS | HOST_ONLY_BUILTINS == frozenset(BUILTIN_REGISTRY)
     assert not (PURE_BUILTINS & HOST_ONLY_BUILTINS)
     assert all(

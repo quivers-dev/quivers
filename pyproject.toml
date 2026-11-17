@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quivers"
-version = "0.64.2"
+version = "0.65.0"
 description = "A typed functional probabilistic programming language with a PyTorch runtime and eleven transpilation targets."
 readme = "README.md"
 license = {text = "MIT"}
@@ -29,7 +29,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
 dependencies = [
-    "torch>=2.0",
+    "torch>=2.1",
     "didactic>=0.18.2",
     "panproto>=0.77.0",
     "panproto-grammars-all>=0.77.0",
@@ -126,8 +126,8 @@ ignore = ["E741"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Recovery / benchmark tests are gated behind the `slow` marker; the
-# default invocation (`pytest tests/`) skips them so the everyday
-# turnaround stays under a minute.  Run them explicitly with
+# default invocation (`pytest tests/`) skips these expensive cases.
+# Run them explicitly with
 # `pytest -m slow tests/` or `pytest --runslow tests/`.
 markers = [
     "slow: deselected by default; run with `-m slow` or `--runslow`.",

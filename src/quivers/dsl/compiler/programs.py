@@ -11,9 +11,12 @@ from abc import abstractmethod
 import math
 from collections.abc import Callable, Collection, Hashable, Mapping, Sequence
 from itertools import product as _cartesian_product
+from numbers import Integral, Real as RealNumber
 from typing import Literal, cast
+from quivers._observation import EVENT_OPTIONS, ObservationEvent
 import didactic.api as dx
 import torch
+from torch.distributions.distribution import Distribution as TorchDistribution
 from torch.distributions import constraints as _constraints
 from quivers.continuous._closed_probability import _count_log
 from quivers.continuous.param_transforms import _validate_parameter
@@ -24,8 +27,6 @@ from quivers.continuous.deterministic import (
 from quivers.continuous.family_spec import (
     FAMILY_REGISTRY,
     FamilySpec,
-    build_torch_distribution,
-    clamp_param,
 )
 from quivers.continuous.morphisms import (
     AnySpace,
@@ -55,7 +56,7 @@ from quivers.continuous.program_steps import (
     reading,
     reads_of,
 )
-from quivers.continuous.programs import MonadicProgram, _lookup_arg
+from quivers.continuous.programs import MonadicProgram, _lookup_arg, _parameter_dtype
 from quivers.effects.checked_program import CheckedProgram
 from quivers.continuous.param_source import (
     AttentionSource,
@@ -81,6 +82,7 @@ from quivers.dsl.ast_nodes import (
     BindStep,
     ContractionDecl,
     ContractionInput,
+    DrawArg,
     DrawArgDist,
     DrawArgIndex,
     DrawArgList,
@@ -119,17 +121,23 @@ from quivers.dsl.ast_nodes import (
     Module,
     GroupedMarginalizeStep,
     MorphismParam,
+    MorphismDecl,
     ObjectParam,
     ObserveStep,
     PlateDrawStep,
     ProgramDecl,
     ProgramStep,
+    QiecIndexBinder,
+    QiecTypeName,
+    QiecValueParameter,
     SampleStep,
     ScalarParam,
     ObjectExpr,
     TypeName,
     ObjectProduct,
     VectorisedObserveStep,
+    OptionName,
+    OptionNumber,
 )
 from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.compiler._options import (
@@ -145,11 +153,18 @@ from quivers.dsl.compiler._deduction_terms import (
     LET_BOUND_VARIABLES_KEY,
     LET_CONSTRUCTORS_KEY,
     LET_INTERNAL_KEYS,
+    LET_FAMILIES_KEY,
     atom_term,
     variable_term,
 )
-from quivers.dsl.compiler._call_lowering import lower_calls
-from quivers.transpile._pure_calls import LOG_PROB_CALL
+from quivers.dsl.compiler._call_lowering import lower_calls, has_structural_lets
+from quivers.transpile._pure_calls import (
+    LOG_PROB_CALL,
+    LOG_MASS_CALL,
+    DISTRIBUTION_CALL,
+    CONDITIONAL_CALL,
+    APPLY_CALL,
+)
 from quivers.dsl.compiler.sugar import desugar_step
 from quivers.dsl.composite_lets import (
     expand_program_scans,
@@ -159,6 +174,7 @@ from quivers.dsl.composite_lets import (
     scan_let_call,
 )
 from quivers.dsl.let_expr_traversal import (
+    let_expr_children,
     free_let_callees,
     free_let_names,
     map_let_expr,
@@ -166,15 +182,34 @@ from quivers.dsl.let_expr_traversal import (
     walk_let_expr,
 )
 from quivers.dsl.markov_chains import chain_cells, markov_cell
-from quivers.dsl.step_resolution import StepResolutionError, _expr_ident_names
+from quivers.dsl.step_resolution import (
+    StepResolutionError,
+    _expr_ident_names,
+    morphism_table,
+    build_let_table,
+    resolve_step_dist,
+)
+from quivers.dsl.family_schemas import FAMILY_ALIASES, PARAMETER_ALIASES
 from quivers.dsl.pure_builtins import EAGER_BUILTINS
 from quivers.program import Program
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
-from quivers.qiec import QiecModule
+from quivers.qiec import (
+    QiecModule,
+    ProgramParameter,
+    ProgramEntry,
+    NAT,
+    PlateShape,
+    StaticSubstitution,
+    substitute_computation,
+    substitute_plate,
+    substitute_static,
+    substitute_type,
+)
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.terms import Computation, Local
-from quivers.qiec.families import FAMILIES
+from quivers.qiec.families import FAMILIES, DistributionFamily
+from quivers.family_catalog import FamilyCatalog
 from quivers.qiec.types import REAL, IndexLiteral, TypeExpr
 from quivers.stochastic.agenda import DeductionSystem
 from quivers.structural.decoder import Decoder, decoder_draw_message
@@ -227,6 +262,7 @@ def _per_row_parameters(
     parameter_names: tuple[str, ...] | list[str],
     value_extents: Mapping[str, tuple[int, ...]],
     rows: int,
+    families: FamilyCatalog | None = None,
 ) -> frozenset[str]:
     """The bindings a plated observe reads one entry of per row.
 
@@ -253,9 +289,7 @@ def _per_row_parameters(
     frozenset[str]
         The names of the bindings read at each row.
     """
-    record = FAMILIES.get(family)
-    if record is None:
-        return frozenset()
+    record = (families if families is not None else FAMILIES).get(family)
     found: set[str] = set()
     for position, arg in enumerate(args):
         if isinstance(arg, DrawArgNamed):
@@ -266,8 +300,25 @@ def _per_row_parameters(
                 parameter_names[position] if position < len(parameter_names) else None
             )
             value = arg
+        # Constructors retain the same declared plate in their scalar leaves.
+        # Inspect each leaf's semantic parameter rank; vector/matrix event
+        # parameters must remain whole even when their extent equals rows.
+        nested = value.items if isinstance(value, DrawArgList) else (value,)
+        for component in nested:
+            if isinstance(component, DrawArgDist):
+                found.update(
+                    _per_row_parameters(
+                        component.family,
+                        component.args,
+                        get_inline_param_names(component.family, families) or (),
+                        value_extents,
+                        rows,
+                        families,
+                    )
+                )
         if (
-            parameter is None
+            record is None
+            or parameter is None
             or parameter not in record.parameter_names
             or record.parameter(parameter).rank != 0
             or not isinstance(value, DrawArgName)
@@ -969,7 +1020,8 @@ def _project_nested_aggregates(
     Parameters
     ----------
     aggregates : torch.Tensor
-        The inner block's aggregates, flat over its product plate.
+        The inner block's aggregates, flat over its product plate, followed
+        by any enclosing class axes.
     inner_sizes : tuple[int, ...]
         The cardinality of each factor of the inner plate.
     kept_axes : tuple[int, ...]
@@ -982,7 +1034,7 @@ def _project_nested_aggregates(
     Returns
     -------
     torch.Tensor
-        The aggregates over the enclosing plate, flat.
+        The aggregates over the enclosing plate, preserving class axes.
 
     Raises
     ------
@@ -992,13 +1044,14 @@ def _project_nested_aggregates(
     total = 1
     for size in inner_sizes:
         total *= size
-    if tuple(aggregates.shape) != (total,):
+    if aggregates.dim() < 1 or aggregates.shape[0] != total:
         raise ValueError(
             f"grouped marginalize: the nested block at slot {slot!r} must "
             f"contribute one aggregate per position of its plate "
             f"{inner_sizes}; got shape {tuple(aggregates.shape)}"
         )
-    shaped = aggregates.reshape(inner_sizes)
+    extra_shape = tuple(aggregates.shape[1:])
+    shaped = aggregates.reshape(*inner_sizes, *extra_shape)
     summed_axes = tuple(
         axis for axis in range(len(inner_sizes)) if axis not in kept_axes
     )
@@ -1008,7 +1061,11 @@ def _project_nested_aggregates(
         order = tuple(remaining.index(axis) for axis in kept_axes)
     else:
         order = kept_axes
-    return shaped.permute(order).reshape(-1)
+    order = (*order, *range(len(kept_axes), shaped.dim()))
+    kept_size = 1
+    for axis in kept_axes:
+        kept_size *= inner_sizes[axis]
+    return shaped.permute(order).reshape(kept_size, *extra_shape)
 
 
 # Value carried by a let-binding at compile time.  The let
@@ -1021,6 +1078,7 @@ def _project_nested_aggregates(
 # let position.
 type LetValue = (
     torch.Tensor
+    | TorchDistribution
     | int
     | float
     | bool
@@ -1029,6 +1087,7 @@ type LetValue = (
     | list["LetValue"]
     | Morphism
     | ContinuousMorphism
+    | FamilyCatalog
     | Callable[[dict[str, "LetValue"]], "LetValue"]
 )
 
@@ -1095,23 +1154,21 @@ _LET_SPECIAL_CALLS: frozenset[str] = frozenset(
         "compose",
         "cholesky_quad_form",
         LOG_PROB_CALL,
+        LOG_MASS_CALL,
+        DISTRIBUTION_CALL,
+        CONDITIONAL_CALL,
+        APPLY_CALL,
     }
 )
 
 
 def _family_log_prob(arguments: list[LetValue]) -> torch.Tensor:
-    """Evaluate ``$log_prob("Family", value, "parameter", argument, ...)``.
-
-    A called computation's ``score.add(log_prob(D, v))`` lowers to this
-    internal let call: the family's log density at the value, entrywise,
-    under the parameters given by name, each clamped as an inline draw
-    from the family clamps it.
+    """Evaluate a checked raw distribution's log density.
 
     Parameters
     ----------
     arguments : list[LetValue]
-        The family's name, the value, then each parameter's name and
-        value.
+        Native distribution, observation, and retained batch rank.
 
     Returns
     -------
@@ -1121,25 +1178,147 @@ def _family_log_prob(arguments: list[LetValue]) -> torch.Tensor:
     Raises
     ------
     CompileError
-        If the family is not registered or a parameter is not one of
-        its parameters.
+        If the query's distribution or retained batch rank is invalid.
     """
-    family, value, *pairs = arguments
-    spec = FAMILY_REGISTRY.get(str(family))
-    if spec is None:
-        raise CompileError(f"no registered family {family!r} to score under")
-    parameters: dict[str, torch.Tensor] = {}
-    for position in range(0, len(pairs), 2):
-        name = str(pairs[position])
-        tensor = torch.as_tensor(pairs[position + 1], dtype=torch.get_default_dtype())
-        try:
-            parameters[name] = clamp_param(spec, name, tensor)
-        except KeyError as error:
-            raise CompileError(
-                f"family {spec.name!r} has no parameter {name!r} to score under"
-            ) from error
-    observed = torch.as_tensor(value, dtype=torch.get_default_dtype())
-    return build_torch_distribution(spec, parameters).log_prob(observed)
+    distribution, value, retained = arguments
+    if not isinstance(distribution, TorchDistribution):
+        raise CompileError("log_prob requires a native distribution value")
+    if (
+        isinstance(retained, torch.Tensor)
+        and retained.ndim == 0
+        and not retained.is_floating_point()
+        and retained.dtype != torch.bool
+    ):
+        retained = int(retained)
+    density = distribution.log_prob(torch.as_tensor(value))
+    if (
+        isinstance(retained, bool)
+        or not isinstance(retained, int)
+        or not 0 <= retained <= density.ndim
+    ):
+        raise CompileError(
+            "log_prob retained axes must be within the density batch rank"
+        )
+    return (
+        density.sum(tuple(range(retained, density.ndim)))
+        if density.ndim > retained
+        else density
+    )
+
+
+def _grouped_data_dependencies(
+    expression: LetExprNode,
+    group_shapes: Mapping[str, tuple[int, ...]],
+    extents: Mapping[str, tuple[int, ...]],
+    dependencies: Mapping[str, frozenset[str]],
+    classes: Mapping[str, frozenset[str]],
+) -> frozenset[str]:
+    """Read group-varying operands without mistaking a class gather for one.
+
+    Parameters
+    ----------
+    expression : LetExprNode
+        The pure let expression.
+    group_shapes : Mapping[str, tuple[int, ...]]
+        Canonical group extents keyed by the grouped latent.
+    extents : Mapping[str, tuple[int, ...]]
+        Checked binding extents.
+    dependencies : Mapping[str, frozenset[str]]
+        Group-varying dependencies of earlier bindings.
+    classes : Mapping[str, frozenset[str]]
+        Enumeration dependencies of earlier bindings.
+
+    Returns
+    -------
+    frozenset[str]
+        Grouped latents whose group coordinates the expression varies over.
+    """
+    if isinstance(expression, LetExprVar):
+        return dependencies.get(expression.name, frozenset())
+    if isinstance(expression, LetExprIndex) and isinstance(
+        expression.array, LetExprVar
+    ):
+        indices = frozenset().union(
+            *(
+                classes.get(name, frozenset())
+                for index in expression.indices
+                for name in _let_expr_reads(index)
+            )
+        )
+        if indices:
+            remaining = extents.get(expression.array.name, ())[
+                len(expression.indices) :
+            ]
+            return frozenset(
+                latent
+                for latent, shape in group_shapes.items()
+                if remaining[: len(shape)] == shape
+            )
+    return frozenset().union(
+        *(
+            _grouped_data_dependencies(
+                child, group_shapes, extents, dependencies, classes
+            )
+            for child in let_expr_children(expression)
+        )
+    )
+
+
+def _classwise_let(
+    function: Callable[[dict[str, LetValue]], LetValue],
+    classes: tuple[str, ...],
+    sizes: tuple[int, ...],
+    input_classes: Mapping[str, tuple[str, ...]],
+) -> Callable[[dict[str, LetValue]], LetValue]:
+    """Evaluate a multi-class or class-and-group let at each class coordinate.
+
+    Parameters
+    ----------
+    function : Callable[[dict], torch.Tensor]
+        The compiled pure let, reading one class coordinate and batched groups.
+    classes : tuple[str, ...]
+        Lexically ordered grouped latent names the result depends on.
+    sizes : tuple[int, ...]
+        Their finite enumeration extents.
+    input_classes : Mapping[str, tuple[str, ...]]
+        Leading enumeration axes carried by each class-dependent operand.
+
+    Returns
+    -------
+    Callable[[dict], torch.Tensor]
+        A let retaining those leading class axes and all group axes.
+    """
+    positions = {name: index for index, name in enumerate(classes)}
+    selections = tuple(
+        (name, tuple(positions[axis] for axis in axes))
+        for name, axes in input_classes.items()
+    )
+
+    def evaluate(env: dict[str, LetValue]) -> torch.Tensor:
+        """Stack evaluations at the finite class coordinates.
+
+        Parameters
+        ----------
+        env : dict
+            Runtime bindings, with group arrays kept batched.
+
+        Returns
+        -------
+        torch.Tensor
+            Results with leading class axes followed by group and event axes.
+        """
+        values = []
+        for coordinate in _cartesian_product(*(range(size) for size in sizes)):
+            local = dict(env)
+            for name, axes in selections:
+                value = cast(torch.Tensor, env[name])
+                for position in axes:
+                    value = value[coordinate[position]]
+                local[name] = value
+            values.append(cast(torch.Tensor, function(local)))
+        return torch.stack(values).reshape(*sizes, *values[0].shape)
+
+    return evaluate
 
 
 def _checked_layout(
@@ -1489,7 +1668,80 @@ _MULTIVARIATE_REAL_FAMILIES: frozenset[str] = frozenset(
 """Families whose sample is one real vector over the event axis."""
 
 _SAMPLE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "iid_over"})
-_OBSERVE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"via", "over", "iid_over"})
+_OBSERVE_STEP_OPTION_KEYS: frozenset[str] = frozenset(
+    {"via", "over", "iid_over", "weights", *EVENT_OPTIONS}
+)
+
+
+def _observation_event(options, line: int, col: int) -> ObservationEvent | None:
+    """Read checked scalar references for one recorded observation event."""
+    fields = {}
+    for key, (field, carrier) in EVENT_OPTIONS.items():
+        option = find_option(options, key)
+        if option is None:
+            continue
+        if isinstance(option.value, OptionName) and option.value.value not in {
+            "true",
+            "false",
+        }:
+            fields[field] = option.value.value
+        elif isinstance(option.value, OptionNumber):
+            value = option.value.value
+            if carrier == "Int":
+                if value not in {-1, 0, 1, 2}:
+                    raise CompileError("cens requires codes -1, 0, 1, or 2", line, col)
+                value = int(value)
+            elif math.isnan(value):
+                raise CompileError(f"{key} requires a non-NaN endpoint", line, col)
+            fields[field] = value
+        else:
+            raise CompileError(f"{key} requires a value name or number", line, col)
+    if "upper" in fields and "status" not in fields:
+        raise CompileError("cens_upper requires a cens status", line, col)
+    return ObservationEvent(**fields) if fields else None
+
+
+def _rename_observation_event(event, value_subst, rename):
+    """Preserve event references through existing template substitutions."""
+    if event is None:
+        return None
+    return event.with_(
+        **{
+            field: value_subst.get(value, rename.get(value, value))
+            for field in ("status", "upper", "lower_bound", "upper_bound")
+            if isinstance(value := getattr(event, field), str)
+        }
+    )
+
+
+def _observation_weights(options, line: int, col: int) -> str | float | None:
+    """Read the named or constant power-likelihood weight of an observation."""
+    option = find_option(options, "weights")
+    if option is None:
+        return None
+    if isinstance(option.value, OptionName):
+        return option.value.value
+    if isinstance(option.value, OptionNumber):
+        value = option.value.value
+        if math.isfinite(value) and value >= 0:
+            return value
+        raise CompileError(
+            "observation weights must be finite and nonnegative", line, col
+        )
+    raise CompileError("observation weights require a value name or number", line, col)
+
+
+def _rename_observation_weights(
+    weights: str | float | None,
+    value_subst: dict[str, str | int | float],
+    rename: dict[str, str],
+) -> str | float | None:
+    """Preserve observation-weight references through template specialization."""
+    if isinstance(weights, str):
+        return value_subst.get(weights, rename.get(weights, weights))
+    return weights
+
+
 _MARGINALIZE_STEP_OPTION_KEYS: frozenset[str] = frozenset({"over", "reduction"})
 _PROGRAM_OPTION_KEYS: frozenset[str] = frozenset({"effects", "posterior_of"})
 _CONTRACTION_OPTION_KEYS: frozenset[str] = frozenset({"rule", "wiring", "share"})
@@ -1596,6 +1848,8 @@ class _ProgramsMixin:
     mixin method.
     """
 
+    _family_catalog: FamilyCatalog | None
+    _distribution_families: Mapping[str, DistributionFamily]
     _algebra: CompositionRule
     _morphisms: dict
     _objects: dict[str, SetObject]
@@ -1603,8 +1857,12 @@ class _ProgramsMixin:
     _output_expr: Expr | None
     _groups: dict[str, list[str]]
     _program_templates: dict[str, ProgramDecl]
+    _instantiated_program_contracts: dict[str, tuple[ProgramEntry, StaticSubstitution]]
     _call_refusals: dict[str, CompileError]
     _parameter_space_stack: list[dict[str, AnySpace]]
+    _sampleable_context_stack: list[
+        dict[tuple[str, str], tuple[ContinuousMorphism, str]]
+    ]
     _value_extents_stack: list[dict[str, tuple[int, ...]]]
     _contractions: dict
     _transformations: dict
@@ -1673,6 +1931,26 @@ class _ProgramsMixin:
         [`desugar_step`][quivers.dsl.compiler.sugar.desugar_step], so
         downstream IR walks the single operator vocabulary.
         """
+        if isinstance(step, SampleStep | ObserveStep | MarginalizeStep):
+            template = self._program_templates.get(step.morphism)
+            if template is not None:
+                from quivers.dsl.program_templates import (
+                    TemplateError,
+                    validate_program_application,
+                )
+
+                try:
+                    validate_program_application(
+                        template, step.args or (), static_arguments=step.static_args
+                    )
+                except TemplateError as error:
+                    raise CompileError(error.message, step.line, step.col) from error
+            elif step.static_args:
+                raise CompileError(
+                    f"{step.morphism!r} accepts no static arguments",
+                    step.line,
+                    step.col,
+                )
         if isinstance(step, CallStep):
             # A call reaching the step compiler is a scan's step program
             # calling its cell, which compiles to a call run in place.
@@ -1690,7 +1968,9 @@ class _ProgramsMixin:
             return BindStep(
                 vars=step.vars,
                 morphism=step.morphism,
-                args=step.args,
+                args=(*step.static_args, *(step.args or ()))
+                if step.static_args
+                else step.args,
                 index=step.index,
                 mode="sample",
                 axes=step.axes,
@@ -1731,9 +2011,13 @@ class _ProgramsMixin:
             return BindStep(
                 vars=step.vars,
                 morphism=step.morphism,
-                args=step.args,
+                args=(*step.static_args, *(step.args or ()))
+                if step.static_args
+                else step.args,
                 index=step.index,
                 mode="score",
+                weights=_observation_weights(step.options, step.line, step.col),
+                event=_observation_event(step.options, step.line, step.col),
                 axes=axes,
                 via=step.via,
                 via_axes=step.via_axes,
@@ -1751,7 +2035,9 @@ class _ProgramsMixin:
             return BindStep(
                 vars=(step.var,),
                 morphism=step.morphism,
-                args=step.args,
+                args=(*step.static_args, *(step.args or ()))
+                if step.static_args
+                else step.args,
                 index=step.index,
                 mode="marginal",
                 scope=tuple(self._surface_to_bind(s) for s in step.scope),
@@ -1847,6 +2133,8 @@ class _ProgramsMixin:
                             morphism=step.morphism,
                             args=step.args,
                             is_observed=True,
+                            weights=step.weights,
+                            event=step.event,
                             line=step.line,
                             col=step.col,
                         )
@@ -1865,6 +2153,8 @@ class _ProgramsMixin:
                             morphism=step.morphism,
                             args=step.args,
                             response_var=step.vars[0],
+                            weights=step.weights,
+                            event=step.event,
                             index_map_var=step.via,
                             index_map_axes=step.via_axes,
                             axes=step.axes,
@@ -2092,6 +2382,8 @@ class _ProgramsMixin:
                                 index_map_var=scoped_step.index_map_var,
                                 index_map_axes=scoped_step.index_map_axes,
                                 ll_slot=ll_slot,
+                                weights=scoped_step.weights,
+                                event=scoped_step.event,
                                 line=scoped_step.line,
                                 col=scoped_step.col,
                             )
@@ -2286,13 +2578,14 @@ class _ProgramsMixin:
             )
 
     def _expand_template_calls(
-        self, steps: tuple[ProgramStep, ...]
+        self, steps: tuple[ProgramStep, ...], *, preserve_names: bool = False
     ) -> tuple[ProgramStep, ...]:
         """Inline parametric-program-template call sites in a step list.
 
-        A ``draw v ~ T(args)`` step whose morphism name ``T`` is a
-        registered parametric program denotes the instantiation of
-        the dependent kernel at the supplied arguments. The body of
+        A ``sample v <- T[statics](values)`` step whose callee ``T`` is a
+        registered program supplies static and runtime arguments in
+        separate lists. For a parametric program, it instantiates the
+        dependent kernel at those arguments. The body of
         ``T`` is substituted (formal parameters → actual arguments)
         and α-renamed (every locally-bound name is prefixed by
         ``v$``, except the return-variable which is renamed to ``v``
@@ -2309,19 +2602,20 @@ class _ProgramsMixin:
             if (
                 isinstance(step, DrawStep)
                 and not step.is_observed
-                and step.morphism in self._program_templates
+                and (
+                    step.morphism in self._program_templates
+                    or step.morphism in self._program_decls
+                )
             ):
-                tmpl = self._program_templates[step.morphism]
-                if len(step.vars) != 1:
-                    raise CompileError(
-                        f"template call {step.morphism!r} may bind only one "
-                        f"variable, got tuple {step.vars}",
-                        step.line,
-                        step.col,
-                    )
-                bind_name = step.vars[0]
+                tmpl = (
+                    self._program_templates.get(step.morphism)
+                    or self._program_decls[step.morphism]
+                )
+                bind_name = step.vars[0] if len(step.vars) == 1 else step.vars
                 args = step.args or ()
-                inst = self._instantiate_template(tmpl, bind_name, args, step)
+                inst = self._instantiate_template(
+                    tmpl, bind_name, args, step, preserve_names=preserve_names
+                )
                 # Recursively expand any nested template calls in the
                 # inlined body.
                 expanded.extend(self._expand_template_calls(inst))
@@ -2341,12 +2635,76 @@ class _ProgramsMixin:
             expanded.append(step)
         return tuple(expanded)
 
+    def _validate_template_static_types(self, template, bindings, node) -> None:
+        """Check categorical static actuals against their declared carriers."""
+        types: dict[str, ObjectExpr] = {
+            name: TypeName(name=actual) for name, actual in bindings.objects.items()
+        }
+        for name, argument in bindings.statics.items():
+            if isinstance(argument, DrawArgScalar):
+                types[name] = TypeName(name=str(int(argument.value)))
+            elif isinstance(argument, DrawArgName) and argument.text in self._objects:
+                types[name] = TypeName(name=argument.text)
+        for parameter in template.type_params or ():
+            if isinstance(parameter, ObjectParam):
+                actual = self._resolve_any_space(types[parameter.name])
+                if (
+                    parameter.universe == "FinSet"
+                    and not isinstance(actual, SetObject)
+                    or parameter.universe == "Space"
+                    and not isinstance(actual, ContinuousSpace)
+                ):
+                    raise CompileError(
+                        f"static object parameter {parameter.name!r} requires {parameter.universe}",
+                        node.line,
+                        node.col,
+                    )
+            if not isinstance(parameter, MorphismParam):
+                continue
+            name = bindings.morphisms[parameter.name]
+            declaration = self._program_decls.get(name) or self._program_templates.get(
+                name
+            )
+            if declaration is None:
+                declaration = next(
+                    (
+                        s
+                        for s in self._module.statements
+                        if isinstance(s, MorphismDecl) and name in s.names
+                    ),
+                    None,
+                )
+            actual = self._morphisms.get(name)
+            if declaration is None and actual is None:
+                raise CompileError(
+                    f"morphism {name!r} passed as {parameter.name!r} is not declared",
+                    node.line,
+                    node.col,
+                )
+            for side in ("domain", "codomain"):
+                expected = self._resolve_any_space(
+                    self._rename_type(getattr(parameter, side), types)
+                )
+                received = (
+                    self._resolve_any_space(getattr(declaration, side))
+                    if declaration is not None
+                    else getattr(actual, side)
+                )
+                if expected != received:
+                    raise CompileError(
+                        f"morphism parameter {parameter.name!r} has incompatible {side}: {name!r} does not inhabit its declared Mor type",
+                        node.line,
+                        node.col,
+                    )
+
     def _instantiate_template(
         self,
         tmpl: ProgramDecl,
-        bind_name: str,
+        bind_name: str | tuple[str, ...],
         args: tuple,
         call_site: ProgramStep,
+        *,
+        preserve_names: bool = False,
     ) -> tuple[ProgramStep, ...]:
         """Realise one call site of a parametric program template.
 
@@ -2363,6 +2721,93 @@ class _ProgramsMixin:
         substitution lemma: substituting actuals for formals
         commutes with denotation up to renaming-equivalence.
         """
+        if tmpl.name in self._call_refusals:
+            # Keep the source computation's located refusal before freshening
+            # its locals; generated aliases are not names the user can edit.
+            self._refuse_computation_calls(tmpl.name, tmpl.draws)
+        if (
+            tmpl.value_parameters
+            or tmpl.binders
+            or isinstance(bind_name, tuple)
+            or not tmpl.type_params
+        ):
+            binders = (bind_name,) if isinstance(bind_name, str) else bind_name
+            prefix = "_".join(binders)
+            from quivers.dsl.program_templates import (
+                TemplateError,
+                instantiate_program,
+                runtime_program_parameters,
+                static_program_parameters,
+                template_bindings,
+            )
+
+            static_count = len(static_program_parameters(tmpl))
+            arguments = tuple(
+                argument
+                if isinstance(argument, DrawArg)
+                else DrawArgName(text=argument)
+                if isinstance(argument, str)
+                else DrawArgScalar(value=argument)
+                for argument in args
+            )
+            bound = {
+                argument.text: LetExprVar(name=argument.text)
+                for argument in arguments[static_count:]
+                if isinstance(argument, DrawArgName)
+            }
+            try:
+                bindings = template_bindings(
+                    tmpl,
+                    arguments[static_count:],
+                    bound,
+                    static_arguments=arguments[:static_count],
+                )
+                self._validate_template_static_types(tmpl, bindings, call_site)
+                objects = dict(bindings.objects)
+                for parameter, argument in zip(
+                    static_program_parameters(tmpl),
+                    arguments[:static_count],
+                    strict=True,
+                ):
+                    if isinstance(parameter, QiecIndexBinder) and isinstance(
+                        argument, DrawArgScalar
+                    ):
+                        object_name = f"__qvr_static${tmpl.name}${prefix}${parameter.name}${int(argument.value)}"
+                        self._objects[object_name] = FinSet(
+                            name=object_name, cardinality=int(argument.value)
+                        )
+                        objects[parameter.name] = object_name
+                    elif isinstance(parameter, QiecIndexBinder) and isinstance(
+                        argument, DrawArgName
+                    ):
+                        if argument.text in self._objects:
+                            objects[parameter.name] = argument.text
+                # Capture actuals once before substitution. Apart from preserving
+                # argument evaluation, aliases make indexed tensor inputs usable
+                # without copying or repeatedly evaluating their expressions.
+                values = dict(bindings.values)
+                captures = []
+                for parameter in runtime_program_parameters(tmpl):
+                    if isinstance(values[parameter.name], LetExprVar | LetExprLiteral):
+                        continue
+                    alias = f"{prefix}$arg${parameter.name}"
+                    captures.append(LetStep(name=alias, value=values[parameter.name]))
+                    values[parameter.name] = LetExprVar(name=alias)
+                bindings = bindings.with_(objects=objects, values=values)
+                return self._expand_bind_steps(
+                    (
+                        *captures,
+                        *instantiate_program(
+                            tmpl, binders, bindings, preserve_names=preserve_names
+                        ),
+                    )
+                )
+            except TemplateError as error:
+                raise CompileError(
+                    error.message, call_site.line, call_site.col
+                ) from error
+
+        assert isinstance(bind_name, str)
         type_params = tmpl.type_params or ()
         if len(args) != len(type_params):
             raise CompileError(
@@ -2371,9 +2816,34 @@ class _ProgramsMixin:
                 call_site.line,
                 call_site.col,
             )
+        from quivers.dsl.program_templates import (
+            template_bindings,
+            static_program_parameters,
+            TemplateError,
+        )
+
+        static_count = len(static_program_parameters(tmpl))
+        actuals = tuple(
+            argument
+            if isinstance(argument, DrawArg)
+            else DrawArgName(text=argument)
+            if isinstance(argument, str)
+            else DrawArgScalar(value=argument)
+            for argument in args
+        )
+        try:
+            checked_bindings = template_bindings(
+                tmpl,
+                actuals[static_count:],
+                {},
+                static_arguments=actuals[:static_count],
+            )
+        except TemplateError as error:
+            raise CompileError(error.message, call_site.line, call_site.col) from error
+        self._validate_template_static_types(tmpl, checked_bindings, call_site)
         # Build the parameter-substitution environment.
         type_subst: dict[str, ObjectExpr] = {}
-        value_subst: dict[str, str | float] = {}
+        value_subst: dict[str, str | int | float] = {}
         for param, arg in zip(type_params, args):
             if isinstance(param, ObjectParam):
                 # `DrawArgName` carries the identifier text; a bare
@@ -2431,11 +2901,11 @@ class _ProgramsMixin:
                 if isinstance(arg, DrawArgName):
                     value_subst[param.name] = arg.text
                 elif isinstance(arg, DrawArgScalar):
-                    value_subst[param.name] = float(arg.value)
+                    value_subst[param.name] = arg.value
                 elif isinstance(arg, str):
                     value_subst[param.name] = arg
                 else:
-                    value_subst[param.name] = float(arg)
+                    value_subst[param.name] = arg
             elif isinstance(param, MorphismParam):
                 if isinstance(arg, DrawArgName):
                     arg = arg.text
@@ -2514,9 +2984,9 @@ class _ProgramsMixin:
         tuple[ProgramStep, ...]
             The steps with every lowerable call lowered.
         """
-        if not _calls_a_computation(steps):
+        if not _calls_a_computation(steps) and not has_structural_lets(steps):
             return steps
-        module = self.qiec_module
+        module = self._available_qiec_module()
         if module is None or module.gap:
             return steps
         cards = {
@@ -2622,24 +3092,22 @@ class _ProgramsMixin:
         self, texpr: ObjectExpr, type_subst: dict[str, ObjectExpr]
     ) -> ObjectExpr:
         """Substitute object parameters inside a type expression."""
-        if isinstance(texpr, TypeName):
-            if texpr.name in type_subst:
-                return type_subst[texpr.name]
-            return texpr
-        if isinstance(texpr, ObjectProduct):
-            return ObjectProduct(
-                components=tuple(
-                    self._rename_type(c, type_subst) for c in texpr.components
-                ),
-                line=texpr.line,
-                col=texpr.col,
-            )
-        return texpr
+        from quivers.dsl.program_templates import (
+            TemplateError,
+            substitute_program_object,
+        )
+
+        try:
+            return substitute_program_object(texpr, type_subst)
+        except TemplateError as error:
+            raise CompileError(
+                error.message, getattr(texpr, "line", 0), getattr(texpr, "col", 0)
+            ) from error
 
     def _rename_args(
         self,
         args: tuple | None,
-        value_subst: dict[str, str | float],
+        value_subst: dict[str, str | int | float],
         rename: dict[str, str],
     ) -> tuple | None:
         """Apply parameter substitution and alpha-renaming inside a
@@ -2671,9 +3139,7 @@ class _ProgramsMixin:
                 if key in value_subst:
                     sub = value_subst[key]
                     if isinstance(sub, (int, float)) and not isinstance(sub, bool):
-                        out.append(
-                            DrawArgScalar(value=float(sub), line=a.line, col=a.col)
-                        )
+                        out.append(DrawArgScalar(value=sub, line=a.line, col=a.col))
                     else:
                         out.append(a.with_(text=str(sub)))
                 elif key in rename:
@@ -2718,7 +3184,7 @@ class _ProgramsMixin:
         self,
         step: ProgramStep,
         type_subst: dict[str, ObjectExpr],
-        value_subst: dict[str, str | float],
+        value_subst: dict[str, str | int | float],
         rename: dict[str, str],
     ) -> ProgramStep:
         """Apply parameter substitution + α-renaming to a single step."""
@@ -2737,6 +3203,8 @@ class _ProgramsMixin:
                 morphism=new_morph,
                 args=self._rename_args(step.args, value_subst, rename),
                 is_observed=step.is_observed,
+                weights=_rename_observation_weights(step.weights, value_subst, rename),
+                event=_rename_observation_event(step.event, value_subst, rename),
                 axes=step.axes,
                 line=step.line,
                 col=step.col,
@@ -2791,6 +3259,12 @@ class _ProgramsMixin:
                 morphism=new_morph,
                 args=self._rename_args(step.args, value_subst, rename),
                 response_var=rename.get(step.response_var, step.response_var),
+                weights=_rename_observation_weights(step.weights, value_subst, rename),
+                event=_rename_observation_event(step.event, value_subst, rename),
+                index_map_var=rename.get(step.index_map_var, step.index_map_var)
+                if step.index_map_var is not None
+                else None,
+                index_map_axes=step.index_map_axes,
                 axes=step.axes,
                 line=step.line,
                 col=step.col,
@@ -2861,6 +3335,8 @@ class _ProgramsMixin:
                 else None,
                 index_map_axes=step.index_map_axes,
                 ll_slot=step.ll_slot,
+                weights=_rename_observation_weights(step.weights, value_subst, rename),
+                event=_rename_observation_event(step.event, value_subst, rename),
                 line=step.line,
                 col=step.col,
             )
@@ -2874,7 +3350,7 @@ class _ProgramsMixin:
         self,
         expr: LetExprNode,
         type_subst: dict[str, ObjectExpr],
-        value_subst: dict[str, str | float],
+        value_subst: dict[str, str | int | float],
         rename: dict[str, str],
         line: int,
         col: int,
@@ -2931,7 +3407,7 @@ class _ProgramsMixin:
                 values[name] = LetExprVar(name=sub)
                 callees[name] = sub
             else:
-                values[name] = LetExprLiteral(value=float(sub))
+                values[name] = LetExprLiteral(value=sub, integral=isinstance(sub, int))
         for callee in free_let_callees(expr):
             if callee in value_subst and callee not in callees:
                 raise CompileError(
@@ -2993,6 +3469,12 @@ class _ProgramsMixin:
                 expr.line,
                 expr.col,
             )
+        if expr.static_args:
+            raise CompileError(
+                f"contraction {expr.callee!r} accepts runtime morphism arguments in parentheses",
+                expr.line,
+                expr.col,
+            )
         if len(expr.args) != len(contraction.input_types):
             raise CompileError(
                 f"contraction {expr.callee!r}: expected "
@@ -3043,21 +3525,43 @@ class _ProgramsMixin:
         """Return a Python-callable wrapper around a parametric
         program template, suitable for attaching to a compiled
         `Program` so callers can write
-        ``prog.<name>(alpha=0.5, beta=0.1)`` to instantiate the
-        template at concrete parameters.
+        ``prog.<name>(n=3)`` to specialize static parameters while
+        retaining runtime inputs, or ``prog.<name>(alpha=0.5, beta=0.1)``
+        to partially apply runtime scalar values. Named partial application
+        does not change a parameter's static or runtime stage.
         """
         tmpl = self._program_templates[name]
-        type_params = tmpl.type_params or ()
-        param_names = tuple(p.name for p in type_params)
+        from quivers.dsl.program_templates import (
+            static_program_parameters,
+            runtime_program_parameters,
+        )
+
+        static_parameters = static_program_parameters(tmpl)
+        value_parameters = runtime_program_parameters(tmpl)
+        parameters = (*static_parameters, *value_parameters)
+        static_names = tuple(p.name for p in static_parameters)
+        param_names = tuple(p.name for p in parameters)
+        partial_static = bool(static_parameters)
 
         def _invoke(*args, **kwargs) -> Program:
+            if partial_static and not args and not kwargs and static_names:
+                raise CompileError(
+                    f"cannot infer static arguments of {name!r}: {list(static_names)}; "
+                    "provide explicit arguments or bind runtime data with checked shapes",
+                    tmpl.line,
+                    tmpl.col,
+                )
             if args and kwargs:
                 raise TypeError(
                     f"template {name!r}: pass either all positional or all "
                     f"keyword arguments, not both"
                 )
             if kwargs:
-                missing = [n for n in param_names if n not in kwargs]
+                missing = [
+                    n
+                    for n in (static_names if partial_static else param_names)
+                    if n not in kwargs
+                ]
                 extra = [k for k in kwargs if k not in param_names]
                 if missing:
                     raise TypeError(f"template {name!r} missing arguments: {missing}")
@@ -3065,18 +3569,71 @@ class _ProgramsMixin:
                     raise TypeError(
                         f"template {name!r} got unexpected arguments: {extra}"
                     )
-                ordered = tuple(kwargs[n] for n in param_names)
+                ordered = tuple(kwargs.get(n, n) for n in param_names)
             else:
+                if partial_static and len(args) == len(static_names):
+                    args = (*args, *(p.name for p in value_parameters))
                 if len(args) != len(param_names):
                     raise TypeError(
                         f"template {name!r} expects {len(param_names)} "
                         f"arguments, got {len(args)}"
                     )
                 ordered = args
+            for parameter, argument in zip(parameters, ordered, strict=True):
+                if isinstance(parameter, QiecIndexBinder):
+                    if (
+                        isinstance(argument, bool)
+                        or not isinstance(argument, Integral)
+                        or argument < 0
+                    ):
+                        raise TypeError(
+                            f"static extent {parameter.name!r} requires a nonnegative integer"
+                        )
+                    continue
+                scalar_kind = (
+                    parameter.scalar_kind
+                    if isinstance(parameter, ScalarParam)
+                    else (
+                        parameter.type_expr.name
+                        if isinstance(parameter, QiecValueParameter)
+                        and isinstance(parameter.type_expr, QiecTypeName)
+                        and parameter.type_expr.name in {"Real", "Nat"}
+                        else None
+                    )
+                )
+                if scalar_kind is None:
+                    if not isinstance(argument, str):
+                        if isinstance(parameter, QiecValueParameter):
+                            raise TypeError(
+                                f"runtime value {parameter.name!r} must be supplied as data through Model.bind"
+                            )
+                        raise TypeError(
+                            f"static parameter {parameter.name!r} requires a declared name"
+                        )
+                    continue
+                if (
+                    partial_static
+                    and isinstance(argument, str)
+                    and argument == parameter.name
+                ):
+                    continue
+                if isinstance(argument, bool) or not isinstance(argument, RealNumber):
+                    raise TypeError(
+                        f"template {name!r}: parameter {parameter.name!r} "
+                        f"requires a {scalar_kind} number"
+                    )
+                if scalar_kind == "Nat" and (
+                    not isinstance(argument, Integral) or argument < 0
+                ):
+                    raise TypeError(
+                        f"template {name!r}: parameter {parameter.name!r} "
+                        "requires a nonnegative integer"
+                    )
             normalized = tuple(str(a) if not isinstance(a, str) else a for a in ordered)
             call_expr = ExprMorphismCall(
                 callee=name,
-                args=normalized,
+                static_args=normalized[: len(static_parameters)],
+                args=normalized[len(static_parameters) :],
                 line=tmpl.line,
                 col=tmpl.col,
             )
@@ -3087,11 +3644,87 @@ class _ProgramsMixin:
         _invoke.__qualname__ = f"template:{name}"
         return _invoke
 
+    def _compile_typed_program_application(
+        self,
+        expr: ExprMorphismCall,
+        template: ProgramDecl,
+        static_arguments: tuple[DrawArg, ...],
+        arguments: tuple[DrawArg, ...],
+    ):
+        """Compile a typed application through its checked wrapper computation."""
+        from quivers.dsl.program_templates import template_bindings
+
+        bindings = template_bindings(
+            template, arguments, {}, static_arguments=static_arguments
+        )
+        object_substitution: dict[str, ObjectExpr] = {
+            name: TypeName(name=actual) for name, actual in bindings.objects.items()
+        }
+        for name, actual in bindings.statics.items():
+            if isinstance(actual, DrawArgScalar):
+                object_substitution[name] = TypeName(name=str(int(actual.value)))
+            elif isinstance(actual, DrawArgName) and actual.text in self._objects:
+                object_substitution[name] = TypeName(name=actual.text)
+        base = f"__tmpl_apply${expr.callee}${expr.line}${expr.col}"
+        unique_name = base
+        suffix = 0
+        while unique_name in self._morphisms:
+            suffix += 1
+            unique_name = f"{base}#{suffix}"
+        wrapper = ProgramDecl(
+            name=unique_name,
+            domain=self._rename_type(template.domain, object_substitution),
+            codomain=self._rename_type(template.codomain, object_substitution),
+            draws=(
+                SampleStep(
+                    vars=template.return_vars,
+                    morphism=expr.callee,
+                    static_args=static_arguments,
+                    args=arguments,
+                    line=expr.line,
+                    col=expr.col,
+                ),
+            ),
+            return_vars=template.return_vars,
+            return_labels=template.return_labels,
+            options=template.options,
+            line=expr.line,
+            col=expr.col,
+        )
+        source = self._qiec_source if self._qiec_source is not None else self._module
+        checked = self._lower_qiec(
+            source.with_(statements=(*source.statements, wrapper))
+        )
+        entry = next(
+            (entry for entry in checked.entries if entry.name == unique_name), None
+        )
+        if entry is None:
+            raise CompileError(
+                f"typed application of {expr.callee!r} has no checked computation",
+                expr.line,
+                expr.col,
+            )
+        cached = self._qiec_module
+        self._qiec_module = checked
+        self._instantiated_program_contracts[unique_name] = (
+            entry,
+            StaticSubstitution(),
+        )
+        try:
+            self._compile_program(wrapper)
+            target = self._morphisms.pop(unique_name)
+            if isinstance(target, MonadicProgram | CheckedProgram):
+                self._attach_program_contract(target, checked, entry)
+        finally:
+            self._instantiated_program_contracts.pop(unique_name, None)
+            self._qiec_module = cached
+        return target
+
     def _compile_program_template_call(self, expr: ExprMorphismCall):
         """Instantiate a parametric program template at a define-binding
-        site: ``define applied = p(f, …)`` substitutes the actual
-        morphism / object / scalar arguments for the template's
-        formal parameters, builds a synthetic non-parametric
+        site: ``define applied = p[Object](value)`` substitutes the static
+        actuals and supplies the runtime values in their separate stages,
+        builds a synthetic specialized
         `ProgramDecl`, and compiles it into a runtime
         `MonadicProgram` morphism.
 
@@ -3103,8 +3736,53 @@ class _ProgramsMixin:
         into an enclosing program.
         """
         tmpl = self._program_templates[expr.callee]
+        from quivers.dsl.program_templates import (
+            TemplateError,
+            validate_program_application,
+            template_bindings,
+        )
+
+        def argument(text: str) -> DrawArg:
+            try:
+                return DrawArgScalar(
+                    value=float(text) if any(c in text for c in ".eE") else int(text),
+                    line=expr.line,
+                    col=expr.col,
+                )
+            except ValueError:
+                return DrawArgName(text=text, line=expr.line, col=expr.col)
+
+        static_arguments = tuple(argument(text) for text in expr.static_args)
+        runtime_arguments = tuple(argument(text) for text in expr.args)
+        try:
+            validate_program_application(
+                tmpl, runtime_arguments, static_arguments=static_arguments
+            )
+        except TemplateError as error:
+            raise CompileError(error.message, expr.line, expr.col) from error
+        bindings = template_bindings(
+            tmpl, runtime_arguments, {}, static_arguments=static_arguments
+        )
+        self._validate_template_static_types(tmpl, bindings, expr)
+        for argument in runtime_arguments:
+            if isinstance(argument, DrawArgName) and (
+                argument.text in self._objects or argument.text in self._spaces
+            ):
+                raise CompileError(
+                    f"object {argument.text!r} is static and cannot fill a runtime parameter",
+                    expr.line,
+                    expr.col,
+                )
+        if tmpl.binders or any(
+            not isinstance(parameter.type_expr, QiecTypeName)
+            or parameter.type_expr.name not in {"Real", "Nat"}
+            for parameter in tmpl.value_parameters
+        ):
+            return self._compile_typed_program_application(
+                expr, tmpl, static_arguments, runtime_arguments
+            )
         type_params = tmpl.type_params or ()
-        args = expr.args
+        args = (*expr.static_args, *expr.args)
         if len(args) != len(type_params):
             raise CompileError(
                 f"template {expr.callee!r} expects {len(type_params)} "
@@ -3113,7 +3791,7 @@ class _ProgramsMixin:
                 expr.col,
             )
         type_subst: dict[str, ObjectExpr] = {}
-        value_subst: dict[str, str | float] = {}
+        value_subst: dict[str, str | int | float] = {}
         for param, arg in zip(type_params, args):
             if isinstance(param, ObjectParam):
                 if param.universe == "FinSet" and arg not in self._objects:
@@ -3155,10 +3833,12 @@ class _ProgramsMixin:
                 # name reference for the caller's bound_vars to
                 # resolve at draw-site time.
                 if isinstance(arg, (int, float)):
-                    value_subst[param.name] = float(arg)
+                    value_subst[param.name] = arg
                 elif isinstance(arg, str):
                     try:
-                        value_subst[param.name] = float(arg)
+                        value_subst[param.name] = (
+                            float(arg) if any(c in arg for c in ".eE") else int(arg)
+                        )
                     except ValueError:
                         value_subst[param.name] = arg
                 else:
@@ -3197,6 +3877,20 @@ class _ProgramsMixin:
             self._rename_step(step, type_subst, value_subst, empty_rename)
             for step in expanded_body
         )
+        returned_parameters = tuple(
+            LetStep(
+                name=name,
+                value=(
+                    LetExprLiteral(value=value)
+                    if isinstance(value, float | int)
+                    else LetExprVar(name=value)
+                ),
+            )
+            for name in tmpl.return_vars
+            if name in value_subst
+            for value in (value_subst[name],)
+        )
+        substituted_body = (*returned_parameters, *substituted_body)
         synth_domain = self._rename_type(tmpl.domain, type_subst)
         synth_codomain = self._rename_type(tmpl.codomain, type_subst)
         synth_name = f"__tmpl_call${expr.callee}${expr.line}${expr.col}"
@@ -3221,8 +3915,88 @@ class _ProgramsMixin:
             line=expr.line,
             col=expr.col,
         )
-        self._compile_program(synth)
-        return self._morphisms.pop(unique_name)
+        module = self.qiec_module
+        entry = (
+            next((e for e in module.entries if e.name == expr.callee), None)
+            if module is not None
+            else None
+        )
+        substitution = StaticSubstitution(
+            indices=tuple(
+                (
+                    name,
+                    IndexLiteral(
+                        value=(
+                            space.cardinality
+                            if isinstance(space, SetObject)
+                            else space.dim
+                        ),
+                        sort=NAT,
+                    ),
+                )
+                for name, value in type_subst.items()
+                for space in (self._resolve_any_space(value),)
+            )
+        )
+        if entry is not None:
+            remaining: dict[str, ProgramParameter] = {}
+            for parameter in entry.parameters:
+                supplied = value_subst.get(parameter.name)
+                if isinstance(supplied, float | int):
+                    continue
+                parameter = parameter.with_(
+                    name=supplied if isinstance(supplied, str) else parameter.name,
+                    type=substitute_type(parameter.type, substitution),
+                )
+                previous = remaining.get(parameter.name)
+                if previous is not None:
+                    if previous.type != parameter.type:
+                        raise CompileError(
+                            f"runtime actual {parameter.name!r} fills parameters of incompatible types",
+                            expr.line,
+                            expr.col,
+                        )
+                    parameter = parameter.with_(
+                        role="observation"
+                        if "observation" in {previous.role, parameter.role}
+                        else previous.role,
+                        constraint=previous.constraint or parameter.constraint,
+                    )
+                remaining[parameter.name] = parameter
+            entry = entry.with_(
+                parameters=tuple(remaining.values()),
+                telescope=tuple(
+                    binder
+                    for binder in entry.telescope
+                    if binder.name not in type_subst
+                ),
+                sites=tuple(
+                    site.with_(batch=plate.batch, event=plate.event)
+                    for site in entry.sites
+                    for plate in (
+                        substitute_plate(
+                            PlateShape(batch=site.batch, event=site.event), substitution
+                        ),
+                    )
+                ),
+            )
+            self._instantiated_program_contracts[unique_name] = (entry, substitution)
+        try:
+            self._compile_program(synth)
+        finally:
+            self._instantiated_program_contracts.pop(unique_name, None)
+        target = self._morphisms.pop(unique_name)
+        if (
+            entry is not None
+            and module is not None
+            and isinstance(target, MonadicProgram)
+        ):
+            self._attach_program_contract(target, module, entry)
+            target.host_index_bounds = {
+                name: tuple(substitute_static(bound, substitution) for bound in bounds)
+                for name, bounds in target.host_index_bounds.items()
+            }
+        return target
 
     def _compile_contraction(self, decl: ContractionDecl) -> None:
         """Compile a ``contraction`` declaration into a callable
@@ -3376,24 +4150,22 @@ class _ProgramsMixin:
         it is this program's binding of that name before the scan, else
         host data.
 
-        Parametric programs (those carrying ``type_params``) are not
-        compiled into a runtime ``MonadicProgram`` directly. They
-        denote a dependent kernel
+        A program with unresolved static parameters is retained as a
+        template. Its static telescope and runtime input space denote
+        a dependent kernel
 
         .. math::
 
             \\Pi (p_1 : P_1) \\ldots \\Pi (p_n : P_n).\\ \\mathbf{Kern}(\\mathrm{dom}(p),\\, \\mathrm{cod}(p))
 
         in the indexed family of Kleisli arrows over the parameter
-        category, and are stored as templates. Each call site of a
-        template (a ``draw v ~ template(args)`` step inside another
-        program) is realised by substituting the actual arguments
-        for the formal parameters and α-renaming all locally-bound
-        latents under the call's binding name, then inlining the
-        renamed body into the caller's step list. The freshness of
-        latent names per call site is the syntactic shadow of the
-        fact that distinct call sites contribute distinct factors
-        to the parent's joint kernel.
+        category. Typed runtime parameters alone do not require static
+        specialization: their program can compile directly, with scalar
+        partial-application metadata retained separately. A call such as
+        ``sample v <- template[Object](value)`` substitutes static actuals,
+        binds runtime values, and renames local latents under the call's
+        binding name before composing its steps into the caller. Distinct
+        call sites thus contribute distinct factors to the joint kernel.
 
         Parameters
         ----------
@@ -3422,6 +4194,9 @@ class _ProgramsMixin:
             line=decl.line,
             col=decl.col,
         )
+        if decl.binders:
+            self._program_templates[decl.name] = decl
+            return None
         if decl.type_params is not None:
             # Parametric program — store as a template; defer body
             # compilation until each call site instantiates it.
@@ -3440,11 +4215,16 @@ class _ProgramsMixin:
             self._program_templates[decl.name] = decl.with_(
                 draws=self._inline_pure_calls(decl.name, decl.draws)
             )
-            return None
+            if any(
+                not isinstance(parameter, ScalarParam) for parameter in decl.type_params
+            ):
+                return None
         if decl.name in self._morphisms:
             raise CompileError(
                 f"morphism {decl.name!r} already declared", decl.line, decl.col
             )
+        if decl.value_parameters and decl.name not in self._program_templates:
+            self._program_templates[decl.name] = decl
         domain = self._resolve_any_space(decl.domain)
         codomain = self._resolve_any_space(decl.codomain)
         if decl.params is not None:
@@ -3463,7 +4243,14 @@ class _ProgramsMixin:
                 )
         decl, scan_effects = self._expand_cell_scans(decl)
         decl = decl.with_(draws=self._inline_pure_calls(decl.name, decl.draws))
-        decl = decl.with_(draws=self._latent_kernel_draws(decl.draws))
+        sampleable_contexts: dict[tuple[str, str], tuple[ContinuousMorphism, str]] = {}
+        decl = decl.with_(
+            draws=self._latent_kernel_draws(
+                decl.draws,
+                sampleable_contexts,
+                set(decl.params or ()) | {p.name for p in decl.value_parameters},
+            )
+        )
         if not step_program and _calls_a_computation(decl.draws):
             # A program calling a named computation runs as its checked
             # computation: the callee's body is a term of the module,
@@ -3493,15 +4280,109 @@ class _ProgramsMixin:
         # of the family Π(p:P).Kern(dom(p), cod(p)) at the supplied
         # arguments, contributing its own factors to the parent's
         # joint kernel.
-        expanded_draws = self._expand_template_calls(ir_draws)
+        from quivers.dsl.program_templates import _is_standalone_application
+
+        expanded_draws = self._expand_template_calls(
+            ir_draws, preserve_names=_is_standalone_application(decl)
+        )
         # The widths an inline family reads its parameters at come from
         # the checked types: of the host data the program reads, and of
         # each let as its operands type it.
         parameter_spaces = self._host_data_spaces(decl.name)
+        for parameter in decl.value_parameters:
+            bound_vars.setdefault(parameter.name, parameter_spaces.get(parameter.name))
+        instantiated = self._instantiated_program_contracts.get(decl.name)
+        entry = instantiated[0] if instantiated is not None else None
+        if entry is not None:
+            for parameter in entry.parameters:
+                if parameter.name in decl.return_vars:
+                    bound_vars.setdefault(
+                        parameter.name, parameter_spaces.get(parameter.name)
+                    )
         self._parameter_space_stack.append(parameter_spaces)
+        self._sampleable_context_stack.append(sampleable_contexts)
         self._value_extents_stack.append(self._checked_value_extents(decl.name))
+        checked_batch_shapes = {}
+        checked_module = self._available_qiec_module()
+        if checked_module is not None:
+            instantiated = self._instantiated_program_contracts.get(decl.name)
+            checked_entry = (
+                instantiated[0]
+                if instantiated is not None
+                else next(
+                    (
+                        entry
+                        for entry in checked_module.entries
+                        if entry.name == decl.name
+                    ),
+                    None,
+                )
+            )
+            if checked_entry is not None:
+                for site in checked_entry.sites:
+                    plate = PlateShape(batch=site.batch, event=site.event)
+                    if instantiated is not None:
+                        plate = substitute_plate(plate, instantiated[1])
+                    batch_shape: list[int] = []
+                    for axis in plate.batch:
+                        size = axis.size
+                        if not isinstance(size, IndexLiteral) or not isinstance(
+                            size.value, int
+                        ):
+                            break
+                        batch_shape.append(size.value)
+                    else:
+                        checked_batch_shapes[site.name] = tuple(batch_shape)
         steps: list[Step] = []
+        # A grouped latent is an enumeration axis, even when its extent
+        # coincides with an observation plate. Track its lexical uses,
+        # including through deterministic bindings, independently of shape.
+        grouped_dependencies: dict[str, frozenset[str]] = {}
+        class_sizes: dict[str, int] = {}
+        classwise_bindings: set[str] = set()
+        group_shapes = {
+            step.var_name: tuple(
+                int(self._objects[name].size)
+                for name in (
+                    step.over_objs
+                    or ((step.over_obj,) if step.over_obj is not None else ())
+                )
+            )
+            for step in expanded_draws
+            if isinstance(step, GroupedMarginalizeStep)
+            and (step.over_objs or step.over_obj)
+        }
+        checked_extents = self._value_extents_stack[-1]
+        group_data_dependencies = {
+            name: frozenset(
+                latent
+                for latent, shape in group_shapes.items()
+                if extents[: len(shape)] == shape
+            )
+            for name, extents in checked_extents.items()
+        }
         for step in expanded_draws:
+            if isinstance(step, GroupedLatentInitStep):
+                grouped_dependencies[step.latent_name] = frozenset((step.latent_name,))
+                class_sizes[step.latent_name] = step.class_size
+            elif isinstance(step, LetStep):
+                reads = self._let_reads(step.value)
+                grouped_dependencies[step.name] = frozenset().union(
+                    *(grouped_dependencies.get(name, frozenset()) for name in reads)
+                )
+                group_data_dependencies[step.name] = _grouped_data_dependencies(
+                    step.value,
+                    group_shapes,
+                    checked_extents,
+                    group_data_dependencies,
+                    grouped_dependencies,
+                )
+                if (
+                    len(grouped_dependencies[step.name]) > 1
+                    or grouped_dependencies[step.name]
+                    & group_data_dependencies[step.name]
+                ):
+                    classwise_bindings.add(step.name)
             if isinstance(step, PlateDrawStep):
                 # draw v : A -> B ~ Family(args).  By the natural iso
                 # Kern(1, B^A) ≅ Kern(A, B), the plate variable IS a
@@ -3555,6 +4436,9 @@ class _ProgramsMixin:
                 array = self._independent_over_axes(
                     step.morphism, getattr(step, "axes", None), step.line, step.col
                 )
+                checked_batch = checked_batch_shapes.get(step.name)
+                if checked_batch and len(checked_batch) > 1:
+                    array = (checked_batch[1:], None if array is None else array[1])
                 if array is not None:
                     array_shape, event_axes = array
                     family, step_args = self._resolve_draw_morphism(
@@ -3569,6 +4453,8 @@ class _ProgramsMixin:
                         ),
                         bound_vars,
                         Euclidean(name=f"_{step.name}", dim=1),
+                        plate_rows=idx_space.size,
+                        batch_ndims=1 + len(array_shape),
                     )
                     if step.name in bound_vars:
                         raise CompileError(
@@ -3647,7 +4533,10 @@ class _ProgramsMixin:
                     col=step.col,
                 )
                 family, step_args = self._resolve_draw_morphism(
-                    _synth, bound_vars, cod_space
+                    _synth,
+                    bound_vars,
+                    cod_space,
+                    plate_rows=None if is_matrix_draw else idx_space.size,
                 )
                 if step.name in bound_vars:
                     raise CompileError(
@@ -3712,7 +4601,7 @@ class _ProgramsMixin:
                     col=step.col,
                 )
                 family, step_args = self._resolve_draw_morphism(
-                    _synth, bound_vars, codomain
+                    _synth, bound_vars, codomain, plate_rows=idx_space.size
                 )
                 # Register the response variable so the runtime can
                 # supply data via the observations dict.
@@ -3721,7 +4610,50 @@ class _ProgramsMixin:
                 resp_var = step.response_var
                 ll_slot = step.ll_slot or step.latent_name
                 num_rows = int(idx_space.size)
-                class_size = int(step.class_size or 1)
+                argument_classes = tuple(
+                    tuple(
+                        latent
+                        for latent in class_sizes
+                        if any(
+                            latent in grouped_dependencies.get(name, ())
+                            for name in _arg_names((argument,))
+                        )
+                    )
+                    for argument in step_args or ()
+                )
+                likelihood_classes = tuple(
+                    latent
+                    for latent in class_sizes
+                    if latent == step.latent_name
+                    or any(latent in axes for axes in argument_classes)
+                )
+                likelihood_sizes = tuple(
+                    class_sizes[name] for name in likelihood_classes
+                )
+                group_arguments = tuple(
+                    step.latent_name in group_data_dependencies.get(argument, ())
+                    if isinstance(argument, str)
+                    else checked_extents.get(argument.name, ())[
+                        len(argument.indices) :
+                    ][: len(group_shapes[step.latent_name])]
+                    == group_shapes[step.latent_name]
+                    for argument in step_args or ()
+                )
+                parameter_spec = cast(
+                    tuple[tuple[str, object], ...],
+                    getattr(family, "_param_spec", ()) or (),
+                )
+                parameter_ranks = cast(
+                    tuple[int, ...], getattr(family, "_param_event_ranks", ())
+                )
+                variable_ranks = tuple(
+                    rank
+                    for (kind, _), rank in zip(
+                        parameter_spec or (), parameter_ranks, strict=True
+                    )
+                    if kind == "var"
+                )
+                grouped_dependencies[ll_slot] = frozenset(likelihood_classes)
 
                 def _captured_observe(
                     env: dict,
@@ -3730,7 +4662,16 @@ class _ProgramsMixin:
                     _resp=resp_var,
                     _slot=ll_slot,
                     _N_decl=num_rows,
-                    _K=class_size,
+                    _class_names=likelihood_classes,
+                    _class_shape=likelihood_sizes,
+                    _argument_classes=argument_classes,
+                    _variable_ranks=variable_ranks,
+                    _weights=step.weights,
+                    _event=step.event,
+                    _group_arguments=group_arguments,
+                    _group_rank=len(group_shapes[step.latent_name]),
+                    _via=step.index_map_var,
+                    _via_axes=step.index_map_axes,
                 ) -> torch.Tensor:
                     # Take the row count from the response tensor at
                     # runtime: the per-row index axis carries the
@@ -3772,44 +4713,163 @@ class _ProgramsMixin:
                     else:
                         parts = [_lookup_arg(env, a) for a in _args]
 
+                    original_rows = _N
+                    argument_axes = _argument_classes or ((),) * len(parts)
+                    ranks = _variable_ranks or (0,) * len(parts)
+                    group_parts = tuple(
+                        grouped and part.dim() >= len(axes) + _group_rank + rank
+                        for part, axes, grouped, rank in zip(
+                            parts,
+                            argument_axes,
+                            _group_arguments or (False,) * len(parts),
+                            ranks,
+                            strict=True,
+                        )
+                    )
+                    if any(group_parts):
+                        if _via_axes is not None:
+                            indices = tuple(
+                                _index_map_tensor(env, name).reshape(-1)
+                                for name in _via_axes
+                            )
+                        else:
+                            assert _via is not None
+                            indices = (_index_map_tensor(env, _via).reshape(-1),)
+                        pulled = []
+                        for part, axes, grouped in zip(
+                            parts, argument_axes, group_parts, strict=True
+                        ):
+                            if grouped:
+                                part = part[
+                                    (
+                                        *(slice(None) for _ in axes),
+                                        *(index.to(part.device) for index in indices),
+                                    )
+                                ].movedim(len(axes), 0)
+                            pulled.append(part)
+                        parts = pulled
+                    row_parts = [
+                        grouped or (not axes and p.dim() > rank and p.shape[0] == _N)
+                        for p, axes, grouped, rank in zip(
+                            parts, argument_axes, group_parts, ranks, strict=True
+                        )
+                    ]
+                    active_rows = None
+                    weights = None
+                    if _weights is not None:
+                        from quivers.effects._observation_weights import checked_weights
+
+                        weights = checked_weights(
+                            env[_weights] if isinstance(_weights, str) else _weights,
+                            response,
+                            _N,
+                        ).expand(_N)
+                        active_rows = torch.nonzero(
+                            weights > 0, as_tuple=False
+                        ).flatten()
+                        if active_rows.numel() == 0:
+                            zero = (weights * 0.0).sum()
+                            for part in parts:
+                                zero = zero + (part * 0.0).sum()
+                            return zero.expand(_N, *_class_shape)
+                        if active_rows.numel() == _N:
+                            # Dense weights need no response/parameter copies.
+                            active_rows = None
+                        else:
+                            response = response.index_select(0, active_rows)
+                            parts = [
+                                part.index_select(0, active_rows.to(part.device))
+                                if is_row
+                                else part
+                                for part, is_row in zip(parts, row_parts, strict=True)
+                            ]
+                            _N = int(active_rows.numel())
+
+                    payload = None
+                    if _event is not None:
+                        from quivers.effects._observation_events import resolve_event
+
+                        payload = resolve_event(_event, env)
+                        if active_rows is not None:
+                            payload = {
+                                name: value.index_select(
+                                    0, active_rows.to(value.device)
+                                )
+                                if isinstance(value, torch.Tensor)
+                                and value.ndim
+                                and value.shape[0] == original_rows
+                                else value
+                                for name, value in payload.items()
+                            }
+
+                    def score_distribution(distribution, target):
+                        """Score one class-expanded law with retained event roles."""
+                        if payload is None:
+                            return distribution.log_prob(target)
+                        from quivers.continuous._observation_events import (
+                            event_log_prob,
+                        )
+
+                        roles = {}
+                        for name, value in payload.items():
+                            if (
+                                isinstance(value, torch.Tensor)
+                                and value.ndim
+                                and value.shape[0] == _N
+                            ):
+                                while value.ndim < len(distribution.batch_shape):
+                                    value = value.unsqueeze(1)
+                            roles[name] = value
+                        return event_log_prob(distribution, target, **roles)
+
                     # Detect whether any parameter carries the class
                     # axis. If so, broadcast each part to leading
                     # (N, K) plus any trailing event dims and call
                     # the family's underlying distribution builder
                     # directly so the inline family's split-by-dim
                     # path doesn't shrink the event axis.
-                    needs_cross = any(p.dim() >= 1 and p.shape[0] == _K for p in parts)
+                    needs_cross = any(argument_axes)
                     if needs_cross:
+                        coordinate_parameters = not any(ranks)
                         event_shape: tuple[int, ...] = ()
-                        bcast_parts = []
-                        for p in parts:
-                            if p.dim() == 0:
-                                bcast_parts.append(p.expand(_N, _K))
-                            elif p.shape[0] == _K:
-                                bcast_parts.append(p.unsqueeze(0))
-                                if p.dim() > 1:
-                                    event_shape = torch.broadcast_shapes(
-                                        event_shape, tuple(p.shape[1:])
-                                    )
-                            elif p.shape[0] == _N:
-                                bcast_parts.append(p.unsqueeze(1))
-                                if p.dim() > 1:
-                                    event_shape = torch.broadcast_shapes(
-                                        event_shape, tuple(p.shape[1:])
-                                    )
-                            else:
-                                bcast_parts.append(p)
-                        target = (_N, _K) + tuple(event_shape)
+                        aligned_parts = []
+                        for p, axes, is_row in zip(
+                            parts, argument_axes, row_parts, strict=True
+                        ):
+                            offset = int(is_row)
+                            suffix = tuple(p.shape[offset + len(axes) :])
+                            axis_sizes = dict(
+                                zip(
+                                    axes,
+                                    p.shape[offset : offset + len(axes)],
+                                    strict=True,
+                                )
+                            )
+                            shape = (
+                                p.shape[0] if is_row else 1,
+                                *(axis_sizes.get(name, 1) for name in _class_names),
+                                *suffix,
+                            )
+                            aligned_parts.append(p.reshape(shape))
+                            if coordinate_parameters:
+                                event_shape = torch.broadcast_shapes(
+                                    event_shape, suffix
+                                )
+                        prefix = (_N, *_class_shape)
                         resolved = []
-                        for p in bcast_parts:
-                            try:
-                                resolved.append(p.expand(target))
-                            except RuntimeError:
-                                resolved.append(p)
-                        # A family applied to literals beside variables
-                        # records the literals in its parameter spec;
-                        # they take their place among the broadcast
-                        # variable parts before the builder runs.
+                        for p in aligned_parts:
+                            suffix = tuple(p.shape[1 + len(_class_shape) :])
+                            if coordinate_parameters:
+                                p = p.reshape(
+                                    *p.shape[: 1 + len(_class_shape)],
+                                    *((1,) * (len(event_shape) - len(suffix))),
+                                    *suffix,
+                                )
+                                suffix = event_shape
+                            resolved.append(p.expand(*prefix, *suffix))
+                        target = (*prefix, *event_shape)
+                        # Literal parameters share the resolved tensors' device;
+                        # only declared class axes are broadcast as enumerations.
                         spec = getattr(_family, "_param_spec", None)
                         if spec is not None:
                             full: list[torch.Tensor] = []
@@ -3820,9 +4880,8 @@ class _ProgramsMixin:
                                         torch.full(
                                             target,
                                             float(literal),
-                                            dtype=resolved[0].dtype
-                                            if resolved
-                                            else torch.get_default_dtype(),
+                                            dtype=resolved[0].dtype,
+                                            device=resolved[0].device,
                                         )
                                     )
                                 else:
@@ -3837,9 +4896,29 @@ class _ProgramsMixin:
                             dist.event_shape
                         ):
                             resp_broadcast = resp_broadcast.unsqueeze(1)
-                        if _family._discrete:
-                            resp_broadcast = resp_broadcast.float()
-                        ll = dist.log_prob(resp_broadcast)
+                        ll = score_distribution(dist, resp_broadcast)
+                    elif getattr(_family, "_param_spec", None) is not None:
+                        # Row-only arguments retain their rows even when
+                        # an intermediate let has no checked plate width.
+                        # Feed their resolved values to the builder rather
+                        # than interpreting their rows as shared features.
+                        resolved = []
+                        variable_parts = iter(parts)
+                        for kind, literal in _family._param_spec:
+                            resolved.append(
+                                parts[0].new_tensor(float(literal))
+                                if kind == "lit"
+                                else next(variable_parts)
+                            )
+                        dist = _family._dist_builder(resolved)
+                        target = response
+                        while target.dim() < len(dist.batch_shape) + len(
+                            dist.event_shape
+                        ):
+                            target = target.unsqueeze(-1)
+                        ll = score_distribution(dist, target)
+                        if ll.dim() > 1:
+                            ll = ll.reshape(_N, -1).sum(-1)
                     else:
                         if len(parts) > 1:
                             common_shape = torch.broadcast_shapes(
@@ -3849,17 +4928,30 @@ class _ProgramsMixin:
                             theta = torch.stack(expanded, dim=-1)
                         else:
                             theta = parts[0]
-                        ll = _family.log_prob(theta, response)
-                    # Reshape to (N, K). When the body's per-row
-                    # log-likelihood has no class dependence (every
-                    # parameter is N-shaped or scalar) we tile across
-                    # K so the marginalize's scatter accumulator
-                    # always receives a (N, K) tensor.
-                    if ll.dim() == 1:
-                        ll = ll.unsqueeze(-1).expand(-1, _K)
-                    elif ll.dim() == 0:
-                        ll = ll.reshape(1, 1).expand(_N, _K)
-                    return ll
+                        ll = (
+                            _family.log_prob(theta, response)
+                            if payload is None
+                            else _family.log_prob_event(theta, response, payload)
+                        )
+                    # Each lexical class axis is retained until its own
+                    # grouped reduction; independent coordinate events sum here.
+                    if needs_cross:
+                        if ll.dim() > 1 + len(_class_shape):
+                            ll = ll.reshape(_N, *_class_shape, -1).sum(-1)
+                    else:
+                        ll = ll.reshape(_N, *((1,) * len(_class_shape))).expand(
+                            _N, *_class_shape
+                        )
+                    weight_shape = (-1, *((1,) * len(_class_shape)))
+                    if active_rows is not None:
+                        assert weights is not None
+                        ll = ll * weights.index_select(0, active_rows).reshape(
+                            weight_shape
+                        )
+                        return ll.new_zeros(original_rows, *_class_shape).index_copy(
+                            0, active_rows, ll
+                        )
+                    return ll if weights is None else ll * weights.reshape(weight_shape)
 
                 bound_vars[ll_slot] = None
                 steps.append(
@@ -3867,7 +4959,23 @@ class _ProgramsMixin:
                         name=ll_slot,
                         value=reading(
                             _captured_observe,
-                            (resp_var, "_x_input", *_arg_names(step_args or ())),
+                            (
+                                resp_var,
+                                "_x_input",
+                                *_arg_names(step_args or ()),
+                                *(
+                                    (step.index_map_var,)
+                                    if step.index_map_var is not None
+                                    else ()
+                                ),
+                                *(step.index_map_axes or ()),
+                                *(step.event.names() if step.event is not None else ()),
+                                *(
+                                    (step.weights,)
+                                    if isinstance(step.weights, str)
+                                    else ()
+                                ),
+                            ),
                         ),
                     )
                 )
@@ -3893,12 +5001,15 @@ class _ProgramsMixin:
                     step.morphism, step.axes, step.line, step.col
                 )
                 array_shape = () if array is None else array[0]
+                checked_batch = checked_batch_shapes.get(step.response_var)
+                if checked_batch and len(checked_batch) > 1:
+                    array_shape = checked_batch[1:]
                 _synth = DrawStep(
                     vars=(step.index_var,),
                     morphism=step.morphism,
                     args=step.args,
                     is_observed=True,
-                    axes=None if array is None else array[1],
+                    axes=step.axes if array is None else array[1],
                     line=step.line,
                     col=step.col,
                 )
@@ -3913,7 +5024,19 @@ class _ProgramsMixin:
                     if array is None
                     else Euclidean(name=f"_{step.response_var}", dim=1),
                     plate_rows=idx_space.size,
+                    batch_ndims=1 + len(array_shape),
                 )
+                if step.morphism in self._morphisms and checked_batch:
+                    # A declared kernel already consumes its codomain axes.
+                    # Scalar base laws expose those coordinates as checked
+                    # batch axes, but they are not another array of kernels.
+                    kernel_axes = max(
+                        len(getattr(family.codomain, "event_shape", ()))
+                        - family.support.event_dim,
+                        0,
+                    )
+                    if kernel_axes:
+                        array_shape = array_shape[:-kernel_axes]
                 # Build a placeholder response of the right shape; the
                 # actual values are supplied at fit time via the
                 # `observations[response_var]` dict-entry. The buffer
@@ -3933,7 +5056,10 @@ class _ProgramsMixin:
                 resp_shape = (resp_shape[0], *array_shape, *resp_shape[1:])
                 placeholder = torch.zeros(*resp_shape)
                 vec_obs = VectorisedObserve(
-                    family, placeholder, array_shape=array_shape
+                    family,
+                    placeholder,
+                    array_shape=array_shape,
+                    array_is_batch=bool(checked_batch and len(checked_batch) > 1),
                 )
                 # The step's response_var is the data column supplied
                 # at fit time. We expose it as the bound name so the
@@ -3943,7 +5069,11 @@ class _ProgramsMixin:
                     bound_vars[step.response_var] = family.codomain
                 steps.append(
                     Observe(
-                        names=(step.response_var,), morphism=vec_obs, args=step_args
+                        names=(step.response_var,),
+                        morphism=vec_obs,
+                        args=step_args,
+                        weights=step.weights,
+                        event=step.event,
                     )
                 )
                 continue
@@ -4124,6 +5254,33 @@ class _ProgramsMixin:
                         step.body_ll_var is not None
                         and step.body_ll_var != step.var_name
                     )
+                    prior_classes = tuple(
+                        name
+                        for name in class_sizes
+                        if name != step.var_name
+                        and any(
+                            name in grouped_dependencies.get(binding, ())
+                            for binding in (probs_var, *probs_indices)
+                        )
+                    )
+                    slot_classes = {
+                        slot: tuple(
+                            name
+                            for name in class_sizes
+                            if name in grouped_dependencies.get(slot, ())
+                        )
+                        for slot, _, _ in observe_specs
+                    }
+                    reduction_classes = tuple(
+                        name
+                        for name in class_sizes
+                        if name == step.var_name
+                        or name in prior_classes
+                        or any(name in axes for axes in slot_classes.values())
+                    )
+                    reduction_sizes = tuple(
+                        class_sizes[name] for name in reduction_classes
+                    )
 
                     def _marginalize_grouped_callable(
                         env: dict,
@@ -4141,6 +5298,11 @@ class _ProgramsMixin:
                         _parameterization: str = parameterization,
                         _product: bool = is_product,
                         _per_group: bool = is_nested_inner,
+                        _slot_classes=slot_classes,
+                        _class_names=reduction_classes,
+                        _class_sizes=reduction_sizes,
+                        _prior_classes=prior_classes,
+                        _latent=step.var_name,
                     ) -> torch.Tensor:
                         # Collect per-observe (ll, idx) pairs from
                         # env, with the shape contract that each
@@ -4160,7 +5322,12 @@ class _ProgramsMixin:
                                 ll = _project_nested_aggregates(
                                     ll, inner_sizes, kept_axes, slot
                                 )
-                                ll = ll.unsqueeze(-1).expand(-1, _k)
+                            axes = _slot_classes[slot]
+                            source_sizes = dict(zip(axes, ll.shape[1:], strict=True))
+                            ll = ll.reshape(
+                                ll.shape[0],
+                                *(source_sizes.get(name, 1) for name in _class_names),
+                            ).expand(ll.shape[0], *_class_sizes)
                             if ll.shape[-1] != _k:
                                 raise ValueError(
                                     f"grouped marginalize: per-row "
@@ -4201,8 +5368,50 @@ class _ProgramsMixin:
                                     idx_list.append(positions)
                         probs = env[_probs]
                         for index_name in _probs_indices:
-                            probs = probs[env[index_name].to(torch.long)]
+                            probs = probs[
+                                env[index_name].to(
+                                    device=probs.device, dtype=torch.long
+                                )
+                            ]
                         log_prior = _categorical_log_prior(probs, _parameterization)
+                        if _prior_classes:
+                            # Conditional priors retain their named enclosing
+                            # class axes. Add the prior exactly once per group;
+                            # the reducer's shared prior is then the neutral zero.
+                            class_rank = len(_prior_classes)
+                            axis_sizes = dict(
+                                zip(
+                                    _prior_classes,
+                                    log_prior.shape[:class_rank],
+                                    strict=True,
+                                )
+                            )
+                            axis_sizes[_latent] = _k
+                            remaining = tuple(log_prior.shape[class_rank:-1])
+                            total_groups = math.prod(_sizes)
+                            if remaining:
+                                if remaining != _sizes:
+                                    raise ValueError(
+                                        "grouped marginalize: conditional prior "
+                                        f"group axes must be {_sizes}; got {remaining}"
+                                    )
+                                log_prior = log_prior.reshape(
+                                    *log_prior.shape[:class_rank], total_groups, _k
+                                ).movedim(class_rank, 0)
+                            else:
+                                log_prior = log_prior.unsqueeze(0)
+                            prior_rows = log_prior.reshape(
+                                log_prior.shape[0],
+                                *(axis_sizes.get(name, 1) for name in _class_names),
+                            ).expand(total_groups, *_class_sizes)
+                            positions = torch.arange(total_groups, device=probs.device)
+                            ll_list.append(prior_rows)
+                            idx_list.append(
+                                tuple(torch.unravel_index(positions, _sizes))
+                                if _product
+                                else positions
+                            )
+                            log_prior = log_prior.new_zeros(_k)
                         # The block's latent is indexed by its grouping
                         # plate: one class per group, drawn from that
                         # group's prior row when the prior is a
@@ -4245,6 +5454,9 @@ class _ProgramsMixin:
                         if is_nested_inner
                         else f"_marg_{step.var_name}"
                     )
+                    grouped_dependencies[marg_name] = frozenset(
+                        name for name in reduction_classes if name != step.var_name
+                    )
                     bound_vars[marg_name] = None
                     marginal_reads: list[str] = [probs_var, *probs_indices]
                     for slot, map_var, map_axes in observe_specs:
@@ -4257,6 +5469,7 @@ class _ProgramsMixin:
                         (
                             Score(
                                 name=marg_name,
+                                role="likelihood",
                                 score=reading(
                                     _marginalize_grouped_callable, marginal_reads
                                 ),
@@ -4377,6 +5590,29 @@ class _ProgramsMixin:
                         ),
                         reads,
                     )
+                    if step.name in classwise_bindings:
+                        classes = tuple(
+                            name
+                            for name in class_sizes
+                            if name in grouped_dependencies[step.name]
+                        )
+                        compiled_fn = reading(
+                            _classwise_let(
+                                compiled_fn,
+                                classes,
+                                tuple(class_sizes[name] for name in classes),
+                                {
+                                    name: tuple(
+                                        axis
+                                        for axis in classes
+                                        if axis in grouped_dependencies.get(name, ())
+                                    )
+                                    for name in reads
+                                    if grouped_dependencies.get(name)
+                                },
+                            ),
+                            reads,
+                        )
                     bound_vars[step.name] = None
                     let_space = _let_space(
                         step.value,
@@ -4440,7 +5676,7 @@ class _ProgramsMixin:
                 continue
             draw = step
             for v in draw.vars:
-                if v in bound_vars:
+                if v in bound_vars and not draw.is_observed:
                     raise CompileError(
                         f"variable {v!r} already bound in program", draw.line, draw.col
                     )
@@ -4501,9 +5737,15 @@ class _ProgramsMixin:
                     draw.col,
                 )
             steps.append(
-                (Observe if draw.is_observed else Draw)(
-                    names=draw.vars, morphism=morph, args=step_args
+                Observe(
+                    names=draw.vars,
+                    morphism=morph,
+                    args=step_args,
+                    weights=draw.weights,
+                    event=draw.event,
                 )
+                if draw.is_observed
+                else Draw(names=draw.vars, morphism=morph, args=step_args)
             )
         for rv in decl.return_vars:
             if rv not in bound_vars:
@@ -4511,6 +5753,7 @@ class _ProgramsMixin:
                     f"return variable {rv!r} not bound in program", decl.line, decl.col
                 )
         self._parameter_space_stack.pop()
+        self._sampleable_context_stack.pop()
         self._value_extents_stack.pop()
         prog = MonadicProgram(
             domain,
@@ -4560,7 +5803,10 @@ class _ProgramsMixin:
         return None
 
     def _latent_kernel_draws(
-        self, steps: tuple[ProgramStep, ...]
+        self,
+        steps: tuple[ProgramStep, ...],
+        contexts: dict[tuple[str, str], tuple[ContinuousMorphism, str]],
+        bound_names: set[str],
     ) -> tuple[ProgramStep, ...]:
         """Draw through each latent-weight kernel at its drawn weights.
 
@@ -4577,6 +5823,10 @@ class _ProgramsMixin:
         ----------
         steps : tuple[ProgramStep, ...]
             A program body, marginalization scopes included.
+        contexts : dict
+            Scoped sampleable reference bindings, populated once per site.
+        bound_names : set[str]
+            Lexical values taking precedence over module sampleables.
 
         Returns
         -------
@@ -4589,17 +5839,93 @@ class _ProgramsMixin:
             If a draw through a latent-weight kernel names no argument,
             or an argument that is not a binding.
         """
+        if not self._latent_networks:
+            return steps
         rewritten: list[ProgramStep] = []
+        latent_names = {
+            id(self._morphisms[name]): name for name in self._latent_networks
+        }
+        bound_names = set(bound_names)
+        occupied = (
+            set(bound_names)
+            | {name for step in steps for name in getattr(step, "vars", ())}
+            | {step.name for step in steps if isinstance(step, LetStep)}
+        )
         for step in steps:
             if isinstance(step, MarginalizeStep):
                 rewritten.append(
-                    step.with_(scope=self._latent_kernel_draws(step.scope))
+                    step.with_(
+                        scope=self._latent_kernel_draws(
+                            step.scope, contexts, bound_names | {step.var}
+                        )
+                    )
                 )
                 continue
             if not isinstance(step, SampleStep | ObserveStep):
                 rewritten.append(step)
+                if isinstance(step, LetStep):
+                    bound_names.add(step.name)
                 continue
-            network = self._latent_networks.get(step.morphism)
+            site = step.vars[0] if step.vars else "value"
+            references: dict[str, tuple[ContinuousMorphism, str]] = {}
+            self._inline_sampleable_references(
+                step.morphism, step.args or (), bound_names, references=references
+            )
+            raw_by_network: dict[tuple[str, tuple[str, ...]], str] = {}
+            source_line, source_col = step.line, step.col
+
+            def raw_network(name: str, inputs: tuple[str, ...]) -> str:
+                """Emit one ordinary network evaluation per distinct context.
+
+                Parameters
+                ----------
+                name : str
+                    Canonical latent kernel name.
+                inputs : tuple[str, ...]
+                    Actual conditioning bindings, in domain-factor order.
+
+                Returns
+                -------
+                str
+                    Fresh raw parameter binding, shared by repeated aliases.
+                """
+                key = (name, inputs)
+                if key not in raw_by_network:
+                    stem = f"{name}__raw_{site}"
+                    raw = stem
+                    suffix = 0
+                    while raw in occupied:
+                        suffix += 1
+                        raw = f"{stem}_{suffix}"
+                    occupied.add(raw)
+                    raw_by_network[key] = raw
+                    rewritten.append(
+                        LetStep(
+                            name=raw,
+                            value=LetExprCall(
+                                func=f"{name}__network",
+                                args=tuple(LetExprVar(name=value) for value in inputs),
+                            ),
+                            line=source_line,
+                            col=source_col,
+                        )
+                    )
+                return raw_by_network[key]
+
+            for alias, reference in references.items():
+                name = latent_names.get(id(reference[0]))
+                if name is not None:
+                    contexts[(site, alias)] = (
+                        self._morphisms[f"{name}__family"],
+                        raw_network(name, ("_x_input",)),
+                    )
+            bound_names.update(step.vars)
+            network_name = latent_names.get(id(self._morphisms.get(step.morphism)))
+            network = (
+                self._latent_networks.get(network_name)
+                if network_name is not None
+                else None
+            )
             if network is None:
                 rewritten.append(step)
                 continue
@@ -4616,22 +5942,11 @@ class _ProgramsMixin:
                     step.line,
                     step.col,
                 )
-            site = step.vars[0] if step.vars else "value"
-            raw = f"{step.morphism}__raw_{site}"
-            rewritten.append(
-                LetStep(
-                    name=raw,
-                    value=LetExprCall(
-                        func=f"{step.morphism}__network",
-                        args=tuple(LetExprVar(name=text) for text in names),
-                    ),
-                    line=step.line,
-                    col=step.col,
-                )
-            )
+            assert network_name is not None
+            raw = raw_network(network_name, tuple(names))
             rewritten.append(
                 step.with_(
-                    morphism=f"{step.morphism}__family",
+                    morphism=f"{network_name}__family",
                     args=(DrawArgName(text=raw),),
                 )
             )
@@ -5146,7 +6461,11 @@ class _ProgramsMixin:
             return total.reshape(1)
 
         bound_vars[step.name] = None
-        return Score(name=step.name, score=reading(_chain_marginal, chain_reads))
+        return Score(
+            name=step.name,
+            role="likelihood",
+            score=reading(_chain_marginal, chain_reads),
+        )
 
     def _compile_call(
         self, step: CallStep, bound_vars: dict[str, AnySpace | None]
@@ -5432,6 +6751,16 @@ class _ProgramsMixin:
         # ``(N,)``) need no such reshape. A vector-valued parameter is
         # the single ``var`` slot whose declared width exceeds one.
         shared_vector_theta = _shared_vector_parameter(obs_family)
+        observation_weights = observe_step.weights if observe_step is not None else None
+        observed_array_shape = ()
+        if isinstance(observe_step, VectorisedObserveStep):
+            array = self._independent_over_axes(
+                observe_step.morphism,
+                observe_step.axes,
+                observe_step.line,
+                observe_step.col,
+            )
+            observed_array_shape = array[0] if array is not None else ()
 
         _CATEGORICAL = prior_family == "Categorical"
         _BERNOULLI = prior_family == "Bernoulli"
@@ -5461,6 +6790,10 @@ class _ProgramsMixin:
             _parameterization: str | None = prior_parameterization,
             _reduction: str = reduction,
             _shared_vector: bool = shared_vector_theta,
+            _weights: str | float | None = observation_weights,
+            _event=observe_step.event if observe_step is not None else None,
+            _plated: bool = isinstance(observe_step, VectorisedObserveStep),
+            _array_shape: tuple[int, ...] = observed_array_shape,
         ) -> torch.Tensor:
             probs = _lookup_arg(env, _prior_arg)
             if _categorical:
@@ -5490,7 +6823,44 @@ class _ProgramsMixin:
                     for name, fn in _lets:
                         local[name] = fn(local)
                     theta = _observation_parameter(local, _obs_args, _shared_vector)
-                    ll_cols.append(_obs_family.log_prob(theta, response))
+                    if _weights is None and _event is None:
+                        ll_cols.append(_obs_family.log_prob(theta, response))
+                    else:
+                        from quivers.effects._observation_weights import (
+                            WeightedObservation,
+                        )
+                        from quivers.effects._observation_events import (
+                            RecordedObservation,
+                            resolve_event,
+                        )
+
+                        declared = (
+                            VectorisedObserve(
+                                _obs_family, response, array_shape=_array_shape
+                            )
+                            if _plated
+                            else _obs_family
+                        )
+                        family = declared
+                        if _event is not None:
+                            family = RecordedObservation(
+                                family, declared, resolve_event(_event, local)
+                            )
+                        if _weights is not None:
+                            weights = (
+                                local[_weights]
+                                if isinstance(_weights, str)
+                                else _weights
+                            )
+                            family = WeightedObservation(
+                                family, declared, weights, theta
+                            )
+                        pointwise = getattr(family, "log_prob_pointwise", None)
+                        ll_cols.append(
+                            pointwise(theta, response)
+                            if callable(pointwise)
+                            else family.log_prob(theta, response)
+                        )
                 per_class = torch.stack(ll_cols, dim=-1)
                 if log_prior.dim() < per_class.dim():
                     # One latent for the whole body. The block
@@ -5546,6 +6916,10 @@ class _ProgramsMixin:
             )
         )
         marginal_reads: set[str] = {*_arg_names((prior_arg,)), "_x_input"}
+        if isinstance(observation_weights, str):
+            marginal_reads.add(observation_weights)
+        if observe_step is not None and observe_step.event is not None:
+            marginal_reads.update(observe_step.event.names())
         for name, fn in body_lets:
             bound_vars[name] = None
             steps.append(Let(name=name, value=fn))
@@ -5559,6 +6933,7 @@ class _ProgramsMixin:
                     names=(response_var,),
                     morphism=MarginalizedFactor(obs_family),
                     args=obs_args,
+                    event=observe_step.event if observe_step is not None else None,
                 )
             )
             marginal_reads.add(response_var)
@@ -5567,8 +6942,129 @@ class _ProgramsMixin:
         marg_name = f"_marg_{latent_name}"
         bound_vars[marg_name] = None
         steps.append(
-            Score(name=marg_name, score=reading(_ungrouped_marginal, marginal_reads))
+            Score(
+                name=marg_name,
+                role="likelihood",
+                score=reading(_ungrouped_marginal, marginal_reads),
+            )
         )
+
+    def _inline_sampleable_references(
+        self, family, arguments, bound_names, *, references=None, site=None
+    ):
+        """Expand fixed declared sampleables through canonical source resolution.
+
+        Parameters
+        ----------
+        family : str
+            Consuming family, whose semantic parameter constraints identify
+            sampleable positions.
+        arguments : tuple
+            Original structural draw arguments, retaining keyword order.
+        bound_names : set[str]
+            Lexical values that take precedence over module declarations.
+        references : dict or None
+            Optional destination for learned native kernels consuming the
+            original program input rather than a fixed initializer.
+        site : str or None
+            Current draw site, selecting its scoped latent-network context.
+
+        Returns
+        -------
+        tuple
+            Arguments with fixed sampleable references replaced by their
+            original initializer trees; numeric references remain lexical.
+
+        Raises
+        ------
+        CompileError
+            If a referenced declaration contains a recursive initializer.
+        """
+        record = self._distribution_families.get(
+            FAMILY_ALIASES.get(family, family) or family
+        )
+        if record is None or not any(
+            parameter.constraint == "sampleable" for parameter in record.parameters
+        ):
+            return arguments
+        morphisms = morphism_table(self._module)
+        aliases = build_let_table(self._module)
+
+        def sampleable(value, seen):
+            if isinstance(value, DrawArgList):
+                return value.with_(
+                    items=tuple(sampleable(item, seen) for item in value.items)
+                )
+            if isinstance(value, DrawArgDist):
+                return value.with_(args=arguments_for(value.family, value.args, seen))
+            if not isinstance(value, DrawArgName) or value.text in bound_names:
+                return value
+            if value.text not in morphisms and value.text not in aliases:
+                return value
+            resolved = resolve_step_dist(
+                value.text,
+                None,
+                morphisms=morphisms,
+                lets=aliases,
+                family_registry=frozenset(self._distribution_families),
+                target="native",
+                native_kernel=True,
+            )
+            declaration = morphisms.get(resolved.original_morphism_name)
+            initializer = declaration.init_family if declaration is not None else None
+            # Bare family declarations contain learned kernels, whose input
+            # context is retained by the ordinary named-morphism path.
+            if initializer is None or not initializer.args:
+                if references is not None:
+                    native = self._morphisms.get(resolved.original_morphism_name)
+                    if isinstance(native, ContinuousMorphism):
+                        contexts = self._sampleable_context_stack
+                        references[value.text] = (
+                            contexts[-1].get((site, value.text), (native, "_x_input"))
+                            if contexts and site is not None
+                            else (native, "_x_input")
+                        )
+                return value
+            name = resolved.original_morphism_name
+            if name in seen:
+                raise CompileError(
+                    f"recursive sampleable initializer {name!r}", value.line, value.col
+                )
+            return DrawArgDist(
+                family=initializer.family,
+                args=arguments_for(initializer.family, initializer.args, (*seen, name)),
+                line=value.line,
+                col=value.col,
+            )
+
+        def arguments_for(current, args, seen):
+            record = self._distribution_families.get(
+                FAMILY_ALIASES.get(current, current) or current
+            )
+            if record is None or not any(
+                parameter.constraint == "sampleable" for parameter in record.parameters
+            ):
+                return args
+            bound = bind_family_arguments(
+                current,
+                args,
+                get_inline_param_names(current, self._family_catalog) or (),
+            )
+            parameter_aliases = PARAMETER_ALIASES.get(current, {})
+            values = []
+            for name, argument in bound:
+                semantic = parameter_aliases.get(name, name)
+                parameter = record.parameter(semantic)
+                if parameter.constraint == "sampleable":
+                    argument = sampleable(argument, seen)
+                elif isinstance(argument, DrawArgDist):
+                    argument = argument.with_(
+                        args=arguments_for(argument.family, argument.args, seen)
+                    )
+                values.append(DrawArgNamed(parameter=name, value=argument))
+            return tuple(values)
+
+        return arguments_for(family, arguments, ())
 
     def _resolve_draw_morphism(
         self,
@@ -5577,6 +7073,7 @@ class _ProgramsMixin:
         program_codomain: SetObject | ContinuousSpace | None,
         *,
         plate_rows: int | None = None,
+        batch_ndims: int | None = None,
     ) -> tuple:
         """Resolve a draw step's morphism, handling both named morphisms
         and inline distribution families.
@@ -5594,6 +7091,9 @@ class _ProgramsMixin:
             over, one family per row; ``None`` for a draw of its own.
             A vector over the plate's rows filling a rank-0 parameter
             holds one entry per row, which the family reads at its row.
+        batch_ndims : int or None
+            Explicit row and independent array rank. None uses one axis
+            for a plate and zero for an unplated construction.
 
         Returns
         -------
@@ -5678,7 +7178,7 @@ class _ProgramsMixin:
                         converted.append(str(a))
                 step_args = tuple(converted)
             return (morph, step_args)
-        param_names = get_inline_param_names(draw.morphism)
+        param_names = get_inline_param_names(draw.morphism, self._family_catalog)
         if param_names is not None:
             if draw.args is None:
                 raise CompileError(
@@ -5686,6 +7186,21 @@ class _ProgramsMixin:
                     draw.line,
                     draw.col,
                 )
+            sampleable_references = {}
+            draw = draw.with_(
+                args=self._inline_sampleable_references(
+                    draw.morphism,
+                    draw.args,
+                    set(bound_vars)
+                    | (
+                        set(self._parameter_space_stack[-1])
+                        if self._parameter_space_stack
+                        else set()
+                    ),
+                    references=sampleable_references,
+                    site=draw.vars[0] if draw.vars else "value",
+                )
+            )
             axes_override = self._axes_codomain(getattr(draw, "axes", None))
             try:
                 inline_codomain = self._infer_inline_codomain(
@@ -5715,7 +7230,12 @@ class _ProgramsMixin:
                 }
                 if plate_rows is not None:
                     per_row = _per_row_parameters(
-                        draw.morphism, draw.args, param_names, value_extents, plate_rows
+                        draw.morphism,
+                        draw.args,
+                        param_names,
+                        value_extents,
+                        plate_rows,
+                        self._family_catalog,
                     )
                     variable_types = {
                         **variable_types,
@@ -5737,6 +7257,13 @@ class _ProgramsMixin:
                     inline_codomain,
                     value_extents=value_extents,
                     variable_types=variable_types,
+                    sampleable_references=sampleable_references,
+                    families=self._family_catalog,
+                    batch_ndims=(
+                        int(plate_rows is not None)
+                        if batch_ndims is None
+                        else batch_ndims
+                    ),
                 )
                 broadcast = self._broadcast_codomain(draw, morph, axes_override)
                 if broadcast is not None:
@@ -5746,6 +7273,13 @@ class _ProgramsMixin:
                         broadcast,
                         value_extents=value_extents,
                         variable_types=variable_types,
+                        sampleable_references=sampleable_references,
+                        families=self._family_catalog,
+                        batch_ndims=(
+                            int(plate_rows is not None)
+                            if batch_ndims is None
+                            else batch_ndims
+                        ),
                     )
             except UnsizedParameterError as exc:
                 # An inline family the checked program cannot size is
@@ -5790,8 +7324,8 @@ class _ProgramsMixin:
             draw.col,
         )
 
-    @staticmethod
     def _broadcast_codomain(
+        self,
         draw: DrawStep,
         morph: ContinuousMorphism,
         axes_override: AnySpace | None,
@@ -5824,7 +7358,7 @@ class _ProgramsMixin:
             If two parameters have different extents of more than one
             entry, which do not broadcast.
         """
-        record = FAMILIES.get(draw.morphism)
+        record = self._distribution_families.get(draw.morphism)
         spec = getattr(morph, "_param_spec", None)
         codomain = morph.codomain
         if (
@@ -5838,7 +7372,19 @@ class _ProgramsMixin:
             return None
         extents = list(
             dict.fromkeys(
-                int(w) for kind, w in spec if kind == "var" and w is not None and w > 1
+                int(w)
+                for position, ((kind, w), rank) in enumerate(
+                    zip(
+                        spec,
+                        getattr(morph, "_param_event_ranks", (0,) * len(spec)),
+                        strict=True,
+                    )
+                )
+                if position not in getattr(morph, "_context_parameters", ())
+                and rank == 0
+                and kind == "var"
+                and w is not None
+                and w > 1
             )
         )
         if not extents:
@@ -5852,6 +7398,21 @@ class _ProgramsMixin:
                 draw.col,
             )
         return codomain.with_(dim=extents[0])
+
+    def _available_qiec_module(self) -> QiecModule | None:
+        """Read optional checked metadata after preserving native diagnostics.
+
+        Returns
+        -------
+        QiecModule | None
+            Available checked metadata, or None when lowering rejected the
+            source. Native declaration checks then report their own located
+            diagnostics; compile still requires checked lowering before returning.
+        """
+        try:
+            return self.qiec_module
+        except QiecDiagnosticError:
+            return None
 
     def _host_data_spaces(self, program: str) -> dict[str, AnySpace]:
         """The spaces the host data a program reads are checked at.
@@ -5872,13 +7433,15 @@ class _ProgramsMixin:
             lower: its diagnostic is then raised where `compile` reads
             the module, after the declarations' own diagnostics.
         """
-        try:
-            module = self.qiec_module
-        except QiecDiagnosticError:
-            return {}
+        module = self._available_qiec_module()
         if module is None:
             return {}
-        entry = next((e for e in module.entries if e.name == program), None)
+        instantiated = self._instantiated_program_contracts.get(program)
+        entry = (
+            instantiated[0]
+            if instantiated is not None
+            else next((e for e in module.entries if e.name == program), None)
+        )
         if entry is None:
             return {}
         plates = {axis.name for site in entry.sites for axis in site.batch}
@@ -5921,13 +7484,15 @@ class _ProgramsMixin:
             or when the module does not lower: its diagnostic is then
             raised where `compile` reads the module.
         """
-        try:
-            module = self.qiec_module
-        except QiecDiagnosticError:
-            return {}
+        module = self._available_qiec_module()
         if module is None:
             return {}
-        entry = next((e for e in module.entries if e.name == program), None)
+        instantiated = self._instantiated_program_contracts.get(program)
+        entry = (
+            instantiated[0]
+            if instantiated is not None
+            else next((e for e in module.entries if e.name == program), None)
+        )
         if entry is None:
             return {}
         computation = next(
@@ -5935,6 +7500,14 @@ class _ProgramsMixin:
         )
         if computation is None:
             return {}
+        if instantiated is not None:
+            substitution = instantiated[1]
+            parameters = tuple(
+                local.with_(type=substitute_type(local.type, substitution))
+                for local in computation.parameters
+            )
+            body = substitute_computation(computation.body, substitution)
+            return _checked_local_extents(parameters, body)
         return _checked_local_extents(computation.parameters, computation.body)
 
     def _annotation_is_event_axis(
@@ -5970,11 +7543,11 @@ class _ProgramsMixin:
             ``None`` when it is the plate, when the family has no event
             axis of rank one, or when the draw states its axes.
         """
-        record = FAMILIES.get(step.morphism)
+        record = self._distribution_families.get(step.morphism)
         if (
             record is None
             or record.event_rank != 1
-            or get_inline_param_names(step.morphism) is None
+            or get_inline_param_names(step.morphism, self._family_catalog) is None
             or getattr(step, "axes", None) is not None
             or not isinstance(step.index, TypeName)
         ):
@@ -6038,8 +7611,12 @@ class _ProgramsMixin:
             If a matrix-valued family names independent axes, or an
             axis names no finite object.
         """
-        record = FAMILIES.get(family)
-        if axes is None or record is None or get_inline_param_names(family) is None:
+        record = self._distribution_families.get(family)
+        if (
+            axes is None
+            or record is None
+            or get_inline_param_names(family, self._family_catalog) is None
+        ):
             return None
         rank = record.event_rank
         over = tuple(axes.over)
@@ -6208,6 +7785,36 @@ class _ProgramsMixin:
         )
 
     @staticmethod
+    def _axis_event_shape(space: object) -> tuple[int, ...] | None:
+        """Read intrinsic named event axes without flattening their product.
+
+        Parameters
+        ----------
+        space : object
+            Explicit finite or continuous axis, possibly a product.
+
+        Returns
+        -------
+        tuple[int, ...] or None
+            Ordered axis extents, or None for an unresolved space.
+        """
+        if isinstance(space, (ProductSet, ProductSpace)):
+            shapes = tuple(
+                _ProgramsMixin._axis_event_shape(component)
+                for component in space.components
+            )
+            if any(shape is None for shape in shapes):
+                return None
+            return tuple(
+                extent for shape in shapes if shape is not None for extent in shape
+            )
+        if isinstance(space, SetObject):
+            return (int(space.size),)
+        if isinstance(space, ContinuousSpace):
+            return (int(space.dim),)
+        return None
+
+    @staticmethod
     def _axis_event_size(space: object) -> int | None:
         """Cardinality of an explicit ``over=`` event axis, or None.
 
@@ -6224,19 +7831,8 @@ class _ProgramsMixin:
         set does not carry, or sum the component dims where the event
         width of a product axis is their product.
         """
-        if isinstance(space, (ProductSet, ProductSpace)):
-            total = 1
-            for comp in space.components:
-                sub = _ProgramsMixin._axis_event_size(comp)
-                if sub is None:
-                    return None
-                total *= sub
-            return total
-        if isinstance(space, SetObject):
-            return int(space.size)
-        if isinstance(space, ContinuousSpace):
-            return int(space.dim)
-        return None
+        shape = _ProgramsMixin._axis_event_shape(space)
+        return math.prod(shape) if shape is not None else None
 
     def _infer_inline_codomain(
         self,
@@ -6279,7 +7875,7 @@ class _ProgramsMixin:
             The inferred codomain.
         """
         bound = bind_family_arguments(
-            family, args, get_inline_param_names(family) or ()
+            family, args, get_inline_param_names(family, self._family_catalog) or ()
         )
         argument_by_name = dict(bound)
         args = tuple(value for _, value in bound)
@@ -6290,6 +7886,40 @@ class _ProgramsMixin:
             family, argument_by_name, var_names[0]
         )
         matrix_spec = self._matrix_family_spec(family)
+        matrix_shape: tuple[int, ...] | None = None
+        if matrix_spec is not None or family == "InverseWishart":
+            matrix_shape = (
+                self._axis_event_shape(event_axis)
+                if event_axis is not None
+                else checked_event
+                if checked_event is not None
+                else self._axis_event_shape(program_codomain)
+            )
+            square_support = family == "InverseWishart" or (
+                matrix_spec is not None
+                and matrix_spec.support
+                in (
+                    _constraints.corr_cholesky,
+                    _constraints.positive_definite,
+                    _constraints.positive_semidefinite,
+                    _constraints.lower_cholesky,
+                )
+            )
+            if (
+                square_support
+                and matrix_shape is not None
+                and (
+                    len(matrix_shape) not in (1, 2)
+                    or len(matrix_shape) == 2
+                    and matrix_shape[0] != matrix_shape[1]
+                )
+            ):
+                raise CompileError(
+                    f"matrix-valued family {family!r} requires a square event, "
+                    f"but {var_names[0]!r} names axes of shape {matrix_shape}",
+                    line,
+                    col,
+                )
         if matrix_spec is not None:
             # A matrix-valued family takes its ``K x K`` shape from the
             # width in scope: the ``[over=...]`` axis when one is
@@ -6298,13 +7928,7 @@ class _ProgramsMixin:
             # None is optional, since the underlying distribution needs
             # ``K`` at construction and a scalar codomain would build it
             # at ``K = 1``.
-            matrix_dim = (
-                event_size
-                if event_size is not None
-                else checked_event[-1]
-                if checked_event is not None
-                else self._axis_event_size(program_codomain)
-            )
+            matrix_dim = matrix_shape[-1] if matrix_shape else None
             if matrix_dim is None or matrix_dim < 2:
                 raise CompileError(
                     f"matrix-valued family {family!r} needs a matrix "
@@ -6322,13 +7946,7 @@ class _ProgramsMixin:
             # An inverse Wishart draws a K x K positive-definite matrix:
             # K is the ``[over=...]`` axis's size, else the extent the
             # checked program gives the draw, else the codomain's width.
-            matrix_dim = (
-                event_size
-                if event_size is not None
-                else checked_event[-1]
-                if checked_event is not None
-                else self._axis_event_size(program_codomain)
-            )
+            matrix_dim = matrix_shape[-1] if matrix_shape else None
             if matrix_dim is None or matrix_dim < 2:
                 raise CompileError(
                     f"InverseWishart draw of {var_names[0]!r} needs a matrix "
@@ -6340,16 +7958,13 @@ class _ProgramsMixin:
                 )
             return Covariance(name=f"_{var_names[0]}", dim=matrix_dim)
         if family == "MatrixNormal":
-            # A matrix normal draws one R x C matrix, its R C entries the
-            # ``[over=[R, C]]`` axes or the checked extents of its mean.
-            entries = (
-                event_size
-                if event_size is not None
-                else math.prod(checked_event)
-                if checked_event is not None
-                else None
+            # Preserve the declared rectangle independently of its entry count.
+            shape = (
+                self._axis_event_shape(event_axis)
+                if event_axis is not None
+                else checked_event
             )
-            if entries is None:
+            if shape is None or len(shape) != 2:
                 raise CompileError(
                     f"MatrixNormal draw of {var_names[0]!r} fixes no matrix "
                     f"shape the compiled runtime can build it at: name its axes "
@@ -6357,8 +7972,27 @@ class _ProgramsMixin:
                     line,
                     col,
                 )
-            return Euclidean(name=f"_{var_names[0]}", dim=entries)
-        record = FAMILIES.get(family)
+            return Euclidean(
+                name=f"_{var_names[0]}", dim=math.prod(shape), intrinsic_shape=shape
+            )
+        record = self._distribution_families.get(family)
+        if self._family_catalog is not None and self._family_catalog.is_custom(family):
+            shape = (
+                checked_event
+                if record is not None and record.event_rank
+                else ((event_size,) if event_size is not None else ())
+            )
+            if record is not None and record.event_rank and shape is None:
+                raise CompileError(
+                    f"custom family {family!r} requires checked event dimensions",
+                    line,
+                    col,
+                )
+            return Euclidean(
+                name=f"_{var_names[0]}",
+                dim=math.prod(shape) if shape else 1,
+                intrinsic_shape=shape if shape else None,
+            )
         if (
             record is not None
             and record.event_rank == 1
@@ -6449,7 +8083,7 @@ class _ProgramsMixin:
             # * ``Dirichlet(alpha)`` with a single scalar literal →
             #   simplex dimension comes from the program's declared
             #   codomain (``dim`` for a ContinuousSpace,
-            #   ``cardinality`` for a SetObject) of at least two; a
+            #   ``cardinality`` for a SetObject) of at least one; a
             #   draw that fixes none is refused.
             sim_dim: int | None = None
             n_literals = sum(
@@ -6473,7 +8107,7 @@ class _ProgramsMixin:
                 # A discrete codomain of cardinality `k` indexes a
                 # k-simplex of class probabilities.
                 sim_dim = getattr(program_codomain, "cardinality", None)
-            if sim_dim is None or sim_dim < 2:
+            if sim_dim is None or sim_dim < 1:
                 raise CompileError(
                     f"Dirichlet draw of {var_names[0]!r} fixes no simplex "
                     f"dimension: give the concentration as a list, annotate "
@@ -6537,7 +8171,7 @@ class _ProgramsMixin:
             else of the draw's own checked value; ``None`` when none is
             fixed or the family has no event axes.
         """
-        record = FAMILIES.get(family)
+        record = self._distribution_families.get(family)
         if record is None or record.event_rank == 0:
             return None
         rank = record.event_rank
@@ -6572,7 +8206,8 @@ class _ProgramsMixin:
         `CompileError` against the binding that
         produced it, which is what makes the diagnostic for a free
         name in ``let w = z + 1.0`` say the same thing, in the same
-        place, as the one for ``let w = z``.
+        place, as the one for ``let w = z``. Runtime domain validation
+        preserves ``ValueError`` and identifies the evaluated binding.
         """
 
         def _run(env: dict[str, "LetValue"]) -> "LetValue":
@@ -6582,6 +8217,8 @@ class _ProgramsMixin:
                 if exc.line:
                     raise
                 raise CompileError(f"{kind} {name!r}: {exc}", line, col) from exc
+            except ValueError as exc:
+                raise ValueError(f"{kind} {name!r} at {line}:{col}: {exc}") from exc
 
         return _run
 
@@ -6601,6 +8238,8 @@ class _ProgramsMixin:
             if isinstance(morphism, LearnedFunction):
                 found[name] = morphism
         found["__index_size__"] = self._resolve_index_size
+        if self._family_catalog is not None:
+            found[LET_FAMILIES_KEY] = self._family_catalog
         return found
 
     def _let_reads(self, expr: LetExprNode) -> frozenset[str]:
@@ -6789,10 +8428,20 @@ class _ProgramsMixin:
             val = int(node.value) if node.integral else node.value
 
             def _literal(env: dict) -> torch.Tensor:
-                for v in env.values():
-                    if isinstance(v, torch.Tensor):
-                        return torch.tensor(val, device=v.device)
-                return torch.tensor(val)
+                # Reuse floating-context promotion without treating unrelated
+                # integer index bindings as packed numeric parameters.
+                tensors = tuple(
+                    value for value in env.values() if isinstance(value, torch.Tensor)
+                )
+                floating = tuple(
+                    value for value in tensors if value.is_floating_point()
+                )
+                reference = floating[0] if floating else tensors[0] if tensors else None
+                return torch.tensor(
+                    val,
+                    device=reference.device if reference is not None else None,
+                    dtype=None if node.integral else _parameter_dtype(floating),
+                )
 
             return _literal
         if isinstance(node, LetExprString):
@@ -7017,6 +8666,42 @@ class _ProgramsMixin:
                 # Higher-order combinators come first; they consume
                 # raw closure args without eager evaluation of the
                 # lambda body.
+                if func_name == APPLY_CALL:
+                    return arg_fns[0](env)(arg_fns[1](env))
+                if func_name == CONDITIONAL_CALL:
+                    condition = arg_fns[0](env)
+                    if isinstance(condition, torch.Tensor):
+                        if condition.dtype != torch.bool or condition.numel() != 1:
+                            raise ValueError(
+                                "a lazy conditional requires a scalar Boolean; use factor for rowwise branches"
+                            )
+                        condition = bool(condition)
+                    if type(condition) is not bool:
+                        raise ValueError("a lazy conditional requires a scalar Boolean")
+                    return arg_fns[1 if condition else 2](env)
+                if func_name == DISTRIBUTION_CALL:
+                    from quivers.continuous.inline import _raw_distribution_value
+
+                    family, event, plate, *pairs = [fn(env) for fn in arg_fns]
+                    values = {
+                        str(pairs[i]): pairs[i + 1] for i in range(0, len(pairs), 2)
+                    }
+                    return _raw_distribution_value(
+                        str(family),
+                        values,
+                        tuple(int(v) for v in event),
+                        tuple(int(v) for v in plate),
+                        families=catalog
+                        if isinstance(
+                            catalog := _globs_for_check.get(LET_FAMILIES_KEY),
+                            FamilyCatalog,
+                        )
+                        else None,
+                    )
+                if func_name == LOG_MASS_CALL:
+                    from quivers.continuous._measure_queries import log_mass
+
+                    return log_mass(arg_fns[0](env), batch_axes=int(arg_fns[1](env)))
                 if func_name == LOG_PROB_CALL:
                     return _family_log_prob([fn(env) for fn in arg_fns])
                 if func_name == "length":

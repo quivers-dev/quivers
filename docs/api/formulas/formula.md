@@ -7,14 +7,64 @@ lookups. `formula_from_data` builds it over `formulae.design_matrices`, so its
 [design matrices](../../tutorials/python/08-analysis-pipelines.md#a-first-fit-gaussian-regression-in-one-line)
 depend on the data and the category encoding as well as on the formula.
 
+`Formula.design_terms` retains coupled Gaussian bases as `GaussianDesignTerm`
+values. Their innovation coordinates and positive penalty scales are distinct
+from ordinary fixed columns; `FormulaData.design_terms` preserves the same
+immutable records across source-lens round trips. The
+[structured predictor guide](../../guides/formula-special-predictors.md)
+describes the current P-spline constructor and retained new-data transforms.
+
 `Formula`, `FormulaData`, and `FixedColumn` are immutable values that
 compare by every field. Two formulas are equal only when their formula
 strings, response names, fixed columns (labels and data), random
-terms, response values, group levels, and group indices all agree, and
+terms, offsets, response modifiers, response values, group levels, and group indices all agree, and
 hashing agrees with equality. The arrays with one entry per row are stored as
 read-only copies made at construction: writing into
 `formula.response_values` or a column's `data` raises `ValueError`, and
 changing the source data frame afterwards does not change the formula.
 Copy a field (`formula.response_values.copy()`) to get a writable array.
+
+`Formula.response_layout` retains response carrier and event shape, named
+vector components, and scalar factor levels with their declared order.
+`cbind(a, b, c)` contributes one vector event per row, whereas a factor
+response contributes one integer code per row. `FormulaData` retains this
+layout through the lens complement; neither serialization nor prediction
+flattens the event into observation rows. `FormulaData.group_layouts` also
+retains the matching immutable Gaussian coefficient layout. An interleaved
+forward pass on another formula cannot change that complement's reconstruction.
+
+`Formula.offsets` retains coefficient-free `offset(expr)` and `exposure(expr)`
+columns as read-only `FixedColumn` values. Exposure contributes the logarithm of
+positive finite values. The [offset guide](../../guides/analysis-data-and-formulas.md#offsets-and-observation-exposure)
+shows how these terms affect fitting and posterior predictors.
+
+`formula_from_data(..., weights="column")` retains a finite nonnegative
+numeric column as `Formula.modifiers.weights`. `Formula.modifiers.decision`
+retains a normalized binary decision column for a joint response model.
+Both belong to `ResponseModifiers`; `FormulaData.modifiers` preserves them
+in the lens complement. The
+[likelihood-weight guide](../../guides/analysis-data-and-formulas.md#likelihood-weights)
+explains the objective, row alignment, and prediction contract.
+
+`ResponseModifiers` additionally retains `CensoringSpec`, `TruncationSpec`,
+`StandardErrorSpec`, and `RowSelection`, together with trials, weight-scaling
+policy, and the original column-or-constant role sources. Subsetting precedes
+all design and role validation, and retained positions align auxiliary and
+neural inputs. The [response-modifier guide](../../guides/analysis-data-and-formulas.md#response-modifiers-and-recorded-events)
+states event endpoints, scale combination, supported families, and fresh-data
+requirements. These records compare by value and retain read-only column data.
+Exact observations must lie within their inclusive truncation bounds before
+inference begins. Censoring endpoints may lie outside the sampling interval;
+their recorded events are intersected with that interval when scored.
+
+`cs(expr)` marks a transition-specific fixed or group column through
+`FixedColumn.category_specific`. The formula lens retains those flags and
+the authored fixed-column order in `FormulaData.category_specific_columns`
+and `fixed_column_order`; serialization through the value IR does not
+silently turn a category-specific coefficient into an ordinary scalar.
+`cs(1)` uses an internally prepared ones column, with an explicit refusal
+if the caller already uses its reserved name. The
+[ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)
+states supported constructions and prediction shapes.
 
 ::: quivers.formulas.formula

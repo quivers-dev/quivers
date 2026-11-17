@@ -8,3 +8,9 @@ adjusts. [Posterior predictive draws](predictive.md) then show which observation
 approximation predicts.
 
 ::: quivers.inference.svi
+
+A parameter-free model and guide may use `optim=None`. SVI still evaluates the
+requested finite objectives and invokes callbacks, but has no gradient update to
+perform. The source and formula fitting adapters select this policy when their
+combined trainable parameter set is empty; frozen parameters do not create an
+optimizer. Omitting the optimizer while trainable parameters exist is an error.

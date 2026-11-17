@@ -5327,6 +5327,20 @@
           }
         ]
       },
+      "static_args": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "signed_number",
+            "named": true
+          }
+        ]
+      },
       "var": {
         "multiple": false,
         "required": true,
@@ -5469,7 +5483,7 @@
     "fields": {
       "args": {
         "multiple": true,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "identifier",
@@ -5483,6 +5497,20 @@
         "types": [
           {
             "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "static_args": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "signed_number",
             "named": true
           }
         ]
@@ -6406,6 +6434,20 @@
           }
         ]
       },
+      "static_args": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "signed_number",
+            "named": true
+          }
+        ]
+      },
       "vars": {
         "multiple": false,
         "required": true,
@@ -6809,6 +6851,28 @@
     "type": "program_decl",
     "named": true,
     "fields": {
+      "binders": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "qiec_effect_binder",
+            "named": true
+          },
+          {
+            "type": "qiec_index_binder",
+            "named": true
+          },
+          {
+            "type": "qiec_type_binder",
+            "named": true
+          },
+          {
+            "type": "typed_program_param",
+            "named": true
+          }
+        ]
+      },
       "codomain": {
         "multiple": false,
         "required": true,
@@ -6915,16 +6979,22 @@
           }
         ]
       },
+      "parameters": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "qiec_value_parameter",
+            "named": true
+          }
+        ]
+      },
       "params": {
         "multiple": true,
         "required": false,
         "types": [
           {
             "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "typed_program_param",
             "named": true
           }
         ]
@@ -9922,6 +9992,20 @@
           }
         ]
       },
+      "static_args": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "signed_number",
+            "named": true
+          }
+        ]
+      },
       "vars": {
         "multiple": false,
         "required": true,
@@ -9937,11 +10021,6 @@
         ]
       }
     }
-  },
-  {
-    "type": "scalar_kind",
-    "named": true,
-    "fields": {}
   },
   {
     "type": "scan_expr",
@@ -11023,10 +11102,6 @@
           {
             "type": "object_kind",
             "named": true
-          },
-          {
-            "type": "scalar_kind",
-            "named": true
           }
         ]
       },
@@ -11255,10 +11330,6 @@
   },
   {
     "type": "Mor",
-    "named": false
-  },
-  {
-    "type": "Nat",
     "named": false
   },
   {

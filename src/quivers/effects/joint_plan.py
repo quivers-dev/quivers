@@ -850,6 +850,24 @@ def _parameter(store: Mapping[str, torch.Tensor], name: str) -> torch.Tensor:
     return value
 
 
+def _has_custom_joint(program: MonadicProgram) -> bool:
+    """Detect a joint override without executing the program or its callback.
+
+    Parameters
+    ----------
+    program : MonadicProgram
+        Native program inspected by prepared scoring or factor decomposition.
+
+    Returns
+    -------
+    bool
+        Whether an instance or subclass overrides the canonical joint method.
+    """
+    return "log_joint" in vars(program) or (
+        type(program).log_joint is not MonadicProgram.log_joint
+    )
+
+
 def _machine_obstacle(program: MonadicProgram) -> str | None:
     """Why the program's log joint is not the reference machine's, now.
 
@@ -875,9 +893,7 @@ def _machine_obstacle(program: MonadicProgram) -> str | None:
         return "handlers are on the stack"
     if not isinstance(program, MonadicProgram):
         return f"the model is a {type(program).__name__}, not a MonadicProgram"
-    if "log_joint" in vars(program) or (
-        type(program).log_joint is not MonadicProgram.log_joint
-    ):
+    if _has_custom_joint(program):
         return "the program's log_joint is overridden"
     if _evaluator() is not REFERENCE_EVALUATOR:
         return "another evaluator is installed"

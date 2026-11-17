@@ -22,6 +22,7 @@ import torch.distributions as D
 
 from quivers.qiec.distributions import ReferenceBackend
 from quivers.qiec.families import FAMILIES
+from quivers.continuous._multivariate_student_t import MultivariateStudentT
 
 type Host = float | int | bool | tuple[object, ...]
 """A host value: a number, a boolean, or nested tuples of numbers."""
@@ -40,6 +41,14 @@ _LOGIT = math.log(_P / (1.0 - _P))
 #: Each family: its fixed arguments, one argument set per alternative,
 #: the value scored, and the torch construction from the arguments.
 _CASES: dict[str, tuple[dict[str, Host], dict[str, dict[str, Host]], Host, Oracle]] = {
+    "Multinomial": (
+        {"total_count": 7},
+        {"probs": {"probs": _PROBS}, "logits": {"logits": _LOGITS}},
+        (1, 4, 2),
+        lambda total_count, **parameters: D.Multinomial(
+            int(total_count.item()), **parameters
+        ),
+    ),
     "MultivariateNormal": (
         {"loc": (0.0, 1.0)},
         {
@@ -49,6 +58,16 @@ _CASES: dict[str, tuple[dict[str, Host], dict[str, dict[str, Host]], Host, Oracl
         },
         (0.3, 0.4),
         D.MultivariateNormal,
+    ),
+    "MultivariateStudentT": (
+        {"df": 5.0, "loc": (0.0, 1.0)},
+        {
+            "scale_tril": {"scale_tril": _L},
+            "covariance_matrix": {"covariance_matrix": _COVARIANCE},
+            "precision_matrix": {"precision_matrix": _PRECISION},
+        },
+        (0.3, 0.4),
+        MultivariateStudentT,
     ),
     "Wishart": (
         {"df": 4.0},
@@ -115,6 +134,35 @@ _CASES: dict[str, tuple[dict[str, Host], dict[str, dict[str, Host]], Host, Oracl
         D.RelaxedOneHotCategorical,
     ),
 }
+
+
+_CASES["MatrixNormal"] = (
+    {"loc": ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))},
+    {
+        str((row, col)): {
+            "row_scale_tril" if row else "row_covariance": ((1.2, 0.0), (0.0, 0.8))
+            if row
+            else ((1.44, 0.0), (0.0, 0.64)),
+            "col_scale_tril" if col else "col_covariance": (
+                (0.7, 0.0, 0.0),
+                (0.0, 1.1, 0.0),
+                (0.0, 0.0, 0.9),
+            )
+            if col
+            else ((0.49, 0.0, 0.0), (0.0, 1.21, 0.0), (0.0, 0.0, 0.81)),
+        }
+        for row in (False, True)
+        for col in (False, True)
+    },
+    ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6)),
+    lambda loc, **parameters: D.Independent(
+        D.Normal(
+            loc,
+            torch.tensor([[0.84, 1.32, 1.08], [0.56, 0.88, 0.72]], dtype=torch.double),
+        ),
+        2,
+    ),
+)
 
 _PAIRS = [
     (family, alternative)

@@ -121,7 +121,13 @@ def _qvr_qiec_if(condition, then, otherwise):
         # A host's Boolean array decides the branch as the host reads
         # it; a host that traces rather than evaluates raises here, as
         # it does for any data-dependent branch.
-        condition = bool(condition)
+        try:
+            condition = bool(condition)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "QIEC conditional requires an evaluable Boolean; "
+                "this target cannot branch on a symbolic Boolean"
+            ) from error
     if not isinstance(condition, bool):
         raise TypeError("QIEC if condition is not a Boolean")
     return then() if condition else otherwise()
@@ -139,6 +145,116 @@ def _qvr_qiec_is_host(value):
 # primitive applied to the host's array stays on the host's array and
 # keeps its gradient; a primitive applied to plain Python values uses the
 # Python table.
+def _qvr_qiec_log_probability(value):
+    if (
+        isinstance(value, bool)
+        or not _qvr_qiec_math.isfinite(value)
+        or (not 0 <= value <= 1)
+    ):
+        raise ValueError("log_probability requires a finite real value in [0, 1]")
+    return _qvr_qiec_math.log(value) if value else -_qvr_qiec_math.inf
+
+
+def _qvr_qiec_log1mexp(value):
+    if isinstance(value, bool) or _qvr_qiec_math.isnan(value) or value > 0:
+        raise ValueError("log1mexp requires a nonpositive real value")
+    if value == 0:
+        return -_qvr_qiec_math.inf
+    if value > -_qvr_qiec_math.log(2):
+        return _qvr_qiec_math.log(-_qvr_qiec_math.expm1(value))
+    return _qvr_qiec_math.log1p(-_qvr_qiec_math.exp(value))
+
+
+def _qvr_qiec_log_ndtr(value):
+    if isinstance(value, bool) or _qvr_qiec_math.isnan(value):
+        raise ValueError("log_ndtr requires a real value other than NaN")
+    if value == _qvr_qiec_math.inf:
+        return 0.0
+    if value == -_qvr_qiec_math.inf:
+        return -_qvr_qiec_math.inf
+    if value < -10:
+        x = -value
+        denominator = x
+        for numerator in range(64, 0, -1):
+            denominator = x + numerator / denominator
+        return (
+            -0.5 * x * x
+            - 0.5 * _qvr_qiec_math.log(2 * _qvr_qiec_math.pi)
+            - _qvr_qiec_math.log(denominator)
+        )
+    if value > 0:
+        return _qvr_qiec_math.log1p(
+            -0.5 * _qvr_qiec_math.erfc(value / _qvr_qiec_math.sqrt(2))
+        )
+    return _qvr_qiec_math.log(
+        0.5 * _qvr_qiec_math.erfc(-value / _qvr_qiec_math.sqrt(2))
+    )
+
+
+def _qvr_qiec_positive_parameter(value):
+    if isinstance(value, bool) or not _qvr_qiec_math.isfinite(value) or value <= 0:
+        raise ValueError(
+            "positive_parameter requires a finite strictly positive real value"
+        )
+    return value
+
+
+def _qvr_qiec_observation_status(value):
+    """Validate a scalar integer recorded-event code.
+
+    Parameters
+    ----------
+    value
+        Runtime integer carrier.
+
+    Returns
+    -------
+    int
+        Code minus one through two, unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the carrier is not integer or the code is invalid.
+    """
+    if type(value) is not int or value not in (-1, 0, 1, 2):
+        raise ValueError("observation_status requires integer codes -1, 0, 1, or 2")
+    return value
+
+
+def _qvr_qiec_interval_upper(lower, upper):
+    """Check the finite upper endpoint of an active interval.
+
+    Parameters
+    ----------
+    lower, upper
+        Real endpoints; lower may be infinite.
+
+    Returns
+    -------
+    float
+        Upper endpoint unchanged.
+
+    Raises
+    ------
+    ValueError
+        If either carrier or the active interval is invalid.
+    """
+    if (
+        any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in (lower, upper)
+        )
+        or _qvr_qiec_math.isnan(lower)
+        or not _qvr_qiec_math.isfinite(upper)
+        or upper <= lower
+    ):
+        raise ValueError(
+            "interval_upper requires a finite upper endpoint greater than its lower endpoint"
+        )
+    return upper
+
+
 _qvr_qiec_host_math = {}
 
 
@@ -155,6 +271,12 @@ def _qvr_qiec_mod_int(a, b):
 # registry; integer division and remainder truncate toward zero on every
 # host, which is why they are spelled out rather than borrowed.
 _qvr_qiec_primitives = {
+    "positive_parameter": _qvr_qiec_positive_parameter,
+    "observation_status": _qvr_qiec_observation_status,
+    "interval_upper": _qvr_qiec_interval_upper,
+    "log_probability": _qvr_qiec_log_probability,
+    "log1mexp": _qvr_qiec_log1mexp,
+    "log_ndtr": _qvr_qiec_log_ndtr,
     "add_int": lambda a, b: a + b,
     "sub_int": lambda a, b: a - b,
     "mul_int": lambda a, b: a * b,
@@ -251,8 +373,15 @@ _qvr_qiec_primitives = {
     "as_weight": lambda a: a,
     "weight_value": lambda a: a,
     "add_weight": lambda a, b: a + b,
-    "scale_weight": lambda a, b: a * b,
+    "scale_weight": lambda a, b: 0.0 if a == 0 else a * b,
+    "observation_weight": lambda a: _qvr_qiec_observation_weight(a),
 }
+
+
+def _qvr_qiec_observation_weight(value):
+    if isinstance(value, bool) or not _qvr_qiec_math.isfinite(value) or value < 0:
+        raise ValueError("observation weights must be finite and nonnegative")
+    return value
 
 
 def _qvr_qiec_sigmoid(value):
@@ -365,9 +494,22 @@ def _qvr_qiec_primitive(name, arguments):
         raise KeyError("unknown QIEC primitive " + name)
     values = tuple(_qvr_qiec_value(argument) for argument in arguments)
     host = _qvr_qiec_host_math.get(name)
-    if host is not None and any(_qvr_qiec_is_host(value) for value in values):
-        return _qvr_qiec_broadcast(host, values)
-    return _qvr_qiec_broadcast(implementation, values)
+    if host is None:
+        return _qvr_qiec_broadcast(implementation, values)
+    if name in {"observation_weight", "scale_weight"} and any(
+        _qvr_qiec_is_host(value) for value in values
+    ):
+        return host(*values)
+
+    def apply(*entries):
+        function = (
+            host
+            if any(_qvr_qiec_is_host(entry) for entry in entries)
+            else implementation
+        )
+        return function(*entries)
+
+    return _qvr_qiec_broadcast(apply, values)
 
 
 def _qvr_qiec_gather(value, index):
@@ -507,7 +649,31 @@ def _qvr_qiec_specialize(value, environment):
         key = value.get("identity") or value.get("name")
         if key in environment:
             return environment[key]
-    return {key: _qvr_qiec_specialize(item, environment) for key, item in value.items()}
+    specialized = {
+        key: _qvr_qiec_specialize(item, environment) for key, item in value.items()
+    }
+    if specialized.get("kind") == "index-sum":
+        terms = []
+        constant = specialized["constant"]
+        for term in specialized["terms"]:
+            if term.get("kind") == "index-literal":
+                constant += term["value"]
+            elif term.get("kind") == "index-sum":
+                terms.extend(term["terms"])
+                constant += term["constant"]
+            else:
+                terms.append(term)
+        if not terms:
+            return {"kind": "index-literal", "value": constant, "sort": {"kind": "nat"}}
+        if len(terms) == 1 and constant == 0:
+            return terms[0]
+        terms.sort(
+            key=lambda term: (
+                (1, term["identity"]) if term.get("identity") else (0, term["name"])
+            )
+        )
+        return {"kind": "index-sum", "terms": terms, "constant": constant}
+    return specialized
 
 
 _qvr_qiec_ambient_handlers = _qvr_qiec_contextvars.ContextVar(
@@ -1116,3 +1282,12 @@ def _qvr_qiec_run(build, operations):
             _qvr_qiec_drop_request(current[1])
             raise
     return _qvr_qiec_value(current[1])
+
+
+_qvr_qiec_host_math.update(
+    {
+        "log_probability": _qvr_qiec_log_probability,
+        "log1mexp": _qvr_qiec_log1mexp,
+        "log_ndtr": _qvr_qiec_log_ndtr,
+    }
+)

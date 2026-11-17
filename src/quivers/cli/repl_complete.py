@@ -32,6 +32,7 @@ from quivers.dsl.pygments_lexer import (
     _BUILTIN_FUNCTION_TOKENS,
     _BUILTIN_TYPE_TOKENS,
     _KEYWORD_TOKENS,
+    _STATIC_INDEX_FUNCTION_TOKENS,
 )
 
 from quivers.dsl.qiec_tooling import (
@@ -40,6 +41,8 @@ from quivers.dsl.qiec_tooling import (
     qiec_binding_map,
 )
 from quivers.transpile import available_targets
+from quivers._observation import EVENT_OPTIONS
+from quivers._family_schemas import _family_signature
 
 
 class Completion(dx.Model):
@@ -56,7 +59,7 @@ class Completion(dx.Model):
     """
 
     text: str
-    kind: str  # "env", "keyword", "type", "function", "namespace", "command", "path"
+    kind: str  # Environment, syntax, option, command, or path category.
     detail: str = ""
 
 
@@ -110,14 +113,21 @@ def all_completions(session: ReplSession, prefix: str) -> list[Completion]:
     Returns
     -------
     list[Completion]
-        Meta-command, transpile-target, environment, keyword, and path
-        candidates, in that order.
+        Meta-command, transpile-target, environment, keyword, observation-option,
+        and path candidates, in that order.
     """
     out: list[Completion] = []
     out.extend(_meta_completions(prefix))
     out.extend(_transpile_target_completions(prefix))
     out.extend(_env_completions(session, prefix))
     out.extend(_keyword_completions(prefix))
+    out.extend(
+        Completion(
+            text=name + "=", kind="option", detail=f"observation {field}: {carrier}"
+        )
+        for name, (field, carrier) in EVENT_OPTIONS.items()
+        if prefix and name.startswith(prefix)
+    )
     out.extend(_path_completions(prefix))
     return out
 
@@ -266,10 +276,19 @@ def _keyword_completions(prefix: str) -> list[Completion]:
             out.append(Completion(text=kw, kind="keyword", detail="keyword"))
     for fn in sorted(_BUILTIN_FUNCTION_TOKENS):
         if fn.startswith(prefix):
-            out.append(Completion(text=fn, kind="function", detail="builtin"))
+            detail = (
+                "static Nat addition"
+                if fn in _STATIC_INDEX_FUNCTION_TOKENS
+                else _family_signature(fn) or "builtin"
+            )
+            out.append(Completion(text=fn, kind="function", detail=detail))
     for ty in sorted(_BUILTIN_TYPE_TOKENS):
         if ty.startswith(prefix):
-            out.append(Completion(text=ty, kind="type", detail="builtin type"))
+            out.append(
+                Completion(
+                    text=ty, kind="type", detail=_family_signature(ty) or "builtin type"
+                )
+            )
     for ns in sorted(_ALGEBRA_NAMES):
         if ns.startswith(prefix):
             out.append(Completion(text=ns, kind="namespace", detail="algebra"))

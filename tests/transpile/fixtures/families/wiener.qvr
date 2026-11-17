@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the Wiener family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program wiener_fixture : Obs -> Obs
+    observe y : Obs <- Wiener(boundary=1.2, ndt=0.1, bias=0.4, drift=0.7)
+    return y
+export wiener_fixture

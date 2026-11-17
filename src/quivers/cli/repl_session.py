@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -41,6 +41,7 @@ from quivers.analysis.scope import (
     find_all_references,
     resolve_scoped_path,
     scope_children,
+    top_level_bindings,
 )
 from quivers.cli.repl_browse import (
     _children_for_bundle,
@@ -55,7 +56,9 @@ from quivers.cli.repl_browse import (
     _children_for_rule,
     _children_for_signature,
     _children_for_space,
+    _program_parameter_groups,
 )
+from quivers._family_schemas import _family_signature
 from quivers.core.objects import FinSet
 from quivers.dsl import (
     CompileError,
@@ -75,6 +78,7 @@ from quivers.dsl.ast_nodes import (
     ObjectExpr,
     ObserveStep,
     ProgramStep,
+    ProgramParam,
     SampleStep,
     Statement,
     TypeFromExpr,
@@ -84,11 +88,21 @@ from quivers.dsl.ast_nodes.qiec import (
     QiecComputationDecl,
     QiecEffectDecl,
     QiecHandlerDecl,
+    QiecBinder,
+    QiecValueParameter,
+    QiecTypeName,
 )
 from quivers.dsl.constraints import Violation, check_constraints
-from quivers.dsl.emit import draw_call_to_source, module_to_source
+from quivers.dsl.emit import (
+    _emit_program_param,
+    _emit_qiec_binder,
+    _emit_qiec_type,
+    draw_call_to_source,
+    module_to_source,
+)
 from quivers.dsl.qiec_diagnostics import QiecDiagnosticError
 from quivers.dsl.qiec_tooling import (
+    ToolingAnalysis,
     analyze_module,
     prelude_effect,
     qiec_binding_candidates,
@@ -98,6 +112,7 @@ from quivers.dsl.qiec_tooling import (
     qiec_module_name,
     qualified_operation_signature,
     render_effect,
+    target_diagnostics,
 )
 from quivers.qiec import (
     EntryRun,
@@ -119,8 +134,6 @@ from quivers.qiec.effects import render_row
 from quivers.qiec.entries import json_value
 from quivers.qiec.module import inferred_computation_type, validate_module
 from quivers.transpile import UnsupportedConstruct, available_targets, transpile
-from quivers.transpile.plan import checked_program_plan
-from quivers.transpile.qiec_ir import analyze_qiec_capabilities
 
 Severity = Literal["error", "warning", "info", "ok"]
 
@@ -365,13 +378,18 @@ class ReplSession:
         return _resp("\n".join(body_lines), result.diagnostics)
 
     def _install_module(
-        self, module: Module, *, source_path: Path | None = None
+        self,
+        module: Module,
+        *,
+        source_path: Path | None = None,
+        analysis: ToolingAnalysis | None = None,
     ) -> ReplResponse:
-        analysis = analyze_module(
-            module,
-            module_name=qiec_module_name(source_path),
-            file_path=str(source_path) if source_path is not None else "<repl>",
-        )
+        if analysis is None:
+            analysis = analyze_module(
+                module,
+                module_name=qiec_module_name(source_path),
+                file_path=str(source_path) if source_path is not None else "<repl>",
+            )
         diags: list[Diagnostic] = [
             _violation_to_diag(v) for v in check_constraints(analysis.non_qiec_module)
         ]
@@ -397,36 +415,18 @@ class ReplSession:
                 )
             )
         if self.options.target and analysis.qiec_module is not None:
-            capabilities = analyze_qiec_capabilities(
-                analysis.qiec_module, self.options.target
-            )
-            for capability in capabilities:
-                origin = capability.origin
-                diags.append(
-                    Diagnostic(
-                        message=capability.message,
-                        severity="error",
-                        line=(origin.line or 0) if origin is not None else 0,
-                        col=(origin.column or 0) if origin is not None else 0,
-                        code=capability.kind,
-                    )
+            diags.extend(
+                Diagnostic(
+                    message=diagnostic.message,
+                    severity="error",
+                    line=diagnostic.line,
+                    col=diagnostic.col,
+                    code=diagnostic.code,
                 )
-            if not capabilities:
-                try:
-                    checked_program_plan(
-                        analysis.qiec_module, module, self.options.target
-                    )
-                except UnsupportedConstruct as error:
-                    diags.extend(
-                        Diagnostic(
-                            message=str(error),
-                            severity="error",
-                            line=0,
-                            col=0,
-                            code=kind,
-                        )
-                        for kind in error.kinds
-                    )
+                for diagnostic in target_diagnostics(
+                    analysis.qiec_module, module, self.options.target
+                )
+            )
         self._module = module
         self._compiler = analysis.compiler
         self._qiec_module = analysis.qiec_module
@@ -443,12 +443,69 @@ class ReplSession:
             except OSError:
                 self._loaded_mtime = None
         self._refresh_watches()
-        body = (
-            f"loaded {source_path}: {_env_counts(analysis.env)}"
-            if source_path is not None
-            else f"installed module: {_env_counts(analysis.env)}"
-        )
+        body = _installed_message(analysis.env, source_path)
         return _resp(body, tuple(diags))
+
+    def _dispatch_object_prelude(
+        self, sources: Sequence[str], *, start: int = 0
+    ) -> tuple[int, tuple[ReplResponse, ...]] | None:
+        """Prepare a closed, pure object prelude once, retaining each chunk's output.
+
+        Executable declarations, symbolic extents, watches, target diagnostics,
+        and errors use ordinary sequential dispatch. Thus neither a future
+        declaration nor fewer stochastic compilations can change a prior chunk.
+        """
+        from quivers.dsl._data_inference import has_inferred_objects
+
+        if (
+            self._watches
+            or self.options.target
+            or any(not isinstance(stmt, ObjectDecl) for stmt in self._module.statements)
+        ):
+            return None
+        additions: list[Module] = []
+        for position in range(start, len(sources)):
+            source = sources[position]
+            if source.lstrip().startswith(":"):
+                break
+            try:
+                parsed = parse(source.strip(), file_path="<repl>")
+            except ParseError:
+                break
+            if not parsed.statements or any(
+                not isinstance(stmt, ObjectDecl) for stmt in parsed.statements
+            ):
+                break
+            additions.append(parsed)
+        if len(additions) < 2:
+            return None
+        combined = _extend_module(
+            self._module, (stmt for module in additions for stmt in module.statements)
+        )
+        if has_inferred_objects(combined):
+            return None
+        analysis = analyze_module(
+            combined,
+            module_name=qiec_module_name(self._loaded_path),
+            file_path=str(self._loaded_path) if self._loaded_path else "<repl>",
+        )
+        if (
+            analysis.compile_error is not None
+            or analysis.qiec_diagnostics
+            or check_constraints(analysis.non_qiec_module)
+        ):
+            return None
+        prefix = dict(self._env)
+        responses = []
+        for addition in additions:
+            for statement in addition.statements:
+                assert isinstance(statement, ObjectDecl)
+                for name in statement.names:
+                    if name in analysis.env:
+                        prefix[name] = analysis.env[name]
+            responses.append(_resp(_installed_message(prefix, self._loaded_path)))
+        self._install_module(combined, source_path=self._loaded_path, analysis=analysis)
+        return len(additions), tuple(responses)
 
     # ----- :type / :kind ------------------------------------------------
     #
@@ -742,10 +799,10 @@ class ReplSession:
         if not self._compiler:
             return None
         c = self._compiler
-        if bare in c.morphisms:
-            return self._type_signature_for_morphism(bare, c.morphisms[bare])
         if bare in c.programs:
             return self._type_signature_for_program(bare, c.programs[bare])
+        if bare in c.morphisms:
+            return self._type_signature_for_morphism(bare, c.morphisms[bare])
         if bare in c.encoders:
             return f"{bare} :: encoder"
         if bare in c.decoders:
@@ -900,53 +957,27 @@ class ReplSession:
         return f"{name} :: {self._pretty(dom)} -> {self._pretty(cod)}"
 
     def _type_signature_for_program(self, name: str, tmpl: Any) -> str:
-        """GHCi-style signature for a program template.
+        """Show static and value parameters separately from the kernel arrow.
 
-        Per ``docs/semantics/programs.md``, a program's denotation
-        depends on the parameter list:
-
-        - Bare-identifier params (``P(q₁, …, qₖ) : τ₁ -> τ₂``) project
-          components of the domain. The kernel's signature is
-          ``τ₁ -> τ₂``; the q_i are syntactic conveniences, not
-          additional arguments, so they do not appear in the type.
-        - Typed params (``alpha : Real``, ``X : Object``,
-          ``f : Mor[A, B]``) denote a dependent family
-          ``∏ p_i:P_i. Kern(dom, cod)`` and are surfaced as a
-          Haskell-style constraint context ``(p₁ : P₁, …) => dom -> cod``
-          so the ∏-bound parameters never get conflated with the
-          kernel's dom -> cod arrow.
-
-        The dom / cod ``ObjectExpr`` AST nodes are routed through
-        the compiler's ``_resolve_any_space`` so the rendered
-        signature carries the *elaborated* SetObject / ContinuousSpace
-        (with cardinalities and dims resolved) rather than the raw
-        parse tree.
+        Static ``[...]`` parameters may occur in later value types. Runtime
+        ``(...)`` parameters supply scalar settings or checked external values.
+        Bare domain projections remain syntactic names for kernel input fields.
         """
-        type_param_strs: list[str] = []
-        for p in getattr(tmpl, "type_params", None) or ():
-            kind = type(p).__name__
-            if kind == "ScalarParam":
-                type_param_strs.append(str(getattr(p, "scalar_kind", "?")))
-            elif kind == "ObjectParam":
-                type_param_strs.append(str(getattr(p, "universe", "?")))
-            elif kind == "MorphismParam":
-                dom_p = self._pretty_obj_expr(getattr(p, "domain", None))
-                cod_p = self._pretty_obj_expr(getattr(p, "codomain", None))
-                if dom_p is not None and cod_p is not None:
-                    type_param_strs.append(f"Mor[{dom_p}, {cod_p}]")
-                else:
-                    type_param_strs.append("Mor")
-            else:
-                type_param_strs.append("?")
+        static, runtime = _program_parameter_groups(tmpl)
+        # Keep the compact scalar context familiar to existing REPL users;
+        # static binders carry their names because later types depend on them.
+        runtime_types = [
+            parameter.split(" : ", 1)[-1] for parameter in runtime if " : " in parameter
+        ]
         dom = self._pretty_obj_expr(getattr(tmpl, "domain", None))
         cod = self._pretty_obj_expr(getattr(tmpl, "codomain", None))
         if dom is None or cod is None:
             return f"{name} :: ?"
         morph_sig = f"{dom} -> {cod}"
-        if type_param_strs:
-            ctx = ", ".join(type_param_strs)
-            return f"{name} :: ({ctx}) => {morph_sig}"
-        return f"{name} :: {morph_sig}"
+        context = f"[{', '.join(static)}] " if static else ""
+        if runtime_types:
+            context += f"({', '.join(runtime_types)}) => "
+        return f"{name} :: {context}{morph_sig}"
 
     def _pretty_obj_expr(self, expr: Any) -> str | None:
         """Render an ``ObjectExpr`` for display, preferring the
@@ -967,6 +998,11 @@ class ReplSession:
         if not self._compiler:
             return _pretty_object(expr)
         if isinstance(expr, TypeName):
+            if any(
+                expr.name in getattr(statement, "names", ())
+                for statement in self._module.statements
+            ):
+                return expr.name
             if (
                 expr.name in self._compiler.objects
                 or expr.name in self._compiler.spaces
@@ -999,6 +1035,8 @@ class ReplSession:
             return f"{ref.name} :: ?"
         if kind in ("sample-site", "observe-site", "marginalize-site"):
             return _site_signature(ref.name, node)
+        if kind == "data-input" and isinstance(node, QiecValueParameter):
+            return f"{ref.name} :: {_emit_qiec_type(node.type_expr)}"
         if kind == "let-site":
             return f"{ref.name} :: ?"
         if kind == "score-site":
@@ -1007,6 +1045,10 @@ class ReplSession:
             members = node if isinstance(node, tuple) else (str(node),)
             return f"return :: {', '.join(str(m) for m in members)}"
         if kind == "param":
+            if isinstance(node, ProgramParam):
+                return f"{ref.name} :: {_emit_program_param(node).split(' : ', 1)[1]}"
+            if isinstance(node, QiecBinder):
+                return f"{ref.name} :: {_emit_qiec_binder(node).split(' : ', 1)[1]}"
             sk = getattr(node, "scalar_kind", None)
             universe = getattr(node, "universe", None)
             if sk is not None:
@@ -1041,46 +1083,14 @@ class ReplSession:
         return f"morphism {name} : {_pretty_morphism(morph)} [role=parameter]"
 
     def _type_line_for_program(self, name: str, tmpl: Any) -> str:
-        """Render a program template's signature.
-
-        Reconstructs ``program NAME(params) : DOM -> COD`` from the
-        AST node. Parameters come from two slots:
-        ``params`` (bare-name list, no type annotation) and
-        ``type_params`` (typed list of ``ScalarParam`` / ``ObjectParam``
-        / ``MorphismParam`` records); a program declares at most one
-        of the two, but the AST keeps them separate so the renderer
-        merges whichever is populated.
-        """
+        """Render static ``[...]`` and runtime ``(...)`` program telescopes."""
         del self
-        param_strs: list[str] = []
-        bare = getattr(tmpl, "params", None) or ()
-        for n in bare:
-            param_strs.append(str(n))
-        typed = getattr(tmpl, "type_params", None) or ()
-        for p in typed:
-            pname = getattr(p, "name", "?")
-            kind = type(p).__name__
-            if kind == "ScalarParam":
-                annot = getattr(p, "scalar_kind", "?")
-            elif kind == "ObjectParam":
-                annot = getattr(p, "universe", "?")
-            elif kind == "MorphismParam":
-                dom = getattr(p, "domain", None)
-                cod = getattr(p, "codomain", None)
-                annot = (
-                    f"Mor[{_pretty_object(dom)}, {_pretty_object(cod)}]"
-                    if dom is not None and cod is not None
-                    else "Mor"
-                )
-            else:
-                annot = ""
-            if annot:
-                param_strs.append(f"{pname} : {annot}")
-            else:
-                param_strs.append(str(pname))
+        static, runtime = _program_parameter_groups(tmpl)
         head = f"program {name}"
-        if param_strs:
-            head += f"({', '.join(param_strs)})"
+        if static:
+            head += f"[{', '.join(static)}]"
+        if runtime:
+            head += f"({', '.join(runtime)})"
         dom = getattr(tmpl, "domain", None)
         cod = getattr(tmpl, "codomain", None)
         if dom is not None and cod is not None:
@@ -1102,8 +1112,12 @@ class ReplSession:
         if kind == "morphism":
             return self._type_line_for_morphism(ref.name, node)
         if kind == "object":
+            if isinstance(node, ObjectDecl):
+                return _render_decl(node).strip()
             return f"object {ref.name} : {_pretty_object(node)}"
         if kind == "space":
+            if isinstance(node, ObjectDecl):
+                return _render_decl(node).strip()
             return f"space {ref.name} : {_pretty_object(node)}"
         if kind == "deduction":
             dom = getattr(node, "domain", None)
@@ -1134,6 +1148,10 @@ class ReplSession:
         if kind == "contraction":
             return f"contraction {ref.name}"
         if kind == "param":
+            if isinstance(node, ProgramParam):
+                return f"param {_emit_program_param(node)}"
+            if isinstance(node, QiecBinder):
+                return f"param {_emit_qiec_binder(node)}"
             sk = getattr(node, "scalar_kind", None)
             universe = getattr(node, "universe", None)
             if sk is not None:
@@ -1141,6 +1159,14 @@ class ReplSession:
             if universe is not None:
                 return f"param {ref.name} : {universe}"
             return f"param {ref.name}"
+        if kind == "data-input" and isinstance(node, QiecValueParameter):
+            prefix = (
+                "param "
+                if isinstance(node.type_expr, QiecTypeName)
+                and node.type_expr.name in {"Real", "Nat"}
+                else ""
+            )
+            return f"{prefix}{ref.name} : {_emit_qiec_type(node.type_expr)}"
         if kind == "sample-site":
             return _render_sample_line(node)
         if kind == "observe-site":
@@ -1294,6 +1320,9 @@ class ReplSession:
                     f"{name} :: {_pretty_runtime_value(value)}\n"
                     f"  (bound, no source declaration)"
                 )
+            family = _family_signature(name)
+            if family is not None:
+                return _resp(family)
             return _err(f"unknown name: {name}")
         line = getattr(decl, "line", 0)
         col = getattr(decl, "col", 0)
@@ -1739,14 +1768,22 @@ class ReplSession:
             ("contractions", compiler.contractions, _children_for_contraction),
         )
         programs = compiler.programs
+        source_refs = top_level_bindings(compiler)
         for ns, mapping, builder in sources:
+            kind = {"objects": "object", "spaces": "space", "programs": "program"}.get(
+                ns
+            )
+            display_mapping: dict[str, object] = dict(mapping)
+            for ref in source_refs:
+                if ref.kind == kind:
+                    display_mapping.setdefault(ref.name, ref.node)
             entries: list[tuple[str, object]] = []
-            for name in sorted(mapping):
+            for name in sorted(display_mapping):
                 if ns == "morphisms" and name in programs:
                     # A program without typed parameters also compiles
                     # to a morphism; it is listed once, as the program.
                     continue
-                head, children = builder(name, mapping[name])
+                head, children = builder(name, display_mapping[name])
                 entries.append((head, children))
             groups[ns] = entries
         qiec_groups = {
@@ -2048,6 +2085,8 @@ class ReplSession:
             module_name=qiec_module_name(self._loaded_path),
             file_path=str(self._loaded_path) if self._loaded_path else "<repl>",
         )
+        if self._qiec_module is not None:
+            c._reuse_checked_source(self._module, self._qiec_module)
         try:
             c.compile_env()
         except CompileError, QiecDiagnosticError:
@@ -2653,6 +2692,15 @@ def _env_counts(env: dict[str, Any]) -> str:
     return f"{items} binding(s)"
 
 
+def _installed_message(env: dict[str, Any], source_path: Path | None) -> str:
+    """Present a prepared environment independently of its preparation granularity."""
+    return (
+        f"loaded {source_path}: {_env_counts(env)}"
+        if source_path is not None
+        else f"installed module: {_env_counts(env)}"
+    )
+
+
 def _violation_to_diag(v: Violation) -> Diagnostic:
     return Diagnostic(
         message=v.message,
@@ -2671,6 +2719,7 @@ _VALUE_REF_KINDS: frozenset[str] = frozenset(
         "program",
         "deduction",
         "sample-site",
+        "data-input",
         "observe-site",
         "marginalize-site",
         "let-site",
@@ -2961,7 +3010,11 @@ def _extract_export_expr(mod: Module):
 
 def _call_str(step: Any) -> str:
     head = getattr(step, "morphism", "?") or "?"
-    return draw_call_to_source(str(head), getattr(step, "args", None))
+    return draw_call_to_source(
+        str(head),
+        getattr(step, "args", None),
+        static_args=getattr(step, "static_args", ()),
+    )
 
 
 def _index_suffix(idx: Any) -> str:

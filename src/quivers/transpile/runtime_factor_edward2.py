@@ -64,3 +64,7 @@ def _qvr_qiec_factor(name, weight):
     return edward2.make_random_variable(_QvrFactorDistribution)(
         log_factor=weight, name=name
     )
+
+
+# qvr-shared-probability:edward2:start
+# qvr-shared-probability:edward2:end

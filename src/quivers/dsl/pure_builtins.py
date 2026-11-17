@@ -12,6 +12,7 @@ primitives implicitly.
 from __future__ import annotations
 
 import inspect
+import math
 from collections.abc import Callable, Mapping
 from typing import Literal
 
@@ -34,6 +35,315 @@ LAYER_NORM_EPS = 1e-5
 #: The offset ``rms_norm`` adds to the mean square when no ``eps`` is
 #: given.
 RMS_NORM_EPS = 1e-6
+
+
+def _tensor_matmul(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
+    """Multiply checked Real tensors using their common floating precision.
+
+    Parameters
+    ----------
+    left, right : torch.Tensor
+        Matrix operands with the existing Torch batch and event geometry.
+
+    Returns
+    -------
+    torch.Tensor
+        Matrix product. Floating operands use Torch's promoted dtype;
+        device, layout and integral-input errors retain ordinary Torch semantics.
+    """
+    if (
+        left.is_floating_point()
+        and right.is_floating_point()
+        and left.dtype != right.dtype
+    ):
+        dtype = torch.promote_types(left.dtype, right.dtype)
+        left, right = left.to(dtype=dtype), right.to(dtype=dtype)
+    return torch.matmul(left, right)
+
+
+def _eager_observation_weight(value: torch.Tensor | float) -> torch.Tensor | float:
+    """Check the same finite, nonnegative carrier as the reference primitive.
+
+    Parameters
+    ----------
+    value : torch.Tensor | float
+        A real scalar or a floating tensor of observation weights.
+
+    Returns
+    -------
+    torch.Tensor | float
+        The supplied value, unchanged and retaining its gradients.
+
+    Raises
+    ------
+    ValueError
+        If a weight is nonfinite or negative, or the tensor dtype is not real.
+    """
+    if isinstance(value, torch.Tensor):
+        valid = value.is_floating_point() and bool(
+            (torch.isfinite(value) & (value >= 0)).all()
+        )
+    else:
+        valid = not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    if not valid:
+        raise ValueError(
+            "observation weights must be finite and nonnegative real values"
+        )
+    return value
+
+
+def _eager_observation_status(value: torch.Tensor | int) -> torch.Tensor | int:
+    """Validate event codes while preserving their scalar or tensor carrier.
+
+    Parameters
+    ----------
+    value : torch.Tensor or int
+        Integer codes from minus one through two, excluding Boolean carriers.
+
+    Returns
+    -------
+    torch.Tensor or int
+        Unchanged validated input.
+
+    Raises
+    ------
+    ValueError
+        If the carrier or any event code is invalid.
+    """
+    if not isinstance(value, torch.Tensor):
+        from quivers.qiec.primitives import _observation_status
+
+        return _observation_status(value)
+    if (
+        value.dtype == torch.bool
+        or value.is_floating_point()
+        or value.is_complex()
+        or not bool(((value >= -1) & (value <= 2)).all())
+    ):
+        raise ValueError("observation_status requires integer codes -1, 0, 1, or 2")
+    return value
+
+
+def _eager_interval_upper(
+    lower: torch.Tensor | float, upper: torch.Tensor | float
+) -> torch.Tensor | float:
+    """Validate active real interval endpoints without changing their gradients.
+
+    Parameters
+    ----------
+    lower, upper : torch.Tensor or float
+        Lower endpoint, possibly infinite, and a finite strictly larger upper.
+
+    Returns
+    -------
+    torch.Tensor or float
+        Validated upper endpoint with its original gradient connection.
+
+    Raises
+    ------
+    ValueError
+        If either carrier is not real or endpoints violate the active interval.
+    """
+    if not isinstance(lower, torch.Tensor) and not isinstance(upper, torch.Tensor):
+        from quivers.qiec.primitives import _interval_upper
+
+        return _interval_upper(lower, upper)
+    reference = lower if isinstance(lower, torch.Tensor) else upper
+    assert isinstance(reference, torch.Tensor)
+    endpoints = tuple(
+        torch.as_tensor(
+            value,
+            dtype=torch.float64 if type(value) is float else None,
+            device=reference.device,
+        )
+        for value in (lower, upper)
+    )
+    if any(
+        value.dtype == torch.bool or not value.is_floating_point()
+        for value in endpoints
+    ):
+        raise ValueError("interval_upper requires real endpoints")
+    low, high = endpoints
+    if not bool((~low.isnan() & high.isfinite() & (high > low)).all()):
+        raise ValueError(
+            "interval_upper requires a finite upper endpoint greater than its lower endpoint"
+        )
+    shape = torch.broadcast_shapes(low.shape, high.shape)
+    return high if high.shape == shape else high.expand(shape)
+
+
+def _eager_positive_parameter(value: torch.Tensor | float) -> torch.Tensor | float:
+    """Validate a positive real parameter without changing its value or gradient.
+
+    Parameters
+    ----------
+    value : torch.Tensor or float
+        Natural-scale scalar or tensor parameter.
+
+    Returns
+    -------
+    torch.Tensor or float
+        The supplied value unchanged, retaining derivative identity.
+
+    Raises
+    ------
+    ValueError
+        If a value is boolean, nonfinite, zero, or negative.
+    """
+    if not isinstance(value, torch.Tensor):
+        from quivers.qiec.primitives import _positive_parameter
+
+        return _positive_parameter(value)
+    if not value.is_floating_point() or not bool(
+        (torch.isfinite(value) & (value > 0)).all()
+    ):
+        invalid = (
+            ~(torch.isfinite(value) & (value > 0))
+            if value.is_floating_point()
+            else torch.ones_like(value, dtype=torch.bool)
+        )
+        positions = invalid.nonzero(as_tuple=False)[:16].detach().cpu().tolist()
+        raise ValueError(
+            "positive_parameter requires finite strictly positive real values; "
+            f"invalid tensor positions {positions}"
+        )
+    return value
+
+
+def _eager_log_probability(value: torch.Tensor | float) -> torch.Tensor | float:
+    """Validate and log a probability, masking the singular zero endpoint.
+
+    Parameters
+    ----------
+    value : torch.Tensor or float
+        Finite real probability in the closed unit interval.
+
+    Returns
+    -------
+    torch.Tensor or float
+        Logarithms, negative infinity at zero. No finite derivative is claimed
+        at zero; masking prevents inactive endpoint expressions from leaking.
+
+    Raises
+    ------
+    ValueError
+        If a value is boolean, nonfinite, or outside [0, 1].
+    """
+    if not isinstance(value, torch.Tensor):
+        from quivers.qiec.primitives import _log_probability
+
+        return _log_probability(value)
+    if not value.is_floating_point() or not bool(
+        (torch.isfinite(value) & (value >= 0) & (value <= 1)).all()
+    ):
+        raise ValueError("log_probability requires finite real values in [0, 1]")
+    positive = value > 0
+    safe = torch.where(positive, value, torch.ones_like(value))
+    return torch.where(positive, safe.log(), -torch.inf)
+
+
+def _eager_log1mexp(value: torch.Tensor | float) -> torch.Tensor | float:
+    """Log complementary exponentials with protected endpoint derivatives.
+
+    Parameters
+    ----------
+    value : torch.Tensor or float
+        Nonpositive real values, including negative infinity.
+
+    Returns
+    -------
+    torch.Tensor or float
+        Log(1-exp(value)); negative infinity at zero. No finite derivative is
+        claimed at zero or at an infinite argument.
+
+    Raises
+    ------
+    ValueError
+        If a value is boolean, NaN, or positive.
+    """
+    if not isinstance(value, torch.Tensor):
+        from quivers.qiec.primitives import _log1mexp
+
+        return _log1mexp(value)
+    if not value.is_floating_point() or not bool(
+        (~torch.isnan(value) & (value <= 0)).all()
+    ):
+        raise ValueError("log1mexp requires nonpositive real values")
+    interior = torch.isfinite(value) & (value < 0)
+    safe = torch.where(interior, value, -torch.ones_like(value))
+    near = safe > -math.log(2)
+    near_arg = torch.where(near, safe, -torch.ones_like(safe))
+    far_arg = torch.where(near, -torch.ones_like(safe), safe)
+    result = torch.where(
+        near, torch.log(-torch.expm1(near_arg)), torch.log1p(-far_arg.exp())
+    )
+    return torch.where(
+        value == 0, -torch.inf, torch.where(value.isneginf(), 0.0, result)
+    )
+
+
+def _eager_log_ndtr(value: torch.Tensor | float) -> torch.Tensor | float:
+    """Normal log CDF with protected infinite endpoint derivatives.
+
+    Parameters
+    ----------
+    value : torch.Tensor or float
+        Real values, including either infinity.
+
+    Returns
+    -------
+    torch.Tensor or float
+        Normal log CDF, negative infinity at -infinity and zero at +infinity.
+
+    Raises
+    ------
+    ValueError
+        If a value is boolean or NaN.
+    """
+    if not isinstance(value, torch.Tensor):
+        from quivers.qiec.primitives import _log_ndtr
+
+        return _log_ndtr(value)
+    if not value.is_floating_point() or bool(torch.isnan(value).any()):
+        raise ValueError("log_ndtr requires real values other than NaN")
+    safe = torch.where(torch.isfinite(value), value, torch.zeros_like(value))
+    result = torch.special.log_ndtr(safe)
+    return torch.where(
+        value.isneginf(), -torch.inf, torch.where(value.isposinf(), 0.0, result)
+    )
+
+
+def _eager_scale_weight(
+    coefficient: torch.Tensor | float, density: torch.Tensor | float
+) -> torch.Tensor | float:
+    """Multiply log weights with zero absorbing even an infinite density.
+
+    Parameters
+    ----------
+    coefficient : torch.Tensor | float
+        The scalar coefficient, or one coefficient per density position.
+    density : torch.Tensor | float
+        The log density at each position.
+
+    Returns
+    -------
+    torch.Tensor | float
+        The product, with zero-coefficient positions masked before multiplication.
+    """
+    if not isinstance(coefficient, torch.Tensor) and not isinstance(
+        density, torch.Tensor
+    ):
+        return 0.0 if coefficient == 0 else coefficient * density
+    if isinstance(density, torch.Tensor):
+        weight = torch.as_tensor(coefficient, device=density.device)
+        value = density
+    else:
+        assert isinstance(coefficient, torch.Tensor)
+        weight = coefficient
+        value = torch.as_tensor(density, device=weight.device)
+    safe = torch.where(weight == 0, torch.zeros_like(value), value)
+    return weight * safe
+
 
 #: Eager implementations for the deterministic-expression builtin surface.
 #: Higher-order collection forms are compiled specially because they consume
@@ -73,6 +383,12 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     "exp": lambda a: torch.exp(a),
     "expm1": lambda a: torch.expm1(a),
     "log": lambda a: torch.log(a),
+    "log_probability": _eager_log_probability,
+    "positive_parameter": _eager_positive_parameter,
+    "observation_status": _eager_observation_status,
+    "interval_upper": _eager_interval_upper,
+    "log1mexp": _eager_log1mexp,
+    "log_ndtr": _eager_log_ndtr,
     "log1p": lambda a: torch.log1p(a),
     "log2": lambda a: torch.log2(a),
     "log10": lambda a: torch.log10(a),
@@ -136,7 +452,7 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     "rms_norm": lambda a, eps=RMS_NORM_EPS: (
         a * torch.rsqrt(a.pow(2).mean(dim=-1, keepdim=True) + float(eps))
     ),
-    "matmul": lambda a, b: torch.matmul(a, b),
+    "matmul": _tensor_matmul,
     "real": lambda a: (
         a.to(dtype=torch.get_default_dtype())
         if isinstance(a, torch.Tensor)
@@ -150,6 +466,8 @@ EAGER_BUILTINS: Mapping[str, Callable] = {
     ),
     "weight": lambda a: a,
     "weight_value": lambda a: a,
+    "observation_weight": _eager_observation_weight,
+    "scale_weight": _eager_scale_weight,
     "concat": lambda *parts: torch.cat(parts, dim=-1),
     "slice": lambda a, start, length: a[..., int(start) : int(start) + int(length)],
 }
@@ -181,6 +499,12 @@ _BUILTIN_PRIMITIVES: Mapping[str, Mapping[tuple[TypeExpr, ...], str]] = {
     },
     "exp": {(REAL,): "exp"},
     "log": {(REAL,): "log"},
+    "log_probability": {(REAL,): "log_probability"},
+    "positive_parameter": {(REAL,): "positive_parameter"},
+    "observation_status": {(INT,): "observation_status"},
+    "interval_upper": {(REAL, REAL): "interval_upper"},
+    "log1mexp": {(REAL,): "log1mexp"},
+    "log_ndtr": {(REAL,): "log_ndtr"},
     "sqrt": {(REAL,): "sqrt"},
     "pow": {(REAL, REAL): "pow_real"},
     "abs": {(INT,): "abs_int", (REAL,): "abs_real"},
@@ -188,6 +512,8 @@ _BUILTIN_PRIMITIVES: Mapping[str, Mapping[tuple[TypeExpr, ...], str]] = {
     "max": {(INT, INT): "max_int", (REAL, REAL): "max_real"},
     "weight": {(REAL,): "as_weight"},
     "weight_value": {(LOG_WEIGHT,): "weight_value"},
+    "observation_weight": {(REAL,): "observation_weight"},
+    "scale_weight": {(REAL, LOG_WEIGHT): "scale_weight"},
     **{
         name: {(REAL,): name}
         for name in (
@@ -289,6 +615,7 @@ type QiecBuiltinForm = Literal[
     "collection",
     "unsupported",
     "host-only",
+    "measure-query",
 ]
 
 
@@ -328,6 +655,12 @@ _COLLECTION_ARITIES: Mapping[str, frozenset[int]] = {
     "logsumexp_over": frozenset({2}),
     "filter": frozenset({2}),
 }
+#: Structural queries use checked sampleable arguments rather than direct
+#: tensor-call implementations. Their arity and result layout stay together.
+_MEASURE_QUERIES: Mapping[str, tuple[int, str]] = {
+    "log_mass": (1, "sampleable-total-mass"),
+    "log_prob": (2, "sampleable-density"),
+}
 _RANDOM_EAGER_BUILTINS = frozenset({"alpha_dropout", "dropout", "rrelu"})
 
 
@@ -346,6 +679,8 @@ def _eager_arities(implementation: Callable | None) -> frozenset[int]:
 
 
 def _qiec_form(name: str) -> QiecBuiltinForm:
+    if name in _MEASURE_QUERIES:
+        return "measure-query"
     if name in _BUILTIN_PRIMITIVES:
         return "primitive"
     if name in _REDUCTIONS:
@@ -362,6 +697,8 @@ def _qiec_form(name: str) -> QiecBuiltinForm:
 
 
 def _qiec_arities(name: str, form: QiecBuiltinForm) -> frozenset[int]:
+    if form == "measure-query":
+        return frozenset({_MEASURE_QUERIES[name][0]})
     if form == "primitive":
         return frozenset(len(signature) for signature in _BUILTIN_PRIMITIVES[name])
     if form in ("reduction", "rowwise"):
@@ -377,6 +714,8 @@ def _qiec_arities(name: str, form: QiecBuiltinForm) -> frozenset[int]:
 
 
 def _shape_rule(name: str, form: QiecBuiltinForm) -> str:
+    if form == "measure-query":
+        return _MEASURE_QUERIES[name][1]
     if form == "primitive":
         return "scalar-lift"
     if form == "reduction":
@@ -394,7 +733,7 @@ def _shape_rule(name: str, form: QiecBuiltinForm) -> str:
     return "eager-native"
 
 
-_BUILTIN_NAMES = frozenset((*EAGER_BUILTINS, *_COLLECTION_BUILTINS))
+_BUILTIN_NAMES = frozenset((*EAGER_BUILTINS, *_COLLECTION_BUILTINS, *_MEASURE_QUERIES))
 
 #: The one capability registry consulted by eager execution, checked lowering,
 #: editor completion, and transpiler validation.

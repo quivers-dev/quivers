@@ -34,11 +34,50 @@ of measurable isomorphisms.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import math
 from collections.abc import Mapping
 from types import MappingProxyType
 
 import torch
 from torch import Tensor
+
+
+def _extended_map(
+    value: Tensor, mapping, bounds: tuple[float, float], image: tuple[float, float]
+) -> Tensor:
+    """Extend an increasing scalar map constantly beyond its domain.
+
+    Parameters
+    ----------
+    value : Tensor
+        Evaluation points.
+    mapping : callable
+        Interior increasing map.
+    bounds : tuple[float, float]
+        Domain bounds of that map.
+    image : tuple[float, float]
+        Corresponding image endpoints, including finite limits.
+
+    Returns
+    -------
+    Tensor
+        Mapped points, with the image limits beyond either domain boundary.
+    """
+    if bool(value.isnan().any()):
+        raise ValueError("scalar interval bounds must not be NaN")
+    low, high = bounds
+    inside = (value > low) & (value < high) & torch.isfinite(value)
+    anchor = (
+        (low + high) / 2
+        if math.isfinite(low) and math.isfinite(high)
+        else low + 1
+        if math.isfinite(low)
+        else high - 1
+        if math.isfinite(high)
+        else 0.0
+    )
+    mapped = mapping(torch.where(inside, value, anchor))
+    return torch.where(inside, mapped, torch.where(value <= low, image[0], image[1]))
 
 
 class Bijector(ABC):
@@ -48,6 +87,141 @@ class Bijector(ABC):
     Implementations override the four primitive methods; the
     `__call__`, `Compose`, and `inv` helpers compose them.
     """
+
+    _domain_bounds: tuple[float, float] | None = None
+    _image_bounds: tuple[float, float] | None = None
+    _batch_parameter_names: tuple[str, ...] | None = None
+    jacobian_event_dim = 0
+
+    def forward_shape(self, shape):
+        """Retain intrinsic event axes for an elementwise transformation.
+
+        Parameters
+        ----------
+        shape : torch.Size
+            Input event shape.
+
+        Returns
+        -------
+        torch.Size
+            Output event shape.
+        """
+        return torch.Size(shape)
+
+    def inverse_shape(self, shape):
+        """Retain intrinsic event axes for the inverse elementwise map.
+
+        Parameters
+        ----------
+        shape : torch.Size
+            Output event shape.
+
+        Returns
+        -------
+        torch.Size
+            Input event shape.
+        """
+        return torch.Size(shape)
+
+    def select_batch(self, batch_shape, active, *, event_shape=(), output_shape=None):
+        """Select declared parameter batches while retaining intrinsic event axes.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size
+            Broadcast batch of the measure before transformation.
+        active : Tensor
+            Boolean selection over that batch.
+        event_shape : tuple[int, ...]
+            Intrinsic coordinates to retain within each selected row.
+        output_shape : torch.Size or None
+            Optional shape for the selected batch axes.
+
+        Returns
+        -------
+        Bijector
+            Transformation with matching selected parameter rows.
+
+        Raises
+        ------
+        NotImplementedError
+            If a custom transformation declares no batch-selection capability.
+        """
+        if self._batch_parameter_names is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} has no batch-selection capability"
+            )
+        if not self._batch_parameter_names:
+            return self
+        from quivers.continuous._batch_selection import select_parameter
+
+        parameters = {
+            name: select_parameter(
+                torch.as_tensor(getattr(self, name)).expand(
+                    torch.Size(batch_shape) + torch.Size(event_shape)
+                ),
+                batch_shape,
+                len(event_shape),
+                active,
+                output_shape=output_shape,
+            )
+            for name in self._batch_parameter_names
+        }
+        return type(self)(**parameters)
+
+    def _interval_preimage(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Pull back scalar bounds through a known increasing bijection.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Bounds in the codomain, including extended-real endpoints.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Extended-real bounds in the domain.
+
+        Raises
+        ------
+        NotImplementedError
+            If the bijector has no scalar interval capability.
+        """
+        if self._image_bounds is None or self._domain_bounds is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} does not declare a scalar interval preimage"
+            )
+        return (
+            _extended_map(low, self.inverse, self._image_bounds, self._domain_bounds),
+            _extended_map(high, self.inverse, self._image_bounds, self._domain_bounds),
+        )
+
+    def _interval_image(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Map scalar bounds through a known increasing bijection.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Bounds in the domain, including extended-real endpoints.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Bounds in the image.
+
+        Raises
+        ------
+        NotImplementedError
+            If no scalar domain contract is declared.
+        """
+        if self._domain_bounds is None or self._image_bounds is None:
+            raise NotImplementedError(
+                "interval images require a scalar domain contract"
+            )
+        return (
+            _extended_map(low, self.forward, self._domain_bounds, self._image_bounds),
+            _extended_map(high, self.forward, self._domain_bounds, self._image_bounds),
+        )
 
     @abstractmethod
     def forward(self, x: Tensor) -> Tensor: ...
@@ -82,6 +256,100 @@ class InverseBijector(Bijector):
 
     def __init__(self, base: Bijector) -> None:
         self.base = base
+        self.jacobian_event_dim = base.jacobian_event_dim
+
+    def forward_shape(self, shape):
+        """Use the retained bijector's inverse event-shape contract.
+
+        Parameters
+        ----------
+        shape : torch.Size
+            Input event shape.
+
+        Returns
+        -------
+        torch.Size
+            Output event shape under inversion.
+        """
+        return self.base.inverse_shape(shape)
+
+    def inverse_shape(self, shape):
+        """Use the retained bijector's forward event-shape contract.
+
+        Parameters
+        ----------
+        shape : torch.Size
+            Output event shape.
+
+        Returns
+        -------
+        torch.Size
+            Original input event shape.
+        """
+        return self.base.forward_shape(shape)
+
+    def select_batch(self, batch_shape, active, *, event_shape=(), output_shape=None):
+        """Select the wrapped transformation before taking its inverse.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size
+            Retained measure batch.
+        active : Tensor
+            Boolean batch selection.
+        event_shape : tuple[int, ...]
+            Intrinsic event coordinates.
+        output_shape : torch.Size or None
+            Optional selected batch layout.
+
+        Returns
+        -------
+        InverseBijector
+            Inverse transformation on the selected batch.
+        """
+        return InverseBijector(
+            self.base.select_batch(
+                batch_shape,
+                active,
+                event_shape=self.base.inverse_shape(event_shape),
+                output_shape=output_shape,
+            )
+        )
+
+    def _interval_preimage(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Use the base forward map when pulling back its inverse.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Bounds in the base domain.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Bounds in the base image.
+
+        Raises
+        ------
+        NotImplementedError
+            If the base lacks an explicit scalar domain contract.
+        """
+        return self.base._interval_image(low, high)
+
+    def _interval_image(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Use the original preimage as the inverse bijector's image.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Scalar bounds in the inverse domain.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Bounds in the inverse image.
+        """
+        return self.base._interval_preimage(low, high)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.base.inverse(x)
@@ -105,6 +373,100 @@ class ComposeBijector(Bijector):
     def __init__(self, outer: Bijector, inner: Bijector) -> None:
         self.outer = outer
         self.inner = inner
+        self.jacobian_event_dim = max(
+            outer.jacobian_event_dim, inner.jacobian_event_dim
+        )
+
+    def forward_shape(self, shape):
+        """Compose the intrinsic event-shape maps.
+
+        Parameters
+        ----------
+        shape : torch.Size
+            Original input event shape.
+
+        Returns
+        -------
+        torch.Size
+            Final output event shape.
+        """
+        return self.outer.forward_shape(self.inner.forward_shape(shape))
+
+    def inverse_shape(self, shape):
+        """Invert event-shape maps in the same order as coordinates.
+
+        Parameters
+        ----------
+        shape : torch.Size
+            Final output event shape.
+
+        Returns
+        -------
+        torch.Size
+            Original input event shape.
+        """
+        return self.inner.inverse_shape(self.outer.inverse_shape(shape))
+
+    def select_batch(self, batch_shape, active, *, event_shape=(), output_shape=None):
+        """Select both retained transformations under the same batch layout.
+
+        Parameters
+        ----------
+        batch_shape : torch.Size
+            Retained measure batch.
+        active : Tensor
+            Boolean batch selection.
+        event_shape : tuple[int, ...]
+            Intrinsic event coordinates.
+        output_shape : torch.Size or None
+            Optional selected batch layout.
+
+        Returns
+        -------
+        ComposeBijector
+            Composition of the selected transformations.
+        """
+        return ComposeBijector(
+            self.outer.select_batch(
+                batch_shape,
+                active,
+                event_shape=self.inner.forward_shape(event_shape),
+                output_shape=output_shape,
+            ),
+            self.inner.select_batch(
+                batch_shape, active, event_shape=event_shape, output_shape=output_shape
+            ),
+        )
+
+    def _interval_preimage(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Compose the same interval capability as the underlying scalar maps.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Bounds in the final image.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Bounds in the original domain.
+        """
+        return self.inner._interval_preimage(*self.outer._interval_preimage(low, high))
+
+    def _interval_image(self, low: Tensor, high: Tensor) -> tuple[Tensor, Tensor]:
+        """Compose images in the same order as the underlying forward maps.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Scalar bounds in the original domain.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Bounds in the final image.
+        """
+        return self.outer._interval_image(*self.inner._interval_image(low, high))
 
     def forward(self, x: Tensor) -> Tensor:
         return self.outer.forward(self.inner.forward(x))
@@ -114,21 +476,50 @@ class ComposeBijector(Bijector):
 
     def forward_log_det_jacobian(self, x: Tensor) -> Tensor:
         inner_x = self.inner.forward(x)
-        return self.inner.forward_log_det_jacobian(
-            x
-        ) + self.outer.forward_log_det_jacobian(inner_x)
+        return self._combine_jacobians(
+            self.inner.forward_log_det_jacobian(x),
+            self.outer.forward_log_det_jacobian(inner_x),
+        )
 
     def inverse_log_det_jacobian(self, y: Tensor) -> Tensor:
         outer_inv = self.outer.inverse(y)
-        return self.outer.inverse_log_det_jacobian(
-            y
-        ) + self.inner.inverse_log_det_jacobian(outer_inv)
+        return self._combine_jacobians(
+            self.inner.inverse_log_det_jacobian(outer_inv),
+            self.outer.inverse_log_det_jacobian(y),
+        )
+
+    def _combine_jacobians(self, inner, outer):
+        """Reduce only event axes that an elementwise member has not reduced.
+
+        Parameters
+        ----------
+        inner, outer : Tensor
+            The two log Jacobians under their own intrinsic event conventions.
+
+        Returns
+        -------
+        Tensor
+            Joint log Jacobian under the composition's event convention.
+        """
+        for value_name, member in (("inner", self.inner), ("outer", self.outer)):
+            dims = self.jacobian_event_dim - member.jacobian_event_dim
+            if dims:
+                if value_name == "inner":
+                    inner = inner.sum(tuple(range(-dims, 0)))
+                else:
+                    outer = outer.sum(tuple(range(-dims, 0)))
+        return inner + outer
 
 
 class IdentityBijector(Bijector):
     """The identity map. Useful as a neutral element in compositions
     and as the trivial pushforward.
     """
+
+    _domain_bounds = (-math.inf, math.inf)
+    _image_bounds = (-math.inf, math.inf)
+
+    _batch_parameter_names = ()
 
     def forward(self, x: Tensor) -> Tensor:
         return x
@@ -148,6 +539,11 @@ class ExpBijector(Bijector):
     $(0, \\infty)$. Jacobian log-determinant is $x$.
     """
 
+    _domain_bounds = (-math.inf, math.inf)
+    _image_bounds = (0.0, math.inf)
+
+    _batch_parameter_names = ()
+
     def forward(self, x: Tensor) -> Tensor:
         return torch.exp(x)
 
@@ -166,6 +562,11 @@ class LogBijector(Bijector):
     $\\mathbb{R}$. Inverse of [`ExpBijector`][quivers.continuous.bijectors.ExpBijector];
     Jacobian log-determinant is $-\\log x$.
     """
+
+    _domain_bounds = (0.0, math.inf)
+    _image_bounds = (-math.inf, math.inf)
+
+    _batch_parameter_names = ()
 
     def forward(self, x: Tensor) -> Tensor:
         return torch.log(x)
@@ -189,6 +590,11 @@ class SigmoidBijector(Bijector):
     is stable in both tails.
     """
 
+    _domain_bounds = (-math.inf, math.inf)
+    _image_bounds = (0.0, 1.0)
+
+    _batch_parameter_names = ()
+
     def forward(self, x: Tensor) -> Tensor:
         return torch.sigmoid(x)
 
@@ -206,6 +612,11 @@ class LogitBijector(Bijector):
     """The logit $f(x) = \\log(x / (1 - x))$ from $(0, 1)$ to
     $\\mathbb{R}$. Inverse of [`SigmoidBijector`][quivers.continuous.bijectors.SigmoidBijector].
     """
+
+    _domain_bounds = (0.0, 1.0)
+    _image_bounds = (-math.inf, math.inf)
+
+    _batch_parameter_names = ()
 
     def forward(self, x: Tensor) -> Tensor:
         return torch.logit(x)
@@ -234,6 +645,11 @@ class SoftplusBijector(Bijector):
     $\\log|df^{-1}/dy| = -\\log(1 - e^{-y}) = -\\log(-\\mathrm{expm1}(-y))$.
     """
 
+    _domain_bounds = (-math.inf, math.inf)
+    _image_bounds = (0.0, math.inf)
+
+    _batch_parameter_names = ()
+
     def forward(self, x: Tensor) -> Tensor:
         return torch.nn.functional.softplus(x)
 
@@ -252,6 +668,11 @@ class AffineBijector(Bijector):
     `scale` must be strictly positive; the Jacobian log-determinant
     is $\\log\\,\\text{scale}$, broadcast to the input shape.
     """
+
+    _domain_bounds = (-math.inf, math.inf)
+    _image_bounds = (-math.inf, math.inf)
+
+    _batch_parameter_names = ("scale", "shift")
 
     def __init__(
         self,
@@ -299,6 +720,53 @@ class StickBreakingBijector(Bijector):
     stick-breaks. Used in the desugaring of `LogisticNormal` and
     other simplex-valued transforms.
     """
+
+    _batch_parameter_names = ()
+    jacobian_event_dim = 1
+
+    def forward_shape(self, shape):
+        """Add the final simplex coordinate to a vector event.
+
+        Parameters
+        ----------
+        shape : torch.Size
+            Real-coordinate vector event shape.
+
+        Returns
+        -------
+        torch.Size
+            Simplex event shape with one additional coordinate.
+
+        Raises
+        ------
+        ValueError
+            If the input has no intrinsic vector axis.
+        """
+        if not shape:
+            raise ValueError("stick breaking requires an intrinsic vector event axis")
+        return torch.Size((*shape[:-1], shape[-1] + 1))
+
+    def inverse_shape(self, shape):
+        """Remove the simplex's redundant coordinate from its event shape.
+
+        Parameters
+        ----------
+        shape : torch.Size
+            Simplex event shape.
+
+        Returns
+        -------
+        torch.Size
+            Real-coordinate event shape.
+
+        Raises
+        ------
+        ValueError
+            If no nonempty simplex coordinate axis is supplied.
+        """
+        if not shape or shape[-1] < 1:
+            raise ValueError("inverse stick breaking requires a simplex event axis")
+        return torch.Size((*shape[:-1], shape[-1] - 1))
 
     def forward(self, x: Tensor) -> Tensor:
         K_minus_1 = x.shape[-1]

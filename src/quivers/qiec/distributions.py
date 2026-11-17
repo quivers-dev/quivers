@@ -15,12 +15,53 @@ from collections.abc import Mapping, Sequence
 import math
 import random
 from types import MappingProxyType
-from typing import Protocol
+from typing import Literal, Protocol, overload
 
 import didactic.api as dx
 
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
+from quivers.qiec._gaussian_tails import (
+    log_erfcx_positive as _log_erfcx_positive,
+    exgaussian_log_component as _exgaussian_log_component,
+)
+from quivers.qiec._response_time import (
+    _exgaussian_parameters,
+    _inverse_gaussian_parameters,
+)
+from quivers.qiec._multinomial import (
+    SAMPLERS as _COUNT_VECTOR_SAMPLERS,
+    DENSITIES as _COUNT_VECTOR_DENSITIES,
+)
+from quivers.qiec._count_tails import (
+    _discrete_weibull_parameters,
+    _discrete_weibull_log_interval,
+)
+from quivers.qiec._sampling import (
+    _binomial_sample as _sample_binomial_count,
+    _dirichlet_weights,
+    _trial_count,
+)
+from quivers.qiec._wiener import density as _wiener_density, sample as _wiener_sample
+from quivers.qiec._extended_beta import (
+    density as _extended_beta_density,
+    sample as _extended_beta_sample,
+)
+from quivers.qiec._bernstein_hazard import (
+    density as _bernstein_density,
+    sample as _bernstein_sample,
+)
+from quivers.qiec._com_poisson import (
+    density as _com_poisson_density,
+    sample as _com_poisson_sample,
+)
+from quivers.qiec._count_mixtures import (
+    SAMPLERS as _COUNT_MIXTURE_SAMPLERS,
+    _binomial_log_mass,
+    _poisson as _sample_poisson_count,
+    _poisson_log_mass,
+    DENSITIES as _COUNT_MIXTURE_DENSITIES,
+)
 from quivers.qiec.reference_families import (
     DENSITIES as _STRUCTURED_DENSITIES,
     LOG_MASSES as _LOG_MASSES,
@@ -31,7 +72,7 @@ from quivers.qiec.reference_support import (
     DistributionError,
     Sampler,
     finite_value as _finite_value,
-    log_choose as _log_choose,
+    _integer_observation,
     normal_log_prob as _normal_log_prob,
     log_probabilities as _log_probabilities,
     probability as _probabilities,
@@ -130,7 +171,9 @@ def tensor_rank(value: object) -> int:
     return 0
 
 
-def _slice_at(value: object, position: Sequence[int], rank: int) -> object:
+def _slice_at(
+    value: object, position: Sequence[int], rank: int, *, plate_rank: int | None = None
+) -> object:
     """Read an argument at one plate position, broadcasting shorter ranks.
 
     Parameters
@@ -142,6 +185,9 @@ def _slice_at(value: object, position: Sequence[int], rank: int) -> object:
         The plate position, outermost axis first.
     rank : int
         The parameter's own rank.
+    plate_rank : int or None
+        Full plate rank when selecting only a leading prefix. Unselected
+        trailing broadcast axes must remain intact.
 
     Returns
     -------
@@ -150,10 +196,31 @@ def _slice_at(value: object, position: Sequence[int], rank: int) -> object:
         it carries no plate dimensions, else the slice its trailing plate
         dimensions select.
     """
+    full_rank = len(position) if plate_rank is None else plate_rank
+    leaf = value
+    depth = 0
+    while isinstance(leaf, tuple) and leaf:
+        depth += 1
+        leaf = leaf[0]
+    if isinstance(leaf, RuntimeDistribution):
+        container_batch = max(depth - rank, 0)
+        leading = container_batch + len(leaf.batch)
+        selected = position[max(full_rank - leading, 0) :]
+        for index in selected[:container_batch]:
+            value = value[index]  # type: ignore[index]
+        remaining = selected[container_batch:]
+        if isinstance(value, tuple) and rank:
+            return tuple(
+                _slice_at(item, remaining, rank - 1, plate_rank=len(leaf.batch))
+                for item in value
+            )
+        if isinstance(value, RuntimeDistribution) and remaining:
+            return value.at(tuple(remaining))
+        return value
     leading = tensor_rank(value) - rank
     if leading <= 0:
         return value
-    for index in position[len(position) - leading :]:
+    for index in position[max(full_rank - leading, 0) :]:
         value = value[index]  # type: ignore[index]
     return value
 
@@ -359,7 +426,10 @@ class RuntimeDistribution(QiecModel):
             )
         arguments = {
             name: self._broadcast(
-                name, _slice_at(value, position, self.ranks.get(name, 0))
+                name,
+                _slice_at(
+                    value, position, self.ranks.get(name, 0), plate_rank=len(shape)
+                ),
             )
             for name, value in self.arguments.items()
         }
@@ -407,23 +477,145 @@ class RuntimeDistribution(QiecModel):
             shape,
         )
 
-    def log_mass(self) -> float:
-        """The log of the distribution's total mass through the installed backend.
+    @overload
+    def log_mass(self, batch_axes: Literal[0] = 0) -> float:
+        """Query the scalar total mass.
+
+        Parameters
+        ----------
+        batch_axes : Literal[0]
+            Reduce every independent axis.
 
         Returns
         -------
         float
+            Total log mass.
+        """
+
+    @overload
+    def log_mass(self, batch_axes: int) -> object:
+        """Query mass with a retained batch prefix.
+
+        Parameters
+        ----------
+        batch_axes : int
+            Number of leading batch axes to retain.
+
+        Returns
+        -------
+        object
+            Nested log weights on the retained axes.
+        """
+
+    def log_mass(self, batch_axes: int = 0) -> object:
+        """The log of the distribution's total mass through the installed backend.
+
+        Parameters
+        ----------
+        batch_axes : int
+            Number of leading independent batch axes retained in the result.
+            The default totals the entire product measure.
+
+        Returns
+        -------
+        float or nested tuple
             Zero for a probability measure; over a plate, the sum of the
             masses at every position, since the plate's draw is their
-            product.
+            product. Requested batch axes remain separate; event axes sum.
+
+        Raises
+        ------
+        DistributionError
+            If the retained rank is not an integer in the batch rank's range.
         """
+        if (
+            isinstance(batch_axes, bool)
+            or not isinstance(batch_axes, int)
+            or not 0 <= batch_axes <= len(self.batch)
+        ):
+            raise DistributionError(
+                "log_mass retained axes must be an integer within the batch rank"
+            )
         if not self.plated:
             return _backend.log_mass(self.family, self._at(()))
         shape = (*self.batch, *self.event)
-        return math.fsum(
-            _backend.log_mass(self.family, self._at(position))
-            for position in _positions(shape)
-        )
+
+        def total(prefix: tuple[int, ...]) -> float:
+            """Sum independent log masses under one retained position.
+
+            Parameters
+            ----------
+            prefix : tuple[int, ...]
+                Position in retained batch axes.
+
+            Returns
+            -------
+            float
+                Log mass of the remaining independent product.
+            """
+            return math.fsum(
+                _backend.log_mass(self.family, self._at((*prefix, *position)))
+                for position in _positions(shape[batch_axes:])
+            )
+
+        if not batch_axes:
+            return total(())
+        kept = shape[:batch_axes]
+        return _nest({position: total(position) for position in _positions(kept)}, kept)
+
+    @overload
+    def log_prob(self, value: object, keep_batch: Literal[False] = False) -> float:
+        """Read the total log density.
+
+        Parameters
+        ----------
+        value : object
+            Outcome with all batch and event coordinates.
+        keep_batch : Literal[False]
+            Sum all independent batch positions.
+
+        Returns
+        -------
+        float
+            Total log density, possibly negative infinity.
+        """
+        ...
+
+    @overload
+    def log_prob(self, value: object, keep_batch: Literal[True]) -> object:
+        """Retain separate batch-position log densities.
+
+        Parameters
+        ----------
+        value : object
+            Outcome with all batch and event coordinates.
+        keep_batch : Literal[True]
+            Retain the batch partition.
+
+        Returns
+        -------
+        object
+            Scalar or nested tuple of batch log densities.
+        """
+        ...
+
+    @overload
+    def log_prob(self, value: object, keep_batch: bool) -> object:
+        """Choose total or batch-preserving log density at runtime.
+
+        Parameters
+        ----------
+        value : object
+            Outcome with all batch and event coordinates.
+        keep_batch : bool
+            Whether to retain separate batch-position scores.
+
+        Returns
+        -------
+        object
+            Total scalar or nested tuple of batch log densities.
+        """
+        ...
 
     def log_prob(self, value: object, keep_batch: bool = False) -> object:
         """Evaluate the log density at a value through the installed backend.
@@ -630,7 +822,8 @@ def _bernoulli_density(a: Mapping[str, object], value: object) -> float:
         The log density, ``-inf`` outside the support.
     """
     log_success, log_failure = _log_probabilities(a, "Bernoulli")
-    return log_success if bool(_finite_value(value, "Bernoulli")) else log_failure
+    point = _integer_observation(value, "Bernoulli")
+    return log_success if point == 1 else log_failure if point == 0 else -math.inf
 
 
 def _categorical_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -674,8 +867,8 @@ def _categorical_density(a: Mapping[str, object], value: object) -> float:
         The log density, ``-inf`` outside the support.
     """
     probs = _simplex(a, "Categorical")
-    index = int(_finite_value(value, "Categorical"))
-    if not 0 <= index < len(probs) or probs[index] <= 0:
+    index = _integer_observation(value, "Categorical")
+    if index is None or not 0 <= index < len(probs) or probs[index] <= 0:
         return -math.inf
     return math.log(probs[index])
 
@@ -777,6 +970,143 @@ def _gamma_density(a: Mapping[str, object], value: object) -> float:
     )
 
 
+def _hurdle_probability(a: Mapping[str, object], family: str) -> float:
+    """Validate the hurdle probability and positive-component parameters.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Natural-scale family parameters.
+    family : str
+        HurdleGamma or HurdleLogNormal.
+
+    Returns
+    -------
+    float
+        Probability of the structural zero atom.
+
+    Raises
+    ------
+    DistributionError
+        If the probability or a component parameter is invalid.
+    """
+    probability = _real(a, "zero_prob", family)
+    if not 0 <= probability <= 1:
+        raise DistributionError(f"{family} needs zero_prob in [0, 1]")
+    if family == "HurdleGamma":
+        if _real(a, "concentration", family) <= 0 or _real(a, "rate", family) <= 0:
+            raise DistributionError("HurdleGamma needs concentration > 0 and rate > 0")
+    elif _real(a, "scale", family) <= 0:
+        raise DistributionError("HurdleLogNormal needs scale > 0")
+    else:
+        _real(a, "loc", family)
+    return probability
+
+
+def _hurdle_density(
+    a: Mapping[str, object], value: object, family: str, density: Density
+) -> float:
+    """Score an atom or positive density against their disjoint reference measures.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Natural-scale family parameters.
+    value : object
+        Response being scored.
+    family : str
+        Name used for validation diagnostics.
+    density : Density
+        Positive-component density under its original parameter names.
+
+    Returns
+    -------
+    float
+        Log mass at zero, log density above zero, or negative infinity.
+    """
+    probability = _hurdle_probability(a, family)
+    point = _finite_value(value, family)
+    if point == 0:
+        return math.log(probability) if probability > 0 else -math.inf
+    if point < 0 or probability == 1:
+        return -math.inf
+    return math.log1p(-probability) + density(a, point)
+
+
+def _hurdle_gamma_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw a zero atom or positive Gamma variate.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Zero probability, concentration, and rate.
+    rng : random.Random
+        Random generator.
+
+    Returns
+    -------
+    object
+        Zero or a positive Gamma draw.
+    """
+    probability = _hurdle_probability(a, "HurdleGamma")
+    return 0.0 if rng.random() < probability else _gamma_sample(a, rng)
+
+
+def _hurdle_gamma_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate the zero-atom/Gamma density.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Zero probability, concentration, and rate.
+    value : object
+        Response being scored.
+
+    Returns
+    -------
+    float
+        Log mass or positive-response log density.
+    """
+    return _hurdle_density(a, value, "HurdleGamma", _gamma_density)
+
+
+def _hurdle_lognormal_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw a zero atom or positive LogNormal variate.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Zero probability, log location, and log scale.
+    rng : random.Random
+        Random generator.
+
+    Returns
+    -------
+    object
+        Zero or a positive LogNormal draw.
+    """
+    probability = _hurdle_probability(a, "HurdleLogNormal")
+    return 0.0 if rng.random() < probability else _lognormal_sample(a, rng)
+
+
+def _hurdle_lognormal_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate the zero-atom/LogNormal density.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Zero probability, log location, and log scale.
+    value : object
+        Response being scored.
+
+    Returns
+    -------
+    float
+        Log mass or positive-response log density.
+    """
+    return _hurdle_density(a, value, "HurdleLogNormal", _lognormal_density)
+
+
 def _exponential_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``Exponential``.
 
@@ -869,15 +1199,7 @@ def _poisson_sample(a: Mapping[str, object], rng: random.Random) -> object:
     object
         The drawn value.
     """
-    rate = _real(a, "rate", "Poisson")
-    # Knuth's method, exact for the moderate rates a reference run uses.
-    limit = math.exp(-rate)
-    count = 0
-    product = rng.random()
-    while product > limit:
-        count += 1
-        product *= rng.random()
-    return count
+    return _sample_poisson_count(_real(a, "rate", "Poisson"), rng)
 
 
 def _poisson_density(a: Mapping[str, object], value: object) -> float:
@@ -896,13 +1218,11 @@ def _poisson_density(a: Mapping[str, object], value: object) -> float:
         The log density, ``-inf`` outside the support; at a zero rate
         the mass sits at zero alone.
     """
-    count = int(_finite_value(value, "Poisson"))
+    count = _integer_observation(value, "Poisson", float64=True)
     rate = _real(a, "rate", "Poisson")
-    if count < 0:
+    if count is None:
         return -math.inf
-    if rate == 0.0:
-        return 0.0 if count == 0 else -math.inf
-    return count * math.log(rate) - rate - math.lgamma(count + 1)
+    return _poisson_log_mass(count, rate)
 
 
 def _binomial_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -920,9 +1240,9 @@ def _binomial_sample(a: Mapping[str, object], rng: random.Random) -> object:
     object
         The drawn value.
     """
-    trials = int(_real(a, "total_count", "Binomial"))
+    trials = _trial_count(a.get("total_count"))
     probability = _probabilities(a, "Binomial")
-    return sum(1 for _ in range(trials) if rng.random() < probability)
+    return _sample_binomial_count(trials, probability, rng)
 
 
 def _binomial_density(a: Mapping[str, object], value: object) -> float:
@@ -940,16 +1260,14 @@ def _binomial_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density, ``-inf`` outside the support.
     """
-    count = int(_finite_value(value, "Binomial"))
-    trials = int(_real(a, "total_count", "Binomial"))
+    count = _integer_observation(value, "Binomial", float64=True)
+    if count is None:
+        return -math.inf
+    trials = _trial_count(a.get("total_count"))
     log_success, log_failure = _log_probabilities(a, "Binomial")
     if not 0 <= count <= trials:
         return -math.inf
-    return (
-        _log_choose(trials, count)
-        + _times(count, log_success)
-        + _times(trials - count, log_failure)
-    )
+    return _binomial_log_mass(float(trials), count, log_success, log_failure)
 
 
 def _geometric_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -966,12 +1284,22 @@ def _geometric_sample(a: Mapping[str, object], rng: random.Random) -> object:
     -------
     object
         The drawn value.
+
+    Raises
+    ------
+    DistributionError
+        If probabilities are improper or a draw exceeds exact count capacity.
     """
-    probability = _probabilities(a, "Geometric")
-    failures = 0
-    while rng.random() >= probability:
-        failures += 1
-    return failures
+    from quivers.qiec._count_tails import geometric_coordinates
+    from quivers.qiec._count_mixtures import _require_sample_capacity
+
+    _, log_failure = geometric_coordinates(a)
+    if log_failure == 0:
+        raise DistributionError(
+            "Geometric sampling exceeds exact Float64 count capacity"
+        )
+    value = math.log1p(-rng.random()) / log_failure
+    return int(math.floor(_require_sample_capacity(value)))
 
 
 def _geometric_density(a: Mapping[str, object], value: object) -> float:
@@ -989,9 +1317,11 @@ def _geometric_density(a: Mapping[str, object], value: object) -> float:
     float
         The log density, ``-inf`` outside the support.
     """
-    failures = int(_finite_value(value, "Geometric"))
-    log_success, log_failure = _log_probabilities(a, "Geometric")
-    if failures < 0:
+    failures = _integer_observation(value, "Geometric", float64=True)
+    from quivers.qiec._count_tails import geometric_coordinates
+
+    log_success, log_failure = geometric_coordinates(a)
+    if failures is None or failures < 0:
         return -math.inf
     return _times(failures, log_failure) + log_success
 
@@ -1013,6 +1343,293 @@ def _times(count: int, log_mass: float) -> float:
         never occurs contributes nothing, whatever its mass.
     """
     return 0.0 if count == 0 else count * log_mass
+
+
+def _exgaussian_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw independent Normal and Exponential components and add them.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, scale, and Exponential rate.
+    rng : random.Random
+        Local generator used for both component draws.
+
+    Returns
+    -------
+    object
+        One draw from the named response distribution.
+    """
+    loc, scale, rate = _exgaussian_parameters(a)
+    return rng.gauss(loc, scale) + rng.expovariate(rate)
+
+
+def _exgaussian_density(a: Mapping[str, object], value: object) -> float:
+    """Score an exponentially modified Gaussian without left-tail underflow.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, scale, and Exponential rate.
+    value : object
+        Real evaluation point.
+
+    Returns
+    -------
+    float
+        Log density at the point; negative infinity outside the support.
+    """
+    loc, scale, rate = _exgaussian_parameters(a)
+    point = _finite_value(value, "ExGaussian")
+    standardized = (point - loc) / scale
+    rate_scale = rate * scale
+    return math.log(rate) + _exgaussian_log_component(standardized, rate_scale)
+
+
+def _inverse_gaussian_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw an inverse Gaussian using the exact quadratic transformation.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named response mean and positive shape.
+    rng : random.Random
+        Local generator used for the transformation and branch choice.
+
+    Returns
+    -------
+    object
+        One draw from the named response distribution.
+    """
+    mu, shape = _inverse_gaussian_parameters(a)
+    t = mu * rng.gauss(0, 1) ** 2 / (2 * shape)
+    smaller = mu / (1 + t + math.sqrt(t) * math.sqrt(t + 2))
+    return smaller if rng.random() <= mu / (mu + smaller) else mu * (mu / smaller)
+
+
+def _inverse_gaussian_density(a: Mapping[str, object], value: object) -> float:
+    """Score the inverse Gaussian in mean/shape parameterization.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named response mean and positive shape.
+    value : object
+        Real evaluation point.
+
+    Returns
+    -------
+    float
+        Log density at the point; negative infinity outside the support.
+    """
+    mu, shape = _inverse_gaussian_parameters(a)
+    point = _finite_value(value, "InverseGaussian")
+    if point <= 0:
+        return -math.inf
+    return (
+        0.5 * (math.log(shape) - math.log(2 * math.pi) - 3 * math.log(point))
+        - 0.5 * shape / point * ((point - mu) / mu) ** 2
+    )
+
+
+def _asymmetric_laplace_parameters(
+    a: Mapping[str, object],
+) -> tuple[float, float, float]:
+    """Read the location, positive scale, and strictly interior quantile.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, positive scale, and interior quantile.
+
+    Returns
+    -------
+    tuple[float, float, float]
+        Validated parameters in constructor order.
+
+    Raises
+    ------
+    DistributionError
+        If scale is nonpositive, quantile is not interior, or a parameter is malformed.
+    """
+    loc = _real(a, "loc", "AsymmetricLaplace")
+    scale = _real(a, "scale", "AsymmetricLaplace")
+    quantile = _real(a, "quantile", "AsymmetricLaplace")
+    if scale <= 0 or not 0 < quantile < 1:
+        raise DistributionError(
+            "AsymmetricLaplace needs scale > 0 and 0 < quantile < 1"
+        )
+    return loc, scale, quantile
+
+
+def _asymmetric_laplace_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw the difference of exponentials in the quantile parameterization.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, positive scale, and interior quantile.
+    rng : random.Random
+        Local generator used for both Exponential draws.
+
+    Returns
+    -------
+    object
+        One draw from the named response distribution.
+    """
+    loc, scale, quantile = _asymmetric_laplace_parameters(a)
+    return loc + scale * (rng.expovariate(quantile) - rng.expovariate(1 - quantile))
+
+
+def _asymmetric_laplace_density(a: Mapping[str, object], value: object) -> float:
+    """Score the check-loss density in the quantile parameterization.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named location, positive scale, and interior quantile.
+    value : object
+        Real evaluation point.
+
+    Returns
+    -------
+    float
+        Log density at the point; negative infinity outside the support.
+    """
+    loc, scale, quantile = _asymmetric_laplace_parameters(a)
+    residual = (_finite_value(value, "AsymmetricLaplace") - loc) / scale
+    loss = residual * (quantile - int(residual < 0))
+    return math.log(quantile) + math.log1p(-quantile) - math.log(scale) - loss
+
+
+def _discrete_weibull_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw a count by a constant-work exponential transform.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Survival probability and concentration.
+    rng : random.Random
+        Local random generator.
+
+    Returns
+    -------
+    object
+        Nonnegative integer draw.
+
+    Raises
+    ------
+    DistributionError
+        If the sampled count exceeds exact Float64 capacity.
+    """
+    q, power = _discrete_weibull_parameters(a)
+    if q == 0:
+        return 0
+    exponential = rng.expovariate(1)
+    if exponential == 0:
+        return 0
+    log_count = (math.log(exponential) - math.log(-math.log(q))) / power
+    if log_count > math.log(2**53):
+        raise DistributionError(
+            "DiscreteWeibull sampling exceeds exact Float64 count capacity 2**53"
+        )
+    return int(math.floor(math.exp(log_count)))
+
+
+def _discrete_weibull_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate a count mass through a stable adjacent-power increment.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Survival probability and concentration.
+    value : object
+        Candidate integer response.
+
+    Returns
+    -------
+    float
+        Log mass, negative infinity outside the integer support.
+    """
+    q, power = _discrete_weibull_parameters(a)
+    point = _integer_observation(value, "DiscreteWeibull", float64=True)
+    if point is None or point < 0:
+        return -math.inf
+    return _discrete_weibull_log_interval(q, power, point, point)
+
+
+def _zero_inflated_asymmetric_laplace_probability(a: Mapping[str, object]) -> float:
+    """Validate the structural zero probability and continuous component.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Structural probability and asymmetric Laplace parameters.
+
+    Returns
+    -------
+    float
+        Closed-unit-interval zero probability.
+
+    Raises
+    ------
+    DistributionError
+        If a mixture or component parameter is invalid.
+    """
+    _asymmetric_laplace_parameters(a)
+    probability = _real(a, "zero_prob", "ZeroInflatedAsymmetricLaplace")
+    if not 0 <= probability <= 1:
+        raise DistributionError(
+            "ZeroInflatedAsymmetricLaplace requires zero_prob in [0,1]"
+        )
+    return probability
+
+
+def _zero_inflated_asymmetric_laplace_sample(
+    a: Mapping[str, object], rng: random.Random
+) -> object:
+    """Select the structural atom before drawing its continuous component.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Structural probability and asymmetric Laplace parameters.
+    rng : random.Random
+        Local random generator.
+
+    Returns
+    -------
+    object
+        Exact zero or a continuous asymmetric Laplace response.
+    """
+    probability = _zero_inflated_asymmetric_laplace_probability(a)
+    return 0.0 if rng.random() < probability else _asymmetric_laplace_sample(a, rng)
+
+
+def _zero_inflated_asymmetric_laplace_density(
+    a: Mapping[str, object], value: object
+) -> float:
+    """Score an atomic zero or a continuous asymmetric Laplace density.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Structural probability and asymmetric Laplace parameters.
+    value : object
+        Real response.
+
+    Returns
+    -------
+    float
+        Log atom mass at zero, weighted component log density elsewhere.
+    """
+    probability = _zero_inflated_asymmetric_laplace_probability(a)
+    point = _finite_value(value, "ZeroInflatedAsymmetricLaplace")
+    if point == 0:
+        return math.log(probability) if probability > 0 else -math.inf
+    if probability == 1:
+        return -math.inf
+    return math.log1p(-probability) + _asymmetric_laplace_density(a, point)
 
 
 def _laplace_sample(a: Mapping[str, object], rng: random.Random) -> object:
@@ -1149,6 +1766,340 @@ def _studentt_density(a: Mapping[str, object], value: object) -> float:
     )
 
 
+def _generalized_pareto_parameters(
+    a: Mapping[str, object],
+) -> tuple[float, float, float]:
+    """Read finite location, positive scale, and real tail index.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named GeneralizedPareto parameters.
+
+    Returns
+    -------
+    tuple[float, float, float]
+        Location, scale, and concentration.
+
+    Raises
+    ------
+    DistributionError
+        If a parameter is nonfinite or scale is nonpositive.
+    """
+    loc, scale, concentration = (
+        _real(a, name, "GeneralizedPareto")
+        for name in ("loc", "scale", "concentration")
+    )
+    if (
+        not all(math.isfinite(item) for item in (loc, scale, concentration))
+        or scale <= 0
+    ):
+        raise DistributionError(
+            "GeneralizedPareto needs finite parameters and positive scale"
+        )
+    return loc, scale, concentration
+
+
+def _generalized_pareto_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw through the exponential quantile transformation.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named parameters.
+    rng : random.Random
+        Host random generator.
+
+    Returns
+    -------
+    object
+        A real observation on the concentration-dependent support.
+    """
+    loc, scale, concentration = _generalized_pareto_parameters(a)
+    exponential = rng.expovariate(1.0)
+    standardized = (
+        exponential
+        if concentration == 0
+        else math.expm1(concentration * exponential) / concentration
+    )
+    return loc + scale * standardized
+
+
+def _generalized_pareto_density(a: Mapping[str, object], value: object) -> float:
+    """Score the generalized Pareto law, including its exponential limit.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named parameters.
+    value : object
+        Real observation to score.
+
+    Returns
+    -------
+    float
+        Log density, with negative infinity outside the support.
+    """
+    loc, scale, concentration = _generalized_pareto_parameters(a)
+    standardized = (_finite_value(value, "GeneralizedPareto") - loc) / scale
+    if standardized < 0:
+        return -math.inf
+    if concentration == 0:
+        return -math.log(scale) - standardized
+    endpoint = 1 + concentration * standardized
+    if endpoint < 0:
+        return -math.inf
+    if endpoint == 0:
+        if concentration == -1:
+            return -math.log(scale)
+        return math.inf if concentration < -1 else -math.inf
+    return -math.log(scale) - (1 + 1 / concentration) * math.log1p(
+        concentration * standardized
+    )
+
+
+def _response_shape_parameters(
+    a: Mapping[str, object], family: str
+) -> dict[str, float]:
+    """Read finite parameters for skew, shifted, and extreme-value responses.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Named scalar parameters.
+    family : str
+        Registered response family.
+
+    Returns
+    -------
+    dict[str, float]
+        Finite parameters satisfying their scale and shape domains.
+
+    Raises
+    ------
+    DistributionError
+        If a scale, shift, or shape violates its domain.
+    """
+    names = {
+        "SkewNormal": ("loc", "scale", "skewness"),
+        "ShiftedLogNormal": ("loc", "scale", "shift"),
+        "Frechet": ("scale", "concentration"),
+        "GeneralizedExtremeValue": ("loc", "scale", "concentration"),
+    }[family]
+    p = {name: _real(a, name, family) for name in names}
+    valid = all(math.isfinite(v) for v in p.values()) and p["scale"] > 0
+    if family == "ShiftedLogNormal":
+        valid = valid and p["shift"] >= 0
+    if family == "Frechet":
+        valid = valid and p["concentration"] > 0
+    if not valid:
+        raise DistributionError(f"{family} parameters violate their response domains")
+    return p
+
+
+def _skew_normal_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Sample a skew normal from two independent standard normals.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Location, scale, and skewness.
+    rng : random.Random
+        Host random generator.
+
+    Returns
+    -------
+    object
+        A real skew-normal response.
+    """
+    p = _response_shape_parameters(a, "SkewNormal")
+    norm = math.hypot(1, p["skewness"])
+    return p["loc"] + p["scale"] * (
+        (p["skewness"] / norm) * abs(rng.gauss(0, 1)) + rng.gauss(0, 1) / norm
+    )
+
+
+def _skew_normal_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate a skew-normal density with a stable Gaussian tail.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Location, scale, and skewness.
+    value : object
+        Real response.
+
+    Returns
+    -------
+    float
+        Log density.
+    """
+    p = _response_shape_parameters(a, "SkewNormal")
+    z = (_finite_value(value, "SkewNormal") - p["loc"]) / p["scale"]
+    t = p["skewness"] * z
+    log_phi = (
+        math.log(0.5) + _log_erfcx_positive(-t / math.sqrt(2)) - t * t / 2
+        if t < 0
+        else math.log(0.5 * math.erfc(-t / math.sqrt(2)))
+    )
+    return (
+        math.log(2)
+        - math.log(p["scale"])
+        - 0.5 * math.log(2 * math.pi)
+        - z * z / 2
+        + log_phi
+    )
+
+
+def _shifted_lognormal_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw a positive lognormal component plus its nonnegative shift.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Log-location, log-scale, and shift.
+    rng : random.Random
+        Host random generator.
+
+    Returns
+    -------
+    object
+        A response above the shift.
+    """
+    p = _response_shape_parameters(a, "ShiftedLogNormal")
+    return p["shift"] + rng.lognormvariate(p["loc"], p["scale"])
+
+
+def _shifted_lognormal_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate the translated lognormal density.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Log-location, log-scale, and shift.
+    value : object
+        Real response.
+
+    Returns
+    -------
+    float
+        Log density, negative infinity at or below the shift.
+    """
+    p = _response_shape_parameters(a, "ShiftedLogNormal")
+    point = _finite_value(value, "ShiftedLogNormal") - p["shift"]
+    return (
+        _normal_log_prob(math.log(point), p["loc"], p["scale"]) - math.log(point)
+        if point > 0
+        else -math.inf
+    )
+
+
+def _frechet_sample(a: Mapping[str, object], rng: random.Random) -> object:
+    """Draw a Frechet observation through an exponential transformation.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Positive scale and concentration.
+    rng : random.Random
+        Host random generator.
+
+    Returns
+    -------
+    object
+        A positive real response.
+    """
+    p = _response_shape_parameters(a, "Frechet")
+    exponential = max(rng.expovariate(1), math.nextafter(0, 1))
+    return p["scale"] * math.exp(-math.log(exponential) / p["concentration"])
+
+
+def _frechet_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate the Frechet density on its positive support.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Scale and concentration.
+    value : object
+        Real response.
+
+    Returns
+    -------
+    float
+        Log density, negative infinity outside the support.
+    """
+    p = _response_shape_parameters(a, "Frechet")
+    point = _finite_value(value, "Frechet")
+    if point <= 0:
+        return -math.inf
+    ratio = math.log(point) - math.log(p["scale"])
+    log_power = -p["concentration"] * ratio
+    if log_power > 709:
+        return -math.inf
+    return (
+        math.log(p["concentration"])
+        - math.log(p["scale"])
+        - (p["concentration"] + 1) * ratio
+        - math.exp(log_power)
+    )
+
+
+def _generalized_extreme_value_sample(
+    a: Mapping[str, object], rng: random.Random
+) -> object:
+    """Draw a generalized extreme-value response, including zero shape.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Location, positive scale, and real concentration.
+    rng : random.Random
+        Host random generator.
+
+    Returns
+    -------
+    object
+        A real response in the concentration-dependent interval.
+    """
+    p = _response_shape_parameters(a, "GeneralizedExtremeValue")
+    gumbel = -math.log(max(rng.expovariate(1), math.nextafter(0, 1)))
+    c = p["concentration"]
+    transformed = math.expm1(c * gumbel) / c if c else gumbel
+    return p["loc"] + p["scale"] * transformed
+
+
+def _generalized_extreme_value_density(a: Mapping[str, object], value: object) -> float:
+    """Evaluate the GEV density and its support-endpoint limits.
+
+    Parameters
+    ----------
+    a : Mapping[str, object]
+        Location, positive scale, and real concentration.
+    value : object
+        Real response.
+
+    Returns
+    -------
+    float
+        Log density, negative infinity outside the shape-dependent support.
+    """
+    p = _response_shape_parameters(a, "GeneralizedExtremeValue")
+    z = (_finite_value(value, "GeneralizedExtremeValue") - p["loc"]) / p["scale"]
+    c = p["concentration"]
+    t = 1 + c * z
+    if t < 0:
+        return -math.inf
+    if t == 0:
+        if c == -1:
+            return -math.log(p["scale"])
+        return math.inf if c < -1 else -math.inf
+    r = math.log1p(c * z) / c if c else z
+    if -r > 709:
+        return -math.inf
+    return -math.log(p["scale"]) - (1 + c) * r - math.exp(-r)
+
+
 def _dirichlet_sample(a: Mapping[str, object], rng: random.Random) -> object:
     """Draw one value from ``Dirichlet``.
 
@@ -1165,9 +2116,7 @@ def _dirichlet_sample(a: Mapping[str, object], rng: random.Random) -> object:
         The drawn value.
     """
     concentration = _vector(a, "concentration", "Dirichlet")
-    draws = [rng.gammavariate(item, 1.0) for item in concentration]
-    total = sum(draws)
-    return tuple(item / total for item in draws)
+    return _dirichlet_weights(concentration, rng)
 
 
 def _dirichlet_density(a: Mapping[str, object], value: object) -> float:
@@ -1222,10 +2171,28 @@ _SAMPLERS: Mapping[str, Sampler] = MappingProxyType(
         "Binomial": _binomial_sample,
         "Geometric": _geometric_sample,
         "Laplace": _laplace_sample,
+        "COMPoisson": _com_poisson_sample,
+        "BernsteinHazard": _bernstein_sample,
+        "ExtendedBeta": _extended_beta_sample,
+        "Wiener": _wiener_sample,
+        "DiscreteWeibull": _discrete_weibull_sample,
+        "ZeroInflatedAsymmetricLaplace": _zero_inflated_asymmetric_laplace_sample,
+        "AsymmetricLaplace": _asymmetric_laplace_sample,
+        "ExGaussian": _exgaussian_sample,
+        "InverseGaussian": _inverse_gaussian_sample,
+        "HurdleGamma": _hurdle_gamma_sample,
+        "HurdleLogNormal": _hurdle_lognormal_sample,
         "Cauchy": _cauchy_sample,
         "StudentT": _studentt_sample,
         "Dirichlet": _dirichlet_sample,
+        "SkewNormal": _skew_normal_sample,
+        "ShiftedLogNormal": _shifted_lognormal_sample,
+        "Frechet": _frechet_sample,
+        "GeneralizedExtremeValue": _generalized_extreme_value_sample,
+        "GeneralizedPareto": _generalized_pareto_sample,
         **_STRUCTURED_SAMPLERS,
+        **_COUNT_VECTOR_SAMPLERS,
+        **_COUNT_MIXTURE_SAMPLERS,
     }
 )
 
@@ -1245,10 +2212,28 @@ _DENSITIES: Mapping[str, Density] = MappingProxyType(
         "Binomial": _binomial_density,
         "Geometric": _geometric_density,
         "Laplace": _laplace_density,
+        "COMPoisson": _com_poisson_density,
+        "BernsteinHazard": _bernstein_density,
+        "ExtendedBeta": _extended_beta_density,
+        "Wiener": _wiener_density,
+        "DiscreteWeibull": _discrete_weibull_density,
+        "ZeroInflatedAsymmetricLaplace": _zero_inflated_asymmetric_laplace_density,
+        "AsymmetricLaplace": _asymmetric_laplace_density,
+        "ExGaussian": _exgaussian_density,
+        "InverseGaussian": _inverse_gaussian_density,
+        "HurdleGamma": _hurdle_gamma_density,
+        "HurdleLogNormal": _hurdle_lognormal_density,
         "Cauchy": _cauchy_density,
         "StudentT": _studentt_density,
         "Dirichlet": _dirichlet_density,
+        "SkewNormal": _skew_normal_density,
+        "ShiftedLogNormal": _shifted_lognormal_density,
+        "Frechet": _frechet_density,
+        "GeneralizedExtremeValue": _generalized_extreme_value_density,
+        "GeneralizedPareto": _generalized_pareto_density,
         **_STRUCTURED_DENSITIES,
+        **_COUNT_VECTOR_DENSITIES,
+        **_COUNT_MIXTURE_DENSITIES,
     }
 )
 

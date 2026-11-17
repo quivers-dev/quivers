@@ -46,6 +46,7 @@ from quivers.dsl.family_schemas import (
     family_parameterizations,
 )
 from quivers.dsl.let_expr_traversal import (
+    LetExprExtension,
     free_let_callees,
     free_let_names,
     let_expr_children,
@@ -149,6 +150,7 @@ def load(
 
 
 __all__ = [
+    "LetExprExtension",
     "DISTRIBUTION_FAMILIES",
     "FAMILY_ALIASES",
     "PARAMETER_ALIASES",

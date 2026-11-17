@@ -325,6 +325,19 @@ class FamilySpec(ValueModel):
             raise TypeError("conditional_class_override must be a class or None")
 
     @property
+    def atomicity(self) -> str:
+        """Read reference-measure classification from the semantic family record.
+
+        Returns
+        -------
+        str
+            Semantic atomicity, shared by native and reference runtimes.
+        """
+        from quivers.qiec.families import family
+
+        return family(self.name).effective_atomicity
+
+    @property
     def param_names(self) -> tuple[str, ...]:
         """Return parameter names in constructor order.
 

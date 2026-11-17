@@ -14,9 +14,8 @@ family-level parameterization / distribution-name defects
   ``Pareto`` keyword (TFP names it ``concentration``).
 * ``lkj-missing-dimension-arg``: TFP ``LKJ`` requires the
   correlation-matrix dimension as its first positional argument.
-* ``halfstudentt-nonexistent``: TFP ships no ``HalfStudentT``; the
-  half-Student-t folds to ``StudentT(df, 0, scale)`` up to an additive
-  ``log 2``.
+* ``halfstudentt-support``: the native TFP ``HalfStudentT`` retains
+  nonnegative support and the folded density normalization.
 * ``matrixnormal-nonexistent``: TFP's ``MatrixNormalLinearOperator``
   takes Cholesky-factor ``LinearOperator``s under ``scale_row`` /
   ``scale_column``, not covariance matrices under
@@ -72,16 +71,13 @@ def test_lkj_cholesky_prepends_dimension_and_flags_cholesky() -> None:
     assert "edward2.LKJ(eta" not in out.replace(" ", "")
 
 
-def test_halfstudentt_folds_to_location_scale_studentt() -> None:
-    """HalfStudentT, absent from TFP, folds to
-    ``StudentT(df, 0, scale)`` (equal up to an additive constant on the
-    positive support)."""
+def test_halfstudentt_retains_support_and_folded_normalization() -> None:
+    """Use TFP's normalized half-distribution with an explicit zero origin."""
     out = _emit_file("docs/examples/source/half_student_t_hierarchical.qvr")
     ast.parse(out)
     compact = out.replace(" ", "")
-    assert "edward2.StudentT(df=3,loc=0,scale=1" in compact
-    # The nonexistent TFP class name must not be emitted.
-    assert "HalfStudentT" not in out
+    assert "edward2.HalfStudentT(loc=0,df=3,scale=1" in compact
+    assert "edward2.StudentT(" not in out
 
 
 def test_matrix_normal_uses_cholesky_scale_linear_operators() -> None:

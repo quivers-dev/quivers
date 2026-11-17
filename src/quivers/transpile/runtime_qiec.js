@@ -240,6 +240,12 @@ var _qvr_qiec_primitives = {
   bool_to_int: function(a) { return a ? 1 : 0; },
   select_real: function(c, a, b) { return c ? a : b; },
   select_int: function(c, a, b) { return c ? a : b; },
+  positive_parameter: function(a) { return _qvr_positive_parameter_scalar(a); },
+  observation_status: function(a) { return _qvr_observation_status_scalar(a); },
+  interval_upper: function(a, b) { return _qvr_interval_upper_scalar(a, b); },
+  log_probability: function(a) { return _qvr_log_probability_scalar(a); },
+  log1mexp: function(a) { return _qvr_log1mexp_scalar(a); },
+  log_ndtr: function(a) { return _qvr_log_ndtr_scalar(a); },
   expm1: function(a) { return Math.expm1(a); },
   log1p: function(a) { return Math.log1p(a); },
   log2: function(a) { return Math.log2(a); },
@@ -288,7 +294,13 @@ var _qvr_qiec_primitives = {
   as_weight: function(a) { return a; },
   weight_value: function(a) { return a; },
   add_weight: function(a, b) { return a + b; },
-  scale_weight: function(a, b) { return a * b; }
+  scale_weight: function(a, b) { return a === 0 ? 0 : a * b; },
+  observation_weight: function(a) {
+    if (typeof a !== "number" || !(a === a && Math.abs(a) !== Infinity) || a < 0) {
+      error("observation weights must be finite and nonnegative");
+    }
+    return a;
+  }
 };
 var _qvr_qiec_broadcast = function(implementation, args) {
   var tensors = filter(function(argument) { return Array.isArray(argument); }, args);
@@ -410,7 +422,18 @@ var _qvr_qiec_specialize = function(value, environment) {
     if (_.has(environment, staticKey)) { return environment[staticKey]; }
   }
   var keys = Object.keys(value);
-  return _.zipObject(keys, map(function(key) { return _qvr_qiec_specialize(value[key], environment); }, keys));
+  var specialized = _.zipObject(keys, map(function(key) { return _qvr_qiec_specialize(value[key], environment); }, keys));
+  if (specialized.kind === "index-sum") {
+    var literals = filter(function(term) { return term.kind === "index-literal"; }, specialized.terms);
+    var sums = filter(function(term) { return term.kind === "index-sum"; }, specialized.terms);
+    var variables = filter(function(term) { return term.kind !== "index-literal" && term.kind !== "index-sum"; }, specialized.terms);
+    var constant = specialized.constant + reduce(function(term, total) { return total + term.value; }, 0, literals) + reduce(function(term, total) { return total + term.constant; }, 0, sums);
+    var terms = _.sortBy(variables.concat(_.flatten(map(function(term) { return term.terms; }, sums), true)), function(term) { return term.identity ? "1:" + term.identity : "0:" + term.name; });
+    if (terms.length === 0) { return { kind: "index-literal", value: constant, sort: { kind: "nat" } }; }
+    if (terms.length === 1 && constant === 0) { return terms[0]; }
+    return { kind: "index-sum", terms: terms, constant: constant };
+  }
+  return specialized;
 };
 var _qvr_qiec_unique = function(items) { return _.uniq(items); };
 var _qvr_qiec_ambient = function() { return globalStore._qvr_qiec_ambient || []; };
@@ -766,3 +789,5 @@ var _qvr_qiec_run = function(build, operations) {
   globalStore._qvr_qiec_instance_serial = 0;
   return _qvr_qiec_drive(_qvr_qiec_force(apply(build, [])), operations);
 };
+
+var _qvr_log_ndtr_scalar = function(x) { return _qvr_log_ndtr_with_erf(x, _qvr_qiec_erf); };

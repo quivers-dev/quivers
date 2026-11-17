@@ -142,6 +142,59 @@ checks the sampler against the model instead, by fitting data simulated from the
 prior and testing whether the true parameters' ranks among the posterior draws are
 uniform.
 
+### Named initial values
+
+`MCMC(initial_values={"sigma": 0.5})` supplies starting values in the latent
+sites' natural coordinates. The driver first runs `init_strategy` (`"jitter"`,
+`"prior"`, `"zero"`, or a supplied `"guide"`) with each chain's seeded generator,
+then replaces the named sites in every chain. Unspecified sites retain the
+strategy's values, so a partial mapping can set a constrained scale while
+allowing dispersed starting locations.
+
+```python
+import torch
+
+from quivers.dsl import loads
+from quivers.inference import HMCKernel, MCMC
+
+model = loads("""
+object Obs : FinSet 3
+program model : Obs -> Obs
+    sample mu <- Normal(loc=0.0, scale=1.0)
+    sample sigma <- HalfNormal(scale=1.0)
+    sample offset : Obs <- Normal(loc=0.0, scale=0.3)
+    let mean = mu + offset
+    observe y : Obs <- Normal(loc=mean, scale=sigma)
+    return mu
+export model
+""").morphism
+
+mcmc = MCMC(
+    HMCKernel(step_size=0.03, num_steps=3),
+    num_warmup=10,
+    num_samples=20,
+    num_chains=2,
+    seed=2026,
+    init_strategy="prior",
+    initial_values={"sigma": 0.5, "offset": torch.tensor([-0.2, 0.0, 0.2])},
+)
+result = mcmc.run(model, torch.zeros(1, 1), {"y": torch.tensor([0.1, 0.4, 0.8])})
+assert result.samples["offset"].shape == (2, 20, 3)
+```
+
+A scalar broadcasts over a site's declared shape; a tensor must have exactly
+that shape, including plate and event axes. Thus `"offset": 0.0` initializes
+all three offsets, while the vector above initializes them separately. A scalar
+site has shape `()`. Values must be finite, real, non-Boolean, and strictly
+inside the prior support: positive scales exceed zero, bounded values exclude
+both endpoints, and simplex coordinates are positive and sum to one. Unknown
+names, observed sites, and incompatible shapes raise before sampling.
+
+The driver detaches and copies the supplied tensors, so later changes to the
+caller's mapping or tensors do not change its initialization. Named values are
+part of [checkpoint compatibility](#checkpoints-budgets-and-sampler-statistics):
+resume with the same mapping values as the original run.
+
 ### Windowed warmup
 
 By default both kernels adapt in one phase (`adaptation="single"`):
@@ -402,13 +455,21 @@ MCMC gives no estimate of the evidence $p(y)$ for model comparison.
 population of particles from the prior to the posterior through the
 tempered targets $\pi_\beta(z) \propto p(z)\, L(z)^\beta$,
 $0 = \beta_0 < \dots < \beta_T = 1$ [@delmoral2006sequential]. Here
-$p(z)$ is the density of the model's latent draws, from which the
-initial particles are drawn exactly by running the model, and $L(z)$
-is everything else the model scores, its observations and its score
-steps.
+$p(z)$ contains latent draw densities and explicit `Score(role="potential")`
+factors; $L(z)$ contains observations and `Score(role="likelihood")`
+factors. Roles come from the checked step records, rather than names such
+as `lik`. `TemperedPotential` preserves prior potentials at every temperature.
+`SMC.run` requires a normalized ancestral prior and refuses explicit prior
+potentials whose mass it cannot determine. Its initial particles use the
+shared prior dependency projection, retaining conditional prior inputs while
+omitting downstream likelihood computations.
 [`TemperedPotential`](../api/inference/mcmc.md#quivers.inference.smc.TemperedPotential)
 evaluates $\log p(z) + \beta \log L(z)$ and returns the two parts
-separately.
+separately. Tempering requires the complete joint to come from the declared
+native steps. An overridden `MonadicProgram.log_joint` is opaque to this
+partition and is refused before execution; custom factor callbacks belong
+in typed `Score` steps. Ordinary `PotentialFn` scoring still supports its
+existing exact fallback for overridden joints.
 
 Each step does four things.
 
@@ -432,11 +493,14 @@ $2.38/\sqrt{D}$ times their spread), then tuned further on a discarded
 pilot run of `num_pilot_steps` transitions. It is then frozen, so every
 move at that temperature leaves $\pi_{\beta'}$ invariant.
 
-The product of the mean incremental weights is an unbiased estimate of
-$p(y)$, and `SMCResult.log_evidence` is its logarithm (so it tends to
-underestimate $\log p(y)$ by about half the estimate's variance).
-Agreement between independent runs, and with MCMC, is a check on both.
-Like `MCMC.run`, `SMC.run` takes an input with one row.
+The product of the mean incremental weights estimates the target's
+normalizing constant, and `SMCResult.log_evidence` is its logarithm.
+This constant is data evidence when the prior and observation factors form
+the corresponding normalized model. Non-unit likelihood weights instead
+define a power target; a response-dependent prior likewise needs its stated
+conditional interpretation. Agreement between independent runs, and with
+MCMC, checks the estimate. Like `MCMC.run`, `SMC.run` takes an input with one
+row and refuses subsampled plates.
 
 <!-- python: skip -->
 ```python

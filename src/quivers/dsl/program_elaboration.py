@@ -71,6 +71,16 @@ from quivers.dsl.ast_nodes import (
     ProgramDecl,
     ProgramStep,
     ReturnStep,
+    QiecTypeName,
+    QiecTypeApplication,
+    QiecShapeIndex,
+    QiecIndexName,
+    QiecValueParameter,
+    QiecIndexLiteral,
+    QiecIndexBinder,
+    QiecNatSort,
+    QiecTypeBinder,
+    QiecEffectBinder,
     SampleStep,
     ObjectParam,
     MorphismParam,
@@ -107,13 +117,18 @@ from quivers.qiec.effects import (
     instantiate_effect,
 )
 from quivers.qiec.families import FAMILIES, DistributionFamily, FamilyParameter
+from quivers.qiec.family_shapes import (
+    family_shape_equations,
+    instantiate_family_shapes,
+    match_family_shapes,
+)
 from quivers.qiec.identifiers import (
     ComputationId,
     HandlerId,
     SiteProvenance,
     SourceOrigin,
 )
-from quivers.qiec.kinds import NAT, IndexBinder, TypeBinder
+from quivers.qiec.kinds import NAT, IndexBinder, TypeBinder, TelescopeBinder
 from quivers.qiec.module import NamedComputation, NamedEffectInstance
 from quivers.qiec.programs import (
     ParameterRole,
@@ -161,6 +176,7 @@ from quivers.qiec.terms import (
     Var,
     WeightSum,
 )
+from quivers.qiec.index_arithmetic import infer_index_extents, solve_index_equation
 from quivers.qiec.types import (
     BOOL,
     INT,
@@ -170,6 +186,7 @@ from quivers.qiec.types import (
     IndexLiteral,
     IndexTerm,
     IndexVariable,
+    IndexSum,
     ShapeIndex,
     StaticArgument,
     TypeApplication,
@@ -185,11 +202,7 @@ from quivers.dsl.composite_lets import (
     positions_let_call,
     scan_let_call,
 )
-from quivers.dsl.family_schemas import (
-    PARAMETER_ALIASES,
-    family_parameterizations,
-    render_parameterizations,
-)
+from quivers.dsl.family_schemas import PARAMETER_ALIASES
 from quivers.dsl.let_expr_traversal import (
     free_let_names,
     let_expr_children,
@@ -199,10 +212,13 @@ from quivers.dsl.let_expr_traversal import (
 from quivers.dsl.deduction_elaboration import PARAMS_INSTANCE
 from quivers.continuous.deterministic import learned_function_draw_message
 from quivers.continuous.param_source import attention_draw_message
-from quivers.dsl.draw_args import kernel_argument_refusal
+from quivers.dsl.draw_args import bind_family_arguments, kernel_argument_refusal
 from quivers.dsl.program_templates import (
     TemplateError,
+    TemplateBindings,
     instantiate_program,
+    runtime_program_parameters,
+    static_program_parameters,
     template_bindings,
 )
 from quivers.dsl.pure_builtins import (
@@ -313,7 +329,39 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     "LogitNormal": (("loc", "identity"), ("scale", "exp_floor")),
     "Cauchy": (("loc", "identity"), ("scale", "softplus")),
     "Laplace": (("loc", "identity"), ("scale", "softplus")),
+    "COMPoisson": (("rate", "softplus"), ("dispersion", "softplus")),
+    "ExtendedBeta": (("mu", "sigmoid"), ("phi", "softplus"), ("kappa", "softplus")),
+    "DiscreteWeibull": (("probs", "sigmoid"), ("concentration", "softplus")),
+    "Wiener": (
+        ("boundary", "softplus"),
+        ("ndt", "softplus"),
+        ("bias", "sigmoid"),
+        ("drift", "identity"),
+    ),
+    "ZeroInflatedAsymmetricLaplace": (
+        ("zero_prob", "sigmoid"),
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("quantile", "sigmoid"),
+    ),
+    "AsymmetricLaplace": (
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("quantile", "sigmoid"),
+    ),
     "Gumbel": (("loc", "identity"), ("scale", "softplus")),
+    "ExGaussian": (("loc", "identity"), ("scale", "softplus"), ("rate", "softplus")),
+    "HurdleGamma": (
+        ("zero_prob", "sigmoid"),
+        ("concentration", "softplus"),
+        ("rate", "softplus"),
+    ),
+    "HurdleLogNormal": (
+        ("zero_prob", "sigmoid"),
+        ("loc", "identity"),
+        ("scale", "softplus"),
+    ),
+    "InverseGaussian": (("mu", "softplus"), ("shape", "softplus")),
     "LogNormal": (("loc", "identity"), ("scale", "softplus")),
     "StudentT": (
         ("df", "softplus_shifted"),
@@ -329,10 +377,41 @@ _CONDITIONAL_HEADS: dict[str, tuple[tuple[str, HeadTransform], ...]] = {
     "HalfNormal": (("scale", "softplus"),),
     "InverseGamma": (("concentration", "softplus_shifted"), ("rate", "softplus")),
     "Weibull": (("scale", "softplus"), ("concentration", "softplus")),
+    "SkewNormal": (
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("skewness", "identity"),
+    ),
+    "ShiftedLogNormal": (
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("shift", "softplus"),
+    ),
+    "Frechet": (("scale", "softplus"), ("concentration", "softplus")),
+    "GeneralizedExtremeValue": (
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("concentration", "identity"),
+    ),
+    "GeneralizedPareto": (
+        ("loc", "identity"),
+        ("scale", "softplus"),
+        ("concentration", "identity"),
+    ),
     "Pareto": (("scale", "softplus"), ("alpha", "softplus")),
     "ContinuousBernoulli": (("logits", "identity"),),
     "Poisson": (("rate", "softplus"),),
     "Geometric": (("probs", "sigmoid"),),
+    "ZeroInflatedNegativeBinomial": (
+        ("zero_prob", "sigmoid"),
+        ("total_count", "softplus_shifted"),
+        ("probs", "sigmoid"),
+    ),
+    "HurdleNegativeBinomial": (
+        ("zero_prob", "sigmoid"),
+        ("total_count", "softplus_shifted"),
+        ("probs", "sigmoid"),
+    ),
     "NegativeBinomial": (("total_count", "softplus_shifted"), ("probs", "sigmoid")),
     "VonMises": (("loc", "identity"), ("concentration", "softplus")),
     "Beta": (
@@ -380,7 +459,7 @@ class ObjectInfo(QiecModel):
         Whether the object is a finite set.
     """
 
-    extent: int | IndexVariable | None = dx.field(
+    extent: int | IndexTerm | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     real_width: int | IndexVariable | None = dx.field(
@@ -963,7 +1042,11 @@ def _is_gap(kinds: Sequence[str]) -> bool:
     return any(kind.startswith(("param-source:", "scan:")) for kind in kinds)
 
 
-def _unknown_call(expr: LetExprNode, macros: Mapping[str, object]) -> str | None:
+def _unknown_call(
+    expr: LetExprNode,
+    macros: Mapping[str, object],
+    families: Mapping[str, DistributionFamily] = FAMILIES,
+) -> str | None:
     """Name the first call to something the pure layer does not define.
 
     Parameters
@@ -984,10 +1067,10 @@ def _unknown_call(expr: LetExprNode, macros: Mapping[str, object]) -> str | None
             continue
         if (
             node.func not in PURE_BUILTINS
-            and node.func not in FAMILIES
+            and node.func not in families
             and node.func not in macros
             and node.func not in _CHART_BUILTINS
-            and node.func not in ("site", "log_prob")
+            and node.func != "site"
         ):
             return node.func
     return None
@@ -2239,11 +2322,11 @@ class _Spread(dx.Model):
         The vector's length.
     """
 
-    value: float
+    value: int | float
     dimension: int
 
 
-def _literal(value: float, integral: bool) -> LiteralValue:
+def _literal(value: int | float, integral: bool) -> LiteralValue:
     """A numeric literal at the type a parameter expects.
 
     Parameters
@@ -2258,7 +2341,7 @@ def _literal(value: float, integral: bool) -> LiteralValue:
     LiteralValue
         An ``Int`` literal when integral and whole, else a ``Real``.
     """
-    if integral and float(value).is_integer():
+    if integral and (isinstance(value, int) or value.is_integer()):
         return LiteralValue(value=int(value), type=INT)
     return LiteralValue(value=float(value), type=REAL)
 
@@ -2327,6 +2410,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
             )
         self._refuse_kernel_arguments()
+        from quivers.dsl.latent_weights import latent_weight_layout
+
+        self._program_latent_weight_names = frozenset(
+            site
+            for layers in latent_weight_layout(expanded, LATENT_WEIGHT_HEADS).values()
+            for weight, bias, _, _ in layers
+            for site in (weight, bias)
+        )
         self._program_lets = build_let_table(expanded)
         self._program_declarations = {
             declaration.name: declaration
@@ -2579,6 +2670,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         random = self._program_instance(RANDOM_INSTANCE, "Random")
         score = self._program_instance(SCORE_INSTANCE, "Score")
         state = _ProgramState(declaration=declaration, random=random, score=score)
+        for info in self._program_objects.values():
+            if isinstance(info.extent, IndexVariable):
+                state.extents[info.extent.name] = IndexBinder(
+                    name=info.extent.name, sort=NAT
+                )
         row = self._markov_rows.get(declaration.name)
         if row is not None:
             state.markov_row_cell[0], state.markov_entry_cell[0] = row
@@ -2626,7 +2722,39 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             row_entries.append(self.instances[PARAMS_INSTANCE].entry)
         row = EffectRow(entries=tuple(row_entries))
         parameters = tuple(scope.locals[name] for name, _ in state.parameters)
-        telescope = tuple(state.extents.values())
+        authored_names = {
+            cast(str, parameter.name)
+            for parameter in static_program_parameters(declaration)
+        }
+        mentioned = _program_extent_mentions(
+            (
+                body,
+                result_type,
+                row,
+                *parameters,
+                declaration.domain,
+                declaration.codomain,
+            ),
+            self._program_objects,
+        )
+        available = {
+            binder.name: binder
+            for binder in (
+                *state.static_binders,
+                *(
+                    binder
+                    for name, binder in state.extents.items()
+                    if name in mentioned or name in authored_names
+                ),
+            )
+        }
+        authored = []
+        for parameter in static_program_parameters(declaration):
+            if isinstance(parameter, MorphismParam):
+                continue
+            if parameter.name in available:
+                authored.append(available.pop(parameter.name))
+        telescope = (*authored, *available.values())
         identity = ComputationId.derive(
             self.source.module_name, "computation", declaration.name
         )
@@ -2673,7 +2801,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         role=role,
                         type=scope.locals[name].type,
                         axes=state.parameter_axes.get(name, ()),
-                        per_row=name in state.per_row,
+                        constraint=state.parameter_constraints.get(name),
+                        per_row=name in state.per_row
+                        and name not in state.declared_data,
                     )
                     for name, role in state.parameters
                 ),
@@ -2791,7 +2921,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     declaration,
                     axes=self._domain_axes(factor, type_),
                 )
-        if declaration.type_params is not None:
+        if declaration.type_params is not None and not declaration.value_parameters:
             for parameter in declaration.type_params:
                 if isinstance(parameter, ScalarParam):
                     self._declare_parameter(
@@ -2801,7 +2931,85 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         scope,
                         state,
                         declaration,
+                        constraint="nonnegative"
+                        if parameter.scalar_kind == "Nat"
+                        else None,
                     )
+
+        declared_here = {
+            p.name
+            for p in declaration.binders
+            if isinstance(p, QiecIndexBinder | QiecTypeBinder | QiecEffectBinder)
+        }
+        declared_here.update(
+            p.name
+            for p in declaration.type_params or ()
+            if isinstance(p, ObjectParam | MorphismParam)
+        )
+        for step in declaration.value_parameters:
+            existing_role = next(
+                (role for name, role in state.parameters if name == step.name), None
+            )
+            if step.name in declared_here or (
+                scope.lookup(step.name) is not None
+                and existing_role not in {"data", "index_map", "observation"}
+            ):
+                self._fail(
+                    step,
+                    f"duplicate program parameter {step.name!r}",
+                    code="qiec-program",
+                )
+            declared_here.add(step.name)
+            state.declared_data.add(step.name)
+            bindings = {
+                name: _extent(info.extent)
+                for name, info in self._program_objects.items()
+                if info.extent is not None
+            }
+            declared_type = (
+                INT
+                if isinstance(step.type_expr, QiecTypeName)
+                and step.type_expr.name == "Nat"
+                else self._lower_type(
+                    step.type_expr,
+                    (*state.static_binders, *state.extents.values()),
+                    bindings,
+                )
+            )
+            axes = self._axes_of_type(declared_type)
+            if (
+                isinstance(step.type_expr, QiecTypeApplication)
+                and step.type_expr.constructor == "Tensor"
+                and len(step.type_expr.indices) == 1
+                and isinstance(step.type_expr.indices[0], QiecShapeIndex)
+            ):
+                # Lowering closed dimensions replaces their names by sizes.
+                # Keep the authored nominal axes beside the checked type;
+                # equal cardinalities do not identify different objects.
+                dimensions = step.type_expr.indices[0].dimensions
+                axes = tuple(
+                    dimension.name if isinstance(dimension, QiecIndexName) else inferred
+                    for dimension, inferred in zip(dimensions, axes, strict=True)
+                )
+            self._declare_parameter(
+                step.name,
+                declared_type,
+                "scalar"
+                if isinstance(step.type_expr, QiecTypeName)
+                and step.type_expr.name in {"Real", "Nat"}
+                else "data",
+                scope,
+                state,
+                step,
+                axes=axes,
+                constraint="nonnegative"
+                if isinstance(step.type_expr, QiecTypeName)
+                and step.type_expr.name == "Nat"
+                else None,
+            )
+            split = tensor_shape(declared_type)
+            if split is not None:
+                state.batch_shapes[step.name] = tuple(split[1])
 
     def _template_objects(
         self: _Elaborator, declaration: ProgramDecl, state: _ProgramState
@@ -2827,6 +3035,23 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         QiecDiagnosticError
             If an object parameter shadows a declared object.
         """
+        for binder in self._lower_telescope(declaration.binders):
+            if isinstance(binder, IndexBinder):
+                state.extents[binder.name] = binder
+                if binder.sort == NAT:
+                    if binder.name in self._program_objects:
+                        self._fail(
+                            declaration,
+                            f"static binder {binder.name!r} shadows an object",
+                            code="qiec-program",
+                        )
+                    variable = IndexVariable(name=binder.name, sort=NAT)
+                    self._program_objects[binder.name] = ObjectInfo(
+                        extent=variable, finite=True
+                    )
+                    state.template_objects.append(binder.name)
+            else:
+                state.static_binders.append(binder)
         if declaration.type_params is None:
             return
         for parameter in declaration.type_params:
@@ -2899,6 +3124,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         state: _ProgramState,
         node: object,
         axes: tuple[str, ...] | None = None,
+        *,
+        constraint: Literal["nonnegative"] | None = None,
     ) -> Local:
         """Bind one program parameter in the body's scope.
 
@@ -2922,6 +3149,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             read off the type when absent: an open extent's variable,
             else the one object of the dimension's cardinality, else
             the dimension's position.
+        constraint : Literal["nonnegative"] | None
+            An additional value restriction retained on the input contract.
 
         Returns
         -------
@@ -2934,6 +3163,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             If the name is already a parameter at another type or a
             bound step.
         """
+        if constraint is not None:
+            state.parameter_constraints[name] = constraint
         root = scope
         while root.outer is not None:
             root = root.outer
@@ -2948,6 +3179,28 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"here but as {self._render(existing.type)} elsewhere",
                     code="qiec-program",
                 )
+            if (
+                role in {"weight", "bias"}
+                and name not in self._program_latent_weight_names
+            ):
+                previous = next(
+                    (value for key, value in state.parameters if key == name), None
+                )
+                if previous not in {"data", role}:
+                    self._fail(
+                        node,
+                        f"learned parameter {name!r} conflicts with an existing {previous or 'step'} binding",
+                        code="qiec-program",
+                    )
+                state.parameters[:] = [
+                    (key, role if key == name else value)
+                    for key, value in state.parameters
+                ]
+            elif role == "observation":
+                state.parameters[:] = [
+                    (key, "observation" if key == name else value)
+                    for key, value in state.parameters
+                ]
             if scope is not root:
                 scope.referenced.add(name)
             return root.locals[name]
@@ -3157,13 +3410,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         request = self._sample_request(
             state.random, name, sampled, distribution, step, state
         )
+        from quivers.qiec._distribution_axes import distribution_axes
+
+        batch_axes, event_axes = distribution_axes(
+            distribution, families=self.distribution_families
+        )
         state.sites.append(
             ProgramSite(
                 name=name,
                 kind="sample",
                 family=distribution.name,
-                batch=distribution.plate.batch,
-                event=distribution.plate.event,
+                batch=batch_axes,
+                event=event_axes,
             )
         )
         self._bind_step(scope, name, sampled, Perform(request=request), step)
@@ -3171,16 +3429,17 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
     def _elaborate_program_draw(
         self: _Elaborator, step: SampleStep, scope: _Scope, state: _ProgramState
     ) -> None:
-        """Elaborate ``sample x <- sub(args)`` by running ``sub`` in place.
+        """Elaborate ``sample x <- sub[statics](values)`` in place.
 
         The program's steps join this program's under names of its own:
         each local ``z`` of ``sub`` becomes ``x$z``, the name ``sub``
         returns becomes ``x`` itself, and a pattern ``(u, v)`` takes the
         returned names positionally, as
         [`instantiate_program`][quivers.dsl.program_templates.instantiate_program]
-        states. A template's object parameters take the objects the
-        draw names and its scalar parameters the numbers or bound names,
-        so every draw of a program contributes its own sites.
+        states. Static object, morphism, and index actuals specialize
+        the callee; runtime actuals supply its typed values. Each list
+        is checked independently, and every draw of a program contributes
+        its own sites.
 
         Parameters
         ----------
@@ -3198,8 +3457,55 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             pattern's arity is not what it returns.
         """
         self._inline_program(
-            step.morphism, step.vars, step.args or (), step, scope, state
+            step.morphism,
+            step.vars,
+            step.args or (),
+            step,
+            scope,
+            state,
+            static_arguments=step.static_args,
         )
+
+    def _specialize_program_indices(
+        self: _Elaborator,
+        template: ProgramDecl,
+        bindings: TemplateBindings,
+        prefix: str,
+    ) -> tuple[TemplateBindings, tuple[str, ...]]:
+        """Give a supplied natural extent an object name inside an inlined body.
+
+        Parameters
+        ----------
+        template : ProgramDecl
+            Program whose Nat binders are instantiated.
+        bindings : TemplateBindings
+            Capture-avoiding static and runtime argument substitutions.
+        prefix : str
+            Invocation identity used to freshen local axis names.
+
+        Returns
+        -------
+        tuple[TemplateBindings, tuple[str, ...]]
+            Substitution extended with static axes and their introduced names.
+        """
+        objects = dict(bindings.objects)
+        introduced: list[str] = []
+        for parameter in template.binders:
+            if not isinstance(parameter, QiecIndexBinder) or not isinstance(
+                parameter.sort, QiecNatSort
+            ):
+                continue
+            argument = bindings.statics[parameter.name]
+            if isinstance(argument, DrawArgName):
+                objects[parameter.name] = argument.text
+            elif isinstance(argument, DrawArgScalar):
+                name = f"__qvr_static${template.name}${prefix}${parameter.name}${int(argument.value)}"
+                self._program_objects[name] = ObjectInfo(
+                    extent=int(argument.value), finite=True
+                )
+                objects[parameter.name] = name
+                introduced.append(name)
+        return bindings.with_(objects=objects), tuple(introduced)
 
     def _inline_program(
         self: _Elaborator,
@@ -3209,6 +3515,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         node: SampleStep | CallStep,
         scope: _Scope,
         state: _ProgramState,
+        *,
+        static_arguments: tuple[DrawArg, ...] = (),
     ) -> None:
         """Elaborate a program's steps in this program under a pattern.
 
@@ -3219,8 +3527,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         binders : tuple[str, ...]
             The draw's pattern.
         arguments : tuple[DrawArg, ...]
-            The draw's arguments, filling the program's template
-            parameters.
+            Runtime actuals, checked against the declared value parameters.
+        static_arguments : tuple[DrawArg, ...]
+            Static actuals in the authored telescope's order.
         node : SampleStep | CallStep
             The source step, for diagnostics.
         scope : _Scope
@@ -3235,10 +3544,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             pattern's arity is not what it returns.
         """
         template = self._program_declarations[name]
-        bound = {local: LetExprVar(name=local) for local in scope.locals}
+        bound = {
+            local.name: LetExprVar(name=local.name) for local in scope.context().locals
+        }
         try:
-            bindings = template_bindings(template, arguments, bound)
-            steps = instantiate_program(template, binders, bindings)
+            bindings = template_bindings(
+                template, arguments, bound, static_arguments=static_arguments
+            )
         except TemplateError as error:
             self._fail(node, error.message, code="qiec-program")
         for parameter, argument in bindings.objects.items():
@@ -3249,18 +3561,222 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"{name!r} is not declared",
                     code="qiec-program",
                 )
-        for parameter, argument in bindings.morphisms.items():
+        expected_objects = dict(self._program_objects)
+        for parameter in template.type_params or ():
+            if not isinstance(parameter, ObjectParam):
+                continue
+            actual = self._program_objects[bindings.objects[parameter.name]]
             if (
-                argument not in self._program_morphisms
-                and argument not in self._program_declarations
+                parameter.universe == "FinSet"
+                and not actual.finite
+                or parameter.universe == "Space"
+                and actual.finite
             ):
                 self._fail(
                     node,
-                    f"morphism {argument!r} passed as {parameter!r} of program "
-                    f"{name!r} is not declared",
+                    f"static object parameter {parameter.name!r} requires {parameter.universe}",
                     code="qiec-program",
                 )
-        self._elaborate_steps(steps, scope, state)
+            expected_objects[parameter.name] = actual
+        for formal, argument in bindings.statics.items():
+            if isinstance(argument, DrawArgScalar):
+                expected_objects[formal] = ObjectInfo(
+                    extent=int(argument.value), finite=True
+                )
+            elif (
+                isinstance(argument, DrawArgName)
+                and argument.text in self._program_objects
+            ):
+                expected_objects[formal] = self._program_objects[argument.text]
+        for parameter in template.type_params or ():
+            if not isinstance(parameter, MorphismParam):
+                continue
+            argument = bindings.morphisms[parameter.name]
+            actual = self._program_morphisms.get(
+                argument
+            ) or self._program_declarations.get(argument)
+            if actual is None:
+                self._fail(
+                    node,
+                    f"morphism {argument!r} passed as {parameter.name!r} of program {name!r} is not declared",
+                    code="qiec-program",
+                )
+            for side in ("domain", "codomain"):
+                expected = _object_expr_info(getattr(parameter, side), expected_objects)
+                received = _object_expr_info(
+                    getattr(actual, side), self._program_objects
+                )
+                if expected is None or received is None or expected != received:
+                    self._fail(
+                        node,
+                        f"morphism parameter {parameter.name!r} has incompatible {side}: {argument!r} does not inhabit its declared Mor type",
+                        code="qiec-program",
+                    )
+        telescope = (*state.static_binders, *state.extents.values())
+        static_bindings: dict[str, StaticArgument] = {
+            object_name: _extent(info.extent)
+            for object_name, info in self._program_objects.items()
+            if info.extent is not None
+        }
+        for parameter, argument in bindings.objects.items():
+            extent = self._program_objects[argument].extent
+            if extent is not None:
+                static_bindings[parameter] = _extent(extent)
+        for parameter in template.binders:
+            if not isinstance(
+                parameter, QiecIndexBinder | QiecTypeBinder | QiecEffectBinder
+            ):
+                self._fail(node, "unsupported static binder", code="qiec-program")
+            actual = bindings.statics[parameter.name]
+            if isinstance(parameter, QiecIndexBinder):
+                if not isinstance(actual, DrawArgScalar | DrawArgName):
+                    self._fail(
+                        node,
+                        "a static index requires a name or a natural literal",
+                        code="qiec-program",
+                    )
+                authored = (
+                    QiecIndexLiteral(value=int(actual.value))
+                    if isinstance(actual, DrawArgScalar)
+                    else QiecTypeName(name=actual.text)
+                )
+            else:
+                if not isinstance(actual, DrawArgName):
+                    self._fail(
+                        node,
+                        f"static parameter {parameter.name!r} requires a name",
+                        code="qiec-program",
+                    )
+                authored = QiecTypeName(name=actual.text)
+            lowered_binder = self._lower_telescope((parameter,))[0]
+            static_bindings[parameter.name] = self._lower_static_argument(
+                authored, lowered_binder, telescope, static_bindings
+            )
+        checked_values = dict(bindings.values)
+        for parameter, argument in zip(
+            runtime_program_parameters(template), arguments, strict=True
+        ):
+            is_nat = (
+                (
+                    isinstance(parameter, QiecValueParameter)
+                    and isinstance(parameter.type_expr, QiecTypeName)
+                    and parameter.type_expr.name == "Nat"
+                )
+                or isinstance(parameter, ScalarParam)
+                and parameter.scalar_kind == "Nat"
+            )
+            if isinstance(parameter, ScalarParam):
+                expected = REAL if parameter.scalar_kind == "Real" else INT
+            else:
+                expected = (
+                    INT
+                    if is_nat
+                    else self._lower_type(
+                        parameter.type_expr, telescope, static_bindings
+                    )
+                )
+            expression = bindings.values[parameter.name]
+            if (
+                isinstance(argument, DrawArgName)
+                and argument.text in self._program_objects
+            ):
+                self._fail(
+                    node,
+                    f"object {argument.text!r} is static and cannot fill runtime parameter {parameter.name!r}",
+                    code="qiec-program",
+                )
+            if (
+                isinstance(argument, DrawArgName)
+                and scope.lookup(argument.text) is None
+                and isinstance(expression, LetExprVar)
+            ):
+                self._declare_parameter(
+                    argument.text,
+                    expected,
+                    "data",
+                    scope,
+                    state,
+                    node,
+                    constraint="nonnegative" if is_nat else None,
+                )
+            if is_nat and isinstance(expression, LetExprVar):
+                actual_name = expression.name
+                if any(key == actual_name for key, _ in state.parameters):
+                    state.parameter_constraints[actual_name] = "nonnegative"
+                elif state.parameter_constraints.get(actual_name) != "nonnegative":
+                    self._fail(
+                        node,
+                        f"runtime Nat parameter {parameter.name!r} requires a natural literal "
+                        "or a constrained Nat input; the local integer "
+                        f"{actual_name!r} has no nonnegative proof",
+                        code="qiec-program",
+                    )
+            if (
+                isinstance(argument, DrawArgScalar)
+                and expected == INT
+                and (isinstance(argument.value, int) or argument.value.is_integer())
+            ):
+                expression = LetExprLiteral(value=int(argument.value), integral=True)
+            if is_nat and isinstance(argument, DrawArgScalar) and argument.value < 0:
+                self._fail(
+                    node,
+                    f"runtime Nat parameter {parameter.name!r} requires a natural number",
+                    code="qiec-program",
+                )
+            value = self._lower_value(
+                expression,
+                telescope,
+                scope.context(),
+                static_bindings,
+                ("programs", state.declaration.name, "arguments", parameter.name),
+                expected=expected,
+            )
+            actual_type = self._value_type(value, scope.context(), node)
+            if actual_type != expected and not self._unify_types(
+                actual_type, expected, scope, state
+            ):
+                self._fail(
+                    node,
+                    f"runtime parameter {parameter.name!r} of program {name!r} expects {self._render(expected)}, received {self._render(actual_type)}",
+                    code="qiec-program",
+                )
+            if isinstance(expression, LetExprVar | LetExprLiteral):
+                # Variables and literals already denote one value. Reusing them
+                # avoids administrative bindings and preserves lexical identity.
+                checked_values[parameter.name] = expression
+                continue
+            alias = f"{'_'.join(binders)}$argument${parameter.name}"
+            while scope.lookup(alias) is not None:
+                alias += "$"
+            self._bind_step(scope, alias, expected, Return(value=value), node)
+            split = tensor_shape(expected)
+            if split is not None:
+                state.batch_shapes[alias] = tuple(split[1])
+            if is_nat:
+                state.parameter_constraints[alias] = "nonnegative"
+            checked_values[parameter.name] = LetExprVar(name=alias)
+        bindings, introduced = self._specialize_program_indices(
+            template, bindings.with_(values=checked_values), "_".join(binders)
+        )
+        try:
+            try:
+                from quivers.dsl.program_templates import _is_standalone_application
+
+                steps = instantiate_program(
+                    template,
+                    binders,
+                    bindings,
+                    preserve_names=(
+                        _is_standalone_application(state.declaration)
+                        and node in state.declaration.draws
+                    ),
+                )
+            except TemplateError as error:
+                self._fail(node, error.message, code="qiec-program")
+            self._elaborate_steps(steps, scope, state)
+        finally:
+            for name in introduced:
+                self._program_objects.pop(name, None)
 
     def _sample_request(
         self: _Elaborator,
@@ -3367,6 +3883,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         distribution = self._step_distribution(
             step, scope, state, name, via=via, group=group
         )
+        from quivers.qiec._distribution_axes import distribution_axes
+
+        batch_axes, event_axes = distribution_axes(
+            distribution, families=self.distribution_families
+        )
         observed_type = self._sampled_type(distribution)
         if state.markov_row_cell[0] is not None and name == state.markov_entry_cell[0]:
             # The row of a marginalized chain's cell scores the entry it
@@ -3390,56 +3911,40 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 scope,
                 state,
                 step,
-                axes=tuple(
-                    axis.name
-                    for axis in (*distribution.plate.batch, *distribution.plate.event)
-                ),
+                axes=tuple(axis.name for axis in (*batch_axes, *event_axes)),
             )
         state.sites.append(
             ProgramSite(
                 name=name,
                 kind="observe",
                 family=distribution.name,
-                batch=distribution.plate.batch,
-                event=distribution.plate.event,
+                batch=batch_axes,
+                event=event_axes,
             )
         )
-        origin = _origin_at(
+        from quivers.dsl._observation_lowering import recorded_density
+
+        density: Value = recorded_density(
             self,
-            ("programs", state.declaration.name, "sites", name),
-            "log-density",
+            distribution,
+            Var(local=observed),
             step,
+            scope,
+            state,
+            families=self.distribution_families,
+        )
+        density = self._weighted_observation(
+            density, PlateShape(batch=batch_axes, event=event_axes), step, scope, state
         )
         weight_scope = _weight_scope(scope)
         if weight_scope is None:
-            weight: Value = WeightSum(
-                value=LogDensity(
-                    sampleable=distribution,
-                    value=Var(local=observed),
-                    origin=origin,
-                    batch=distribution.plate.batch,
-                )
-            )
-            self._add_score(state.score, weight, scope, state, step)
+            self._add_score(state.score, WeightSum(value=density), scope, state, step)
             return
         assert weight_scope.weight_type_cell[0] is not None
         if weight_scope.group is None:
-            weight = WeightSum(
-                value=LogDensity(
-                    sampleable=distribution,
-                    value=Var(local=observed),
-                    origin=origin,
-                    batch=distribution.plate.batch,
-                )
-            )
+            weight: Value = WeightSum(value=density)
         else:
             batch = distribution.plate.batch
-            density = LogDensity(
-                sampleable=distribution,
-                value=Var(local=observed),
-                origin=origin,
-                batch=batch,
-            )
             if via is not None:
                 if len(batch) != 1:
                     self._fail(
@@ -3472,6 +3977,111 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         assert weight_scope.weight_instance_cell[0] is not None
         self._add_weight(
             weight_scope.weight_instance_cell[0], weight, scope, state, step
+        )
+
+    def _weighted_observation(
+        self: _Elaborator,
+        density: Value,
+        plate: PlateShape,
+        step: ObserveStep,
+        scope: _Scope,
+        state: _ProgramState,
+    ) -> Value:
+        """Validate and scale observation densities before reducing their batch.
+
+        Parameters
+        ----------
+        density : Value
+            The unreduced observation log density.
+        plate : PlateShape
+            Its independent batch and joint event axes.
+        step : ObserveStep
+            The source observation carrying an optional weights option.
+        scope : _Scope
+            The lexical bindings the weight may read.
+        state : _ProgramState
+            The program's accumulating input contract.
+
+        Returns
+        -------
+        Value
+            The density scaled by validated weights, or the original density.
+
+        Raises
+        ------
+        QiecDiagnosticError
+            If the option is malformed or its type or shape is incompatible.
+        """
+        entries = tuple(entry for entry in step.options if entry.key == "weights")
+        if not entries:
+            return density
+        if len(entries) != 1:
+            self._fail(
+                step, "an observation has one weights option", code="qiec-program"
+            )
+        option = entries[0].value
+        dimensions = tuple(axis.size for axis in plate.batch)
+        expected = tensor_type(REAL, dimensions) if dimensions else REAL
+        if isinstance(option, OptionNumber):
+            if not math.isfinite(option.value) or option.value < 0:
+                self._fail(
+                    step,
+                    "observation weights must be finite and nonnegative",
+                    code="qiec-program",
+                )
+            weight: Value = _literal(option.value, False)
+            weight_shape: tuple[IndexTerm, ...] | None = None
+        elif isinstance(option, OptionName) and option.value not in {"true", "false"}:
+            local = scope.lookup(option.value)
+            if local is None:
+                static_names = {
+                    str(parameter.name)
+                    for parameter in static_program_parameters(state.declaration)
+                }
+                if (
+                    option.value in self._program_objects
+                    or option.value in static_names
+                ):
+                    self._fail(
+                        step,
+                        f"observation weights require a runtime value; {option.value!r} is static",
+                        code="qiec-program",
+                    )
+                local = self._declare_parameter(
+                    option.value,
+                    self._pinned_types.get(option.value, expected),
+                    "data",
+                    scope,
+                    state,
+                    step,
+                    axes=tuple(axis.name for axis in plate.batch),
+                )
+            weight = Var(local=local)
+            actual = local.type
+            if actual != REAL and actual != expected:
+                self._fail(
+                    step,
+                    f"observation weights {option.value!r} must be Real or "
+                    f"{self._render(expected)}, got {self._render(actual)}",
+                    code="qiec-program",
+                )
+            weight_shape = dimensions if actual != REAL else None
+        else:
+            self._fail(
+                step,
+                "observation weights require a numeric literal or a value name",
+                code="qiec-program",
+            )
+        path = ("programs", state.declaration.name, "sites", step.vars[0], "weights")
+        checked = self._primitive(
+            "observation_weight", (weight,), step, (*path, "validate"), weight_shape
+        )
+        return self._primitive(
+            "scale_weight",
+            (checked, density),
+            step,
+            (*path, "scale"),
+            dimensions or None,
         )
 
     def _add_score(
@@ -4928,9 +5538,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         bindings: dict[str, IndexTerm] = {}
         for parameter, argument in zip(signature.parameters, arguments, strict=True):
-            _bind_extents(
-                parameter, self._value_type(argument, context, step), bindings
-            )
+            try:
+                _bind_extents(
+                    parameter, self._value_type(argument, context, step), bindings
+                )
+            except (TypeError, ValueError) as error:
+                self._fail_kernel(step, error, fallback="qiec-program")
         statics: list[StaticArgument] = []
         for binder in signature.telescope:
             bound = (
@@ -5060,7 +5673,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "execution and has no checked QIEC lowering",
                 code="qiec-builtin:host-only",
             )
-        unknown = _unknown_call(expr, self._lambda_macros)
+        unknown = _unknown_call(expr, self._lambda_macros, self.distribution_families)
         if unknown is not None:
             self._fail(
                 node,
@@ -5212,6 +5825,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 )
 
         def hoist(candidate: LetExprNode) -> LetExprNode:
+            """Bind one learned call before the enclosing pure expression.
+
+            Parameters
+            ----------
+            candidate : LetExprNode
+                Visited expression node.
+
+            Returns
+            -------
+            LetExprNode
+                Reference to the bound call, or the unchanged pure node.
+            """
             if not isinstance(candidate, LetExprCall):
                 return candidate
             morphism = self._function_morphism(candidate.func)
@@ -5611,12 +6236,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     step.args,
                     morphisms=self._program_morphisms,
                     lets=self._program_lets,
-                    family_registry=frozenset(FAMILIES),
+                    family_registry=frozenset(self.distribution_families),
                     target="qvr-qiec",
                 )
             except StepResolutionError, TypeError:
                 continue
-            record = FAMILIES.get(resolved.family)
+            record = self.distribution_families.get(resolved.family)
             if record is None:
                 continue
             for argument in step.args:
@@ -5657,7 +6282,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         dict[str, tuple[TypeApplication, PlateAxis | None]]
             Each free name's element type and batch axis, if any.
         """
-        bound: set[str] = set()
+        bound: set[str] = {parameter.name for parameter in declaration.value_parameters}
         if declaration.params is not None:
             bound.update(declaration.params)
         if declaration.type_params is not None:
@@ -5723,22 +6348,32 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     # place, so the names they read are typed as they
                     # are read there.
                     template = self._program_declarations[step.morphism]
+                    introduced: tuple[str, ...] = ()
                     try:
-                        instantiated = instantiate_program(
+                        bindings = template_bindings(
                             template,
-                            step.vars,
-                            template_bindings(
-                                template,
-                                step.args or (),
-                                {name: LetExprVar(name=name) for name in bound},
-                            ),
+                            step.args or (),
+                            {name: LetExprVar(name=name) for name in bound},
+                            static_arguments=step.static_args,
+                        )
+                        bindings, introduced = self._specialize_program_indices(
+                            template, bindings, "_".join(step.vars)
+                        )
+                        instantiated = instantiate_program(
+                            template, step.vars, bindings
                         )
                     except TemplateError:
+                        for name in introduced:
+                            self._program_objects.pop(name, None)
                         # The elaboration of the draw reports the misfit
                         # with its location.
                         bound.update(step.vars)
                         continue
-                    visit(instantiated, group)
+                    try:
+                        visit(instantiated, group)
+                    finally:
+                        for name in introduced:
+                            self._program_objects.pop(name, None)
                     bound.update(step.vars)
                 elif isinstance(step, SampleStep | ObserveStep | MarginalizeStep):
                     names = (
@@ -5752,7 +6387,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                             step.args,
                             morphisms=self._program_morphisms,
                             lets=self._program_lets,
-                            family_registry=frozenset(FAMILIES),
+                            family_registry=frozenset(self.distribution_families),
                             target="qvr-qiec",
                         )
                     except StepResolutionError, TypeError:
@@ -5762,7 +6397,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                         # structurally.
                         bound.update(names)
                         continue
-                    record = FAMILIES.get(resolved.family)
+                    record = self.distribution_families.get(resolved.family)
                     if record is None:
                         bound.update(names)
                         continue
@@ -5779,10 +6414,18 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     plate = self._step_plate(step, record, morphism, own_group)
                     batch = plate.batch[0] if plate.batch else None
                     if batch is not None:
-                        for argument in step.args or ():
-                            for name in _argument_names(argument):
-                                for free in depends.get(name, set()):
-                                    axes.setdefault(free, batch)
+                        consumed = {
+                            name
+                            for argument in step.args or ()
+                            for name in _argument_names(argument)
+                        }
+                        if isinstance(step, ObserveStep):
+                            weight = _option_entry(step.options, "weights")
+                            if isinstance(weight, OptionName):
+                                consumed.add(weight.value)
+                        for name in consumed:
+                            for free in depends.get(name, set()):
+                                axes.setdefault(free, batch)
                     bound.update(names)
                     if isinstance(step, MarginalizeStep):
                         visit(step.scope, own_group)
@@ -5986,7 +6629,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         )
         if state.pending_alphabet_cell[0] is not None:
             state.alphabets[latent_name] = state.pending_alphabet_cell[0]
-        record = FAMILIES[distribution.name]
+        record = self.distribution_families[distribution.name]
         if not _enumerable(record):
             # Nothing finite to sum over: the latent is drawn once per
             # position and the scope runs in the enclosing scope, which
@@ -6215,7 +6858,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             when neither names one.
         """
         name = OPERATOR_ALIASES.get(step.morphism, step.morphism)
-        record = FAMILIES.get(name)
+        record = self.distribution_families.get(name)
         if record is not None:
             return record
         morphism = self._program_morphisms.get(step.morphism)
@@ -6224,7 +6867,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         family = _bare_init_family(morphism)
         if family is None and morphism.init_family is not None:
             family = morphism.init_family.family
-        return FAMILIES.get(OPERATOR_ALIASES.get(family or "", family or ""))
+        return self.distribution_families.get(
+            OPERATOR_ALIASES.get(family or "", family or "")
+        )
 
     def _elaborate_continuous_marginalize(
         self: _Elaborator,
@@ -6489,11 +7134,20 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             If the morphism cannot be resolved to a family, or the
             arguments and plate do not type.
         """
+        if step.static_args:
+            self._fail(
+                step,
+                f"{step.morphism!r} is not a program template and accepts no static arguments",
+                code="qiec-program",
+            )
         if self._function_morphism(step.morphism) is not None:
             self._fail(
                 step, learned_function_draw_message(step.morphism), code="qiec-program"
             )
-        if step.morphism in FAMILIES or step.morphism in OPERATOR_ALIASES:
+        if (
+            step.morphism in self.distribution_families
+            or step.morphism in OPERATOR_ALIASES
+        ):
             # A family applied by name resolves to itself; its arguments
             # are read structurally, nested distributions included.
             resolved = ResolvedDist(
@@ -6506,7 +7160,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     step.args,
                     morphisms=self._program_morphisms,
                     lets=self._program_lets,
-                    family_registry=frozenset(FAMILIES) | frozenset(OPERATOR_ALIASES),
+                    family_registry=frozenset(self.distribution_families)
+                    | frozenset(OPERATOR_ALIASES),
                     target="qvr-qiec",
                 )
             except StepResolutionError as error:
@@ -6529,7 +7184,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     )
                 resolved = network
         family_name = OPERATOR_ALIASES.get(resolved.family, resolved.family)
-        record = FAMILIES.get(family_name)
+        record = self.distribution_families.get(family_name)
         if record is None:
             self._fail(
                 step,
@@ -6542,13 +7197,40 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             # An operator form denotes a measure the step normalizes at its
             # boundary: the construction itself is unplated, and the
             # normalization carries the step's plate.
-            inner = self._nested_distribution(
+            positions = tuple(
+                (axis, Local(name=f"__measure_coordinate_{i}", type=INT))
+                for i, axis in enumerate(plate.batch)
+            )
+            inner_scope = (
+                _Scope(
+                    outer=scope, locals={local.name: local for _, local in positions}
+                )
+                if positions
+                else scope
+            )
+            inner: Value = self._nested_distribution(
                 DrawArgDist(family=resolved.family, args=tuple(step.args)),
-                scope,
+                inner_scope,
                 state,
                 step,
+                positions=positions,
             )
-            normalize = FAMILIES["Normalize"]
+            # The outer normalization owns replication. Construct a scalar
+            # conditional measure at each declared batch coordinate rather
+            # than making a vector-valued inner event and replicating it again.
+            inner_type = self._value_type(inner, inner_scope.context(), step)
+            if positions:
+                scope.referenced.update(inner_scope.referenced - scope.locals.keys())
+            dimensions = ()
+            for axis, local in reversed(positions):
+                dimensions = (axis.size, *dimensions)
+                inner = Comprehension(
+                    binder=local,
+                    extent=axis.size,
+                    body=inner,
+                    result_type=tensor_type(inner_type, dimensions),
+                )
+            normalize = self.distribution_families["Normalize"]
             path = ("programs", state.declaration.name, "sites", site, "distribution")
             provisional = DistributionValue(
                 family=normalize.id,
@@ -6650,24 +7332,20 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         tuple[list[tuple[str, Value]], PlateShape]
             The arguments and plate at every extent fixed so far.
         """
-        supplied = record.event_argument(arguments)
-        if (
-            supplied is not None
-            and record.event_rank
-            and len(plate.event) >= record.event_rank
-        ):
-            shape = tensor_shape(self._value_type(supplied[1], scope.context(), node))
-            if shape is not None and len(shape[1]) >= record.event_rank:
-                natural = shape[1][len(shape[1]) - record.event_rank :]
-                trailing = plate.event[len(plate.event) - record.event_rank :]
-                self._unify_extents(
-                    [
-                        (size, axis.size)
-                        for size, axis in zip(natural, trailing, strict=True)
-                    ],
-                    scope,
-                    state,
-                )
+        patterns, event = self._family_shape_patterns(record, state)
+        actual = self._family_argument_shapes(record, arguments, scope, node)
+        declared = (
+            tuple(axis.size for axis in plate.event[-record.event_rank :])
+            if record.event_rank and len(plate.event) >= record.event_rank
+            else None
+        )
+        pairs = family_shape_equations(patterns, event, actual, declared)
+        if not self._unify_extents(pairs, scope, state):
+            self._fail(
+                node,
+                f"family {record.name!r} has incompatible parameter/event extents",
+                code="qiec-program",
+            )
         if not state.extent_solution:
             return arguments, plate
         substitution = self._extent_substitution(state)
@@ -6704,14 +7382,16 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         QiecDiagnosticError
             If the kernel rejects the construction.
         """
-        record = FAMILIES[value.name]
+        record = self.distribution_families[value.name]
         context = scope.context()
         argument_types = {
             name: self._value_type(argument, context, node)
             for name, argument in value.arguments
         }
         try:
-            return _plated_sample_type(value, record, argument_types)
+            return _plated_sample_type(
+                value, record, argument_types, families=self.distribution_families
+            )
         except KernelError as error:
             self._fail_kernel(node, error, fallback="qiec-program")
 
@@ -6928,13 +7608,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             or (morphism is not None and _option_axes(morphism.options, "over"))
         ):
             return plate
-        supplied = record.event_argument(arguments)
-        if supplied is None:
+        actual = self._family_argument_shapes(record, arguments, scope, step)
+        try:
+            natural = match_family_shapes(record.effective_shape_signature, actual)
+        except ValueError:
             return plate
-        shape = tensor_shape(self._value_type(supplied[1], scope.context(), step))
-        if shape is None or len(shape[1]) < record.event_rank:
-            return plate
-        natural = tuple(shape[1][len(shape[1]) - record.event_rank :])
         if not all(isinstance(size, IndexLiteral) for size in natural):
             return plate
         if natural == tuple(axis.size for axis in plate.event):
@@ -7167,7 +7845,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             If more arguments are supplied than the family has
             parameters.
         """
-        direct_family = step.morphism in FAMILIES or step.morphism in OPERATOR_ALIASES
+        direct_family = (
+            step.morphism in self.distribution_families
+            or step.morphism in OPERATOR_ALIASES
+        )
         structural: tuple[DrawArg, ...] = (step.args or ()) if direct_family else ()
         if (
             not structural
@@ -7233,7 +7914,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         self: _Elaborator,
         record: DistributionFamily,
         surface_family: str,
-        raw: list[DrawArg | str | float | _Spread],
+        raw: list[DrawArg],
         step: SampleStep | ObserveStep | MarginalizeStep,
         plate: PlateShape,
         scope: _Scope,
@@ -7241,41 +7922,43 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         via: tuple[str, ...] | None,
         group: PlateAxis | None,
     ) -> list[tuple[str, Value]]:
-        """Bind a keyword-only construction to one complete family schema."""
-        schemas = family_parameterizations(surface_family, record.parameter_names)
-        schema_text = render_parameterizations(schemas)
-        supplied: set[str] = set()
-        source: dict[str, DrawArg] = {}
-        for argument in raw:
-            if not isinstance(argument, DrawArgNamed):
-                self._fail(
-                    step,
-                    f"family {record.name!r} arguments are keyword-only; "
-                    f"use one complete schema: {schema_text}",
-                    code="qiec-program",
-                )
-            parameter_name = argument.parameter
-            if parameter_name in supplied:
-                self._fail(
-                    step,
-                    f"family {record.name!r} is given parameter "
-                    f"{parameter_name!r} twice",
-                    code="qiec-program",
-                )
-            supplied.add(parameter_name)
-            source[parameter_name] = argument.value
+        """Bind a keyword-only construction to one complete family schema.
 
-        selected = next((schema for schema in schemas if set(schema) == supplied), None)
-        if selected is None:
-            self._fail(
-                step,
-                f"family {record.name!r} requires exactly one complete parameter "
-                f"schema {schema_text}; got ({', '.join(source)})",
-                code="qiec-program",
+        Parameters
+        ----------
+        record : DistributionFamily
+            Canonical semantic family.
+        surface_family : str
+            Authored constructor name selecting accepted keyword schemas.
+        raw : list[DrawArg]
+            Authored arguments before canonical ordering.
+        step : SampleStep | ObserveStep | MarginalizeStep
+            Draw supplying source locations.
+        plate : PlateShape
+            Batch and event axes of the construction.
+        scope : _Scope
+            Current lexical environment.
+        state : _ProgramState
+            Accumulated bindings and inferred extents.
+        via : tuple[str, ...] or None
+            Group-to-row index maps.
+        group : PlateAxis or None
+            Active grouping axis.
+
+        Returns
+        -------
+        list[tuple[str, Value]]
+            Lowered named arguments in canonical constructor order.
+        """
+        try:
+            bound = bind_family_arguments(
+                surface_family, tuple(raw), record.parameter_names, allow_defaults=False
             )
+        except TypeError as error:
+            self._fail(step, str(error), code="qiec-program")
 
         pairs: list[tuple[FamilyParameter, DrawArg | str | float | _Spread]] = []
-        for parameter_name in selected:
+        for parameter_name, source_argument in bound:
             try:
                 parameter = _semantic_family_parameter(
                     record, parameter_name, surface_family
@@ -7288,8 +7971,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"{', '.join(record.parameter_names)}",
                     code="qiec-program",
                 )
-            argument: DrawArg | str | float | _Spread = source[parameter_name]
-            if len(selected) == 1:
+            argument: DrawArg | str | float | _Spread = source_argument
+            if len(bound) == 1:
                 bundled = self._bundle_vector_argument(
                     record, [argument], step, plate, state
                 )
@@ -7312,14 +7995,11 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
     ) -> list[tuple[str, Value]]:
         """Lower each argument against its parameter, sizing free names by the draw.
 
-        A free name filling a tensor parameter whose axes the family ties
-        to its sample's (a multivariate normal's mean and Cholesky
-        factor, a Wishart's scale) takes those axes' extents from the
-        draw: the plate's trailing event axes when it names enough, else
-        the arguments already typed. An axis nothing in the draw fixes is
-        one open extent, shared by every free name the family ties to it.
-        Free names are therefore lowered after the arguments that may fix
-        their extents.
+        The family's dependent shape signature relates intrinsic parameter
+        and sample-event dimensions. Typed arguments and explicit event axes
+        constrain fresh open extents before free tensor names are lowered.
+        Parameters sharing a signature index thus share one extent, including
+        structural parameter dimensions unrelated to the scalar sample.
 
         Parameters
         ----------
@@ -7345,14 +8025,28 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         list[tuple[str, Value]]
             The named arguments, in the order of ``pairs``.
         """
-        event: dict[int, IndexTerm] = {}
-        if (
-            record.event_rank
+        hints = {}
+        signature = record.effective_shape_signature
+        for parameter, argument in pairs:
+            name = self._tied_free_name(parameter, argument, plate, scope)
+            if name is None:
+                continue
+            for axis, term in enumerate(signature.parameter_shape(parameter.name)):
+                if isinstance(term, IndexVariable):
+                    hints.setdefault(
+                        term.name,
+                        f"{name}_extent"
+                        if parameter.rank == 1
+                        else f"{name}_extent{axis}",
+                    )
+        patterns, event_shape = self._family_shape_patterns(record, state, hints)
+        declared = (
+            tuple(axis.size for axis in plate.event[-record.event_rank :])
+            if record.event_rank
             and len(plate.event) >= record.event_rank
             and not self._provisional_event(record, step)
-        ):
-            trailing = plate.event[len(plate.event) - record.event_rank :]
-            event = {position: axis.size for position, axis in enumerate(trailing)}
+            else None
+        )
         values: dict[int, Value] = {}
         tied: list[int] = []
         for position, (parameter, argument) in enumerate(pairs):
@@ -7361,38 +8055,101 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 continue
             value = self._draw_argument(argument, parameter, plate, scope, state, step)
             values[position] = value
-            if parameter.event_dims:
-                self._tie_event_extents(
-                    record, parameter, value, event, step, scope, state
+        actual = self._family_argument_shapes(
+            record,
+            [(pairs[position][0].name, value) for position, value in values.items()],
+            scope,
+            step,
+        )
+        equations = family_shape_equations(patterns, event_shape, actual, declared)
+        if not self._unify_extents(equations, scope, state):
+            # Preserve both-use diagnostics after a conflicting joint solve.
+            # The same Nat solver projects only declared event evidence here;
+            # this projection explains the failure and does not change scope.
+            if declared is not None:
+                try:
+                    anchor = infer_index_extents(
+                        [
+                            (pattern, int(axis.value))
+                            for pattern, axis in zip(event_shape, declared, strict=True)
+                            if isinstance(axis, IndexLiteral)
+                        ]
+                    )
+                except ValueError, TypeError:
+                    anchor = {}
+                substitution = StaticSubstitution(
+                    types=(),
+                    indices=tuple(
+                        (name, IndexLiteral(value=size, sort=NAT))
+                        for name, size in anchor.items()
+                    ),
+                    effects=(),
                 )
+                event_names = _index_variables_in(event_shape)
+                for parameter, argument in pairs:
+                    for pattern, found in zip(
+                        patterns[parameter.name],
+                        actual.get(parameter.name, ()),
+                        strict=False,
+                    ):
+                        wanted = substitute_index(pattern, substitution)
+                        if (
+                            isinstance(found, IndexLiteral)
+                            and isinstance(wanted, IndexLiteral)
+                            and found != wanted
+                            and _index_variables_in((pattern,)) & event_names
+                        ):
+                            names = (
+                                _argument_names(argument)
+                                if isinstance(
+                                    argument,
+                                    DrawArgName
+                                    | DrawArgNamed
+                                    | DrawArgIndex
+                                    | DrawArgList
+                                    | DrawArgDist
+                                    | DrawArgScalar,
+                                )
+                                else [argument]
+                                if isinstance(argument, str)
+                                else []
+                            )
+                            source = names[0] if names else parameter.name
+                            self._fail(
+                                step,
+                                f"{record.name} reads its {parameter.name!r} from {source!r}, an axis of extent "
+                                f"{render_static(found)}, but the sample's axis it spans has extent {render_static(wanted)}",
+                                code="qiec-program",
+                            )
+            self._fail(
+                step,
+                f"family {record.name!r} has incompatible or underdetermined parameter/event extents",
+                code="qiec-program",
+            )
         for position in tied:
             parameter, argument = pairs[position]
-            name = self._tied_free_name(parameter, argument, plate, scope)
-            assert name is not None
-            extents: list[IndexTerm] = []
-            for axis, dim in enumerate(parameter.event_dims):
-                if dim is not None and dim in event:
-                    extents.append(event[dim])
-                    continue
-                extent = self._open_extent(
-                    f"{name}_extent" if parameter.rank == 1 else f"{name}_extent{axis}",
-                    state,
-                )
-                if dim is not None:
-                    event[dim] = extent
-                extents.append(extent)
-            values[position] = self._draw_argument(
-                argument,
-                parameter,
-                plate,
-                scope,
-                state,
-                step,
-                extents=tuple(extents),
+            extents = tuple(
+                self._resolved_extent(t, state) for t in patterns[parameter.name]
             )
+            value = self._draw_argument(
+                argument, parameter, plate, scope, state, step, extents=extents
+            )
+            values[position] = value
+            actual = self._family_argument_shapes(
+                record, [(parameter.name, value)], scope, step
+            )
+            if not self._unify_extents(
+                family_shape_equations(patterns, event_shape, actual), scope, state
+            ):
+                self._fail(
+                    step,
+                    f"parameter {parameter.name!r} of family {record.name!r} has incompatible event extents",
+                    code="qiec-program",
+                )
         if state.extent_solution:
             # A free name's typing may fix an extent an argument lowered
             # before it reads.
+            self._apply_extent_solution(scope, state)
             substitution = self._extent_substitution(state)
             values = {
                 position: substitute_value(value, substitution)
@@ -7442,69 +8199,73 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         morphism = self._program_morphisms.get(step.morphism)
         return morphism is None or not _option_axes(morphism.options, "over")
 
-    def _tie_event_extents(
+    def _family_shape_patterns(
         self: _Elaborator,
         record: DistributionFamily,
-        parameter: FamilyParameter,
-        value: Value,
-        event: dict[int, IndexTerm],
-        step: SampleStep | ObserveStep | MarginalizeStep,
-        scope: _Scope,
         state: _ProgramState,
-    ) -> None:
-        """Read a typed argument's tied axes against the draw's event extents.
-
-        Each axis the family ties to a sample axis either fixes that
-        axis's extent, when nothing has yet, or must equal it: an open
-        extent on either side is fixed to the other, and two different
-        fixed extents are refused.
+        hints: Mapping[str, str] | None = None,
+    ) -> tuple[dict[str, tuple[IndexTerm, ...]], tuple[IndexTerm, ...]]:
+        """Freshen one local shape telescope into the existing extent scope.
 
         Parameters
         ----------
         record : DistributionFamily
-            The family.
-        parameter : FamilyParameter
-            The parameter the argument fills.
-        value : Value
-            The lowered argument.
-        event : dict[int, IndexTerm]
-            The extents of the sample's axes fixed so far, extended in
-            place.
-        step : SampleStep | ObserveStep | MarginalizeStep
-            The step, where a mismatch is reported.
-        scope : _Scope
-            The scope.
+            Family carrying the shared dependent shape contract.
         state : _ProgramState
-            The program's accumulating state.
+            Existing program extent scope and solutions.
+        hints : Mapping[str, str] or None
+            Preferred names for dimensions inferred from free arguments.
 
-        Raises
-        ------
-        QiecDiagnosticError
-            If an axis of the argument has a fixed extent other than the
-            sample axis's.
+        Returns
+        -------
+        tuple[dict[str, tuple[IndexTerm, ...]], tuple[IndexTerm, ...]]
+            Fresh parameter and sample-event patterns.
         """
-        shape = tensor_shape(self._value_type(value, scope.context(), step))
-        if shape is None or len(shape[1]) < parameter.rank:
-            return
-        own = shape[1][len(shape[1]) - parameter.rank :]
-        for size, dim in zip(own, parameter.event_dims, strict=True):
-            if dim is None:
+        indices = {}
+        for binder in record.effective_shape_signature.telescope:
+            name = (hints or {}).get(
+                binder.name, f"__family_shape_{len(state.extents)}_{binder.name}"
+            )
+            while name in state.extents:
+                name += "_"
+            indices[binder.name] = self._open_extent(name, state)
+        return instantiate_family_shapes(record.effective_shape_signature, indices)
+
+    def _family_argument_shapes(
+        self: _Elaborator,
+        record: DistributionFamily,
+        arguments: Sequence[tuple[str, Value]],
+        scope: _Scope,
+        node: object,
+    ) -> dict[str, tuple[IndexTerm, ...]]:
+        """Read intrinsic parameter dimensions while excluding plate prefixes.
+
+        Parameters
+        ----------
+        record : DistributionFamily
+            Family declaring each parameter's rank.
+        arguments : Sequence[tuple[str, Value]]
+            Named arguments whose types are already available.
+        scope : _Scope
+            Value typing scope.
+        node : object
+            Source node for a typing diagnostic.
+
+        Returns
+        -------
+        dict[str, tuple[IndexTerm, ...]]
+            Intrinsic dimensions; scalar broadcasts supply no shape evidence.
+        """
+        result = {}
+        for name, value in arguments:
+            parameter = record.parameter(name)
+            if not parameter.rank:
+                result[name] = ()
                 continue
-            if dim not in event:
-                event[dim] = self._resolved_extent(size, state)
-                continue
-            if not self._unify_extents([(size, event[dim])], scope, state):
-                source = f"{value.local.name!r}, " if isinstance(value, Var) else ""
-                self._fail(
-                    step,
-                    f"family {record.name!r} reads its {parameter.name!r} from "
-                    f"{source}an axis of extent "
-                    f"{render_static(self._resolved_extent(size, state))}, but "
-                    f"the sample's axis it spans has extent "
-                    f"{render_static(self._resolved_extent(event[dim], state))}",
-                    code="qiec-program",
-                )
-            event[dim] = self._resolved_extent(event[dim], state)
+            shape = tensor_shape(self._value_type(value, scope.context(), node))
+            if shape is not None and len(shape[1]) >= parameter.rank:
+                result[name] = tuple(shape[1][-parameter.rank :])
+        return result
 
     def _tied_free_name(
         self: _Elaborator,
@@ -7529,14 +8290,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         Returns
         -------
         str | None
-            The name, when the argument is a name nothing binds, the
-            family ties the parameter's axes to its sample's, and the
-            draw reads the name as a tensor over those axes: with no
-            plate, one value per row of a plate with no event axes, or
-            beside event axes a matrix, which no scalar broadcast stands
-            in for. ``None`` otherwise.
+            The unbound name when the argument requires intrinsic tensor
+            dimensions. A scalar-broadcasting vector beside event axes keeps
+            the existing scalar interpretation; matrices and structural
+            tables require their signature dimensions. ``None`` otherwise.
         """
-        if not parameter.event_dims:
+        if not parameter.rank:
             return None
         if isinstance(argument, DrawArgNamed):
             argument = argument.value
@@ -7550,10 +8309,15 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             name = argument
         else:
             return None
-        if scope.lookup(name) is not None or name in self._program_morphisms:
+        if (
+            scope.lookup(name) is not None
+            or name in self._program_morphisms
+            or name in self._pinned_types
+        ):
             return None
         if (
-            plate.event
+            parameter.scalar_broadcast
+            and plate.event
             and parameter.constraint not in _MATRIX_CONSTRAINTS
             and parameter.rank < 2
         ):
@@ -7621,7 +8385,15 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         items = tuple(
             item
             if isinstance(item, DrawArgScalar)
-            else DrawArgScalar(value=float(item), line=step.line, col=step.col)
+            else DrawArgScalar(
+                value=item
+                if isinstance(item, int | float)
+                else float(item)
+                if any(c in item for c in ".eE")
+                else int(item),
+                line=step.line,
+                col=step.col,
+            )
             for item in literals
         )
         if len(items) >= 2:
@@ -7696,6 +8468,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         constraint = parameter.constraint
         if constraint == "transform":
             return self._transform_chain(argument, node)
+        if constraint == "boolean":
+            text = argument.text if isinstance(argument, DrawArgName) else argument
+            if isinstance(text, str) and text in {"true", "false"}:
+                return LiteralValue(value=text == "true", type=BOOL)
         if isinstance(argument, _Spread):
             # A single literal spread over a vector parameter is the
             # same number at every position of the vector.
@@ -7707,7 +8483,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 result_type=tensor_type(element, (_extent(argument.dimension),)),
             )
         if isinstance(argument, float | int):
-            return _literal(float(argument), integral)
+            return _literal(argument, integral)
         if isinstance(argument, DrawArgScalar):
             return _literal(argument.value, integral)
         if isinstance(argument, DrawArgNamed):
@@ -7745,7 +8521,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             return self._nested_distribution(argument, scope, state, node)
         text = str(argument)
         if _is_number_text(text):
-            return _literal(float(text), integral)
+            return _literal(
+                float(text) if any(c in text for c in ".eE") else int(text), integral
+            )
         if "[" in text:
             base, _, rest = text.partition("[")
             indices = tuple(item.rstrip("]") for item in rest.split("["))
@@ -7813,9 +8591,38 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         local = scope.lookup(name)
         if local is not None:
             return Var(local=local)
+        if any(
+            isinstance(binder, QiecIndexBinder) and binder.name == name
+            for binder in state.declaration.binders
+        ):
+            self._fail(
+                node,
+                f"static index {name!r} is an extent, not a runtime distribution value; "
+                f"declare ({name} : Nat) as a runtime program parameter to use a count",
+                code="qiec-program",
+            )
         morphism = self._program_morphisms.get(name)
-        if morphism is not None and constraint == "sampleable":
-            return self._morphism_distribution(morphism, name, scope, state, node)
+        if constraint == "sampleable":
+            if morphism is None and name in self._program_lets:
+                try:
+                    resolved = resolve_step_dist(
+                        name,
+                        None,
+                        morphisms=self._program_morphisms,
+                        lets=self._program_lets,
+                        family_registry=frozenset(self.distribution_families),
+                        target="qvr-qiec",
+                        native_kernel=True,
+                    )
+                except StepResolutionError as error:
+                    self._fail(
+                        node,
+                        error.detail,
+                        code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
+                    )
+                morphism = self._program_morphisms.get(resolved.original_morphism_name)
+            if morphism is not None:
+                return self._morphism_distribution(morphism, name, scope, state, node)
         if rank > 0 and not plate.batch and (plate.empty or extents is not None):
             # A draw with no batch axes reads the input as one tensor over
             # the parameter's own axes. An axis the draw does not fix is a
@@ -7953,6 +8760,13 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         """
         if isinstance(term, IndexVariable) and term.identity is None:
             return state.extent_solution.get(term.name, term)
+        if isinstance(term, IndexSum) and state.extent_solution:
+            return substitute_index(
+                term,
+                StaticSubstitution(
+                    types=(), indices=tuple(state.extent_solution.items()), effects=()
+                ),
+            )
         return term
 
     def _unify_extents(
@@ -7965,9 +8779,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
 
         An open extent a free name's typing introduced equals whatever it
         meets: a declared object's size, a literal, or another extent.
-        Two extents neither of which is open, such as two different
-        literals, do not unify. Each fix is applied to every name bound
-        so far, so later uses read the fixed types.
+        Exact ground equations are solved jointly by the shared Nat solver;
+        symbolic aliases use capture-safe cancellation. Only open extents can
+        be fixed. Each substitution retypes names already bound in the scope.
 
         Parameters
         ----------
@@ -7985,22 +8799,33 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             Whether every pair unifies. Fixes found before a pair that
             does not unify are kept.
         """
-        changed = False
-        unified = True
-        for left, right in pairs:
-            left = self._resolved_extent(left, state)
-            right = self._resolved_extent(right, state)
-            if left == right:
-                continue
-            if isinstance(left, IndexVariable) and left.name in state.open_extents:
-                variable, term = left, right
-            elif isinstance(right, IndexVariable) and right.name in state.open_extents:
-                variable, term = right, left
-            else:
-                unified = False
-                continue
+        resolved = [
+            (self._resolved_extent(left, state), self._resolved_extent(right, state))
+            for left, right in pairs
+        ]
+        ground = []
+        for left, right in resolved:
+            if isinstance(left, IndexLiteral):
+                left, right = right, left
+            if (
+                isinstance(right, IndexLiteral)
+                and right.sort == NAT
+                and _index_variables_in((left,)) <= state.open_extents
+            ):
+                ground.append((left, int(right.value)))
+        try:
+            inferred = infer_index_extents(ground)
+        except ValueError, TypeError:
+            return False
+        changed = bool(inferred)
+        if inferred:
             fixed = StaticSubstitution(
-                types=(), indices=((variable.name, term),), effects=()
+                types=(),
+                indices=tuple(
+                    (name, IndexLiteral(value=value, sort=NAT))
+                    for name, value in inferred.items()
+                ),
+                effects=(),
             )
             state.extent_solution.update(
                 {
@@ -8008,11 +8833,47 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     for name, value in state.extent_solution.items()
                 }
             )
-            state.extent_solution[variable.name] = term
-            changed = True
+            state.extent_solution.update(dict(fixed.indices))
+        # Ground evidence can determine several open variables jointly. The
+        # existing symbolic cancellation then handles aliases and caller axes;
+        # revisit earlier equations after later aliases become known.
+        while True:
+            progressed = False
+            unresolved = False
+            for left, right in resolved:
+                left = self._resolved_extent(left, state)
+                right = self._resolved_extent(right, state)
+                if left == right:
+                    continue
+                solved = None
+                for name in sorted(
+                    _index_variables_in((left, right)) & state.open_extents
+                ):
+                    variable = IndexVariable(name=name, sort=NAT)
+                    term = solve_index_equation(left, right, variable)
+                    if term is not None:
+                        solved = variable, term
+                        break
+                if solved is None:
+                    unresolved = True
+                    continue
+                variable, term = solved
+                fixed = StaticSubstitution(
+                    types=(), indices=((variable.name, term),), effects=()
+                )
+                state.extent_solution.update(
+                    {
+                        name: substitute_index(value, fixed)
+                        for name, value in state.extent_solution.items()
+                    }
+                )
+                state.extent_solution[variable.name] = term
+                progressed = changed = True
+            if not progressed:
+                break
         if changed:
             self._apply_extent_solution(scope, state)
-        return unified
+        return not unresolved
 
     def _unify_types(
         self: _Elaborator,
@@ -8284,6 +9145,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         scope: _Scope,
         state: _ProgramState,
         node: object,
+        positions: tuple[tuple[PlateAxis, Local], ...] = (),
+        reserved_batch_ndims: int | None = None,
     ) -> Value:
         """Lower a list of distributions to a tensor of sampleables.
 
@@ -8297,6 +9160,10 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             The program's accumulating state.
         node : object
             The source node.
+        positions : tuple[tuple[PlateAxis, Local], ...]
+            Declared enclosing batch coordinates used by component parameters.
+        reserved_batch_ndims : int or None
+            Trailing intrinsic batch axes reserved by an enclosing Independent.
 
         Returns
         -------
@@ -8315,13 +9182,31 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         items: list[Value] = []
         for item in argument.items:
-            if not isinstance(item, DrawArgDist):
+            if isinstance(item, DrawArgDist):
+                lowered = self._nested_distribution(
+                    item,
+                    scope,
+                    state,
+                    node,
+                    positions=positions,
+                    reserved_batch_ndims=reserved_batch_ndims,
+                )
+            elif isinstance(item, DrawArgName):
+                lowered = self._draw_argument(
+                    item,
+                    self.distribution_families["Mixture"].parameter("component"),
+                    PlateShape(batch=tuple(axis for axis, _ in positions)),
+                    scope,
+                    state,
+                    node,
+                )
+            else:
                 self._fail(
                     node,
                     "every component of a mixture must be a distribution",
                     code="qiec-program",
                 )
-            items.append(self._nested_distribution(item, scope, state, node))
+            items.append(lowered)
         context = scope.context()
         types = [self._value_type(item, context, node) for item in items]
         if any(item != types[0] for item in types):
@@ -8331,7 +9216,15 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             elements = {sampled_element(item) for item in types}
             if elements == {INT, REAL}:
                 items = [
-                    self._nested_distribution(item, scope, state, node, element=INT)
+                    self._nested_distribution(
+                        item,
+                        scope,
+                        state,
+                        node,
+                        element=INT,
+                        positions=positions,
+                        reserved_batch_ndims=reserved_batch_ndims,
+                    )
                     if isinstance(item, DrawArgDist)
                     and item.family == "PointMass"
                     and sampled_element(self._value_type(lowered, context, node))
@@ -8356,6 +9249,8 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         state: _ProgramState,
         node: object,
         element: TypeApplication | None = None,
+        positions: tuple[tuple[PlateAxis, Local], ...] = (),
+        reserved_batch_ndims: int | None = None,
     ) -> DistributionValue:
         """Lower a nested family application in argument position.
 
@@ -8373,6 +9268,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             The element type an atom's value is read at, for a
             ``PointMass`` whose siblings fix it; ``None`` reads the
             family's own.
+        positions : tuple[tuple[PlateAxis, Local], ...]
+            Declared enclosing batch coordinates. Only parameter dimensions
+            preceding each family's intrinsic rank are gathered at them.
+        reserved_batch_ndims : int or None
+            Minimum number of trailing base batch dimensions reserved by an
+            enclosing Independent. None preserves ordinary scalar-call rules.
 
         Returns
         -------
@@ -8384,41 +9285,43 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         QiecDiagnosticError
             If the family is unknown.
         """
-        record = FAMILIES.get(OPERATOR_ALIASES.get(argument.family, argument.family))
+        record = self.distribution_families.get(
+            OPERATOR_ALIASES.get(argument.family, argument.family)
+        )
         if record is None:
             self._fail(
                 node,
                 f"family:{argument.family}: not in the semantic family registry",
                 code="qiec-program",
             )
-        schemas = family_parameterizations(argument.family, record.parameter_names)
-        schema_text = render_parameterizations(schemas)
-        if any(not isinstance(item, DrawArgNamed) for item in argument.args):
-            self._fail(
-                node,
-                f"family {argument.family!r} arguments are keyword-only; "
-                f"use one complete schema: {schema_text}",
-                code="qiec-program",
+        try:
+            bound = bind_family_arguments(
+                argument.family,
+                argument.args,
+                record.parameter_names,
+                allow_defaults=False,
             )
-        source = {item.parameter: item.value for item in argument.args}
-        if len(source) != len(argument.args):
-            self._fail(
-                node,
-                f"family {argument.family!r} is given a parameter twice",
-                code="qiec-program",
-            )
-        selected = next(
-            (schema for schema in schemas if set(schema) == set(source)), None
-        )
-        if selected is None:
-            self._fail(
-                node,
-                f"family {argument.family!r} requires exactly one complete "
-                f"parameter schema {schema_text}; got ({', '.join(source)})",
-                code="qiec-program",
-            )
+        except TypeError as error:
+            self._fail(node, str(error), code="qiec-program")
+        reserve = reserved_batch_ndims
+        if record.name == "Independent":
+            from quivers._independent import independent_ndims
+
+            raw_count = dict(bound).get("reinterpreted_batch_ndims")
+            if not isinstance(raw_count, DrawArgScalar):
+                self._fail(
+                    node,
+                    "Independent requires a static integer reinterpreted_batch_ndims",
+                    code="qiec-distribution",
+                )
+            try:
+                count = independent_ndims(raw_count.value)
+            except (TypeError, ValueError) as error:
+                self._fail(node, str(error), code="qiec-distribution")
+            reserve = count + (reserved_batch_ndims or 0)
         arguments = []
-        for parameter_name in selected:
+        intrinsic_batch: tuple[IndexTerm, ...] = ()
+        for parameter_name, parameter_argument in bound:
             try:
                 parameter = _semantic_family_parameter(
                     record, parameter_name, argument.family
@@ -8429,21 +9332,96 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     f"family {record.name!r} has no parameter {parameter_name!r}",
                     code="qiec-program",
                 )
-            arguments.append(
-                (
-                    parameter.name,
-                    self._draw_argument(
-                        source[parameter_name],
-                        _ScalarParameter(element)
-                        if element is not None and record.name == "PointMass"
-                        else parameter,
-                        PlateShape(),
-                        scope,
-                        state,
-                        node,
-                    ),
+            if (
+                isinstance(parameter_argument, DrawArgDist)
+                and parameter.constraint == "sampleable"
+            ):
+                lowered = self._nested_distribution(
+                    parameter_argument,
+                    scope,
+                    state,
+                    node,
+                    positions=positions,
+                    reserved_batch_ndims=reserve,
                 )
+            elif (
+                isinstance(parameter_argument, DrawArgList)
+                and parameter.constraint == "sampleable"
+            ):
+                lowered = self._distribution_list(
+                    parameter_argument,
+                    scope,
+                    state,
+                    node,
+                    positions=positions,
+                    reserved_batch_ndims=reserve,
+                )
+            else:
+                lowered = self._draw_argument(
+                    parameter_argument,
+                    _ScalarParameter(element)
+                    if element is not None and record.name == "PointMass"
+                    else parameter,
+                    PlateShape(batch=tuple(axis for axis, _ in positions)),
+                    scope,
+                    state,
+                    node,
+                )
+                shape = tensor_shape(self._value_type(lowered, scope.context(), node))
+                leading = len(shape[1]) - parameter.rank if shape is not None else 0
+                consumed = leading
+                if reserve is not None and shape is not None:
+                    from quivers._independent import reserved_parameter_axes
+
+                    consumed, _ = reserved_parameter_axes(
+                        tuple(shape[1]), parameter.rank, len(positions), reserve
+                    )
+                if consumed > 0 and positions:
+                    assert shape is not None
+                    axes = tuple(axis.size for axis, _ in positions)
+                    if (
+                        consumed > len(axes)
+                        or tuple(shape[1][:consumed]) != axes[-consumed:]
+                    ):
+                        self._fail(
+                            node,
+                            f"parameter {parameter_name!r} of {record.name!r} has batch axes that do not follow the declared plate",
+                            code="qiec-distribution",
+                        )
+                    for _, position in positions[-consumed:]:
+                        assert shape is not None
+                        lowered = Gather(
+                            value=lowered,
+                            index=Var(local=position),
+                            result_type=tensor_type(shape[0], shape[1][1:])
+                            if len(shape[1]) > 1
+                            else shape[0],
+                        )
+                        shape = tensor_shape(
+                            self._value_type(lowered, scope.context(), node)
+                        )
+                if (
+                    reserve is not None
+                    and not record.compositional
+                    and shape is not None
+                ):
+                    residual = tuple(shape[1][: len(shape[1]) - parameter.rank])
+                    if residual:
+                        shorter, longer = sorted((intrinsic_batch, residual), key=len)
+                        if shorter and longer[-len(shorter) :] != shorter:
+                            self._fail(
+                                node,
+                                "Independent base parameters have incompatible batch axes",
+                                code="qiec-distribution",
+                            )
+                        intrinsic_batch = longer
+            arguments.append((parameter.name, lowered))
+        intrinsic_plate = PlateShape(
+            batch=tuple(
+                PlateAxis(name=f"__independent_batch_{i}", size=extent)
+                for i, extent in enumerate(intrinsic_batch)
             )
+        )
         provisional = DistributionValue(
             family=record.id,
             name=record.name,
@@ -8455,6 +9433,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                 "distribution",
                 node,
             ),
+            plate=intrinsic_plate,
         )
         return DistributionValue(
             family=record.id,
@@ -8462,6 +9441,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             arguments=tuple(arguments),
             result_type=self._plated_type(provisional, scope, node),
             origin=provisional.origin,
+            plate=intrinsic_plate,
         )
 
     def _morphism_distribution(
@@ -8497,18 +9477,52 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         QiecDiagnosticError
             If the morphism has no distribution initializer.
         """
+        family = _bare_init_family(morphism)
+        if family is not None and self._conditional_map(morphism, family):
+            try:
+                origin = resolve_step_dist(
+                    name,
+                    None,
+                    morphisms=self._program_morphisms,
+                    lets=self._program_lets,
+                    family_registry=frozenset(self.distribution_families),
+                    target="qvr-qiec",
+                    native_kernel=True,
+                )
+            except StepResolutionError as error:
+                self._fail(
+                    node,
+                    error.detail,
+                    code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
+                )
+            # A sampleable value retains exactly the ordinary named kernel's
+            # conditioning inputs and explicit parameter-map telescope.
+            step = SampleStep(
+                vars=("__sampleable_value",),
+                morphism=origin.original_morphism_name,
+                args=None,
+                line=getattr(node, "line", 0),
+                col=getattr(node, "col", 0),
+            )
+            return self._step_distribution(
+                step, scope, state, f"__sampleable_{origin.original_morphism_name}"
+            )
         try:
             resolved = resolve_step_dist(
                 name,
                 None,
                 morphisms=self._program_morphisms,
                 lets=self._program_lets,
-                family_registry=frozenset(FAMILIES),
+                family_registry=frozenset(self.distribution_families),
                 target="qvr-qiec",
             )
         except StepResolutionError as error:
-            self._fail(node, error.detail, code="qiec-program")
-        record = FAMILIES.get(resolved.family)
+            self._fail(
+                node,
+                error.detail,
+                code=GAP_CODE if _is_gap(error.kinds) else "qiec-program",
+            )
+        record = self.distribution_families.get(resolved.family)
         if record is None:
             self._fail(
                 node,
@@ -8517,28 +9531,14 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
         init = morphism.init_family
         if init is not None and init.args:
-            schemas = family_parameterizations(init.family, record.parameter_names)
-            schema_text = render_parameterizations(schemas)
-            if any(not isinstance(item, DrawArgNamed) for item in init.args):
-                self._fail(
-                    node,
-                    f"family {record.name!r} arguments are keyword-only; "
-                    f"use one complete schema: {schema_text}",
-                    code="qiec-program",
+            try:
+                bound = bind_family_arguments(
+                    init.family, init.args, record.parameter_names, allow_defaults=False
                 )
-            source = {item.parameter: item.value for item in init.args}
-            selected = next(
-                (schema for schema in schemas if set(schema) == set(source)), None
-            )
-            if selected is None or len(source) != len(init.args):
-                self._fail(
-                    node,
-                    f"family {record.name!r} requires exactly one complete "
-                    f"parameter schema {schema_text}",
-                    code="qiec-program",
-                )
+            except TypeError as error:
+                self._fail(node, str(error), code="qiec-program")
             arguments = []
-            for parameter_name in selected:
+            for parameter_name, parameter_argument in bound:
                 parameter = _semantic_family_parameter(
                     record, parameter_name, init.family
                 )
@@ -8546,7 +9546,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
                     (
                         parameter.name,
                         self._draw_argument(
-                            source[parameter_name],
+                            parameter_argument,
                             parameter,
                             PlateShape(),
                             scope,
@@ -9941,6 +10941,8 @@ class _ProgramState(QiecModel):
         The program.
     parameters
         The computation's parameters with their roles, in order.
+    parameter_constraints
+        Additional restrictions on external inputs and proven internal aliases.
     sites
         The probabilistic steps seen so far.
     helpers
@@ -10017,6 +11019,12 @@ class _ProgramState(QiecModel):
     parameters: list[tuple[str, ParameterRole]] = dx.field(
         default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    parameter_constraints: dict[str, Literal["nonnegative"]] = dx.field(
+        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    declared_data: set[str] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     sites: list[ProgramSite] = dx.field(
         default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
@@ -10040,6 +11048,9 @@ class _ProgramState(QiecModel):
     )
     current_site_cell: list[str] = dx.field(
         default_factory=lambda: [""], opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    static_binders: list[TelescopeBinder] = dx.field(
+        default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     extents: dict[str, IndexBinder] = dx.field(
         default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
@@ -10084,6 +11095,64 @@ class _ProgramState(QiecModel):
     score: NamedEffectInstance = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
 
 
+def _program_extent_mentions(
+    roots: Sequence[object], objects: Mapping[str, ObjectInfo]
+) -> frozenset[str]:
+    """Find extents this entry actually uses, without capturing other entries.
+
+    Parameters
+    ----------
+    roots : Sequence[object]
+        Checked body, interface types, effect row and source domain/codomain.
+    objects : Mapping[str, ObjectInfo]
+        Module object metadata resolving source object names.
+
+    Returns
+    -------
+    frozenset[str]
+        Unskolemized index names referenced by this entry. Traversal visits
+        shared kernel records once per bound-index scope and ignores literal
+        data buffers.
+    """
+    from quivers.qiec.terms import CaseMotive
+
+    found: set[str] = set()
+    pending = [(root, frozenset()) for root in roots]
+    seen: set[tuple[int, frozenset[str]]] = set()
+    while pending:
+        node, bound = pending.pop()
+        if isinstance(node, IndexVariable):
+            if node.identity is None and node.name not in bound:
+                found.add(node.name)
+        elif isinstance(node, TypeName):
+            info = objects.get(node.name)
+            if info is not None and isinstance(info.extent, IndexVariable):
+                pending.append((info.extent, bound))
+        elif isinstance(node, tuple | list):
+            pending.extend((item, bound) for item in node)
+        elif isinstance(node, Mapping):
+            pending.extend((item, bound) for item in node.values())
+        elif isinstance(node, dx.Model):
+            key = (id(node), bound)
+            if key in seen:
+                continue
+            seen.add(key)
+            if isinstance(node, CaseMotive):
+                pending.append(
+                    (node.result_type, bound | {binder.name for binder in node.indices})
+                )
+                continue
+            fields = (
+                ("type",) if isinstance(node, LiteralValue) else node.__field_specs__
+            )
+            pending.extend(
+                (getattr(node, name), bound)
+                for name in fields
+                if name not in {"origin", "tag", "identity"}
+            )
+    return frozenset(found)
+
+
 def _index_variables_in(terms: Sequence[StaticArgument]) -> frozenset[str]:
     """The names of every index variable a set of static terms mentions.
 
@@ -10107,6 +11176,8 @@ def _index_variables_in(terms: Sequence[StaticArgument]) -> frozenset[str]:
             pending.extend(term.dimensions)
         elif isinstance(term, IndexVariable):
             found.add(term.name)
+        elif isinstance(term, IndexSum):
+            pending.extend(term.terms)
     return frozenset(found)
 
 
@@ -10125,19 +11196,82 @@ def _bind_extents(
         The bindings found so far, extended in place; a variable already
         bound keeps its first binding.
     """
-    if not isinstance(parameter, TypeApplication) or not isinstance(
-        argument, TypeApplication
-    ):
-        return
-    for expected, actual in zip(parameter.arguments, argument.arguments):
-        if isinstance(expected, ShapeIndex) and isinstance(actual, ShapeIndex):
-            for dimension, extent in zip(expected.dimensions, actual.dimensions):
-                if isinstance(dimension, IndexVariable):
-                    bindings.setdefault(dimension.name, extent)
-        elif isinstance(expected, TypeApplication | TypeVariable) and isinstance(
-            actual, TypeApplication | TypeVariable
+    pairs: list[tuple[IndexTerm, IndexTerm]] = []
+    pending = [(parameter, argument)]
+    while pending:
+        expected_type, actual_type = pending.pop()
+        if not isinstance(expected_type, TypeApplication) or not isinstance(
+            actual_type, TypeApplication
         ):
-            _bind_extents(expected, actual, bindings)
+            continue
+        for expected, actual in zip(expected_type.arguments, actual_type.arguments):
+            if isinstance(expected, ShapeIndex) and isinstance(actual, ShapeIndex):
+                pairs.extend(zip(expected.dimensions, actual.dimensions))
+            elif isinstance(expected, TypeApplication | TypeVariable) and isinstance(
+                actual, TypeApplication | TypeVariable
+            ):
+                pending.append((expected, actual))
+    # Callee binders and caller dimensions can share a display name while
+    # denoting different lexical variables. Freshen only the formal side
+    # before applying the shared equation solver.
+    names = sorted(_index_variables_in((parameter,)) - bindings.keys())
+    occupied = set(_index_variables_in((argument,))) | set(bindings)
+    fresh: dict[str, str] = {}
+    for name in names:
+        candidate = f"__qvr_bind_extent${name}"
+        while candidate in occupied:
+            candidate += "$"
+        occupied.add(candidate)
+        fresh[name] = candidate
+    formal = StaticSubstitution(
+        indices=tuple(
+            (
+                *bindings.items(),
+                *(
+                    (name, IndexVariable(name=actual, sort=NAT))
+                    for name, actual in fresh.items()
+                ),
+            )
+        )
+    )
+    pairs = [(substitute_index(left, formal), right) for left, right in pairs]
+    closed = [
+        (left, int(right.value))
+        for left, right in pairs
+        if isinstance(right, IndexLiteral) and right.sort == NAT
+    ]
+    solved = (
+        {
+            name: IndexLiteral(value=size, sort=NAT)
+            for name, size in infer_index_extents(closed).items()
+        }
+        if closed
+        else {}
+    )
+    # Every successful pass fixes a fresh variable, bounding this loop by
+    # the finite formal type rather than any runtime tensor dimension.
+    changed = True
+    while changed:
+        changed = False
+        substitution = StaticSubstitution(indices=tuple(solved.items()))
+        for dimension, extent in pairs:
+            dimension = substitute_index(dimension, substitution)
+            for name in sorted(
+                _index_variables_in((dimension,))
+                & (set(fresh.values()) - solved.keys())
+            ):
+                solution = solve_index_equation(
+                    dimension, extent, IndexVariable(name=name, sort=NAT)
+                )
+                if solution is not None:
+                    solved[name] = solution
+                    changed = True
+    substitution = StaticSubstitution(indices=tuple(solved.items()))
+    for name, local in fresh.items():
+        if local in solved:
+            term = substitute_index(solved[local], substitution)
+            if not (_index_variables_in((term,)) & set(fresh.values())):
+                bindings[name] = term
 
 
 def _is_entry_point(declaration: ProgramDecl) -> bool:
@@ -10161,12 +11295,12 @@ def _is_entry_point(declaration: ProgramDecl) -> bool:
     )
 
 
-def _extent(size: int | IndexVariable) -> IndexTerm:
+def _extent(size: int | IndexTerm) -> IndexTerm:
     """An axis extent as an index term.
 
     Parameters
     ----------
-    size : int | IndexVariable
+    size : int | IndexTerm
         The extent: a cardinality, or the index variable a program
         template binds for an object parameter.
 
@@ -10175,17 +11309,17 @@ def _extent(size: int | IndexVariable) -> IndexTerm:
     IndexTerm
         The literal of the nat sort, or the variable itself.
     """
-    if isinstance(size, IndexVariable):
-        return size
-    return IndexLiteral(value=size, sort=NAT)
+    if isinstance(size, int):
+        return IndexLiteral(value=size, sort=NAT)
+    return size
 
 
-def _fixed_extent(size: int | IndexVariable) -> int | None:
+def _fixed_extent(size: int | IndexTerm) -> int | None:
     """An extent as a cardinality, when it has one.
 
     Parameters
     ----------
-    size : int | IndexVariable
+    size : int | IndexTerm
         The extent.
 
     Returns
@@ -10194,7 +11328,11 @@ def _fixed_extent(size: int | IndexVariable) -> int | None:
         The cardinality, or ``None`` for the index variable of a
         template's object parameter, which no call has fixed yet.
     """
-    return None if isinstance(size, IndexVariable) else size
+    if isinstance(size, int):
+        return size
+    return (
+        int(size.value) if isinstance(size, IndexLiteral) and size.sort == NAT else None
+    )
 
 
 def _axis_name(expr: ObjectExpr) -> str:
@@ -10289,7 +11427,8 @@ def _draw_dependencies(step: SampleStep) -> set[str]:
         if isinstance(argument, DrawArgNamed):
             visit(argument.value)
         elif isinstance(argument, DrawArgName):
-            names.add(argument.text)
+            if argument.text not in {"true", "false"}:
+                names.add(argument.text)
         elif isinstance(argument, DrawArgIndex):
             names.add(argument.name)
             names.update(argument.indices)
@@ -10464,6 +11603,13 @@ def _object_expr_info(
         sizes = [_size_argument(item, table) for item in expr.args]
         if any(size is None for size in sizes):
             return None
+        if len(sizes) == 1 and isinstance(sizes[0], IndexVariable):
+            return ObjectInfo(
+                extent=sizes[0],
+                real_width=sizes[0] if expr.constructor == "Real" else None,
+            )
+        if any(isinstance(size, IndexVariable) for size in sizes):
+            return None
         extents = [cast(int, size) for size in sizes]
         if expr.constructor == "Real":
             width = 1
@@ -10488,7 +11634,9 @@ def _object_expr_info(
     return None
 
 
-def _size_argument(argument: str, table: Mapping[str, ObjectInfo]) -> int | None:
+def _size_argument(
+    argument: str, table: Mapping[str, ObjectInfo]
+) -> int | IndexTerm | None:
     """Resolve a constructor size argument.
 
     Parameters
@@ -10506,9 +11654,7 @@ def _size_argument(argument: str, table: Mapping[str, ObjectInfo]) -> int | None
     if argument.isdigit():
         return int(argument)
     prior = table.get(argument)
-    return (
-        None if prior is None or prior.extent is None else _fixed_extent(prior.extent)
-    )
+    return None if prior is None else prior.extent
 
 
 def _object_table(statements: Sequence[object]) -> dict[str, ObjectInfo]:
@@ -10533,7 +11679,14 @@ def _object_table(statements: Sequence[object]) -> dict[str, ObjectInfo]:
         if isinstance(statement.init, TypeEnumSet):
             info = ObjectInfo(extent=len(statement.init.elements), finite=True)
         elif isinstance(statement.init, TypeFromExpr):
-            info = _object_expr_info(statement.init.expr, table)
+            expr = statement.init.expr
+            if isinstance(expr, DiscreteConstructor) and expr.args == ("_",):
+                for name in statement.names:
+                    table[name] = ObjectInfo(
+                        extent=IndexVariable(name=name, sort=NAT), finite=True
+                    )
+                continue
+            info = _object_expr_info(expr, table)
         if info is None:
             continue
         for name in statement.names:

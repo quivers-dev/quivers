@@ -55,7 +55,7 @@ from quivers.continuous._matrix import PositiveDefiniteTransform
 from quivers.effects.subsample import refuse_subsampling
 from quivers.continuous.plate import PlateDraw
 from quivers.continuous.morphisms import ContinuousMorphism
-from quivers.continuous.program_steps import Call, Draw, Observe, Scan
+from quivers.continuous.program_steps import Call, Draw, Let, Observe, Scan, Score
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import ContinuousSpace
 from quivers.effects.trace_types import Trace
@@ -84,9 +84,9 @@ def _unconstrained_event_dim(
     thereof).
     """
     if support is _constraints.simplex:
-        return max(1, constrained_dim - 1)
+        return constrained_dim - 1
     if support is _constraints.corr_cholesky:
-        return max(1, constrained_dim * (constrained_dim - 1) // 2)
+        return constrained_dim * (constrained_dim - 1) // 2
     if support is _constraints.positive_definite:
         return constrained_dim * (constrained_dim + 1) // 2
     return constrained_dim
@@ -220,6 +220,9 @@ class LatentSite(ValueModel):
         product is ``plate_index_size``: ``(|A|,)`` for a plate over one
         axis, ``(|A|, |B|, |C|)`` for an independent array over
         several; ``()`` otherwise.
+    event_shape : tuple[int, ...]
+        Declared intrinsic event axes, including rectangular matrix events.
+        Empty retains the legacy scalar/support-derived geometry.
     """
 
     name: str
@@ -234,6 +237,7 @@ class LatentSite(ValueModel):
     flat_offset: int
     flat_length: int
     plate_shape: tuple[int, ...] = ()
+    event_shape: tuple[int, ...] = ()
 
     @dx.model_validator()
     def _check_runtime_fields(self) -> None:
@@ -252,10 +256,22 @@ class LatentSite(ValueModel):
             raise TypeError("latent bijector must be a torch distribution transform")
 
     @property
+    def is_scalar(self) -> bool:
+        """Whether one constrained event is a scalar, rather than a singleton tensor.
+
+        Returns
+        -------
+        bool
+            True only for a one-coordinate support without intrinsic event
+            axes. Singleton simplices and matrices retain their event axes.
+        """
+        return self.constrained_dim == 1 and self.support.event_dim == 0
+
+    @property
     def constrained_shape(self) -> tuple[int, ...]:
         """The shape of one draw of this site on its constrained
-        support (after the bijector, with a length-one event axis
-        squeezed off).
+        support after the bijector. Scalar supports omit an event
+        axis; singleton simplex and matrix supports retain theirs.
 
         Plate sites have shape ``(*plate_shape,)`` or
         ``(*plate_shape, d)``, ``(|A|,)`` or ``(|A|, d)`` for a plate
@@ -280,16 +296,12 @@ class LatentSite(ValueModel):
         matrix, so its event shape is ``(d, d)`` rather
         than ``(d,)``.
         """
-        event: tuple[int, ...]
-        if self.support in (_constraints.corr_cholesky, _constraints.positive_definite):
-            event = (self.constrained_dim, self.constrained_dim)
-        elif self.constrained_dim == 1:
-            event = ()
-        else:
-            event = (self.constrained_dim,)
-        if self.is_plate:
-            return (*(self.plate_shape or (self.plate_index_size,)), *event)
-        return event
+        return _constrained_shape(
+            self.support,
+            self.constrained_dim,
+            self.plate_shape or ((self.plate_index_size,) if self.is_plate else ()),
+            self.event_shape,
+        )
 
     @property
     def unconstrained_shape(self) -> tuple[int, ...]:
@@ -298,6 +310,206 @@ class LatentSite(ValueModel):
         if self.is_plate:
             return (self.plate_index_size, self.unconstrained_dim)
         return (self.unconstrained_dim,)
+
+    def constrain(self, value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Map flat site coordinates to the declared structured event.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            Site unconstrained coordinates, optionally preceded by sample/run axes.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            Structured constrained values and the transform-native log Jacobian.
+            Only support event axes are reduced by an event-aware transform.
+
+        Raises
+        ------
+        ValueError
+            If the trailing coordinates disagree with the declared site layout.
+        """
+        width = len(self.unconstrained_shape)
+        if tuple(value.shape[-width:]) != self.unconstrained_shape:
+            raise ValueError(
+                f"unconstrained site {self.name!r} requires trailing shape {self.unconstrained_shape}"
+            )
+        leading = value.shape[:-width]
+        transform_shape = (
+            self.unconstrained_shape
+            if self.is_scalar
+            else self.bijector.inverse_shape(torch.Size(self.constrained_shape))
+        )
+        structured = value.reshape((*leading, *transform_shape))
+        result = _apply_transform(self.bijector, structured)
+        log_det = self.bijector.log_abs_det_jacobian(structured, result)
+        return result.reshape((*leading, *self.constrained_shape)), log_det
+
+    def unconstrain(self, value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Invert a declared structured event into flat site coordinates.
+
+        Parameters
+        ----------
+        value : torch.Tensor
+            Constrained event, optionally preceded by sample/run axes.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            Flat site coordinates and the transform-native inverse log Jacobian.
+
+        Raises
+        ------
+        ValueError
+            If the event's trailing axes disagree with its declared shape.
+        """
+        width = len(self.constrained_shape)
+        if width and tuple(value.shape[-width:]) != self.constrained_shape:
+            raise ValueError(
+                f"constrained site {self.name!r} requires trailing shape {self.constrained_shape}"
+            )
+        leading = value.shape[:-width] if width else value.shape
+        structured = (
+            value.reshape((*leading, *self.unconstrained_shape))
+            if self.is_scalar
+            else value
+        )
+        result = _apply_transform(self.bijector.inv, structured)
+        log_det = self.bijector.inv.log_abs_det_jacobian(structured, result)
+        return result.reshape((*leading, *self.unconstrained_shape)), log_det
+
+
+def _constrained_shape(
+    support: _constraints.Constraint,
+    dimension: int,
+    plate_shape: tuple[int, ...],
+    event_shape: tuple[int, ...] = (),
+) -> tuple[int, ...]:
+    """Retain declared scalar, intrinsic-event, and plate axes without a bijector.
+
+    Parameters
+    ----------
+    support : torch.distributions.constraints.Constraint
+        Declared scalar or intrinsic-event support.
+    dimension : int
+        Event width, or matrix order for matrix-valued support.
+    plate_shape : tuple[int, ...]
+        Declared independent plate extents.
+    event_shape : tuple[int, ...]
+        Declared intrinsic event axes, or empty for support-derived geometry.
+
+    Returns
+    -------
+    tuple[int, ...]
+        One constrained draw's plate and event axes.
+    """
+    if support in (_constraints.corr_cholesky, _constraints.positive_definite):
+        event = (dimension, dimension)
+    elif dimension == 1 and support.event_dim == 0:
+        event = ()
+    else:
+        event = event_shape or (dimension,)
+    return (*plate_shape, *event)
+
+
+def _site_geometry(
+    morphism: ContinuousMorphism, names: int
+) -> tuple[_constraints.Constraint, int, int, tuple[int, ...], tuple[int, ...]]:
+    """Read declared event geometry independently of continuous support transforms.
+
+    Parameters
+    ----------
+    morphism : ContinuousMorphism
+        Native drawing law, optionally plated.
+    names : int
+        Number of evenly destructured variable bindings.
+
+    Returns
+    -------
+    tuple
+        Support, event width, flattened plate size, plate axes, and event axes.
+    """
+    plated = isinstance(morphism, PlateDraw)
+    law = morphism.family if plated else morphism
+    codomain = law.codomain
+    event = codomain.event_shape if isinstance(codomain, ContinuousSpace) else ()
+    # Destructuring partitions the final output axis, as trace extraction does.
+    if names > 1 and event:
+        if event[-1] % names:
+            raise ValueError("latent destructuring must divide the final event axis")
+        event = (*event[:-1], event[-1] // names)
+    support = law.support
+    dimension = max(1, math.prod(event))
+    if (
+        support in (_constraints.corr_cholesky, _constraints.positive_definite)
+        and len(event) > 1
+    ):
+        if event[-2] != event[-1]:
+            raise ValueError("matrix support requires a square intrinsic event")
+        dimension = event[-1]
+    return (
+        support,
+        dimension,
+        morphism.index_size if plated else 0,
+        morphism.index_shape if plated else (),
+        event,
+    )
+
+
+def _trace_latent_values(
+    recorded: Trace,
+    *,
+    include_observed: bool = False,
+    selected: frozenset[str] | None = None,
+) -> dict[str, torch.Tensor]:
+    """Extract one constrained draw, including discrete and dynamically scanned sites.
+
+    The same declared geometry used by continuous inference determines event
+    axes; discrete priors require no artificial continuous bijector.
+
+    Parameters
+    ----------
+    recorded : Trace
+        One program execution, including dynamic scan addresses.
+    include_observed : bool
+        Include conditioned or intervened values for explicitly selected
+        registry sites; independent ancestral extraction omits these sites.
+    selected : frozenset[str] or None
+        Restrict extraction to named sites, or retain every latent site.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        Detached values at their declared constrained shape.
+    """
+    values: dict[str, torch.Tensor] = {}
+    for label, record in recorded.sites.items():
+        if (
+            record.morphism is None
+            or record.is_deterministic
+            and not (include_observed and selected is not None)
+            or record.is_observed
+            and not include_observed
+        ):
+            continue
+        names = label.split(",")
+        if selected is not None and not selected.intersection(names):
+            continue
+        support, dimension, size, plate, event = _site_geometry(
+            record.morphism, len(names)
+        )
+        shape = _constrained_shape(
+            support, dimension, plate or ((size,) if size else ()), event
+        )
+        parts = (
+            record.value.chunk(len(names), dim=-1)
+            if len(names) > 1
+            else (record.value,)
+        )
+        for name, value in zip(names, parts, strict=True):
+            values[name] = value.detach().reshape(shape)
+    return values
 
 
 def _latent_site(
@@ -330,27 +542,9 @@ def _latent_site(
         The site.
     """
     is_plate = isinstance(morphism, PlateDraw)
-    if is_plate:
-        plate = cast(PlateDraw, morphism)
-        inner = plate.family
-        inner_cod = inner.codomain
-        if isinstance(inner_cod, ContinuousSpace):
-            constrained_dim = max(1, math.prod(inner_cod.event_shape))
-        else:
-            constrained_dim = 1
-        support = inner.support
-        plate_index_size = plate.index_size
-        plate_shape = plate.index_shape
-    else:
-        cod = morphism.codomain
-        if isinstance(cod, ContinuousSpace):
-            total_dim = math.prod(cod.event_shape)
-            constrained_dim = max(1, total_dim // max(1, names))
-        else:
-            constrained_dim = 1
-        support = morphism.support
-        plate_index_size = 0
-        plate_shape = ()
+    support, constrained_dim, plate_index_size, plate_shape, event_shape = (
+        _site_geometry(morphism, names)
+    )
     unconstrained_dim = _unconstrained_event_dim(support, constrained_dim)
     flat_length = (
         plate_index_size * unconstrained_dim if is_plate else unconstrained_dim
@@ -368,6 +562,7 @@ def _latent_site(
         flat_offset=flat_offset,
         flat_length=flat_length,
         plate_shape=plate_shape,
+        event_shape=event_shape,
     )
 
 
@@ -526,7 +721,9 @@ class LatentRegistry:
             Variable names treated as observations. Sample sites
             with names in this set are skipped (their values come
             from the conditioning data dict at trace time, not
-            from a guide).
+            from a guide). An observation of an earlier lexical binding
+            is also skipped: its value is computed by the model, rather
+            than supplied by a guide.
 
         Returns
         -------
@@ -544,12 +741,19 @@ class LatentRegistry:
             )
         sites: dict[str, LatentSite] = {}
         flat_cursor = 0
+        bound = set(model._params or ())
+        computed_observed: set[str] = set()
 
         for spec_idx, spec in enumerate(model.steps):
+            if isinstance(spec, Let | Score | Call | Scan):
+                bound.add(spec.name)
+                continue
             if not isinstance(spec, Draw | Observe):
                 continue
             for var in spec.names:
-                if var in observed:
+                if var in observed or isinstance(spec, Observe) and var in bound:
+                    if var not in sites:
+                        computed_observed.add(var)
                     continue
                 morph = model.step_module(spec)
                 if morph is None:
@@ -566,8 +770,9 @@ class LatentRegistry:
                 )
                 sites[var] = site
                 flat_cursor += site.flat_length
+            bound.update(spec.names)
 
-        return cls(sites, observed, model)
+        return cls(sites, observed | computed_observed, model)
 
     @classmethod
     def from_trace(
@@ -787,12 +992,9 @@ class LatentRegistry:
                 raise KeyError(
                     f"LatentRegistry.to_constrained: missing site {site.name!r}"
                 )
-            z = unconstrained[site.name]
-            v = _apply_transform(site.bijector, z)
-            log_abs_dets[site.name] = site.bijector.log_abs_det_jacobian(z, v)
-            if site.constrained_dim == 1 and v.dim() >= 1 and v.shape[-1] == 1:
-                v = v.squeeze(-1)
-            constrained[site.name] = v
+            constrained[site.name], log_abs_dets[site.name] = site.constrain(
+                unconstrained[site.name]
+            )
         return constrained, log_abs_dets
 
     def to_unconstrained(
@@ -806,12 +1008,9 @@ class LatentRegistry:
                 raise KeyError(
                     f"LatentRegistry.to_unconstrained: missing site {site.name!r}"
                 )
-            v = constrained[site.name]
-            if site.constrained_dim == 1 and v.dim() == (1 if site.is_plate else 0):
-                v = v.unsqueeze(-1)
-            z = _apply_transform(site.bijector.inv, v)
-            log_abs_dets[site.name] = site.bijector.inv.log_abs_det_jacobian(v, z)
-            unconstrained[site.name] = z
+            unconstrained[site.name], log_abs_dets[site.name] = site.unconstrain(
+                constrained[site.name]
+            )
         return unconstrained, log_abs_dets
 
     def trace_values(
@@ -894,20 +1093,12 @@ class LatentRegistry:
         ValueError
             If the run did not reach a latent site.
         """
+        reached = _trace_latent_values(
+            run, include_observed=True, selected=frozenset(self._sites)
+        )
         out: dict[str, torch.Tensor] = {}
         for name, site in self._sites.items():
-            record = run.sites.get(name)
-            value: torch.Tensor | None = None
-            if record is not None:
-                value = record.value.detach()
-            else:
-                for label, candidate in run.sites.items():
-                    names = label.split(",")
-                    if name in names:
-                        value = candidate.value.detach().chunk(len(names), dim=-1)[
-                            names.index(name)
-                        ]
-                        break
+            value = reached.get(name)
             if value is None:
                 raise ValueError(
                     f"LatentRegistry.trace_draw: the run did not reach the latent "

@@ -7,7 +7,9 @@ support, output representation, and constructors, and is registered in
 conditional families dispatch on the registered specification, so registering a family with
 [`register_family`](#quivers.continuous.family_spec.register_family), and refreshing the inline
 tables with [`reload_inline_registry`](inline.md#quivers.continuous.inline.reload_inline_registry),
-makes it available to programs. A specification separates
+lets inline builders resolve its constructors. Checked QVR source must also
+support its parameter contract, and each renderer needs its own mapping;
+registration alone establishes neither capability. A specification separates
 [batch and event shapes](https://pyro.ai/examples/tensor_shapes.html#Distributions-shapes:-batch_shape-and-event_shape)
 [@pyroTensorShapes]: batch axes index independent distributions, and event axes belong to one
 jointly scored outcome. QVR states these roles with the

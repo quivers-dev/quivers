@@ -231,12 +231,13 @@ def _emit_binop(ctx: _JsLetCtx, expr: LetExprBinOp) -> tuple[str, str]:
 
 
 def _emit_unary(ctx: _JsLetCtx, expr: LetExprUnaryOp) -> tuple[str, str]:
-    """Emit a unary-minus `unary_expression` carrying its operand on
+    """Emit arithmetic or Boolean negation carrying its operand on
     the `argument` field edge."""
     operand_vid, operand_kind = _maybe_paren(ctx, _render(ctx, expr.operand))
     vid = ctx.v(ctx.fresh("uop"), "unary_expression")
-    ctx.constraint(vid, "field:operator", "-")
-    ctx.constraint(vid, "chose-alt-fingerprint", "-")
+    operator = "!" if expr.op == "not" else "-"
+    ctx.constraint(vid, "field:operator", operator)
+    ctx.constraint(vid, "chose-alt-fingerprint", operator)
     ctx.constraint(vid, "chose-alt-child-kinds", operand_kind)
     ctx.e(vid, operand_vid, "argument")
     return vid, "unary_expression"

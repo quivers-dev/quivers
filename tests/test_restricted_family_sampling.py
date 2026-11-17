@@ -163,7 +163,9 @@ def test_a_zero_truncated_count_draws_its_conditioned_mass() -> None:
 
 def test_a_restriction_too_small_to_reject_into_raises() -> None:
     restricted = Restrict(D.Poisson(0.01), low=40.0)
-    with pytest.raises(RuntimeError, match="stayed outside"):
+    with pytest.raises(
+        RuntimeError, match="failed to fill 4 coordinates after 10000 redraws"
+    ):
         restricted.sample(torch.Size((4,)))
 
 

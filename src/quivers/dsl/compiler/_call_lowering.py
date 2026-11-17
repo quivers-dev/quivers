@@ -36,7 +36,6 @@ from quivers.dsl.ast_nodes import (
     LetExprIndex,
     LetExprLambda,
     LetExprNode,
-    LetExprString,
     LetExprVar,
     LetFactorBinder,
     LetStep,
@@ -47,8 +46,15 @@ from quivers.dsl.ast_nodes import (
     TypeName,
 )
 from quivers.dsl.compiler._prelude import CompileError
-from quivers.dsl.let_expr_traversal import substitute_let_expr
-from quivers.qiec.canonical import tensor_shape, tensor_type
+from quivers.dsl.let_expr_traversal import substitute_let_expr, walk_let_expr
+from quivers.dsl.pure_builtins import BUILTIN_REGISTRY
+from quivers.qiec.families import FAMILIES, DistributionFamily
+from quivers.qiec.canonical import (
+    LOG_WEIGHT,
+    sampled_element,
+    tensor_shape,
+    tensor_type,
+)
 from quivers.qiec.kinds import NAT
 from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.terms import (
@@ -64,6 +70,7 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     LogDensity,
+    LogMass,
     NewInstance,
     Perform,
     Resume,
@@ -76,7 +83,6 @@ from quivers.qiec.terms import (
 from quivers.qiec.types import INT, REAL, IndexLiteral, TypeExpr
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pure_calls import (
-    LOG_PROB_CALL,
     CallNotLowered,
     _expression,
     _LetFloater,
@@ -136,7 +142,13 @@ class _Plate:
 
     @property
     def size(self) -> IndexLiteral:
-        """The extent as an index literal."""
+        """The extent as an index literal.
+
+        Returns
+        -------
+        IndexLiteral
+            The plate's checked finite extent.
+        """
         return IndexLiteral(value=self.extent, sort=NAT)
 
     def lifted_type(self, element: TypeExpr) -> TypeExpr:
@@ -185,8 +197,10 @@ class _Lowering:
         program: str,
         step: CallStep,
         plate: _Plate | None,
+        families: Mapping[str, DistributionFamily] = FAMILIES,
     ) -> None:
         self.computations = computations
+        self.families = families
         self.cards = cards
         self.occupied = occupied
         self.program = program
@@ -215,7 +229,9 @@ class _Lowering:
             If the value has no expression form.
         """
         try:
-            return _expression(value, self.cards, RUNTIME_TARGET, self.program)
+            return _expression(
+                value, self.cards, RUNTIME_TARGET, self.program, families=self.families
+            )
         except UnsupportedConstruct as error:
             raise CallNotLowered(
                 "binds a value the compiled runtime's let expressions have no "
@@ -298,6 +314,8 @@ class _Lowering:
         Value
             The read of the bound value.
         """
+        if sampled_element(type_) is not None:
+            return value
         if isinstance(value, Var | LiteralValue) and not self.per_item(value):
             return value
         if self.plate is None or not self.per_item(value):
@@ -667,7 +685,7 @@ class _Lowering:
         """
         if isinstance(value, LiteralValue) and isinstance(value.value, int | float):
             if not isinstance(value.value, bool):
-                return DrawArgScalar(value=float(value.value))
+                return DrawArgScalar(value=value.value)
         if isinstance(value, Var) and not self.per_item(value):
             return DrawArgName(text=value.local.name)
         if self.plate is not None and self.per_item(value):
@@ -772,35 +790,10 @@ class _Lowering:
         Returns
         -------
         LetExprNode
-            ``$log_prob("Family", value, "parameter", argument, ...)``,
-            entrywise over the iterations on a plated lowering.
-
-        Raises
-        ------
-        CallNotLowered
-            If the density is not of a family construction.
+            A query on the raw distribution value, entrywise over the
+            iterations on a plated lowering.
         """
-        sampleable = density.sampleable
-        if not isinstance(sampleable, DistributionValue):
-            raise CallNotLowered(
-                "scores the log density of a value that is not a family construction"
-            )
-        if sampleable.plate.batch and self.plate is not None:
-            raise CallNotLowered(
-                f"scores a plated {sampleable.name} density once per item, "
-                f"which a call lowers over one axis only"
-            )
-        arguments: list[LetExprNode] = [
-            LetExprString(value=sampleable.name),
-            self.expression(self.lifted(density.value, f"{hint}_value")),
-        ]
-        for parameter, value in sampleable.arguments:
-            arguments.append(LetExprString(value=parameter))
-            arguments.append(self.expression(self.lifted(value, f"{hint}_{parameter}")))
-        call = LetExprCall(func=LOG_PROB_CALL, args=tuple(arguments))
-        if sampleable.plate.batch or sampleable.plate.event:
-            return LetExprCall(func="sum", args=(call,))
-        return call
+        return self.expression(self.lifted(density, hint))
 
 
 def _value_type(value: Value) -> TypeExpr:
@@ -817,6 +810,8 @@ def _value_type(value: Value) -> TypeExpr:
         The value's recorded type; ``Real`` for a value that records
         none, which the lifting then treats as one entry per item.
     """
+    if isinstance(value, LogDensity | LogMass):
+        return LOG_WEIGHT
     for field in ("result_type", "type"):
         recorded = getattr(value, field, None)
         if recorded is not None and not isinstance(recorded, str):
@@ -826,30 +821,27 @@ def _value_type(value: Value) -> TypeExpr:
     return REAL
 
 
-def _binder_type(body: Computation | None, name: str) -> TypeExpr | None:
-    """The type a program's checked body gives one of its bindings.
+def _checked_bindings(body: Computation | None) -> dict[str, tuple[Local, Computation]]:
+    """Index checked bindings once for type and structural-value lookup.
 
     Parameters
     ----------
     body : Computation | None
         The body of the program's checked computation.
-    name : str
-        The binding's name.
 
     Returns
     -------
-    TypeExpr | None
-        The type of the first local of that name the body binds, or
-        ``None`` when the body or the binding is absent.
+    dict[str, tuple[Local, Computation]]
+        Each first matching local and its defining computation.
     """
     if body is None:
-        return None
+        return {}
+    bindings: dict[str, tuple[Local, Computation]] = {}
     pending: list[Computation] = [body]
     while pending:
         node = pending.pop()
         if isinstance(node, Bind):
-            if node.binder.name == name:
-                return node.binder.type
+            bindings.setdefault(node.binder.name, (node.binder, node.first))
             pending.append(node.first)
             pending.append(node.then)
         elif isinstance(node, If):
@@ -857,7 +849,35 @@ def _binder_type(body: Computation | None, name: str) -> TypeExpr | None:
             pending.append(node.otherwise)
         elif isinstance(node, Handle | NewInstance):
             pending.append(node.computation if isinstance(node, Handle) else node.body)
-    return None
+    return bindings
+
+
+def has_structural_lets(steps: tuple[ProgramStep, ...]) -> bool:
+    """Whether a program needs checked polymorphic builtin lowering.
+
+    Parameters
+    ----------
+    steps : tuple[ProgramStep, ...]
+        Program body and nested marginalization scopes.
+
+    Returns
+    -------
+    bool
+        Whether an authored structural query occurs in a let expression.
+    """
+    return any(
+        (isinstance(step, MarginalizeStep) and has_structural_lets(step.scope))
+        or (
+            isinstance(step, LetStep)
+            and any(
+                isinstance(node, LetExprCall)
+                and (spec := BUILTIN_REGISTRY.get(node.func)) is not None
+                and spec.qiec_form == "measure-query"
+                for node in walk_let_expr(step.value)
+            )
+        )
+        for step in steps
+    )
 
 
 class CallLowering:
@@ -884,6 +904,10 @@ class CallLowering:
     ) -> None:
         self.program = program
         self.module = module
+        self.families = {
+            **FAMILIES,
+            **{item.name: item for item in module.distribution_families},
+        }
         self.cards = cards
         self.occupied = occupied
         self.computations = {item.name: item for item in module.computations}
@@ -899,6 +923,8 @@ class CallLowering:
         )
         self.refusal: CompileError | None = None
         self.lambdas: dict[str, LetExprLambda] = {}
+        self.bindings = _checked_bindings(self.checked_body)
+        self.sampleables: dict[Local, Value] = {}
 
     def body(self, steps: tuple[ProgramStep, ...]) -> tuple[ProgramStep, ...]:
         """Lower every call a body makes, searching marginalization scopes.
@@ -915,7 +941,13 @@ class CallLowering:
         -------
         tuple[ProgramStep, ...]
             The body with every lowerable call replaced by its steps.
+
+        Raises
+        ------
+        CompileError
+            If checked structural-query metadata is unavailable.
         """
+        outer_sampleables = dict(self.sampleables)
         out: list[ProgramStep] = []
         for step in steps:
             if isinstance(step, MarginalizeStep) and step.scope:
@@ -923,6 +955,37 @@ class CallLowering:
                 continue
             if isinstance(step, LetStep) and isinstance(step.value, LetExprLambda):
                 self.lambdas[step.name] = step.value
+            binding = (
+                self.bindings.get(step.name) if isinstance(step, LetStep) else None
+            )
+            if (
+                binding is not None
+                and sampled_element(binding[0].type) is not None
+                and isinstance(binding[1], Return)
+            ):
+                self.sampleables[binding[0]] = replace_locals(
+                    binding[1].value, self.sampleables
+                )
+                continue
+            if isinstance(step, LetStep) and has_structural_lets((step,)):
+                if binding is None or not isinstance(binding[1], Return):
+                    raise CompileError(
+                        f"checked structural query binding {step.name!r} is unavailable",
+                        step.line,
+                        step.col,
+                    )
+                out.append(
+                    step.with_(
+                        value=_expression(
+                            replace_locals(binding[1].value, self.sampleables),
+                            self.cards,
+                            RUNTIME_TARGET,
+                            self.program,
+                            families=self.families,
+                        )
+                    )
+                )
+                continue
             if not isinstance(step, CallStep):
                 out.append(step)
                 continue
@@ -939,6 +1002,7 @@ class CallLowering:
                         step.col,
                     )
                 out.append(step)
+        self.sampleables = outer_sampleables
         return tuple(out)
 
     def call(self, step: CallStep) -> tuple[ProgramStep, ...]:
@@ -983,7 +1047,13 @@ class CallLowering:
                 f"`{callee.name}`, which takes {len(callee.parameters)}"
             )
         lowering = _Lowering(
-            self.computations, self.cards, self.occupied, self.program, step, None
+            self.computations,
+            self.cards,
+            self.occupied,
+            self.program,
+            step,
+            None,
+            families=self.families,
         )
         arguments: list[Value] = []
         for parameter, argument in zip(
@@ -996,7 +1066,8 @@ class CallLowering:
                 lowering.steps.append(
                     LetStep(name=name, value=argument, line=step.line, col=step.col)
                 )
-            arguments.append(Var(local=Local(name=name, type=parameter.type)))
+            actual = Var(local=Local(name=name, type=parameter.type))
+            arguments.append(replace_locals(actual, self.sampleables))
         result = lowering.call(
             callee, tuple(arguments), callee.type.result, step.name, ()
         )
@@ -1055,7 +1126,8 @@ class CallLowering:
                 f"passes static arguments to `{callee.name}`, which the "
                 f"compiled runtime does not instantiate in a call"
             )
-        result_type = _binder_type(self.checked_body, step.name)
+        binding = self.bindings.get(step.name)
+        result_type = binding[0].type if binding is not None else None
         shape = tensor_shape(result_type) if result_type is not None else None
         if shape is None or not shape[1] or not isinstance(shape[1][0], IndexLiteral):
             raise CallNotLowered(
@@ -1072,7 +1144,13 @@ class CallLowering:
         index = Local(name=_fresh(f"{step.name}_item", self.occupied), type=INT)
         plate = _Plate(axis, extent, index)
         lowering = _Lowering(
-            self.computations, self.cards, self.occupied, self.program, step, plate
+            self.computations,
+            self.cards,
+            self.occupied,
+            self.program,
+            step,
+            plate,
+            families=self.families,
         )
         if isinstance(source, LetExprVar):
             source_name = source.name

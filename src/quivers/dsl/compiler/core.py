@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from typing import cast
+
+import didactic.api as dx
 import torch.nn as nn
 from quivers.dsl.markov_chains import chain_cells
 from quivers.continuous.deterministic import LearnedFunction
 from quivers.core.algebras import PRODUCT_FUZZY, Algebra
-from quivers.continuous.morphisms import AnySpace
+from quivers.continuous.morphisms import AnySpace, ContinuousMorphism
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.checked_program import CheckedProgram
 from quivers.core.objects import SetObject
 from quivers.program import Program
 from quivers.dsl.ast_nodes import (
@@ -56,7 +60,10 @@ from quivers.dsl.qiec_lowering import (
     non_qiec_projection,
 )
 from quivers.qiec import QiecModule
+from quivers.family_catalog import FamilyCatalog
+from quivers.qiec.families import FAMILIES
 from quivers.qiec.terms import PlateAxis
+from quivers.qiec.programs import ProgramEntry
 from quivers.qiec.types import IndexLiteral
 from quivers.qiec.entries import EntryPoint, entry_point, entry_points
 from quivers.qiec.execution import ExecutionDiagnostic, ExecutionFailure
@@ -118,6 +125,8 @@ class Compiler(
         Whether to lower the checked QIEC projection. Tooling sets this to
         ``False`` only for its classic-compiler recovery pass after QIEC has
         already produced a diagnostic.
+    families : FamilyCatalog or None
+        Immutable custom family contracts and native implementations.
     """
 
     def __init__(
@@ -127,8 +136,12 @@ class Compiler(
         module_name: str | None = None,
         file_path: str = "<source>",
         lower_qiec: bool = True,
+        families: FamilyCatalog | None = None,
     ) -> None:
+        self._family_catalog = families
+        self._distribution_families = families if families is not None else FAMILIES
         self._qiec_module: QiecModule | None = None
+        self._deferred_statements: tuple[Statement, ...] = ()
         # The QIEC projection is lowered on first use, after the
         # statements' own checks when `compile` drives it, so a source
         # error the statement compiler names is reported by it.
@@ -175,6 +188,7 @@ class Compiler(
         # stored as their unsubstituted AST decl. Instantiated at each call
         # site by parameter substitution + α-renaming of internal latents.
         self._program_templates: dict[str, ProgramDecl] = {}
+        self._instantiated_program_contracts = {}
         # The located refusal of the first call each program keeps
         # because it cannot be lowered to compiled runtime steps.
         self._call_refusals: dict[str, CompileError] = {}
@@ -184,6 +198,11 @@ class Compiler(
         # The parameter spaces of the program being compiled, innermost
         # last: its host data and its lets, by name.
         self._parameter_space_stack: list[dict[str, AnySpace]] = []
+        # Nested latent kernels use the ordinary raw-network binding at
+        # each site; the scoped context is compile-time metadata only.
+        self._sampleable_context_stack: list[
+            dict[tuple[str, str], tuple[ContinuousMorphism, str]]
+        ] = []
         # The checked extents of the values the program being compiled
         # binds, innermost last, by name.
         self._value_extents_stack: list[dict[str, tuple[int, ...]]] = []
@@ -388,6 +407,7 @@ class Compiler(
                 module,
                 module_name=self._qiec_module_name,
                 file_path=self._qiec_file_path,
+                families=self._family_catalog,
             )
         except QiecDiagnosticError as error:
             if error.code != GAP_CODE:
@@ -397,6 +417,7 @@ class Compiler(
                 module_name=self._qiec_module_name,
                 file_path=self._qiec_file_path,
                 elaborate_programs=False,
+                families=self._family_catalog,
             ).with_(
                 gap=error.message,
             )
@@ -414,38 +435,11 @@ class Compiler(
         CompileError
             On semantic errors (undefined names, type mismatches, etc.).
         """
+        self._specialize_data_objects()
         for stmt in self._module.statements:
             self._compile_statement(stmt)
         qiec_module = self.qiec_module
-        if self._output_expr is None:
-            # A module may declare only structural artifacts
-            # (signatures, encoders, decoders, losses) with no
-            # exported morphism; the returned Program is a container
-            # carrying those artifacts.
-            program = Program(None)
-        elif isinstance(
-            self._output_expr, ExprIdent
-        ) and self._output_expr.name in getattr(self, "_program_templates", {}):
-            # The export names a parametric program template. A
-            # template has no root morphism on its own (a function
-            # ``Pi (p : P). Kern(dom(p), cod(p))`` rather than a
-            # single Kleisli arrow); the returned Program is a
-            # container holding the template, which the caller
-            # instantiates by attribute access.
-            tmpl_name = self._output_expr.name
-            program = Program(None)
-            invoker = self._make_template_invoker(tmpl_name)
-            program.templates = {tmpl_name: invoker}
-            # Convenience: ``program.<name>(...)`` works directly.
-            object.__setattr__(program, tmpl_name, invoker)
-        else:
-            root_morphism = self._compile_expr(self._output_expr)
-            program = Program(root_morphism)
-        # Exports after the first become named accessors on the compiled
-        # Program: ``export a`` then ``export b`` makes ``a`` the primary
-        # morphism (``program.morphism`` / ``program(...)``) and
-        # ``program.b`` the compiled form of the second.
-        self._attach_secondary_exports(program)
+        program = self._compile_exports()
         # Attach the compiler's deduction and posterior registries to
         # the Program so downstream callers can reach them after
         # `quivers.dsl.load(...)`.
@@ -480,6 +474,84 @@ class Compiler(
                 system.losses[name] = program.losses
         return program
 
+    def _compile_exports(self) -> Program:
+        """Resolve retained exports without recompiling their declarations.
+
+        Called after ordinary compilation or symbolic environment analysis.
+        Deferred statements have not entered the export registry, so their
+        generic expressions remain available for later specialization.
+
+        Returns
+        -------
+        Program
+            A container for the retained primary and secondary exports.
+
+        Raises
+        ------
+        CompileError
+            If a retained export names an unknown value or has an invalid type.
+        """
+        if self._output_expr is None:
+            # A module may declare only structural artifacts
+            # (signatures, encoders, decoders, losses) with no
+            # exported morphism; the returned Program is a container
+            # carrying those artifacts.
+            program = Program(None)
+        elif isinstance(
+            self._output_expr, ExprIdent
+        ) and self._output_expr.name in getattr(self, "_program_templates", {}):
+            # A scalar value interface also has a runtime root. Static
+            # interfaces remain families until their arguments are known;
+            # both expose named partial application beside the runtime root.
+            tmpl_name = self._output_expr.name
+            program = Program(self._morphisms.get(tmpl_name))
+            invoker = self._make_template_invoker(tmpl_name)
+            program.templates = {tmpl_name: invoker}
+            # Convenience: ``program.<name>(...)`` works directly.
+            object.__setattr__(program, tmpl_name, invoker)
+        else:
+            root_morphism = self._compile_expr(self._output_expr)
+            program = Program(root_morphism)
+        # Exports after the first become named accessors on the compiled
+        # Program: ``export a`` then ``export b`` makes ``a`` the primary
+        # morphism (``program.morphism`` / ``program(...)``) and
+        # ``program.b`` the compiled form of the second.
+        self._attach_secondary_exports(program)
+        return program
+
+    def _specialize_data_objects(self) -> None:
+        from quivers.dsl._data_inference import infer_data_objects
+
+        source = self._qiec_source if self._qiec_source is not None else self._module
+        resolved = infer_data_objects(
+            source,
+            getattr(self, "_data_bindings", {}),
+            checked_source=(source, self._qiec_module)
+            if self._qiec_module is not None
+            else None,
+            families=self._family_catalog,
+        )
+        if resolved is source:
+            return
+        self._qiec_module = None
+        if self._qiec_source is not None:
+            self._qiec_source = resolved
+            self._module = non_qiec_projection(resolved)
+        else:
+            self._module = resolved
+
+    def _reuse_checked_source(self, source: Module, checked: QiecModule) -> bool:
+        """Seed the lazy checked cache only when source expansion kept its identity."""
+        if self._qiec_source is not source:
+            return False
+        expected = (
+            self._family_catalog.definitions if self._family_catalog is not None else ()
+        )
+        if checked.distribution_families != expected:
+            return False
+        self._qiec_module = checked
+        return True
+
     def _attach_host_data_types(self, module: QiecModule) -> None:
         """Give each compiled program the checked types of its host data.
 
@@ -502,20 +574,32 @@ class Compiler(
         }
         for entry in module.entries:
             target = compiled.get(entry.name)
-            if not isinstance(target, MonadicProgram):
+            if not isinstance(target, MonadicProgram | CheckedProgram):
                 continue
-            target.host_data_types = {
-                parameter.name: parameter.type
-                for parameter in entry.parameters
-                if parameter.role in ("data", "index_map")
-            }
-            target.host_data_shared = frozenset(
-                parameter.name for parameter in entry.parameters if parameter.per_row
-            )
-            target.site_plates = {
-                site.name: _plate_axes(site.batch) for site in entry.sites
-            }
-            target.host_data_notes = passed_data_notes(module, entry.name)
+            self._attach_program_contract(target, module, entry)
+
+    def _attach_program_contract(
+        self,
+        target: MonadicProgram | CheckedProgram,
+        module: QiecModule,
+        entry: ProgramEntry,
+    ) -> None:
+        from quivers.dsl._data_inference import external_index_bounds
+
+        target.input_contract = entry
+        target.host_index_bounds = external_index_bounds(module, entry)
+        target.host_data_types = {
+            parameter.name: parameter.type
+            for parameter in entry.parameters
+            if parameter.role in ("data", "index_map", "observation", "scalar")
+        }
+        target.host_data_shared = frozenset(
+            parameter.name for parameter in entry.parameters if parameter.per_row
+        )
+        target.site_plates = {
+            site.name: _plate_axes(site.batch) for site in entry.sites
+        }
+        target.host_data_notes = passed_data_notes(module, entry.name)
 
     def _attach_secondary_exports(self, program: "Program") -> None:
         """Expose every export after the first as a named attribute.
@@ -549,10 +633,133 @@ class Compiler(
                 value = self._compile_expr(expr)
             object.__setattr__(program, name, value)
 
-    def compile_env(self) -> dict:
+    @property
+    def deferred_statements(self) -> tuple[Statement, ...]:
+        """Authored declarations awaiting finite-object specialization.
+
+        Returns
+        -------
+        tuple[Statement, ...]
+            Uncompiled declarations in source order, retaining their authored
+            types. No finite cardinalities are invented for these declarations.
+        """
+        return self._deferred_statements
+
+    def _inferred_dependency_projection(self) -> frozenset[int]:
+        """Defer unresolved objects and their transitive runtime dependents.
+
+        The original source and checked QIEC module stay intact. Existing
+        morphism-expression dependency analysis supplies value edges; checked
+        entry telescopes supply program extent dependencies.
+
+        Returns
+        -------
+        frozenset[int]
+            Source statement positions awaiting runtime specialization.
+        """
+        from quivers.dsl._data_inference import _inferred_objects
+        from quivers.dsl.compiler.declarations import _type_names
+        from quivers.dsl.latent_weights import _references
+        from quivers.dsl.step_resolution import _expr_ident_names
+        from quivers.dsl.program_templates import static_program_parameters
+
+        inferred = _inferred_objects(self._module)
+        if not inferred:
+            return frozenset()
+        graph = _references(self._module)
+        checked = self.qiec_module
+        entries = {} if checked is None else {e.name: e for e in checked.entries}
+        object_names = {
+            name
+            for statement in self._module.statements
+            if isinstance(statement, ObjectDecl)
+            for name in statement.names
+        }
+        dependencies: list[set[str]] = []
+        declared: list[tuple[str, ...]] = []
+        for statement in self._module.statements:
+            names = (
+                statement.names
+                if isinstance(statement, ObjectDecl | MorphismDecl | CategoryDecl)
+                else (cast(str, statement.name),)
+                if hasattr(statement, "name")
+                else ()
+            )
+            declared.append(names)
+            references: set[str] = set().union(*(graph.get(name, ()) for name in names))
+            if isinstance(statement, ProgramDecl) and statement.name in entries:
+                # Value-input names occupy a different namespace from axes;
+                # checked telescopes, not spelling collisions, fix extent use.
+                references.difference_update(
+                    p.name for p in entries[statement.name].parameters
+                )
+                authored = {
+                    cast(str, p.name) for p in static_program_parameters(statement)
+                }
+                references.update(
+                    binder.name
+                    for binder in entries[statement.name].telescope
+                    if binder.name not in authored
+                )
+            else:
+                pending: list[object] = [statement]
+                while pending:
+                    node = pending.pop()
+                    if isinstance(node, ObjectExpr):
+                        references.update(name.name for name in _type_names(node))
+                        for arg in getattr(node, "args", ()):
+                            if isinstance(arg, str) and arg in object_names:
+                                references.add(arg)
+                    if isinstance(node, Expr):
+                        references.update(_expr_ident_names(node))
+                        name = getattr(node, "object_name", None)
+                        if name is not None:
+                            references.add(name)
+                    if isinstance(node, tuple):
+                        pending.extend(node)
+                    elif isinstance(node, dx.Model):
+                        pending.extend(
+                            getattr(node, name)
+                            for name in type(node).__field_specs__
+                            if name not in {"docs", "line", "col"}
+                        )
+                if isinstance(statement, SchemaDecl):
+                    references.difference_update(
+                        name for group in statement.parameters for name in group.names
+                    )
+                elif isinstance(statement, RuleDecl):
+                    references.difference_update(statement.variables)
+            dependencies.append(references)
+        blocked = set(inferred)
+        deferred = {i for i, names in enumerate(declared) if set(names) & blocked}
+        dependents: dict[str, list[int]] = {}
+        for i, references in enumerate(dependencies):
+            for name in references:
+                dependents.setdefault(name, []).append(i)
+        pending_names = list(blocked)
+        while pending_names:
+            name = pending_names.pop()
+            for i in dependents.get(name, ()):
+                if i in deferred:
+                    continue
+                deferred.add(i)
+                for defined in declared[i]:
+                    if defined not in blocked:
+                        blocked.add(defined)
+                        pending_names.append(defined)
+        return frozenset(deferred)
+
+    def compile_env(self, *, defer_unresolved: bool = False) -> dict:
         """Compile all statements and return the full environment.
 
         Useful for inspection without requiring an output declaration.
+
+        Parameters
+        ----------
+        defer_unresolved : bool
+            Retain unresolved finite objects and their dependent declarations
+            symbolically, compiling independent declarations for inspection.
+            False requires data to specialize every inferred object.
 
         Returns
         -------
@@ -562,12 +769,27 @@ class Compiler(
             (parametric templates), deductions, signatures, encoders,
             decoders, losses, bundles, contractions, transformations.
         """
-        for stmt in self._module.statements:
+        deferred = (
+            self._inferred_dependency_projection() if defer_unresolved else frozenset()
+        )
+        self._deferred_statements = tuple(
+            statement
+            for index, statement in enumerate(self._module.statements)
+            if index in deferred
+        )
+        if not deferred:
+            self._specialize_data_objects()
+        for index, stmt in enumerate(self._module.statements):
+            if index in deferred:
+                if isinstance(stmt, ProgramDecl):
+                    self._program_decls[stmt.name] = stmt
+                continue
             self._compile_statement(stmt)
         env: dict = {}
         env["__algebra__"] = self._algebra
         qiec_module = self.qiec_module
         if qiec_module is not None:
+            self._attach_host_data_types(qiec_module)
             env["__qiec__"] = qiec_module
         for name, obj in self._objects.items():
             env[name] = obj
@@ -595,6 +817,12 @@ class Compiler(
             env[name] = bundle
         for name, contr in getattr(self, "_contractions", {}).items():
             env[name] = contr
+        for statement in self._deferred_statements:
+            names = getattr(statement, "names", ()) or (
+                (statement.name,) if hasattr(statement, "name") else ()
+            )
+            for name in names:
+                env.setdefault(name, statement)
         return env
 
     def _compile_statement(self, stmt: Statement) -> None:

@@ -37,6 +37,12 @@ The VS Code and Cursor extension exposes the target as the setting `qvr.transpil
 may change it with `workspace/didChangeConfiguration`, and the server then rechecks every open
 document without reparsing it.
 
+The CLI, REPL, language server, and Jupyter kernel share the same target preflight.
+It first checks reachable capabilities, then derives a target plan if those checks pass.
+All four preserve diagnostic kinds, messages, and source locations. Retargeting an open
+document reuses its checked module; a successful preflight still requires rendering and
+execution with the target's toolchain.
+
 ## List entry points
 
 An *entry point* is a named computation or program that a module exposes to `qvr run`,
@@ -178,6 +184,20 @@ commands that run entry points are:
 The TUI status bar shows the active runtime and the last result. Every command and key binding is
 listed in [Interactive tools: REPL, kernel, and language server](../../guides/repl-and-lsp.md).
 
+The Jupyter kernel preserves each blank-separated chunk's output and stops at the first error.
+A closed object prelude in an object-only session shares one preparation pass. Meta-commands,
+executable declarations, watches, and symbolic extents keep sequential preparation, including
+their generator state and intermediate diagnostics.
+
+[`Model`][quivers.modeling.Model] retains checked evidence for its original source AST. Binding
+can reuse that evidence while the source is identical; object specialization, template cloning,
+and source replacement require fresh checking. Reusing a model thus keeps each binding's data
+and specialized input contract independent.
+
+Type-expression probes likewise retain the loaded module's checked evidence while
+allocating fresh native compiler state. Static target renderers reuse one capability
+selection within each render; a later render checks its own module again.
+
 ## Language-server features
 
 The QVR language server (LSP) uses the compiler's typed source model. It provides:
@@ -270,9 +290,9 @@ Three identifiers name three formats, and each can change without the others:
 
 | Identifier | Names |
 | --- | --- |
-| `qvr-source/v0.20` | the source grammar and its elaboration to QIEC |
+| `qvr-source/v0.22` | the source grammar and its elaboration to QIEC |
 | `qiec-core/v1alpha1` | the typed core that checked modules are written in |
-| `qiec-json/v1` | the deterministic JSON serialization of a checked module |
+| `qiec-json/v2` | the deterministic JSON serialization of a checked module |
 
 New syntax that elaborates to existing core terms changes the first identifier and not the second,
 and a new serialization changes the third without changing how `.qvr` files parse. Code that

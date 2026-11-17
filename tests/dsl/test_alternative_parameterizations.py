@@ -26,6 +26,7 @@ from quivers.dsl.family_schemas import family_parameterizations
 from quivers.dsl.qiec_lowering import QiecDiagnosticError
 from quivers.inference.trace import trace
 from quivers.qiec.families import FAMILIES
+from quivers.continuous._multivariate_student_t import MultivariateStudentT
 
 type Host = float | int | list[float] | list[int] | list[list[float]]
 """A number, a vector, or a matrix as a case writes it."""
@@ -78,6 +79,118 @@ def _normal(value: torch.Tensor) -> torch.Tensor:
 #: Each case: its family and parameterization, the program, its data, its
 #: site values, and the oracle.
 _CASES: dict[str, tuple[str, str, str, dict[str, Host], dict[str, Host], Oracle]] = {
+    "relaxed-bernoulli-logits": (
+        "RelaxedBernoulli",
+        "logits",
+        "program p : One -> D\n"
+        "    observe y : Row <- RelaxedBernoulli(temperature=0.7,logits=0.4)\n"
+        "    return y\n",
+        {"y": [0.1, 0.3, 0.6, 0.8]},
+        {},
+        lambda s: D.RelaxedBernoulli(_t(0.7), logits=_t(0.4)).log_prob(s["y"]).sum(),
+    ),
+    "relaxed-onehot-logits": (
+        "RelaxedOneHotCategorical",
+        "logits",
+        "program p : One -> D\n"
+        "    observe y : Row <- RelaxedOneHotCategorical(temperature=0.7,logits=[0.4,-0.2]) [over=Two]\n"
+        "    return y\n",
+        {"y": [[0.1, 0.9], [0.3, 0.7], [0.6, 0.4], [0.8, 0.2]]},
+        {},
+        lambda s: (
+            D.RelaxedOneHotCategorical(_t(0.7), logits=_t([0.4, -0.2]))
+            .log_prob(s["y"])
+            .sum()
+        ),
+    ),
+    "onehot-logits": (
+        "OneHotCategorical",
+        "logits",
+        "program p : One -> D\n"
+        "    observe y : Row <- OneHotCategorical(logits=[0.4,-0.2]) [over=Two]\n"
+        "    return y\n",
+        {"y": [[1, 0], [0, 1], [0, 1], [1, 0]]},
+        {},
+        lambda s: D.OneHotCategorical(logits=_t([0.4, -0.2])).log_prob(s["y"]).sum(),
+    ),
+    "bernstein-hazard-log-rate": (
+        "BernsteinHazard",
+        "log_rate",
+        "program p : One -> D\n"
+        "    observe y : Row <- BernsteinHazard(breaks=[0.0,1.0],controls=[[1.0]],log_rate=0.7)\n"
+        "    return y\n",
+        {"y": [0.0, 0.2, 1.3, 2.1]},
+        {},
+        lambda s: D.Exponential(_t(math.exp(0.7))).log_prob(s["y"]).sum(),
+    ),
+    "alr-reference": (
+        "AdditiveLogRatioNormal",
+        "reference",
+        "object Component : FinSet 3\n"
+        "program p(m:Tensor[Real]([Two]),l:Tensor[Real]([Two,Two])) : One -> D\n"
+        "    observe v : Row <- AdditiveLogRatioNormal(loc=m,scale_tril=l,reference=0) [over=Component]\n"
+        "    return v\n",
+        {
+            "m": [0.2, -0.1],
+            "l": [[0.7, 0.0], [0.2, 0.9]],
+            "v": [[0.2, 0.3, 0.5], [0.6, 0.1, 0.3], [0.4, 0.4, 0.2], [0.1, 0.2, 0.7]],
+        },
+        {},
+        lambda v: (
+            D.MultivariateNormal(_t(v["m"]), scale_tril=_t(v["l"])).log_prob(
+                _t(v["v"])[:, 1:].log() - _t(v["v"])[:, :1].log()
+            )
+            - _t(v["v"]).log().sum(-1)
+        ).sum(),
+    ),
+    "multinomial-logits": (
+        "Multinomial",
+        "logits",
+        "program p(q:Tensor[Real]([Two])) : One -> D\n"
+        "    observe y : Row <- Multinomial(total_count=7,logits=q) [over=Two]\n"
+        "    return y\n",
+        {"q": [0.3, -0.7], "y": [[1, 6], [2, 5], [0, 7], [6, 1]]},
+        {},
+        lambda s: D.Multinomial(7, logits=_t(s["q"])).log_prob(_t(s["y"])).sum(),
+    ),
+    "dirichlet-multinomial-concentration": (
+        "DirichletMultinomial",
+        "concentration",
+        "program p(n:Tensor[Int]([Row]),alpha:Tensor[Real]([Row,Two])) : One -> D\n"
+        "    observe y : Row <- DirichletMultinomial(total_count=n,concentration=alpha) [over=Two]\n"
+        "    return y\n",
+        {
+            "n": [3, 0, 7, 4],
+            "alpha": [[0.7, 1.3], [2.0, 0.5], [1.2, 2.1], [0.4, 0.8]],
+            "y": [[1, 2], [0, 0], [2, 5], [4, 0]],
+        },
+        {},
+        lambda s: (
+            torch.lgamma(s["n"] + 1)
+            - torch.lgamma(s["y"] + 1).sum(-1)
+            + torch.lgamma(s["alpha"].sum(-1))
+            - torch.lgamma(s["alpha"].sum(-1) + s["n"])
+            + (torch.lgamma(s["alpha"] + s["y"]) - torch.lgamma(s["alpha"])).sum(-1)
+        ).sum(),
+    ),
+    "com-poisson-log-rate": (
+        "COMPoisson",
+        "log_rate",
+        "program p : One -> D\n"
+        "    observe y : Row <- COMPoisson(log_rate=0.7,dispersion=1.3)\n"
+        "    return y\n",
+        {"y": [0, 1, 3, 2]},
+        {},
+        lambda s: (
+            s["y"] * 0.7
+            - 1.3 * torch.lgamma(s["y"] + 1)
+            - torch.logsumexp(
+                torch.arange(100, dtype=torch.double) * 0.7
+                - 1.3 * torch.lgamma(torch.arange(100, dtype=torch.double) + 1),
+                0,
+            )
+        ).sum(),
+    ),
     "mvn-covariance-literal": (
         "MultivariateNormal",
         "covariance_matrix",
@@ -240,6 +353,66 @@ _CASES: dict[str, tuple[str, str, str, dict[str, Host], dict[str, Host], Oracle]
         ),
     ),
 }
+
+
+for _parameter, _matrix in (
+    ("covariance_matrix", _COVARIANCE),
+    ("precision_matrix", _PRECISION),
+):
+    _CASES["multivariate-student-" + _parameter] = (
+        "MultivariateStudentT",
+        _parameter,
+        "program p:One->One\n"
+        f"    observe y:Row <- MultivariateStudentT(df=5.0,loc=[0.0,1.0],{_parameter}={_matrix!r}) [over=Two]\n"
+        "    return y\n",
+        {"y": [[0.2, -0.1], [0.5, 0.8], [1.3, 0.7], [-0.2, 1.8]]},
+        {},
+        lambda s: (
+            MultivariateStudentT(
+                _t(5.0), _t([0.0, 1.0]), covariance_matrix=_t(_COVARIANCE)
+            )
+            .log_prob(s["y"])
+            .sum()
+        ),
+    )
+
+
+# Both factor slots share the rectangular event proof and the same dense oracle.
+for _axis in ("row", "col"):
+    _row = (
+        "row_scale_tril=[[1.2,0.0],[0.3,0.8]]"
+        if _axis == "row"
+        else "row_covariance=[[1.44,0.36],[0.36,0.73]]"
+    )
+    _col = (
+        "col_scale_tril=[[0.7,0.0,0.0],[-0.2,1.1,0.0],[0.1,0.3,0.9]]"
+        if _axis == "col"
+        else "col_covariance=[[0.49,-0.14,0.07],[-0.14,1.25,0.31],[0.07,0.31,0.91]]"
+    )
+    _CASES["matrix-normal-" + _axis + "-factor"] = (
+        "MatrixNormal",
+        _axis + "_scale_tril",
+        "object Col : FinSet 3\nprogram p : One -> One\n"
+        "    observe v : Row <- MatrixNormal(loc=[[0.0,0.0,0.0],[0.0,0.0,0.0]],"
+        + _row
+        + ","
+        + _col
+        + ") [over=[Two,Col]]\n"
+        "    return v\n",
+        {"v": [[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]] * 4},
+        {},
+        lambda s: (
+            D.MultivariateNormal(
+                torch.zeros(6, dtype=torch.double),
+                covariance_matrix=torch.kron(
+                    _t([[1.44, 0.36], [0.36, 0.73]]),
+                    _t([[0.49, -0.14, 0.07], [-0.14, 1.25, 0.31], [0.07, 0.31, 0.91]]),
+                ),
+            )
+            .log_prob(s["v"].flatten(-2))
+            .sum()
+        ),
+    )
 
 
 def _tensor(value: Host) -> torch.Tensor:

@@ -1,6 +1,6 @@
 # Architecture
 
-The library has twenty subpackages and one public top-level module, `program.py`.
+The library has twenty-one subpackages and one public top-level module, `program.py`.
 
 ## Follow one model through the library
 
@@ -15,8 +15,8 @@ handlers that trace, condition, and replay its sample sites. `inference/` fits
 it by evaluating its log joint density while it adjusts a variational guide or
 moves a Markov chain, and `diagnostics/` summarizes the result.
 
-To fit a model, start in `dsl/` or `formulas/` and follow the result into
-`inference/` and `diagnostics/`. To add a distribution family, start in
+To fit a model, start in `modeling/` for QVR source or `formulas/` for a
+data-frame formula, then follow the result into `inference/` and `diagnostics/`. To add a distribution family, start in
 `continuous/families.py` and the family registry in `qiec/families.py`. To
 change how finite morphisms compose, start in `core/`. To trace an
 [effect request](../tutorials/qvr/10-effects-and-handlers.md#1-declare-the-request)
@@ -52,6 +52,7 @@ quivers/
 ├── data/           # data frame encoding and dataset schemas
 ├── diagnostics/    # ArviZ conversion, convergence, calibration,
 │                   # predictive checks, model comparison
+├── modeling/       # checked data binding, reusable fits, predictions
 ├── formulas/       # R-style formulas compiled to QVR
 ├── transpile/      # intermediate representation and eleven renderers
 ├── cli/            # the qvr command, REPL, grammar migrations
@@ -122,7 +123,7 @@ Tree and graph autoencoders over terms of a binding signature: `Signature`, `Sor
 
 ### `qiec/`
 
-The data model and checker of QIEC: kinds and finite enumerated index types, telescopes, indexed families and constructors, effect interfaces and rows, handlers, values, and computations (`kinds.py`, `declarations.py`, `effects.py`, `types.py`, `terms.py`), checked by `checking.py` and `coverage.py`. `serialization.py` defines a deterministic JSON format for checked modules. `evaluator.py` and `execution.py` implement the [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for QIEC, and `program_runtime.py` runs programs on it. `families.py` is the distribution family registry that the compiler, the reference machine, and the transpilers share. `builtins.py` declares the built-in effect interfaces (`Random`, `Score`, `Compute`, `Param`).
+The data model and checker of QIEC: kinds and closed index sorts, telescopes, indexed families and constructors, effect interfaces and rows, handlers, values, and computations (`kinds.py`, `declarations.py`, `effects.py`, `types.py`, `terms.py`), checked by `checking.py` and `coverage.py`. `serialization.py` defines a deterministic JSON format for checked modules. `evaluator.py` and `execution.py` implement the [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for QIEC, and `program_runtime.py` runs programs on it. `families.py` is the distribution family registry that the compiler, the reference machine, and the transpilers share. `builtins.py` declares the built-in effect interfaces (`Random`, `Score`, `Compute`, `Param`).
 
 Values that can be serialized cross module and process boundaries as QIEC data. Python callables, samplers, state, and handler implementations are runtime attachments: values bound to a declared identifier in the running Python process and never serialized. The transpile layer reads the serialized data. Eight targets receive the whole computation through a shared runtime, and Stan, BUGS, and JAGS accept a restricted subset of programs. A program that uses a feature a target lacks receives a diagnostic at that feature's source location. [Quivers Indexed Effect Core](../developer/qiec.md) gives the details.
 
@@ -134,7 +135,7 @@ The QVR front end.
 - **`ast_nodes/`:** the AST, one `dx.Model` per node, with recursive sums as `dx.TaggedUnion` roots.
 - **`compiler/`:** `Compiler`, which walks the AST and produces a `quivers.Program`. Its mixins handle declarations, expressions, programs, deductions, and structural declarations, and `resolution.py` maps each object expression to a `SetObject` or a `ContinuousSpace`.
 - **`qiec_lowering.py`, `program_elaboration.py`, `structural_elaboration.py`, `deduction_elaboration.py`, `qiec_tooling.py`:** elaborate a module to QIEC, check it, and report diagnostics to the CLI, the REPL, and the language server.
-- **Parametric programs:** a program with parameters, `program name (G : FinSet, scale : Real) : dom -> cod`, is stored on the `Compiler` as a template and instantiated at each call site with fresh names, so each call contributes its own factors to the joint density. `program_templates.py` instantiates a program at a draw from it.
+- **Program parameters:** `program name[G : FinSet](scale : Real) : dom -> cod` separates static object specialization from runtime values. Static templates are instantiated at each call site with fresh names, so each call contributes its own factors to the joint density. Typed runtime parameters also state external input contracts, without adding effects. `program_templates.py` specializes templates at calls; QIEC checks their value parameters.
 - **`program_theory.py`:** extracts a panproto schema from a compiled module (`extract_program_schema`), so that panproto's diff and migration tools apply to `.qvr` programs.
 - **`constraints.py`, `emit.py`, `pygments_lexer.py`, `_grammar_build.py`, `_grammar_introspection.py`:** checks run after parsing, printing an AST back to source, the Pygments lexer, loading the packaged parser, and syntax metadata shared by the editors.
 
@@ -168,6 +169,14 @@ Static analysis of programs: scope traversal, shape inference for chain rules, p
 ### `diagnostics/`
 
 `arviz_io.py` converts an `MCMCResult` to an ArviZ data tree. `convergence.py` computes R-hat and effective sample size, `calibration.py` runs simulation-based calibration of an inference procedure, `predictive_checks.py` runs posterior predictive checks, and `comparison.py` compares models by approximate leave-one-out cross-validation.
+
+### `modeling/`
+
+`Model` exposes the QIEC input contract, binds runtime data, and specializes
+static parameters. `BoundModel` combines the checked program and its binding;
+`ModelFit` provides posterior draws, prediction, and pointwise log likelihood.
+`methods.py` defines reusable `MCMCMethod` and `VariationalMethod`
+configurations that select inference without repeating setup code.
 
 ### `formulas/`
 

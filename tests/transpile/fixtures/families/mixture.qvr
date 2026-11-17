@@ -1,0 +1,6 @@
+# A canonical mixture retains its distribution-valued components.
+object Obs : FinSet 3
+program mixture_fixture : Obs -> Obs
+    observe y : Obs <- Mixture(weights=[0.3, 0.7], components=[Normal(loc=-1.0, scale=0.5), Normal(loc=1.0, scale=0.5)])
+    return y
+export mixture_fixture

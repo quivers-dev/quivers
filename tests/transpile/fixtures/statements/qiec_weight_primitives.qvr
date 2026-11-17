@@ -1,0 +1,4 @@
+# Exercises authored checked-weight primitives, independently of Observe.
+define weighted_log_density(w : Real, ell : Real) : Real !{} =
+    return weight_value(scale_weight(observation_weight(w), weight(ell)))
+export weighted_log_density

@@ -21,7 +21,7 @@ behavior of binding sites it unblocks:
   where ``h = f >> g``) compiles and runs through ``rsample`` to
   produce a finite output tensor.
 * A parametric program with a morphism-typed parameter
-  (``program p (k : Mor[A, B])``) compiles and instantiates.
+  (``program p[k : Mor[A, B]]``) compiles and instantiates.
 * ``fan(...)`` over let-composed morphisms accepts non-Module
   morphisms at the binding site.
 """
@@ -206,11 +206,11 @@ def test_parametric_program_with_morphism_typed_parameter_compiles() -> None:
 
     morphism f : A -> B [role=parameter]
 
-    program p(k : Mor[A, B]) : A -> B
+    program p[k : Mor[A, B]] : A -> B
         sample out <- k
         return out
 
-    define applied = p(f)
+    define applied = p[f]()
     export applied
     """
     m = loads(textwrap.dedent(src))

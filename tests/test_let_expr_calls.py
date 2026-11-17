@@ -33,6 +33,7 @@ from quivers.dsl.compiler.programs import (
     _ProgramsMixin,
     _expected_call_arity,
 )
+from quivers.dsl.pure_builtins import BUILTIN_REGISTRY
 
 
 # ---------------------------------------------------------------------------
@@ -71,35 +72,16 @@ class TestBuiltinPrimitives:
 
     @pytest.mark.parametrize(
         "name",
-        sorted(
-            n
-            for n in _LET_EXPR_BUILTINS
-            if n
-            not in {
-                "leaky_relu",
-                "prelu",
-                "rrelu",
-                "elu",
-                "celu",
-                "hardtanh",
-                "hardshrink",
-                "softplus",
-                "softshrink",
-                "threshold",
-                "normalize",
-                "clamp",
-                "dropout",
-                "alpha_dropout",
-                "norm",
-                "pow",
-                "slice",
-                "select",
-                "matmul",
-            }
-        ),
+        sorted(n for n in _LET_EXPR_BUILTINS if 1 in BUILTIN_REGISTRY[n].eager_arities),
     )
     def test_unary_builtin_runs(self, name):
         x = torch.randn(4, 8).abs() + 0.5
+        if name == "log1mexp":
+            x = -x
+        elif name == "log_probability":
+            x = x.sigmoid()
+        elif name == "observation_status":
+            x = torch.randint(-1, 3, x.shape)
         fn = _compile(_call(name, _var("x")))
         out = fn({"x": x})
         # min/max/argmin/argmax etc collapse the last axis; sum/mean
@@ -107,8 +89,21 @@ class TestBuiltinPrimitives:
         # the call doesn't crash and returns a tensor.
         assert isinstance(out, torch.Tensor)
 
-    def test_all_95_primitives_present(self):
-        assert len(_LET_EXPR_BUILTINS) == 95
+    def test_eager_primitives_match_the_capability_registry(self):
+        assert set(_LET_EXPR_BUILTINS) == {
+            name for name, spec in BUILTIN_REGISTRY.items() if spec.eager is not None
+        }
+        assert BUILTIN_REGISTRY["observation_weight"].eager_arities == {1}
+        assert BUILTIN_REGISTRY["scale_weight"].eager_arities == {2}
+
+    def test_binary_scale_weight_masks_zero_before_multiplication(self):
+        fn = _compile(_call("scale_weight", _var("w"), _var("ell")))
+        torch.testing.assert_close(
+            fn(
+                {"w": torch.tensor([0.0, 2.0]), "ell": torch.tensor([-torch.inf, -3.0])}
+            ),
+            torch.tensor([0.0, -6.0]),
+        )
 
     def test_binary_pow_uses_both_arguments(self):
         fn = _compile(_call("pow", _var("x"), _lit(2.0)))

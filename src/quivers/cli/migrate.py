@@ -26,7 +26,6 @@ import argparse
 import os
 import stat
 import sys
-import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -65,42 +64,28 @@ def _atomic_write(
     *,
     source_mode: int | None = None,
 ) -> None:
-    """Validate and atomically replace ``target`` with ``data``."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, raw_temporary = tempfile.mkstemp(
-        prefix=f".{target.name}.",
-        suffix=".tmp",
-        dir=target.parent,
-    )
-    temporary = Path(raw_temporary)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
+    """Validate and atomically replace ``target`` with ``data``.
+
+    Parameters
+    ----------
+    target : Path
+        Migration destination.
+    data : bytes
+        Complete checked source bytes to write.
+    source_mode : int or None
+        Permission bits to preserve when creating a new destination.
+
+    Raises
+    ------
+    OSError
+        If writing, readback verification, or atomic replacement fails.
+    """
+    from quivers._atomic import atomic_output
+
+    with atomic_output(target, source_mode=source_mode) as temporary:
+        temporary.write_bytes(data)
         if temporary.read_bytes() != data:
             raise OSError(f"staged migration write was incomplete: {temporary}")
-        if target.exists():
-            os.chmod(temporary, stat.S_IMODE(target.stat().st_mode))
-        elif source_mode is not None:
-            os.chmod(temporary, stat.S_IMODE(source_mode))
-        os.replace(temporary, target)
-        try:
-            directory_fd = os.open(target.parent, os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            try:
-                os.fsync(directory_fd)
-            except OSError:
-                # Directory fsync is unavailable on some platforms. The
-                # sibling-file fsync and atomic replacement have completed.
-                pass
-        finally:
-            os.close(directory_fd)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
 
 
 def _walk_inputs(

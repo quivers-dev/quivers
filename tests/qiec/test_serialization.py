@@ -235,8 +235,8 @@ def test_codec_rejects_unknown_tags_versions_and_malformed_tuples() -> None:
 def test_codec_rejects_duplicate_json_object_keys() -> None:
     encoded = dumps(Return(value=LiteralValue(value=1, type=INT)))
     duplicate = encoded.replace(
-        '"$schema":"qiec-json/v1"',
-        '"$schema":"qiec-json/v1","$schema":"qiec-json/v1"',
+        f'"$schema":"{QIEC_WIRE_FORMAT}"',
+        f'"$schema":"{QIEC_WIRE_FORMAT}","$schema":"{QIEC_WIRE_FORMAT}"',
         1,
     )
 

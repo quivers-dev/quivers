@@ -3,8 +3,8 @@
 A conditional distribution family in quivers is a
 [`ContinuousMorphism`](../api/continuous/morphisms.md#quivers.continuous.morphisms.ContinuousMorphism)
 whose distribution's parameters a parameter source, a lookup table or a network,
-computes from each input. More than fifty families are registered, and in QVR the same
-families are written inline in program steps with given parameters
+computes from each input. More than fifty families are registered. QVR writes
+supported families inline in program steps with checked parameters
 ([Inline distributions](dsl-programs-and-lets.md#inline-distributions)).
 [Continuous Spaces](continuous-spaces.md) describes the spaces they live on.
 
@@ -20,6 +20,230 @@ deviations than a Normal.
 parameters, including its mean. A mean given exactly is written in QVR as
 `Normal(loc=mu, scale=sigma)`, which uses the values bound to `mu` and `sigma` at that
 step.
+
+Registry membership, checked source construction, and external rendering are
+separate capabilities. `Independent` supports native and checked-reference
+execution, including inline source construction. Its nested distribution
+arguments remain explicitly unsupported by all eleven external renderers.
+
+### Independent product events
+
+`Independent` moves a specified number of trailing base batch axes into the
+event. The remaining batch axes retain separate pointwise scores. A typed
+runtime header states the parameter and observation shapes; a static telescope
+can leave the row extent to be inferred from supplied data:
+
+```qvr
+object Coordinate : FinSet 3
+program vectors[n : Nat](
+    location : Tensor[Real]([n, Coordinate]),
+    y : Tensor[Real]([n, Coordinate]),
+) : n -> n
+    observe y : n <- Independent(base=Normal(loc=location, scale=1.0), reinterpreted_batch_ndims=1)
+    return y
+export vectors
+```
+
+Here the last parameter axis belongs to the base batch and becomes a vector
+event. The leading `n` axis indexes observations. A single location vector of
+shape `[Coordinate]` instead broadcasts across those observations. These roles
+follow the checked axis positions, including when both extents equal three.
+Neither equality of sizes nor a host tensor's length establishes axis ownership.
+
+The count is a nonnegative integer literal in checked source. Zero preserves
+all batch and event axes; a smaller count than the base batch rank leaves the
+leading batch axes intact. Existing intrinsic event axes follow the newly
+reinterpreted axes. Restrictions, normalization, and mixtures retain this
+partition, and native and reference execution reduce each event exactly once.
+The [formal rule](../semantics/programs.md#independent-product-events) states the
+batch/event split and raw-mass behavior.
+
+### Vector count events
+
+A Multinomial response is a vector of category counts for one observation.
+The row axis indexes observations; the category axis belongs to each event.
+A typed runtime header states both axes, while a static telescope can leave
+the row count to be inferred at binding:
+
+```qvr
+object Category : FinSet 3
+program count_vectors[n : Nat](
+    trials : Tensor[Int]([n]),
+    probabilities : Tensor[Real]([n, Category]),
+    y : Tensor[Int]([n, Category]),
+) : n -> n
+    observe y : n <- Multinomial(total_count=trials, probs=probabilities) [over=Category]
+    return y
+export count_vectors
+```
+
+`[over=Category]` marks a single vector event. Its log probability reduces
+the category coordinates together, leaving one score per observation row.
+This distinction also holds when row and category extents happen to be equal.
+The supplied trials may vary by row; responses must sum to those trials.
+Zero trials require an all-zero response. Replacing the kernel with
+`DirichletMultinomial(total_count=trials, concentration=concentrations)`
+uses a typed concentration tensor with the same axes.
+
+Both native kernels check finite trial counts in `0..2**53` before conversion,
+use float64 scores and moments, and draw int64 vectors without pathwise
+sampling gradients. The static `[n : Nat]` determines a shape; the runtime
+`trials` tensor supplies counts to the probability law. Native and
+checked-reference execution support these kernels; the
+[native API](../api/continuous/families.md#vector-count-events) gives the
+constructors and conditional learned-parameter variants.
+
+### Positive-time spline hazards
+
+A baseline hazard describes how event risk changes with elapsed time.
+`BernsteinHazard` retains positive polynomial pieces and their integrals;
+a proportional rate scales the hazard, rather than the expected event time.
+Its finite-interval baseline integral is one, separating shape from overall
+rate. After the upper boundary, the positive endpoint hazard continues
+constantly, so the distribution includes events beyond the fitted interval.
+
+The typed source interface separates structural table dimensions from
+observation dimensions:
+
+```qvr
+program event_times[n : Nat, s : Nat, k : Nat](
+    breaks : Tensor[Real]([nat_add(s, 1)]),
+    controls : Tensor[Real]([s, k]),
+    log_rate : Tensor[Real]([n]),
+    time : Tensor[Real]([n]),
+) : n -> n
+    observe time : n <- BernsteinHazard(breaks=breaks, controls=controls, log_rate=log_rate) [iid_over=n]
+    return time
+export event_times
+```
+
+The sample is scalar even though its baseline contains a matrix. The same
+shape contract checks `s + 1` boundaries against `s` coefficient rows at
+compilation and data binding. Declaring the tables adds no effects;
+`observe` supplies the likelihood role.
+
+`MSplineBasis` constructs normalized M-splines and integrated I-splines
+from retained knots. `CoxPH` combines them with simplex weights and uses
+the same Bernstein hazard kernel:
+
+```python
+import torch
+from quivers.continuous import CoxPH, cox_spline_basis
+
+basis = cox_spline_basis(
+    event_times=[0.2, 0.5, 0.8, 1.4],
+    observed_times=[0.2, 0.5, 0.8, 1.4, 2.0],
+    df=5, degree=3,
+)
+weights = torch.full((basis.size,), 1 / basis.size, dtype=torch.float64)
+event_law = CoxPH(basis, weights, log_rate=0.2)
+assert event_law.cdf(torch.inf).item() == 1.0
+assert event_law.icdf(0.9).item() > 0
+```
+
+The knot factory uses event-time quantiles for interior knots and all
+follow-up times for the upper boundary, including censored follow-up.
+It retains zero as the lower boundary and extends the upper boundary by
+one fiftieth of the follow-up span, using the maximum follow-up when
+that span is zero. Repeated quantiles or missing events
+cannot silently change the requested basis dimension; provide an explicit
+basis when those data do not determine distinct knots. Prediction retains
+the fitted knots rather than rebuilding them from new responses.
+
+The constant tail is an explicit model policy. Its positive hazard avoids
+a leftover probability mass at infinity. Native and reference kernels
+share the polynomial structure and bounded inverse policy; failures of
+floating-point capacity or the iteration budget raise explicitly. The
+[native API](../api/continuous/families.md#bernstein-and-spline-baseline-hazards)
+gives rate-only conditional models, tensor shapes, and sampling behavior.
+
+### Censored extended Beta responses
+
+`ExtendedBeta(mu, phi, kappa)` extends a Beta component's support to
+`[-kappa, 1+kappa]` and censors observations at zero and one. The component
+mean `mu` lies strictly between zero and one, precision `phi` is positive,
+and extension `kappa` is nonnegative. Endpoint scores are exact censored
+tail probabilities; scores inside the interval are affine Beta densities.
+
+```python
+import torch
+from quivers.continuous import ExtendedBeta
+
+bounded = ExtendedBeta(mu=0.3, phi=4.0, kappa=0.2)
+scores = bounded.log_prob(torch.tensor([0.0, 0.3, 1.0], dtype=torch.float64))
+assert scores.shape == (3,)
+assert bounded.mean.item() != 0.3
+assert bounded.sample((5,)).shape == (5,)
+```
+
+The native and checked-reference families share the same parameterization.
+The [formula interface](analysis-data-and-formulas.md#censored-extended-beta-regression)
+calls it `xbeta`, retaining log-linked precision and extension predictors.
+Its observed mean accounts for both boundary atoms. Deterministic moment
+evaluation and pathwise sampling have explicit numerical-capacity checks;
+see the [native API](../api/continuous/families.md#censored-extended-beta-responses).
+
+### Simplex events with correlated log ratios
+
+An additive log-ratio Normal models a whole composition using correlated
+Normal log ratios. Its `d` coordinates determine `d + 1` response components;
+the typed interface expresses that relationship with static Nat addition:
+
+```qvr
+program compositions[n : Nat, d : Nat](
+    location : Tensor[Real]([n, d]),
+    factor : Tensor[Real]([n, d, d]),
+    y : Tensor[Real]([n, nat_add(d, 1)]),
+) : n -> n
+    observe y : n <- AdditiveLogRatioNormal(loc=location, scale_tril=factor) [iid_over=n]
+    return y
+export compositions
+```
+
+Binding location shape `(12, 2)`, factor shape `(12, 2, 2)`, and response
+shape `(12, 3)` infers `n=12` and `d=2`. An inconsistent response width
+fails before execution. `nat_add` combines static natural indices; its
+parentheses are index application syntax, rather than a runtime pure call.
+
+The default reference is the last component, so the Normal coordinates are
+`log(y[..., :-1] / y[..., -1:])`. An optional `reference` integer selects
+another component; the remaining coordinates keep their response order.
+A typed integer tensor can select a reference per row. The density includes their Jacobian,
+and each row contributes one joint score. This differs from the existing
+`LogisticNormal` stick-breaking transform. The
+[native API](../api/continuous/families.md#additive-log-ratio-normal-events)
+describes the constructor and learned conditional heads.
+
+### COM-Poisson rates
+
+`COMPoisson(rate=..., dispersion=...)` uses a nonnegative rate and positive
+dispersion, or accepts `log_rate=...` instead of rate. Its Poisson limit
+has dispersion one; elsewhere rate is not generally the response mean.
+Float64 centered sums certify normalization and moments within explicit
+budgets, and an independent exact rejection envelope generates integer
+samples. Both paths fail explicitly when their resource or exact-count
+capacity is exceeded. The
+[native API](../api/continuous/families.md#com-poisson-counts)
+gives defaults and exception types; the
+[formula guide](analysis-data-and-formulas.md#com-poisson-rate-and-response-mean)
+gives regression parameters and the released brms helper distinction.
+
+```qvr
+object Out : Real 1
+program count_model[n : Nat](
+    log_rate : Real,
+    shape : Real,
+    y : Tensor[Int]([n]),
+) : n -> Out
+    observe y : n <- COMPoisson(log_rate=log_rate, dispersion=shape)
+    return log_rate
+export count_model
+```
+
+Here `n` specializes the response extent, while `shape` is a runtime
+dispersion parameter. The family argument's name does not make it a
+static shape index, and the typed response declaration alone contributes
+no likelihood; the `observe` step supplies it.
 
 ### Core families {#hand-written-core-families}
 
@@ -60,11 +284,46 @@ Families with a learned location and scale, all with reparameterized draws:
 from quivers.continuous.families import (
     ConditionalCauchy,
     ConditionalLaplace,
+    ConditionalAsymmetricLaplace,
+    ConditionalExGaussian,
+    ConditionalInverseGaussian,
     ConditionalGumbel,
     ConditionalLogNormal,
     ConditionalStudentT,
 )
 ```
+
+### Gaussian response-time tails
+
+`ExGaussian(loc, scale, rate)` adds independent Normal and Exponential
+components. `InverseGaussian(mu, shape)` uses the response mean `mu` and
+positive shape directly. Both provide Float64 `log_cdf` and
+`log_survival_function` methods. Use these methods for small probabilities:
+taking the logarithm of an ordinary CDF can lose the tail before the
+logarithm is evaluated.
+
+```python
+import torch
+from quivers.continuous import ExGaussian
+from quivers.continuous.measure import Normalize, Restrict
+
+law = ExGaussian(torch.tensor(0.0, dtype=torch.float64), 1.0, 0.1)
+point = torch.tensor(-40.0, dtype=torch.float64)
+assert law.cdf(point) == 0.0
+assert -811.0 < law.log_cdf(point) < -810.0
+restricted = Normalize(Restrict(law, -40.0, -39.9))
+assert torch.isfinite(restricted.log_prob(torch.tensor(-39.95, dtype=torch.float64)))
+```
+
+Censoring and truncation reuse these paired tails in native and checked-reference
+execution. For sufficiently short intervals, a bound on log-density variation
+selects the shared positive eight-node integration rule. Thus adjacent bounds
+retain a positive interval mass even when their CDF values coincide. The tail
+calculation also uses agreeing eight- and 32-node rules for short Gaussian
+divided differences, with explicit failure on nonconvergence or exceeded
+Float64 log-tail capacity. These bounded checks do not establish a uniform
+error guarantee. Finite tail calculations support first and second derivatives
+in all response parameters, including forward automatic differentiation.
 
 ### Families on the positive reals {#positive-valued-families}
 
@@ -90,6 +349,99 @@ x = torch.randn(8, 5)
 gamma = ConditionalGamma(domain, codomain)
 samples = gamma.rsample(x)  # positive
 ```
+
+### Skew, shifted, and extreme-value responses
+
+The native constructor parameters describe a distribution directly.
+A formula frontend may instead parameterize its response mean or
+standard deviation; the [regression guide](analysis-data-and-formulas.md#skew-shifted-and-extreme-value-regressions)
+gives those conversions.
+
+| Native family | Parameters and support | Response mean |
+| --- | --- | --- |
+| `SkewNormal(loc, scale, skewness)` | real location and skewness, positive scale; real responses | `loc + scale * delta * sqrt(2/pi)`, where `delta = skewness / sqrt(1 + skewness**2)` |
+| `ShiftedLogNormal(loc, scale, shift)` | Normal log-location and positive log-scale, nonnegative shift; responses greater than `shift` | `shift + exp(loc + scale**2/2)` |
+| `Frechet(scale, concentration)` | positive scale and concentration; positive responses | `scale * Gamma(1 - 1/concentration)` when concentration exceeds one |
+| `GeneralizedExtremeValue(loc, scale, concentration)` | real location and concentration, positive scale; `1 + concentration * (y-loc)/scale > 0`, with the Gumbel limit at zero | location plus the tail correction in the [formal definition](../semantics/programs.md#scalar-response-kernels-and-regression-parameters), when concentration is below one |
+
+Fréchet variance requires concentration above two; GEV variance requires
+concentration below one half. A supported density can thus have no
+finite response mean or variance. GEV's `concentration` has the opposite
+sign to the shape argument of
+[SciPy's `genextreme`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.genextreme.html).
+
+Static response extents and runtime distribution parameters remain
+separate. In the following program, `n` fixes a shared row axis;
+`sigma`, `nu`, and the other real inputs supply distribution values.
+Their declarations add no draws or scores.
+
+Native and checked-reference execution support all four families. Each of
+the 11 external renderers currently refuses them explicitly; family
+registration does not supply an external implementation.
+
+```qvr
+object Out : Real 1
+program scalar_responses[n : Nat](sigma : Real, skewness : Real, ndt : Real, nu : Real, xi : Real) : n -> Out
+    observe skewed : n <- SkewNormal(loc=0.0, scale=sigma, skewness=skewness)
+    observe shifted : n <- ShiftedLogNormal(loc=0.0, scale=sigma, shift=ndt)
+    observe extreme : n <- Frechet(scale=1.0, concentration=nu)
+    observe maxima : n <- GeneralizedExtremeValue(loc=0.0, scale=sigma, concentration=xi)
+    return sigma
+export scalar_responses
+```
+
+All four native distributions provide `cdf`, `log_cdf`,
+`log_survival_function`, `icdf`, and pathwise `rsample`. Skew-normal
+CDFs and quantiles use deterministic quadrature and float64 intermediate
+arithmetic. Their tail and derivative checks
+do not establish a uniform quadrature-error bound. Both methods require
+a device with float64 support. Fréchet and
+GEV return infinite moments outside the finite-moment domains above.
+
+### Generalized Pareto tails
+
+`GeneralizedPareto(loc, scale, concentration)` implements the
+[generalized Pareto law](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.genpareto.html)
+above `loc`,
+with positive `scale` and real tail index `concentration`. A negative
+tail index gives the finite upper endpoint `loc - scale/concentration`;
+a nonnegative index gives an unbounded upper tail. At index zero, the
+law is `loc + Exponential(rate=1/scale)`.
+
+```qvr
+object Row : FinSet 4
+program tail(scale: Real) : Row -> Row
+    observe y : Row <- GeneralizedPareto(loc=0.0, scale=scale, concentration=-0.2)
+    return y
+export tail
+```
+
+The native family supplies density, CDF, inverse CDF, broadcasting, and
+reparameterized sampling, including differentiable zero-index limits.
+Its mean exists for `concentration < 1` and its variance for
+`concentration < 0.5`; the implementation returns `NaN` outside those
+moment domains. The public learned wrapper is
+[`ConditionalGeneralizedPareto`](../api/continuous/families.md#quivers.continuous.families.ConditionalGeneralizedPareto).
+The underlying distribution class is an implementation detail, rather
+than a `quivers.continuous.GeneralizedPareto` export. Native and QIEC
+reference execution support this source family; the current external
+renderers refuse it.
+
+### Zero atoms with positive responses
+
+`HurdleGamma(zero_prob, concentration, rate)` combines a structural zero with a
+Gamma response. `HurdleLogNormal(zero_prob, loc, scale)` combines it with a
+LogNormal response. Both constructors are exported by `quivers.continuous`;
+their `ConditionalHurdleGamma` and `ConditionalHurdleLogNormal` wrappers compute
+parameters from a learned input map. The positive component contributes no mass
+to the zero atom, including when its continuous density diverges at zero.
+
+The native distributions expose density/mass, CDF, mean, variance, expansion,
+and sampling. Sampling includes a discrete gate and has no pathwise derivative;
+likelihood and response-moment parameters remain differentiable. The
+[formula interface](analysis-data-and-formulas.md#positive-hurdle-regressions)
+uses `hu` for the structural zero probability and retains the component family's
+usual mean/shape or log-location/log-scale conventions.
 
 ### Families on the unit interval {#unit-interval-families}
 
@@ -215,6 +567,85 @@ mvn = ConditionalMultivariateNormal(domain, Euclidean(name="Y", dim=5))
 
 ### Discrete / categorical families
 
+Count mixtures combine an exact zero with a discrete response. The registered
+native constructors are:
+
+| Family | Parameters |
+| --- | --- |
+| `ZeroInflatedNegativeBinomial` | `zero_prob`, `total_count`, `probs` |
+| `ZeroInflatedBinomial` | `zero_prob`, `total_count`, `probs` |
+| `ZeroInflatedBetaBinomial` | `zero_prob`, `total_count`, `concentration1`, `concentration0` |
+| `HurdleNegativeBinomial` | `zero_prob`, `total_count`, `probs` |
+
+For zero inflation, `zero_prob` selects a structural zero in addition to
+zeros from the count component. For the hurdle family, it is the complete
+zero probability; the other branch is a positive-truncated negative
+binomial. Its component mean is `total_count * probs / (1-probs)` before
+truncation. At `probs=0`, the positive branch uses its limiting count of one.
+Binomial trial counts may be zero, in which case the response is always zero.
+These scalar count samples are not reparameterized. Their log masses and
+moments retain gradients with respect to the distribution parameters.
+
+```qvr
+object Row : FinSet 3
+program counts : Row -> Row
+    observe nb : Row <- ZeroInflatedNegativeBinomial(zero_prob=0.3, total_count=2.5, probs=0.4)
+    observe bin : Row <- ZeroInflatedBinomial(zero_prob=0.3, total_count=8, probs=0.4)
+    observe bb : Row <- ZeroInflatedBetaBinomial(zero_prob=0.3, total_count=8, concentration1=0.7, concentration0=1.1)
+    observe hurdle : Row <- HurdleNegativeBinomial(zero_prob=0.3, total_count=2.5, probs=0.4)
+    return nb
+export counts
+```
+
+The [formula interface](analysis-data-and-formulas.md#zero-inflated-and-hurdle-counts)
+provides mean/precision parameterizations and known trial counts. The
+[native API](../api/continuous/families.md#zero-inflated-and-hurdle-counts)
+gives the constructors and sampling behavior. Native and reference execution
+support these families. All 11 external renderers currently refuse each
+with a `family:<Family>` diagnostic; the 44 family/backend cells are checked
+by `tests/transpile/test_family_matrix.py`. These family fixtures are separate
+from the gallery and construct rows of the general support matrix.
+
+Native Binomial, BetaBinomial, NegativeBinomial, Poisson, and the four count mixtures
+use float64 parameters, log scores, and moments to avoid float32
+cancellation at large counts. Gradients still reach the original learned
+heads, including float32 heads. Finite trial counts are checked before
+conversion and must lie between zero and `2**53`, inclusive. This bound
+preserves their exact integer representation in float64; `Int` remains a
+signed 64-bit carrier. Supply large counts as integer tensors or integer
+source literals. Converting an already-rounded float32 count to float64
+does not restore the original integer.
+Arithmetic count observations use the same exact-integer limit. Native and
+reference execution check original finite counts before floating conversion and
+refuse magnitudes above `2**53`. With argument validation disabled, fractional,
+nonfinite, and other off-support observations have log mass negative infinity;
+they are never truncated to an integer. Finite category indices use their own
+support checks and do not acquire this arithmetic-count limit.
+A source integer literal also retains its integer value through parsing,
+static substitution, and family argument binding. Stable deviance,
+Stirling, and gamma-increment formulas avoid subtracting nearly equal
+large log-gamma values in the count kernels. Float64 remains an
+approximation; these choices do not establish a uniform error bound for
+every parameter regime.
+A runtime header can declare `trials : Tensor[Int]([Row])` and pass it as
+`Binomial(total_count=trials, probs=p)`; the checked integer input reaches
+the count kernel before floating-point conversion.
+A shared scalar count can instead use `(trials : Nat)`. A static
+`[trials : Nat]` is an index extent; it cannot directly supply the
+family's runtime `total_count` argument. The source checker reports this
+stage mismatch explicitly.
+
+Poisson, negative-binomial, and their inflated or hurdle samplers refuse
+a generated intensity or count that is nonfinite or exceeds `2**53`.
+Native execution raises `RuntimeError`; reference execution raises
+`DistributionError`, a `ValueError` subtype. These failures do not
+truncate or renormalize the law, or redraw to conceal overflow.
+A structural-zero outcome bypasses its unreachable count branch, so a
+zero-atom probability of one does not attempt to sample a huge base
+count. The sampling ceiling is separate from the general `Int` carrier;
+density and moment evaluation can still accept larger real-valued
+negative-binomial shapes or Poisson rates.
+
 ```python
 from quivers.continuous.families import (
     ConditionalBernoulli,
@@ -223,6 +654,130 @@ from quivers.continuous.families import (
     ConditionalRelaxedOneHotCategorical,
 )
 ```
+
+## Discrete Weibull counts and zero-atom quantiles
+
+`DiscreteWeibull(probs=q, concentration=b)` models nonnegative integer
+counts with survival probability `P(Y >= k) = q**(k**b)`. It requires
+`0 <= q < 1` and positive `b`; `q=0` gives a point mass at zero.
+The probability parameter is not a response mean. Its mean is the
+sum of `q**(k**b)` over positive integers, as in the
+[formal count definition](../semantics/programs.md#discrete-weibull-counts).
+Native and reference interval queries use its exact tail law and a shared
+factored power-difference kernel for finite intervals. This retains tiny
+positive masses at small concentrations without subtracting rounded CDFs or
+stopping a count sum while substantial tail mass remains.
+
+`ZeroInflatedAsymmetricLaplace(zero_prob, loc, scale, quantile)` combines
+an exact zero atom with a continuous asymmetric Laplace response. The
+atom probability may range from zero to one; `scale` is positive and
+`quantile` lies strictly between zero and one. `loc` is that quantile
+of the continuous component. It need not be the same quantile of the
+whole response distribution after the zero atom is added.
+
+At an exact zero, scoring returns `log(zero_prob)`. At a nonzero
+response it returns `log(1-zero_prob)` plus the component log density.
+The continuous density at zero is not added to the atom probability.
+Its CDF includes the atom at zero; its strict survival probability
+`P(Y > y)` excludes it at `y=0`. These conventions follow the
+[mixed-kernel semantics](../semantics/programs.md#a-zero-atom-with-asymmetric-laplace-responses).
+
+Both declarations below use ordinary runtime values for distribution
+parameters and a static `n` for their common row extent. The typed
+inputs distinguish count from real responses; the observation steps
+give them likelihood roles.
+
+```qvr
+object Out : Real 1
+program count_and_atom[n : Nat](
+    q : Real,
+    shape : Real,
+    zi : Real,
+    location : Real,
+    scale : Real,
+    quantile : Real,
+    counts : Tensor[Int]([n]),
+    residuals : Tensor[Real]([n]),
+) : n -> Out
+    observe counts : n <- DiscreteWeibull(probs=q, concentration=shape)
+    observe residuals : n <- ZeroInflatedAsymmetricLaplace(zero_prob=zi, loc=location, scale=scale, quantile=quantile)
+    return location
+export count_and_atom
+```
+
+Native and checked-reference execution support both families; all 11
+external renderers explicitly refuse them. Both samplers are
+non-reparameterized. Discrete Weibull parameters, scores, and moments
+use float64, while its draws are int64. Finite draws or requested finite
+quantiles above `2**53` are refused; the law is not clipped or redrawn
+to hide an unrepresentable result.
+
+Discrete Weibull moments use adaptive sums and analytic omitted-tail
+bounds. Native `moment_rtol` and `moment_max_terms` control tolerance
+and work, defaulting to `1e-10` and `262144` count terms. If the requested
+remainder bound cannot be established within that budget, moment
+evaluation refuses explicitly. A mathematical finite mean does not
+guarantee that a chosen numerical budget suffices.
+
+## Truncating an independent response
+
+`Truncated(base, lower=..., upper=...)` restricts a base family to an
+interval and divides its density by the probability of that interval.
+This normalizer depends on the base parameters. Censoring instead
+records that a value falls in an interval; it contributes the interval
+probability without changing the full response law.
+
+For independent scalar coordinates, interval probabilities multiply,
+and the corresponding log normalizers add. A coupled multivariate
+distribution needs a joint rectangle probability, which cannot be
+recovered from separate marginal CDFs. Missing CDF or rectangle-mass
+capabilities must produce an explicit error.
+
+The native wrapper reads the base's scalar-coordinate distributions and
+computes deterministic interval masses. It uses log-CDF or log-survival
+methods where supplied, stable Normal tails, and incomplete-gamma
+calculations for Gamma and Poisson. Beta intervals use log-CDF and
+log-survival calculations from a shared continued-fraction recurrence;
+positive affine transforms delegate interval probabilities to their base.
+Other scalar bases need a working
+CDF; unsupported bases and coupled events raise explicit errors. An
+interval with zero or nonfinite computed probability is rejected.
+
+Normal sampling uses a stable inverse CDF, including far-tail intervals.
+Other bases use bounded rejection, with `max_rejection_iterations`
+controlling failure. That rejection path does not establish a general
+pathwise derivative through a parameter-dependent acceptance event.
+
+```python
+import torch
+from quivers.continuous.families import ConditionalNormal, Truncated
+from quivers.continuous.spaces import Euclidean
+
+base = ConditionalNormal(
+    Euclidean(name="Input", dim=2), Euclidean(name="Response", dim=1)
+)
+restricted = Truncated(base, lower=0.0, upper=1.0)
+inputs = torch.zeros(3, 2)
+responses = restricted.rsample(inputs)
+log_density = restricted.log_prob(inputs, responses)
+assert responses.shape == (3, 1)
+assert torch.isfinite(log_density).all()
+```
+
+The Gamma interval normalizer supports shape and rate derivatives through
+converged float64 tail recurrences. Its lower-tail series, upper-tail
+continued fraction, and small-shape complement calculations have a
+512-iteration convergence limit; nonconvergence raises explicitly. This
+policy supplies no uniform accuracy or convergence guarantee across all
+parameter regimes. Beta tails support derivatives in both concentrations
+and the evaluation point through float64 recurrences with a 4096-iteration
+limit. Short interior intervals use a positive eight-node Gauss–Legendre
+rule when the density varies by less than the local integration threshold;
+this avoids subtracting tails that have rounded to the same value. The
+native and reference kernels share the rule's fixed constants. Beta
+interval tests cover first and second derivatives and compare concentrated
+and short intervals with independent high-precision integrals. Derivative
+support remains a separate question for each other base family.
 
 ## Event and batch axes {#event-rank-and-axis-role-syntax}
 
@@ -242,7 +797,11 @@ that choice explicit:
 
 | Family | Event dimensions | Interpretation |
 |---|---|---|
-| `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli`, `Horseshoe` | 0 | Scalar; every codomain axis is iid by default |
+| `Normal`, `Beta`, `Gamma`, `Exponential`, `LogNormal`, `LogitNormal`, `Cauchy`, `Laplace`, `AsymmetricLaplace`, `ExGaussian`, `InverseGaussian`, `HurdleGamma`, `HurdleLogNormal`, `Gumbel`, `StudentT`, `Weibull`, `Pareto`, `Kumaraswamy`, `ContinuousBernoulli`, `HalfNormal`, `HalfCauchy`, `InverseGamma`, `TruncatedNormal`, `Uniform`, `Bernoulli`, `Horseshoe` | 0 | Scalar; every codomain axis is iid by default |
+| `SkewNormal`, `ShiftedLogNormal`, `Frechet`, `GeneralizedExtremeValue` | 0 | Scalar real response; extent and runtime distribution shape are separate |
+| `DiscreteWeibull` | 0 | Nonnegative integer count; probability and concentration are runtime parameters |
+| `ZeroInflatedAsymmetricLaplace` | 0 | Real response with an exact zero atom and a continuous component |
+| `ZeroInflatedNegativeBinomial`, `ZeroInflatedBinomial`, `ZeroInflatedBetaBinomial`, `HurdleNegativeBinomial` | 0 | Integer count; every codomain axis is iid by default |
 | `MultivariateNormal`, `LowRankMVN`, `Dirichlet`, `OneHotCategorical`, `RelaxedOneHotCategorical`, `LogisticNormal`, `GP` | 1 | Vector; one named event axis carries the joint distribution |
 | `Wishart`, `InverseWishart`, `MatrixNormal`, `LKJCholesky` | 2 | Matrix; two named event axes carry the joint distribution |
 
@@ -257,6 +816,35 @@ event axes, so the declaration records both the event axes and the covariance
 structure.
 
 ## Structured priors over weight matrices
+
+### Multivariate Student responses
+
+`MultivariateStudentT(df, loc, scale_tril=...)` retains one real-vector event
+axis. It also accepts `covariance_matrix` or `precision_matrix` instead of
+the factor, using the same Gaussian scale geometry as `MultivariateNormal`.
+The covariance parameter names describe the Gaussian scale: the response
+covariance is `df/(df-2)` times that matrix when `df > 2`.
+
+Coordinates share a single chi-squared radial scale, so this law differs
+from independent scalar Student responses even when its scale is diagonal.
+Scoring evaluates the marginal Student density directly, and `rsample`
+supports pathwise derivatives of all three heads. The response mean is
+`loc` for `df > 1`; it is undefined otherwise. Marginal variances are
+infinite for `1 < df <= 2` and undefined for `df <= 1`.
+
+```qvr
+object Row : FinSet 3
+object Component : FinSet 2
+program student_response : Row -> Row
+    observe y : Row <- MultivariateStudentT(df=5.0, loc=[0.0,1.0], scale_tril=[[1.0,0.0],[0.5,1.0]]) [over=Component]
+    return y
+export student_response
+```
+
+`ConditionalMultivariateStudentT` reuses the existing Gaussian location and
+packed Cholesky heads, adding one positive degrees-of-freedom head. The
+native and checked reference runtimes implement this family; external
+renderers report a capability error until a target mapping is implemented.
 
 ### MatrixNormal: matrix prior with Kronecker covariance {#matrixnormal-kronecker-covariance-matrix-prior}
 
@@ -286,6 +874,32 @@ As a prior on a learnable table in QVR,
 `morphism W : D -> K [role=parameter, over=[dom, cod]] ~ MatrixNormal(loc=0.0, row_covariance=1.0, col_covariance=1.0)`,
 the first axis in `over` takes the row covariance and the second the column
 covariance ([Latent morphism prior](dsl-declarations.md#latent-morphism-prior)).
+
+MatrixNormal also accepts `row_scale_tril` and `col_scale_tril` independently
+of one another. Supply exactly one covariance or lower Cholesky factor for
+each axis. The same triangular-solve density and reparameterized sampler serve
+all four combinations. Supplied factors avoid forming covariance products or
+performing Cholesky factorization; `expand` and batch selection retain those
+factor coordinates. `ConditionalMatrixNormal` passes its learned factors
+directly through this constructor. Its row and column dimensions remain
+separate named event axes, including rectangular matrices.
+
+```qvr
+object Row : FinSet 2
+object Col : FinSet 3
+program matrix_prior : Row -> Row
+    sample weights <- MatrixNormal(loc=[[0.0,0.0,0.0],[0.0,0.0,0.0]], row_scale_tril=[[1.2,0.0],[0.3,0.8]], col_scale_tril=[[0.7,0.0,0.0],[-0.2,1.1,0.0],[0.1,0.3,0.9]]) [over=[Row,Col]]
+    return weights
+export matrix_prior
+```
+
+Native and checked-reference execution retain these parameterizations.
+`:info MatrixNormal`, notebook inspection, editor hover, and completion details
+read the same complete constructor schemas, including mixed covariance/factor
+forms. Authored declarations retain precedence over builtin family help.
+External targets receive literal factors multiplied into covariances through
+the existing matrix constructor. A factor known only at runtime is refused
+when that target has no declared MatrixNormal factor interface.
 
 ### InverseWishart: conjugate covariance prior
 

@@ -30,14 +30,25 @@ from __future__ import annotations
 
 from quivers.formulas.formula import (
     FixedColumn,
+    GaussianDesignTerm,
+    SplineBasis,
     RandomTerm,
     Formula,
     FormulaData,
+    ResponseLayout,
+    ResponseModifiers,
+    CensoringSpec,
+    TruncationSpec,
+    StandardErrorSpec,
+    RowSelection,
     formula_from_data,
 )
 from quivers.formulas.family import (
     Link,
     AuxParam,
+    OrdinalSpec,
+    ResponseSpec,
+    BaselineSpec,
     Family,
     links,
     families,
@@ -45,25 +56,81 @@ from quivers.formulas.family import (
 from quivers.formulas.compile import (
     FormulaToQVRModule,
 )
-from quivers.formulas._fit import BayesianFit, fit, formula_to_qvr
+from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
+from quivers.formulas._group_covariance import GroupCovariance, GroupCovarianceBasis
+from quivers.formulas._predictor_graph import (
+    NonlinearExpression,
+    ComponentExpression,
+    PredictorGraph,
+)
+from quivers.formulas._priors import (
+    PriorSpec,
+    PriorSet,
+    PriorTarget,
+    PriorInput,
+    PriorDistribution,
+    RegularizedHorseshoe,
+    R2D2,
+    normalize_priors,
+)
+from quivers.formulas._custom_family import custom_family
+from quivers.formulas._custom_types import CustomFamilySpec
+from quivers.formulas._fit import BayesianFit, fit, formula_to_qvr, get_prior
+from quivers.formulas._response_modifiers import (
+    ResponseDraws,
+    PredictionOptions,
+    ExpectationOptions,
+)
 
 __all__ = [
     # formula
     "FixedColumn",
+    "GaussianDesignTerm",
+    "SplineBasis",
     "RandomTerm",
     "Formula",
     "FormulaData",
+    "ResponseLayout",
+    "ResponseModifiers",
+    "CensoringSpec",
+    "TruncationSpec",
+    "StandardErrorSpec",
+    "RowSelection",
+    "ResponseDraws",
+    "PredictionOptions",
+    "ExpectationOptions",
     "formula_from_data",
     # family
     "Link",
     "AuxParam",
+    "OrdinalSpec",
+    "ResponseSpec",
+    "BaselineSpec",
     "Family",
+    "CustomFamilySpec",
+    "custom_family",
     "links",
     "families",
+    "PriorSpec",
+    "PriorSet",
+    "PriorTarget",
+    "PriorInput",
+    "PriorDistribution",
+    "RegularizedHorseshoe",
+    "R2D2",
+    "normalize_priors",
     # compile
     "FormulaToQVRModule",
+    "GroupBlockLayout",
+    "GroupCovariance",
+    "GroupCovarianceBasis",
+    "GroupMemberLayout",
+    "NonlinearExpression",
+    "ComponentExpression",
+    "PredictorGraph",
     # _fit
     "BayesianFit",
     "fit",
     "formula_to_qvr",
+    "get_prior",
 ]

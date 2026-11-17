@@ -24,6 +24,7 @@ outer one gives.
 
 from __future__ import annotations
 
+import math
 import weakref
 from collections.abc import Callable, Mapping
 from typing import TypeIs
@@ -35,8 +36,8 @@ from quivers.core.morphisms import extract_morphism
 from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.spaces import ContinuousSpace
 from quivers.continuous.program_steps import Call as CallStep
-from quivers.continuous.program_steps import Draw, Let, Observe, Scan, Score
-from quivers.continuous.programs import install_evaluator
+from quivers.continuous.program_steps import Draw, Indexed, Let, Observe, Scan, Score
+from quivers.continuous.programs import install_evaluator, _lookup_arg
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.base import (
@@ -46,6 +47,7 @@ from quivers.effects.base import (
     RunContext,
     _handler_stack,
 )
+from quivers.effects.checked_program import CheckedProgram
 from quivers.effects.program_module import (
     INPUT_NAME,
     SCAN_POSITION,
@@ -287,6 +289,148 @@ class _ParameterizedMorphism(ContinuousMorphism):
             The log density of the kept rows.
         """
         return self._call("log_prob_rows", x, y, *rows)
+
+    def score_dependencies(self) -> tuple[torch.Tensor, ...]:
+        """Return the live parameter overrides used by density evaluation.
+
+        Returns
+        -------
+        tuple[torch.Tensor, ...]
+            Runtime parameter values, including tensors not registered on
+            the original morphism, which retain zero-score gradients.
+        """
+        return tuple(self._values.values())
+
+    def log_prob_pointwise(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Read raw row densities under the supplied parameter values."""
+        method = (
+            "log_prob_pointwise"
+            if callable(getattr(self._inner, "log_prob_pointwise", None))
+            else "log_prob"
+        )
+        return self._call(method, x, y)
+
+    def log_prob_pointwise_rows(
+        self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor
+    ) -> torch.Tensor:
+        """Read selected raw row densities under the supplied parameters."""
+        return self._call("log_prob_pointwise_rows", x, y, *rows)
+
+    def log_prob_event(self, x, y, event):
+        """Score recorded events under the current parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._call("log_prob_event", x, y, event)
+
+    def log_prob_pointwise_event(self, x, y, event):
+        """Read event scores per row under parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._call("log_prob_pointwise_event", x, y, event)
+
+    def log_prob_pointwise_rows_event(self, x, y, event, *rows):
+        """Read selected event scores under parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+        *rows : tuple[Tensor, ...]
+            Selected plate indices, outermost observation axis first.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._call("log_prob_pointwise_rows_event", x, y, event, *rows)
+
+    def log_prob_rows_event(self, x, y, event, *rows):
+        """Sum selected event scores under parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+        *rows : tuple[Tensor, ...]
+            Selected plate indices, outermost observation axis first.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._call("log_prob_rows_event", x, y, event, *rows)
+
+    def rsample_event(self, x, sample_shape, event):
+        """Draw the truncated sampling law under parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Response draws with retained sample, observation, array, and event axes.
+        """
+        return self._call("rsample_event", x, sample_shape, event)
+
+    def sampling_distribution(self, x, event=None):
+        """Construct the response law under parameter overrides.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Distribution
+            Underlying response sampling law, normalized on any truncation interval.
+        """
+        return self._call("sampling_distribution", x, event)
 
     def __getattr__(self, name: str) -> torch.Tensor | torch.nn.Module:
         """Read a submodule, or any other attribute from the inner morphism.
@@ -732,15 +876,40 @@ def _event_numel(morphism: torch.nn.Module | None) -> int | None:
     Returns
     -------
     int | None
-        The width of a continuous codomain, one for a discrete codomain,
-        or ``None`` when the site has no morphism.
+        The number of coordinates in a continuous codomain's carrier,
+        one for a discrete codomain, or ``None`` when the site has no
+        morphism. Matrix carriers use their full shape rather than their
+        matrix dimension.
     """
     if morphism is None:
         return None
     codomain = getattr(morphism, "codomain", None)
     if isinstance(codomain, ContinuousSpace):
-        return int(getattr(codomain, "dim"))
+        return math.prod(getattr(codomain, "shape", codomain.event_shape))
     return 1
+
+
+def _declared_event(morphism: torch.nn.Module | None, value: torch.Tensor) -> bool:
+    """Check an exact intrinsic event shape before classifying a run axis.
+
+    Parameters
+    ----------
+    morphism : torch.nn.Module or None
+        Native law with optional explicit tensor-event geometry.
+    value : torch.Tensor
+        Supplied value before any run slicing.
+
+    Returns
+    -------
+    bool
+        True when all value axes belong to the explicitly declared event.
+    """
+    codomain = getattr(morphism, "codomain", None)
+    return (
+        isinstance(codomain, ContinuousSpace)
+        and getattr(codomain, "intrinsic_shape", None) is not None
+        and tuple(value.shape) == codomain.event_shape
+    )
 
 
 def _plated_value(
@@ -1021,6 +1190,7 @@ class _HostSteps:
         self.program = run.kernel.program
         self.x = x
         self.axis = axis
+        self._given_observations = frozenset(run.observations)
 
     def _one_run(
         self, step: HostStep, env: dict[str, torch.Tensor]
@@ -1237,10 +1407,44 @@ class _HostSteps:
             lambda name: self.axis.carries(step.program, name),
         )
         assert step.site is not None
+        if isinstance(spec, Observe) and len(spec.names) == 1 and spec.names[0] in env:
+            address = (
+                site_label(step.site, self.run.occurrences.get(step.site, 0))
+                if step.scanned
+                else step.site
+            )
+            if address not in self._given_observations:
+                value = env[spec.names[0]]
+                carries = self.axis.carries(step.program, spec.names[0])
+                if _plated(morphism) and carries:
+                    value = value[0]
+                    carries = False
+                self.run.observations[address] = _canonical(morphism, value)
+                self.axis.given(step.program, step.site, carries)
         values = parameters(step.site, morphism)
         drawing: ContinuousMorphism = (
             _ParameterizedMorphism(morphism, values) if values else morphism
         )
+        if isinstance(spec, Observe) and spec.event is not None:
+            from quivers.effects._observation_events import (
+                RecordedObservation,
+                resolve_event,
+            )
+
+            stripped, _ = self._one_run(step, env)
+            payload = resolve_event(spec.event, stripped)
+            drawing = RecordedObservation(drawing, morphism, payload)
+        raw_morphism = drawing
+        if isinstance(spec, Observe) and spec.weights is not None:
+            from quivers.effects._observation_weights import WeightedObservation
+
+            stripped, _ = self._one_run(step, env)
+            weights = (
+                _lookup_arg(stripped, spec.weights)
+                if isinstance(spec.weights, str | Indexed)
+                else spec.weights
+            )
+            drawing = WeightedObservation(drawing, morphism, weights, inp)
         subsampled = _subsampled_rows(self.run, step, spec, morphism)
         if subsampled is not None:
             rows, factor = subsampled
@@ -1248,9 +1452,19 @@ class _HostSteps:
             annotations["subsample_scale"] = factor
             annotations["subsample_rows"] = rows
             drawing = _SubsampledMorphism(drawing, rows, factor)
+        if isinstance(spec, Observe):
+            from quivers.effects.observation_scoring import (
+                _enabled,
+                _UnscoredObservation,
+            )
+
+            if not _enabled(self.run):
+                drawing = _UnscoredObservation(drawing)
         if drawing is morphism:
             return TorchSampleable(morphism=morphism, input=inp)
-        return TorchSampleable(morphism=drawing, input=inp, declared=morphism)
+        return TorchSampleable(
+            morphism=drawing, input=inp, declared=morphism, raw_morphism=raw_morphism
+        )
 
     def _parameters(
         self, site: str, morphism: ContinuousMorphism, context: ClauseContext
@@ -1402,7 +1616,7 @@ class _HostSteps:
             self.axis.record(step.program, spec.name, carried)
             return value
         self.axis.record(step.program, spec.name, True)
-        return torch.full((self.x.shape[0],), float(spec.value), device=self.x.device)
+        return torch.full((self.x.shape[0],), spec.value, device=self.x.device)
 
     def _score(self, step: HostStep, argument: object) -> object:
         """Compute a score step's contribution.
@@ -1421,6 +1635,11 @@ class _HostSteps:
         """
         spec = step.spec
         assert isinstance(spec, Score)
+        from quivers.effects.observation_scoring import _enabled
+
+        if spec.role == "likelihood" and not _enabled(self.run):
+            self.axis.record(step.program, spec.name, True)
+            return torch.zeros(self.x.shape[0], device=self.x.device)
         stripped, carried = self._one_run(step, _environment(step, argument))
         value = spec.score(stripped)
         if carried:
@@ -1827,8 +2046,8 @@ def _element_admits(element: TypeExpr, value: torch.Tensor) -> bool:
 
 
 def check_host_data(
-    program: MonadicProgram,
-    data: Mapping[str, torch.Tensor | float | int],
+    program: MonadicProgram | CheckedProgram,
+    data: Mapping[str, object],
     runs: int | None = None,
 ) -> dict[str, bool]:
     """Refuse host data that does not inhabit the program's checked types.
@@ -1848,9 +2067,9 @@ def check_host_data(
 
     Parameters
     ----------
-    program : MonadicProgram
+    program : MonadicProgram or CheckedProgram
         The program, whose ``host_data_types`` give the checked types.
-    data : Mapping[str, torch.Tensor | float | int]
+    data : Mapping[str, object]
         The supplied host data, by name.
     runs : int | None
         The length of the input batch, whose axis a datum may lead with;
@@ -1871,8 +2090,21 @@ def check_host_data(
     TypeError
         If a datum's element type is not the one its checked type names.
     """
+    from quivers.qiec.types import IndexSum
+    from quivers.qiec.index_arithmetic import infer_index_extents
+
     extents: dict[str, tuple[int, str]] = {}
+    affine_equations: list[tuple[IndexTerm, int]] = []
     per_run_data: dict[str, bool] = {}
+    nonnegative = (
+        {
+            parameter.name
+            for parameter in program.input_contract.parameters
+            if parameter.constraint == "nonnegative"
+        }
+        if program.input_contract is not None
+        else set()
+    )
     for name, expected in program.host_data_types.items():
         if name not in data:
             continue
@@ -1885,7 +2117,12 @@ def check_host_data(
             supplied = _string_shape(name, data[name], rendered)
             value = None
         else:
-            value = torch.as_tensor(data[name])
+            try:
+                value = torch.as_tensor(data[name])
+            except (TypeError, ValueError, RuntimeError) as error:
+                raise TypeError(
+                    f"host datum {name!r} cannot be read at checked type {rendered}"
+                ) from error
             supplied = tuple(value.shape)
         layouts = [tuple(dimensions)]
         if name in program.host_data_shared and dimensions:
@@ -1908,6 +2145,8 @@ def check_host_data(
         per_run_data[name] = per_run != supplied
         dimensions = layout
         for dimension, extent in zip(dimensions, per_run):
+            if isinstance(dimension, IndexSum):
+                affine_equations.append((dimension, extent))
             if not isinstance(dimension, IndexVariable):
                 continue
             fixed = extents.setdefault(dimension.name, (extent, name))
@@ -1922,6 +2161,34 @@ def check_host_data(
                 f"program reads it at type {rendered}, whose elements are "
                 f"{render_static(element)}"
             )
+        if value is not None and name in nonnegative and bool((value < 0).any()):
+            raise ValueError(f"host datum {name!r} must be a nonnegative integer")
+    if affine_equations:
+        for name, extent in infer_index_extents(
+            affine_equations, {key: value for key, (value, _) in extents.items()}
+        ).items():
+            extents.setdefault(name, (extent, "checked affine shapes"))
+    for name, bounds in program.host_index_bounds.items():
+        if name not in data:
+            continue
+        value = torch.as_tensor(data[name])
+        for bound in bounds:
+            if isinstance(bound, IndexLiteral):
+                size = bound.value
+            elif isinstance(bound, IndexVariable) and bound.name in extents:
+                size = extents[bound.name][0]
+            elif isinstance(bound, IndexSum) and all(
+                term.name in extents for term in bound.terms
+            ):
+                size = bound.constant + sum(
+                    extents[term.name][0] for term in bound.terms
+                )
+            else:
+                continue
+            if bool(((value < 0) | (value >= size)).any()):
+                raise ValueError(
+                    f"index datum {name!r} must contain indices in [0, {size})"
+                )
     return per_run_data
 
 
@@ -2183,7 +2450,11 @@ def _run_slice(
         if single is not None and value.numel() == single:
             # One value every run shares, at one run's layout: led by
             # the run axis of length one.
-            if value.dim() >= 1 and int(value.shape[0]) == 1:
+            if (
+                not _declared_event(morphism, value)
+                and value.dim() >= 1
+                and int(value.shape[0]) == 1
+            ):
                 return value
             return value.unsqueeze(0)
         if runs == 1:
@@ -2263,7 +2534,10 @@ def _vectorized_sites(
         single = _event_numel(morphism)
         if single is None:
             return None
-        if (
+        if _declared_event(morphism, value):
+            one = _run_slice(kernel, label, value, 1, 0)
+            rows = one.expand(runs, *one.shape[1:])
+        elif (
             value.dim() >= 1
             and int(value.shape[0]) == runs
             and value.numel() == runs * single
@@ -2275,7 +2549,11 @@ def _vectorized_sites(
         else:
             return None
         codomain = getattr(morphism, "codomain", None)
-        if isinstance(codomain, ContinuousSpace) and len(codomain.event_shape) == 1:
+        if (
+            isinstance(codomain, ContinuousSpace)
+            and getattr(codomain, "shape", None) is None
+            and len(codomain.event_shape) == 1
+        ):
             # A continuous draw is one row of its event per run, so a
             # scalar's runs are a column, never a row the event reads.
             rows = rows.reshape(runs, single)
@@ -2532,16 +2810,23 @@ def _run_once(
             ),
         )
     )
-    if sites:
-        clamped = {
-            label: _canonical(_site_morphism(kernel, label), value)
-            for label, value in sites.items()
-        }
+    if sites or any(
+        isinstance(step.spec, Observe)
+        and len(step.spec.names) == 1
+        and step.spec.names[0] in step.environment
+        for step in kernel.steps
+    ):
+        run.observations.update(
+            {
+                label: _canonical(_site_morphism(kernel, label), value)
+                for label, value in sites.items()
+            }
+        )
         random_installations.append(
             Installation(
                 instance=kernel.random,
                 runtime=condition_handler(
-                    clamped,
+                    run.observations,
                     score_instance=kernel.score.entry.instance,
                     result_validator=host_value,
                     missing=MissingValuePolicy.FORWARD,

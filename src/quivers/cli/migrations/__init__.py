@@ -50,7 +50,8 @@ from quivers.cli.migrations import v0_11_0_to_v0_14_0 as _hop_11_14
 from quivers.cli.migrations import v0_14_0_to_v0_15_0 as _hop_14_15
 from quivers.cli.migrations import v0_18_0_to_v0_19_0 as _hop_18_19
 from quivers.cli.migrations import v0_19_0_to_v0_62_0 as _hop_19_62
-from quivers.cli.migrations import v0_62_0_to_head as _hop_62_head
+from quivers.cli.migrations import v0_62_0_to_v0_64_2 as _hop_62_64
+from quivers.cli.migrations import v0_64_2_to_head as _hop_64_head
 from quivers.cli.migrations._common import MigrationError
 from quivers.cli.migrations._manifest import SCHEMA_COMMITS, revisions_are_identical
 from quivers.cli.migrations._vcs import (
@@ -83,6 +84,7 @@ CHAIN: tuple[str, ...] = (
     "v0.18.0",
     "v0.19.0",
     "v0.62.0",
+    "v0.64.2",
     "HEAD",
 )
 """The QVR grammar releases a migration can start or end at, oldest
@@ -169,7 +171,8 @@ MIGRATORS: dict[tuple[str, str], _Migrator] = {
     ),
     ("v0.18.0", "v0.19.0"): _hop_18_19.migrate,
     ("v0.19.0", "v0.62.0"): _hop_19_62.migrate,
-    ("v0.62.0", "HEAD"): _hop_62_head.migrate,
+    ("v0.62.0", "v0.64.2"): _hop_62_64.migrate,
+    ("v0.64.2", "HEAD"): _hop_64_head.migrate,
 }
 """The one-hop migrator registered for each adjacent pair of `CHAIN`,
 a ``bytes -> bytes`` rewrite of ``.qvr`` source."""
@@ -190,7 +193,8 @@ COVERAGE: dict[tuple[str, str], frozenset[str]] = {
     ("v0.17.0", "v0.18.0"): _identity.SOURCE_RULE_COVERAGE,
     ("v0.18.0", "v0.19.0"): _hop_18_19.SOURCE_RULE_COVERAGE,
     ("v0.19.0", "v0.62.0"): _hop_19_62.SOURCE_RULE_COVERAGE,
-    ("v0.62.0", "HEAD"): _hop_62_head.SOURCE_RULE_COVERAGE,
+    ("v0.62.0", "v0.64.2"): _hop_62_64.SOURCE_RULE_COVERAGE,
+    ("v0.64.2", "HEAD"): _hop_64_head.SOURCE_RULE_COVERAGE,
 }
 """The source-side grammar rules each hop's converters cover, keyed by
 adjacent pair of `CHAIN`. `vcs_coverage_report` checks these against
@@ -218,7 +222,7 @@ IDENTITY_PAIRS: frozenset[tuple[str, str]] = _declared_identity_pairs()
 their registered migrator returns its source unchanged."""
 
 
-_SEMANTIC_PAIRS = frozenset({("v0.62.0", "HEAD")})
+_SEMANTIC_PAIRS = frozenset({("v0.62.0", "v0.64.2")})
 """Option-vocabulary migrations with byte-identical grammar assets."""
 
 

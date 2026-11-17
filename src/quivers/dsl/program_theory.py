@@ -328,6 +328,7 @@ _EDGE_RULES = [
 ]
 
 _CONSTRAINT_SORTS = [
+    "value_constraint",
     "name",
     "cardinality",
     "max_length",
@@ -842,6 +843,8 @@ class _KernelWriter:
             self._builder.constraint(pvid, "name", parameter.name)
             self._builder.constraint(pvid, "role", parameter.role)
             self._builder.constraint(pvid, "type", render_static(parameter.type))
+            if parameter.constraint is not None:
+                self._builder.constraint(pvid, "value_constraint", parameter.constraint)
             if parameter.axes:
                 self._builder.constraint(pvid, "axes", ", ".join(parameter.axes))
             self._builder.edge(vid, pvid, "parameter")

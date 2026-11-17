@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the HalfStudentT family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program halfstudentt_fixture : Obs -> Obs
+    observe y : Obs <- HalfStudentT(df=4.0, scale=1.0)
+    return y
+export halfstudentt_fixture

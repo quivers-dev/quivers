@@ -1,0 +1,6 @@
+# Pushforward is the checked program surface of canonical Transformed.
+object Obs : FinSet 3
+program transformed_fixture : Obs -> Obs
+    observe y : Obs <- Pushforward(base=Normal(loc=0.0, scale=1.0), bijector=Exp)
+    return y
+export transformed_fixture

@@ -218,6 +218,13 @@ loss = elbo(model, guide, x, observations)
 QVR has no data block: the tensors are passed from Python at the call, and the keys
 must match the names the program observes or reads.
 
+To state these inputs explicitly, use typed runtime parameters in the program
+header, as in `program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out`.
+The annotations constrain supplied values without drawing or scoring them.
+`observe y` assigns the response its likelihood role. Static object, morphism,
+and extent parameters use a preceding bracketed telescope; see the
+[parameter reference](../reference/qvr/index.md#parameter-telescopes).
+
 ## Named parameters
 
 When the domain is a product, `params` names its components so that steps can read
@@ -470,3 +477,6 @@ torch.testing.assert_close(factors.log_prob(torch.zeros(1), draw).squeeze(), ref
   intercepts, monotone effects, and marginalizing a discrete latent once per group.
 - [Inference Foundations](inference-foundations.md): how programs are fit by
   variational inference and MCMC.
+
+For data-driven finite dimensions and reusable fitting components, see
+[Model data and fitting](model-data-and-fitting.md).

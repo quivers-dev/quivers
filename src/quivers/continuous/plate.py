@@ -112,6 +112,7 @@ from quivers.continuous.spaces import (
     Correlation,
     Covariance,
     Euclidean,
+    ContinuousSpace,
     LowerTriangular,
     Orthogonal,
     Stiefel,
@@ -139,6 +140,110 @@ _CLASS_SPACES = (FinSet, EnumSet)
 Their ``shape`` is the one-hot width of an element, not the extent of a
 draw: a row of a plated draw over such a set holds a single index.
 """
+
+
+def _array_parameter_rows(
+    family: ContinuousMorphism,
+    x: torch.Tensor,
+    rows: int,
+    array_shape: tuple[int, ...],
+) -> torch.Tensor:
+    """Share checked parameter-block expansion between draws and observations.
+
+    Parameters
+    ----------
+    family : ContinuousMorphism
+        Numeric parameter packing and structural batch-rank proofs.
+    x : torch.Tensor
+        Shared, row-wise, or already flattened parameter feature rows.
+    rows : int
+        Number of outer rows before independent array axes.
+    array_shape : tuple[int, ...]
+        Explicit independent array axes; dimensions do not select ownership.
+
+    Returns
+    -------
+    torch.Tensor
+        One parameter feature row per row and independent array position.
+    """
+    entries = math.prod(array_shape)
+    if x.shape[0] == 1 and rows != 1:
+        # The caller declares the outer row count. A shared conditioning
+        # row must cover those rows before expanding their array entries.
+        x = x.expand(rows, *x.shape[1:])
+    if x.shape[0] == rows * entries:
+        # The checked packing may already supply one parameter row for
+        # every independent array entry. Do not replicate those rows.
+        return x
+    spec = getattr(family, "_param_spec", None)
+    if spec is not None and x.dim() == 2:
+        widths = [width for kind, width in spec if kind == "var"]
+        ranks = getattr(family, "_param_batch_ndims", ())
+        varying = (
+            [rank for (kind, _), rank in zip(spec, ranks, strict=True) if kind == "var"]
+            if ranks
+            else []
+        )
+        known_widths = [width for width in widths if width is not None]
+        known_ranks = [rank for rank in varying if rank is not None]
+        if (
+            widths
+            and len(known_widths) == len(widths)
+            and len(known_ranks) == len(widths)
+        ):
+            selected = [min(max(rank - 1, 0), len(array_shape)) for rank in known_ranks]
+            feature_widths = [
+                width * math.prod(array_shape[:axes])
+                for width, axes in zip(known_widths, selected, strict=True)
+            ]
+            if x.shape[-1] == sum(feature_widths):
+                blocks = []
+                offset = 0
+                for width, axes, columns in zip(
+                    known_widths, selected, feature_widths, strict=True
+                ):
+                    block = x[:, offset : offset + columns].reshape(
+                        x.shape[0],
+                        *array_shape[:axes],
+                        *((1,) * (len(array_shape) - axes)),
+                        width,
+                    )
+                    blocks.append(block.expand(x.shape[0], *array_shape, width))
+                    offset += columns
+                return torch.cat(blocks, dim=-1).reshape(
+                    x.shape[0] * entries, sum(known_widths)
+                )
+        if (
+            widths
+            and len(known_widths) == len(widths)
+            and x.shape[-1] == sum(known_widths) * entries
+        ):
+            blocks = []
+            offset = 0
+            for width in known_widths:
+                block = x[:, offset : offset + width * entries].reshape(
+                    x.shape[0], entries, width
+                )
+                blocks.append(block)
+                offset += width * entries
+            return torch.cat(blocks, dim=-1).reshape(
+                x.shape[0] * entries, sum(known_widths)
+            )
+        if (
+            widths
+            and entries > 1
+            and all(width is None or width == 1 for width in widths)
+            and int(x.shape[-1]) == len(widths) * entries
+        ):
+            # Every parameter holds one value per entry of the row's
+            # array, laid out parameter by parameter: each entry
+            # reads its own value of each.
+            return (
+                x.reshape(x.shape[0], len(widths), entries)
+                .transpose(1, 2)
+                .reshape(x.shape[0] * entries, len(widths))
+            )
+    return x.repeat_interleave(entries, dim=0)
 
 
 class PlateDraw(ContinuousMorphism):
@@ -206,14 +311,24 @@ class PlateDraw(ContinuousMorphism):
         elif isinstance(family.codomain, _MATRIX_SPACES):
             per_row_shape = family.codomain.shape
             per_row_dim = math.prod(per_row_shape)
-        elif hasattr(family.codomain, "dim"):
-            per_row_dim = int(family.codomain.dim)
-            per_row_shape = (per_row_dim,)
+        elif isinstance(family.codomain, ContinuousSpace):
+            per_row_shape = family.codomain.event_shape
+            per_row_dim = math.prod(per_row_shape)
         else:
             per_row_shape = tuple(family.codomain.shape)
             per_row_dim = (
                 int(torch.tensor(per_row_shape).prod().item()) if per_row_shape else 1
             )
+        explicit_shape = (
+            isinstance(family.codomain, Euclidean)
+            and family.codomain.intrinsic_shape is not None
+        )
+        if (
+            per_row_shape == (1,)
+            and family.support.event_dim == 0
+            and not explicit_shape
+        ):
+            per_row_shape = ()
         # `plate_rows` keeps the row structure of the flattened
         # codomain recoverable: a consumer that reads the variable as
         # a *parameter* needs the per-row width, since the plate axis
@@ -231,6 +346,9 @@ class PlateDraw(ContinuousMorphism):
         self._index_size = index_size
         self._index_shape = shape
         self._family = family
+        from quivers.continuous.inline import FixedDistribution
+
+        self._fixed_parameters = isinstance(family, FixedDistribution)
         self._per_row_shape = per_row_shape
         self._per_row_dim = per_row_dim
         # Width of the conditioning input a single row of the family
@@ -239,7 +357,9 @@ class PlateDraw(ContinuousMorphism):
         # network, so it must equal the domain's feature width.
         dom = actual_domain
         if hasattr(dom, "dim"):
-            self._domain_width = max(1, int(dom.dim))
+            self._domain_width = max(
+                1, int(dom.row_width if isinstance(dom, Euclidean) else dom.dim)
+            )
         elif hasattr(dom, "shape"):
             shape = tuple(dom.shape)
             self._domain_width = int(torch.tensor(shape).prod().item()) if shape else 1
@@ -284,6 +404,20 @@ class PlateDraw(ContinuousMorphism):
         elements of its finite domain is drawn one row per element by
         a plate over that domain, so each row is conditioned on its own
         index.
+
+        Parameters
+        ----------
+        x : torch.Tensor or None
+            Shared or row-indexed conditioning features.
+        n_rows : int
+            Number of independent parameter rows to produce.
+        device : torch.device or None
+            Device used for fixed-family placeholder inputs.
+
+        Returns
+        -------
+        torch.Tensor
+            Conditioning rows with checked independent-array packing.
         """
         width = self._domain_width
         if isinstance(getattr(self._family, "param_source", None), LookupSource):
@@ -292,6 +426,10 @@ class PlateDraw(ContinuousMorphism):
         if x is None or x.numel() == 0:
             return torch.zeros(n_rows, width, device=device)
         xf = x if x.dim() == 2 else x.reshape(1, -1)
+        if len(self._index_shape) > 1 and n_rows == self._index_size:
+            xf = _array_parameter_rows(
+                self._family, xf, self._index_shape[0], self._index_shape[1:]
+            )
         if xf.shape[-1] != width:
             if xf.numel() == width:
                 xf = xf.reshape(1, width)
@@ -326,6 +464,23 @@ class PlateDraw(ContinuousMorphism):
         vector, *not* a per-particle (batch, n_subj) replication. The
         gather ``arr[idx]`` along the plate axis then composes
         cleanly with per-row observed-plate axes downstream.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+
+        Returns
+        -------
+        Tensor
+            Response draws with retained sample, observation, array, and event axes.
+
+        Raises
+        ------
+        ValueError
+            If selected indices or observation and parameter layouts violate the plate contract.
         """
         del sample_shape  # plate latents are batch-invariant
         device = x.device if x is not None else None
@@ -338,10 +493,22 @@ class PlateDraw(ContinuousMorphism):
         # positive-support family realised as a restricted base
         # measure, say); those ignore the input's leading axis but
         # still honour the explicit sample shape.
-        row_input = self._row_conditioning(x, 1, device)
-        base = self._family.rsample(
-            row_input, sample_shape=torch.Size((self._index_size,))
+        per_row = isinstance(
+            getattr(self._family, "param_source", None), LookupSource
+        ) or (
+            not self._fixed_parameters
+            and x is not None
+            and self._index_size > 1
+            and x.numel() == self._index_size * self._domain_width
         )
+        if per_row:
+            row_input = self._row_conditioning(x, self._index_size, device)
+            base = self._family.rsample(row_input)
+        else:
+            row_input = self._row_conditioning(x, 1, device)
+            base = self._family.rsample(
+                row_input, sample_shape=torch.Size((self._index_size,))
+            )
         expected = self._index_size * self._per_row_dim
         if base.numel() != expected:
             raise ValueError(
@@ -356,15 +523,10 @@ class PlateDraw(ContinuousMorphism):
 
         The per-row event axis ``B`` is carried explicitly so a
         downstream gather ``v[idx]`` along the plate axis preserves the
-        event coordinates. Scalar-per-row plates
-        (``per_row_shape == (1,)``) drop the trailing length-1 axis so
-        the latent has the natural ``(|A|,)`` shape and ``v[idx]``
-        advance-indexing produces ``(N,)`` without a manual squeeze.
+        event coordinates. Scalar supports have empty per-row shape; a
+        singleton simplex or matrix keeps its intrinsic event axes.
         """
-        sample = value.reshape(*self._index_shape, *self._per_row_shape)
-        if len(self._per_row_shape) == 1 and self._per_row_shape[0] == 1:
-            sample = sample.squeeze(-1)
-        return sample
+        return value.reshape(*self._index_shape, *self._per_row_shape)
 
     def canonical_latent(self, value: torch.Tensor) -> torch.Tensor:
         """Give a clamped plate value its structured ``(|A|, *B.shape)``.
@@ -547,6 +709,11 @@ class VectorisedObserve(ContinuousMorphism):
         one-dimensional continuous codomain also accepts ``(N,)``,
         which gains its event axis in `_align_response`; a discrete
         codomain takes ``(N,)`` indices and has no event axis.
+    array_shape : tuple[int, ...]
+        Independent coordinates after the outer observation axis.
+    array_is_batch : bool
+        Retain these coordinates in pointwise scores when the checked
+        distribution declares them batch axes rather than event coordinates.
     """
 
     def __init__(
@@ -555,10 +722,12 @@ class VectorisedObserve(ContinuousMorphism):
         response: torch.Tensor,
         *,
         array_shape: tuple[int, ...] = (),
+        array_is_batch: bool = False,
     ) -> None:
         super().__init__(family.domain, family.codomain)
         self._family = family
         self._array_shape = tuple(array_shape)
+        self._array_is_batch = array_is_batch
         self.register_buffer("_response", response.detach())
 
     @property
@@ -592,25 +761,9 @@ class VectorisedObserve(ContinuousMorphism):
         torch.Tensor
             The parameters, one row per entry of every row's array.
         """
-        entries = math.prod(self._array_shape)
-        spec = getattr(self._family, "_param_spec", None)
-        if spec is not None and x.dim() == 2:
-            widths = [width for kind, width in spec if kind == "var"]
-            if (
-                widths
-                and entries > 1
-                and all(width is None or width == 1 for width in widths)
-                and int(x.shape[-1]) == len(widths) * entries
-            ):
-                # Every parameter holds one value per entry of the row's
-                # array, laid out parameter by parameter: each entry
-                # reads its own value of each.
-                return (
-                    x.reshape(x.shape[0], len(widths), entries)
-                    .transpose(1, 2)
-                    .reshape(x.shape[0] * entries, len(widths))
-                )
-        return x.repeat_interleave(entries, dim=0)
+        return _array_parameter_rows(
+            self._family, x, int(self.response.shape[0]), self._array_shape
+        )
 
     @property
     def response(self) -> torch.Tensor:
@@ -653,13 +806,156 @@ class VectorisedObserve(ContinuousMorphism):
         program-wide parameters) is drawn once per row of the plate,
         so the draw has the plate's rows whatever mix of shared and
         per-row parameters the observation reads.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+
+        Returns
+        -------
+        Tensor
+            Response draws with retained sample, observation, array, and event axes.
+        """
+        return self._rsample(x, sample_shape, None)
+
+    def rsample_event(self, x, sample_shape, event):
+        """Draw the underlying response law through the same observation layout.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Response draws with retained sample, observation, array, and event axes.
+        """
+        return self._rsample(x, sample_shape, event)
+
+    def sampling_distribution(self, x, event=None):
+        """Build the underlying per-entry law using the observation layout.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Distribution
+            Underlying response sampling law, normalized on any truncation interval.
+        """
+        rows = self.response.shape[0]
+        if x.ndim and x.shape[0] == 1 and rows > 1:
+            x = x.expand(rows, *x.shape[1:])
+        if self._array_shape:
+            x = self._array_rows(x)
+        payload = self._event_layout(
+            event, self.response, flatten=bool(self._array_shape)
+        )
+        return self._family.sampling_distribution(x, payload)
+
+    def _event_layout(self, event, target, *, flatten=False):
+        """Broadcast bound recording roles exactly as the observed values.
+
+        Parameters
+        ----------
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+        target : Tensor
+            Response values carrying the checked observation layout.
+        flatten : bool
+            Whether to combine observation and independent array axes.
+
+        Returns
+        -------
+        dict[str, object] or None
+            Recording roles broadcast and flattened using the same observation layout.
+        """
+        if event is None:
+            return None
+        result = {}
+        for name, value in event.items():
+            if value is None:
+                result[name] = None
+                continue
+            tensor = torch.as_tensor(
+                value,
+                device=target.device,
+                dtype=None
+                if name == "status" or isinstance(value, torch.Tensor)
+                else torch.float64,
+            )
+            if (
+                tensor.ndim == 1
+                and target.ndim > 1
+                and tensor.shape[0] == target.shape[0]
+            ):
+                tensor = tensor.reshape(tensor.shape + (1,) * (target.ndim - 1))
+            tensor = torch.broadcast_to(tensor, target.shape)
+            if flatten:
+                entries = math.prod(self._array_shape)
+                event_size = math.prod(target.shape[1 + len(self._array_shape) :])
+                tensor = tensor.reshape(target.shape[0] * entries, event_size).squeeze(
+                    -1
+                )
+            result[name] = self._align_response(tensor)
+        return result
+
+    def _rsample(self, x, sample_shape, event):
+        """Share sampling layout between ordinary and recorded observations.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        sample_shape : torch.Size
+            Leading independent sampling dimensions.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Response draws with retained sample, observation, array, and event axes.
         """
         rows = self.response.shape[0]
         if x.dim() >= 1 and x.shape[0] == 1 and rows > 1:
             x = x.expand(rows, *x.shape[1:])
+        payload = self._event_layout(
+            event, self.response, flatten=bool(self._array_shape)
+        )
+
+        def draw(theta):
+            """Draw through the selected ordinary or recorded-event sampling view.
+
+            Parameters
+            ----------
+            theta : Tensor
+                Family parameters in the per-entry observation layout.
+
+            Returns
+            -------
+            Tensor
+                Response draws with retained sample, observation, array, and event axes.
+            """
+            if payload is None:
+                return self._family.rsample(theta, sample_shape)
+            return self._family.rsample_event(theta, sample_shape, payload)
+
         if not self._array_shape:
-            return self._family.rsample(x, sample_shape)
-        draws = self._family.rsample(self._array_rows(x), sample_shape)
+            return draw(x)
+        draws = draw(self._array_rows(x))
         lead = tuple(sample_shape)
         event = tuple(draws.shape[len(lead) + 1 :])
         if event == (1,):
@@ -714,26 +1010,128 @@ class VectorisedObserve(ContinuousMorphism):
         different value (e.g. a clamped observation) is supported
         for fast prior-predictive checks.
         """
+        return self.log_prob_pointwise(x, y).sum()
+
+    def log_prob_pointwise(
+        self, x: torch.Tensor, y: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Score each observation row without summing the observation plate.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Family parameters at each row, or shared across rows.
+        y : torch.Tensor or None
+            Observations; the registered response when omitted.
+
+        Returns
+        -------
+        torch.Tensor
+            One log density per observation row. Event dimensions and each
+            row's array axes are reduced together, as in ``log_prob``.
+        """
+        return self._log_prob_pointwise(x, y, None)
+
+    def log_prob_event(self, x, y, event):
+        """Sum unweighted recorded-event likelihoods over this observation plate.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._log_prob_pointwise(x, y, event).sum()
+
+    def log_prob_pointwise_event(self, x, y, event):
+        """Score recorded events with the existing row and event reductions.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._log_prob_pointwise(x, y, event)
+
+    def _log_prob_pointwise(self, x, y, event):
+        """Apply one scoring rule using the canonical observation layout.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
         target = y if y is not None else cast("torch.Tensor", self._response)
         if self._array_shape:
             # Each entry of a row's array is one observation of the
             # per-row family at that row's parameters.
             entries = math.prod(self._array_shape)
-            flat = target.reshape(target.shape[0] * entries, -1).squeeze(-1)
+            event_size = math.prod(target.shape[1 + len(self._array_shape) :])
+            flat = target.reshape(target.shape[0] * entries, event_size).squeeze(-1)
             rows = (
                 x
-                if x.shape[0] == target.shape[0]
+                if x.shape[0] in (target.shape[0], target.shape[0] * entries)
                 else x.expand(target.shape[0], *x.shape[1:])
             )
-            return self._family.log_prob(
-                self._array_rows(rows), self._align_response(flat)
-            ).sum()
-        return self._family.log_prob(x, self._align_response(target)).sum()
+            theta, point = self._array_rows(rows), self._align_response(flat)
+            density = (
+                self._family.log_prob(theta, point)
+                if event is None
+                else self._family.log_prob_event(
+                    theta, point, self._event_layout(event, target, flatten=True)
+                )
+            )
+            # Retain the proved response width even for an empty row axis;
+            # inferring -1 from zero elements is ambiguous.
+            score_width = math.prod(density.shape[1:])
+            per_entry = density.reshape(target.shape[0], entries, score_width).sum(-1)
+            return (
+                per_entry.reshape(target.shape[0], *self._array_shape)
+                if self._array_is_batch
+                else per_entry.sum(-1)
+            )
+        point = self._align_response(target)
+        density = (
+            self._family.log_prob(x, point)
+            if event is None
+            else self._family.log_prob_event(
+                x, point, self._event_layout(event, target)
+            )
+        )
+        if density.ndim > 1:
+            density = density.flatten(start_dim=1).sum(-1)
+        return density
 
-    def log_prob_rows(
+    def log_prob_pointwise_rows(
         self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor
     ) -> torch.Tensor:
-        """Sum of the per-observation log-densities at a subset of the rows.
+        """Per-observation log densities at a selected subset of the rows.
 
         Parameters
         ----------
@@ -751,7 +1149,7 @@ class VectorisedObserve(ContinuousMorphism):
         Returns
         -------
         torch.Tensor
-            The summed log-density of the kept rows.
+            One log density per kept observation row, after event reduction.
 
         Raises
         ------
@@ -759,6 +1157,74 @@ class VectorisedObserve(ContinuousMorphism):
             If ``rows`` does not give one index per axis, keeps a subset of
             an array axis, or leaves its axis, or if ``x`` or ``y`` has
             neither the plate's rows nor the kept rows.
+        """
+        return self._log_prob_pointwise_rows(x, y, rows, None)
+
+    def log_prob_pointwise_rows_event(self, x, y, event, *rows):
+        """Score selected recorded events with the same plate indexing rules.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+        *rows : tuple[Tensor, ...]
+            Selected plate indices, outermost observation axis first.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._log_prob_pointwise_rows(x, y, rows, event)
+
+    def log_prob_rows_event(self, x, y, event, *rows):
+        """Sum recorded-event scores over selected plate rows.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+        *rows : tuple[Tensor, ...]
+            Selected plate indices, outermost observation axis first.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+        """
+        return self._log_prob_pointwise_rows(x, y, rows, event).sum()
+
+    def _log_prob_pointwise_rows(self, x, y, rows, event):
+        """Select parameters, outcomes, and recording roles together.
+
+        Parameters
+        ----------
+        x : Tensor
+            Resolved response-family parameters, shared or one row per observation.
+        y : Tensor or None
+            Observed values or censoring endpoints; None uses the registered response.
+        rows : tuple[Tensor, ...]
+            Selected plate indices, outermost observation axis first.
+        event : dict[str, object] or None
+            Bound recording roles and sampling bounds; None requests ordinary response scoring.
+
+        Returns
+        -------
+        Tensor
+            Recorded-event log likelihoods under the method's row and event reductions.
+
+        Raises
+        ------
+        ValueError
+            If selected indices or observation and parameter layouts violate the plate contract.
         """
         if len(rows) != 1 + len(self._array_shape):
             raise ValueError(
@@ -802,7 +1268,37 @@ class VectorisedObserve(ContinuousMorphism):
                 f"{int(x.shape[0])} rows, neither the plate's {plate_rows}, "
                 f"the {count} kept, nor one shared row"
             )
-        return self.log_prob(theta, target)
+        if event is not None:
+            event = {
+                name: value.index_select(0, kept.to(value.device))
+                if isinstance(value, torch.Tensor)
+                and value.ndim
+                and value.shape[0] == plate_rows
+                else value
+                for name, value in event.items()
+            }
+        return self._log_prob_pointwise(theta, target, event)
+
+    def log_prob_rows(
+        self, x: torch.Tensor, y: torch.Tensor, *rows: torch.Tensor
+    ) -> torch.Tensor:
+        """Sum the log densities of the selected observation rows.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Shared, full-row, or selected-row family parameters.
+        y : torch.Tensor
+            Full or selected observation rows.
+        *rows : torch.Tensor
+            Kept indices for the observation axis and each array axis.
+
+        Returns
+        -------
+        torch.Tensor
+            Total log density of the selected rows.
+        """
+        return self.log_prob_pointwise_rows(x, y, *rows).sum()
 
     def log_likelihood(self, theta: torch.Tensor) -> torch.Tensor:
         """Alias for ``log_prob(theta)``; preserved for the Python

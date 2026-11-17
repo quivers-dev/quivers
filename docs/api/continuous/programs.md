@@ -9,4 +9,11 @@ Running a program records its latent draws and observation scores in an
 statement selects the values the caller receives. Inference uses these scores to fit or sample a
 posterior.
 
+The `Observe.weights` field selects a finite nonnegative power of the observed
+likelihood, with a scalar or one value per observation batch position. It
+changes the score while retaining the raw response distribution for sampling
+and pointwise likelihood extraction. The
+[observation-weight reference](../../reference/qvr/probabilistic-programs.md#observation-weights)
+explains validation, zero weights, and the reduction order.
+
 ::: quivers.continuous.programs

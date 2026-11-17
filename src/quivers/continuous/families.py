@@ -26,6 +26,8 @@ implemented as standalone classes.
 
 from __future__ import annotations
 
+from quivers._quadrature_constants import _NODES_16, _WEIGHTS_16
+
 import math
 from collections.abc import Callable, Sequence
 from typing import cast
@@ -35,10 +37,48 @@ import torch.nn.functional as F
 import torch.distributions as D
 from torch.distributions import constraints as _constraints
 
+from quivers.continuous._com_poisson import COMPoisson
+from quivers.continuous._bernstein_hazard import BernsteinHazard
+from quivers.continuous._extended_beta import ExtendedBeta
+from quivers.continuous._cox import CoxPH
+from quivers._splines import MSplineBasis
+from quivers._spline_design import cox_spline_basis
+from quivers.continuous._additive_log_ratio import AdditiveLogRatioNormal
+from quivers.continuous._multivariate_student_t import MultivariateStudentT
+from quivers.continuous._multinomial import (
+    Multinomial,
+    DirichletMultinomial,
+    _count_parameters,
+)
+from quivers.continuous._closed_probability import _ValidatedCategorical
+from quivers.continuous._discrete_weibull import DiscreteWeibull
+from quivers.continuous._wiener import Wiener
+from quivers.continuous._zero_inflated_asymmetric_laplace import (
+    ZeroInflatedAsymmetricLaplace,
+)
+from quivers.continuous._asymmetric_laplace import AsymmetricLaplace
+from quivers.continuous._shape_families import (
+    ShiftedLogNormal,
+    Frechet,
+    GeneralizedExtremeValue,
+)
+from quivers.continuous._skew_normal import SkewNormal
+from quivers.continuous._response_time import ExGaussian, InverseGaussian
+from quivers.continuous._zero_inflated_count import (
+    ZeroInflatedNegativeBinomial,
+    ZeroInflatedBinomial,
+    ZeroInflatedBetaBinomial,
+    HurdleNegativeBinomial,
+    BetaBinomial as _BetaBinomial,
+)
+from quivers.continuous._positive_hurdle import HurdleGamma, HurdleLogNormal
+
 from quivers.continuous._closed_probability import (
     ClosedBernoulli,
+    ClosedGeometric,
     ClosedBinomial,
     ClosedNegativeBinomial,
+    _check_trial_count_source,
     ClosedPoisson,
 )
 from quivers.continuous._matrix import InverseWishart, MatrixNormal
@@ -188,7 +228,10 @@ class _IndependentConditional(ContinuousMorphism):
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         dist = self._get_dist(x)
-        y_typed = y.float() if self._discrete else y
+        floating_support = isinstance(
+            dist.support, (_constraints._Boolean, _constraints._OneHot)
+        )
+        y_typed = y.float() if self._discrete and floating_support else y
         return dist.log_prob(y_typed).sum(dim=-1)
 
     def rsample(
@@ -205,6 +248,94 @@ class _IndependentConditional(ContinuousMorphism):
         # back to ``.sample()`` — gradients won't flow through the
         # sample but the distribution still scores log-probabilities.
         return dist.sample(sample_shape)
+
+
+class ConditionalBernsteinHazard(_IndependentConditional):
+    """Learn a proportional log rate over an explicitly fixed baseline.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        Predictor space for the log hazard multiplier.
+    codomain : ContinuousSpace
+        Scalar event-time coordinates, independently repeated when dim > 1.
+    breaks : Tensor or Sequence[float] or None
+        Explicit retained baseline boundaries; required.
+    controls : Tensor or Sequence[Sequence[float]] or None
+        Explicit normalized positive baseline coefficients; required.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-source network widths.
+    param_source : ParamSource or None
+        Reusable source of one log rate per output coordinate.
+    param_source_option : str or None
+        Parameter-source strategy.
+
+    Notes
+    -----
+    The checked baseline is copied into fixed buffers. Knots and controls are
+    never invented by unconstrained neural heads. Source programs can instead
+    pass explicitly computed, differentiable controls to BernsteinHazard.
+    """
+
+    def __init__(
+        self,
+        domain,
+        codomain,
+        *,
+        breaks=None,
+        controls=None,
+        hidden_dim=None,
+        param_source=None,
+        param_source_option=None,
+    ):
+        if breaks is None or controls is None:
+            raise ValueError(
+                "ConditionalBernsteinHazard requires explicit fixed breaks and controls"
+            )
+        baseline = BernsteinHazard(breaks, controls, rate=1.0)
+        if baseline.batch_shape not in (torch.Size(), torch.Size((codomain.dim,))):
+            raise ValueError(
+                "fixed Bernstein baseline batch must be empty or match output coordinates"
+            )
+        super().__init__(
+            domain,
+            codomain,
+            BernsteinHazard,
+            [("log_rate", lambda value: value)],
+            hidden_dim=hidden_dim,
+            param_source=param_source,
+            param_source_option=param_source_option,
+        )
+        self.register_buffer("breaks", baseline.breaks.detach().clone())
+        self.register_buffer("controls", baseline.controls.detach().clone())
+
+    @property
+    def support(self):
+        """Return nonnegative event-time support.
+
+        Returns
+        -------
+        torch.distributions.constraints.Constraint
+            Nonnegative real support.
+        """
+        return _constraints.nonnegative
+
+    def _get_dist(self, x):
+        """Build the shared hazard law with predictor-dependent rates.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Predictor batch.
+
+        Returns
+        -------
+        BernsteinHazard
+            Fixed baseline with one learned log rate per output coordinate.
+        """
+        return BernsteinHazard(
+            self.breaks, self.controls, log_rate=self.param_source(x)
+        )
 
 
 # ============================================================================
@@ -419,6 +550,11 @@ class ConditionalNormal(ContinuousMorphism):
         )
 
         return log_p.sum(dim=-1)
+
+    def _get_dist(self, x: torch.Tensor) -> D.Normal:
+        """Return the scalar-coordinate laws before event reduction."""
+        mu, sigma = self._get_params(x)
+        return D.Normal(mu, sigma)
 
     def rsample(
         self,
@@ -736,6 +872,175 @@ class ConditionalDirichlet(ContinuousMorphism):
         return dist.rsample(sample_shape)
 
 
+class _ConditionalCountVector(ContinuousMorphism):
+    """Shared fixed-trial vector kernel with learned category parameters."""
+
+    _distribution_class = Multinomial
+
+    def __init__(
+        self,
+        domain,
+        codomain,
+        total_count,
+        hidden_dim=None,
+        param_source=None,
+        param_source_option=None,
+    ):
+        _check_trial_count_source(total_count)
+        super().__init__(domain, codomain)
+        counts, _ = _count_parameters(total_count, [1.0] * codomain.dim)
+        self.register_buffer("total_count", counts.to(torch.int64))
+        self.param_source = _make_source(
+            domain,
+            codomain.dim,
+            hidden_dim,
+            param_source=param_source,
+            param_source_option=param_source_option,
+        )
+
+    @property
+    def support(self):
+        """Integer vector support, with the trial total enforced by scoring.
+
+        Returns
+        -------
+        torch.distributions.constraints.Constraint
+            One trailing vector of nonnegative counts.
+        """
+        return Multinomial.support
+
+    def _distribution(self, x):
+        """Construct the shared count law from one category parameter vector.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Parameter-source inputs.
+
+        Returns
+        -------
+        torch.distributions.Distribution
+            One count-vector event for each input batch row.
+        """
+        raw = self.param_source(x)
+        if self._distribution_class is Multinomial:
+            return Multinomial(self.total_count, logits=raw)
+        return DirichletMultinomial(self.total_count, F.softplus(raw) + EPS)
+
+    def log_prob(self, x, y):
+        """Score category vectors, reducing the event axis exactly once.
+
+        Parameters
+        ----------
+        x, y : torch.Tensor
+            Inputs and observed integer category vectors.
+
+        Returns
+        -------
+        torch.Tensor
+            One log mass per input row.
+        """
+        return self._distribution(x).log_prob(y)
+
+    def sample(self, x, sample_shape=torch.Size()):
+        """Draw fixed-total category vectors.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Parameter-source inputs.
+        sample_shape : torch.Size
+            Sample dimensions prepended to input batch dimensions.
+
+        Returns
+        -------
+        torch.Tensor
+            Int64 count vectors.
+        """
+        return self._distribution(x).sample(sample_shape)
+
+    def rsample(self, x, sample_shape=torch.Size()):
+        """Refuse pathwise reparameterization of discrete count events.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Parameter-source inputs.
+        sample_shape : torch.Size
+            Requested sample dimensions.
+
+        Raises
+        ------
+        NotImplementedError
+            Count-vector sampling is discrete.
+        """
+        raise NotImplementedError("count-vector sampling is discrete; use sample()")
+
+
+class ConditionalMultinomial(_ConditionalCountVector):
+    """Fixed-trial Multinomial with category logits learned from the input.
+
+    Parameters
+    ----------
+    domain, codomain : SetObject or ContinuousSpace
+        Input space and vector-valued output space.
+    total_count : int or torch.Tensor
+        Nonnegative exact trials broadcastable with input batch dimensions.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-network hidden dimensions.
+    param_source : ParamSource or None
+        Optional reusable category parameter source.
+    param_source_option : str or None
+        Parameter-source strategy.
+    """
+
+
+class ConditionalDirichletMultinomial(_ConditionalCountVector):
+    """Fixed-trial Dirichlet-multinomial with learned positive concentrations.
+
+    Parameters
+    ----------
+    domain, codomain : SetObject or ContinuousSpace
+        Input space and vector-valued output space.
+    total_count : int or torch.Tensor
+        Nonnegative exact trials broadcastable with input batch dimensions.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-network hidden dimensions.
+    param_source : ParamSource or None
+        Optional reusable category parameter source.
+    param_source_option : str or None
+        Parameter-source strategy.
+    """
+
+    _distribution_class = DirichletMultinomial
+
+
+for _name, _distribution, _conditional, _parameter, _transform in (
+    ("Multinomial", Multinomial, ConditionalMultinomial, "probs", "id"),
+    (
+        "DirichletMultinomial",
+        DirichletMultinomial,
+        ConditionalDirichletMultinomial,
+        "concentration",
+        "softplus_shifted",
+    ),
+):
+    _register_family(
+        FamilySpec(
+            name=_name,
+            dist_class=_distribution,
+            params=(
+                ParamSpec(name="total_count", transform="id", kind="integer"),
+                ParamSpec(name=_parameter, transform=_transform, kind="vector"),
+            ),
+            support=_distribution.support,
+            discrete=True,
+            output_kind="vector",
+            conditional_class_override=_conditional,
+        )
+    )
+
+
 # ============================================================================
 # factory-generated families (all remaining torch.distributions with rsample)
 # ============================================================================
@@ -757,6 +1062,141 @@ ConditionalLaplace = _make_family(
     "Conditional Laplace(loc(x), scale(x)). Sharp peak, heavier tails than normal.",
 )
 """Conditional Laplace(loc(x), scale(x)). Sharp peak, heavier tails than normal."""
+
+ConditionalCOMPoisson = _make_family(
+    "ConditionalCOMPoisson",
+    COMPoisson,
+    [("rate", "softplus"), ("dispersion", "softplus")],
+    "Conditional Conway--Maxwell--Poisson rate and dispersion.",
+    discrete=True,
+    inline_bounds={"rate": (0.0, math.inf)},
+)
+"""Conditional COM-Poisson count law."""
+
+ConditionalWiener = _make_family(
+    "ConditionalWiener",
+    Wiener,
+    [
+        ("boundary", "softplus"),
+        ("ndt", "softplus"),
+        ("bias", "sigmoid"),
+        ("drift", "id"),
+    ],
+    "Conditional joint signed Wiener reaction times and boundary decisions.",
+    discrete=False,
+    inline_bounds={"ndt": (0.0, math.inf)},
+)
+"""Conditional Wiener joint signed response-time law."""
+
+ConditionalDiscreteWeibull = _make_family(
+    "ConditionalDiscreteWeibull",
+    DiscreteWeibull,
+    [("probs", "sigmoid"), ("concentration", "softplus")],
+    "Conditional discrete Weibull survival probability and positive power.",
+    discrete=True,
+)
+"""Conditional discrete Weibull count law."""
+
+ConditionalZeroInflatedAsymmetricLaplace = _make_family(
+    "ConditionalZeroInflatedAsymmetricLaplace",
+    ZeroInflatedAsymmetricLaplace,
+    [
+        ("zero_prob", "sigmoid"),
+        ("loc", "id"),
+        ("scale", "softplus"),
+        ("quantile", "sigmoid"),
+    ],
+    "Conditional structural zero and asymmetric Laplace quantile response.",
+    discrete=False,
+)
+"""Conditional zero atom and asymmetric Laplace continuous component."""
+
+ConditionalAsymmetricLaplace = _make_family(
+    "ConditionalAsymmetricLaplace",
+    AsymmetricLaplace,
+    [("loc", "id"), ("scale", "softplus"), ("quantile", "sigmoid")],
+    "Conditional asymmetric Laplace with input-driven location, scale, and quantile.",
+)
+"""Conditional quantile regression distribution with three input-driven parameters."""
+
+ConditionalExGaussian = _make_family(
+    "ConditionalExGaussian",
+    ExGaussian,
+    [("loc", "id"), ("scale", "softplus"), ("rate", "softplus")],
+    "Conditional exponentially modified Gaussian with location, Normal scale, and Exponential rate.",
+)
+"""Conditional sum of a Normal and an independent Exponential variable."""
+
+ConditionalExtendedBeta = _make_family(
+    "ConditionalExtendedBeta",
+    ExtendedBeta,
+    [("mu", "sigmoid"), ("phi", "softplus"), ("kappa", "softplus")],
+    "Conditional censored extended Beta with mean, precision, and extension heads.",
+    discrete=False,
+    inline_bounds={"kappa": (0.0, math.inf)},
+)
+"""Conditional extended-Beta component parameters with endpoint censoring atoms."""
+
+ConditionalInverseGaussian = _make_family(
+    "ConditionalInverseGaussian",
+    InverseGaussian,
+    [("mu", "softplus"), ("shape", "softplus")],
+    "Conditional inverse Gaussian with input-driven mean and shape.",
+)
+"""Conditional inverse Gaussian with implicit reparameterized sampling."""
+
+ConditionalHurdleGamma = _make_family(
+    "ConditionalHurdleGamma",
+    HurdleGamma,
+    [("zero_prob", "sigmoid"), ("concentration", "softplus"), ("rate", "softplus")],
+    "Conditional structural zero probability and Gamma shape/rate response.",
+    discrete=False,
+)
+"""Conditional zero atom combined with a positive Gamma component."""
+
+ConditionalHurdleLogNormal = _make_family(
+    "ConditionalHurdleLogNormal",
+    HurdleLogNormal,
+    [("zero_prob", "sigmoid"), ("loc", "id"), ("scale", "softplus")],
+    "Conditional structural zero probability and LogNormal log-location/log-scale response.",
+    discrete=False,
+)
+"""Conditional zero atom combined with a positive LogNormal component."""
+
+ConditionalSkewNormal = _make_family(
+    "ConditionalSkewNormal",
+    SkewNormal,
+    [("loc", "id"), ("scale", "softplus"), ("skewness", "id")],
+    "Conditional SkewNormal response distribution.",
+)
+"""Conditional skew-normal with learned location, positive scale, and real skewness."""
+
+ConditionalShiftedLogNormal = _make_family(
+    "ConditionalShiftedLogNormal",
+    ShiftedLogNormal,
+    [("loc", "id"), ("scale", "softplus"), ("shift", "softplus")],
+    "Conditional ShiftedLogNormal response distribution.",
+    support=_constraints.real,
+    inline_bounds={"shift": (0.0, math.inf)},
+)
+"""Conditional lognormal component with a learned nonnegative additive shift."""
+
+ConditionalFrechet = _make_family(
+    "ConditionalFrechet",
+    Frechet,
+    [("scale", "softplus"), ("concentration", "softplus")],
+    "Conditional Frechet response distribution.",
+)
+"""Conditional Fréchet with learned positive scale and concentration."""
+
+ConditionalGeneralizedExtremeValue = _make_family(
+    "ConditionalGeneralizedExtremeValue",
+    GeneralizedExtremeValue,
+    [("loc", "id"), ("scale", "softplus"), ("concentration", "id")],
+    "Conditional GeneralizedExtremeValue response distribution.",
+    support=_constraints.real,
+)
+"""Conditional generalized extreme value with learned location, scale, and tail index."""
 
 ConditionalGumbel = _make_family(
     "ConditionalGumbel",
@@ -1031,13 +1471,230 @@ ConditionalPoisson = _make_family(
 )
 """Conditional Poisson(rate(x)). Discrete, non-negative integer counts."""
 
+ConditionalZeroInflatedNegativeBinomial = _make_family(
+    "ConditionalZeroInflatedNegativeBinomial",
+    ZeroInflatedNegativeBinomial,
+    [
+        ("zero_prob", "sigmoid"),
+        ("total_count", "softplus_shifted"),
+        ("probs", "sigmoid"),
+    ],
+    "Conditional structural zeros plus a negative binomial count.",
+    inline_bounds={
+        "zero_prob": (0.0, 1.0),
+        "total_count": (0.0, math.inf),
+        "probs": (0.0, 1.0),
+    },
+)
+"""Conditional zero-inflated negative binomial with three parameter heads."""
+
+ConditionalHurdleNegativeBinomial = _make_family(
+    "ConditionalHurdleNegativeBinomial",
+    HurdleNegativeBinomial,
+    [
+        ("zero_prob", "sigmoid"),
+        ("total_count", "softplus_shifted"),
+        ("probs", "sigmoid"),
+    ],
+    "Conditional structural zeros plus a normalized positive negative binomial.",
+    inline_bounds={"zero_prob": (0.0, 1.0), "probs": (0.0, 1.0)},
+)
+"""Conditional hurdle negative binomial with an efficiently sampled positive count."""
+
+
+class _ConditionalInflatedTrialCount(_IndependentConditional):
+    """Shared learned heads for a count family with fixed integer trial counts.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        Parameter-source domain.
+    codomain : ContinuousSpace
+        Independent count coordinates.
+    total_count : int
+        Nonnegative trial count.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-source network dimensions.
+    param_source : ParamSource or None
+        Reusable parameter source.
+    param_source_option : str or None
+        Parameter-source strategy.
+    """
+
+    _count_distribution: type[D.Distribution]
+    _count_heads: tuple[tuple[str, str], ...]
+
+    def __init__(
+        self,
+        domain,
+        codomain,
+        total_count,
+        hidden_dim=None,
+        param_source=None,
+        param_source_option=None,
+    ):
+        _check_trial_count_source(total_count)
+        if (
+            isinstance(total_count, bool)
+            or not isinstance(total_count, int)
+            or total_count < 0
+        ):
+            raise ValueError("total_count must be a nonnegative integer")
+        self._total_count = total_count
+        super().__init__(
+            domain,
+            codomain,
+            self._count_distribution,
+            [
+                (name, resolve_transform(transform).forward)
+                for name, transform in self._count_heads
+            ],
+            hidden_dim,
+            discrete=True,
+            param_source=param_source,
+            param_source_option=param_source_option,
+        )
+
+    @property
+    def support(self):
+        """The finite integer response support.
+
+        Returns
+        -------
+        Constraint
+            Integers from zero to the fixed trial count.
+        """
+        return _constraints.integer_interval(0, self._total_count)
+
+    def _get_dist(self, x):
+        """Build the count distribution from learned heads and fixed trials.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs to the parameter source.
+
+        Returns
+        -------
+        Distribution
+            Independent response counts per codomain coordinate.
+        """
+        raw = self.param_source(x)
+        parameters = {
+            name: transform(raw[..., i * self._d : (i + 1) * self._d])
+            for i, (name, transform) in enumerate(self._param_specs)
+        }
+        parameters["total_count"] = raw.new_tensor(
+            self._total_count, dtype=torch.float64
+        )
+        return self._count_distribution(**parameters)
+
+
+class ConditionalZeroInflatedBinomial(_ConditionalInflatedTrialCount):
+    """Zero-inflated binomial heads with fixed nonnegative trial counts.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        Parameter-source domain.
+    codomain : ContinuousSpace
+        Independent count coordinates.
+    total_count : int
+        Fixed nonnegative number of trials.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-source network dimensions.
+    param_source : ParamSource or None
+        Optional reusable parameter source.
+    param_source_option : str or None
+        Optional source strategy.
+    """
+
+    _count_distribution = ZeroInflatedBinomial
+    _count_heads = (("zero_prob", "sigmoid"), ("probs", "sigmoid"))
+    arg_constraints = ZeroInflatedBinomial.arg_constraints
+
+
+class ConditionalZeroInflatedBetaBinomial(_ConditionalInflatedTrialCount):
+    """Zero-inflated beta-binomial heads with fixed nonnegative trials.
+
+    Parameters
+    ----------
+    domain : AnySpace
+        Parameter-source domain.
+    codomain : ContinuousSpace
+        Independent count coordinates.
+    total_count : int
+        Fixed nonnegative number of trials.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-source network dimensions.
+    param_source : ParamSource or None
+        Optional reusable parameter source.
+    param_source_option : str or None
+        Optional source strategy.
+    """
+
+    _count_distribution = ZeroInflatedBetaBinomial
+    _count_heads = (
+        ("zero_prob", "sigmoid"),
+        ("concentration1", "softplus"),
+        ("concentration0", "softplus"),
+    )
+    arg_constraints = ZeroInflatedBetaBinomial.arg_constraints
+
+
+for _count_name, _count_class, _conditional_count, _extra_heads in (
+    (
+        "ZeroInflatedBinomial",
+        ZeroInflatedBinomial,
+        ConditionalZeroInflatedBinomial,
+        (("probs", "sigmoid"),),
+    ),
+    (
+        "ZeroInflatedBetaBinomial",
+        ZeroInflatedBetaBinomial,
+        ConditionalZeroInflatedBetaBinomial,
+        (("concentration1", "softplus"), ("concentration0", "softplus")),
+    ),
+):
+    _register_family(
+        FamilySpec(
+            name=_count_name,
+            dist_class=_count_class,
+            params=(
+                ParamSpec(
+                    name="zero_prob", transform="sigmoid", inline_bounds=(0.0, 1.0)
+                ),
+                ParamSpec(
+                    name="total_count",
+                    transform="softplus_shifted",
+                    kind="integer",
+                    inline_bounds=(0.0, math.inf),
+                ),
+                *(
+                    ParamSpec(
+                        name=name,
+                        transform=transform,
+                        inline_bounds=(0.0, 1.0) if name == "probs" else None,
+                    )
+                    for name, transform in _extra_heads
+                ),
+            ),
+            support=_constraints.nonnegative_integer,
+            discrete=True,
+            output_kind="independent",
+            docstring="Structural zero atom plus a finite-trial count component.",
+            conditional_class_override=_conditional_count,
+        )
+    )
+
+
 ConditionalGeometric = _make_family(
     "ConditionalGeometric",
-    D.Geometric,
+    ClosedGeometric,
     [("probs", "sigmoid")],
     "Conditional Geometric(probs(x)). Number of failures before first success.",
-    # A success probability of one is the point mass at zero failures;
-    # one of zero puts no mass on any count.
+    # A success probability of one is the point mass at zero failures.
+    # Zero is refused by the proper native law.
     inline_bounds={"probs": (0.0, 1.0)},
 )
 """Conditional Geometric(probs(x)). Number of failures before first success."""
@@ -1169,6 +1826,10 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         Hidden layer width for neural parameter source.
     """
 
+    _event_offset = 0
+    _extra_raw_parameters = 0
+    _distribution_class = D.MultivariateNormal
+
     def __init__(
         self,
         domain: AnySpace,
@@ -1178,11 +1839,13 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         param_source_option: str | None = None,
     ) -> None:
         super().__init__(domain, codomain)
-        d = codomain.dim
+        d = codomain.dim - self._event_offset
+        if d < 1:
+            raise ValueError("Gaussian coordinate dimension must be positive")
         n_tril = d * (d + 1) // 2
         self.param_source = _make_source(
             domain,
-            d + n_tril,
+            d + n_tril + self._extra_raw_parameters,
             hidden_dim,
             param_source=param_source,
             param_source_option=param_source_option,
@@ -1190,10 +1853,10 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         self._d = d
         self._n_tril = n_tril
 
-    def _get_dist(self, x: torch.Tensor) -> D.MultivariateNormal:
+    def _get_dist(self, x: torch.Tensor) -> D.Distribution:
         raw = self.param_source(x)
         loc = raw[..., : self._d]
-        tril_raw = raw[..., self._d :]
+        tril_raw = raw[..., self._d : self._d + self._n_tril]
 
         # build lower-triangular matrix
         batch_shape = tril_raw.shape[:-1]
@@ -1213,7 +1876,24 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
         diag_idx = torch.arange(self._d)
         L[..., diag_idx, diag_idx] = F.softplus(L[..., diag_idx, diag_idx]) + EPS
 
-        return D.MultivariateNormal(loc, scale_tril=L)
+        return self._distribution_from_raw(loc, L, raw)
+
+    def _distribution_from_raw(
+        self, loc: torch.Tensor, factor: torch.Tensor, raw: torch.Tensor
+    ) -> D.Distribution:
+        """Construct a law from the shared Gaussian location/factor unpacking.
+
+        Parameters
+        ----------
+        loc, factor, raw : torch.Tensor
+            Decoded Gaussian heads and the complete parameter-source output.
+
+        Returns
+        -------
+        torch.distributions.Distribution
+            Distribution retaining the same event coordinates.
+        """
+        return self._distribution_class(loc, scale_tril=factor)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         dist = self._get_dist(x)
@@ -1226,6 +1906,64 @@ class ConditionalMultivariateNormal(ContinuousMorphism):
     ) -> torch.Tensor:
         dist = self._get_dist(x)
         return dist.rsample(sample_shape)
+
+
+class ConditionalMultivariateStudentT(ConditionalMultivariateNormal):
+    """Learn a Student radial scale alongside the existing Gaussian heads.
+
+    Parameters
+    ----------
+    domain, codomain : AnySpace
+        Input carrier and real-vector response space.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-network hidden dimensions.
+    param_source : ParamSource or None
+        Reusable source emitting location, packed Cholesky, and one df head.
+    param_source_option : str or None
+        Existing parameter-source strategy.
+    """
+
+    _extra_raw_parameters = 1
+
+    def _distribution_from_raw(
+        self, loc: torch.Tensor, factor: torch.Tensor, raw: torch.Tensor
+    ) -> D.Distribution:
+        """Add the positive radial head to the shared Gaussian geometry.
+
+        Parameters
+        ----------
+        loc, factor, raw : torch.Tensor
+            Decoded Gaussian heads and complete learned output.
+
+        Returns
+        -------
+        torch.distributions.Distribution
+            Marginal Student vector law with learned degrees of freedom.
+        """
+        return MultivariateStudentT(
+            F.softplus(raw[..., -1]) + EPS, loc, scale_tril=factor
+        )
+
+
+class ConditionalAdditiveLogRatioNormal(ConditionalMultivariateNormal):
+    """Learn correlated Gaussian log ratios against the final component.
+
+    Parameters
+    ----------
+    domain : SetObject or ContinuousSpace
+        Source space.
+    codomain : ContinuousSpace
+        Simplex space with at least two components.
+    hidden_dim : int or Sequence[int] or None
+        Parameter-network hidden dimensions.
+    param_source : ParamSource or None
+        Reusable Gaussian coordinate parameter source.
+    param_source_option : str or None
+        Parameter-source strategy.
+    """
+
+    _event_offset = 1
+    _distribution_class = AdditiveLogRatioNormal
 
 
 class ConditionalLowRankMVN(ContinuousMorphism):
@@ -1625,8 +2363,8 @@ class ConditionalMatrixNormal(ContinuousMorphism):
         V_chol = self._build_tril(col_raw, p, self._n_col_tril)
         return MatrixNormal(
             loc_flat.reshape(*loc_flat.shape[:-1], n, p),
-            U_chol @ U_chol.transpose(-1, -2),
-            V_chol @ V_chol.transpose(-1, -2),
+            row_scale_tril=U_chol,
+            col_scale_tril=V_chol,
         )
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -2061,9 +2799,14 @@ class ConditionalBinomial(ContinuousMorphism):
         param_source: ParamSource | None = None,
         param_source_option: str | None = None,
     ) -> None:
-        if total_count < 1:
+        _check_trial_count_source(total_count)
+        if (
+            isinstance(total_count, bool)
+            or not isinstance(total_count, int)
+            or total_count < 0
+        ):
             raise ValueError(
-                f"ConditionalBinomial: total_count must be >= 1, got {total_count}"
+                f"ConditionalBinomial: total_count must be a nonnegative integer, got {total_count}"
             )
         super().__init__(domain, codomain)
         d = codomain.dim
@@ -2079,11 +2822,11 @@ class ConditionalBinomial(ContinuousMorphism):
 
     def _get_dist(self, x: torch.Tensor) -> D.Binomial:
         logits = self.param_source(x)
-        return D.Binomial(total_count=self._total_count, logits=logits)
+        return ClosedBinomial(total_count=self._total_count, logits=logits)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         dist = self._get_dist(x)
-        return dist.log_prob(y.float()).sum(dim=-1)
+        return dist.log_prob(y).sum(dim=-1)
 
     def rsample(
         self,
@@ -2200,7 +2943,7 @@ class ConditionalZeroInflatedPoisson(ContinuousMorphism):
         return ZeroInflatedPoisson(zero_prob, rate)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        return self._get_dist(x).log_prob(y.float()).sum(dim=-1)
+        return self._get_dist(x).log_prob(y).sum(dim=-1)
 
     def rsample(
         self,
@@ -2248,7 +2991,7 @@ class ConditionalHurdlePoisson(ContinuousMorphism):
         return HurdlePoisson(zero_prob, rate)
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        return self._get_dist(x).log_prob(y.float()).sum(dim=-1)
+        return self._get_dist(x).log_prob(y).sum(dim=-1)
 
     def rsample(
         self,
@@ -2978,46 +3721,10 @@ def _gauss_legendre_16(
     table 25.4) are mapped to ``[0, 1]`` via ``t = (1 + xi) / 2`` with
     weights scaled by ``1/2``.
     """
-    nodes_pm1 = (
-        -0.9894009349916499,
-        -0.9445750230732326,
-        -0.8656312023878318,
-        -0.7554044083550030,
-        -0.6178762444026438,
-        -0.4580167776572274,
-        -0.2816035507792589,
-        -0.0950125098376374,
-        0.0950125098376374,
-        0.2816035507792589,
-        0.4580167776572274,
-        0.6178762444026438,
-        0.7554044083550030,
-        0.8656312023878318,
-        0.9445750230732326,
-        0.9894009349916499,
-    )
-    weights_pm1 = (
-        0.0271524594117541,
-        0.0622535239386479,
-        0.0951585116824928,
-        0.1246289712555339,
-        0.1495959888165767,
-        0.1691565193950025,
-        0.1826034150449236,
-        0.1894506104550685,
-        0.1894506104550685,
-        0.1826034150449236,
-        0.1691565193950025,
-        0.1495959888165767,
-        0.1246289712555339,
-        0.0951585116824928,
-        0.0622535239386479,
-        0.0271524594117541,
-    )
     nodes = torch.tensor(
-        [(1.0 + n) * 0.5 for n in nodes_pm1], device=device, dtype=dtype
+        [(1.0 + n) * 0.5 for n in _NODES_16], device=device, dtype=dtype
     )
-    weights = torch.tensor([w * 0.5 for w in weights_pm1], device=device, dtype=dtype)
+    weights = torch.tensor([w * 0.5 for w in _WEIGHTS_16], device=device, dtype=dtype)
     return nodes, weights
 
 
@@ -3029,11 +3736,13 @@ class ConditionalHorseshoe(ContinuousMorphism):
 
     .. code-block:: text
 
-       tau ~ HalfCauchy(scale)
+       tau = scale                       positive learnable global parameter
        lambda_d ~ HalfCauchy(1)            for d = 1, ..., D
-       beta_d | tau, lambda_d ~ Normal(0, (tau * lambda_d)^2)
+       beta_d | tau, lambda_d ~ Normal(0, tau * lambda_d)
 
-    The marginal density of ``beta_d`` after integrating the local
+    The global scale is a module parameter; it is not a sampled hyperprior.
+    Formula ``RegularizedHorseshoe`` priors instead emit explicit global,
+    local, and slab latent sites. The marginal density of ``beta_d`` after integrating the local
     scale ``lambda_d`` has no closed form; this implementation uses a
     16-point Gauss-Legendre quadrature after mapping the half-line
     ``lambda in (0, inf)`` to ``t in (0, 1)`` via the change of
@@ -3226,7 +3935,7 @@ class ConditionalLearnedOrderedLogistic(ContinuousMorphism):
 # ============================================================================
 
 try:
-    _GPD = D.GeneralizedPareto
+    from quivers.continuous._generalized_pareto import GeneralizedPareto as _GPD
 
     class ConditionalGeneralizedPareto(ContinuousMorphism):
         """Conditional generalized Pareto distribution.
@@ -3303,6 +4012,22 @@ except AttributeError:
 # canonical info the factory-generated ones do; the
 # ``conditional_class_override`` field carries the hand-written class
 # so the unified catalog can build a ConditionalX from any DSL name.
+
+
+_register_family(
+    FamilySpec(
+        name="BernsteinHazard",
+        dist_class=BernsteinHazard,
+        params=(
+            ParamSpec(name="breaks", transform="id", kind="vector"),
+            ParamSpec(name="controls", transform="id"),
+            ParamSpec(name="rate", transform="softplus"),
+        ),
+        support=_constraints.nonnegative,
+        output_kind="independent",
+        conditional_class_override=ConditionalBernsteinHazard,
+    )
+)
 
 
 _register_family(
@@ -3413,6 +4138,35 @@ _register_family(
 
 _register_family(
     FamilySpec(
+        name="MultivariateStudentT",
+        dist_class=MultivariateStudentT,
+        params=(
+            ParamSpec(name="df", transform="softplus"),
+            ParamSpec(name="loc", transform="id"),
+            ParamSpec(name="scale_tril", transform="id"),
+        ),
+        support=_constraints.real_vector,
+        output_kind="mvn",
+        conditional_class_override=ConditionalMultivariateStudentT,
+    )
+)
+
+_register_family(
+    FamilySpec(
+        name="AdditiveLogRatioNormal",
+        dist_class=AdditiveLogRatioNormal,
+        params=(
+            ParamSpec(name="loc", transform="id"),
+            ParamSpec(name="scale_tril", transform="id"),
+        ),
+        support=_constraints.simplex,
+        output_kind="mvn",
+        conditional_class_override=ConditionalAdditiveLogRatioNormal,
+    )
+)
+
+_register_family(
+    FamilySpec(
         name="LowRankMVN",
         dist_class=D.LowRankMultivariateNormal,
         params=(
@@ -3492,7 +4246,7 @@ _register_family(
 _register_family(
     FamilySpec(
         name="Categorical",
-        dist_class=D.Categorical,
+        dist_class=_ValidatedCategorical,
         params=(ParamSpec(name="probs", transform="id", kind="vector"),),
         support=_constraints.nonnegative_integer,
         discrete=True,
@@ -3652,7 +4406,7 @@ class ConditionalBetaBinomial(ContinuousMorphism):
         observations are produced per input.
     total_count : int
         Number of Bernoulli trials per observation; must be a
-        positive integer.
+        nonnegative integer.
     hidden_dim : int
         Hidden layer width for the neural parameter source.
     """
@@ -3666,9 +4420,14 @@ class ConditionalBetaBinomial(ContinuousMorphism):
         param_source: ParamSource | None = None,
         param_source_option: str | None = None,
     ) -> None:
-        if total_count < 1:
+        _check_trial_count_source(total_count)
+        if (
+            isinstance(total_count, bool)
+            or not isinstance(total_count, int)
+            or total_count < 0
+        ):
             raise ValueError(
-                f"ConditionalBetaBinomial: total_count must be >= 1, got {total_count}"
+                f"ConditionalBetaBinomial: total_count must be a nonnegative integer, got {total_count}"
             )
         super().__init__(domain, codomain)
         d = codomain.dim
@@ -3697,23 +4456,13 @@ class ConditionalBetaBinomial(ContinuousMorphism):
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         alpha, beta = self._get_concentrations(x)
-        n = float(self._total_count)
-        y_f = y.float()
-        lgamma = torch.lgamma
-        n_tensor = torch.tensor(n, device=y_f.device, dtype=y_f.dtype)
-        log_binom = (
-            lgamma(n_tensor + 1.0) - lgamma(y_f + 1.0) - lgamma(n_tensor - y_f + 1.0)
+        return (
+            _BetaBinomial(
+                alpha.new_tensor(self._total_count, dtype=torch.float64), alpha, beta
+            )
+            .log_prob(y)
+            .sum(-1)
         )
-        log_p = (
-            lgamma(alpha + beta)
-            + lgamma(alpha + y_f)
-            + lgamma(beta + n_tensor - y_f)
-            - lgamma(alpha)
-            - lgamma(beta)
-            - lgamma(alpha + beta + n_tensor)
-            + log_binom
-        )
-        return log_p.sum(dim=-1)
 
     def rsample(
         self,
@@ -3733,8 +4482,7 @@ class ConditionalBetaBinomial(ContinuousMorphism):
     ) -> torch.Tensor:
         with torch.no_grad():
             alpha, beta = self._get_concentrations(x)
-            p = D.Beta(alpha, beta).sample(sample_shape)
-            return D.Binomial(total_count=self._total_count, probs=p).sample().long()
+            return _BetaBinomial(self._total_count, alpha, beta).sample(sample_shape)
 
 
 class ConditionalLogistic(ContinuousMorphism):
@@ -4039,16 +4787,19 @@ class Truncated(ContinuousMorphism):
         - F_{\\text{cdf}}(a)} \\cdot \\mathbb{1}_{[a,b]}(x)
 
     and the morphism :math:`F_{|[a,b]} : \\Theta \\to
-    \\mathcal{G}([a,b])`. Sampling uses inverse-CDF when
-    `base` supports it; otherwise rejection sampling.
+    \\mathcal{G}([a,b])`. Independent output coordinates are conditioned
+    separately; coupled events require a joint rectangle probability
+    and are rejected. Normalizing masses are deterministic and retain
+    parameter gradients supported by the base CDF. Normal sampling uses
+    a log-space inverse CDF; other bases use bounded rejection.
 
     Parameters
     ----------
     base : ContinuousMorphism
         The base distribution-family morphism. Must expose
-        ``log_prob`` and ``rsample`` plus an ``icdf`` method or a
-        ``base_distribution`` torch ``Distribution`` for inverse-CDF
-        sampling. Falls back to rejection sampling otherwise.
+        ``log_prob`` and ``rsample`` plus ``_get_dist(x)`` returning
+        the scalar-coordinate distributions. The base must supply an
+        analytic CDF or stable log-tail methods for normalization.
     lower : float or None
         Lower bound :math:`a`. ``None`` means :math:`-\\infty`.
     upper : float or None
@@ -4060,7 +4811,7 @@ class Truncated(ContinuousMorphism):
     # Class-level transpile-time metadata. The base wrapped morphism
     # carries its own argument constraints; the bounds are simple
     # real scalars. Class-level `support` defaults to `real`; per-
-    # instance the lookup tightens via `support_at_bounds()`.
+    # instance initialization intersects static base bounds with the interval.
     arg_constraints: dict[str, _constraints.Constraint] = {
         "lower": _constraints.real,
         "upper": _constraints.real,
@@ -4084,90 +4835,172 @@ class Truncated(ContinuousMorphism):
             raise ValueError(
                 f"Truncated requires lower < upper; got lower={lower}, upper={upper}"
             )
+        if any(
+            bound is not None and not math.isfinite(bound) for bound in (lower, upper)
+        ):
+            raise ValueError("Truncated bounds must be finite or None")
+        if (
+            isinstance(max_rejection_iterations, bool)
+            or not isinstance(max_rejection_iterations, int)
+            or max_rejection_iterations < 1
+        ):
+            raise ValueError("max_rejection_iterations must be a positive integer")
         self._base = base
         self._lower = lower
         self._upper = upper
         self._max_iters = max_rejection_iterations
+        base_support = getattr(base, "support", _constraints.real)
+        base_lower = getattr(base_support, "lower_bound", None)
+        base_upper = getattr(base_support, "upper_bound", None)
+        effective_lower, effective_upper = lower, upper
+        if isinstance(base_lower, (float, int)):
+            effective_lower = base_lower if lower is None else max(lower, base_lower)
+        if isinstance(base_upper, (float, int)):
+            effective_upper = base_upper if upper is None else min(upper, base_upper)
+        if getattr(base_support, "is_discrete", False):
+            self.support = _constraints.integer_interval(
+                -math.inf if effective_lower is None else math.ceil(effective_lower),
+                math.inf if effective_upper is None else math.floor(effective_upper),
+            )
+        elif effective_lower is not None and effective_upper is not None:
+            self.support = _constraints.interval(effective_lower, effective_upper)
+        elif effective_lower is not None:
+            self.support = _constraints.greater_than(effective_lower)
+        elif effective_upper is not None:
+            self.support = _constraints.less_than(effective_upper)
         # Attach so the parent nn.Module tracks parameters.
         self._base_mod = base
 
-    def _interval_logmass(self, x: torch.Tensor) -> torch.Tensor:
-        """Approximate :math:`\\log(F(b) - F(a))` via Monte-Carlo on the base.
+    def _get_dist(self, x: torch.Tensor) -> D.Distribution:
+        """Build the shared normalized restriction for independent coordinates.
 
-        For families with analytic CDFs (Normal, etc.) we could use
-        a closed form, but a general primitive operating across
-        every family in the registry uses 256 base samples to
-        estimate the truncation mass. This keeps the combinator
-        usable on every family without per-family special-casing.
+        Parameters
+        ----------
+        x : torch.Tensor
+            Inputs to the base conditional family.
+
+        Returns
+        -------
+        Distribution
+            One normalized scalar distribution per output coordinate.
+
+        Raises
+        ------
+        NotImplementedError
+            If the base exposes no scalar-coordinate distribution or has a
+            coupled event requiring a joint rectangle probability.
+        ValueError
+            If an interval has zero or nonfinite probability.
         """
-        with torch.no_grad():
-            samples = self._base.rsample(x.repeat(256, *([1] * (x.ndim - 1))))
-            mask = torch.ones_like(samples)
-            if self._lower is not None:
-                mask = mask * (samples >= self._lower).float()
-            if self._upper is not None:
-                mask = mask * (samples <= self._upper).float()
-            in_interval = mask.reshape(256, x.shape[0], -1).mean(dim=0)
-        return torch.log(in_interval.clamp(min=1e-30)).squeeze(-1)
+        from quivers.continuous.measure import Normalize, Restrict
+
+        builder = getattr(self._base, "_get_dist", None)
+        if not callable(builder):
+            raise NotImplementedError(
+                f"Truncated requires {type(self._base).__name__} to expose "
+                "scalar-coordinate distributions through _get_dist(x)"
+            )
+        distribution = builder(x)
+        if distribution.event_shape:
+            raise NotImplementedError(
+                "Truncated requires a joint rectangle probability for coupled events"
+            )
+        return Normalize(Restrict(distribution, self._lower, self._upper))
 
     def rsample(
         self, x: torch.Tensor, sample_shape: torch.Size = torch.Size()
     ) -> torch.Tensor:
-        del sample_shape
-        """Rejection-sample from the base until every entry is in :math:`[a,b]`."""
-        batch = x.shape[0]
-        out = self._base.rsample(x)
-        mask = self._in_bounds(out)
-        for _ in range(self._max_iters):
-            if mask.all():
-                return out
-            replacement = self._base.rsample(x)
-            out = torch.where(
-                mask.reshape(batch, *([1] * (out.ndim - 1))).expand_as(out),
-                out,
-                replacement,
-            )
-            mask = self._in_bounds(out)
-        if not mask.all():
-            raise RuntimeError(
-                f"Truncated rejection sampling failed to fill the batch in "
-                f"{self._max_iters} iterations; the truncation mass is "
-                "vanishingly small for the supplied parameters"
-            )
-        return out
+        """Condition each independent coordinate on the supplied interval."""
+        from quivers.continuous.measure import _bounded_rejection
 
-    def _in_bounds(self, x: torch.Tensor) -> torch.Tensor:
-        m = torch.ones(x.shape[:1], device=x.device, dtype=torch.bool)
+        shape = torch.Size(sample_shape)
+        builder = getattr(self._base, "_get_dist", None)
+        if callable(builder):
+            distribution = builder(x)
+            if distribution.event_shape:
+                raise NotImplementedError(
+                    "Truncated sampling of coupled events requires a joint rectangle law"
+                )
+            if isinstance(distribution, D.Normal):
+                lower = distribution.loc.new_tensor(
+                    -torch.inf if self._lower is None else self._lower
+                )
+                upper = distribution.loc.new_tensor(
+                    torch.inf if self._upper is None else self._upper
+                )
+                return TruncatedNormal(
+                    distribution.loc, distribution.scale, lower, upper
+                ).rsample(shape)
+        return _bounded_rejection(
+            lambda: self._base.rsample(x, shape),
+            self._coordinate_bounds,
+            max_rounds=self._max_iters,
+            label="Truncated",
+        )
+
+    def _coordinate_bounds(self, x: torch.Tensor) -> torch.Tensor:
+        m = torch.ones_like(x, dtype=torch.bool)
         if self._lower is not None:
-            m = m & (x.reshape(x.shape[0], -1) >= self._lower).all(dim=-1)
+            m = m & (x >= self._lower)
         if self._upper is not None:
-            m = m & (x.reshape(x.shape[0], -1) <= self._upper).all(dim=-1)
+            m = m & (x <= self._upper)
         return m
 
     def log_prob(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        base_lp = self._base.log_prob(x, y)
-        # Hard-zero outside the interval.
-        in_bounds = self._in_bounds(y)
-        truncation_lp = self._interval_logmass(x)
-        adjusted = base_lp - truncation_lp
-        return torch.where(
-            in_bounds,
-            adjusted,
-            torch.full_like(adjusted, float("-inf")),
-        )
+        return self._get_dist(x).log_prob(y).sum(dim=-1)
 
     def __repr__(self) -> str:
         return f"Truncated({self._base!r}, lower={self._lower}, upper={self._upper})"
 
 
 __all__ = [
+    "ExtendedBeta",
+    "ConditionalExtendedBeta",
+    "SkewNormal",
+    "ConditionalSkewNormal",
+    "ShiftedLogNormal",
+    "ConditionalShiftedLogNormal",
+    "Frechet",
+    "ConditionalFrechet",
+    "GeneralizedExtremeValue",
+    "ConditionalGeneralizedExtremeValue",
+    "ZeroInflatedNegativeBinomial",
+    "ZeroInflatedBinomial",
+    "ZeroInflatedBetaBinomial",
+    "HurdleNegativeBinomial",
+    "ConditionalZeroInflatedNegativeBinomial",
+    "ConditionalZeroInflatedBinomial",
+    "ConditionalZeroInflatedBetaBinomial",
+    "ConditionalHurdleNegativeBinomial",
     "ConditionalNormal",
     "ConditionalLogitNormal",
     "ConditionalBeta",
     "ConditionalTruncatedNormal",
     "ConditionalDirichlet",
+    "Multinomial",
+    "DirichletMultinomial",
+    "ConditionalMultinomial",
+    "ConditionalDirichletMultinomial",
     "ConditionalCauchy",
     "ConditionalLaplace",
+    "BernsteinHazard",
+    "ConditionalBernsteinHazard",
+    "CoxPH",
+    "MSplineBasis",
+    "cox_spline_basis",
+    "COMPoisson",
+    "ConditionalCOMPoisson",
+    "ConditionalDiscreteWeibull",
+    "ConditionalWiener",
+    "Wiener",
+    "ConditionalZeroInflatedAsymmetricLaplace",
+    "DiscreteWeibull",
+    "ZeroInflatedAsymmetricLaplace",
+    "ConditionalAsymmetricLaplace",
+    "ConditionalExGaussian",
+    "ConditionalHurdleGamma",
+    "ConditionalHurdleLogNormal",
+    "ConditionalInverseGaussian",
     "ConditionalGumbel",
     "ConditionalLogNormal",
     "ConditionalStudentT",
@@ -4189,7 +5022,11 @@ __all__ = [
     "ConditionalNegativeBinomial",
     "ConditionalVonMises",
     "ConditionalUniform",
+    "AdditiveLogRatioNormal",
+    "ConditionalAdditiveLogRatioNormal",
     "ConditionalMultivariateNormal",
+    "MultivariateStudentT",
+    "ConditionalMultivariateStudentT",
     "ConditionalLowRankMVN",
     "ConditionalRelaxedBernoulli",
     "ConditionalRelaxedOneHotCategorical",

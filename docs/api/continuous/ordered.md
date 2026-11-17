@@ -13,6 +13,15 @@ combines point masses at the endpoints with a density between them
 different quantities, and each contribution is scored against its own measure, discrete or
 continuous.
 
+Discrimination defaults to one and must be finite and strictly positive.
+The formula frontend additionally supplies cumulative, adjacent-category,
+stopping-ratio, continuation-ratio, and hurdle-cumulative constructions
+through a shared log-probability kernel. Their
+[ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)
+and [formal laws](../../semantics/programs.md#ordinal-probability-constructions)
+distinguish cumulative threshold ordering from unconstrained noncumulative
+thresholds and identify the hurdle response codes.
+
 The module gives ordered categorical families, conditional and inline, and the zero-inflated,
 hurdle, and mixture distributions that PyTorch does not include.
 

@@ -9,31 +9,27 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor
+from quivers.continuous._count_cdf import _CountCDF
+from quivers.continuous._closed_probability import _check_count_observation_source
 from torch.distributions import constraints as _constraints
 from torch.distributions.distribution import Distribution
 
 from quivers.continuous._closed_probability import ClosedPoisson, _count_log
+from quivers.continuous._recorded_event_tails import (
+    log_normal_mixture_tails,
+    log_zero_one_inflated_beta_tails,
+)
+from quivers.continuous._zero_inflated_count import _InflatedCount
 from quivers.continuous._zero_truncated_poisson import (
     positive_poisson_mean,
+    positive_poisson_log_mean,
     positive_poisson_sample,
 )
-from quivers.continuous.measure import Mixture, PointMass
+from quivers.continuous._observation_events import event_log_prob
+from quivers.continuous.measure import Mixture, Normalize, Restrict
 
 
-def _two_component_inflation(
-    zero_prob: Tensor,
-    base: Distribution,
-) -> Mixture:
-    """Build the two-component `Mixture([pi, 1-pi], [PointMass(0), base])`
-    used by inflation / hurdle constructions. Stacks the weights
-    along the last axis so per-row `pi` broadcasts against the base's
-    batch shape.
-    """
-    weights = torch.stack([zero_prob, 1.0 - zero_prob], dim=-1)
-    return Mixture(weights, [PointMass(0.0), base])
-
-
-class ZeroInflatedPoisson(Distribution):
+class ZeroInflatedPoisson(_InflatedCount):
     """`Mixture([pi, 1-pi], [PointMass(0), Poisson(rate)])`.
 
     Total zero mass `pi + (1-pi) * exp(-rate)` per Lambert 1992;
@@ -52,6 +48,8 @@ class ZeroInflatedPoisson(Distribution):
     }
     support = _constraints.nonnegative_integer
     has_rsample = False
+    _count_class = ClosedPoisson
+    _zero_count_parameters = ("rate",)
 
     def __init__(
         self,
@@ -59,28 +57,14 @@ class ZeroInflatedPoisson(Distribution):
         rate: Tensor,
         validate_args: bool | None = None,
     ) -> None:
-        self.zero_prob = zero_prob
-        self.rate = rate
-        base = ClosedPoisson(rate)
-        self._mixture = _two_component_inflation(zero_prob, base)
+        self.zero_prob, self.rate = torch.broadcast_tensors(zero_prob, rate)
         super().__init__(
-            batch_shape=self._mixture.batch_shape,
-            event_shape=self._mixture.event_shape,
+            batch_shape=self.zero_prob.shape,
             validate_args=validate_args,
         )
 
-    @property
-    def mean(self) -> Tensor:
-        return (1.0 - self.zero_prob) * self.rate
 
-    def log_prob(self, value: Tensor) -> Tensor:
-        return self._mixture.log_prob(value)
-
-    def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
-        return self._mixture.sample(sample_shape).long()
-
-
-class HurdlePoisson(Distribution):
+class HurdlePoisson(_CountCDF, Distribution):
     """A point mass at zero mixed with a normalized positive Poisson.
 
     A Bernoulli with probability ``1 - zero_prob`` selects the positive
@@ -110,6 +94,70 @@ class HurdlePoisson(Distribution):
             validate_args=validate_args,
         )
 
+    def _all_count_tails(self, value):
+        """Condition shared Poisson tails before structural-zero mixing.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor, Tensor, Tensor]
+            Paired log and ordinary tail probabilities.
+        """
+        from quivers.continuous._count_tails import (
+            positive_count_log_tails,
+            inflated_count_tails,
+        )
+
+        rate = self.rate.double()
+        base = ClosedPoisson(rate, validate_args=False)
+        first = -rate + positive_poisson_log_mean(rate)
+        second = first + torch.log1p(rate / 2)
+        lc, ls = positive_count_log_tails(
+            value,
+            base.log_cdf(value),
+            base.log_survival_function(value),
+            -rate,
+            first,
+            second,
+        )
+        return inflated_count_tails(self.zero_prob.double(), value, lc, ls)
+
+    def _count_log_tails(self, value):
+        """Read the paired log tails from the shared hurdle event kernel.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive log CDF and strict log survival.
+        """
+        result = self._all_count_tails(value)
+        return result[0], result[1]
+
+    def _count_probability_tails(self, value):
+        """Retain finite probability derivatives at the hurdle boundary.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real-valued thresholds.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Inclusive cumulative and strict survival probabilities.
+        """
+        result = self._all_count_tails(value)
+        return result[2], result[3]
+
     @property
     def mean(self) -> Tensor:
         """The hurdle mean, with the positive component's limit at zero."""
@@ -133,21 +181,29 @@ class HurdlePoisson(Distribution):
         ValueError
             If validation is enabled and an observation is outside the support.
         """
+        _check_count_observation_source(value)
         if self._validate_args:
             self._validate_sample(value)
-        safe_value = torch.where(value > 0, value, torch.ones_like(value))
-        one = torch.ones_like(self.rate)
-        positive = (
-            _count_log(one, 1 - self.zero_prob)
-            + _count_log(safe_value - 1, self.rate)
-            - self.rate
-            + positive_poisson_mean(self.rate).log()
-            - torch.lgamma(safe_value + 1)
+        valid = _constraints.nonnegative_integer.check(value)
+        value = value.to(torch.float64)
+        rate, zero = self.rate.to(torch.float64), self.zero_prob.to(torch.float64)
+        safe_value = torch.where(valid & (value > 0), value, 1.0)
+        # Reuse the stable unrestricted count kernel. The one-count identity
+        # retains the finite first/second rate derivatives at the zero limit.
+        safe_rate = torch.where(rate > 0, rate, 1.0)
+        conditioned = (
+            ClosedPoisson(safe_rate, validate_args=False).log_prob(safe_value)
+            - (-torch.expm1(-safe_rate)).log()
         )
-        result = torch.where(value == 0, _count_log(one, self.zero_prob), positive)
-        return torch.where(
-            _constraints.nonnegative_integer.check(value), result, -torch.inf
+        component = torch.where(
+            safe_value == 1,
+            -rate + positive_poisson_log_mean(rate),
+            torch.where(rate > 0, conditioned, -torch.inf),
         )
+        one = torch.ones_like(rate)
+        positive = _count_log(one, 1 - zero) + component
+        result = torch.where(value == 0, _count_log(one, zero), positive)
+        return torch.where(valid, result, -torch.inf)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         """Draw counts using a conditioned first arrival for the positive branch.
@@ -164,9 +220,17 @@ class HurdlePoisson(Distribution):
         """
         with torch.no_grad():
             shape = self._extended_shape(sample_shape)
-            positive = positive_poisson_sample(self.rate.expand(shape))
-            zero = torch.bernoulli(self.zero_prob.expand(shape)).bool()
-            return torch.where(zero, torch.zeros_like(positive), positive).long()
+            probability = self.zero_prob.expand(shape)
+            active = (
+                torch.rand(shape, dtype=probability.dtype, device=probability.device)
+                >= probability
+            )
+            result = torch.zeros(shape, dtype=torch.long, device=probability.device)
+            if active.any():
+                result[active] = positive_poisson_sample(
+                    self.rate.expand(shape)[active]
+                ).long()
+            return result
 
 
 class MixtureNormal(Distribution):
@@ -237,6 +301,111 @@ class MixtureNormal(Distribution):
     def log_prob(self, value: Tensor) -> Tensor:
         return self._mixture.log_prob(value)
 
+    def _log_tails(self, value: Tensor) -> tuple[Tensor, Tensor]:
+        """Evaluate the log CDF and log survival as weighted component sums.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points without the component axis.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Float64 ``log P(Y <= value)`` and ``log P(Y > value)``.
+        """
+        return log_normal_mixture_tails(self.weights, self.loc, self.scale, value)
+
+    def _components(self) -> list[torch.distributions.Normal]:
+        """Build the Normal components in component-axis order.
+
+        Returns
+        -------
+        list[torch.distributions.Normal]
+            One Normal law per mixture component.
+        """
+        return [
+            torch.distributions.Normal(self.loc[..., k], self.scale[..., k])
+            for k in range(self._num_components)
+        ]
+
+    def recorded_event_log_prob(
+        self,
+        value: Tensor,
+        *,
+        status: Tensor | int | None = None,
+        interval_upper: Tensor | float | None = None,
+        trunc_lower: Tensor | float | None = None,
+        trunc_upper: Tensor | float | None = None,
+    ) -> Tensor:
+        """Score a recorded event with each component truncated separately.
+
+        brms normalizes every mixture component on the truncation interval and
+        then mixes the normalized components with the mixing weights. The
+        score is ``log sum_k w_k P_k(event) / P_k(lower <= Y <= upper)``, and
+        censoring alone reduces to the mass of the mixture. Cost: O(n K).
+
+        Parameters
+        ----------
+        value : Tensor
+            Exact outcomes or first censoring endpoints.
+        status : Tensor or int or None
+            Censoring codes -1 left, 0 exact, 1 right, 2 interval.
+        interval_upper : Tensor or float or None
+            Upper endpoints of interval-censored rows.
+        trunc_lower, trunc_upper : Tensor or float or None
+            Inclusive truncation bounds.
+
+        Returns
+        -------
+        Tensor
+            Unweighted log likelihoods per row.
+        """
+        scores = torch.stack(
+            [
+                event_log_prob(
+                    component,
+                    value,
+                    status=status,
+                    interval_upper=interval_upper,
+                    trunc_lower=trunc_lower,
+                    trunc_upper=trunc_upper,
+                )
+                for component in self._components()
+            ],
+            dim=-1,
+        )
+        log_weights = torch.where(
+            self.weights > 0,
+            torch.where(self.weights > 0, self.weights, 1.0).log(),
+            -torch.inf,
+        )
+        return torch.logsumexp(log_weights + scores, dim=-1)
+
+    def componentwise_truncation(
+        self, lower: Tensor | float | None, upper: Tensor | float | None
+    ) -> Mixture:
+        """Mix the components after normalizing each on the truncation interval.
+
+        Parameters
+        ----------
+        lower, upper : Tensor or float or None
+            Inclusive truncation bounds; None leaves a side open.
+
+        Returns
+        -------
+        Mixture
+            The brms truncated mixture, sampled by component then by the
+            component's truncated Normal law.
+        """
+        return Mixture(
+            self.weights,
+            [
+                Normalize(Restrict(component, lower, upper))
+                for component in self._components()
+            ],
+        )
+
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         return self._mixture.sample(sample_shape)
 
@@ -270,6 +439,8 @@ class ZeroOneInflatedBeta(Distribution):
     convention follows the [brms family
     documentation](https://paulbuerkner.com/brms/articles/brms_families.html).
     """
+
+    _semantic_family = "ZeroOneInflatedBeta"
 
     arg_constraints = {
         "mu": _OpenUnitInterval(),
@@ -305,6 +476,17 @@ class ZeroOneInflatedBeta(Distribution):
             validate_args=self._validate_args,
         )
 
+    @property
+    def mean(self) -> Tensor:
+        """Expected response, including the atom at one and the interior mean.
+
+        Returns
+        -------
+        Tensor
+            The atom-at-one contribution plus the weighted interior mean.
+        """
+        return self.zoi * self.coi + (1 - self.zoi) * self.mu
+
     def log_prob(self, value: Tensor) -> Tensor:
         if self._validate_args:
             self._validate_sample(value)
@@ -327,6 +509,57 @@ class ZeroOneInflatedBeta(Distribution):
             lp_zero,
             torch.where(is_one, lp_one, torch.where(is_interior, lp_mid, -torch.inf)),
         )
+
+    def _log_tails(self, value: Tensor) -> tuple[Tensor, Tensor]:
+        """Evaluate the log CDF and log survival, including both atoms.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points.
+
+        Returns
+        -------
+        tuple[Tensor, Tensor]
+            Float64 ``log P(Y <= value)`` and ``log P(Y > value)``.
+        """
+        return log_zero_one_inflated_beta_tails(
+            self.mu, self.phi, self.zoi, self.coi, value, left=False
+        )
+
+    def log_cdf_left(self, value: Tensor) -> Tensor:
+        """Evaluate ``log P(Y < value)``, excluding an atom at the query.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points.
+
+        Returns
+        -------
+        Tensor
+            Float64 log left limits of the CDF.
+        """
+        return log_zero_one_inflated_beta_tails(
+            self.mu, self.phi, self.zoi, self.coi, value, left=True
+        )[0]
+
+    def log_survival_function_left(self, value: Tensor) -> Tensor:
+        """Evaluate ``log P(Y >= value)``, including an atom at the query.
+
+        Parameters
+        ----------
+        value : Tensor
+            Real query points.
+
+        Returns
+        -------
+        Tensor
+            Float64 log survival including the query point.
+        """
+        return log_zero_one_inflated_beta_tails(
+            self.mu, self.phi, self.zoi, self.coi, value, left=True
+        )[1]
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> Tensor:
         shape = sample_shape + self.batch_shape

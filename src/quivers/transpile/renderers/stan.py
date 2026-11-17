@@ -55,6 +55,8 @@ The Stan-specific layout decisions:
 
 from __future__ import annotations
 
+from quivers.transpile._resolve import source_declarations
+
 import math
 import pathlib
 from collections.abc import Callable, Mapping
@@ -65,10 +67,7 @@ from torch.distributions.constraints import Constraint
 
 from quivers.dsl.ast_nodes import (
     DrawArg,
-    Expr,
-    DefineDecl,
     Module,
-    MorphismDecl,
 )
 from quivers.dsl.ast_nodes.let_expressions import (
     LetExprCall,
@@ -80,6 +79,9 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetExprVar,
 )
 from quivers.dsl.draw_args import atom_value, bind_family_arguments
+from quivers.transpile.lower import free_vars_in_let
+from quivers.transpile._builtin_spellings import _probability_builtins_used
+
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pipeline import parser_registry, target_protocol
 from quivers.transpile.family_meta import (
@@ -90,10 +92,10 @@ from quivers.transpile.family_meta import (
 )
 from quivers.transpile.ir import (
     CSBoolean,
+    CSInteger,
     CSIntegerInterval,
     CSNonnegativeInteger,
     CSPositiveInteger,
-    CSReal,
     ConstraintSpec,
     LetExprAffineMap,
     Dim,
@@ -144,9 +146,8 @@ from quivers.transpile.renderers._base import (
     mixture_normal_components,
 )
 from quivers.transpile.renderers._qiec import (
-    refuse_static_gaps,
+    _checked_static_computations,
     render_computations_static,
-    carried_computations,
     has_runtime_computations,
 )
 from quivers.transpile.renderers._one_based import counter_value, is_class_code_family
@@ -425,7 +426,7 @@ class StanRenderer(RendererBase):
         assert_no_dropped_param_map(ir, self.target)
         proto = self.target_protocol()
         sb = proto.schema()
-        morphisms, lets = self._resolve_morphisms_and_lets()
+        morphisms, lets = source_declarations(self._source_module)
         ctx = RenderContext(sb=sb, morphisms=morphisms, defines=lets)
         # Reset per-render state.
         self._blocks = {}
@@ -450,17 +451,70 @@ class StanRenderer(RendererBase):
         self._declared_shapes_state.clear()
         self._name_ranks = name_rank_map(ir)
         self._let_events = self._compute_let_events(ir)
+        self._model_deterministics: dict[str, IRDeterministic] = {}
+        # Continuous marginal scopes use the same declaration blocks as the
+        # outer program. Discrete scopes instead inline lets per enumerated atom.
+        layout_nodes = list(ir.body)
+        position = 0
+        while position < len(layout_nodes):
+            current = layout_nodes[position]
+            if isinstance(current, IRMarginalize) and _is_continuous_support(
+                current.constraint.to_constraint()
+            ):
+                layout_nodes[position + 1 : position + 1] = current.scope
+            position += 1
+        for node in layout_nodes:
+            deterministic = node
+            if isinstance(node, IRCall):
+                deterministic = IRDeterministic(
+                    name=node.name,
+                    expr=LetExprCall(func=f"qiec_{node.callee}", args=node.arguments),
+                    constraint=node.constraint,
+                    plate=node.plate,
+                )
+            if isinstance(deterministic, IRDeterministic) and (
+                deterministic.constraint.to_constraint().is_discrete
+                or (
+                    set(free_vars_in_let(deterministic.expr))
+                    | {
+                        dim.size_name
+                        for dim in (
+                            *deterministic.plate.batch_dims,
+                            *deterministic.plate.event_dims,
+                        )
+                        if isinstance(dim, DimDynamic)
+                    }
+                )
+                & self._model_deterministics.keys()
+            ):
+                self._model_deterministics[deterministic.name] = deterministic
+        for node in (*ir.inputs, *layout_nodes):
+            if isinstance(node, (IRDeterministic, IRCall)) and (
+                node.name in self._model_deterministics
+            ):
+                continue
+            plate = getattr(node, "plate", None)
+            if plate is None:
+                continue
+            for dim in (*plate.batch_dims, *plate.event_dims):
+                if (
+                    isinstance(dim, DimDynamic)
+                    and dim.size_name in self._model_deterministics
+                ):
+                    raise UnsupportedConstruct(
+                        "qvr-stan",
+                        [f"dim:model-local:{dim.size_name}:{node.name}"],
+                    )
         self._vector_promotions_state.clear()
         self._vector_promotions_state.update(self._compute_vector_promotions(ir))
         self._class_index_widths_state.clear()
         self._class_index_widths_state.update(self._compute_class_index_widths(ir))
         # A needed computation the static subset lacks is refused before
         # the body is walked, so its call site is never rendered.
-        if has_runtime_computations(ir):
-            refuse_static_gaps(ir, self.target)
+        carried = _checked_static_computations(ir, self.target)
         # Program root.
         ctx.sb.vertex("prog", "program")
-        if carried_computations(ir, self.target):
+        if carried:
             self._ensure_block(ctx, "function_body")
         # Stan ships `normal`, `beta`, `gamma`, ... as built-in
         # densities but lacks `kumaraswamy`. When the IR samples or
@@ -471,7 +525,9 @@ class StanRenderer(RendererBase):
         # into the program above the data block so the sampling
         # statement `y ~ kumaraswamy(a, b);` resolves through Stan's
         # `<family>_lpdf` lookup convention.
-        if any(_ir_uses_family(ir.body, f) for f in _STAN_RUNTIME_HELPER_FAMILIES):
+        if any(
+            _ir_uses_family(ir.body, f) for f in _STAN_RUNTIME_HELPER_FAMILIES
+        ) or _probability_builtins_used(ir.body):
             _graft_runtime_stan_helper(ctx.sb, self, "prog")
         # Pre-create blocks in canonical Stan order so emit_pretty
         # honours the `data? transformed_data? parameters?
@@ -508,6 +564,7 @@ class StanRenderer(RendererBase):
                 ir,
                 target=self.target,
                 destination=self._blocks.get("function_body", "prog"),
+                computations=carried,
             )
         return ctx.sb.build()
 
@@ -908,7 +965,11 @@ class StanRenderer(RendererBase):
         elif isinstance(node, IRDataInput):
             needed.add("data")
         elif isinstance(node, (IRDeterministic, IRCall)):
-            needed.add("transformed_parameters")
+            needed.add(
+                "model"
+                if node.name in self._model_deterministics
+                else "transformed_parameters"
+            )
         elif isinstance(node, IRScore):
             needed.add("model")
         elif isinstance(node, IRMarginalize):
@@ -987,7 +1048,9 @@ class StanRenderer(RendererBase):
         promoted_k = self._vector_promotions.get(name)
         class_width = self._class_index_widths.get(name)
         if promoted_k is not None:
-            self._emit_vector_type_of_size(ctx, tvt, promoted_k)
+            self._emit_type(
+                ctx, tvt, sup, (DimStatic(size=promoted_k, name="_promoted"),)
+            )
         elif class_width is not None:
             # A class-index outcome holds the QVR code of a class of its
             # family's alphabet, `0` to `K - 1`; the log-pmf reads it one
@@ -1049,12 +1112,30 @@ class StanRenderer(RendererBase):
             or is_real_unit_interval(sup)
             or is_real_bounded_interval(sup)
         ):
+            lower, upper = None, None
+            if is_real_positive(sup):
+                lower = 0
+            elif is_real_unit_interval(sup):
+                lower, upper = 0, 1
+            elif is_real_bounded_interval(sup):
+                lower, upper = real_interval_bounds(sup)
             if len(event_dims) == 1:
-                self._emit_vector_type(ctx, tvt_vid, event_dims)
+                self._emit_vector_type(
+                    ctx, tvt_vid, event_dims, lower=lower, upper=upper
+                )
                 return
             if len(event_dims) == 2:
-                self._emit_matrix_type(ctx, tvt_vid, event_dims)
+                self._emit_matrix_type(
+                    ctx, tvt_vid, event_dims, lower=lower, upper=upper
+                )
                 return
+        if (
+            sup.is_discrete
+            and getattr(sup, "lower_bound", None) == -math.inf
+            and getattr(sup, "upper_bound", None) == math.inf
+        ):
+            self._emit_int_type(ctx, tvt_vid, lower=None, upper=None)
+            return
         # Scalar real family.
         if is_real_scalar(sup):
             self._emit_real_type(ctx, tvt_vid, lower=None, upper=None)
@@ -1139,6 +1220,9 @@ class StanRenderer(RendererBase):
         ctx: RenderContext,
         tvt_vid: str,
         event_dims: tuple[Dim, ...],
+        *,
+        lower: int | float | None = None,
+        upper: int | float | None = None,
     ) -> None:
         if len(event_dims) != 1:
             raise UnsupportedConstruct(
@@ -1150,27 +1234,8 @@ class StanRenderer(RendererBase):
             )
         vt = self._fresh(ctx, "vt")
         ctx.sb.vertex(vt, "vector_type")
+        self._maybe_emit_range_constraint(ctx, vt, lower, upper)
         size_vid = self._dim_size_vertex(ctx, event_dims[0])
-        ctx.sb.edge(vt, size_vid, "child_of")
-        ctx.sb.edge(tvt_vid, vt, "child_of")
-
-    def _emit_vector_type_of_size(
-        self,
-        ctx: RenderContext,
-        tvt_vid: str,
-        size: int,
-    ) -> None:
-        """Emit a `vector[K]` type child under `tvt_vid` with a
-        literal integer size.
-
-        Used by the vector-promotion path: chain-tail variables whose
-        downstream consumer binds them to an event_dim>=1 slot are
-        declared as `vector[K]` (wrapped in `array[batch]` when the
-        producer had batch dims) rather than scalar `real`.
-        """
-        vt = self._fresh(ctx, "vt")
-        ctx.sb.vertex(vt, "vector_type")
-        size_vid = self._int_literal(ctx, size)
         ctx.sb.edge(vt, size_vid, "child_of")
         ctx.sb.edge(tvt_vid, vt, "child_of")
 
@@ -1259,6 +1324,9 @@ class StanRenderer(RendererBase):
         ctx: RenderContext,
         tvt_vid: str,
         event_dims: tuple[Dim, ...],
+        *,
+        lower: int | float | None = None,
+        upper: int | float | None = None,
     ) -> None:
         if len(event_dims) != 2:
             raise UnsupportedConstruct(
@@ -1270,6 +1338,7 @@ class StanRenderer(RendererBase):
             )
         mt = self._fresh(ctx, "mt")
         ctx.sb.vertex(mt, "matrix_type")
+        self._maybe_emit_range_constraint(ctx, mt, lower, upper)
         row_vid = self._dim_size_vertex(ctx, event_dims[0])
         col_vid = self._dim_size_vertex(ctx, event_dims[1])
         ctx.sb.edge(mt, row_vid, "child_of")
@@ -3741,7 +3810,7 @@ class StanRenderer(RendererBase):
                     expr=LetExprCall(
                         func=f"qiec_{node.callee}", args=tuple(node.arguments)
                     ),
-                    constraint=CSReal(),
+                    constraint=node.constraint,
                     plate=node.plate,
                 ),
             )
@@ -3764,9 +3833,15 @@ class StanRenderer(RendererBase):
         self,
         ctx: RenderContext,
         node: IRDeterministic,
+        *,
+        block: BlockKind | None = None,
     ) -> None:
-        """Emit a deterministic let-binding into the
-        ``transformed_parameters`` block.
+        """Emit a deterministic binding with its checked scalar carrier.
+
+        Integer bindings and their dependents are local to ``model``;
+        unrelated continuous bindings remain in ``transformed_parameters``.
+        Returning a model-local value replays its pure dependency closure
+        in ``generated_quantities``.
 
         Scalar plate (``batch_dims=()``): the binding is a single
         ``<type> <name> = <expr>;`` declaration whose RHS is
@@ -3794,10 +3869,16 @@ class StanRenderer(RendererBase):
         `vector`, and its leading axes as array dimensions; see
         `_compute_let_events`.
         """
-        parent = self._ensure_block(ctx, "transformed_parameters")
-        if node.name in self._declared["transformed_parameters"]:
+        block = block or (
+            "model"
+            if node.name in self._model_deterministics
+            or node.constraint.to_constraint().is_discrete
+            else "transformed_parameters"
+        )
+        parent = self._ensure_block(ctx, block)
+        if node.name in self._declared[block]:
             return
-        self._declared["transformed_parameters"].add(node.name)
+        self._declared[block].add(node.name)
         sup = node.constraint.to_constraint()
         event = self._let_events.get(node.name, 0)
         stan_plate = self._stan_plate(node.name, node.plate)
@@ -3818,7 +3899,7 @@ class StanRenderer(RendererBase):
             elif len(body_expr.items) > 1 and event == 0:
                 list_array_size = len(body_expr.items)
         decl = self._fresh(ctx, "tpvd")
-        ctx.sb.vertex(decl, "top_var_decl")
+        ctx.sb.vertex(decl, "var_decl" if block == "model" else "top_var_decl")
         ctx.sb.edge(parent, decl, "child_of")
         promoted_k = self._vector_promotions.get(node.name)
         if list_array_size is not None and promoted_k is None:
@@ -3839,9 +3920,31 @@ class StanRenderer(RendererBase):
                 ctx.sb.edge(arr, size_vid, "child_of")
             ctx.sb.edge(decl, arr, "child_of")
         tvt = self._fresh(ctx, "tpvt")
-        ctx.sb.vertex(tvt, "top_var_type")
-        if promoted_k is not None:
-            self._emit_vector_type_of_size(ctx, tvt, promoted_k)
+        ctx.sb.vertex(tvt, "sized_basic_type" if block == "model" else "top_var_type")
+        if block == "model":
+            event_dims = (
+                (DimStatic(size=promoted_k, name="_promoted"),)
+                if promoted_k is not None
+                else stan_plate.event_dims
+            )
+            if sup.is_discrete:
+                ctx.sb.constraint(tvt, "literal-value", "int")
+            elif not event_dims:
+                ctx.sb.constraint(tvt, "literal-value", "real")
+            elif len(event_dims) in (1, 2):
+                ctx.sb.constraint(
+                    tvt, "literal-value", "vector" if len(event_dims) == 1 else "matrix"
+                )
+                for dim in event_dims:
+                    ctx.sb.edge(tvt, self._dim_size_vertex(ctx, dim), "child_of")
+            else:
+                raise UnsupportedConstruct(
+                    "qvr-stan", [f"declare:model-local-event-rank:{node.name}"]
+                )
+        elif promoted_k is not None:
+            self._emit_type(
+                ctx, tvt, sup, (DimStatic(size=promoted_k, name="_promoted"),)
+            )
         else:
             self._emit_type(ctx, tvt, sup, stan_plate.event_dims)
         ctx.sb.edge(decl, tvt, "child_of")
@@ -4082,7 +4185,25 @@ class StanRenderer(RendererBase):
         Re-declaring an existing name is illegal in Stan, so each
         return-var emerges as `<var>_value`.
         """
+
+        def replay(var: str) -> None:
+            node = self._model_deterministics.get(var)
+            if node is None or var in self._declared["generated_quantities"]:
+                return
+            for dependency in free_vars_in_let(node.expr):
+                replay(dependency)
+            for dim in (*node.plate.batch_dims, *node.plate.event_dims):
+                if (
+                    isinstance(dim, DimDynamic)
+                    and dim.size_name in self._model_deterministics
+                ):
+                    raise UnsupportedConstruct(
+                        "qvr-stan", [f"dim:model-local:{dim.size_name}:{var}_value"]
+                    )
+            self._emit_deterministic(ctx, node, block="generated_quantities")
+
         for var in names:
+            replay(var)
             self._emit_gq_alias(ctx, var)
 
     def _emit_gq_alias(self, ctx: RenderContext, var: str) -> None:
@@ -4152,32 +4273,12 @@ class StanRenderer(RendererBase):
 
     # ----- morphism / let resolution -----
 
-    def _resolve_morphisms_and_lets(
-        self,
-    ) -> tuple[dict[str, MorphismDecl], dict[str, Expr]]:
-        """Build the morphism / let tables from the source module.
-
-        Used by [`IRArgFamilyRef`][quivers.transpile.ir.IRArgFamilyRef]
-        resolution. Empty when the renderer was constructed without a
-        source module; in that case `IRArgFamilyRef` rendering raises.
-        """
-        if self._source_module is None:
-            return {}, {}
-        morphisms: dict[str, MorphismDecl] = {}
-        lets: dict[str, Expr] = {}
-        for stmt in self._source_module.statements:
-            if isinstance(stmt, MorphismDecl):
-                for name in stmt.names:
-                    morphisms[name] = stmt
-            elif isinstance(stmt, DefineDecl):
-                lets[stmt.name] = stmt.expr
-        return morphisms, lets
-
 
 #: The supports of a discrete draw, which Stan's samplers carry no
 #: parameter of.
 _DISCRETE_SUPPORTS: tuple[type[ConstraintSpec], ...] = (
     CSBoolean,
+    CSInteger,
     CSIntegerInterval,
     CSNonnegativeInteger,
     CSPositiveInteger,

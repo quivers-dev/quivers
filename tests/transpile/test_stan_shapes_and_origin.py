@@ -72,7 +72,7 @@ def _int(value: int) -> LetExprLiteral:
     LetExprLiteral
         The literal.
     """
-    return LetExprLiteral(value=float(value), integral=True)
+    return LetExprLiteral(value=value, integral=True)
 
 
 _FIXTURE_NAMES: tuple[str, ...] = (

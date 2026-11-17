@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the GeneralizedExtremeValue family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program generalizedextremevalue_fixture : Obs -> Obs
+    observe y : Obs <- GeneralizedExtremeValue(loc=0.2, scale=1.1, concentration=0.1)
+    return y
+export generalizedextremevalue_fixture

@@ -72,6 +72,9 @@ def _walk_sample_step(t: _Tree, vid: str) -> SampleStep:
         vars=vars_t,
         morphism=t.text(morph_vid),
         args=args,
+        static_args=tuple(
+            _walk_draw_arg(t, child) for child in t.fields(vid, "static_args")
+        ),
         index=index,
         axes=axes,
         options=options,
@@ -129,6 +132,9 @@ def _walk_observe_step(t: _Tree, vid: str) -> ObserveStep:
         vars=vars_t,
         morphism=t.text(morph_vid),
         args=args,
+        static_args=tuple(
+            _walk_draw_arg(t, child) for child in t.fields(vid, "static_args")
+        ),
         index=index,
         via=via,
         via_axes=via_axes,
@@ -178,6 +184,9 @@ def _walk_marginalize_step(t: _Tree, vid: str) -> MarginalizeStep:
         var=t.text(var_vid),
         morphism=t.text(morph_vid),
         args=args,
+        static_args=tuple(
+            _walk_draw_arg(t, child) for child in t.fields(vid, "static_args")
+        ),
         index=index,
         over=over,
         over_objs=over_objs,

@@ -8,6 +8,7 @@ from quivers.qiec.families import FAMILIES
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile.family_meta import FAMILY_META
 from quivers.transpile.family_spelling import (
+    _UNSPELLED_ALTERNATIVES,
     DYNAMIC_TARGET_LANGUAGES,
     can_spell,
     helper_families,
@@ -59,6 +60,8 @@ def test_every_named_family_has_a_spelling_or_is_declared_unspellable(
                 and name != "loc"
                 and name != "covariance_matrix"
             ):
+                continue
+            if (family, name) in _UNSPELLED_ALTERNATIVES:
                 continue
             assert f"a_{name}" in spelled.expression, (target, family, name)
         assert set(spelled.helpers) <= helper_roots(target, frozenset({family}))
@@ -159,3 +162,22 @@ def test_helper_families_are_the_ones_each_runtime_file_defines() -> None:
     assert helper_roots("pymc", frozenset({"Normal", "LKJCholesky"})) == frozenset(
         {"LKJCholesky"}
     )
+
+
+@pytest.mark.parametrize("target", sorted(DYNAMIC_TARGET_LANGUAGES))
+@pytest.mark.parametrize(("family", "alternative"), sorted(_UNSPELLED_ALTERNATIVES))
+def test_an_alternative_named_without_the_parameter_read_is_refused(
+    target: str, family: str, alternative: str
+) -> None:
+    if not can_spell(target, family):
+        return
+    read = _UNSPELLED_ALTERNATIVES[(family, alternative)]
+    arguments = {
+        name: value for name, value in _arguments(family).items() if name != read
+    }
+    with pytest.raises(UnsupportedConstruct) as caught:
+        spell_distribution(target, family, arguments, (3, 3))
+    assert any(
+        kind == f"qiec:distribution:{family}:{alternative}:no-{target}-spelling"
+        for kind in caught.value.kinds
+    ), caught.value.kinds

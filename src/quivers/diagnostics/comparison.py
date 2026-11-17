@@ -12,9 +12,12 @@ from typing import Literal, Mapping
 import arviz as az
 import xarray as xr
 
+from quivers.diagnostics.posterior import PosteriorAnalysis
+import torch
+
 
 def compare(
-    fits: Mapping[str, xr.DataTree],
+    fits: Mapping[str, xr.DataTree | PosteriorAnalysis],
     *,
     method: Literal["stacking", "BB-pseudo-BMA", "pseudo-BMA"] = "stacking",
     var_name: str | None = None,
@@ -29,9 +32,11 @@ def compare(
 
     Parameters
     ----------
-    fits : Mapping[str, xr.DataTree]
-        Per-model fits produced by quivers.diagnostics.to_datatree.
-        Every fit must carry a log-likelihood group.
+    fits : Mapping[str, xr.DataTree or PosteriorAnalysis]
+        Per-model retained analyses or DataTrees. Each supplies raw observation
+        log likelihoods. Retained analyses are checked for matching response
+        values and observation units before their PSIS-LOO estimates are ranked.
+        Variational analyses use relative efficiency one.
     method : "stacking", "BB-pseudo-BMA", or "pseudo-BMA"
         Model-weight estimator. Default "stacking" follows Yao,
         Vehtari, Simpson, and Gelman (2018) [Yao et al. (2018)](<https://doi.org/10.1214/17-BA1091>).
@@ -52,8 +57,32 @@ def compare(
     pandas.DataFrame
         ArviZ ranking table with one row per model.
     """
+    analyses = [fit for fit in fits.values() if isinstance(fit, PosteriorAnalysis)]
+    if analyses:
+        # Matching response values catch accidental comparison of different
+        # datasets; callers still choose a common predictive unit/design.
+        selected = [fit._likelihood_name(var_name) for fit in analyses]
+        reference_analysis, reference_name = analyses[0], selected[0]
+        reference_scores = reference_analysis.log_likelihood[reference_name]
+        for fit, name in zip(analyses[1:], selected[1:]):
+            if fit.log_likelihood[name].shape[2:] != reference_scores.shape[2:]:
+                raise ValueError("model comparisons require matching observation units")
+            reference_data = reference_analysis.observed_data.get(reference_name)
+            values = fit.observed_data.get(name)
+            if reference_data is None or values is None:
+                raise ValueError("model comparisons require observed response data")
+            if not torch.equal(reference_data, values):
+                raise ValueError(
+                    "model comparisons require the same observed responses"
+                )
+    prepared = {
+        name: fit.loo(var_name=var_name, pointwise=True)
+        if isinstance(fit, PosteriorAnalysis)
+        else fit
+        for name, fit in fits.items()
+    }
     return az.compare(
-        dict(fits),
+        prepared,
         method=method,
         var_name=var_name,
         reference=reference,

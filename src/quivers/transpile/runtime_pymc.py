@@ -217,3 +217,13 @@ def LKJCholesky(name, n, eta, **kwargs):
         ),
         **kwargs,
     )
+
+
+# qvr-shared-probability:pymc:start
+# qvr-shared-probability:pymc:end
+
+
+def _qvr_bool_not(value):
+    if isinstance(value, bool):
+        return not value
+    return pymc.pytensorf.pt.invert(value)

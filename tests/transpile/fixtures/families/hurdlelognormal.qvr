@@ -1,0 +1,5 @@
+object Row : FinSet 3
+program model : Row -> Row
+    observe y : Row <- HurdleLogNormal(zero_prob=0.25, loc=-0.2, scale=0.7)
+    return y
+export model

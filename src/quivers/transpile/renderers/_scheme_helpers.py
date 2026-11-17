@@ -77,7 +77,7 @@ def render_let_expr_scheme(ctx, expr: LetExprNode) -> str:
     if isinstance(expr, LetExprUnaryOp):
         lst = ctx.v(ctx.fresh("list"), "list")
         op = ctx.v(ctx.fresh("sym"), "symbol")
-        ctx.lit(op, "-")
+        ctx.lit(op, "not" if expr.op == "not" else "-")
         ctx.e(lst, op)
         ctx.e(lst, render_let_expr_scheme(ctx, expr.operand))
         return lst

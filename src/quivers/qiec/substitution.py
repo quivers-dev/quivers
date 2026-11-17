@@ -30,6 +30,8 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     LogDensity,
+    LogMass,
+    ConditionalValue,
     NewInstance,
     Perform,
     PrimitiveApplication,
@@ -65,6 +67,8 @@ from quivers.qiec.types import (
     EqualityType,
     FunctionType,
     IndexConstructor,
+    IndexSum,
+    add_indices,
     IndexTerm,
     IndexVariable,
     ShapeIndex,
@@ -214,6 +218,14 @@ def substitute_index(term: IndexTerm, substitution: StaticSubstitution) -> Index
     """
     if isinstance(term, IndexVariable) and term.identity is None:
         return substitution.index(term.name) or term
+    if isinstance(term, IndexSum):
+        from quivers.qiec.kinds import NAT
+        from quivers.qiec.types import IndexLiteral
+
+        return add_indices(
+            *(substitute_index(argument, substitution) for argument in term.terms),
+            IndexLiteral(value=term.constant, sort=NAT),
+        )
     if isinstance(term, IndexConstructor):
         return IndexConstructor(
             name=term.name,
@@ -652,6 +664,24 @@ def substitute_value(value: Value, substitution: StaticSubstitution) -> Value:
             ),
             body=substitute_value(value.body, substitution),
             result_type=substitute_type(value.result_type, substitution),
+        )
+    if isinstance(value, ConditionalValue):
+        return ConditionalValue(
+            condition=substitute_value(value.condition, substitution),
+            then=substitute_value(value.then, substitution),
+            otherwise=substitute_value(value.otherwise, substitution),
+            result_type=substitute_type(value.result_type, substitution),
+        )
+    if isinstance(value, LogMass):
+        return LogMass(
+            sampleable=substitute_value(value.sampleable, substitution),
+            origin=value.origin,
+            batch=tuple(
+                PlateAxis(
+                    name=axis.name, size=substitute_index(axis.size, substitution)
+                )
+                for axis in value.batch
+            ),
         )
     if isinstance(value, LogDensity):
         return LogDensity(

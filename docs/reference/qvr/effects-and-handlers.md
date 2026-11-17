@@ -34,6 +34,12 @@ argument types precede `->`. An operation with no arguments may be written `Unit
 nullary form the grammar admits. A request always names its instance, as in
 `perform left.get()`, and this is what keeps `left` and `right` apart in the row.
 
+The static arguments select an applied interface, while the operation's value
+arguments are supplied when a request runs. Programs, computations, and
+constructors use the same distinction between static specialization and runtime
+values, as described in the [parameter reference](index.md#parameter-telescopes).
+Introducing a static parameter does not itself perform the operation.
+
 ## Prelude interfaces
 
 These interfaces need no source declaration:

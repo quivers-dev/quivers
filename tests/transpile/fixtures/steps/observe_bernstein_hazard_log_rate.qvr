@@ -1,0 +1,6 @@
+object Row : FinSet 4
+program model : Row -> Row
+    sample eta <- Normal(loc=0.0, scale=2.0)
+    observe t : Row <- BernsteinHazard(breaks=[0.0, 1.0], controls=[[1.0]], log_rate=eta)
+    return t
+export model

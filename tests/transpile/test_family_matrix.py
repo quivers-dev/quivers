@@ -84,16 +84,29 @@ _LONGHAND_FAMILIES: dict[str, frozenset[str]] = {
 #: zeros, standing in for the distribution name the other branch reads.
 _ZEROS_TRICK_MARKERS: tuple[bytes, ...] = (b"dpois", b"zeros")
 
+# Some supported families are exact constructor/density compositions rather
+# than a call to the catalogue's single distribution-name spelling.
+_COMPOSED_MARKERS: dict[tuple[str, str], tuple[bytes, ...]] = {
+    ("stan", "mixturenormal"): (b"log_sum_exp", b"normal_lpdf", b"log(weights"),
+    ("turing", "halfstudentt"): (b"truncated", b"TDist", b"0", b"Inf"),
+}
 
-#: Cells whose transpile refuses for a reason that has nothing to do
-#: with the family under test.
+# These renderers report a missing target mapping before family rendering.
+_UNMAPPED_FAMILY_TAGS = {
+    "jags": "family:no-target-name",
+    "numpyro": "family:no-target-name",
+    "stan": "family:no-stan-target",
+    "webppl": "family:no-webppl-target",
+}
+
+
+#: Cells whose measured capability differs from the catalogue's name lookup.
 #:
-#: A fixture exercises its family at an observed site, and may reach
-#: for other constructs around it. When a backend refuses one of those
-#: the cell says nothing about the family, so the pin records the kind
-#: the refusal must carry: a closed gap surfaces as a raise that no
-#: longer happens, and a regression as a raise of a different kind.
-_ORTHOGONAL_REFUSALS: dict[tuple[str, str], str] = {
+#: A fixture may need a surrounding construct, or the renderer may explicitly
+#: reject a catalogue spelling that its target cannot implement. Pin each
+#: refusal's actual kind: a closed gap then fails because the expected raise
+#: disappears, and a different regression fails because its kind differs.
+_EXPECTED_REFUSALS: dict[tuple[str, str], str] = {
     # `wishart.qvr` writes its scale matrix as a literal, which JAGS's
     # data block has no syntax for; the family itself is one JAGS has.
     ("jags", "wishart"): "arg:matrix-literal",
@@ -111,6 +124,37 @@ _ORTHOGONAL_REFUSALS: dict[tuple[str, str], str] = {
     # carry no discrete parameter; Stan scores the family at an observed
     # site.
     ("stan", "bernoulli"): "sample:discrete-latent",
+    # BUGS cannot add the observed beta-binomial or mixture marginal to
+    # its joint without an additional host-bound density carrier.
+    ("bugs", "betabinomial"): "family:BetaBinomial",
+    ("bugs", "mixturenormal"): "family:MixtureNormal:no-free-density-term",
+    # Shape-dependent intervals can reach storage checks before the
+    # backend's unsupported-family check.
+    ("gen", "generalizedpareto"): "support:_Interval: no Gen.jl storage-type rule",
+    ("stan", "generalizedpareto"): "declare:unsupported-support:_Interval",
+    ("stan", "generalizedextremevalue"): "declare:unsupported-support:_Interval",
+    # These native/reference laws currently have no external implementation.
+    # Pin the named refusal even if future catalogue metadata changes.
+    **{
+        (
+            backend,
+            family.lower(),
+        ): f"{_UNMAPPED_FAMILY_TAGS.get(backend, 'family')}:{family}"
+        for backend in _BACKENDS
+        for family in ("DiscreteWeibull", "ZeroInflatedAsymmetricLaplace")
+    },
+    **{
+        (backend, "wiener"): "family:Wiener:support:_SignedSupport"
+        for backend in _BACKENDS
+    },
+    # The checked canonical families retain distribution-valued arguments.
+    # All current external plans reject those arguments explicitly; family
+    # name metadata alone does not imply support for this composition.
+    **{
+        (backend, family.lower()): f"nested-distribution-arg:{family}:"
+        for backend in _BACKENDS
+        for family in ("Mixture", "Transformed", "Independent")
+    },
 }
 
 
@@ -133,21 +177,20 @@ def test_family_backend_cell(fixture: _load.Fixture, backend: str) -> None:
     backend_name = _backend_target_name(family, backend)
     module = parse(fixture.source)
 
-    orthogonal = _ORTHOGONAL_REFUSALS.get((backend, fixture.name))
-    if orthogonal is not None:
+    refusal = _EXPECTED_REFUSALS.get((backend, fixture.name))
+    if refusal is not None:
         with pytest.raises(UnsupportedConstruct) as exc_info:
             transpile(module, target=backend)
         kinds = exc_info.value.kinds
-        assert any(k.startswith(orthogonal) for k in kinds), (
+        assert any(k.startswith(refusal) for k in kinds), (
             f"backend {backend!r} on family {family!r}: expected a "
-            f"refusal carrying {orthogonal!r}, got kinds={kinds!r}. "
-            f"The cell is pinned to a gap beside the family; if that "
-            f"gap closed, drop the row so the family is exercised "
-            f"again."
+            f"refusal carrying {refusal!r}, got kinds={kinds!r}. "
+            f"The cell pins an explicit capability boundary; if that "
+            f"gap closed, remove this row and exercise the rendered model."
         )
         return
 
-    if backend_name is None and family in _LONGHAND_FAMILIES.get(backend, frozenset()):
+    if family in _LONGHAND_FAMILIES.get(backend, frozenset()):
         # No native name, and none is wanted: the density is written
         # out longhand, so the cell asserts the shape of that emission
         # rather than a distribution name.
@@ -167,6 +210,11 @@ def test_family_backend_cell(fixture: _load.Fixture, backend: str) -> None:
             f"`FAMILY_META[{family!r}].target_names`, or the longhand "
             f"path changed shape."
         )
+        return
+
+    if markers := _COMPOSED_MARKERS.get((backend, fixture.name)):
+        output = transpile(module, target=backend)
+        assert all(marker in output for marker in markers), output.decode()
         return
 
     if backend_name is None:

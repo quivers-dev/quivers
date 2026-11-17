@@ -23,6 +23,8 @@ from quivers.qiec.coverage import (
 )
 from quivers.qiec._models import QiecModel, field_types, validate_shape
 from quivers.qiec.declarations import ConstructorDecl, FamilyDecl, FieldDef
+from quivers.qiec.families import DistributionFamily, FamilyParameter
+from quivers.qiec.family_shapes import FamilyShapeSignature
 from quivers.qiec.effects import (
     ArgumentDef,
     ComputationType,
@@ -96,6 +98,8 @@ from quivers.qiec.terms import (
     LiteralValue,
     Local,
     LogDensity,
+    LogMass,
+    ConditionalValue,
     Perform,
     PrimitiveApplication,
     Projection,
@@ -125,6 +129,7 @@ from quivers.qiec.types import (
     EqualityType,
     FunctionType,
     IndexConstructor,
+    IndexSum,
     IndexLiteral,
     IndexVariable,
     ShapeIndex,
@@ -134,7 +139,7 @@ from quivers.qiec.types import (
 )
 
 
-QIEC_WIRE_FORMAT = "qiec-json/v1"
+QIEC_WIRE_FORMAT = "qiec-json/v2"
 """The format tag every encoded document carries, checked on decoding."""
 
 type JsonValue = (
@@ -191,6 +196,9 @@ _ENUM_CLASSES = (
 )
 
 _NODE_CLASSES = (
+    DistributionFamily,
+    FamilyParameter,
+    FamilyShapeSignature,
     # source identity and kinds
     SourceOrigin,
     DynamicAddressFrame,
@@ -210,6 +218,7 @@ _NODE_CLASSES = (
     IndexVariable,
     IndexLiteral,
     IndexConstructor,
+    IndexSum,
     ShapeIndex,
     TypeVariable,
     TypeConstructorRef,
@@ -276,6 +285,8 @@ _NODE_CLASSES = (
     LetValue,
     LogDensity,
     SiteValue,
+    LogMass,
+    ConditionalValue,
     Return,
     Bind,
     Perform,
@@ -291,9 +302,13 @@ _NODE_CLASSES = (
 
 _IDS = {_class_tag(class_): class_ for class_ in _ID_CLASSES}
 _ENUMS = {_class_tag(class_): class_ for class_ in _ENUM_CLASSES}
-_NODES: dict[str, type[QiecModel]] = {
-    _class_tag(class_): class_ for class_ in _NODE_CLASSES
-}
+_NODES: dict[
+    str,
+    type[QiecModel]
+    | type[DistributionFamily]
+    | type[FamilyParameter]
+    | type[FamilyShapeSignature],
+] = {_class_tag(class_): class_ for class_ in _NODE_CLASSES}
 
 
 def _encode(value: object) -> JsonValue:
@@ -341,7 +356,9 @@ def _encode(value: object) -> JsonValue:
         return {"$tuple": [_encode(item) for item in value]}
     if callable(value):
         raise SerializationError("host callables cannot enter stable QIEC")
-    if isinstance(value, QiecModel):
+    if isinstance(
+        value, (QiecModel, DistributionFamily, FamilyParameter, FamilyShapeSignature)
+    ):
         tag = _class_tag(type(value))
         if tag not in _NODES:
             raise SerializationError(
@@ -350,7 +367,14 @@ def _encode(value: object) -> JsonValue:
         return {
             "$type": tag,
             "fields": [
-                {"name": name, "value": _encode(getattr(value, name))}
+                {
+                    "name": name,
+                    "value": _encode(
+                        tuple(value.targets.items())
+                        if isinstance(value, DistributionFamily) and name == "targets"
+                        else getattr(value, name)
+                    ),
+                }
                 for name in type(value).__field_specs__
             ],
         }
@@ -489,6 +513,16 @@ def _decode(value: JsonValue) -> object:
             raise SerializationError(
                 f"fields for {tag!r} must be {expected_names!r}, got {actual_names!r}"
             )
+        if class_ is DistributionFamily:
+            targets = arguments.get("targets")
+            if not isinstance(targets, tuple) or any(
+                not isinstance(pair, tuple)
+                or len(pair) != 2
+                or not all(isinstance(item, str) for item in pair)
+                for pair in targets
+            ):
+                raise SerializationError("distribution targets must be string pairs")
+            arguments["targets"] = dict(targets)
         tag_field = class_fields.get("tag")
         if tag_field is not None and not tag_field.is_required:
             actual_tag = arguments["tag"]

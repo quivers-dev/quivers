@@ -14,6 +14,8 @@ here.
 
 from __future__ import annotations
 
+from tests.transpile.fixtures._capabilities import PARAMETERIZATION_REFUSALS
+
 from collections.abc import Callable, Mapping
 import math
 import pathlib
@@ -58,6 +60,30 @@ def _t(value: torch.Tensor | Host) -> torch.Tensor:
     return torch.as_tensor(value, dtype=torch.float64)
 
 
+def _multivariate_student_oracle(value: torch.Tensor | Host) -> torch.Tensor:
+    """Score the fixed two-dimensional law using its independent dense formula.
+
+    Parameters
+    ----------
+    value : torch.Tensor or Host
+        Three vector observations in the fixture's original order.
+
+    Returns
+    -------
+    torch.Tensor
+        Joint density with one shared radial Student variable per event.
+    """
+    delta = _t(value) - _t([0.0, 1.0])
+    covariance = _t(_COVARIANCE)
+    quadratic = (delta * (delta @ torch.linalg.inv(covariance))).sum(-1)
+    constant = math.lgamma(3.5) - math.lgamma(2.5) - math.log(5 * math.pi)
+    return (
+        constant
+        - 0.5 * torch.linalg.slogdet(covariance)[1]
+        - 3.5 * torch.log1p(quadratic / 5)
+    ).sum()
+
+
 def _eta(v: Mapping[str, torch.Tensor]) -> torch.Tensor:
     return D.Normal(_t(0.0), _t(2.0)).log_prob(_t(v["eta"]))
 
@@ -83,6 +109,131 @@ _SIGMAS: list[dict[str, Host]] = [
 _CASES: dict[
     str, tuple[str, str, str, dict[str, Host], list[dict[str, Host]], Oracle]
 ] = {
+    "relaxed-bernoulli-logits": (
+        "RelaxedBernoulli",
+        "logits",
+        "steps/observe_relaxed_bernoulli_logits",
+        {"u": [0.1, 0.45, 0.8, 0.97]},
+        _ETAS,
+        lambda v: (
+            _eta(v)
+            + D.RelaxedBernoulli(_t(0.7), logits=_t(v["eta"]))
+            .log_prob(_t(v["u"]))
+            .sum()
+        ),
+    ),
+    "onehot-categorical-logits": (
+        "OneHotCategorical",
+        "logits",
+        "steps/observe_onehot_categorical_logits",
+        {"v": [[1, 0, 0], [0, 0, 1], [0, 1, 0]]},
+        [{}],
+        lambda v: (
+            D.OneHotCategorical(logits=_t([0.2, -0.4, 0.7])).log_prob(_t(v["v"])).sum()
+        ),
+    ),
+    "relaxed-onehot-logits": (
+        "RelaxedOneHotCategorical",
+        "logits",
+        "steps/observe_relaxed_onehot_logits",
+        {"v": [[0.2, 0.3, 0.5], [0.6, 0.1, 0.3], [0.4, 0.4, 0.2]]},
+        [{}],
+        lambda v: (
+            D.RelaxedOneHotCategorical(_t(0.7), logits=_t([0.2, -0.4, 0.7]))
+            .log_prob(_t(v["v"]))
+            .sum()
+        ),
+    ),
+    "bernstein-hazard-log-rate": (
+        "BernsteinHazard",
+        "log_rate",
+        "steps/observe_bernstein_hazard_log_rate",
+        {"t": [0.0, 0.4, 1.0, 2.7]},
+        _ETAS,
+        lambda v: (
+            _eta(v) + D.Exponential(_t(v["eta"]).exp()).log_prob(_t(v["t"])).sum()
+        ),
+    ),
+    "multinomial-logits": (
+        "Multinomial",
+        "logits",
+        "steps/observe_multinomial_logits",
+        {"y": [[1, 2, 2], [0, 1, 4], [3, 2, 0]]},
+        [{}],
+        lambda v: (
+            D.Multinomial(5, logits=_t([0.2, -0.3, 0.7])).log_prob(_t(v["y"])).sum()
+        ),
+    ),
+    "dirichlet-multinomial": (
+        "DirichletMultinomial",
+        "concentration",
+        "steps/observe_dirichlet_multinomial",
+        {"y": [[1, 2, 2], [0, 1, 4], [3, 2, 0]]},
+        [{}],
+        lambda v: (
+            torch.lgamma(_t(6.0))
+            - torch.lgamma(_t(v["y"]) + 1).sum(-1)
+            + torch.lgamma(_t(4.0))
+            - torch.lgamma(_t(9.0))
+            + (
+                torch.lgamma(_t([0.7, 1.3, 2.0]) + _t(v["y"]))
+                - torch.lgamma(_t([0.7, 1.3, 2.0]))
+            ).sum(-1)
+        ).sum(),
+    ),
+    "com-poisson-log-rate": (
+        "COMPoisson",
+        "log_rate",
+        "steps/observe_com_poisson_log_rate",
+        {"y": [0, 2, 4]},
+        [{}],
+        lambda v: (
+            _t(v["y"]) * 0.7
+            - 1.3 * torch.lgamma(_t(v["y"]) + 1)
+            - torch.logsumexp(
+                torch.arange(100, dtype=torch.double) * 0.7
+                - 1.3 * torch.lgamma(torch.arange(100, dtype=torch.double) + 1),
+                0,
+            )
+        ).sum(),
+    ),
+    "alr-reference": (
+        "AdditiveLogRatioNormal",
+        "reference",
+        "steps/observe_alr_reference",
+        {"v": [[0.2, 0.3, 0.5], [0.6, 0.1, 0.3], [0.4, 0.4, 0.2]]},
+        [{}],
+        lambda v: (
+            D.MultivariateNormal(
+                _t([0.2, -0.1]), scale_tril=_t([[0.7, 0.0], [0.2, 0.9]])
+            ).log_prob(_t(v["v"])[:, 1:].log() - _t(v["v"])[:, :1].log())
+            - _t(v["v"]).log().sum(-1)
+        ).sum(),
+    ),
+    "multivariate-student-factor": (
+        "MultivariateStudentT",
+        "scale_tril",
+        "steps/observe_multivariate_student_factor",
+        {"v": [[0.2, 0.3], [0.6, -0.1], [-0.4, 0.7]]},
+        [{}],
+        lambda v: _multivariate_student_oracle(v["v"]),
+    ),
+    "multivariate-student-covariance": (
+        "MultivariateStudentT",
+        "covariance_matrix",
+        "steps/observe_multivariate_student_covariance",
+        {"v": [[0.2, 0.3], [0.6, -0.1], [-0.4, 0.7]]},
+        [{}],
+        lambda v: _multivariate_student_oracle(v["v"]),
+    ),
+    "multivariate-student-precision": (
+        "MultivariateStudentT",
+        "precision_matrix",
+        "steps/observe_multivariate_student_precision",
+        {"v": [[0.2, 0.3], [0.6, -0.1], [-0.4, 0.7]]},
+        [{}],
+        lambda v: _multivariate_student_oracle(v["v"]),
+    ),
     "mvn-covariance": (
         "MultivariateNormal",
         "covariance_matrix",
@@ -180,6 +331,28 @@ _CASES: dict[
         ),
     ),
 }
+
+
+for _axis in ("row", "col"):
+    _CASES["matrix-normal-" + _axis + "-factor"] = (
+        "MatrixNormal",
+        _axis + "_scale_tril",
+        "steps/observe_matrix_normal_" + _axis + "_factor",
+        {"v": [[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]] * 3},
+        _ETAS,
+        lambda v: (
+            _eta(v)
+            + D.MultivariateNormal(
+                torch.zeros(6, dtype=torch.double),
+                covariance_matrix=torch.kron(
+                    _t([[1.44, 0.36], [0.36, 0.73]]),
+                    _t([[0.49, -0.14, 0.07], [-0.14, 1.25, 0.31], [0.07, 0.31, 0.91]]),
+                ),
+            )
+            .log_prob(_t(v["v"]).flatten(-2))
+            .sum()
+        ),
+    )
 
 _INTEGERS = frozenset({"y"})
 
@@ -279,6 +452,9 @@ _REFUSED: dict[tuple[str, str], str] = {
         ),
     ),
 }
+
+# Shared expected cells keep construct and numerical matrices consistent.
+_REFUSED.update(PARAMETERIZATION_REFUSALS)
 
 _TARGETS: tuple[str, ...] = tuple(sorted(_BACKENDS_WITH_IMAGES))
 
@@ -456,7 +632,7 @@ def test_target_scores_the_reference_joint(
             name: "int"
             if name in _INTEGERS
             else "float32"
-            if len(shapes[name]) == 2
+            if len(shapes[name]) >= 2
             else "float"
             for name in shapes
         },

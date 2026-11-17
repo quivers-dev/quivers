@@ -120,7 +120,7 @@ def log_lik_by_tau(rate_before, rate_after, series):
     t = torch.arange(len(series))
     candidates = torch.arange(len(series)).unsqueeze(1)
     rates = torch.where(t.unsqueeze(0) > candidates, rate_after, rate_before)
-    return D.Poisson(rates).log_prob(series).sum(-1)
+    return D.Poisson(rates.double()).log_prob(series.double()).sum(-1)
 
 rate_prior = D.Gamma(2.0, 1.0)
 oracle_lj = (

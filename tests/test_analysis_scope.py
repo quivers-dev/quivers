@@ -118,9 +118,27 @@ def test_resolve_observe_site_inside_marginalize(lda):
 
 
 def test_resolve_typed_program_parameter(lda):
+    from quivers.dsl.ast_nodes import QiecValueParameter
+
     ref = resolve_scoped_path(lda._compiler, "lda::alpha")
     assert ref is not None
+    assert ref.kind == "data-input"
+    assert isinstance(ref.node, QiecValueParameter)
+
+
+def test_resolve_static_program_parameter_keeps_its_declaration():
+    from quivers.dsl.ast_nodes import QiecIndexBinder
+
+    session = ReplSession()
+    response = session.dispatch(
+        "object R:Real 1\nprogram p[n:Nat](x:Tensor[Real]([n])):R->R\n"
+        "    sample b <- Normal(loc=0.0,scale=1.0)\n    return b\nexport p\n"
+    )
+    assert response.ok, response.diagnostics
+    ref = resolve_scoped_path(session._compiler, "p::n")
+    assert ref is not None
     assert ref.kind == "param"
+    assert isinstance(ref.node, QiecIndexBinder)
 
 
 def test_resolve_return_step(lda):
@@ -444,3 +462,25 @@ def test_morphism_is_a_leaf():
     assert ref is not None
     assert ref.kind == "morphism"
     assert dict(scope_children(ref)) == {}
+
+
+def test_weighted_observation_exposes_declared_weight_and_computed_local_scopes():
+    from types import SimpleNamespace
+
+    from quivers.dsl import parse
+
+    module = parse("""object Row : FinSet 3
+object Out : Real 1
+program main(w : Tensor[Real]([Row])) : Row -> Out
+    let adjusted = w * 2.0
+    observe y : Row <- Normal(loc=0.0, scale=1.0) [weights=adjusted]
+    return y
+""")
+    compiler = SimpleNamespace(_module=module)
+    weight = resolve_scoped_path(compiler, "main::w")
+    adjusted = resolve_scoped_path(compiler, "main::adjusted")
+    assert weight is not None and weight.kind == "data-input"
+    assert adjusted is not None and adjusted.kind == "let-site"
+    assert [reference.path for reference in find_all_references(compiler, "w")] == [
+        "main::w"
+    ]

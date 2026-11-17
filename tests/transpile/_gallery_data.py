@@ -4,7 +4,7 @@ Each example may contain a Python block under ``Generating synthetic
 data``. [`load_gallery_data`][tests.transpile._gallery_data.load_gallery_data]
 executes that block in an isolated namespace, de-aliases structural
 subscripts from row order, and returns observations, latent values,
-and scalar template parameters. Missing or failing blocks return
+and runtime scalar inputs. Missing or failing blocks return
 ``None``.
 
 The module also creates per-run container scratch directories and
@@ -31,7 +31,9 @@ import torch
 from torch.distributions import constraints
 
 from quivers.continuous import ContinuousMorphism, Draw, MonadicProgram, Observe
-from quivers.dsl import loads
+from quivers.dsl import loads, parse
+from quivers.dsl.ast_nodes import ExportDecl, ExprIdent, ProgramDecl
+from quivers.dsl.ast_nodes.qiec import QiecTypeName
 from quivers.qiec.canonical import tensor_shape
 from quivers.qiec.types import IndexLiteral
 from tests.transpile.probes._protocol import Point
@@ -288,11 +290,11 @@ class GalleryDataset:
     through the parameter channel, never through a model input the
     emitted program does not declare."""
 
-    scalar_params: dict[str, float]
-    """The exported program's scalar type-parameters, at the concrete
-    values the synthetic-data block instantiated the template with.
+    scalar_params: dict[str, float | int]
+    """The exported program's runtime scalar inputs, at the concrete
+    values the synthetic-data block partially applied.
 
-    A parametric program header (`program lda(alpha : Real, beta :
+    A runtime parameter header (`program lda(alpha : Real, beta :
     Real) : Token -> Mix`) renders as a required *input* of the emitted
     program on every backend: numpyro emits `def model(alpha, beta,
     word_idx, w=None)`, Stan declares `real alpha; real beta;` in its
@@ -328,7 +330,7 @@ class GalleryDataset:
 
     Keyed by wire name, which the lowering derives from the morphism a
     site draws from rather than from the site itself. They ride in
-    `Point.data` beside the scalar type-parameters, and never in
+    `Point.data` beside the runtime scalar inputs, and never in
     `observations`: they are inputs of the emitted program, not sites
     the in-process trace clamps. See
     [`_compiled_param_wires`][tests.transpile._gallery_data._compiled_param_wires]."""
@@ -347,12 +349,10 @@ class GalleryDataset:
     monadic: MonadicProgram | None
     """The compiled [`MonadicProgram`][quivers.continuous.programs.MonadicProgram]
     the synthetic-data block bound to `model` (or, for state-space
-    examples, `inner`). Parametric program templates are exported as
-    a `Program` with `_morphism=None`; the block invokes the template
-    at concrete arguments (e.g. `prog.gmm(alpha=1.0)`) and binds the
-    instantiated MonadicProgram. The QVR probe consumes this directly
-    rather than re-parsing the source, so it sees the same template
-    instance the data was generated under."""
+    examples, `inner`). The block may partially apply runtime scalar
+    inputs (e.g. `prog.gmm(alpha=1.0)`) and bind that MonadicProgram.
+    The QVR probe consumes this directly rather than re-parsing the
+    source, so it sees the same scalar binding the data was generated under."""
 
     shared_plates: dict[str, int] = dataclasses.field(default_factory=dict)
     """The plate extent of each datum supplied as one value every row of
@@ -376,25 +376,10 @@ _SAMPLE_NAME_RE = re.compile(
     re.MULTILINE,
 )
 
-_EXPORT_NAME_RE = re.compile(
-    r"^\s*export\s+([A-Za-z_][A-Za-z_0-9]*)\b",
-    re.MULTILINE,
-)
-
-_PROGRAM_HEADER_RE = re.compile(
-    r"^\s*program\s+([A-Za-z_][A-Za-z_0-9]*)\s*\(([^)]*)\)",
-    re.MULTILINE,
-)
-
-_TYPE_PARAM_RE = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z_0-9]*)\s*:\s*([A-Za-z_][A-Za-z_0-9]*)\s*$",
-)
-
-_SCALAR_PARAM_TYPE = "Real"
-"""The only declared type-parameter kind that reaches a backend as a
-numeric input. A `FinSet`-typed parameter names an *object* the
-compiler resolves at instantiation time (`school_effects(spread :
-Real, K : FinSet)`), so it has no runtime value to send."""
+_SCALAR_PARAM_TYPES = frozenset({"Real", "Nat"})
+"""Runtime scalar types captured by the gallery probes.
+A static `FinSet` parameter names an object specialized before execution,
+as in `school_effects[K : FinSet](spread : Real)`; it is not a runtime input."""
 
 
 def _qvr_observe_names(source_qvr: Path) -> list[str]:
@@ -425,20 +410,20 @@ def _qvr_sample_names(source_qvr: Path) -> list[str]:
     return _SAMPLE_NAME_RE.findall(text)
 
 
-def _exported_type_parameters(
+def _exported_value_parameters(
     source_qvr: Path,
 ) -> dict[str, tuple[tuple[str, str], ...]]:
-    """Declared type-parameters of every program the source exports.
+    """Declared runtime parameters of every program the source exports.
 
     Keyed by program name, each value is the header's parameter list in
-    declaration order as `(name, type)` pairs. Only a header whose
-    parameters are *typed* contributes: `program gru_cell(x_t, h_prev)`
-    binds per-step values rather than type-parameters, and its
-    untyped entries are dropped.
+    declaration order as `(name, type)` pairs. Scalar types retain their
+    names; structured types retain their AST tag for classification. Bare
+    domain binders, as in `program gru_cell(x_t, h_prev)`, are excluded.
+    Parsing keeps nested types, multiline lists, and static telescopes distinct.
 
     Restricting to exported programs is what keeps an inner parametric
     program out of the table. `parametric_pooling` declares
-    `program school_effects(spread : Real, K : FinSet)` and samples it
+    `program school_effects[K : FinSet](spread : Real)` and samples it
     from within `pooled_tight`; only `pooled_tight` is exported, so the
     emitted program takes no scalar input and none is sent.
     """
@@ -446,18 +431,27 @@ def _exported_type_parameters(
         text = source_qvr.read_text(encoding="utf-8")
     except OSError:
         return {}
-    exported = frozenset(_EXPORT_NAME_RE.findall(text))
+    module = parse(text)
+    exported = frozenset(
+        item.expr.name
+        for item in module.statements
+        if isinstance(item, ExportDecl) and isinstance(item.expr, ExprIdent)
+    )
     out: dict[str, tuple[tuple[str, str], ...]] = {}
-    for name, raw_params in _PROGRAM_HEADER_RE.findall(text):
-        if name not in exported:
+    for declaration in module.statements:
+        if not isinstance(declaration, ProgramDecl) or declaration.name not in exported:
             continue
-        declared: list[tuple[str, str]] = []
-        for chunk in raw_params.split(","):
-            typed = _TYPE_PARAM_RE.match(chunk)
-            if typed is not None:
-                declared.append((typed.group(1), typed.group(2)))
+        declared = tuple(
+            (
+                parameter.name,
+                parameter.type_expr.name
+                if isinstance(parameter.type_expr, QiecTypeName)
+                else parameter.type_expr.kind,
+            )
+            for parameter in declaration.value_parameters
+        )
         if declared:
-            out[name] = tuple(declared)
+            out[declaration.name] = declared
     return out
 
 
@@ -466,10 +460,12 @@ def _literal_argument(
     program: str,
     param: str,
     md: Path,
-) -> float:
-    """Value of one literal argument of a template invocation.
+    *,
+    parameter_type: str,
+) -> float | int:
+    """Value of one literal runtime argument partially applied to a program.
 
-    The synthetic-data block instantiates a parametric program at
+    The synthetic-data block partially applies runtime arguments at
     constants (`prog.lda(alpha=1.0, beta=0.5)`), and those constants
     are the values every emitted program expects as inputs. A
     non-literal argument would make the harness guess at a value the
@@ -481,17 +477,24 @@ def _literal_argument(
         raise RuntimeError(
             f"{md.name}: the synthetic-data block invokes "
             f"{program!r} with a non-literal value for the scalar "
-            f"type-parameter {param!r}, so the harness cannot send "
+            f"input {param!r}, so the harness cannot send "
             f"the emitted program the input it declares. Bind the "
             f"argument to a numeric literal in the snippet."
         ) from exc
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RuntimeError(
-            f"{md.name}: scalar type-parameter {param!r} of "
+            f"{md.name}: runtime scalar input {param!r} of "
             f"{program!r} was given {value!r}, which is not a real "
             f"number; the emitted program declares it as a real "
             f"input."
         )
+    if parameter_type == "Nat":
+        if not isinstance(value, int) or value < 0:
+            raise RuntimeError(
+                f"{md.name}: runtime Nat input {param!r} of {program!r} "
+                f"requires a nonnegative integer; received {value!r}."
+            )
+        return value
     return float(value)
 
 
@@ -499,15 +502,14 @@ def _scalar_program_arguments(
     snippet: str,
     md: Path,
     declared: dict[str, tuple[tuple[str, str], ...]],
-) -> dict[str, float]:
-    """Concrete values the snippet instantiated the exported
-    parametric program at, keyed by type-parameter name.
+) -> dict[str, float | int]:
+    """Runtime scalar values partially applied to the exported program.
 
-    Template instantiation bakes the arguments into the resulting
+    Partial application binds the arguments in the resulting
     [`MonadicProgram`][quivers.continuous.programs.MonadicProgram]'s
     families and leaves no record of them (`model._params` is None for
-    an instantiated template), so the invocation site is the only place
-    the snippet is the remaining source of the declared names.
+    a partially applied program), so the invocation site records the
+    concrete values alongside the source's declared names.
     """
     if not declared:
         return {}
@@ -521,8 +523,8 @@ def _scalar_program_arguments(
         params = declared.get(func.attr)
         if params is None:
             continue
-        scalar = {name for name, kind in params if kind == _SCALAR_PARAM_TYPE}
-        bound: dict[str, float] = {}
+        scalar = {name: kind for name, kind in params if kind in _SCALAR_PARAM_TYPES}
+        bound: dict[str, float | int] = {}
         for (name, _kind), positional in zip(params, node.args):
             if name in scalar:
                 bound[name] = _literal_argument(
@@ -530,6 +532,7 @@ def _scalar_program_arguments(
                     func.attr,
                     name,
                     md,
+                    parameter_type=scalar[name],
                 )
         for keyword in node.keywords:
             if keyword.arg in scalar:
@@ -538,13 +541,14 @@ def _scalar_program_arguments(
                     func.attr,
                     keyword.arg,
                     md,
+                    parameter_type=scalar[keyword.arg],
                 )
-        missing = sorted(scalar - set(bound))
+        missing = sorted(set(scalar) - set(bound))
         if missing:
             raise RuntimeError(
                 f"{md.name}: the synthetic-data block invokes "
                 f"{func.attr!r} without a value for the scalar "
-                f"type-parameter(s) {missing!r}, which every emitted "
+                f"input(s) {missing!r}, which every emitted "
                 f"program declares as required inputs."
             )
         return bound
@@ -796,9 +800,8 @@ def load_gallery_data(source_qvr: Path) -> GalleryDataset | None:
             except TypeError, ValueError:
                 return None
 
-    # Compiled MonadicProgram. Templates compile to `Program(None)`
-    # with `program.templates[<name>]` invokers; the synthetic-data
-    # block instantiates the template at concrete arguments and binds
+    # Compiled MonadicProgram. The synthetic-data block may partially
+    # apply a program through its named scalar-argument invoker and bind
     # the result to `model` (or, for examples that wire the bare
     # morphism, `inner`). Capturing either lets the QVR probe walk
     # the instantiated program directly, and pins the ground-truth
@@ -871,17 +874,17 @@ def load_gallery_data(source_qvr: Path) -> GalleryDataset | None:
     scalar_params = _scalar_program_arguments(
         snippet,
         md,
-        _exported_type_parameters(source_qvr),
+        _exported_value_parameters(source_qvr),
     )
     collisions = sorted(
         frozenset(scalar_params) & (frozenset(params) | frozenset(obs_tensors))
     )
     if collisions:
         raise RuntimeError(
-            f"{md.name}: scalar type-parameter(s) {collisions!r} share "
+            f"{md.name}: runtime scalar input(s) {collisions!r} share "
             f"a name with a sample site or an observation, so the "
             f"point's data section cannot carry both. Rename the "
-            f"program's type-parameter in the `.qvr` source."
+            f"program's scalar input in the `.qvr` source."
         )
 
     # Program-input tensor: the snippet may bind any of the canonical
@@ -1222,7 +1225,7 @@ def point_from_dataset(dataset: GalleryDataset) -> Point:
     it as a data input. `dataset.observations` itself is left intact,
     so the in-process QVR trace still clamps every site.
 
-    The program's scalar type-parameters ride in the same `data`
+    The program's runtime scalar inputs ride in the same `data`
     section: they are inputs of the emitted program on every backend,
     and `data` is the section each probe script binds to the model's
     formal arguments."""
@@ -1237,7 +1240,7 @@ def point_from_dataset(dataset: GalleryDataset) -> Point:
 def _point_from_tensors(
     params: dict[str, torch.Tensor],
     observations: dict[str, torch.Tensor],
-    scalar_params: dict[str, float],
+    scalar_params: dict[str, float | int],
     param_wires: dict[str, torch.Tensor] | None = None,
 ) -> Point:
     """Flatten a (latent, observed) tensor pair into a wire
@@ -1751,7 +1754,21 @@ def _perturb_by_support(
     elif isinstance(support, type(constraints.real)):
         moved = work + scale * noise
     else:
-        return None
+        # Custom supports expose their coordinates through the same registry
+        # used by inference. In particular, a normalized restriction retains
+        # its own support rather than pretending to be the base constraint.
+        try:
+            transform = torch.distributions.biject_to(support)
+        except NotImplementedError:
+            return None
+        coordinate = transform.inv(work)
+        if not bool(torch.isfinite(coordinate).all()):
+            return None
+        if coordinate.shape != noise.shape:
+            noise = torch.randn(
+                coordinate.shape, generator=generator, dtype=torch.float64
+            )
+        moved = transform(coordinate + scale * noise)
     return moved.to(dtype=value.dtype)
 
 
@@ -1993,8 +2010,8 @@ def observed_data_names(dataset: GalleryDataset) -> frozenset[str]:
     2. A sample site the `.md` snippet also clamps for its inference
        demo. The point files it under `params` (the latent spelling is
        canonical), so it is not observed data and is excluded here.
-    3. A scalar type-parameter of the program. It is an *input* of the
-       emitted program, fixed by the template instantiation, so it
+    3. A runtime scalar input of the program. It is an *input* of the
+       emitted program, fixed by the partial application, so it
        never varies and is excluded here too.
     """
     return frozenset(dataset.observations) - frozenset(dataset.params)

@@ -27,7 +27,9 @@ def test_hurdle_mean_preserves_the_truncated_poisson_limit(rate: float) -> None:
 def test_zero_rate_hurdle_is_a_bernoulli_distribution(zero_prob: float) -> None:
     dist = HurdlePoisson(torch.tensor(zero_prob), torch.tensor(0.0))
     actual = dist.log_prob(torch.tensor([0.0, 1.0, 2.0])).exp()
-    torch.testing.assert_close(actual, torch.tensor([zero_prob, 1 - zero_prob, 0.0]))
+    torch.testing.assert_close(
+        actual, torch.tensor([zero_prob, 1 - zero_prob, 0.0], dtype=torch.float64)
+    )
 
 
 @pytest.mark.parametrize("rate", [1e-16, 0.005, 0.01, 0.2, 8.0, 20.0])

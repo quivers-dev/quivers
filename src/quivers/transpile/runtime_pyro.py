@@ -253,14 +253,18 @@ class MatrixNormal(pyro.distributions.torch_distribution.TorchDistribution):
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         n = self.loc.shape[-2]
         p = self.loc.shape[-1]
+        # The observation and the parameters meet in their promoted dtype,
+        # since the triangular solves take one dtype on both sides.
         diff = value - self.loc
-        row_solve = torch.cholesky_solve(diff, self._row_tril)
+        row_tril = self._row_tril.to(diff.dtype)
+        col_tril = self._col_tril.to(diff.dtype)
+        row_solve = torch.cholesky_solve(diff, row_tril)
         gram = diff.transpose(-1, -2) @ row_solve
-        col_solve = torch.cholesky_solve(gram, self._col_tril)
+        col_solve = torch.cholesky_solve(gram, col_tril)
         trace = col_solve.diagonal(dim1=-2, dim2=-1).sum(-1)
-        logdet_row = 2.0 * torch.log(self._row_tril.diagonal(dim1=-2, dim2=-1)).sum(-1)
-        logdet_col = 2.0 * torch.log(self._col_tril.diagonal(dim1=-2, dim2=-1)).sum(-1)
-        const = n * p * torch.log(torch.as_tensor(2.0 * torch.pi, dtype=self.loc.dtype))
+        logdet_row = 2.0 * torch.log(row_tril.diagonal(dim1=-2, dim2=-1)).sum(-1)
+        logdet_col = 2.0 * torch.log(col_tril.diagonal(dim1=-2, dim2=-1)).sum(-1)
+        const = n * p * torch.log(torch.as_tensor(2.0 * torch.pi, dtype=diff.dtype))
         return -0.5 * (trace + const + p * logdet_row + n * logdet_col)
 
     def sample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
@@ -544,3 +548,13 @@ __all__ = [
     "LogGamma",
     "LogitBeta",
 ]
+
+
+# qvr-shared-probability:pyro:start
+from quivers.transpile.runtime_probability_pyro import (  # noqa: E402
+    _qvr_log_probability as _qvr_log_probability,
+    _qvr_log1mexp as _qvr_log1mexp,
+    _qvr_log_ndtr as _qvr_log_ndtr,
+    _qvr_positive_parameter as _qvr_positive_parameter,
+)
+# qvr-shared-probability:pyro:end

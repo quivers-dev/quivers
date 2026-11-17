@@ -1,4 +1,44 @@
 functions {
+  int qvr_observation_status(int x) {
+    if (x < -1 || x > 2) reject("observation_status requires integer codes -1, 0, 1, or 2");
+    return x;
+  }
+  real qvr_interval_upper(real lower_endpoint, real upper_endpoint) {
+    if (is_nan(lower_endpoint) || is_nan(upper_endpoint) || is_inf(upper_endpoint) || upper_endpoint <= lower_endpoint) reject("interval_upper requires a finite upper endpoint greater than its lower endpoint");
+    return upper_endpoint;
+  }
+
+  real qvr_positive_parameter(real x) {
+    if (is_nan(x) || is_inf(x) || x <= 0) reject("positive_parameter requires a finite strictly positive real");
+    return x;
+  }
+
+
+  real qvr_log_probability(real x) {
+    if (is_nan(x) || is_inf(x) || x < 0 || x > 1) reject("log_probability requires a finite real in [0,1]");
+    return x == 0 ? negative_infinity() : log(x);
+  }
+  real qvr_log1mexp(real x) {
+    if (is_nan(x) || x > 0) reject("log1mexp requires a nonpositive real");
+    return x == 0 ? negative_infinity() : log1m_exp(x);
+  }
+  real qvr_log_ndtr(real x) {
+    if (is_nan(x)) reject("log_ndtr requires a real other than NaN");
+    if (x == positive_infinity()) return 0;
+    if (x == negative_infinity()) return negative_infinity();
+    if (abs(x) > 2.5) {
+      real magnitude = abs(x);
+      real denominator = magnitude;
+      real tail;
+      for (j in 1:96) {
+        denominator = magnitude + (97 - j) / denominator;
+      }
+      tail = -0.5 * magnitude * magnitude - 0.9189385332046727 - log(denominator);
+      return x < 0 ? tail : log1m_exp(tail);
+    }
+    return std_normal_lcdf(x);
+  }
+
   real kumaraswamy_lpdf(real y, real a, real b) {
     return log(a) + log(b) + (a - 1) * log(y) + (b - 1) * log1m(y ^ a);
   }

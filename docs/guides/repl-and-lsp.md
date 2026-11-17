@@ -362,8 +362,8 @@ conditions one of its sample sites and leaves every other site drawn, and
 `--seed N` seeds the reference generator the draws use. The response carries
 the program's value and the log joint of the drawn and given sites together
 with its observations and scores. A program's extents are read off its data,
-and an extent no data fixes, the object parameter of a program template, is
-given with `--static NAME=TERM`. A program's handlers are fixed by the run,
+and an unsolved static object or index parameter is supplied with
+`--static NAME=TERM`. A program's handlers are fixed by the run,
 so the session's runtime configuration applies to computations only.
 
 Named computations may recurse without bound, so `--fuel STEPS` caps the
@@ -627,7 +627,7 @@ machine-readable.
 
 ```
 > :dump lda
-ProgramDecl(name='lda', params=None, type_params=(ScalarParam(name='alpha', …), …), …)
+ProgramDecl(name='lda', binders=(), value_parameters=(QiecValueParameter(name='alpha', …), …), …)
 ```
 
 #### `:edit NAME`
@@ -753,7 +753,7 @@ What each container kind exposes as named children:
 
 | Container | Children |
 |---|---|
-| `program` | typed parameters + body steps (sample / observe / let / marginalize / score / return), and every program is a scope, with or without typed parameters |
+| `program` | static and runtime header parameters + body steps (sample / observe / let / marginalize / score / return), and every program is a scope, with or without typed parameters |
 | `marginalize` | the same kinds of program step, nested inside the marginalize block |
 | `deduction` | rules + atoms + lexicon entries |
 | `signature` | sorts + constructors + binders + vertex_kinds + edge_kinds |
@@ -849,7 +849,10 @@ otherwise a TextArea action.
 2. Inserts the first candidate, replacing the prefix under the cursor.
 3. Subsequent `Tab` presses cycle through the remaining candidates without rebuilding the list.
 
-The LSP and the Jupyter kernel call the same completer.
+The LSP and the Jupyter kernel call the same completer. Recording options
+`cens=`, `cens_upper=`, `trunc_lower=`, and `trunc_upper=` come from the
+executor's typed role table and include their `Int` or `Real` carrier in
+completion details. The language server displays these candidates as properties.
 
 ### Command palette
 
@@ -1000,7 +1003,8 @@ Cell semantics:
 - Leading-`:` lines are dispatched as meta-commands.
 - Other lines are appended to the live module and compiled.
 - Blank lines before a new top-level declaration separate chunks. Blank lines
-  inside indented declarations remain part of the declaration. A top-level
+  inside declarations, including hanging static or runtime parameter lists,
+  remain part of the declaration. Chunk boundaries use the QVR parser. A top-level
   meta-command starts its own chunk, with or without a preceding blank line.
 - A failed chunk stops the cell and returns structured error details. Silent
   execution suppresses output messages but retains the error status.
@@ -1187,3 +1191,80 @@ Each frontend is a thin adapter:
 - [`quivers.cli.repl_prompt`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/cli/repl_prompt.py), prompt_toolkit single-line frontend.
 - [`quivers.kernel.quivers_kernel`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/kernel/quivers_kernel.py), ipykernel adapter.
 - [`quivers.lsp.server`](https://github.com/quivers-dev/quivers/blob/main/src/quivers/lsp/server.py), pygls server.
+
+## Checked parameters in interactive tools
+
+A model with inferred dimensions can be checked and inspected before data are
+available. Save this source as `regression.qvr`:
+
+<!-- compile: qiec -->
+```qvr
+object Row : FinSet _
+object Out : Real 1
+program regression(x : Tensor[Real]([Row]), y : Tensor[Real]([Row])) : Row -> Out
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let mu = b * x
+    observe y : Row <- Normal(loc=mu, scale=1.0)
+    return b
+export regression
+```
+
+`qvr check regression.qvr` checks the symbolic program. The language server uses
+the same checked projection for diagnostics, formatting, highlighting, and
+navigation. Within `regression`, completion offers `x` and `y` with their declared
+types; hover and go-to-definition resolve them to their parameter declarations.
+These names are local to the program rather than module globals. Independent
+declarations with known dimensions remain compiled and inspectable in the same
+session. The compiler defers only declarations that depend on unresolved
+dimensions, and still reports errors in independent declarations.
+
+Program headers use the same telescope convention as checked computations:
+`[...]` binds static parameters, while `(...)` binds values supplied to execution.
+A later parameter's type may refer to an earlier static parameter. The header
+describes the inputs; an `observe` step separately determines which input
+contributes a likelihood. Thus an observed response remains an ordinary typed
+parameter, and navigation returns to its header declaration.
+
+For a template such as `program p[K : FinSet](spread : Real) : K -> Out`,
+`:type p` displays `p :: [K : FinSet] (Real) => K -> Out`. This keeps the
+static object and runtime scalar separate from the kernel's domain and codomain.
+`:type p::K` and `:type p::spread` inspect the individual parameters. The language
+server offers both names within the body and distinguishes static parameters
+from runtime variables in completion.
+
+The REPL and its TUI retain the symbolic objects and program in their environment
+browsers. Scoped inspection exposes the declarations:
+
+```text
+:load regression.qvr
+:browse programs
+:type regression::x
+:info regression::x
+:run
+:run regression --data x=[1.0,2.0,3.0] --data y=[0.5,1.0,1.5] --seed 7
+```
+
+`:type regression::x` reports `x :: Tensor[Real]([Row])`. `:run` lists the checked
+entry with its input roles, while the invocation infers `Row` from the supplied
+arrays. Conflicting row lengths fail at the data boundary.
+
+The QVR Jupyter kernel accepts the same source and meta-commands in cells; its
+completion and inspection use the shared session. A notebook using the Python
+kernel can instead fit the source through [`Model`](model-data-and-fitting.md):
+
+```python
+from pathlib import Path
+import torch
+from quivers.modeling import Model, VariationalMethod
+
+model = Model(Path("regression.qvr").read_text())
+fit = model.fit(
+    {"x": torch.tensor([1.0, 2.0, 3.0]), "y": torch.tensor([0.5, 1.0, 1.5])},
+    method=VariationalMethod(num_steps=1000, seed=7),
+)
+```
+
+The reference-machine `:run` executes a model once. The Python fitting interface
+specializes and validates a tensor model, then runs the chosen inference method.
+Typed structured bindings and tensor fitting of `CheckedProgram` remain subject
+to the limits listed in the [capability audit](../developer/model-interface-roadmap.md).

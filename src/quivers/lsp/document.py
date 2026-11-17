@@ -14,7 +14,13 @@ from typing import Protocol
 
 from quivers.cli.repl_session import Diagnostic
 from quivers.dsl import Compiler, ParseError, parse
-from quivers.dsl.ast_nodes import DefineDecl, Module, Statement
+from quivers.dsl.ast_nodes import (
+    DefineDecl,
+    Module,
+    ProgramDecl,
+    ProgramParam,
+    Statement,
+)
 from quivers.dsl.ast_nodes.qiec import (
     QiecBindComputation,
     QiecBinder,
@@ -41,13 +47,11 @@ from quivers.dsl.qiec_tooling import (
     qiec_binding_candidates,
     qiec_binding_map,
     qiec_module_name,
+    target_diagnostics,
 )
 from quivers.qiec import QiecModule
 from quivers.qiec.checking import KernelRegistry
 from quivers.qiec.module import validate_module
-from quivers.transpile import UnsupportedConstruct
-from quivers.transpile.plan import checked_program_plan
-from quivers.transpile.qiec_ir import analyze_qiec_capabilities
 
 
 class EnvBinding(Protocol):
@@ -59,7 +63,9 @@ class EnvBinding(Protocol):
     """
 
 
-type QiecLocalDecl = QiecBinder | QiecValueParameter | QiecLocalBinding | QiecTypeName
+type QiecLocalDecl = (
+    QiecBinder | QiecValueParameter | QiecLocalBinding | QiecTypeName | ProgramParam
+)
 """A source binder whose identity is lexical rather than module-level."""
 
 
@@ -184,7 +190,7 @@ class DocumentState:
         """Recompute the target-capability diagnostics against ``target``.
 
         The parsed module and its checked projection are kept: only the
-        capability pass runs again, so a configuration change costs no
+        target preflight runs again, so a configuration change costs no
         reparse and cannot change the grammar the document was read
         with.
 
@@ -198,32 +204,16 @@ class DocumentState:
         self.diagnostics = list(self._base_diagnostics)
         if target is None or self.qiec_module is None:
             return
-        capabilities = analyze_qiec_capabilities(self.qiec_module, target)
-        for diagnostic in capabilities:
-            origin = diagnostic.origin
-            self.diagnostics.append(
-                Diagnostic(
-                    message=diagnostic.message,
-                    severity="error",
-                    line=(origin.line or 0) if origin is not None else 0,
-                    col=(origin.column or 0) if origin is not None else 0,
-                    code=diagnostic.kind,
-                )
+        self.diagnostics.extend(
+            Diagnostic(
+                message=diagnostic.message,
+                severity="error",
+                line=diagnostic.line,
+                col=diagnostic.col,
+                code=diagnostic.code,
             )
-        if not capabilities:
-            try:
-                checked_program_plan(self.qiec_module, self.module, target)
-            except UnsupportedConstruct as error:
-                self.diagnostics.extend(
-                    Diagnostic(
-                        message=str(error),
-                        severity="error",
-                        line=0,
-                        col=0,
-                        code=kind,
-                    )
-                    for kind in error.kinds
-                )
+            for diagnostic in target_diagnostics(self.qiec_module, self.module, target)
+        )
 
     def find_decl(
         self,
@@ -291,7 +281,21 @@ class DocumentState:
         source_col = len(source_lines[line][:col].encode("utf-8"))
         visible: list[QiecLocalDecl] = []
 
-        if isinstance(owner, QiecFamilyDecl):
+        if isinstance(owner, ProgramDecl):
+            from quivers.dsl.program_templates import (
+                static_program_parameters,
+                runtime_program_parameters,
+            )
+
+            visible.extend(
+                local
+                for local in (
+                    *static_program_parameters(owner),
+                    *runtime_program_parameters(owner),
+                )
+                if _binder_has_entered_scope(local, source_line, source_col)
+            )
+        elif isinstance(owner, QiecFamilyDecl):
             visible.extend(
                 local
                 for local in (*owner.parameters, *owner.indices)

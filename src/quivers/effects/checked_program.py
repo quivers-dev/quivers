@@ -34,6 +34,7 @@ from quivers.qiec.program_runtime import (
     sample_program,
 )
 from quivers.qiec.programs import ProgramEntry
+from quivers.qiec.types import IndexTerm, TypeExpr
 
 
 def _nested(value: object) -> HostValue:
@@ -134,6 +135,12 @@ class CheckedProgram(ContinuousMorphism):
         self._name = name
         self._entry: ProgramEntry = program_entry(module, name)
         self._refusal = refusal
+        self.input_contract: ProgramEntry = self._entry
+        self.host_data_types: dict[str, TypeExpr] = {}
+        self.host_index_bounds: dict[str, tuple[IndexTerm, ...]] = {}
+        self.host_data_shared: frozenset[str] = frozenset()
+        self.host_data_notes: dict[str, str] = {}
+        self.site_plates: dict[str, tuple[tuple[str, int | None], ...]] = {}
 
     @property
     def refusal(self) -> Exception:

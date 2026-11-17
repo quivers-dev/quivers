@@ -25,6 +25,24 @@ from quivers.dsl.pygments_lexer import QvrLexer
 SAMPLE = "object X : FinSet 3\nmorphism f : X -> X [role=parameter]\n# comment\n"
 
 
+def test_static_index_addition_highlights_without_reserving_constructor_names() -> None:
+    source = """index Count = zero | nat_add(Count, Count)
+define padded[n : Nat](x : Tensor[Real]([nat_add(n, 1)])) : Tensor[Real]([nat_add(n, 1)]) !{} =
+    return x
+"""
+    pygments = [
+        token
+        for _, token, text in QvrLexer().get_tokens_unprocessed(source)
+        if text == "nat_add"
+    ]
+    assert pygments == [Name.Function, Name.Builtin, Name.Builtin]
+    assert [sp.token for sp in tokenize(source) if sp.text == "nat_add"] == [
+        "function",
+        "function",
+        "function",
+    ]
+
+
 def _classify(spans: list[Span]) -> list[tuple[str, str]]:
     return [(sp.token, sp.text) for sp in spans if sp.text.strip()]
 

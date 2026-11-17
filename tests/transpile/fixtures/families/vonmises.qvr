@@ -1,0 +1,7 @@
+# Auto-generated fixture exercising the VonMises family.
+# Regenerate via tests/transpile/fixtures/_generate_families.py.
+object Obs : FinSet 8
+program vonmises_fixture : Obs -> Obs
+    observe y : Obs <- VonMises(loc=0.0, concentration=1.0)
+    return y
+export vonmises_fixture

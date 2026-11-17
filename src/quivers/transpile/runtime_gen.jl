@@ -358,3 +358,43 @@ Gen.has_argument_grads(::QvrCategoricalDist) = (false,)
 Gen.is_discrete(::QvrCategoricalDist) = true
 
 (::QvrCategoricalDist)(probs) = Gen.random(QvrCategoricalDist(), probs)
+
+function _qvr_log_probability(x)
+    x isa Real && !(x isa Bool) && isfinite(x) && 0 <= x <= 1 || error("log_probability requires a finite real in [0,1]")
+    return iszero(x) ? -Inf : log(x)
+end
+function _qvr_log1mexp(x)
+    x isa Real && !(x isa Bool) && !isnan(x) && x <= 0 || error("log1mexp requires a nonpositive real")
+    return iszero(x) ? -Inf : x > -log(2.0) ? log(-expm1(x)) : log1p(-exp(x))
+end
+function _qvr_log_ndtr(x)
+    x isa Real && !(x isa Bool) && !isnan(x) || error("log_ndtr requires a real other than NaN")
+    x == Inf && return zero(x)
+    x == -Inf && return -Inf
+    if abs(x) > 2.5
+        magnitude = abs(x)
+        denominator = magnitude
+        for k in 96:-1:1
+            denominator = magnitude + k / denominator
+        end
+        tail = -0.5 * magnitude * magnitude - 0.9189385332046727 - log(denominator)
+        return x < 0 ? tail : log1p(-exp(tail))
+    end
+    return log(0.5 * (1 + Distributions.SpecialFunctions.erf(x / sqrt(2.0))))
+end
+
+function _qvr_positive_parameter(x)
+    x isa Real && !(x isa Bool) && isfinite(x) && x > 0 || error("positive_parameter requires a finite strictly positive real")
+    return x
+end
+
+
+function _qvr_observation_status(x)
+    x isa Integer && !(x isa Bool) && -1 <= x <= 2 || error("observation_status requires integer codes -1, 0, 1, or 2")
+    return x
+end
+
+function _qvr_interval_upper(lower, upper)
+    lower isa Real && !(lower isa Bool) && upper isa Real && !(upper isa Bool) && !isnan(lower) && isfinite(upper) && upper > lower || error("interval_upper requires a finite upper endpoint greater than its lower endpoint")
+    return upper
+end

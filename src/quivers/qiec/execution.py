@@ -88,6 +88,8 @@ from quivers.qiec.types import (
     EqualityType,
     FunctionType,
     IndexConstructor,
+    IndexSum,
+    add_indices,
     IndexLiteral,
     IndexTerm,
     ShapeIndex,
@@ -2102,6 +2104,12 @@ def _parse_static(
         )
         return ShapeIndex(dimensions=dimensions)  # type: ignore[arg-type]
     if index_parts:
+        if head == "nat_add" and isinstance(binder.sort, NatSort):
+            if len(index_parts) != 2:
+                raise ValueError("nat_add expects two Nat indices")
+            return add_indices(
+                *(_parse_static(module, binder, part) for part in index_parts)
+            )
         if not isinstance(binder.sort, UserIndexSort):
             raise ValueError(f"index sort {binder.sort!r} has no named constructors")
         arguments = tuple(
@@ -2639,6 +2647,10 @@ def _render_static(argument: StaticArgument) -> str:
         argument, TypeVariable | TypeApplication | FunctionType | EqualityType
     ):
         return _render_type(argument)
+    if isinstance(argument, IndexSum):
+        from quivers.qiec.types import render_static
+
+        return render_static(argument)
     if isinstance(argument, IndexConstructor):
         if not argument.arguments:
             return argument.name

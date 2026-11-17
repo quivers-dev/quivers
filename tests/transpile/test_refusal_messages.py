@@ -98,6 +98,10 @@ FORWARDING_SITES: dict[tuple[str, str], str] = {
     ("transpile/_resolve.py", "build_morphism_table"): (
         "a StepResolutionError's kinds, whose raise sites are scanned"
     ),
+    ("transpile/_resolve.py", "source_declarations"): (
+        "a StepResolutionError's kinds from the canonical declaration indexes, "
+        "whose raise sites are scanned"
+    ),
     ("transpile/_resolve.py", "param_source_kind"): (
         "a StepResolutionError's kinds, whose raise sites are scanned"
     ),
@@ -122,7 +126,7 @@ FORWARDING_SITES: dict[tuple[str, str], str] = {
     ("transpile/renderers/_qiec.py", "render_computations_dynamic"): (
         "QIEC capability diagnostics, measured on the support page"
     ),
-    ("transpile/renderers/_qiec.py", "refuse_static_gaps"): (
+    ("transpile/renderers/_qiec.py", "_checked_static_computations"): (
         "QIEC capability diagnostics, measured on the support page"
     ),
     ("transpile/renderers/bugs.py", "_reject_list_args"): (

@@ -1,0 +1,8 @@
+object Row : FinSet 3
+object R : FinSet 2
+object C : FinSet 3
+program model : Row -> Row
+    sample eta <- Normal(loc=0.0, scale=2.0)
+    observe v : Row <- MatrixNormal(loc=[[0.0,0.0,0.0],[0.0,0.0,0.0]],row_covariance=[[1.44,0.36],[0.36,0.73]],col_scale_tril=[[0.7,0.0,0.0],[-0.2,1.1,0.0],[0.1,0.3,0.9]]) [over=[R,C]]
+    return v
+export model

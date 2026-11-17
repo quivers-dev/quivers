@@ -478,7 +478,7 @@ def test_contraction_invocation_argument_not_a_morphism_errors() -> None:
 
 
 def test_parametric_template_call_from_let() -> None:
-    """``define applied = p(f)`` builds a synthetic non-parametric
+    """``define applied = p[f]()`` builds a synthetic non-parametric
     program by substituting ``f`` for the formal ``k`` and
     compiles it to a runtime morphism."""
     src = """
@@ -488,11 +488,11 @@ def test_parametric_template_call_from_let() -> None:
 
     morphism f : A -> B [role=parameter]
 
-    program p (k : Mor[A, B]) : A -> B
+    program p[k : Mor[A, B]] : A -> B
         sample out <- k
         return out
 
-    define applied = p(f)
+    define applied = p[f]()
     export applied
     """
     m = loads(textwrap.dedent(src))
@@ -507,14 +507,14 @@ def test_parametric_template_call_wrong_arity_errors() -> None:
 
     morphism f : A -> B [role=parameter]
 
-    program p (k : Mor[A, B], j : Mor[A, B]) : A -> B
+    program p[k : Mor[A, B], j : Mor[A, B]] : A -> B
         sample out <- k
         return out
 
-    define bad = p(f)
+    define bad = p[f]()
     export bad
     """
-    with pytest.raises(CompileError, match="expects 2 arguments"):
+    with pytest.raises(CompileError, match=r"takes 2 static argument\(s\).*supplies 1"):
         loads(textwrap.dedent(src))
 
 
@@ -524,11 +524,11 @@ def test_parametric_template_call_undefined_morphism_errors() -> None:
     object A : FinSet 2
     object B : FinSet 2
 
-    program p (k : Mor[A, B]) : A -> B
+    program p[k : Mor[A, B]] : A -> B
         sample out <- k
         return out
 
-    define bad = p(undefined)
+    define bad = p[undefined]()
     export bad
     """
     with pytest.raises(CompileError, match="not declared"):

@@ -340,6 +340,7 @@ def _walk_expr(t: _Tree, vid: str) -> Expr:
         return ExprMorphismCall(
             callee=t.text(callee_vid),
             args=tuple(t.text(av) for av in t.fields(vid, "args")),
+            static_args=tuple(t.text(av) for av in t.fields(vid, "static_args")),
             line=line,
             col=col,
         )
@@ -633,7 +634,12 @@ def _walk_let_arith(t: _Tree, vid: str) -> LetExprNode:
     if k in ("integer", "float", "signed_number", "let_literal"):
         text = t.text(vid)
         integral = not any(character in text for character in ".eE")
-        return LetExprLiteral(value=float(text), integral=integral, line=line, col=col)
+        return LetExprLiteral(
+            value=int(text) if integral else float(text),
+            integral=integral,
+            line=line,
+            col=col,
+        )
     if k == "let_bool":
         return LetExprBool(value=t.text(vid) == "true", line=line, col=col)
     if k == "let_unit":

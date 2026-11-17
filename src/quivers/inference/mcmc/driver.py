@@ -26,7 +26,7 @@ and tail effective sample sizes are computed from those draws by
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import cached_property
 import math
 from pathlib import Path
@@ -584,6 +584,12 @@ class MCMC:
         chain and per call.
     callback : MCMCCallback, optional
         Progress hook called after every transition.
+    initial_values : Mapping[str, torch.Tensor or float], optional
+        Natural-scale starting values for named latent sites. Scalars
+        broadcast to the site's shape; arrays must match it exactly.
+        Values must be finite and strictly inside the prior support.
+        They replace the configured strategy's corresponding coordinates
+        in every chain and are included in checkpoint compatibility.
 
     Raises
     ------
@@ -609,6 +615,7 @@ class MCMC:
         max_seconds: float | None = None,
         max_evaluations: int | None = None,
         callback: MCMCCallback | None = None,
+        initial_values: Mapping[str, torch.Tensor | float] | None = None,
     ) -> None:
         if num_warmup < 0:
             raise ValueError(f"MCMC: num_warmup must be >= 0, got {num_warmup}")
@@ -648,6 +655,10 @@ class MCMC:
         self.max_seconds = max_seconds
         self.max_evaluations = max_evaluations
         self.callback = callback
+        self.initial_values = {
+            name: torch.as_tensor(value).detach().clone()
+            for name, value in (initial_values or {}).items()
+        }
 
     def _run_seed(self) -> int:
         """Return the base seed for one `run` without using global RNG state."""
@@ -719,6 +730,23 @@ class MCMC:
         ValueError
             If ``init_strategy="guide"`` has no guide.
         """
+        position = self._strategy_position(setup, guide, generator)
+        if self.initial_values:
+            from quivers.inference._initialization import unconstrained_initial_values
+
+            for name, value in unconstrained_initial_values(
+                setup.registry, self.initial_values
+            ).items():
+                site = setup.registry[name]
+                position[site.flat_offset : site.flat_offset + site.flat_length] = (
+                    value.reshape(-1)
+                )
+        return position
+
+    def _strategy_position(
+        self, setup: _RunSetup, guide: Guide | None, generator: torch.Generator
+    ) -> torch.Tensor:
+        """Draw the configured starting position before named replacements."""
         registry = setup.registry
         D = registry.total_unconstrained_dim
         if self.init_strategy == "zero":
@@ -1002,6 +1030,11 @@ class MCMC:
             "num_chains": self.num_chains,
             "init_strategy": self.init_strategy,
         }
+        if self.initial_values:
+            settings["initial_values"] = {
+                name: tensor_digest(value)
+                for name, value in sorted(self.initial_values.items())
+            }
         return _CheckpointHeader(
             format_version=CHECKPOINT_FORMAT_VERSION,
             library="quivers",
