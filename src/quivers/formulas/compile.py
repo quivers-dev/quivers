@@ -112,7 +112,7 @@ from quivers.dsl.emit import draw_call_to_source
 from quivers.dsl.draw_args import bind_family_arguments
 from quivers.dsl.family_schemas import family_parameter_names, family_parameterizations
 from quivers.formulas._design import SymbolicColumn
-from quivers.formulas.family import Family
+from quivers.formulas.family import Family, Link, links
 from quivers.formulas._recorded_event_families import check_recorded_event_family
 
 # brms mu<c>: category-specific predictors of categorical and simplex families.
@@ -143,6 +143,7 @@ from quivers.formulas._mixture import (
 from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._ast import (
+    _bind,
     _let,
     _var,
     _add,
@@ -620,114 +621,32 @@ def _prior_lower_bound(step: SampleStep, lower: float | None) -> SampleStep:
     return step
 
 
-def _apply_link(eta: LetExprNode, link_name: str) -> LetExprNode:
-    if link_name == "identity":
-        return eta
-    if link_name in {"logit", "log", "softmax"}:
-        return _call(
-            {"logit": "sigmoid", "log": "exp", "softmax": "softmax"}[link_name], eta
-        )
-    if link_name == "inverse":
-        return _div(LetExprLiteral(value=1.0), eta)
-    if link_name == "probit":
-        return _mul(
-            LetExprLiteral(value=0.5),
-            _add(
-                LetExprLiteral(value=1.0),
-                _call("erf", _div(eta, LetExprLiteral(value=math.sqrt(2.0)))),
-            ),
-        )
-    if link_name == "probit_approx":
-        return _call(
-            "sigmoid",
-            _add(
-                _mul(LetExprLiteral(value=0.07056), _mul(eta, _mul(eta, eta))),
-                _mul(LetExprLiteral(value=1.5976), eta),
-            ),
-        )
-    if link_name == "log1p":
-        return _call("expm1", eta)
-    if link_name == "cloglog":
-        return _mul(
-            LetExprLiteral(value=-1.0),
-            _call("expm1", _mul(LetExprLiteral(value=-1.0), _call("exp", eta))),
-        )
-    if link_name == "cauchit":
-        return _add(
-            LetExprLiteral(value=0.5),
-            _div(_call("atan", eta), LetExprLiteral(value=math.pi)),
-        )
-    if link_name == "sqrt":
-        return _mul(eta, eta)
-    if link_name == "inverse_square":
-        return _div(LetExprLiteral(value=1.0), _call("sqrt", eta))
-    if link_name == "logm1":
-        return _add(LetExprLiteral(value=1.0), _call("exp", eta))
-    if link_name == "softplus":
-        nonnegative = LetExprBinOp(op=">=", left=eta, right=LetExprLiteral(value=0.0))
-        zero = LetExprLiteral(value=0.0)
-        positive = _call("select", nonnegative, eta, zero)
-        negative = _call("select", nonnegative, zero, eta)
-        return _call(
-            "select",
-            nonnegative,
-            _add(
-                eta,
-                _call(
-                    "log1p", _call("exp", _mul(LetExprLiteral(value=-1.0), positive))
-                ),
-            ),
-            _call("log1p", _call("exp", negative)),
-        )
-    if link_name == "tan_half":
-        return _mul(LetExprLiteral(value=2.0), _call("atan", eta))
-    raise ValueError(f"compile_formula: unsupported link {link_name!r}")
-
-
 def _append_link(
-    steps: list[ProgramStep], name: str, eta: LetExprNode, link_name: str
+    steps: list[ProgramStep], name: str, eta: LetExprNode, link: Link
 ) -> None:
-    """Lower inverse links with shared intermediates and safe tail arithmetic."""
-    if link_name == "softit":
-        positive = f"{name}_link_positive"
-        steps.append(_let(positive, _apply_link(eta, "softplus")))
-        value = _var(positive)
-        steps.append(_let(name, _div(value, _add(LetExprLiteral(value=1.0), value))))
-    elif link_name == "squareplus":
-        half, scale, root, magnitude = (
-            f"{name}_link_{suffix}" for suffix in ("half", "scale", "root", "magnitude")
-        )
-        steps.append(_let(half, _mul(LetExprLiteral(value=0.5), eta)))
-        t = _var(half)
-        steps.append(
-            _let(scale, _call("max", LetExprLiteral(value=1.0), _call("abs", t)))
-        )
-        unit = _div(t, _var(scale))
-        reciprocal = _div(LetExprLiteral(value=1.0), _var(scale))
+    """Bind a parameter to its declared inverse link of a linear predictor.
+
+    Parameters
+    ----------
+    steps : list[ProgramStep]
+        Program body receiving the link's intermediates and the parameter.
+    name : str
+        Parameter being defined.
+    eta : LetExprNode
+        Linear predictor.
+    link : Link
+        Inverse link, emitted exactly as it declares itself.
+    """
+    for binding in link.intermediates:
         steps.append(
             _let(
-                root,
-                _mul(
-                    _var(scale),
-                    _call("sqrt", _add(_mul(unit, unit), _mul(reciprocal, reciprocal))),
-                ),
+                binding.name.format(name=name),
+                _bind(binding.expr.format(eta="eta", name=name), eta=eta),
             )
         )
-        nonnegative = LetExprBinOp(op=">=", left=t, right=LetExprLiteral(value=0.0))
-        # select (rather than abs) retains the right branch's derivative at 0.
-        absolute = _call("select", nonnegative, t, _mul(LetExprLiteral(value=-1.0), t))
-        steps.append(_let(magnitude, _add(_var(root), absolute)))
-        value = _var(magnitude)
-        steps.append(
-            _let(
-                name,
-                _call(
-                    "select", nonnegative, value, _div(LetExprLiteral(value=1.0), value)
-                ),
-            )
-        )
-    else:
-        steps.append(_let(name, _apply_link(eta, link_name)))
+    steps.append(
+        _let(name, _bind(link.inverse_expr.format(eta="eta", name=name), eta=eta))
+    )
 
 
 def _decode_module(module: Module, layouts: tuple[GroupBlockLayout, ...] = ()) -> dict:
@@ -1253,6 +1172,34 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Immutable group blocks shared with retained prediction plans.
         """
         return tuple(self._group_layouts)
+
+    def _observe_argument(
+        self, argument: str | float, scale: Mapping[str, LetExprNode]
+    ) -> str | float:
+        """Resolve one declared native constructor argument.
+
+        Parameters
+        ----------
+        argument : str or float
+            A declared `Family.observe_args` entry.
+        scale : Mapping[str, LetExprNode]
+            Names standing in for formula parameters under known errors.
+
+        Returns
+        -------
+        str or float
+            The bound program name or literal constant.
+        """
+        if argument == "trials":
+            if isinstance(self._binomial_trials, str):
+                return _qvr_name(self._binomial_trials)
+            assert self._binomial_trials is not None
+            return float(self._binomial_trials)
+        if isinstance(argument, str) and argument in scale:
+            replacement = scale[argument]
+            assert isinstance(replacement, LetExprVar)
+            return replacement.name
+        return argument
 
     def _append_known_error_scale(
         self, formula: Formula, program_steps: list[ProgramStep]
@@ -4015,7 +3962,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 aux.link for aux in self._family.aux_params if aux.name == parameter
             )
         )
-        _append_link(program_steps, parameter, _var(f"{prefix}eta"), link.name)
+        _append_link(program_steps, parameter, _var(f"{prefix}eta"), link)
 
     def _append_covariance_matrix(
         self,
@@ -5734,7 +5681,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     axis=f"dpar_{aux.name}_FormulaCategoryLogit",
                     components=labels,
                 )
-                _append_link(program_steps, aux.name, _var(eta_name), aux.link.name)
+                _append_link(program_steps, aux.name, _var(eta_name), aux.link)
                 continue
             predictor = self._distributional.get(aux.name)
             # brms sigma<c>: one scale formula or scalar scale per free category.
@@ -5744,7 +5691,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 program_steps,
                 correlated,
                 aux.prior,
-                lambda steps, name, eta, link=aux.link.name: _append_link(
+                lambda steps, name, eta, link=aux.link: _append_link(
                     steps, name, eta, link
                 ),
             ):
@@ -5793,7 +5740,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 )
                 eta_name = f"dpar_{aux.name}_eta"
                 program_steps.append(_let(eta_name, linear_predictor))
-                _append_link(program_steps, aux.name, _var(eta_name), aux.link.name)
+                _append_link(program_steps, aux.name, _var(eta_name), aux.link)
 
     def _build_module(
         self,
@@ -6069,9 +6016,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 program_steps,
                 "mu",
                 _var("eta"),
-                "identity"
+                links["identity"]
                 if self._family.ordinal is not None
-                else self._family.location_link.name,
+                else self._family.location_link,
             )
 
         if self._family.baseline is not None:
@@ -6110,245 +6057,29 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     formula, cutpoints_name, statements, program_steps
                 )
                 obs_args = ("ordinal_logits",)
-        elif self._family.name == "skew_normal":
-            # brms forms the mean parameterization from the total scale, so
-            # known errors enter before the skew location and scale.
-            scale_name = "sigma"
+        elif retained_log_rate:
+            obs_args = ("eta", "shape")
+        else:
+            # The family states its own map to the native constructor. Under
+            # known errors the total scale stands wherever it names sigma.
+            scale: dict[str, LetExprNode] = {}
             if formula.modifiers.standard_error is not None:
                 self._append_known_error_scale(formula, program_steps)
-                scale_name = "formula_sigma"
-            program_steps.extend(
-                [
-                    _let(
-                        "skew_delta",
-                        _call("sin", _call("atan", _var("alpha"))),
-                    ),
-                    _let(
-                        "skew_center",
-                        _mul(
-                            _var("skew_delta"),
-                            LetExprLiteral(value=math.sqrt(2 / math.pi)),
-                        ),
-                    ),
-                    _let(
-                        "skew_scale",
-                        _div(
-                            _var(scale_name),
-                            _call(
-                                "sqrt",
-                                _sub(
-                                    LetExprLiteral(value=1.0),
-                                    _mul(_var("skew_center"), _var("skew_center")),
-                                ),
-                            ),
-                        ),
-                    ),
-                    _let(
-                        "skew_location",
-                        _sub(_var("mu"), _mul(_var("skew_scale"), _var("skew_center"))),
-                    ),
-                ]
-            )
-            obs_args = ("skew_location", "skew_scale", "alpha")
-        elif self._family.name == "shifted_lognormal":
-            obs_args = ("mu", "sigma", "ndt")
-        elif self._family.name == "wiener":
-            # The raw positive reaction time and checked decision are explicit
-            # inputs. Their signed joint event is an ordinary QVR expression.
-            program_steps.append(
-                _let(
-                    _qvr_name(formula.response_name),
-                    _mul(
-                        _var("formula_response"),
-                        _sub(
-                            _mul(
-                                LetExprLiteral(value=2.0),
-                                _call("real", _var("formula_decision")),
-                            ),
-                            LetExprLiteral(value=1.0),
-                        ),
-                    ),
-                )
-            )
-            obs_args = ("bs", "ndt", "bias", "mu")
-        elif self._family.name == "frechet":
-            program_steps.append(
-                _let(
-                    "frechet_scale",
-                    _mul(
-                        _var("mu"),
-                        _call(
-                            "exp",
-                            _mul(
-                                LetExprLiteral(value=-1.0),
-                                _call(
-                                    "lgamma",
-                                    _sub(
-                                        LetExprLiteral(value=1.0),
-                                        _div(LetExprLiteral(value=1.0), _var("nu")),
-                                    ),
-                                ),
-                            ),
-                        ),
-                    ),
-                )
-            )
-            obs_args = ("frechet_scale", "nu")
-        elif self._family.name == "gen_extreme_value":
-            obs_args = ("mu", "sigma", "xi")
-        elif self._family.name == "zero_inflated_asym_laplace":
-            obs_args = ("zi", "mu", "sigma", "quantile")
-        elif self._family.name in {
-            "negbinomial2",
-            "negative_binomial",
-            "zero_inflated_negbinomial",
-            "hurdle_negbinomial",
-        }:
-            # QVR follows torch's ``NegativeBinomial(total_count, probs)``
-            # convention. The formula family is parameterized by mean ``mu``
-            # and a concentration, for which probs = mu / (mu + concentration).
-            shape = "disp" if self._family.name == "negative_binomial" else "shape"
-            if self._family.name == "negbinomial2":
-                shape = "negative_binomial_shape"
-                program_steps.append(
-                    _let(shape, _div(LetExprLiteral(value=1.0), _var("sigma")))
-                )
-            program_steps.append(
-                _let(
-                    "negative_binomial_probs",
-                    _div(_var("mu"), _add(_var("mu"), _var(shape))),
-                )
-            )
-            obs_args = (shape, "negative_binomial_probs")
-            if self._family.name not in {"negative_binomial", "negbinomial2"}:
-                zero = "hu" if self._family.name == "hurdle_negbinomial" else "zi"
-                obs_args = (zero, *obs_args)
-        elif self._family.name == "exgaussian":
-            program_steps.append(
-                _let("exgaussian_location", _sub(_var("mu"), _var("beta")))
-            )
-            program_steps.append(
-                _let("exgaussian_rate", _div(LetExprLiteral(value=1.0), _var("beta")))
-            )
-            obs_args = ("exgaussian_location", "sigma", "exgaussian_rate")
-        elif self._family.name == "exponential":
-            program_steps.append(
-                _let("exponential_rate", _div(LetExprLiteral(value=1.0), _var("mu")))
-            )
-            obs_args = ("exponential_rate",)
-        elif self._family.name == "geometric":
-            program_steps.append(
-                _let(
-                    "geometric_probs",
-                    _div(
-                        LetExprLiteral(value=1.0),
-                        _add(LetExprLiteral(value=1.0), _var("mu")),
-                    ),
-                )
-            )
-            obs_args = ("geometric_probs",)
-        elif self._family.name == "weibull":
-            program_steps.append(
-                _let(
-                    "weibull_scale",
-                    _mul(
-                        _var("mu"),
-                        _call(
-                            "exp",
-                            _mul(
-                                LetExprLiteral(value=-1.0),
-                                _call(
-                                    "lgamma",
-                                    _add(
-                                        LetExprLiteral(value=1.0),
-                                        _div(LetExprLiteral(value=1.0), _var("shape")),
-                                    ),
-                                ),
-                            ),
-                        ),
-                    ),
-                )
-            )
-            obs_args = ("weibull_scale", "shape")
-        elif self._family.name == "hurdle_gamma":
-            program_steps.append(
-                _let("hurdle_gamma_rate", _div(_var("shape"), _var("mu")))
-            )
-            obs_args = ("hu", "shape", "hurdle_gamma_rate")
-        elif self._family.name == "hurdle_lognormal":
-            obs_args = ("hu", "mu", "sigma")
-        elif self._family.name == "gamma":
-            # The formula surface uses the brms mean/shape convention.
-            # QVR's Gamma constructor follows torch and accepts
-            # ``(concentration, rate)``, so rate = shape / mean.
-            program_steps.append(_let("gamma_rate", _div(_var("shape"), _var("mu"))))
-            obs_args = ("shape", "gamma_rate")
-        elif self._family.name == "beta":
-            # Convert mean/precision to the two concentrations expected by
-            # QVR: alpha = mu * phi, beta = (1 - mu) * phi.
-            program_steps.extend(
-                [
-                    _let(
-                        "beta_concentration1",
-                        _mul(_var("mu"), _var("phi")),
-                    ),
-                    _let(
-                        "beta_concentration0",
-                        _mul(
-                            _sub(LetExprLiteral(value=1.0), _var("mu")),
-                            _var("phi"),
-                        ),
-                    ),
-                ]
-            )
-            obs_args = ("beta_concentration1", "beta_concentration0")
-        elif self._family.name == "zero_inflated_beta":
-            # A zero-only inflation is exactly the native zero/one mixture
-            # with its conditional one-atom probability fixed at zero.
-            obs_args = ("mu", "phi", "zi", 0.0)
-        elif self._family.name == "student_t":
-            # QVR follows torch's ``StudentT(df, loc, scale)`` ordering;
-            # the formula surface names those slots ``nu``, ``mu``, and
-            # ``sigma`` respectively.
-            obs_args = ("nu", "mu", "sigma")
-        elif self._family.name in {
-            "zero_inflated_poisson",
-            "hurdle_poisson",
-        }:
-            # Both native constructors take the zero probability before
-            # the Poisson rate; metadata retains its distinct formula role.
-            obs_args = (*self._family.extra_observe_args, "mu")
-        elif self._family.trials_parameter is not None:
-            trials: str | float
-            if isinstance(self._binomial_trials, str):
-                trials = _qvr_name(self._binomial_trials)
-            else:
-                assert self._binomial_trials is not None
-                trials = float(self._binomial_trials)
-            if self._family.observe_family.endswith("BetaBinomial"):
-                program_steps.append(
-                    _let("beta_binomial_concentration1", _mul(_var("mu"), _var("phi")))
-                )
+                scale["sigma"] = _var("formula_sigma")
+            if self._family.decision_event is not None:
                 program_steps.append(
                     _let(
-                        "beta_binomial_concentration0",
-                        _mul(_sub(LetExprLiteral(value=1.0), _var("mu")), _var("phi")),
+                        _qvr_name(formula.response_name),
+                        _bind(self._family.decision_event),
                     )
                 )
-                obs_args = (
-                    trials,
-                    "beta_binomial_concentration1",
-                    "beta_binomial_concentration0",
-                )
-            else:
-                obs_args = (trials, "mu")
-            if self._family.name.startswith("zero_inflated_"):
-                obs_args = ("zi", *obs_args)
-        else:
-            obs_args = (
-                ("eta", "shape")
-                if retained_log_rate
-                else ("mu",) + tuple(self._family.extra_observe_args)
+            program_steps.extend(
+                _let(binding.name, _bind(binding.expr, **scale))
+                for binding in self._family.observe_lets
+            )
+            obs_args = tuple(
+                self._observe_argument(argument, scale)
+                for argument in self._family.observe_args
             )
         if self._family.custom is not None:
             # Autocorrelation terms: structural matrices beyond scalar auxiliaries.
@@ -6406,20 +6137,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     DrawArgNamed(
                         parameter="logits", value=_to_draw_arg("ordinal_logits")
                     ),
-                )
-            )
-        if (
-            formula.modifiers.standard_error is not None
-            and self._family.name != "skew_normal"
-        ):
-            self._append_known_error_scale(formula, program_steps)
-            observation = observation.with_(
-                args=tuple(
-                    argument.with_(value=_to_draw_arg("formula_sigma"))
-                    if isinstance(argument, DrawArgNamed)
-                    and argument.parameter == "scale"
-                    else argument
-                    for argument in observation.args or ()
                 )
             )
         from quivers.formulas._response_roles import event_option_columns
