@@ -4,6 +4,19 @@ All notable changes to the quivers library are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.67.0] - 2026-11-17
+
+### Added
+
+- **Initial values for Gibbs sites.** `MCMC(initial_values=...)`, in its shared and per-chain forms, may name Gibbs sites. A chain starts at the given natural-scale values, validated against the site's support with the boundary allowed, and the remaining Gibbs sites are drawn from the program conditioned on them. The values take part in checkpoint compatibility.
+- **Gibbs blocks over host data.** `GibbsKernel(sites, update=..., host=True)` declares a block over names the program reads but does not sample. `MCMC` requires a starting value for each name in every chain, conditions the potential on them, records them as draws, and saves them in checkpoints. `MCMCKernel.host_sites` reports the names of a kernel or a composite. A host block without `update`, a host name the program binds or observes, and a host block in `SMC` are refused.
+- **`KernelState.evaluated`.** `KernelState.evaluated(potential)` returns the state with its log density and gradient evaluated, and `KernelState.has_density` and `KernelState.density()` report and read them.
+
+### Changed
+
+- **Chain densities are evaluated when first read.** A Gibbs sweep that changes a value leaves `KernelState.log_density` and `grad_log_density` unevaluated (`None`), and the first reader (HMC, NUTS, Metropolis, or the driver when it records a draw) evaluates them once. A cycle of several Gibbs components followed by a gradient kernel costs one evaluation for the Gibbs components together. Recorded draws, statistics, random streams and resumed runs are unchanged. `num_evaluations` and `num_gradient_evaluations` are lower for such cycles, so a `max_evaluations` budget stops a chain later. A callback can see an unevaluated state after a warmup or thinned-out transition that ended in a Gibbs sweep. A nonfinite density after a Gibbs update is raised where the density is next read. Checkpoints written by this release may hold an unevaluated density; earlier checkpoints still load.
+- **`MCMC.resume` compares run settings before the model.** A changed initial value is reported as different run settings.
+
 ## [0.66.0] - 2026-11-17
 
 ### Added
