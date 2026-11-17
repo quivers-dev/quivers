@@ -46,6 +46,11 @@ from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
+from quivers.formulas._row_retention import (
+    complete_rows,
+    compose_positions,
+    role_columns,
+)
 from quivers.formulas._smooth import PSpline
 
 
@@ -499,7 +504,9 @@ class ResponseModifiers(ValueModel):
     standard_error : StandardErrorSpec or None
         Known measurement errors and optional residual scale.
     subset : RowSelection or None
-        Structural row selection performed before evaluating the design.
+        Structural row selection performed before evaluating the design: the
+        rows kept by ``subset`` and by removing rows with missing model
+        values, as original positions.
     trials : FixedColumn or None
         Exact finite trial counts supplied by a response modifier.
     weights_scale : bool
@@ -981,6 +988,10 @@ def formula_from_data(
     Polynomial terms via
     ``poly(x, k)`` are orthogonal by default, matching R's
     ``stats::poly``.
+    As brms's ``na_omit``, a row with a missing value in any variable the
+    formula uses (response, predictors, grouping factors, and role columns)
+    is removed with a warning before anything is evaluated, and
+    ``modifiers.subset`` records the original positions of the rows kept.
 
     Parameters
     ----------
@@ -1074,7 +1085,27 @@ def _formula_and_design(
     normalized_formula, names = parse_roles(
         formula, {"weights": weights, "decision": decision}
     )
+    # brms na_omit: a row missing any model variable is removed before
+    # anything is built, and its original position is retained.
+    original_rows = len(pandas_df)
+    retained = complete_rows(
+        pandas_df,
+        (normalized_formula,),
+        (*role_columns(names), *groups),
+    )
+    if retained is not None:
+        # A column holding missing values recovers its observed type.
+        pandas_df = pandas_df.iloc[list(retained)].infer_objects()
     pandas_df, bound_roles = bind_roles(pandas_df, names)
+    if retained is not None:
+        selected = bound_roles.get("subset")
+        positions = compose_positions(
+            retained,
+            selected.positions if selected is not None else None,
+            len(pandas_df),
+        )
+        assert positions is not None
+        bound_roles["subset"] = RowSelection(size=original_rows, positions=positions)
     response_modifiers = ResponseModifiers(**bound_roles)
     nw_df = nw.from_native(pandas_df, eager_only=True)
     namespace: dict[str, object] = dict(_R_TRANSFORMS)

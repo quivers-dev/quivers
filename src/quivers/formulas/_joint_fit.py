@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal, TypedDict, Unpack, cast
 
+import narwhals as nw
 import torch
 from narwhals.typing import IntoDataFrame
 
@@ -26,6 +27,11 @@ from quivers.formulas._posterior import replay, row_binding
 from quivers.formulas._response import expected_response
 from quivers.formulas._priors import PriorInput, normalize_priors
 from quivers.formulas._group_covariance import GroupCovariance
+from quivers.formulas._row_retention import (
+    joint_complete_rows,
+    model_columns,
+    model_texts,
+)
 from quivers.inference._likelihood import collect_log_likelihood
 from quivers.inference._posterior import (
     collect_site_draws,
@@ -517,12 +523,34 @@ def _prepare_joint(
     TypeError
         If the joint emission does not compile to one MonadicProgram.
     """
+    # brms na_omit: one row decision for every response together.
+    rows = joint_complete_rows(
+        nw.from_native(data, eager_only=True).to_pandas(),
+        tuple(
+            (
+                model_texts(
+                    response.formula, (response.distributional, response.nonlinear)
+                ),
+                model_columns(
+                    response.weights,
+                    response.decision,
+                    response.binomial_trials,
+                    response.thresholds_by,
+                ),
+            )
+            for response in (
+                specification.responses[name]
+                for name in specification.response_names or ()
+            )
+        ),
+    )
     prepared: dict[str, _PreparedFormula] = {}
     for name in specification.response_names or ():
         response = specification.responses[name]
         prepared[name] = _prepare_formula(
             response.formula,
             data=data,
+            rows=rows,
             family=response.resolved_family,
             distributional=response.distributional,
             nonlinear=response.nonlinear,

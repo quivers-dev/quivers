@@ -208,12 +208,20 @@ def test_offset_interactions_groups_and_wrappers_are_rejected(data, formula):
         formula_from_data(formula, data)
 
 
-@pytest.mark.parametrize("value", [0.0, -1.0, np.inf, np.nan])
+@pytest.mark.parametrize("value", [0.0, -1.0, np.inf])
 def test_exposures_must_be_strictly_positive_and_finite(data, value):
     with pytest.raises(ValueError, match="positive finite|response row"):
         formula_from_data(
             "y ~ exposure(time)", data.assign(time=[value, 1.0, 2.0, 3.0])
         )
+
+
+def test_rows_with_missing_exposures_are_removed_as_brms_na_omit(data):
+    with pytest.warns(UserWarning, match="time"):
+        formula = formula_from_data(
+            "y ~ exposure(time)", data.assign(time=[np.nan, 1.0, 2.0, 3.0])
+        )
+    np.testing.assert_allclose(formula.offsets[0].data, np.log([1.0, 2.0, 3.0]))
 
 
 @pytest.mark.parametrize("value", [np.inf, -np.inf])

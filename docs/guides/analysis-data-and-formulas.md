@@ -338,6 +338,53 @@ The direct QVR form uses `observe` options `cens`, `cens_upper`,
 `trunc_lower`, and `trunc_upper`; all 11 external targets currently refuse
 these options explicitly.
 
+### Missing values
+
+As in brms, a row with a missing value in any variable the model uses is
+removed before anything is built: the response, every predictor of the
+location, distributional, and nonlinear formulas, grouping factors, and the
+columns of `weights`, `trials`, `cens`, `subset`, and the other addition
+terms. Only a variable inside `mi()` may be missing. One decision covers every
+part of the model, and in a joint model every response, so all of them use
+the same rows. A response's `subset` can keep a row that is missing a
+variable only that response uses, as brms does. The fit warns which
+variables removed rows, and `BayesianFit.included_rows` lists the positions
+of the rows it used, in the order of pointwise likelihoods and training-row
+predictions.
+
+A value that does not apply to a row does not make the row incomplete. The
+upper endpoint `y2` of `cens(status, y2)` is read only on interval-censored
+rows, so a missing endpoint on an exact, left-censored, or right-censored row
+keeps the row. On an interval-censored row it is required, and a missing
+endpoint is refused with an error. This differs from brms, which removes any
+row with a missing `y2` unless the user fills it with a placeholder value.
+
+<!-- python: run -->
+```python
+import warnings
+
+import numpy as np
+import pandas as pd
+from quivers.formulas import fit
+
+data = pd.DataFrame(
+    {
+        "y": [1.0, 2.1, 2.9, 4.2, 5.1, 5.8, 7.2, 8.1],
+        "x": [1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        "g": ["a", "b", "a", "b", "a", "b", None, "a"],
+    }
+)
+with warnings.catch_warnings(record=True):
+    warnings.simplefilter("always")
+    model = fit("y ~ x + (1 | g)", data=data, method="svi", num_steps=5, seed=1)
+assert model.included_rows == (0, 2, 3, 4, 5, 7)
+```
+
+Fresh rows passed as `new_data` must have every required value: a missing
+predictor or factor level is refused with an error naming the term. A
+missing grouping identity is a new level, so it needs
+`allow_new_levels=True`.
+
 ### Likelihood weights
 
 Pass `weights="column"` to multiply each response log density by its row's

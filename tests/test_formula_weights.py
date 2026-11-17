@@ -201,7 +201,6 @@ def test_categorical_probabilities_ignore_observation_weights_at_fixed_coefficie
     [
         ([-1.0, 1.0, 1.0, 1.0], "nonnegative"),
         ([np.inf, 1.0, 1.0, 1.0], "finite"),
-        ([np.nan, 1.0, 1.0, 1.0], "finite"),
         ([True, False, True, False], "numeric"),
         (["0.0", "1.0", "2.0", "3.0"], "numeric"),
         ([1j, 1j, 1j, 1j], "numeric"),
@@ -218,8 +217,16 @@ def test_weight_column_validation_precedes_compilation(data, entry, column, patt
 def test_missing_selector_dropped_rows_and_reserved_input_names_are_rejected(data):
     with pytest.raises(ValueError, match="existing dataframe column"):
         formula_from_data("y ~ x", data, weights="missing")
-    with pytest.raises(ValueError, match="align with every"):
-        formula_from_data("y ~ x", data.assign(x=[np.nan, 0.0, 1.0, 2.0]), weights="w")
+    # As brms's na_omit, a row missing a predictor or a weight is removed from
+    # the weights and the design together.
+    for column in ("x", "w"):
+        with pytest.warns(UserWarning, match="excluded from the model"):
+            dropped = formula_from_data(
+                "y ~ x", data.assign(**{column: [np.nan, 0.0, 1.0, 2.0]}), weights="w"
+            )
+        assert dropped.modifiers.weights is not None
+        assert dropped.modifiers.weights.data.shape == (3,)
+        assert dropped.response_values.shape == (3,)
     with pytest.raises(ValueError, match="formula_weights is reserved"):
         formula_to_qvr(
             "y ~ formula_weights", data=data.assign(formula_weights=data.x), weights="w"

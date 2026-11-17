@@ -40,9 +40,16 @@ from quivers.formulas.family import Family, families
 from quivers.formulas.formula import (
     Formula,
     FormulaData,
+    RowSelection,
     _formula_and_design,
     _qvr_name,
     formula_from_data,
+)
+from quivers.formulas._row_retention import (
+    complete_rows,
+    compose_positions,
+    model_columns,
+    model_texts,
 )
 from quivers.formulas._predictor_graph import (
     NonlinearExpression,
@@ -519,6 +526,24 @@ class BayesianFit(ValueModel):
         out = Path(path)
         out.write_text(self.qvr_source)
         return out
+
+    @property
+    def included_rows(self) -> tuple[int, ...]:
+        """Positions of the input data rows the model was fitted to.
+
+        Rows excluded by ``subset`` or by a missing value in any model
+        variable are absent. Pointwise likelihoods and predictions on the
+        training rows follow this order.
+
+        Returns
+        -------
+        tuple[int, ...]
+            Zero-based positions in the data passed to ``fit``.
+        """
+        selection = self.formula.modifiers.subset
+        if selection is not None:
+            return selection.positions
+        return tuple(range(len(self.formula.response_values)))
 
     @property
     def category_labels(self) -> tuple[int | str, ...]:
@@ -2900,6 +2925,7 @@ def _prepare_formula(
     mixture_components: int = 2,
     predictor_name: str | None = None,
     caller: str = "formula_to_qvr",
+    rows: tuple[int, ...] | None = None,
 ) -> _PreparedFormula:
     """Prepare one retained design and compiler configuration for every entry.
 
@@ -2935,6 +2961,9 @@ def _prepare_formula(
         Checked external neural binding.
     caller : str
         Entry-point name used in located configuration errors.
+    rows : tuple[int, ...] or None
+        Rows decided for a whole multivariate model, replacing this
+        response's own decision; None decides from this response's variables.
 
     Returns
     -------
@@ -2959,6 +2988,24 @@ def _prepare_formula(
     distributional = custom_distributional(
         family_obj, distributional, fixed_parameters=fixed_parameters
     )
+    # brms na_omit: one decision over every variable of every model part.
+    original = nw.from_native(data, eager_only=True).to_pandas()
+    retained = rows
+    if rows is None:
+        retained = complete_rows(
+            original,
+            model_texts(formula, (distributional, nonlinear)),
+            model_columns(
+                weights,
+                decision,
+                thresholds_by,
+                binomial_trials,
+                family_obj.baseline.by if family_obj.baseline is not None else None,
+            ),
+        )
+    if retained is not None:
+        # A column holding missing values recovers its observed type.
+        data = original.iloc[list(retained)].infer_objects()
     parsed, design = _threshold_formula_and_design(
         nonlinear_response_source(formula, nonlinear),
         data,
@@ -2971,6 +3018,19 @@ def _prepare_formula(
     )
     from quivers.formulas._response_roles import included_data, retained_trials
 
+    if retained is not None:
+        # Retained rows keep their positions in the caller's frame.
+        selection = parsed.modifiers.subset
+        positions = compose_positions(
+            retained, selection.positions if selection is not None else None, len(data)
+        )
+        assert positions is not None
+        parsed = parsed.with_(
+            modifiers=parsed.modifiers.with_(
+                subset=RowSelection(size=len(original), positions=positions)
+            )
+        )
+        data = original
     data = included_data(parsed, data)
     binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
     parsed = parsed.with_(formula=formula)

@@ -54,16 +54,25 @@ def test_named_labels_and_numeric_decisions_have_same_normalized_values(frame):
         [0, 2, 1],
         [0, 0.5, 1],
         [0, np.inf, 1],
-        [0, np.nan, 1],
         [False, True, False],
         ["low", "upper", "lower"],
-        ["lower", None, "upper"],
     ],
 )
-def test_decision_domains_reject_ambiguous_or_missing_codes(frame, bad):
+def test_decision_domains_reject_ambiguous_codes(frame, bad):
     frame["bad"] = bad
     with pytest.raises(ValueError, match="decisions"):
         formula_from_data("rt ~ x", frame, decision="bad")
+
+
+@pytest.mark.parametrize("missing", [[0, np.nan, 1], ["lower", None, "upper"]])
+def test_rows_with_missing_decisions_are_removed_as_brms_na_omit(frame, missing):
+    frame["partial"] = missing
+    with pytest.warns(UserWarning, match="partial"):
+        formula = formula_from_data("rt ~ x", frame, decision="partial")
+    assert formula.modifiers.subset is not None
+    assert formula.modifiers.subset.positions == (0, 2)
+    assert formula.modifiers.decision is not None
+    np.testing.assert_array_equal(formula.modifiers.decision.data, [0, 1])
 
 
 @pytest.mark.parametrize(
