@@ -318,7 +318,17 @@ continuous ones.
   ([`GibbsUpdate`](../api/inference/mcmc.md#quivers.inference.mcmc.GibbsUpdate))
   that draws from its full conditional, such as a conjugate update. Every
   discrete latent must belong to a Gibbs block, and `MCMC.run` raises
-  naming any that does not.
+  naming any that does not. A block with an `update=` may also hold host
+  data, names the program reads (in a `score` step, say) without
+  declaring a distribution for them: `GibbsKernel(["z"], update=move,
+  host=True)`. `MCMC` conditions the potential on host data as it does on
+  sample sites, reports them in `MCMCResult.samples`, and saves them in
+  checkpoints. Since the program has no draw of them, every chain's
+  starting value comes from `initial_values`, taken with its own shape
+  and dtype, and the update must return that shape and dtype. Enumeration
+  needs the support of a sample site, so a host block without `update=`
+  is refused, and so is a host block in `SMC`, whose particles start from
+  the prior.
 - [`CycleKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.CycleKernel)
   applies its components in order on every transition, and
   [`MixtureKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.MixtureKernel)

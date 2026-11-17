@@ -476,6 +476,8 @@ class _RunSetup:
         The potential.
     gibbs_sites : frozenset[str]
         The kernel's Gibbs sites.
+    host_sites : frozenset[str]
+        The Gibbs sites that are host data.
     gibbs_layout : dict[str, _GibbsSite]
         Each Gibbs site's layout.
     gibbs_start : tuple[dict[str, torch.Tensor], ...]
@@ -492,6 +494,7 @@ class _RunSetup:
         "registry",
         "potential",
         "gibbs_sites",
+        "host_sites",
         "gibbs_layout",
         "gibbs_start",
         "site_names",
@@ -505,6 +508,7 @@ class _RunSetup:
         registry: LatentRegistry,
         potential: PotentialFn,
         gibbs_sites: frozenset[str],
+        host_sites: frozenset[str],
         gibbs_layout: dict[str, _GibbsSite],
         gibbs_start: tuple[dict[str, torch.Tensor], ...],
     ) -> None:
@@ -514,9 +518,29 @@ class _RunSetup:
         self.registry = registry
         self.potential = potential
         self.gibbs_sites = gibbs_sites
+        self.host_sites = host_sites
         self.gibbs_layout = gibbs_layout
         self.gibbs_start = gibbs_start
         self.site_names = (*registry.names, *sorted(gibbs_sites))
+
+    def kernel_data(self, gibbs: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """The data a kernel is initialized with for one chain.
+
+        Parameters
+        ----------
+        gibbs : Mapping[str, torch.Tensor]
+            The chain's current Gibbs values.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            The observations and the chain's current host data, which
+            the program reads as data.
+        """
+        return {
+            **self.observations,
+            **{name: gibbs[name] for name in sorted(self.host_sites)},
+        }
 
     def fingerprint(self, gibbs: dict[str, torch.Tensor]) -> str:
         """A digest of the model and data the run samples.
@@ -616,7 +640,10 @@ class MCMC:
         `GibbsKernel` updates: the chain then starts at that value
         instead of a draw from the program, and the value, at the shape
         of one draw in `MCMCResult.samples`, must be finite and inside
-        the site's support, its boundary included.
+        the site's support, its boundary included. Host data a
+        `GibbsKernel` updates (``host=True``) must be named, in every
+        chain: the value is taken as given, with its shape and dtype,
+        which every chain shares.
     thin : int
         Keep every ``thin``-th post-warmup transition; each chain runs
         ``num_samples * thin`` sampling transitions and keeps
@@ -1134,8 +1161,10 @@ class MCMC:
         ------
         ValueError
             If the input has several rows, the data are outside their
-            support, the kernel's Gibbs sites do not fit the model, or
-            an initial value of a Gibbs site does not fit the site.
+            support, the kernel's Gibbs sites do not fit the model, an
+            initial value of a Gibbs site does not fit the site, or host
+            data a Gibbs block updates have no starting value, are among
+            the observations, or are bound by the program.
         """
         _require_one_run(x, consumer)
         _check_observed_support(model, observations, consumer)
@@ -1144,30 +1173,55 @@ class MCMC:
         # from a stream derived from the run's seed, so a seeded run
         # records the same latents whatever the global RNG holds, and
         # Torch's global RNG is left as it was.
+        gibbs_sites = self.kernel.gibbs_sites
+        host_sites = self.kernel.host_sites
+        host_start = self._host_start_values(host_sites, observations, consumer)
+        # The program reads host data by name, so the recording run sees
+        # the first chain's starting values of them.
         recording = self._chain_generator(run_seed, -1)
         try:
             with torch.random.fork_rng(devices=[]), latent_structure_recording():
                 torch.random.set_rng_state(recording.get_state())
-                recorded = trace(model, x, observations=observations)
+                recorded = trace(
+                    model, x, observations={**observations, **host_start[0]}
+                )
         except Exception as error:
             error.add_note(
                 f"{consumer}: raised while recording the run its latents are read "
                 "from, before any sampling"
             )
             raise
-        gibbs_sites = self.kernel.gibbs_sites
-        gibbs_layout = {
+        bound = sorted(name for name in host_sites if name in recorded.sites)
+        if bound:
+            raise ValueError(
+                f"{consumer}: the kernel's Gibbs sites {bound} are declared host "
+                "data, but the program binds them; a block over the program's own "
+                "sites is a GibbsKernel without host=True"
+            )
+        program_layout = {
             name: _GibbsSite.of_program_site(name, recorded.sites[name].value, morphism)
-            for name, morphism in _check_gibbs_sites(recorded, gibbs_sites).items()
+            for name, morphism in _check_gibbs_sites(
+                recorded, gibbs_sites - host_sites
+            ).items()
         }
         gibbs_start = tuple(
             {
-                name: gibbs_layout[name].trace_value(value)
-                for name, value in sorted(self._named_initial_values(chain).items())
-                if name in gibbs_layout
+                **{
+                    name: program_layout[name].trace_value(value)
+                    for name, value in sorted(self._named_initial_values(chain).items())
+                    if name in program_layout
+                },
+                **host_start[chain],
             }
             for chain in range(self.num_chains)
         )
+        gibbs_layout = {
+            **program_layout,
+            **{
+                name: _GibbsSite.of_host_data(name, value)
+                for name, value in host_start[0].items()
+            },
+        }
         registry = LatentRegistry.from_trace(model, recorded, exclude=gibbs_sites)
         potential = PotentialFn(model, registry, x, observations)
         return _RunSetup(
@@ -1177,9 +1231,74 @@ class MCMC:
             registry,
             potential,
             gibbs_sites,
+            host_sites,
             gibbs_layout,
             gibbs_start,
         )
+
+    def _host_start_values(
+        self,
+        host_sites: frozenset[str],
+        observations: Mapping[str, torch.Tensor],
+        consumer: str,
+    ) -> tuple[dict[str, torch.Tensor], ...]:
+        """Each chain's starting values of the host data Gibbs blocks update.
+
+        The program has no draw of host data, so the caller gives every
+        chain's value, which is taken as it is. The chains' values share
+        one shape and dtype, since their draws are stacked.
+
+        Parameters
+        ----------
+        host_sites : frozenset[str]
+            The host-data Gibbs sites.
+        observations : Mapping[str, torch.Tensor]
+            The run's data.
+        consumer : str
+            The method named in errors.
+
+        Returns
+        -------
+        tuple[dict[str, torch.Tensor], ...]
+            For each chain, its own copy of the values by name.
+
+        Raises
+        ------
+        ValueError
+            If a host name is among the observations, a chain has no
+            starting value for one, or the chains' values differ in
+            shape or dtype.
+        """
+        observed = sorted(name for name in host_sites if name in observations)
+        if observed:
+            raise ValueError(
+                f"{consumer}: the kernel's Gibbs sites {observed} are host data a "
+                "Gibbs block updates, so they are given in initial_values, not "
+                "among the observations"
+            )
+        starts: list[dict[str, torch.Tensor]] = []
+        for chain in range(self.num_chains):
+            named = self._named_initial_values(chain)
+            missing = sorted(name for name in host_sites if name not in named)
+            if missing:
+                raise ValueError(
+                    f"{consumer}: the kernel's Gibbs sites {missing} are host data, "
+                    "which the program does not draw; give chain "
+                    f"{chain} a starting value for each in initial_values"
+                )
+            starts.append({name: named[name].clone() for name in sorted(host_sites)})
+        for name in sorted(host_sites):
+            first = starts[0][name]
+            for chain, values in enumerate(starts):
+                value = values[name]
+                if value.shape != first.shape or value.dtype != first.dtype:
+                    raise ValueError(
+                        f"{consumer}: chain {chain}'s starting value of the host "
+                        f"data {name!r} has shape {tuple(value.shape)} and dtype "
+                        f"{value.dtype}; chain 0's has shape {tuple(first.shape)} "
+                        f"and dtype {first.dtype}"
+                    )
+        return tuple(starts)
 
     def _header(self, setup: _RunSetup, run_seed: int) -> _CheckpointHeader:
         """The checkpoint header of a run.
@@ -1346,7 +1465,11 @@ class MCMC:
         init_pos, gibbs_values = self._accepted_start(setup, guide, generator, chain)
         self.kernel._set_generator(generator)
         state = self.kernel.init(
-            setup.registry, setup.model, setup.x, setup.observations, init_pos
+            setup.registry,
+            setup.model,
+            setup.x,
+            setup.kernel_data(gibbs_values),
+            init_pos,
         )
         state = state.with_(gibbs_values=gibbs_values)
         if self.num_warmup > 0:
@@ -1393,7 +1516,7 @@ class MCMC:
                     setup.registry,
                     setup.model,
                     setup.x,
-                    setup.observations,
+                    setup.kernel_data(record.state.gibbs_values),
                     record.state.position,
                 )
                 self.kernel.load_state_dict(record.kernel_state)
@@ -1769,6 +1892,26 @@ class _GibbsSite(ValueModel):
             ),
         )
 
+    @classmethod
+    def of_host_data(cls, name: str, value: torch.Tensor) -> "_GibbsSite":
+        """The layout of host data a Gibbs block updates.
+
+        Parameters
+        ----------
+        name : str
+            The name the program reads the data by.
+        value : torch.Tensor
+            A chain's starting value.
+
+        Returns
+        -------
+        _GibbsSite
+            The layout: the value's own shape and dtype, for the chain's
+            state and for its draws alike, and no declared support.
+        """
+        shape = tuple(value.shape)
+        return cls(name=name, trace_shape=shape, draw_shape=shape, dtype=value.dtype)
+
     def draw(self, value: torch.Tensor) -> torch.Tensor:
         """One draw of the site from its trace-side value.
 
@@ -1905,7 +2048,9 @@ def _check_gibbs_sites(
     if unknown:
         raise ValueError(
             f"MCMC.run: the kernel's Gibbs sites {unknown} are not latent sample "
-            f"sites of the run; its latent sites are {sorted(latent)}"
+            f"sites of the run; its latent sites are {sorted(latent)}. A block "
+            "with an update= over host data the program only reads declares "
+            "host=True"
         )
     discrete = []
     for label, record in latent.items():

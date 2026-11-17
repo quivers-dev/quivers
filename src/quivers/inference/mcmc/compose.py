@@ -121,6 +121,18 @@ class _CompositeKernel(MCMCKernel):
         self, kernels: Sequence[MCMCKernel] | Mapping[str, MCMCKernel]
     ) -> None:
         self._components = _named_components(kernels, type(self).__name__)
+        host = self.host_sites
+        mixed = sorted(
+            site
+            for _, kernel in self._components
+            for site in (kernel.gibbs_sites - kernel.host_sites) & host
+        )
+        if mixed:
+            raise ValueError(
+                f"{type(self).__name__}: {mixed} are host data for one component "
+                "and sample sites of the program for another; every block that "
+                "updates a name must declare it the same way"
+            )
 
     @property
     def components(self) -> dict[str, MCMCKernel]:
@@ -133,6 +145,14 @@ class _CompositeKernel(MCMCKernel):
         out: frozenset[str] = frozenset()
         for _, kernel in self._components:
             out = out | kernel.gibbs_sites
+        return out
+
+    @property
+    def host_sites(self) -> frozenset[str]:
+        """The union of the components' host-data Gibbs sites."""
+        out: frozenset[str] = frozenset()
+        for _, kernel in self._components:
+            out = out | kernel.host_sites
         return out
 
     def tune(self, population: torch.Tensor) -> None:

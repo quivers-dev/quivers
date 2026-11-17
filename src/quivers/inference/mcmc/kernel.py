@@ -799,6 +799,19 @@ class MCMCKernel(ABC):
         """
         return frozenset()
 
+    @property
+    def host_sites(self) -> frozenset[str]:
+        """The Gibbs sites that are host data, not sample sites of the program.
+
+        A subset of `gibbs_sites`. The program declares no distribution
+        for such a name: its steps read it as data, the kernel's update
+        moves it, and `MCMC` takes each chain's starting value of it
+        from the caller. A kernel that updates only sample sites of the
+        program has none, and a composite kernel has the union of its
+        components'.
+        """
+        return frozenset()
+
     def tune(self, population: torch.Tensor) -> None:
         """Tune the kernel to a population of positions.
 
