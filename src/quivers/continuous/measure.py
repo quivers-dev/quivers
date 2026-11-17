@@ -34,6 +34,7 @@ from quivers.continuous._interval import (
     log_interval_mass,
 )
 from quivers.continuous._recorded_event_tails import _log_complement, invert_log_cdf
+from quivers.continuous._truncated_mean import truncated_mean
 
 
 _NEG_INF = float("-inf")
@@ -2389,6 +2390,36 @@ class Normalize(Measure):
         Tensor
             Log of the raw total mass, one value per batch entry."""
         return torch.zeros_like(self._base_log_normalizer)
+
+    @property
+    def mean(self) -> Tensor:
+        """Mean of a scalar law conditioned on an interval, without sampling.
+
+        Returns
+        -------
+        Tensor
+            The truncated mean from a closed form, a finite sum, or
+            deterministic quadrature, in the dtype of the base law.
+
+        Raises
+        ------
+        NotImplementedError
+            If the base is not the restriction of a scalar law to an
+            interval, or no deterministic rule covers that law there.
+        """
+        restricted = self.base
+        if not isinstance(restricted, Restrict) or restricted.event_shape:
+            raise NotImplementedError(
+                "a normalized measure has a deterministic mean only as a scalar "
+                "law restricted to an interval"
+            )
+        return truncated_mean(
+            restricted.base,
+            restricted.low,
+            restricted.high,
+            lower_closed=restricted.lower_closed,
+            upper_closed=restricted.upper_closed,
+        ).to(_reference(restricted.base))
 
     def log_interval_mass(self, low, high, *, lower_closed=True, upper_closed=True):
         """Normalize the same base event mass by the retained total mass.

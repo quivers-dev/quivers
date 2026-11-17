@@ -23,6 +23,7 @@ from quivers._splines import MSplineBasis
 from quivers.formulas._survival import BaselineSpec
 from quivers.formulas._custom_types import CustomFamilySpec
 from quivers.formulas._link_whitelist import check_family_links
+from quivers.formulas._family_registry import FamilyRegistry
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 
 
@@ -547,7 +548,7 @@ links: Mapping[str, Link] = {
 """The built-in inverse links, keyed by link name."""
 
 
-families: Mapping[str, Family] = {
+families: Mapping[str, Family] = FamilyRegistry({
     "wiener": Family(
         name="wiener",
         location_link=_IDENTITY,
@@ -1009,11 +1010,14 @@ families: Mapping[str, Family] = {
         location_link=_IDENTITY,
         observe_family="Mixture",
     ),
-}
+})  # fmt: skip
 """The built-in response families, keyed by brms-style family name.
 
 The compiler dispatches on the family name and slots each family's
-observe step and link into the emitted ``.qvr`` source.
+observe step and link into the emitted ``.qvr`` source. Lookup also
+accepts the brms spellings of a name (``negbinomial``, ``student``,
+``Gamma``, ``inverse.gaussian``, ``zi_poisson``), each resolving to the
+one registered family.
 """
 
 

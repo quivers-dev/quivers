@@ -152,12 +152,17 @@ def single_response(
     Raises
     ------
     ValueError
-        If an option is given in both places with different values.
+        If an option is given in both places with different values, or a
+        parameter formula of a ``bf`` without a family names no parameter
+        of the entry point's family.
 
     Notes
     -----
     Cost is constant in the data.
     """
+    # A bf without a family takes the entry point's, as brm(bf(...), family=).
+    if not model.family_given:
+        model = model.with_family(family)
     return SingleResponseArguments(
         formula=model.formula,
         family=_merge("family", model.family, family, "gaussian", caller),

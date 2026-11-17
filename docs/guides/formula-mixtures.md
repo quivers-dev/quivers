@@ -163,7 +163,8 @@ adjacent-category (`acat`), and hurdle cumulative families mix with one
 another but not with other families, as in brms. Each component is the
 ordinary ordinal model of its family, with its own thresholds,
 discrimination (`disc1 ~ x`), and category-specific `cs()` terms. The
-response is an ordered factor or integer codes `0..K-1`, and
+response is an ordered factor or integer codes (`1..K` as brms codes them,
+or `0..K-1`), and
 `posterior_epred` returns the mixed category probabilities on a last
 category axis.
 

@@ -198,7 +198,7 @@ def test_gp_smooths_fit_predict_refit_and_restore(method, tmp_path):
         ("y ~ t2(x, z, bs = 'gp')", "margins must use bases"),
         ("y ~ s(x, bs = 'ad')", "brms refuses it as well"),
         ("y ~ s(x, z, bs = 'so')", "brms refuses it as well"),
-        ("y ~ s(x, z, bs = 'ds')", "unsupported smooth basis"),
+        ("y ~ s(x, z, bs = 'dz')", "unsupported smooth basis"),
         ("y ~ s(g, bs = 'mrf')", "requires xt = list"),
         ("y ~ s(g, bs = 'gp')", "finite real row vector"),
     ],

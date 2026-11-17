@@ -116,6 +116,25 @@ in row order with `broadcast=False`. For two coefficients,
 correlation at 0.6. A single broadcast value is not a valid factor and is
 refused. A rule's `tag` is carried into the prior table, as brms's `tag` is.
 
+A tuple with `broadcast=False` on a class of several coefficients fixes each
+of them, as brms's `constant(v, broadcast = FALSE)` fixes a parameter vector
+to the vector `v`. `ConstantPrior(value=(8.0, -3.0), broadcast=False)` on
+class `b` fixes the first population coefficient at 8 and the second at -3,
+and on class `sd` with a `group` it fixes that factor's standard deviations.
+The rule needs one value for each coefficient it selects within one
+predictor and grouping factor, and a different count is refused with the
+selected sites named. A rule that selects several grouping factors or
+predictors gives each of them the same vector, as brms does.
+
+The values follow the order of the coefficients in the prior table, which
+is the order of the formula's terms. brms follows the column order of R's
+model matrix, which places every interaction after the main effects. The
+two orders thus differ for a formula such as `y ~ x * z + w`, whose
+coefficients are `x`, `z`, `x:z`, `w` here and `x`, `z`, `w`, `x:z` in brms.
+brms's separate vectors of smooth and special-term coefficients (`bs`,
+`bsp`) are class `b` rows of the same table. In brms a vector constant is a
+Stan variable passed through `stanvars`, and here it is the tuple itself.
+
 A rule selects a class by its QVR name or by its brms name. The brms names
 `rescor` (residual correlation of a joint model), `lncor` (correlation of a
 logistic-normal response), `delta` (spacing of equidistant ordinal
@@ -170,6 +189,13 @@ fitted = fit(
 )
 assert float(fitted.draws(num_samples=4)["beta_x"].min()) == 8.0
 assert prior_summary(fitted).rows == checked.rows
+
+both = PriorSpec(
+    distribution=ConstantPrior(value=(8.0, -3.0), broadcast=False), class_="b"
+)
+table = validate_prior(both, "y ~ x + z", data=data)
+assert table.row("beta_x").prior == "constant(8.0)"
+assert table.row("beta_z").prior == "constant(-3.0)"
 ```
 
 ### Shrinkage across classes
@@ -262,7 +288,17 @@ The formula layer reads R's operators as R does: `I(x^2)` is a power,
 `x %in% f` is the nested term `x:f`, `scale(x)` divides by the deviation with
 `n - 1`, and `ns(x, df = k)` is the natural cubic spline basis of
 `splines::ns` (prediction outside the boundary knots continues linearly).
-`update(formula=". ~ . + z")` expands R's dot against the fitted formula.
+`bs(x, df = k)` is the [B-spline](https://en.wikipedia.org/wiki/B-spline)
+basis of `splines::bs` without its first column, with `degree`, `knots` and
+`intercept` as in R (prediction outside the boundary knots continues the
+boundary polynomials).
+`update(formula=". ~ . + z")` follows R's `update.formula`. A `.` on the left
+stands for the fitted response side and a `.` on the right for the fitted
+terms. `+ term` adds a term that is not yet present and `- term` removes one,
+including a group-level term such as `- (1 | g)`, which is kept, added, or
+removed whole. `- 1` or `+ 0` removes the intercept, `+ 1` restores it, and a
+one-sided `"~ . + z"` keeps the response. A term is matched by its text, so
+`- x:z` after `x * z` is left to the formula algebra.
 
 Factor levels follow brms's `drop_unused_levels`. By default a level that no
 row uses has no column, as brms drops it. With `drop_unused_levels=False`, the

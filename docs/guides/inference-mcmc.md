@@ -101,8 +101,13 @@ Before sampling, `MCMC.run` scores each chain's initial position with
 [`PotentialFn.check_initial`](../api/inference/mcmc.md#quivers.inference.mcmc.PotentialFn.check_initial),
 which lets every error through. Observed values that are not finite or lie outside a
 likelihood's support, row counts that disagree, and errors in a custom score function
-raise there with a note naming the chain, and a non-finite initial log density raises
-naming the offending terms. During sampling a position scores $-\infty$, and is
+raise there with a note naming the chain. A position that scores without error but
+with a non-finite log density is discarded, and the chain draws another from its own
+stream, up to 100 attempts, as Stan does for random initial values. The first accepted
+draw is unchanged for a model whose first position is finite. If no attempt is finite,
+or the start is deterministic (`init_strategy="zero"`, or named initial values that fix
+every coordinate), the error names the offending terms and the attempt count. During
+sampling a position scores $-\infty$, and is
 rejected, only when it lies outside the model's support: a `torch.distributions`
 parameter or value validation error, recognized by the validator that raised it, or a
 `torch.linalg.LinAlgError` from a matrix the position makes non-positive-definite.

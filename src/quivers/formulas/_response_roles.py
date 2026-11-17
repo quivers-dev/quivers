@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Mapping
 from numbers import Real
 from typing import TYPE_CHECKING, TypedDict
@@ -14,6 +15,7 @@ import torch
 from narwhals.typing import IntoDataFrame
 
 from quivers._observation import EVENT_OPTIONS
+from quivers.formulas._r_evaluate import evaluate_r_expression
 
 from quivers.formulas.formula import (
     FixedColumn,
@@ -30,6 +32,8 @@ if TYPE_CHECKING:
     from quivers.formulas.family import Family
 
 type RoleSource = str | int | float | bool
+
+_IDENTIFIER = re.compile(r"[A-Za-z_.][A-Za-z0-9_.]*")
 
 
 class BoundRoles(TypedDict, total=False):
@@ -86,23 +90,26 @@ _ROLES = frozenset(
 )
 
 
-def _source(node: ast.expr) -> RoleSource:
-    """Read a column name or scalar literal without evaluating user code.
+def _source(node: ast.expr, text: str) -> RoleSource:
+    """Read a column name, scalar literal, or R expression over columns.
 
     Parameters
     ----------
     node : ast.expr
         One modifier argument.
+    text : str
+        The text the argument was parsed from.
 
     Returns
     -------
     str or int or float or bool
-        Named column or literal scalar.
+        Named column, literal scalar, or the text of an expression that
+        brms evaluates in the data, such as ``sqrt(1 / (N - 3))``.
 
     Raises
     ------
     ValueError
-        If the expression is not a column or a scalar literal.
+        If the argument has no source text.
     """
     if isinstance(node, ast.Name):
         if node.id in {"true", "false", "TRUE", "FALSE"}:
@@ -111,12 +118,17 @@ def _source(node: ast.expr) -> RoleSource:
     if isinstance(node, ast.Constant) and isinstance(node.value, int | float | bool):
         return node.value
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd | ast.USub):
-        value = _source(node.operand)
+        value = _source(node.operand, text)
         if isinstance(value, int | float) and not isinstance(value, bool):
             return -value if isinstance(node.op, ast.USub) else value
-    raise ValueError(
-        "response modifier arguments require dataframe columns or scalar literals"
-    )
+    # brms evaluates any other argument as an R expression in the data.
+    expression = ast.get_source_segment(text, node)
+    if expression is None:
+        raise ValueError(
+            "response modifier arguments require dataframe columns, scalar "
+            "literals, or expressions over columns"
+        )
+    return " ".join(expression.split())
 
 
 def parse_roles(
@@ -196,7 +208,7 @@ def parse_roles(
         if not arguments or required - arguments.keys():
             raise ValueError(f"{call.func.id} requires its response role argument")
         for role, node in arguments.items():
-            value = _source(node)
+            value = _source(node, lhs.strip())
             if role in roles and (
                 type(value) is not type(roles[role]) or value != roles[role]
             ):
@@ -215,7 +227,7 @@ def _values(frame: pd.DataFrame, source: RoleSource, role: str) -> np.ndarray:
     frame : pandas.DataFrame
         Included observation rows.
     source : str or scalar
-        Column name or constant.
+        Column name, R expression over columns, or constant.
     role : str
         Semantic role used in diagnostics.
 
@@ -227,12 +239,17 @@ def _values(frame: pd.DataFrame, source: RoleSource, role: str) -> np.ndarray:
     Raises
     ------
     ValueError
-        If a named column is absent or not one dimensional.
+        If a named column is absent or not one dimensional, or an
+        expression over columns cannot be evaluated.
     """
     if isinstance(source, str):
-        if source not in frame.columns:
+        if source in frame.columns:
+            values = np.asarray(frame[source])
+        elif _IDENTIFIER.fullmatch(source):
             raise ValueError(f"{role} must name an existing dataframe column")
-        values = np.asarray(frame[source])
+        else:
+            # brms evaluates an addition-term argument in the data.
+            values = evaluate_r_expression(source, frame, context=role)
     else:
         values = np.full(len(frame), source)
     if values.shape != (len(frame),):

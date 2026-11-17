@@ -71,6 +71,13 @@ from quivers.formulas._gp import (
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._latent_effects import LatentTerm
 from quivers.formulas._priors import PriorTarget
+from quivers.formulas._ordered_contrasts import apply_ordered_contrasts
+from quivers.formulas._ordinal_coding import (
+    CategoryCoding,
+    category_positions,
+    integer_category_values,
+    is_zero_coded,
+)
 from quivers.formulas._row_retention import (
     complete_rows,
     compose_positions,
@@ -719,12 +726,18 @@ class ResponseLayout(ValueModel):
         from vector event component names.
     ordered : bool
         Whether the original factor declares an ordering.
+    category_values : tuple[int, ...]
+        Integer response value of each category, for a response whose
+        categories are integers read as brms reads them (ordinal codes
+        ``1, ..., K``). Empty for a factor response and for the zero-based
+        codes ``0, ..., K - 1``.
     """
 
     component_names: tuple[str, ...] = ()
     carrier: Literal["real", "integer"] = "real"
     category_levels: tuple[str, ...] = ()
     ordered: bool = False
+    category_values: tuple[int, ...] = ()
 
     @property
     def event_shape(self) -> tuple[int, ...]:
@@ -1262,6 +1275,59 @@ def _group_coding(
     return levels, tuple(positions[str(value)] for value in column.to_list())
 
 
+def _located_design_matrices(
+    authored: str,
+    normalized: str,
+    frame: pd.DataFrame,
+    namespace: Mapping[str, object],
+) -> fo.matrices.DesignMatrices:
+    """Evaluate the design matrices, locating an unknown name in the formula.
+
+    Parameters
+    ----------
+    authored : str
+        The formula as written, quoted in the diagnostic.
+    normalized : str
+        The formula text handed to the formula parser.
+    frame : pandas.DataFrame
+        Model rows.
+    namespace : Mapping[str, object]
+        Functions and constants a formula call may name.
+
+    Returns
+    -------
+    formulae.matrices.DesignMatrices
+        Evaluated response, population, and group designs.
+
+    Raises
+    ------
+    ValueError
+        If the formula names a variable that is not a data column, or calls
+        a function that is not a formula function; the error names it and
+        lists the data columns.
+    """
+    try:
+        return fo.design_matrices(normalized, data=frame, extra_namespace=namespace)
+    except KeyError as error:
+        name = error.args[0] if error.args else None
+        if (
+            not isinstance(name, str)
+            or re.search(rf"(?<![\w.]){re.escape(name)}(?![\w.])", normalized) is None
+        ):
+            raise
+        called = re.search(rf"(?<![\w.]){re.escape(name)}\s*\(", normalized)
+        columns = sorted(
+            str(column)
+            for column in frame.columns
+            if str(column) not in {BRMS_INTERCEPT, _CS_ONES}
+        )
+        kind = "names the variable" if called is None else "calls the unknown function"
+        detail = ", which is not a column of the data" if called is None else ""
+        raise ValueError(
+            f"formula {authored!r} {kind} {name!r}{detail}; data columns are {columns}"
+        ) from error
+
+
 def formula_from_data(
     formula: str,
     data: IntoDataFrame,
@@ -1355,6 +1421,7 @@ def _formula_and_design(
     extra_namespace: Mapping[str, object] | None = None,
     cmc: bool = True,
     extra_category: bool = False,
+    category_coding: CategoryCoding | None = None,
 ) -> tuple[Formula, DesignMatrices]:
     """Evaluate a formula once and retain its fitted transformation state.
 
@@ -1379,6 +1446,10 @@ def _formula_and_design(
         Whether response code zero is a category outside the ordinal
         thresholds (the hurdle of ``hurdle_cumulative``), so that ``thres(n)``
         declares the codes ``0, ..., n + 1``.
+    category_coding : {"ordinal", "hurdle", "nominal"} or None
+        How the family reads an integer response as categories, following
+        brms (ordinal codes ``1, ..., max(y)``). None keeps the response
+        values as they are.
 
     Returns
     -------
@@ -1516,20 +1587,20 @@ def _formula_and_design(
                 raise ValueError(
                     "offset and exposure terms cannot be random coefficients"
                 )
-    dm = fo.design_matrices(normalized, data=pandas_df, extra_namespace=namespace)
+    dm = _located_design_matrices(formula, normalized, pandas_df, namespace)
     # brms cmc = FALSE: no intercept without cell-mean coding.
     drop_intercept = not cmc and (
         dm.common is None or "Intercept" not in dm.common.terms
     )
     if drop_intercept:
-        dm = fo.design_matrices(
-            without_zero_intercept(normalized),
-            data=pandas_df,
-            extra_namespace=namespace,
+        dm = _located_design_matrices(
+            formula, without_zero_intercept(normalized), pandas_df, namespace
         )
     # brms drop_unused_levels = FALSE keeps declared levels.
     if not dropping_unused_levels():
         dm = keep_unused_levels(dm, pandas_df)
+    # R codes ordered factors by polynomial contrasts (contr.poly).
+    dm = apply_ordered_contrasts(dm, pandas_df)
     if dm.response is None:
         raise ValueError(
             f"formula_from_data: formula {formula!r} has no response "
@@ -1741,6 +1812,30 @@ def _formula_and_design(
     response_values = normalize_response_values(
         response_values, component_names=labels, category_levels=category_levels
     )
+    # brms integer categories: ordinal codes 1, ..., max(y) become positions.
+    category_values: tuple[int, ...] = ()
+    if (
+        category_coding is not None
+        and not category_levels
+        and not labels
+        # A refit reads the response as its original fit did.
+        and not (category_coding != "hurdle" and is_zero_coded(response_name))
+    ):
+        category_values = integer_category_values(
+            response_values,
+            category_coding,
+            None
+            if response_modifiers.threshold_groups is not None
+            else response_modifiers.thresholds,
+        )
+    if category_values:
+        response_values = category_positions(response_values, category_values)
+        if (
+            response_modifiers.thresholds is None
+            and response_modifiers.threshold_groups is None
+        ):
+            category_levels = tuple(str(value) for value in category_values)
+            ordered_response = category_coding != "nominal"
     integer_carrier = response_values.dtype.kind in "iu"
     response_layout = ResponseLayout(
         component_names=labels,
@@ -1766,6 +1861,18 @@ def _formula_and_design(
         )
         response_layout = response_layout.with_(
             category_levels=category_levels, ordered=ordered_response
+        )
+    if category_values:
+        # Categories carry their authored integer values as labels.
+        first = category_values[0]
+        category_values = tuple(
+            range(first, first + len(response_layout.category_levels))
+            if category_coding != "nominal"
+            else category_values
+        )
+        response_layout = response_layout.with_(
+            category_levels=tuple(str(value) for value in category_values),
+            category_values=category_values,
         )
     validate_event_response(
         response_values, response_modifiers.censoring, response_modifiers.truncation

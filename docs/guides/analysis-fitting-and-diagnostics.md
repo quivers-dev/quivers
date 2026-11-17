@@ -612,6 +612,11 @@ brms's `posterior_table` does, and their errors are refused. Pearson residuals
 divide each error by the row's predictive standard deviation. `draw_ids`
 selects pooled draws by 0-based position, and every prediction keyword
 (`new_data`, `re_formula`, new-level policies) has its existing meaning.
+brms also takes `draw_ids` on `posterior_predict`, `posterior_epred`,
+`posterior_linpred`, and `log_lik`. Their counterparts here
+(`log_likelihood` for `log_lik`) take `num_samples` and `seed` and have no
+`draw_ids`, so a chosen set of draws is read through the summary methods
+with `summary=False`, as in the last call below.
 
 <!-- python: run -->
 ```python
@@ -676,6 +681,21 @@ second = simple.add_criterion("loo", num_samples=100)
 table = loo_compare({"group": first, "intercept": second})
 assert table.columns[:2] == ("elpd_diff", "se_diff")
 assert first.criterion("loo").pareto_k.shape == (12,)
+```
+
+[`loo`](../api/formulas/index.md#quivers.formulas.loo) and
+[`waic`](../api/formulas/index.md#quivers.formulas.waic) take several fits at
+once, as brms's `loo(fit1, fit2)` does. Each fit's criterion is computed
+unless it is stored, and the result holds the estimates and the comparison
+table.
+
+<!-- python: run -->
+```python
+from quivers.formulas import loo
+
+compared = loo(model, simple, model_names=["group", "intercept"])
+assert set(compared.estimates) == {"group", "intercept"}
+assert compared.diffs.columns[:2] == ("elpd_diff", "se_diff")
 ```
 
 A joint fit scores the units of `MultivariateFit.log_likelihood`: one row's
@@ -868,7 +888,9 @@ term on a grid of its covariates (a surface for two numeric covariates), with
 fit evaluates the smooths of every response, or of those named by `resp`,
 and names each frame `<parameter>_<resp>: <term>`. The
 function `quivers.formulas.conditional_smooths(fit, term, new_data)`
-evaluates one smooth of a single-response fit at explicit rows.
+evaluates one smooth of a single-response fit at explicit rows. That call
+takes the role of brms's `posterior_smooths(fit, smooth, newdata)`, a name
+that is not provided.
 
 ### Posterior predictive checks
 
@@ -913,6 +935,13 @@ built = intervals.plot(backend="none")  # ArviZ builds the plot without drawing
 [`mcmc_plot`][quivers.formulas._mcmc_plot.mcmc_plot] maps bayesplot's
 `mcmc_*` types onto ArviZ plots of the brms-named draws, and `plot` and
 `pairs` are its `combo` and `pairs` types, as in brms.
+
+`variable` takes brms variable names or regular expressions. With
+`regex=True` a pattern is searched for within each name, as brms's
+`variable = "^b", regex = TRUE` is: `variable="^b_", regex=True` selects the
+population coefficients and `variable="simo", regex=True` the simplexes of
+monotonic terms. Without `regex` a pattern must match a whole name, as in
+`variable="b_.*"`. A pattern matching no name raises an error.
 
 | brms / bayesplot type | ArviZ counterpart |
 | --- | --- |

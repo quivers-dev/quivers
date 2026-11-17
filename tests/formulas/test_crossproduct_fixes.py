@@ -401,13 +401,13 @@ def test_exact_gp_draws_at_new_inputs_follow_the_seed_in_every_method() -> None:
     assert float(first[..., 0].std()) > 1e-3
 
 
-def test_automatic_effects_take_a_monte_carlo_budget_for_truncated_means() -> None:
+def test_automatic_effects_accept_a_monte_carlo_budget_for_truncated_means() -> None:
     fitted = fit("y | trunc(lb = -10, ub = 10) ~ x", data=DATA, **SVI)
-    with pytest.raises(TypeError, match="no analytic response expectation"):
-        fitted.conditional_effects(resolution=3, ndraws=2)
-    effects = fitted.conditional_effects(resolution=3, ndraws=2, mc_samples=8)
-    frame = effects.effects[0].frame
-    assert np.isfinite(np.array(frame["estimate__"], dtype=float)).all()
+    # The truncated Gaussian mean is closed form; the budget is optional.
+    for options in ({}, {"mc_samples": 8}):
+        effects = fitted.conditional_effects(resolution=3, ndraws=2, **options)
+        frame = effects.effects[0].frame
+        assert np.isfinite(np.array(frame["estimate__"], dtype=float)).all()
     with pytest.raises(ValueError, match="mc_samples applies only to epred"):
         fitted.conditional_effects(
             resolution=3, ndraws=2, mc_samples=8, method="linpred"

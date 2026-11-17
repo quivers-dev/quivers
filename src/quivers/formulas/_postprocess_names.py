@@ -50,26 +50,30 @@ if TYPE_CHECKING:
 _INDEXED = re.compile(r"^(?P<stem>.*\()(?P<args>.*)\)\[(?P<index>[0-9]+)\]$")
 
 
-def _r_label(label: str) -> str:
+def _r_label(label: str, *, categoric: bool = False) -> str:
     """Rewrite a formulae column label to R's ``model.matrix`` label.
 
     Parameters
     ----------
     label : str
         formulae label such as ``f[q]``, ``x:f[q]`` or ``poly(z, 2)[0]``.
+    categoric : bool
+        Whether the label belongs to a categorical term, whose bracket holds
+        a level, as in ``factor(k)[2]``, and not a column position.
 
     Returns
     -------
     str
         R's label before brms renaming: factor levels follow the term
-        (``fq``), the columns of a matrix-valued call are numbered from
-        one (``poly(z, 2)1``), and a power inside ``I()``, which the formula
-        layer evaluates as ``**``, is written ``^`` as in the R formula.
+        (``fq``, ``factor(k)2``), the columns of a matrix-valued call are
+        numbered from one (``poly(z, 2)1``), and a power inside ``I()``,
+        which the formula layer evaluates as ``**``, is written ``^`` as in
+        the R formula.
     """
     # R's ^ in I(): brms labels I(x^2) as IxE2.
     label = label.replace(" ** ", "^").replace("**", "^")
     match = _INDEXED.match(label)
-    if match is not None:
+    if match is not None and not categoric:
         return f"{match['stem']}{match['args']}){int(match['index']) + 1}"
     return label
 
@@ -102,9 +106,13 @@ def coefficient_labels(fit: BayesianFit) -> dict[tuple[str, str], str]:
         for column in predictor.fixed_columns:
             position = seen.get(column.term, 0)
             seen[column.term] = position + 1
-            labels = getattr(terms.get(column.term), "labels", None)
+            term = terms.get(column.term)
+            labels = getattr(term, "labels", None)
             label = (
-                _r_label(labels[position])
+                _r_label(
+                    labels[position],
+                    categoric=getattr(term, "kind", None) == "categoric",
+                )
                 if labels is not None and position < len(labels)
                 else column.name
             )

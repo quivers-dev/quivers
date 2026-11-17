@@ -397,6 +397,73 @@ def test_subsample_estimator_matches_loo_subsample() -> None:
         )
 
 
+def test_arviz_containers_carry_each_estimator_and_the_subsample() -> None:
+    oracle = ORACLE["subsample"]
+    draws = torch.tensor(oracle["draws"], dtype=torch.float64)
+    y = torch.tensor(oracle["y"], dtype=torch.float64)
+    scores = (
+        torch.distributions.Normal(draws[:, :1], draws[:, 1:]).log_prob(y).unsqueeze(0)
+    )
+    units = [int(i) - 1 for i in oracle["observations"]]
+    weights = psis_weights(scores[..., units], r_eff=1.0)
+    exact = torch.logsumexp(weights.log_weights + scores[..., units], dim=(0, 1))
+    lpd = torch.logsumexp(scores.flatten(0, 1), 0) - math.log(scores.shape[1])
+    point = torch.distributions.Normal(draws[:, 0].mean(), draws[:, 1].mean()).log_prob(
+        y
+    )
+    shift = 0.05 * torch.arange(len(units), dtype=torch.float64)
+    first, second = (
+        subsample_estimate(
+            terms,
+            approximation,
+            units,
+            lpd[units],
+            weights.pareto_k,
+            num_samples=400,
+            responses=("y",),
+            hashed="h",
+            method=method,
+        )
+        for terms, approximation, method in (
+            (exact, point, "plpd"),
+            (exact - shift, lpd, "lpd"),
+        )
+    )
+    container = first.to_arviz()
+    assert container.kind == "loo"
+    assert container.elpd == first.elpd and container.se == first.se_elpd
+    assert container.n_data_points == len(y) and container.n_samples == 400
+    assert getattr(container, "subsample_size") == len(units)
+    assert getattr(container, "subsampling_se") == first.subsampling_se
+    np.testing.assert_array_equal(
+        getattr(container, "loo_subsample_observations"), np.asarray(units)
+    )
+    np.testing.assert_array_equal(
+        getattr(container, "elpd_loo_approx").values, point.numpy()
+    )
+    np.testing.assert_array_equal(
+        container.pareto_k.values[units], weights.pareto_k.numpy()
+    )
+    full = loo_from_pointwise(ORACLE["loo"]["pointwise"]).to_arviz()
+    assert full.kind == "loo" and getattr(full, "subsample_size", None) is None
+    # The difference estimator of subsampled PSIS-LOO over the shared units:
+    # sum_i d_i + N mean_{j in S}(e_j - d_j), with d the difference of the
+    # approximations and e the difference of the exact terms.
+    compared = compare_estimates({"a": first, "b": second})
+    best, other = (first, second) if first.elpd >= second.elpd else (second, first)
+    assert best.approximation is not None and other.approximation is not None
+    approximate = (other.approximation - best.approximation).numpy()
+    sampled = (other.pointwise_elpd - best.pointwise_elpd).numpy()[units]
+    expected = approximate.sum() + len(y) * (sampled - approximate[units]).mean()
+    rows = list(compared.rows)
+    np.testing.assert_allclose(
+        compared.values.numpy()[rows.index("a" if other is first else "b"), 0],
+        expected,
+        rtol=1e-10,
+    )
+    assert compared.values.numpy()[0, 0] == 0.0
+
+
 def test_psis_loo_recovers_exact_leave_one_out(conjugate: BayesianFit) -> None:
     estimate = conjugate.loo()
     exact = exact_loo()

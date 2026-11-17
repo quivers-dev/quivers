@@ -5,10 +5,12 @@ import inspect
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+import narwhals as nw
 from narwhals.typing import IntoDataFrame
 
 from quivers.modeling.refit import RefitRecipe, SnapshotPolicy, _snapshot
 from quivers.formulas._formula_options import expand_dot_formula
+from quivers.formulas._ordinal_coding import zero_coded_columns
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
@@ -42,7 +44,9 @@ def capture_recipe(
         if seed is not None:
             values["seed"] = seed
         bound = signature.bind(**values)
-        return fitter(*bound.args, **bound.kwargs)
+        # An integer response keeps the category coding of the original rows.
+        with zero_coded_columns(nw.from_native(data, eager_only=True).to_pandas()):
+            return fitter(*bound.args, **bound.kwargs)
 
     return RefitRecipe(
         data,

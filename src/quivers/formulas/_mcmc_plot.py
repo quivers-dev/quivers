@@ -85,7 +85,9 @@ def _safe(name: str) -> str:
     return re.sub(r"[\[\],]", ".", name).rstrip(".")
 
 
-def mcmc_datatree(fit: Fit, variable: str | Sequence[str] | None = None) -> xr.DataTree:
+def mcmc_datatree(
+    fit: Fit, variable: str | Sequence[str] | None = None, *, regex: bool = False
+) -> xr.DataTree:
     """Return an ArviZ data tree of brms-named draws and sampler statistics.
 
     Parameters
@@ -95,6 +97,11 @@ def mcmc_datatree(fit: Fit, variable: str | Sequence[str] | None = None) -> xr.D
     variable : str or Sequence[str] or None
         brms variable names, or regular expressions matched against them;
         None for every variable.
+    regex : bool
+        brms ``regex``: with True each entry of ``variable`` is a regular
+        expression searched for anywhere in a name, as R's ``grepl`` does
+        (``variable="^b_", regex=True``). With False an entry selects the
+        name it equals or matches in full.
 
     Returns
     -------
@@ -116,7 +123,12 @@ def mcmc_datatree(fit: Fit, variable: str | Sequence[str] | None = None) -> xr.D
         chosen = [
             n
             for n in named
-            if any(n == p or re.fullmatch(p, n) is not None for p in patterns)
+            if any(
+                re.search(p, n) is not None
+                if regex
+                else n == p or re.fullmatch(p, n) is not None
+                for p in patterns
+            )
         ]
     if not chosen:
         raise ValueError(f"no variable matches {variable!r}")
@@ -152,6 +164,7 @@ def mcmc_plot(
     type: str = "intervals",
     *,
     variable: str | Sequence[str] | None = None,
+    regex: bool = False,
     backend: str,
     **kwargs: str | int | float | bool,
 ) -> PlotResult:
@@ -165,6 +178,8 @@ def mcmc_plot(
         bayesplot ``mcmc_*`` type without prefix (`MCMC_PLOTS`).
     variable : str or Sequence[str] or None
         brms variable names or regular expressions; None for all.
+    regex : bool
+        brms ``regex``: search each expression anywhere in a name.
     backend : str
         ArviZ plotting backend (``"matplotlib"``, ``"bokeh"``, ``"plotly"``,
         or ``"none"`` to build without drawing).
@@ -192,7 +207,7 @@ def mcmc_plot(
     name, defaults = MCMC_PLOTS[type]
     options: dict[str, str | int | float | bool] = {**defaults, **kwargs}
     function = getattr(azp, name)
-    tree = mcmc_datatree(fit, variable)
+    tree = mcmc_datatree(fit, variable, regex=regex)
     return function(tree, backend=backend, **options)
 
 

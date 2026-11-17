@@ -626,6 +626,33 @@ class ResidualLayout(ValueModel):
                 raise ValueError("conditional ARMA series must partition the rows")
 
 
+def spectrum_tolerance(eigenvalues: np.ndarray) -> float:
+    """Bound the rounding error of a computed spectrum.
+
+    LAPACK's QR algorithm is backward stable: the computed eigenvalues of an
+    ``n`` by ``n`` matrix ``W`` are the exact eigenvalues of ``W + E`` with
+    ``||E||`` of order ``n eps ||W||``, and a simple eigenvalue moves by at
+    most its condition number times ``||E||``. The bound
+    is ``1e3 n eps max(1, max_i |lambda_i|)``, which allows a constant and a
+    condition number whose product is at most ``1e3``. A real eigenvalue thus
+    carries an imaginary part or a displacement no larger than the bound, and
+    which side of an exact value a computed eigenvalue falls on depends on
+    the platform's arithmetic.
+
+    Parameters
+    ----------
+    eigenvalues : np.ndarray
+        Computed eigenvalues, real or complex.
+
+    Returns
+    -------
+    float
+        The absolute error bound of each eigenvalue.
+    """
+    scale = max(1.0, float(np.abs(eigenvalues).max()))
+    return 1e3 * float(np.finfo(np.float64).eps) * eigenvalues.size * scale
+
+
 def sar_weights(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Retain a SAR weight matrix's nonzeros and its eigenvalues once.
 
@@ -657,10 +684,7 @@ def sar_weights(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if not np.isfinite(weights).all():
         raise ValueError("SAR weights must be finite")
     eigenvalues = np.linalg.eigvals(weights)
-    scale = max(1.0, float(np.abs(eigenvalues).max()))
-    if np.abs(eigenvalues.imag).max(initial=0.0) > 1e3 * np.finfo(float).eps * (
-        scale * weights.shape[0]
-    ):
+    if np.abs(eigenvalues.imag).max() > spectrum_tolerance(eigenvalues):
         raise ValueError(
             "SAR weights must have real eigenvalues; brms bounds the SAR "
             "parameter by the smallest and largest eigenvalue"
@@ -1201,12 +1225,18 @@ class ResidualResponse(Distribution):
             layout.eigenvalues, dtype=self.loc.dtype, device=self.loc.device
         )
         factors = 1 - rho[..., None] * eigenvalues
-        inside = (factors > 0).all(-1)
-        self._valid = self._valid & inside
+        # A factor within the rounding error of its eigenvalue, computed in
+        # Float64 and rounded to the scoring dtype, is not distinguishable
+        # from zero, so the matrix is treated as singular.
+        tolerance = max(
+            spectrum_tolerance(layout.eigenvalues), torch.finfo(factors.dtype).eps
+        )
+        nonsingular = factors > rho.abs()[..., None] * tolerance
+        self._valid = self._valid & nonsingular.all(-1)
         return (
             weights,
             rho,
-            torch.where(factors > 0, factors, torch.ones_like(factors)).log().sum(-1),
+            torch.where(nonsingular, factors, torch.ones_like(factors)).log().sum(-1),
         )
 
     def _location(self, values: torch.Tensor, *, fill: bool) -> torch.Tensor:

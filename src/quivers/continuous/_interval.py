@@ -11,10 +11,14 @@ from torch.distributions import (
     Beta,
     Distribution,
     Exponential,
+    ExpTransform,
     Gamma,
     Normal,
+    PowerTransform,
+    Transform,
     TransformedDistribution,
     Uniform,
+    Weibull,
 )
 
 from quivers.continuous._ordered import _log1mexp
@@ -91,6 +95,98 @@ def _reference(base: Distribution) -> Tensor:
     )
 
 
+def _wide_parameter(value: Tensor | float, like: Tensor) -> Tensor:
+    """Read a transform parameter in float64 on a reference device.
+
+    Parameters
+    ----------
+    value : Tensor or float
+        Parameter of a transform.
+    like : Tensor
+        Tensor whose device the result takes.
+
+    Returns
+    -------
+    Tensor
+        The parameter in float64; a Python number keeps its full precision.
+    """
+    if isinstance(value, Tensor):
+        return value.to(device=like.device, dtype=torch.float64)
+    return torch.as_tensor(value, dtype=torch.float64, device=like.device)
+
+
+def _monotone_pullback(
+    transforms: list[Transform], value: Tensor
+) -> tuple[Tensor, Tensor, Tensor, bool] | None:
+    """Pull query points back through a chain of strictly monotone maps.
+
+    A response ``Y = g(X)`` with ``g`` strictly increasing has
+    ``P(Y <= y) = P(X <= g^{-1}(y))``, and a strictly decreasing ``g``
+    exchanges the two tails. Scoring the base law at the pulled-back point
+    keeps both log tails finite where ``log(1 - cdf)`` of the transformed
+    law would round to negative infinity. The cost is one inverse per
+    transform and query point.
+
+    Parameters
+    ----------
+    transforms : list[Transform]
+        Transforms of a transformed distribution, innermost first. Affine
+        maps with a scale of one sign, the exponential map, and power maps
+        with an exponent of one sign on a positive argument are monotone.
+    value : Tensor
+        Query points on the transformed scale.
+
+    Returns
+    -------
+    tuple[Tensor, Tensor, Tensor, bool] or None
+        Float64 base-scale points, a mask of queries below the image of the
+        chain, a mask of queries above it, and whether the chain is
+        decreasing. None when a transform is not one of the monotone maps.
+    """
+    query = value.double()
+    # Infinite queries are settled here, so the base law and its derivative
+    # are evaluated at finite points only.
+    below, above = query == -torch.inf, query == torch.inf
+    point = torch.where(below | above, 0.0, query)
+    decreasing = False
+    for transform in reversed(transforms):
+        if isinstance(transform, AffineTransform):
+            # A Python number is read in float64 directly, not through the
+            # default single precision.
+            scale = _wide_parameter(transform.scale, point)
+            loc = _wide_parameter(transform.loc, point)
+            if bool((scale > 0).all()):
+                flips = False
+            elif bool((scale < 0).all()):
+                flips = True
+            else:
+                return None
+            point = (point - loc) / scale
+        elif isinstance(transform, ExpTransform | PowerTransform):
+            outside = (point <= 0) & ~below & ~above
+            # A nonpositive query lies under the positive image of the map;
+            # a decreasing outer chain sends it above the response image.
+            below = below | (outside & (not decreasing))
+            above = above | (outside & decreasing)
+            safe = torch.where(point > 0, point, 1.0)
+            if isinstance(transform, ExpTransform):
+                flips = False
+                point = safe.log()
+            else:
+                exponent = _wide_parameter(transform.exponent, point)
+                if bool((exponent > 0).all()):
+                    flips = False
+                elif bool((exponent < 0).all()):
+                    flips = True
+                else:
+                    return None
+                point = torch.exp(safe.log() / exponent)
+        else:
+            return None
+        decreasing = decreasing != flips
+    return point, below, above, decreasing
+
+
 def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
     """Return log CDF and log survival, without Monte Carlo estimation.
 
@@ -123,15 +219,32 @@ def _log_tails(base: Distribution, value: Tensor) -> tuple[Tensor, Tensor]:
         from quivers.continuous._beta_tails import log_beta_tails
 
         return log_beta_tails(base.concentration1, base.concentration0, value)
-    if isinstance(base, TransformedDistribution) and all(
-        isinstance(transform, AffineTransform)
-        and bool((torch.as_tensor(transform.scale) > 0).all())
-        for transform in base.transforms
-    ):
-        inverse = value
-        for transform in reversed(base.transforms):
-            inverse = cast(Tensor, transform.inv(inverse))
-        return _log_tails(base.base_dist, inverse)
+    if isinstance(base, Weibull):
+        # The cumulative hazard (y / scale)**concentration is exponential with
+        # unit rate; it is formed from the stored parameters, not from the
+        # rounded reciprocal exponent of the law's power transform.
+        point = value.double()
+        inside = (point > 0) & torch.isfinite(point)
+        log_ratio = torch.where(inside, point, 1.0).log() - base.scale.double().log()
+        hazard = torch.where(
+            inside,
+            torch.exp(base.concentration.double() * log_ratio),
+            torch.where(point <= 0, 0.0, torch.inf),
+        )
+        return log_exponential_tails(torch.ones_like(hazard), hazard)
+    if isinstance(base, TransformedDistribution):
+        pulled = _monotone_pullback(base.transforms, value)
+        if pulled is not None and not getattr(
+            base.base_dist.support, "is_discrete", False
+        ):
+            point, below, above, reversed_order = pulled
+            log_cdf, log_sf = _log_tails(base.base_dist, point)
+            if reversed_order:
+                log_cdf, log_sf = log_sf, log_cdf
+            return (
+                torch.where(below, -torch.inf, torch.where(above, 0.0, log_cdf)),
+                torch.where(below, 0.0, torch.where(above, -torch.inf, log_sf)),
+            )
     if isinstance(base, Uniform):
         lower, upper = base.low.double(), base.high.double()
         point = value.double()

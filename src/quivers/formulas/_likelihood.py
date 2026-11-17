@@ -22,6 +22,7 @@ from quivers.formulas._response import (
     response_tensor,
     validate_simplex,
 )
+from quivers.formulas._ordinal_coding import category_positions
 from quivers.formulas._response_modifiers import response_input_name
 from quivers.formulas._response_roles import (
     bind_roles,
@@ -113,15 +114,19 @@ def prepare_likelihood(
     if evaluated is None:
         raise ValueError("the retained formula has no response evaluator")
     evaluated_values = np.asarray(evaluated.term.term.eval_new_data(frame))
+    # Integer categories evaluate to a value vector and not to factor
+    # indicators: brms thres() and cat() codes, and brms's integer coding.
+    integer_categories = fit.formula.response_layout.category_values
     values = normalize_response_values(
         evaluated_values,
         component_names=fit.formula.response_layout.component_names,
-        # brms thres() and cat() declare the categories of integer codes,
-        # which evaluate to a code vector and not to factor indicators.
         category_levels=()
-        if fit.formula.modifiers.thresholds is not None and evaluated_values.ndim == 1
+        if (fit.formula.modifiers.thresholds is not None or integer_categories)
+        and evaluated_values.ndim == 1
         else fit.formula.response_layout.category_levels,
     )
+    if integer_categories:
+        values = category_positions(values, integer_categories)
     if values.shape[:1] != (len(frame),):
         raise ValueError("fresh response evaluation must retain every included row")
     if not np.isfinite(values).all():

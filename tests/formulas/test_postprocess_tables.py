@@ -678,10 +678,22 @@ def test_joint_fit_tables(frame: pd.DataFrame) -> None:
     )
     summary = joint.summary(num_samples=30)
     assert summary.fixed is not None and summary.spec_pars is not None
-    assert list(summary.fixed.rows) == ["y_Intercept", "y_x", "y2_Intercept", "y2_x"]
-    assert list(summary.spec_pars.rows) == ["sigma_y", "sigma_y2"]
-    assert summary.rescor is not None and list(summary.rescor.rows) == ["rescor(y,y2)"]
-    assert list(summary.random["g"].rows) == ["sd(y_Intercept)"]
+    # Row names of brms's summary() of the same formula
+    # (oracles/brms_joint_summary_rows.R): every intercept precedes the other
+    # population effects.
+    rows = json.loads(
+        (
+            pathlib.Path(__file__).parent / "oracles" / "brms_joint_summary_rows.json"
+        ).read_text()
+    )
+    assert rows["formula"] == ["bf(y ~ x + (1 | g)) + bf(y2 ~ x) + set_rescor(TRUE)"]
+    assert rows["fixed"] == ["y_Intercept", "y2_Intercept", "y_x", "y2_x"]
+    assert list(summary.fixed.rows) == rows["fixed"]
+    assert list(summary.spec_pars.rows) == rows["spec_pars"]
+    assert summary.rescor is not None
+    assert list(summary.rescor.rows) == rows["rescor_pars"]
+    assert set(summary.random) == set(rows["random"])
+    assert list(summary.random["g"].rows) == rows["random"]["g"]
     blocks = joint.varcorr(num_samples=30)
     assert blocks["residual__"].labels == ("y", "y2")
     assert blocks["residual__"].cor is not None

@@ -61,6 +61,7 @@ _BASES = (
     "gp",
     "mrf",
     "sos",
+    "ds",
 )
 
 
@@ -538,7 +539,13 @@ class ThinPlateBasis(ValueModel):
 
 
 def thin_plate(
-    x: FloatArray, k: int, m: int, *, shrink: float | None, drop_null: bool = False
+    x: FloatArray,
+    k: int,
+    m: int,
+    *,
+    shrink: float | None,
+    drop_null: bool = False,
+    knots: FloatArray | None = None,
 ) -> RawSmooth:
     """Construct mgcv's thin-plate regression spline [@wood2003thin].
 
@@ -546,7 +553,10 @@ def thin_plate(
     unique covariate rows: the ``k`` largest-magnitude eigenvectors of the
     radial basis matrix, constrained orthogonal to the null-space
     polynomials, followed by those polynomials, with columns rescaled to unit
-    root mean square. Costs O(u cubed) for ``u`` unique rows.
+    root mean square. User knots replace the unique covariate rows, as in
+    mgcv's ``tprs_setup``: the eigenproblem is that of the knots and every
+    row is evaluated in the radial basis of the knots. Costs O(u cubed) for
+    ``u`` unique rows or knots.
 
     Parameters
     ----------
@@ -560,6 +570,9 @@ def thin_plate(
         Null-space shrinkage factor of ``bs = 'ts'``, or None.
     drop_null : bool
         Drop the null-space polynomials, as ``m = c(m, 0)`` requests.
+    knots : numpy.ndarray or None
+        Knot rows, shape knots by dimension, or None for the unique
+        covariate rows.
 
     Returns
     -------
@@ -570,7 +583,8 @@ def thin_plate(
     ------
     ValueError
         If ``k`` is too small, or the covariate rows have too few unique
-        combinations, or more than mgcv's exact-eigenproblem limit.
+        combinations, or more than mgcv's exact-eigenproblem limit, or the
+        knots are more than the rows or fewer than ``k``.
     """
     n, d = x.shape
     shift = x.mean(axis=0)
@@ -583,10 +597,25 @@ def thin_plate(
         raise ValueError(
             f"thin-plate smooth k={k} must exceed its penalty null-space dimension {null_dim}"
         )
-    knots, inverse = np.unique(centered, axis=0, return_inverse=True)
-    inverse = inverse.reshape(-1)
+    supplied = knots is not None
+    if knots is not None:
+        if knots.shape[0] > n:
+            raise ValueError(
+                "a thin-plate smooth has more knots than data rows; mgcv "
+                "ignores such knots"
+            )
+        if knots.shape[0] < k:
+            raise ValueError(
+                f"a thin-plate smooth with k={k} needs at least {k} knots, got "
+                f"{knots.shape[0]}; mgcv ignores fewer knots"
+            )
+        knots = np.unique(knots - shift, axis=0)
+        inverse = np.zeros(0, dtype=np.intp)
+    else:
+        knots, inverse = np.unique(centered, axis=0, return_inverse=True)
+        inverse = inverse.reshape(-1)
     unique = knots.shape[0]
-    if unique > _MAX_KNOTS and n > _MAX_KNOTS:
+    if not supplied and unique > _MAX_KNOTS and n > _MAX_KNOTS:
         raise ValueError(
             f"thin-plate smooth has {unique} unique covariate combinations; mgcv "
             f"subsamples knots above {_MAX_KNOTS} with R's random number generator, "
@@ -617,9 +646,20 @@ def thin_plate(
         transform = np.zeros((unique + null_dim, k))
         transform[:unique, : k - null_dim] = (vectors @ q)[:, : k - null_dim]
         transform[unique:, k - null_dim :] = np.eye(null_dim)
-        reduced = (vectors * values) @ q
-        reduced[:, k - null_dim :] = polynomial
-        design = reduced[inverse]
+        if supplied:
+            design = (
+                np.column_stack(
+                    (
+                        _eta(_squared_distances(centered, knots), m_eff, d),
+                        _poly(centered, m_eff),
+                    )
+                )
+                @ transform
+            )
+        else:
+            reduced = (vectors * values) @ q
+            reduced[:, k - null_dim :] = polynomial
+            design = reduced[inverse]
         penalty = q.T @ np.diag(values) @ q
     penalty[k - null_dim :, :] = 0.0
     penalty[:, k - null_dim :] = 0.0
@@ -857,6 +897,237 @@ def gp_smooth(x: FloatArray, k: int, definition: tuple[float, ...]) -> RawSmooth
         stationary=stationary,
         rho=rho,
         power=power,
+    )
+    return RawSmooth(
+        basis=basis,
+        design=basis.evaluate(x),
+        penalties=(penalty,),
+        rank=(rank,),
+        null_dim=null_dim,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Duchon splines (Duchon 1977; mgcv smooth.construct.ds.smooth.spec).
+
+
+def _duchon_kernel(x: FloatArray, knots: FloatArray, m: int, s: float) -> FloatArray:
+    """Evaluate mgcv's ``DuchonE`` reproducing kernel between two row sets.
+
+    Parameters
+    ----------
+    x, knots : numpy.ndarray
+        Centered rows by dimension.
+    m : int
+        Order of the derivatives in the penalty.
+    s : float
+        Exponent of the Fourier-domain weight, a multiple of one half.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``len(x)`` by ``len(knots)`` kernel values: the distance to the
+        power ``2 m + 2 s - d``, times its logarithm for an even power, with
+        mgcv's alternating sign.
+    """
+    distance = np.sqrt(_squared_distances(x, knots))
+    power = round(2 * m + 2 * s - x.shape[1])
+    if power % 2 == 0:
+        positive = distance > 0
+        safe = np.where(positive, distance, 1.0)
+        values = np.where(positive, safe**power * np.log(safe), 0.0)
+    else:
+        values = distance**power
+    sign = 1 - 2 * ((power // 2 + 1) % 2)
+    return values * sign
+
+
+class DuchonBasis(ValueModel):
+    """Retained state of mgcv's Duchon spline ``bs = "ds"``.
+
+    Attributes
+    ----------
+    shift : tuple[float, ...]
+        Training covariate means subtracted before evaluation.
+    knots : numpy.ndarray
+        Centered knot rows.
+    transform : numpy.ndarray
+        Knots-by-rank map ``UZ`` from the constrained coefficients to the
+        kernel coefficients.
+    order : int
+        Order ``m`` of the derivatives in the penalty.
+    weight : float
+        Exponent ``s`` of the Fourier-domain weight.
+    """
+
+    kind: Literal["ds"] = "ds"
+    shift: tuple[float, ...]
+    knots: FloatArray = _array_field()
+    transform: FloatArray = _array_field()
+    order: int
+    weight: float
+
+    @property
+    def width(self) -> int:
+        """Number of raw basis columns.
+
+        Returns
+        -------
+        int
+            Constrained kernel columns plus the null-space polynomials.
+        """
+        dimension = self.knots.shape[1]
+        return self.transform.shape[1] + math.comb(
+            self.order + dimension - 1, dimension
+        )
+
+    def evaluate(self, x: FloatArray) -> FloatArray:
+        """Evaluate the retained basis at fresh covariate rows.
+
+        Costs O(rows times knots times (dimension plus rank)).
+
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Covariate rows, shape rows by dimension.
+
+        Returns
+        -------
+        numpy.ndarray
+            Rows by basis dimension: the constrained kernel columns, then
+            the polynomials of degree below ``order``.
+        """
+        centered = x - np.asarray(self.shift)
+        kernel = _duchon_kernel(centered, self.knots, self.order, self.weight)
+        return np.column_stack((kernel @ self.transform, _poly(centered, self.order)))
+
+
+def duchon_spline(
+    x: FloatArray,
+    k: int,
+    m: int,
+    s: float,
+    *,
+    knots: FloatArray | None = None,
+) -> RawSmooth:
+    """Construct mgcv's Duchon spline [@duchon1977splines].
+
+    The penalty is the integral of the squared order ``m`` derivatives of
+    the function, weighted in the Fourier domain by the frequency norm to
+    the power ``2 s``; ``s = 0`` is the thin-plate spline. The knots are the
+    unique covariate rows in mgcv's order, or the given knots. The basis is
+    the kernel between rows and knots, reduced to the ``k`` leading
+    eigenvectors of the knot kernel matrix when there are more knots than
+    ``k`` and constrained orthogonal to the polynomials of degree below
+    ``m``, followed by those polynomials. Costs O(u squared) per Lanczos
+    iteration for ``u`` knots.
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Training covariate rows, shape rows by dimension.
+    k : int
+        Basis dimension, or a negative value for mgcv's default.
+    m : int
+        Order of the derivatives in the penalty, at least one.
+    s : float
+        Fourier weight exponent, a multiple of one half with
+        ``-d / 2 < s < d / 2`` and ``m + s > d / 2`` in dimension ``d``.
+    knots : numpy.ndarray or None
+        Knot rows, shape knots by dimension, or None for the unique
+        covariate rows.
+
+    Returns
+    -------
+    RawSmooth
+        Basis, training design, penalty, and null-space dimension.
+
+    Raises
+    ------
+    ValueError
+        If ``m`` and ``s`` violate Duchon's conditions, ``k`` does not
+        exceed the null-space dimension, there are fewer unique covariate
+        rows or knots than ``k``, more knots than rows, or more than 2000
+        unique rows without knots, where mgcv subsamples them with R's
+        random number generator.
+    """
+    n, d = x.shape
+    if m < 1 or 2 * s != round(2 * s):
+        raise ValueError(
+            "bs='ds' takes m = c(m, s) with an integer m of at least 1 and s "
+            "a multiple of 0.5"
+        )
+    if not -d / 2 < s < d / 2 or m + s <= d / 2:
+        raise ValueError(
+            f"bs='ds' with m = c({m}, {s:g}) over {d} covariate(s) violates "
+            f"Duchon's conditions -d/2 < s < d/2 and m + s > d/2; mgcv "
+            "replaces s with a warning, which QVR does not: choose s "
+            f"explicitly, for instance m = c({m}, {max(0.5 + d / 2 - m, (1 - d) / 2):g})"
+            if 0.5 + d / 2 - m < d / 2
+            else f"bs='ds' has no valid s for m = {m} over {d} covariates; increase m"
+        )
+    null_dim = math.comb(m + d - 1, d)
+    if k < 0:
+        k = null_dim + (10, 30, 100)[min(d, 3) - 1]
+    if k < null_dim + 1:
+        raise ValueError(
+            f"bs='ds' k={k} must exceed its penalty null-space dimension {null_dim}"
+        )
+    unique = np.unique(x[:, 0])[:, None] if d == 1 else _unique_rows_as_text(x)
+    if unique.shape[0] < k:
+        raise ValueError(
+            "a smooth term has fewer unique covariate combinations than its "
+            "basis dimension"
+        )
+    if knots is None:
+        if n > _MAX_KNOTS and unique.shape[0] > _MAX_KNOTS:
+            raise ValueError(
+                f"a bs='ds' smooth over more than {_MAX_KNOTS} unique covariate "
+                "rows subsamples knots with R's random number generator in "
+                "mgcv and is not supported without user knots"
+            )
+        points = unique
+    elif knots.shape[0] > n:
+        raise ValueError(
+            "a bs='ds' smooth has more knots than data rows; mgcv ignores such knots"
+        )
+    elif knots.shape[0] < k:
+        raise ValueError(
+            f"a bs='ds' smooth with k={k} needs at least {k} knots, got "
+            f"{knots.shape[0]}"
+        )
+    else:
+        points = knots
+    shift = x.mean(axis=0)
+    points = points - shift
+    count = points.shape[0]
+    kernel = _duchon_kernel(points, points, m, s)
+    polynomial = _poly(points, m)
+    if k < count:
+        values, vectors = _lanczos(kernel, k, _EPS**0.5)
+        diagonal = np.diag(values)
+        constraint = vectors.T @ polynomial
+    else:
+        vectors = np.eye(k)
+        diagonal = kernel
+        constraint = polynomial
+    q = np.eye(k)
+    reduced = constraint.copy()
+    for column in range(null_dim):
+        reflector = np.eye(k)
+        reflector[column:, column:] = _householder(reduced[column:, column].copy())
+        reduced = reflector @ reduced
+        q = q @ reflector
+    free = q[:, null_dim:]
+    rank = k - null_dim
+    penalty = np.zeros((k, k))
+    penalty[:rank, :rank] = free.T @ diagonal @ free
+    basis = DuchonBasis(
+        shift=tuple(shift.tolist()),
+        knots=points,
+        transform=vectors @ free,
+        order=m,
+        weight=s,
     )
     return RawSmooth(
         basis=basis,
@@ -2884,6 +3155,7 @@ type SmoothBasis = (
     | BSplineBasis
     | RandomEffectBasis
     | GaussianProcessSmoothBasis
+    | DuchonBasis
     | SphereBasis
     | FactorSmoothBasis
     | MarkovRandomFieldBasis

@@ -38,7 +38,7 @@ import torch
 from scipy.integrate import quad
 from scipy.special import eval_legendre, spence
 
-from quivers.formulas import conditional_smooths, fit
+from quivers.formulas import BayesianFit, conditional_smooths, fit
 from quivers.formulas._data_options import formula_data_options
 from quivers.formulas._mgcv_smooth import (
     SphereBasis,
@@ -358,6 +358,7 @@ def test_sphere_splines_fit_predict_refit_and_restore(method, tmp_path):
     path = tmp_path / "sos_smooth.pt"
     save_fit(fitted, path)
     restored = load_fit(path)
+    assert isinstance(restored, BayesianFit)
     torch.testing.assert_close(
         restored.posterior_linpred(new_data=fresh, num_samples=3, seed=1),
         fitted.posterior_linpred(new_data=fresh, num_samples=3, seed=1),

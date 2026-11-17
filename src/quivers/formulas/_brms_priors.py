@@ -571,6 +571,84 @@ def _constant_value(
     )
 
 
+def _split_vector_constants(
+    targets: Sequence[PriorTarget],
+    selected: Mapping[str, PriorSpec],
+    constants: Mapping[str, ConstantPrior],
+) -> dict[str, ConstantPrior]:
+    """Give each scalar site of one rule its entry of a vector constant.
+
+    brms fixes a parameter vector, such as the coefficients ``b`` of one
+    predictor or the standard deviations of one grouping factor, to a vector
+    with ``constant(v, broadcast = FALSE)``. Here those coefficients are
+    separate scalar sites, so the values of one rule are assigned to the
+    scalar sites it selects in catalogue order, separately for each class,
+    grouping factor, distributional or nonlinear parameter, and response, as
+    brms assigns the vector to each parameter vector the rule selects.
+
+    Parameters
+    ----------
+    targets : Sequence[PriorTarget]
+        Role metadata of the selected sites, in catalogue order.
+    selected : Mapping[str, PriorSpec]
+        Resolved rules by site.
+    constants : Mapping[str, ConstantPrior]
+        Constant rules by site.
+
+    Returns
+    -------
+    dict[str, ConstantPrior]
+        ``constants`` with every scalar site of a vector rule holding one
+        value.
+
+    Raises
+    ------
+    ValueError
+        If a vector constant without broadcasting selects a number of scalar
+        sites different from its number of values.
+    """
+    groups: list[tuple[tuple[PriorSpec, PriorTarget], list[str]]] = []
+    for target in targets:
+        prior = constants.get(target.site)
+        if (
+            prior is None
+            or prior.broadcast
+            or not isinstance(prior.value, tuple)
+            or len(prior.value) == 1
+            or target.axes
+            or target.event_rank
+        ):
+            continue
+        rule = selected[target.site]
+        vector = PriorTarget(
+            site="",
+            class_=target.class_,
+            group=target.group,
+            dpar=target.dpar,
+            nlpar=target.nlpar,
+            response=target.response,
+        )
+        for known, sites in groups:
+            if known == (rule, vector):
+                sites.append(target.site)
+                break
+        else:
+            groups.append(((rule, vector), [target.site]))
+    split = dict(constants)
+    for (rule, _), sites in groups:
+        prior = rule.distribution
+        assert isinstance(prior, ConstantPrior) and isinstance(prior.value, tuple)
+        if len(sites) != len(prior.value):
+            raise ValueError(
+                f"constant prior with {len(prior.value)} values and "
+                f"broadcast=False selects {len(sites)} scalar parameters "
+                f"{sites}; give one value per parameter in this order"
+            )
+        for site, value in zip(sites, prior.value, strict=True):
+            split[site] = ConstantPrior(value=float(value))
+    return split
+
+
 def apply_fixed_rules(
     module: Module,
     targets: Sequence[PriorTarget],
@@ -596,7 +674,7 @@ def apply_fixed_rules(
     Raises
     ------
     ValueError
-        If a constant has the wrong width, a flat rule has unsupported bounds,
+        If a constant has the wrong width or count, a flat rule has unsupported bounds,
         or a constant names a site another prior depends on as a shrinkage
         member.
     """
@@ -617,6 +695,7 @@ def apply_fixed_rules(
             remaining[site] = rule
     if not flat and not constants:
         return module, remaining
+    constants = _split_vector_constants(targets, selected, constants)
     sizes = finite_object_sizes(module)
     statements = []
     for statement in module.statements:

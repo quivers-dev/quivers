@@ -157,8 +157,10 @@ class PriorSpec(ValueModel):
     distribution : str or RegularizedHorseshoe or R2D2
         A compositional QVR distribution or a sampled shrinkage hierarchy.
     class_ : str or None
-        Parameter class: b excludes intercepts; Intercept, sd, cor, and
-        auxiliary parameter names select their corresponding roles.
+        Parameter class: b excludes intercepts, except the intercept of a
+        nonlinear parameter, which brms names class b with coefficient
+        Intercept; Intercept, sd, cor, and auxiliary parameter names select
+        their corresponding roles.
     coef, group, dpar, nlpar, site, response : str or None
         Expanded coefficient label, original group name, distributional or
         nonlinear parameter name, exact generated site, or authored joint-response
@@ -373,7 +375,29 @@ def brms_class_names(target: PriorTarget) -> frozenset[str]:
         names |= {"lncor", "Llncor"}
     elif target.class_ == "cutpoint_spacing":
         names |= {"delta"}
+    elif _nonlinear_intercept(target):
+        names |= {"b"}
     return frozenset(names)
+
+
+def _nonlinear_intercept(target: PriorTarget) -> bool:
+    """Report whether a target is the intercept of a nonlinear parameter.
+
+    brms gives the intercept of a nonlinear parameter the class ``b`` and
+    the coefficient name ``Intercept``, so ``prior(..., nlpar = "b1")``
+    selects it.
+
+    Parameters
+    ----------
+    target : PriorTarget
+        One registered site.
+
+    Returns
+    -------
+    bool
+        True for a class ``Intercept`` target of a nonlinear parameter.
+    """
+    return target.class_ == "Intercept" and target.nlpar is not None
 
 
 def _selects(target: PriorTarget, key: str, value: str | None) -> bool:
@@ -391,10 +415,13 @@ def _selects(target: PriorTarget, key: str, value: str | None) -> bool:
     Returns
     -------
     bool
-        Equality on the field; a class also matches by its brms names.
+        Equality on the field; a class also matches by its brms names, and
+        the coefficient ``Intercept`` matches a nonlinear intercept.
     """
     if key == "class_" and value is not None:
         return value in brms_class_names(target)
+    if key == "coef" and value == "Intercept" and _nonlinear_intercept(target):
+        return True
     return getattr(target, key) == value
 
 

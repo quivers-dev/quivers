@@ -107,9 +107,9 @@ def test_invalid_knots_are_refused():
         cubic_regression(x, 5, shrink=None, knots=np.array([0.0, 0.5, 0.3, 0.8, 1.0]))
     train, _ = smooths._frames()
     cases = {
-        "y ~ s(x)": "bs='tp' smooth are not supported",
-        "y ~ s(x, z)": "multivariate s\\(\\) are not supported",
-        "y ~ t2(x, z)": "t2\\(\\) covariates",
+        "y ~ s(x)": "needs at least 10 knots, got 2",
+        "y ~ s(x, z)": "must be given for every covariate",
+        "y ~ t2(x, z)": "takes k = 5 knots, 2 given",
         "y ~ s(x, bs = 'ps', k = 8)": "does not include the data",
         "y ~ s(x, bs = 'bs', k = 6)": "two end points, four knots, or 10 knots",
     }

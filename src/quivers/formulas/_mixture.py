@@ -97,7 +97,9 @@ if TYPE_CHECKING:
 
 _Value = TypeVar("_Value")
 
-#: brms ``no_mixture``: categorical, multinomial, simplex and continuous hurdle laws.
+#: brms 2.23 ``no_mixture``: categorical, multinomial, simplex and continuous
+#: hurdle laws (``is_cont_hurdle``: hurdle_gamma, hurdle_lognormal,
+#: zero_inflated_beta, zero_one_inflated_beta).
 _NO_MIXTURE = frozenset(
     {
         "categorical",
@@ -142,7 +144,11 @@ _INTEGER = frozenset(
 #: Components this mixture construction refuses, with the reason.
 _UNSUPPORTED = {
     "wiener": "its signed decision response is not a scalar mixture event",
-    "cox": "its baseline hazard is shared by construction",
+    "cox": (
+        "its baseline hazard is shared by construction; brms's Stan program "
+        "for two Cox components declares the baseline data twice and does "
+        "not compile"
+    ),
 }
 
 #: Object carrying the component axis of weights and stacked predictors.
@@ -188,7 +194,9 @@ def _component_family(value: str | Family) -> Family:
         raise ValueError("mixture: a component cannot itself be a mixture")
     if value.name in _NO_MIXTURE:
         raise ValueError(
-            f"mixture: family {value.name!r} is not allowed in mixture models"
+            f"mixture: family {value.name!r} is not allowed in mixture models: "
+            "brms 2.23 refuses categorical, multinomial, simplex, and continuous "
+            "hurdle and zero-inflated families as mixture components"
         )
     if value.name in _UNSUPPORTED:
         raise ValueError(

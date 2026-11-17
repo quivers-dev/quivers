@@ -34,7 +34,9 @@ one node at a time with an explicit stack, so deeply nested values
 (long structural term lists, for instance) do not exhaust the
 interpreter's recursion limit. A model's hash is computed once and
 cached. Copying and pickling rebuild the model from its declared field
-values, so opaque values survive both.
+values, so opaque values survive both. A shallow copy passes each field's
+value object through, so a field compared by identity stays equal; pickling
+replaces read-only mapping proxies by dicts, which a pickle can hold.
 
 This module imports nothing from quivers, so every package can use it
 without an import cycle.
@@ -561,6 +563,24 @@ class ValueModel(dx.Model):
                 return False
             stack.extend(zip(left_children, right_children, strict=True))
         return True
+
+    def __copy__(self) -> Self:
+        """Copy the model, keeping every field's value object.
+
+        Returns
+        -------
+        Self
+            A model built from the same field values. A field compared by
+            identity holds the same object, so the copy equals the original;
+            a field compared by value is frozen again from the same content.
+        """
+        cls = type(self)
+        return cls(
+            **{
+                name: cast("HeldValue", getattr(self, name))
+                for name in cls.__field_specs__
+            }
+        )
 
     def __reduce__(
         self,

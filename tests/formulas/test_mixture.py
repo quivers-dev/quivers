@@ -452,11 +452,19 @@ def test_ordering_removes_the_label_switched_mode():
         data=frame,
         family=mixture("gaussian", "gaussian"),
         method="nuts",
-        num_warmup=150,
-        num_samples=100,
+        # Each gradient costs tens of milliseconds, so the budget is the
+        # smallest that carries both chains from the wrong side to the mode:
+        # 40 warmup transitions of at most 31 leapfrog steps. The posterior
+        # deviation of an intercept is about 0.1, and the retained means sit
+        # near -2 and 2 for every seed tried, so the thresholds at -1 and 1
+        # are more than five Monte Carlo standard errors of a 20-draw mean
+        # (at most 0.35 / sqrt(20)) away.
+        num_warmup=40,
+        num_samples=20,
         num_chains=2,
         seed=4,
         initial_values={"dpar_mu1_intercept": 1.5},
+        control={"max_treedepth": 5},
     )
     draws = ordered.draws()
     assert bool((draws["mixture_intercept_spacing"] > 0).all())

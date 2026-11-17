@@ -83,6 +83,12 @@ from quivers.formulas._joint_prediction import (
     JointPredictionContext,
     prepare_joint_prediction,
 )
+from quivers.formulas._brms_hypothesis import (
+    HypothesisInput,
+    HypothesisTable,
+    fit_hypothesis,
+    is_brms_hypothesis,
+)
 from quivers.formulas._multivariate import MultivariateFormula
 from quivers.formulas._missing import LatentResponseSpec
 from quivers.formulas._joint_missing import (
@@ -129,7 +135,7 @@ from quivers.modeling._row_attachments import original_positions, validate_split
 from quivers.modeling.refit import RefitRecipe, refit_callback
 
 # brms post-processing methods (summaries, accessors, LOO family) and stored criteria.
-from quivers.diagnostics.elpd import ELPDEstimate
+from quivers.diagnostics.elpd import NO_CRITERIA, ELPDEstimate
 from quivers.formulas._postprocess_methods import JointPostprocess
 
 # brms coefficient renaming shared with single fits.
@@ -317,7 +323,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
     )
     # Criteria stored by add_criterion (brms ``x$criteria``), kept in artifacts.
     criteria: Mapping[str, ELPDEstimate | torch.Tensor] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+        default=NO_CRITERIA, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
     @property
@@ -2066,7 +2072,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
 
     def hypothesis(
         self,
-        expression: str | ContrastExpression,
+        expression: str | ContrastExpression | Sequence[str] | Mapping[str, str],
         *,
         prior: bool = False,
         num_samples: int | None = None,
@@ -2077,14 +2083,21 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         robust: bool = False,
         point: PointNullSpec | None = None,
         name: str = "contrast",
-    ) -> HypothesisSummary:
-        """Evaluate a contrast over brms-named parameters.
+        class_: str | None = "b",
+        group: str | None = None,
+        scope: Literal["standard", "ranef", "coef"] = "standard",
+        alpha: float = 0.05,
+    ) -> HypothesisSummary | HypothesisTable:
+        """Test a brms hypothesis string, or a contrast over brms names.
 
         Parameters
         ----------
-        expression : str or ContrastExpression
-            QVR expression over the names of `variables`, for instance
-            ``"b_y1_x - b_y2_x"`` or ``"rescor__y1__y2"``.
+        expression : str or ContrastExpression or Sequence[str] or Mapping[str, str]
+            brms hypothesis strings ``"left (= | < | >) right"``, whose
+            names take the class prefix (``"y1_x > y2_x"`` tests
+            ``b_y1_x - b_y2_x``); or a QVR expression over the names of
+            `variables`, for instance ``"b_y1_x - b_y2_x"`` or
+            ``"rescor__y1__y2"``.
         prior : bool
             Also evaluate the contrast on joint prior draws.
         num_samples, num_prior_samples : int or None
@@ -2101,17 +2114,43 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             Optional point-density comparison; requires prior=True.
         name : str
             Output contrast label.
+        class_ : str or None
+            Class prefix of the names in a brms hypothesis string; None
+            reads them as `variables` reports them.
+        group : str or None
+            Grouping factor of a brms hypothesis string.
+        scope : {"standard", "ranef", "coef"}
+            Scope of a brms hypothesis string.
+        alpha : float
+            brms ``alpha`` of a hypothesis string.
 
         Returns
         -------
-        HypothesisSummary
-            Posterior summaries and region evidence.
+        HypothesisSummary or HypothesisTable
+            brms's table for a hypothesis string; posterior summaries and
+            region evidence for a contrast expression.
 
         Raises
         ------
         ValueError
-            If point evidence or a prior count is requested without prior.
+            If point evidence or a prior count is requested without prior,
+            or a hypothesis string is malformed or names an unknown
+            parameter.
         """
+        if is_brms_hypothesis(expression):
+            return fit_hypothesis(
+                self,
+                cast("HypothesisInput", expression),
+                class_=class_,
+                group=group,
+                scope=scope,
+                alpha=alpha,
+                robust=robust,
+                prior=prior,
+                num_samples=num_samples,
+                num_prior_samples=num_prior_samples,
+                seed=seed,
+            )
         if point is not None and not prior:
             raise ValueError("point-density evidence requires prior=True")
         if num_prior_samples is not None and not prior:
@@ -2126,7 +2165,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
         )
         return _contrast_hypothesis(
             samples,
-            expression,
+            cast("str | ContrastExpression", expression),
             prior=prior_samples,
             null=null,
             probs=probs,
@@ -2394,6 +2433,9 @@ def _linpred_binding(
     graph_parameter = graph is not None and parameter in (
         graph.leaves.keys() | graph.expressions.keys() | graph.roots.keys()
     )
+    # brms: an auxiliary parameter without a formula is constant over rows.
+    if view._constant_parameter(parameter):
+        return parameter, False, False, 0
     # mixtures: parameter="mu" stacks the component locations.
     if not graph_parameter and not (
         parameter == "mu" and view.family.mixture is not None

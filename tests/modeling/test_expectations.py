@@ -319,8 +319,8 @@ def test_explicit_finite_moment_budget_is_seeded_and_undefined_means_refused():
         "Normal(loc=mu, scale=1.0) [trunc_lower=-0.5,trunc_upper=1.0]",
     )
     fitted = _fit(source)
-    with pytest.raises(TypeError, match="mc_samples|analytic"):
-        fitted.posterior_epred(num_samples=1)
+    # A truncated Normal has a closed-form mean, so no budget is needed.
+    closed = fitted.posterior_epred(num_samples=1)["y"]
     rng = torch.random.get_rng_state().clone()
     actual = fitted.posterior_epred(num_samples=1, mc_samples=6000, seed=17)["y"]
     mu = (fitted.samples["b"][:, :1, None] * fitted.model.data["x"]).double()
@@ -332,7 +332,9 @@ def test_explicit_finite_moment_budget_is_seeded_and_undefined_means_refused():
     expected = mu + (
         torch.exp(normal.log_prob(lower)) - torch.exp(normal.log_prob(upper))
     ) / (normal.cdf(upper) - normal.cdf(lower))
-    torch.testing.assert_close(actual, expected, rtol=0, atol=0.025)
+    # The closed form answers in the law's dtype, as other analytic means do.
+    torch.testing.assert_close(actual.double(), expected, rtol=0, atol=0.025)
+    torch.testing.assert_close(closed.double(), expected, rtol=1e-5, atol=1e-6)
     assert torch.equal(rng, torch.random.get_rng_state())
     assert torch.equal(
         actual, fitted.posterior_epred(num_samples=1, mc_samples=6000, seed=17)["y"]

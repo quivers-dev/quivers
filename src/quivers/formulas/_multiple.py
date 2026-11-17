@@ -12,10 +12,12 @@ warns.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Unpack, cast, overload
+from collections.abc import Callable, Mapping, Sequence
+from types import MethodType
+from typing import Concatenate, Literal, Unpack, cast, overload
 
 import didactic.api as dx
+from didactic.types._typing import FieldValue
 import torch
 from narwhals.typing import IntoDataFrame
 
@@ -34,6 +36,10 @@ __all__: list[str] = []
 
 #: A fitted formula model whose recorded draws can be pooled.
 type Pooled = BayesianFit | MultivariateFit
+
+type PooledMember = MethodType | ValueModel | torch.Tensor | torch.nn.Module
+"""A bound method of the pooled fit, or the value of one of its properties
+that is not a plain field value."""
 
 
 def _structure(fitted: Pooled) -> tuple[tuple[str, tuple[int, ...]], ...]:
@@ -176,6 +182,49 @@ def combine_models(*fits: Pooled) -> Pooled:
     return first.with_(posterior=_concatenate(posteriors))
 
 
+def _pooled[**P, R](
+    method: Callable[Concatenate[BayesianFit, P], R],
+) -> Callable[Concatenate[MultipleFit, P], R]:
+    """Build the combined fit's method that calls the pooled fit's method.
+
+    Parameters
+    ----------
+    method : Callable
+        A method of `BayesianFit`, whose name, signature and documentation
+        the returned method takes.
+
+    Returns
+    -------
+    Callable
+        A method of `MultipleFit` that calls the method of that name on the
+        pooled fit, a `BayesianFit` or a `MultivariateFit`, with the same
+        arguments.
+    """
+    name = method.__name__
+
+    def call(self: MultipleFit, *args: P.args, **kwargs: P.kwargs) -> R:
+        """Call the pooled fit's method of the same name.
+
+        Parameters
+        ----------
+        *args : P.args
+            Positional arguments of the pooled fit's method.
+        **kwargs : P.kwargs
+            Keyword arguments of the pooled fit's method.
+
+        Returns
+        -------
+        R
+            The value the pooled fit's method returns.
+        """
+        return cast(R, getattr(self.pooled, name)(*args, **kwargs))
+
+    call.__name__ = name
+    call.__qualname__ = f"MultipleFit.{name}"
+    call.__doc__ = method.__doc__
+    return call
+
+
 class MultipleFit(ValueModel):
     """Fits of one formula to several datasets and their pooled posterior.
 
@@ -185,6 +234,15 @@ class MultipleFit(ValueModel):
         Fit retaining every dataset's chains (`combine_models`).
     fits : tuple
         The per-dataset fits, in dataset order.
+
+    Notes
+    -----
+    Every public method and property of ``pooled`` is also an attribute of
+    this value, acting on the pooled draws: ``summary()``,
+    ``posterior_predict()``, ``conditional_effects()``, ``loo()`` and the
+    rest, as a brms ``brmsfit_multiple`` is an ordinary ``brmsfit``. The
+    methods defined here (`rhats`, `update`) take precedence. Data-dependent
+    quantities use the first dataset, as in brms.
     """
 
     pooled: BayesianFit | MultivariateFit = dx.field(
@@ -193,6 +251,116 @@ class MultipleFit(ValueModel):
     fits: tuple[BayesianFit | MultivariateFit, ...] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+
+    # brms post-processing methods, each acting on the pooled draws.
+    ndraws = _pooled(BayesianFit.ndraws)
+    nchains = _pooled(BayesianFit.nchains)
+    niterations = _pooled(BayesianFit.niterations)
+    nwarmup = _pooled(BayesianFit.nwarmup)
+    nvariables = _pooled(BayesianFit.nvariables)
+    posterior_summary = _pooled(BayesianFit.posterior_summary)
+    posterior_interval = _pooled(BayesianFit.posterior_interval)
+    summary = _pooled(BayesianFit.summary)
+    ngrps = _pooled(BayesianFit.ngrps)
+    fixef = _pooled(BayesianFit.fixef)
+    ranef = _pooled(BayesianFit.ranef)
+    coef = _pooled(BayesianFit.coef)
+    varcorr = _pooled(BayesianFit.varcorr)
+    vcov = _pooled(BayesianFit.vcov)
+    rhat = _pooled(BayesianFit.rhat)
+    neff_ratio = _pooled(BayesianFit.neff_ratio)
+    control_params = _pooled(BayesianFit.control_params)
+    inits = _pooled(BayesianFit.inits)
+    nuts_params = _pooled(BayesianFit.nuts_params)
+    log_posterior = _pooled(BayesianFit.log_posterior)
+    criterion = _pooled(BayesianFit.criterion)
+    variables = _pooled(BayesianFit.variables)
+    nobs = _pooled(BayesianFit.nobs)
+    predict = _pooled(BayesianFit.predict)
+    fitted = _pooled(BayesianFit.fitted)
+    predictive_error = _pooled(BayesianFit.predictive_error)
+    residuals = _pooled(BayesianFit.residuals)
+    predictive_interval = _pooled(BayesianFit.predictive_interval)
+    loo = _pooled(BayesianFit.loo)
+    loo_moment_match = _pooled(BayesianFit.loo_moment_match)
+    waic = _pooled(BayesianFit.waic)
+    psis = _pooled(BayesianFit.psis)
+    loo_subsample = _pooled(BayesianFit.loo_subsample)
+    loo_predict = _pooled(BayesianFit.loo_predict)
+    loo_epred = _pooled(BayesianFit.loo_epred)
+    loo_linpred = _pooled(BayesianFit.loo_linpred)
+    loo_predictive_interval = _pooled(BayesianFit.loo_predictive_interval)
+    loo_r2 = _pooled(BayesianFit.loo_r2)
+    kfold = _pooled(BayesianFit.kfold)
+    add_criterion = _pooled(BayesianFit.add_criterion)
+    conditional_smooths = _pooled(BayesianFit.conditional_smooths)
+    pp_check = _pooled(BayesianFit.pp_check)
+    mcmc_plot = _pooled(BayesianFit.mcmc_plot)
+    plot = _pooled(BayesianFit.plot)
+    pairs = _pooled(BayesianFit.pairs)
+    prior_summary = _pooled(BayesianFit.prior_summary)
+    conditional_effects = _pooled(BayesianFit.conditional_effects)
+    prior_draws = _pooled(BayesianFit.prior_draws)
+    prior_view = _pooled(BayesianFit.prior_view)
+    draws = _pooled(BayesianFit.draws)
+    posterior_linpred = _pooled(BayesianFit.posterior_linpred)
+    posterior_epred = _pooled(BayesianFit.posterior_epred)
+    posterior_predict = _pooled(BayesianFit.posterior_predict)
+    log_likelihood = _pooled(BayesianFit.log_likelihood)
+    bayes_r2 = _pooled(BayesianFit.bayes_r2)
+    hypothesis = _pooled(BayesianFit.hypothesis)
+    posterior_response = _pooled(BayesianFit.posterior_response)
+
+    def __getattr__(self, name: str) -> FieldValue | PooledMember:
+        """Read a field, or a method or property of the pooled fit.
+
+        brms treats a ``brmsfit_multiple`` as an ordinary ``brmsfit``:
+        ``summary``, the prediction methods, ``conditional_effects``,
+        ``loo`` and every other method act on the pooled draws. A name that
+        is not a field of this value is thus looked up on ``pooled``, so the
+        whole method surface of the pooled `BayesianFit` or
+        `MultivariateFit` is available here through the one shared
+        post-processing path.
+
+        Parameters
+        ----------
+        name : str
+            Field of this value, or public method or property of the
+            pooled fit.
+
+        Returns
+        -------
+        FieldValue or PooledMember
+            The field value, or the pooled fit's bound method or property
+            value.
+
+        Raises
+        ------
+        AttributeError
+            If the name is private, or neither a field nor a public member
+            of the pooled fit.
+        """
+        if name in type(self).__field_specs__ or name.startswith("_"):
+            return super().__getattr__(name)
+        pooled = super().__getattr__("pooled")
+        if not hasattr(pooled, name):
+            raise AttributeError(
+                f"{type(self).__name__!r} has no field {name!r}, and its pooled "
+                f"{type(pooled).__name__} has no method or property of that name"
+            )
+        return cast(PooledMember, getattr(pooled, name))
+
+    def __dir__(self) -> list[str]:
+        """List this value's names and the pooled fit's public names.
+
+        Returns
+        -------
+        list[str]
+            Sorted names reachable as attributes.
+        """
+        own = set(super().__dir__())
+        public = {name for name in dir(self.pooled) if not name.startswith("_")}
+        return sorted(own | public)
 
     def rhats(self) -> list[dict[str, torch.Tensor]]:
         """Return split R-hat of every parameter for each dataset.
@@ -295,6 +463,7 @@ def fit_multiple(
     formula: MultivariateFormula,
     *,
     data: Sequence[IntoDataFrame],
+    combine: Literal[True] = True,
     **options: Unpack[JointFitOptions],
 ) -> MultipleFit: ...
 
@@ -304,16 +473,38 @@ def fit_multiple(
     formula: str | ResponseModel,
     *,
     data: Sequence[IntoDataFrame],
+    combine: Literal[True] = True,
     **options: Unpack[FormulaFitOptions],
 ) -> MultipleFit: ...
+
+
+@overload
+def fit_multiple(
+    formula: MultivariateFormula,
+    *,
+    data: Sequence[IntoDataFrame],
+    combine: Literal[False],
+    **options: Unpack[JointFitOptions],
+) -> tuple[MultivariateFit, ...]: ...
+
+
+@overload
+def fit_multiple(
+    formula: str | ResponseModel,
+    *,
+    data: Sequence[IntoDataFrame],
+    combine: Literal[False],
+    **options: Unpack[FormulaFitOptions],
+) -> tuple[BayesianFit, ...]: ...
 
 
 def fit_multiple(
     formula: str | ResponseModel | MultivariateFormula,
     *,
     data: Sequence[IntoDataFrame],
+    combine: bool = True,
     **options: Unpack[FormulaFitOptions],
-) -> MultipleFit:
+) -> MultipleFit | tuple[BayesianFit, ...] | tuple[MultivariateFit, ...]:
     """Fit one formula to each imputed dataset, as brms ``brm_multiple`` does.
 
     Every dataset is fitted by `fit` with the same options and seed, as
@@ -326,30 +517,42 @@ def fit_multiple(
         Formula fitted to every dataset.
     data : Sequence[IntoDataFrame]
         Imputed datasets, for instance from a multiple-imputation package.
+    combine : bool
+        brms ``combine``: pool the fits into one `MultipleFit`. False
+        returns the per-dataset fits, which may then use any method.
     **options : FormulaFitOptions
-        Every other `fit` keyword. The method must record draws (NUTS or HMC).
+        Every other `fit` keyword. A combined fit requires a method that
+        records draws (NUTS or HMC).
 
     Returns
     -------
-    MultipleFit
-        Per-dataset fits and the pooled fit.
+    MultipleFit or tuple
+        Per-dataset fits and the pooled fit, or the per-dataset fits alone
+        with ``combine=False``.
 
     Raises
     ------
     ValueError
-        If no dataset is given or the method is SVI.
+        If no dataset is given or a combined fit is requested with SVI.
+    TypeError
+        If ``combine`` is not Boolean.
     """
+    if type(combine) is not bool:
+        raise TypeError("combine must be True or False")
     datasets = list(data)
     if not datasets:
         raise ValueError("fit_multiple requires at least one dataset")
-    if options.get("method", "nuts") == "svi":
+    if combine and options.get("method", "nuts") == "svi":
         raise ValueError(
             "fit_multiple pools recorded draws; use method='nuts' or 'hmc'"
         )
-    fits: tuple[BayesianFit, ...] | tuple[MultivariateFit, ...]
     if isinstance(formula, MultivariateFormula):
-        joint = cast(JointFitOptions, options)
-        fits = tuple(fit(formula, data=frame, **joint) for frame in datasets)
-        return MultipleFit(pooled=combine_models(*fits), fits=fits)
-    fits = tuple(fit(formula, data=frame, **options) for frame in datasets)
-    return MultipleFit(pooled=combine_models(*fits), fits=fits)
+        settings = cast(JointFitOptions, options)
+        joint = tuple(fit(formula, data=frame, **settings) for frame in datasets)
+        if not combine:
+            return joint
+        return MultipleFit(pooled=combine_models(*joint), fits=joint)
+    single = tuple(fit(formula, data=frame, **options) for frame in datasets)
+    if not combine:
+        return single
+    return MultipleFit(pooled=combine_models(*single), fits=single)

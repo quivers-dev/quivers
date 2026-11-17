@@ -45,6 +45,15 @@ def _prepare_optimizer(
     )
 
 
+INITIAL_ATTEMPTS = 100
+"""How many times `SVI.run` draws the objective of its first step before it
+reports a non-finite start, the budget `MCMC` gives an initial position."""
+
+
+class _NonFiniteObjective(ValueError):
+    """A variational objective that evaluated without error to a non-finite value."""
+
+
 class SVI:
     """Stochastic Variational Inference optimizer.
 
@@ -104,7 +113,7 @@ class SVI:
             self.optim.zero_grad()
         loss_val = self.objective(self.model, self.guide, x, observations)
         if not bool(torch.isfinite(loss_val).all()):
-            raise ValueError("nonfinite variational objective")
+            raise _NonFiniteObjective("nonfinite variational objective")
         if self.optim is not None:
             loss_val.backward()
             self.optim.step()
@@ -142,7 +151,9 @@ class SVI:
         Raises
         ------
         ValueError
-            If the budget is invalid or an objective is nonfinite.
+            If the budget is invalid or an objective is nonfinite. The first
+            step's objective is drawn up to `INITIAL_ATTEMPTS` times, without
+            a parameter update, before a nonfinite start is reported.
         """
         if (
             isinstance(num_steps, bool)
@@ -153,12 +164,26 @@ class SVI:
         losses: list[float] = []
         for index in range(num_steps):
             bindings = observations(index) if callable(observations) else observations
-            try:
-                loss = self.step(x, dict(bindings))
-            except ValueError as exc:
-                raise ValueError(
-                    f"variational optimization at step {index}: {exc}"
-                ) from exc
+            # The objective is a Monte Carlo estimate. At the start a draw of
+            # the untrained guide may fall outside the model's support, so a
+            # non-finite first objective is drawn again, as a sampler redraws
+            # a non-finite initial position.
+            attempts = INITIAL_ATTEMPTS if index == 0 else 1
+            for attempt in range(1, attempts + 1):
+                try:
+                    loss = self.step(x, dict(bindings))
+                except _NonFiniteObjective as exc:
+                    if attempt < attempts:
+                        continue
+                    tried = f" after {attempt} draws" if attempts > 1 else ""
+                    raise ValueError(
+                        f"variational optimization at step {index}: {exc}{tried}"
+                    ) from exc
+                except ValueError as exc:
+                    raise ValueError(
+                        f"variational optimization at step {index}: {exc}"
+                    ) from exc
+                break
             losses.append(loss)
             if callback is not None:
                 callback(index, loss)

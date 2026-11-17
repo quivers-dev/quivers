@@ -72,6 +72,7 @@ on.
 | `bs` | B-spline, integrated squared derivative | 10 | polynomials of degree below `m[2]` |
 | `re` | random effect, identity penalty | number of levels | none |
 | `gp` | low-rank Gaussian process smooth | dimension plus 11, 31, or 101 | constant and linear functions, or the constant alone when stationary |
+| `ds` | Duchon spline | null dimension plus 10, 30, or 100 | polynomials of degree below `m[1]` |
 | `mrf` | Markov random field over the levels of a factor, penalty from `xt` | number of regions | null space of the penalty (the constant for a connected neighbourhood graph) |
 | `sos` | spline on the sphere over latitude and longitude | 50 | constants, and for `m = -1` also the three coordinates of the embedded sphere |
 | `fs` | one smooth per level of a factor, thin-plate unless `xt` names another base | as the base | none: every null column is penalized |
@@ -81,8 +82,8 @@ including `m = c(m1, m2)` for `ps` and `bs` and `m = c(m, 0)` for a
 thin-plate spline without its null space. `fx = TRUE` keeps the basis as
 unpenalized population columns. A thin-plate smooth over more than 2000
 unique covariate combinations is refused, because mgcv then subsamples knots
-with R's random number generator. Use `bs = 'cr'` or `bs = 'ps'` for such a
-term.
+with R's random number generator. Give `knots` for such a term, or use
+`bs = 'cr'` or `bs = 'ps'`.
 
 `s(x, bs = 'gp')` is mgcv's Gaussian process smooth
 [@kammann2003geoadditive; @wood2017generalized], a spline with a fixed
@@ -220,6 +221,48 @@ assert spatial.posterior_linpred(new_data=areas.head(5), num_samples=5).shape ==
 )
 ```
 
+`s(x, z, bs = 'ds')` is mgcv's Duchon spline [@duchon1977splines;
+@wood2017generalized], which generalizes the thin-plate spline. Its penalty
+integrates the squared derivatives of order `m[1]` after weighting their
+[Fourier transform](https://en.wikipedia.org/wiki/Fourier_transform) by the
+frequency norm to the power `2 * m[2]`. `m = c(m, s)` thus gives the
+derivative order `m` and the weight exponent `s`, and the default
+`m = c(2, 0)` is the thin-plate penalty. In `d` dimensions `s` is a multiple
+of one half with `-d/2 < s < d/2`, and `m + s > d/2` makes the smooth
+continuous. The kernel is the distance to the power `2m + 2s - d`, times its
+logarithm when that power is even. The null space holds the polynomials of
+degree below `m`. For instance, `m = c(1, 0.5)` over two covariates
+penalizes first derivatives and leaves only the constant unpenalized, where
+a thin-plate spline over two covariates must leave the linear functions
+unpenalized as well.
+
+The knots of a Duchon spline are the unique covariate rows, or the `knots`
+described below. With more knots than `k`, the columns are the kernel
+between rows and knots reduced to the `k` leading eigenvectors of the knot
+kernel matrix. Otherwise there is one kernel column per knot. `by`, `fx`,
+and use as a `t2()` margin work as for the other bases.
+
+<!-- python: run -->
+```python
+site = np.arange(40)
+plane = pd.DataFrame(
+    {"x": (site * 0.618034) % 1, "z": 2 * ((site * 0.414214) % 1) - 0.5}
+)
+plane["y"] = np.sin(3 * plane["x"]) + plane["z"] ** 2
+
+duchon = fit(
+    "y ~ s(x, z, bs = 'ds', k = 10, m = c(1, 0.5))",
+    data=plane,
+    method="svi",
+    num_steps=50,
+    seed=3,
+)
+names = duchon.variables(num_samples=5)
+assert "sds_sxz_1" in names and not any(name.startswith("bs_") for name in names)
+corners = pd.DataFrame({"x": [0.0, 1.0], "z": [-0.5, 1.5]})
+assert duchon.posterior_linpred(new_data=corners, num_samples=5).shape == (1, 5, 2)
+```
+
 `s(lat, lon, bs = 'sos')` is mgcv's spline on the
 [sphere](https://en.wikipedia.org/wiki/Sphere)
 [@wahba1981spline; @wood2017generalized]. Its first covariate is latitude and
@@ -288,8 +331,15 @@ or the full knot sequence, `k + m[1] + 2` knots for `ps` and `k + m[1] + 1`
 for `bs`. `bs` also takes four knots, the outer two bounding the evaluation
 range and the inner two the interior knots. Knots must increase strictly. A
 `re` basis reads none, as in mgcv. An `sos` basis takes the knot latitudes
-and longitudes, one entry per covariate and of equal length. Knots of a `tp`
-or `ts` basis, of any other multivariate `s()`, and of `t2()` margins are
+and longitudes, one entry per covariate and of equal length.
+
+A `tp`, `ts`, or `ds` basis takes knot locations in place of the unique
+covariate rows, with one entry of equal length for each covariate of the
+smooth. At least `k` knots are needed. With exactly `k` distinct knots the
+basis has one function per knot, and with more it is the eigenbasis of the
+knots, so knots also make a smooth over more than 2000 unique rows
+available. Each margin of a `t2()` term reads the knots of its own
+covariates in the same way. Knots of a `gp`, `fs`, or `mrf` basis are
 refused with an error. The
 basis keeps its knots, so prediction, refits, and artifacts use them, and
 joint formulas take `knots` once for every response, as `brm` does.
@@ -364,8 +414,8 @@ values into its period.
 
 ### Where QVR differs from brms
 
-Four choices of mgcv and brms are not reproducible or not consistent, so QVR
-fixes them and says so here.
+Several choices of mgcv and brms are not reproducible or not consistent, so
+QVR fixes them and says so here.
 
 1. mgcv takes some coordinates from the orthonormal basis that the
    [LAPACK](https://en.wikipedia.org/wiki/LAPACK) eigensolver returns for a
@@ -411,6 +461,13 @@ fixes them and says so here.
    are refused, because they select a random knot subsample drawn with R's
    generator. With `m = -1`, knots that lie on one circle do not identify
    the null space and are refused.
+6. mgcv replaces an `m[2]` of a `ds` smooth that violates Duchon's
+   conditions and warns. QVR refuses it and names a valid value. Thus
+   `s(x, z, bs = 'ds', m = 1)`, which mgcv fits as `m = c(1, 0.5)`, must be
+   written with both values. Knots of a `tp`, `ts`, or `ds` smooth that
+   mgcv ignores (fewer knots than `k`, more knots than rows, or knots for
+   some covariates of the smooth alone) are refused, and so are the `xt`
+   entries `max.knots` and `seed` of a `ds` smooth.
 
 ## Monotonic effects
 

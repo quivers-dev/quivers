@@ -98,6 +98,13 @@ from quivers.formulas._multivariate import (
 
 # brms brm(bf(y ~ x, sigma ~ z)): a single-response bf as the formula.
 from quivers.formulas._single_response import single_response
+from quivers.formulas._ordinal_coding import CategoryCoding, family_category_coding
+from quivers.formulas._brms_hypothesis import (
+    HypothesisInput,
+    HypothesisTable,
+    fit_hypothesis,
+    is_brms_hypothesis,
+)
 from quivers.formulas._threshold_groups import (
     absent_thresholds,
     threshold_family,
@@ -183,7 +190,7 @@ from quivers.diagnostics.hypothesis import HypothesisSummary
 from quivers.diagnostics.density import PointNullSpec
 
 # brms post-processing methods (summaries, accessors, LOO family) and stored criteria.
-from quivers.diagnostics.elpd import ELPDEstimate
+from quivers.diagnostics.elpd import NO_CRITERIA, ELPDEstimate
 from quivers.formulas._postprocess_methods import SinglePostprocess
 
 # brms evidence, effects and predictive checks.
@@ -323,7 +330,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
     ) = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
     # Criteria stored by add_criterion (brms ``x$criteria``), kept in artifacts.
     criteria: Mapping[str, ELPDEstimate | torch.Tensor] = dx.field(
-        default_factory=dict, opaque=True, extras=OPAQUE_BY_IDENTITY
+        default=NO_CRITERIA, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     # brms prior policy and population-coordinate options.
     default_priors: DefaultPriorPolicy = "quivers"
@@ -770,12 +777,17 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
 
         Returns
         -------
-        tuple[int, ...]
-            Codes ``0..K-1`` for categorical and ordinal responses; empty
-            for other families. Categorical coefficient arrays omit code zero.
+        tuple[int or str, ...]
+            Factor levels, the integer values ``1..K`` of an ordinal response
+            coded as brms codes it, or the codes ``0..K-1``; empty for other
+            families. Predicted categories are positions in this tuple.
+            Categorical coefficient arrays omit the first category.
         """
         if self.formula.response_layout.component_names:
             return self.formula.response_layout.component_names
+        # brms integer categories keep their integer values as labels.
+        if self.formula.response_layout.category_values:
+            return self.formula.response_layout.category_values
         if self.formula.response_layout.category_levels:
             return self.formula.response_layout.category_levels
         if self.family.observe_family not in {
@@ -1102,7 +1114,10 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         Parameters
         ----------
         parameter : str
-            ``mu`` or a distributionally regressed auxiliary parameter.
+            ``mu`` or an auxiliary parameter of the family. An auxiliary
+            parameter without a formula is constant over the rows: its
+            draws are repeated for every row on the parameter's own scale
+            whatever ``transform`` is, as brms does.
         transform : bool
             Return the native inverse-link binding instead of its linear
             predictor. For binomial data this is a probability, not a count.
@@ -1172,9 +1187,14 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         graph_parameter = graph is not None and parameter in (
             graph.leaves.keys() | graph.expressions.keys() | graph.roots.keys()
         )
+        # brms: an auxiliary parameter without a formula is constant over the
+        # rows, and its draws are returned on the parameter's own scale.
+        constant = self._constant_parameter(parameter)
         # mixtures: parameter="mu" returns every component location.
-        if not graph_parameter and not (
-            parameter == "mu" and self.family.mixture is not None
+        if (
+            not graph_parameter
+            and not constant
+            and not (parameter == "mu" and self.family.mixture is not None)
         ):
             self._formula_predictor(parameter)
         ordinal = self.family.ordinal is not None
@@ -1239,6 +1259,15 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
                 One checked row/event value per retained chain and draw.
             """
             for recorded in replay(self, draws, shape, context=context):
+                if constant:
+                    fixed = recorded.sites[parameter].value
+                    if fixed.numel() != 1:
+                        raise ValueError(
+                            f"parameter {parameter!r} has no fitted predictor "
+                            "and is not one scalar per draw"
+                        )
+                    yield fixed.reshape(()).expand(rows)
+                    continue
                 value = recorded.sites[binding].value
                 # brms's mu includes conditional ARMA terms.
                 if parameter == "mu" and autocor_binding(self.family) is not None:
@@ -1574,7 +1603,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
 
     def hypothesis(
         self,
-        expression: str | ContrastExpression,
+        expression: str | ContrastExpression | Sequence[str] | Mapping[str, str],
         *,
         class_: str | None = "b",
         parameter: str = "mu",
@@ -1589,13 +1618,22 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         robust: bool = False,
         point: PointNullSpec | None = None,
         name: str = "contrast",
-    ) -> HypothesisSummary:
-        """Evaluate a checked contrast using original fitted parameter labels.
+        alpha: float = 0.05,
+    ) -> HypothesisSummary | HypothesisTable:
+        """Test a brms hypothesis string, or evaluate a checked contrast.
+
+        A string of the form ``"left (= | < | >) right"``, or several such
+        strings, is a brms hypothesis: every name is prefixed with the
+        class (``"x > 0"`` tests ``b_x``, and with ``class_="sd"`` and
+        ``group="g"`` the name ``Intercept`` is ``sd_g__Intercept``), the
+        sides are R expressions (``^``, ``exp``), and the result is brms's
+        table. ``class_=None`` reads names as `variables` reports them.
 
         Parameters
         ----------
-        expression : str or ContrastExpression
-            QVR value expression over authored labels, with optional aliases.
+        expression : str or ContrastExpression or Sequence[str] or Mapping[str, str]
+            brms hypothesis strings (a mapping names them), or a QVR value
+            expression over authored labels, with optional aliases.
         class_ : str or None
             Parameter role such as b, Intercept, sd, cor, or an auxiliary name.
             The b role includes population intercepts. None selects exact
@@ -1626,18 +1664,48 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             contrast streams. Requires prior=True and a checked Real result.
         name : str
             Output contrast label.
+        alpha : float
+            brms ``alpha`` of a hypothesis string: the interval is
+            ``alpha`` to ``1 - alpha`` for a one-sided hypothesis and
+            ``alpha / 2`` to ``1 - alpha / 2`` for a two-sided one.
 
         Returns
         -------
-        HypothesisSummary
-            Chain/draw/event-aware uncertainty and strict-region evidence.
+        HypothesisSummary or HypothesisTable
+            For a brms hypothesis string, brms's table (``Estimate``,
+            ``Est.Error``, ``CI.Lower``, ``CI.Upper``, ``Evid.Ratio``,
+            ``Post.Prob``, ``Star``); its evidence ratio of a point
+            hypothesis needs prior draws (``sample_prior`` or
+            ``prior=True``). For a contrast expression,
+            chain/draw/event-aware uncertainty and strict-region evidence.
             Posterior odds and prior-corrected region Bayes factors are distinct;
             equality frequencies do not estimate a point-null Bayes factor.
             Optional point_evidence uses the shared density estimator and retains
             its bandwidth and explicit assumption declarations.
+
+        Raises
+        ------
+        ValueError
+            If a hypothesis string is malformed or names a parameter that
+            is not in the model (the message lists the class's parameters),
+            or the contrast selectors match nothing.
         """
         from quivers.formulas._hypothesis import _formula_hypothesis
 
+        if is_brms_hypothesis(expression):
+            return fit_hypothesis(
+                self,
+                cast("HypothesisInput", expression),
+                class_=class_,
+                group=group,
+                scope=scope,
+                alpha=alpha,
+                robust=robust,
+                prior=prior,
+                num_samples=num_samples,
+                num_prior_samples=num_prior_samples,
+                seed=seed,
+            )
         return _formula_hypothesis(
             self,
             expression,
@@ -2032,6 +2100,8 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
                     tuple(str(label) for label in labels)
                 )
             )
+        if self._constant_parameter(parameter):
+            return ()
         self._formula_predictor(parameter)
         return (
             self.coefficient_labels
@@ -2111,6 +2181,33 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             Public parameter labels, stable namespaces, and fitted designs.
         """
         return predictor_items(self.formula, self.distributional, self.predictor_graph)
+
+    def _constant_parameter(self, parameter: str) -> bool:
+        """Report whether an auxiliary parameter has no predictor of its own.
+
+        Parameters
+        ----------
+        parameter : str
+            Parameter name.
+
+        Returns
+        -------
+        bool
+            True for an auxiliary parameter of the family that neither a
+            distributional formula nor the predictor graph predicts, so its
+            value is constant over the rows.
+        """
+        graph = self.predictor_graph
+        return (
+            parameter != "mu"
+            and parameter not in self.distributional
+            and not (
+                graph is not None
+                and parameter
+                in (graph.leaves.keys() | graph.expressions.keys() | graph.roots.keys())
+            )
+            and any(aux.name == parameter for aux in self.family.aux_params)
+        )
 
     def _formula_predictor(self, parameter: str) -> tuple[Formula, str]:
         """Read retained predictor metadata without re-evaluating its formula.
@@ -2603,11 +2700,7 @@ def fit(
             return _joint_fit.fit_entry(
                 formula, preparation_data, refit_recipe.method, refit_recipe
             )
-        if is_mvbind(formula) or uses_missing_syntax(formula):
-            raise ValueError(
-                "fit: mvbind(), mi(), me(), and index() terms compile through "
-                f"the joint program; pass bf({formula!r})"
-            )
+        _refuse_joint_syntax(formula, "fit")
         if method == "svi":
             given = [
                 name
@@ -2855,6 +2948,7 @@ def formula_to_qvr(
         if path is not None:
             Path(path).write_text(source)
         return source
+    _refuse_joint_syntax(formula, "formula_to_qvr")
     lens, parsed = _formula_lens(
         formula,
         data=data,
@@ -3028,6 +3122,7 @@ def get_prior(
                 caller="get_prior",
             )
         return _joint_fit.joint_prior(module, targets)
+    _refuse_joint_syntax(formula, "get_prior")
     lens, parsed = _formula_lens(
         formula,
         data=data,
@@ -3677,6 +3772,32 @@ def _assemble_fit(
     )
 
 
+def _refuse_joint_syntax(formula: str | ResponseModel, caller: str) -> None:
+    """Refuse joint-program terms written in a plain formula string.
+
+    Parameters
+    ----------
+    formula : str or ResponseModel
+        Authored formula. Only a string is inspected.
+    caller : str
+        Public entry point named in the diagnostic.
+
+    Raises
+    ------
+    ValueError
+        If a formula string uses ``mvbind()``, ``mi()``, ``me()``, or
+        ``index()``, which compile through the joint program reached by
+        `bf`.
+    """
+    if isinstance(formula, str) and (
+        is_mvbind(formula) or uses_missing_syntax(formula)
+    ):
+        raise ValueError(
+            f"{caller}: mvbind(), mi(), me(), and index() terms compile through "
+            f"the joint program; pass bf({formula!r})"
+        )
+
+
 def _formula_lens(
     formula: str | ResponseModel,
     *,
@@ -4016,6 +4137,8 @@ def _prepare_formula(
             else (),
             # brms counts the thresholds of a hurdle family above the hurdle.
             extra_category="hurdle_cumulative" in threshold_kinds(family_obj),
+            # brms integer categories: ordinal codes 1, ..., max(y).
+            category_coding=family_category_coding(family_obj),
         )
     from quivers.formulas._response_roles import included_data, retained_trials
 
@@ -4138,6 +4261,7 @@ def _threshold_formula_and_design(
     groups: tuple[str, ...] = (),
     cmc: bool = True,
     extra_category: bool = False,
+    category_coding: CategoryCoding | None = None,
 ) -> tuple[Formula, DesignMatrices]:
     """Evaluate a full threshold profile with one shared group location.
 
@@ -4160,6 +4284,8 @@ def _threshold_formula_and_design(
     extra_category : bool
         Whether response code zero is the hurdle category, outside the
         thresholds that ``thres(n)`` counts.
+    category_coding : {"ordinal", "hurdle", "nominal"} or None
+        How the family reads an integer response as categories.
 
     Returns
     -------
@@ -4175,6 +4301,7 @@ def _threshold_formula_and_design(
         groups=groups,
         cmc=cmc,
         extra_category=extra_category,
+        category_coding=category_coding,
     )
     if thresholds_by is None or any(
         term.group == thresholds_by and term.slope == "Intercept"
@@ -4190,6 +4317,7 @@ def _threshold_formula_and_design(
         groups=groups,
         cmc=cmc,
         extra_category=extra_category,
+        category_coding=category_coding,
     )
     return parsed.with_(formula=formula), design
 

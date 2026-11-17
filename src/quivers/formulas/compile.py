@@ -5865,7 +5865,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 if (
                     prefix in component_valued
                     or membership.group == self._thresholds_by
-                    or membership.group in self._group_covariances
                     or any(
                         term.group == membership.group
                         and term.column is not None
@@ -5875,8 +5874,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 ):
                     raise ValueError(
                         f"multi-membership factor {membership.group!r} supports scalar "
-                        "group coefficients only: not category-specific or categorical "
-                        "coefficients, grouped thresholds, or a known level covariance"
+                        "group coefficients only: not category-specific coefficients, "
+                        "coefficients over the response categories, or grouped "
+                        "thresholds"
                     )
 
         program_steps: list[ProgramStep] = []

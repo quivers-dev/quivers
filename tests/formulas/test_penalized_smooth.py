@@ -142,7 +142,7 @@ def test_auxiliary_smooth_uses_same_prior_and_prediction_paths_and_typed_overrid
         ("y~(s(x,bs='ps',k=6)|z)", "structured smooth"),
         ("y~te(x,z)", "use 't2'"),
         ("y~ti(x,z)", "use 't2'"),
-        ("y~s(x,bs='ds')", "unsupported smooth basis"),
+        ("y~s(x,bs='dz')", "unsupported smooth basis"),
         ("y~s(x,bs='sos')", "exactly two covariates"),
         ("y~s(x,k=20)", "fewer unique covariate"),
         ("y~s(x,bs='cr',m=2)", "fixed penalty order"),

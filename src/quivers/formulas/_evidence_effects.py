@@ -185,6 +185,7 @@ class EvidenceEffectsMethods(EvidenceMethods):
         type: str = "intervals",
         *,
         variable: str | Sequence[str] | None = None,
+        regex: bool = False,
         backend: str,
         **kwargs: str | int | float | bool,
     ) -> PlotResult:
@@ -196,6 +197,9 @@ class EvidenceEffectsMethods(EvidenceMethods):
             bayesplot ``mcmc_*`` type without prefix.
         variable : str or Sequence[str] or None
             brms variable names or regular expressions.
+        regex : bool
+            brms ``regex``: search each expression anywhere in a name, so
+            ``variable="^b_", regex=True`` selects the population effects.
         backend : str
             ArviZ backend.
         **kwargs : str or int or float or bool
@@ -215,6 +219,7 @@ class EvidenceEffectsMethods(EvidenceMethods):
             cast("BayesianFit | MultivariateFit", self),
             type,
             variable=variable,
+            regex=regex,
             backend=backend,
             **kwargs,
         )
@@ -223,6 +228,7 @@ class EvidenceEffectsMethods(EvidenceMethods):
         self,
         *,
         variable: str | Sequence[str] | None = None,
+        regex: bool = False,
         backend: str,
         **kwargs: str | int | float | bool,
     ) -> PlotResult:
@@ -232,6 +238,9 @@ class EvidenceEffectsMethods(EvidenceMethods):
         ----------
         variable : str or Sequence[str] or None
             brms variable names or regular expressions.
+        regex : bool
+            brms ``regex``: search each expression anywhere in a name, so
+            ``variable="^b_", regex=True`` selects the population effects.
         backend : str
             ArviZ backend.
         **kwargs : str or int or float or bool
@@ -242,12 +251,15 @@ class EvidenceEffectsMethods(EvidenceMethods):
         arviz_plots.PlotCollection
             ArviZ ``plot_trace_dist``.
         """
-        return self.mcmc_plot("combo", variable=variable, backend=backend, **kwargs)
+        return self.mcmc_plot(
+            "combo", variable=variable, regex=regex, backend=backend, **kwargs
+        )
 
     def pairs(
         self,
         *,
         variable: str | Sequence[str] | None = None,
+        regex: bool = False,
         backend: str,
         **kwargs: str | int | float | bool,
     ) -> PlotResult:
@@ -257,6 +269,9 @@ class EvidenceEffectsMethods(EvidenceMethods):
         ----------
         variable : str or Sequence[str] or None
             brms variable names or regular expressions.
+        regex : bool
+            brms ``regex``: search each expression anywhere in a name, so
+            ``variable="^b_", regex=True`` selects the population effects.
         backend : str
             ArviZ backend.
         **kwargs : str or int or float or bool
@@ -267,7 +282,9 @@ class EvidenceEffectsMethods(EvidenceMethods):
         arviz_plots.PlotMatrix
             ArviZ ``plot_pair``.
         """
-        return self.mcmc_plot("pairs", variable=variable, backend=backend, **kwargs)
+        return self.mcmc_plot(
+            "pairs", variable=variable, regex=regex, backend=backend, **kwargs
+        )
 
 
 __all__ = ["EvidenceEffectsMethods"]

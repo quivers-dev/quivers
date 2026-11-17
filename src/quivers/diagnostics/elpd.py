@@ -13,13 +13,19 @@ precomputed weights, and the leave-one-out R-squared of brms.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import hashlib
 import math
+from types import MappingProxyType
 from typing import Literal
 
 import arviz as az
-from arviz_stats.utils import ELPDData
+from arviz_stats.utils import (
+    ELPDData,
+    ELPDDataLOO,
+    ELPDDataLOOKFold,
+    ELPDDataLOOSubsample,
+)
 import didactic.api as dx
 import numpy as np
 import torch
@@ -39,6 +45,42 @@ _LABELS: dict[str, tuple[str, str, str]] = {
     "waic": ("elpd_waic", "p_waic", "waic"),
     "kfold": ("elpd_kfold", "p_kfold", "kfoldic"),
 }
+
+
+type _ArvizField = float | int | str | bool | np.ndarray | xr.DataArray | None
+"""Value of one field of an ArviZ ``ELPDData`` container."""
+
+#: ArviZ's container class of each criterion. WAIC has no class of its own
+#: and uses the base container.
+_ARVIZ_CLASS: dict[str, Callable[..., ELPDData]] = {
+    "loo": ELPDDataLOO,
+    "loo_subsample": ELPDDataLOOSubsample,
+    "kfold": ELPDDataLOOKFold,
+    "waic": ELPDData,
+}
+
+
+def _arviz_container(criterion: Criterion, fields: dict[str, _ArvizField]) -> ELPDData:
+    """Build ArviZ's container of one criterion from its field values.
+
+    ArviZ identifies the estimator by the container's class, and its
+    ``compare`` reads the subsample of an ``ELPDDataLOOSubsample`` only. The
+    classes annotate their optional fields without ``None``, so each is held
+    by its callable type.
+
+    Parameters
+    ----------
+    criterion : {"loo", "waic", "kfold", "loo_subsample"}
+        Estimator label.
+    fields : dict[str, float | int | str | bool | numpy.ndarray | xarray.DataArray | None]
+        Field values by ArviZ field name.
+
+    Returns
+    -------
+    arviz_stats.utils.ELPDData
+        The container ``arviz.compare`` reads.
+    """
+    return _ARVIZ_CLASS[criterion](**fields)
 
 
 def response_hash(values: Sequence[torch.Tensor]) -> str:
@@ -231,40 +273,42 @@ class ELPDEstimate(ValueModel):
             if self.pareto_k is not None
             else None
         )
-        kind = "loo" if self.criterion in {"loo", "loo_subsample"} else self.criterion
-        if self.criterion == "kfold":
-            kind = "loo_kfold"
-        result = ELPDData(
-            kind=kind,
-            elpd=self.elpd,
-            se=self.se_elpd,
-            p=self.p,
-            n_samples=self.num_samples,
-            n_data_points=self.num_observations,
-            scale="log",
-            warning=bool(
-                self.pareto_k is not None
-                and self.good_k is not None
-                and bool((self.pareto_k > self.good_k).any())
-            ),
-            good_k=self.good_k if self.good_k is not None else 0.7,
-            elpd_i=pointwise,
+        warning = bool(
+            self.pareto_k is not None
+            and self.good_k is not None
+            and bool((self.pareto_k > self.good_k).any())
         )
-        # ELPDData declares its optional diagnostics without None in their types.
-        setattr(result, "pareto_k", pareto)
+        fields: dict[str, _ArvizField] = {
+            "elpd": self.elpd,
+            "se": self.se_elpd,
+            "p": self.p,
+            "n_samples": self.num_samples,
+            "n_data_points": self.num_observations,
+            "scale": "log",
+            "warning": warning,
+            "good_k": self.good_k if self.good_k is not None else 0.7,
+            "elpd_i": pointwise,
+            "pareto_k": pareto,
+        }
         if self.criterion == "loo_subsample":
             assert self.approximation is not None
-            setattr(result, "subsampling_se", self.subsampling_se)
-            setattr(result, "subsample_size", len(self.subsample))
-            setattr(result, "loo_subsample_observations", np.asarray(self.subsample))
-            setattr(
-                result,
-                "elpd_loo_approx",
-                xr.DataArray(self.approximation.cpu().numpy(), dims=("__obs__",)),
+            fields["subsampling_se"] = self.subsampling_se
+            fields["subsample_size"] = len(self.subsample)
+            fields["loo_subsample_observations"] = np.asarray(self.subsample)
+            fields["elpd_loo_approx"] = xr.DataArray(
+                self.approximation.cpu().numpy(), dims=("__obs__",)
             )
         if self.criterion == "kfold":
-            setattr(result, "n_folds", len(set(self.folds)) if self.folds else None)
-        return result
+            fields["n_folds"] = len(set(self.folds)) if self.folds else None
+        return _arviz_container(self.criterion, fields)
+
+
+NO_CRITERIA: Mapping[str, ELPDEstimate | torch.Tensor] = MappingProxyType({})
+"""The stored criteria of a fit without any.
+
+A fit compares its stored criteria by identity, so every fit without criteria
+holds this one read-only mapping and such fits agree on the field.
+"""
 
 
 def _standard_error(values: torch.Tensor) -> float:
@@ -998,8 +1042,9 @@ def compare_estimates(estimates: Mapping[str, ELPDEstimate]) -> SummaryTable:
     for name in order:
         estimate = estimates[name]
         if table is not None:
-            # ArviZ's difference estimator for subsampled terms.
-            difference = -float(table.loc[name, "elpd_diff"])
+            # ArviZ's difference estimator for subsampled terms, which it
+            # reports as this model's ELPD minus the best model's.
+            difference = float(table.loc[name, "elpd_diff"])
             se_difference = float(table.loc[name, "dse"])
         else:
             # loo_compare: paired pointwise differences, sqrt(n var) with n - 1.

@@ -7,7 +7,12 @@ from torch import Tensor
 from torch.distributions import Distribution, Gamma, LogNormal, constraints
 from torch.distributions.utils import broadcast_all
 
-from quivers.continuous._recorded_event_tails import log_hurdle_tails
+from quivers.continuous._interval import log_interval_mass
+from quivers.continuous._recorded_event_tails import (
+    _log_add,
+    _log_mass,
+    log_hurdle_tails,
+)
 
 
 class _PositiveHurdle(Distribution):
@@ -138,6 +143,70 @@ class _PositiveHurdle(Distribution):
         """
         point = torch.where(torch.isnan(value), 0.0, value)
         return log_hurdle_tails(self.zero_prob, self._base(), point, left=False)
+
+    def log_interval_mass(
+        self,
+        low: Tensor | float | None,
+        high: Tensor | float | None,
+        *,
+        lower_closed: bool | Tensor = True,
+        upper_closed: bool | Tensor = True,
+    ) -> Tensor:
+        """Log mass of an interval, adding the atom and the positive part apart.
+
+        The mass is ``p0 [0 in I] + (1 - p0) G(I)`` for the positive
+        component ``G``. Scoring ``G(I)`` on its own keeps an interval far in
+        a tail of the component finite, where the difference of two composed
+        tails would cancel against the atom. Cost is one component interval
+        mass per query.
+
+        Parameters
+        ----------
+        low : Tensor | float | None
+            Lower event bound; None leaves that side unbounded.
+        high : Tensor | float | None
+            Upper event bound; None leaves that side unbounded.
+        lower_closed : bool | Tensor
+            Whether the lower endpoint belongs to the event.
+        upper_closed : bool | Tensor
+            Whether the upper endpoint belongs to the event.
+
+        Returns
+        -------
+        Tensor
+            Float64 log masses, negative infinity for an empty event.
+
+        Raises
+        ------
+        ValueError
+            If an endpoint is NaN.
+        """
+        device = self.zero_prob.device
+        lower = torch.as_tensor(
+            -torch.inf if low is None else low, device=device, dtype=torch.float64
+        )
+        upper = torch.as_tensor(
+            torch.inf if high is None else high, device=device, dtype=torch.float64
+        )
+        if bool(lower.isnan().any()) or bool(upper.isnan().any()):
+            raise ValueError("interval endpoints must not be NaN")
+        lower_flag = torch.as_tensor(lower_closed, device=device)
+        upper_flag = torch.as_tensor(upper_closed, device=device)
+        holds_atom = ((lower < 0) | ((lower == 0) & lower_flag)) & (
+            (upper > 0) | ((upper == 0) & upper_flag)
+        )
+        start = lower.clamp_min(0.0)
+        occupied = upper > start
+        component = log_interval_mass(
+            self._base(),
+            torch.where(occupied, start, 0.0),
+            torch.where(occupied, upper, 1.0),
+        ).double()
+        probability = self.zero_prob.double()
+        return _log_add(
+            torch.where(holds_atom, _log_mass(probability), -torch.inf),
+            torch.where(occupied, _log_mass(1 - probability) + component, -torch.inf),
+        )
 
     def log_cdf_left(self, value: Tensor) -> Tensor:
         """Evaluate ``log P(Y < value)``, excluding an atom at the query.

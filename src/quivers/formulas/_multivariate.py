@@ -115,6 +115,16 @@ class ResponseModel(ValueModel):
         brms ``bf(cmc = , sparse = )``.
     unused : tuple[str, ...]
         brms ``bf(unused = )``: further columns joining row retention.
+    family_given : bool
+        Whether the family was stated. A response built by `bf` without a
+        family takes the ``family`` of the entry point it is passed to, as
+        ``brm(bf(...), family = ...)`` does.
+    parameter_formulas, nonlinear_formulas : tuple[str, ...]
+        Authored additive (`bf`, `lf`) and nonlinear (`nlf`) parameter
+        formulas, from which ``distributional`` and ``nonlinear`` are
+        classified under the family.
+    nl : bool
+        Whether the main formula is a nonlinear expression.
 
     Notes
     -----
@@ -151,6 +161,12 @@ class ResponseModel(ValueModel):
     cmc: bool = True
     sparse: bool = False
     unused: tuple[str, ...] = ()
+    # Authored parameter formulas, kept so a family given after `bf` (by
+    # `fit`, or added with ``+``) classifies them again.
+    family_given: bool = True
+    parameter_formulas: tuple[str, ...] = ()
+    nonlinear_formulas: tuple[str, ...] = ()
+    nl: bool = False
 
     @dx.model_validator()
     def _validate(self) -> None:
@@ -214,21 +230,29 @@ class ResponseModel(ValueModel):
         return response_label(self.formula)
 
     def __add__(
-        self, other: ResponseModel | MultivariateFormula | RescorSetting | MecorSetting
+        self,
+        other: ResponseModel
+        | MultivariateFormula
+        | RescorSetting
+        | MecorSetting
+        | Family
+        | ParameterFormulas,
     ) -> MultivariateFormula | ResponseModel:
-        """Combine this response with another response or a setting.
+        """Combine this response with another response, a family, or a setting.
 
         Parameters
         ----------
-        other : ResponseModel or MultivariateFormula or RescorSetting or MecorSetting
-            Further responses, the residual-correlation setting, or the
-            ``me()`` correlation setting of this response.
+        other : ResponseModel or MultivariateFormula or RescorSetting or MecorSetting or Family or ParameterFormulas
+            Further responses, the residual-correlation setting, the
+            ``me()`` correlation setting of this response, its family
+            (brms ``bf(...) + skew_normal()``), or the parameter formulas of
+            `lf`, `nlf` and `set_nl`.
 
         Returns
         -------
         MultivariateFormula or ResponseModel
             The joint specification, responses in authored order, or this
-            response with its ``set_mecor`` setting.
+            response with the setting, family, or formulas applied.
 
         Raises
         ------
@@ -243,7 +267,322 @@ class ResponseModel(ValueModel):
             raise ValueError(
                 "set_rescor() applies to a multivariate formula of at least two responses"
             )
+        if isinstance(other, Family):
+            return self.with_family(other)
+        if isinstance(other, ParameterFormulas):
+            return self.with_parameters(other)
         return mvbf(self, other)
+
+    def with_family(self, family: str | Family) -> ResponseModel:
+        """Return this response under a stated family.
+
+        Parameters
+        ----------
+        family : str or Family
+            Registered family name or configured family.
+
+        Returns
+        -------
+        ResponseModel
+            The response with its authored parameter formulas classified as
+            distributional or nonlinear under ``family``.
+
+        Raises
+        ------
+        ValueError
+            If an authored parameter formula names neither an auxiliary
+            parameter of ``family`` nor, with ``nl``, a nonlinear parameter.
+        """
+        if not (self.parameter_formulas or self.nonlinear_formulas or self.nl):
+            return self.with_(family=family, family_given=True)
+        distributional, nonlinear = classify_parameters(
+            family,
+            self.parameter_formulas,
+            self.nonlinear_formulas,
+            nl=self.nl,
+            mixture_components=self.mixture_components,
+            strict=True,
+        )
+        return self.with_(
+            family=family,
+            family_given=True,
+            distributional=distributional or None,
+            nonlinear=nonlinear if self.nl else None,
+        )
+
+    def with_parameters(self, added: ParameterFormulas) -> ResponseModel:
+        """Return this response with further parameter formulas.
+
+        Parameters
+        ----------
+        added : ParameterFormulas
+            The value of `lf`, `nlf`, or `set_nl`.
+
+        Returns
+        -------
+        ResponseModel
+            The response with the formulas appended and classified under its
+            family; a family not yet stated classifies them when it is.
+
+        Raises
+        ------
+        ValueError
+            If the response was built with explicit ``distributional`` or
+            ``nonlinear`` mappings and not by `bf`, or a formula names no
+            parameter of the stated family.
+        """
+        authored = bool(self.parameter_formulas or self.nonlinear_formulas or self.nl)
+        if not authored and (self.distributional or self.nonlinear is not None):
+            raise ValueError(
+                "lf(), nlf() and set_nl() extend a response built by bf(); this "
+                "response gives its distributional and nonlinear mappings directly"
+            )
+        nl = self.nl if added.nl is None else added.nl
+        formulas = (*self.parameter_formulas, *added.formulas)
+        nonlinear_formulas = (*self.nonlinear_formulas, *added.nonlinear)
+        distributional, nonlinear = classify_parameters(
+            self.family,
+            formulas,
+            nonlinear_formulas,
+            nl=nl,
+            mixture_components=self.mixture_components,
+            strict=self.family_given,
+            pending=True,
+        )
+        return self.with_(
+            parameter_formulas=formulas,
+            nonlinear_formulas=nonlinear_formulas,
+            nl=nl,
+            distributional=distributional or None,
+            nonlinear=nonlinear if nl else None,
+        )
+
+
+class ParameterFormulas(ValueModel):
+    """Parameter formulas added to a response with ``+``.
+
+    Parameters
+    ----------
+    formulas : tuple[str, ...]
+        Additive formulas of distributional or nonlinear parameters, the
+        arguments of brms ``lf()``.
+    nonlinear : tuple[str, ...]
+        Formulas whose right-hand side is a nonlinear expression, the
+        arguments of brms ``nlf()``.
+    nl : bool or None
+        brms ``set_nl()``: whether the main formula is nonlinear. None
+        leaves the response's setting.
+    """
+
+    formulas: tuple[str, ...] = ()
+    nonlinear: tuple[str, ...] = ()
+    nl: bool | None = None
+
+
+def lf(*formulas: str) -> ParameterFormulas:
+    """Give additive parameter formulas to add to a response, as brms ``lf``.
+
+    Parameters
+    ----------
+    *formulas : str
+        Formulas such as ``"sigma ~ 0 + sex"`` or ``"b1 + b2 ~ 1"``.
+
+    Returns
+    -------
+    ParameterFormulas
+        A value added to a `bf` response with ``+``.
+
+    Raises
+    ------
+    ValueError
+        If a formula lacks a named left side.
+    """
+    for text in formulas:
+        parameter_names(text)
+    return ParameterFormulas(formulas=tuple(formulas))
+
+
+def nlf(*formulas: str) -> ParameterFormulas:
+    """Give nonlinear parameter formulas to add to a response, as brms ``nlf``.
+
+    Parameters
+    ----------
+    *formulas : str
+        Formulas such as ``"sigma ~ a * exp(b * x)"``. The right-hand side is
+        an R expression over Stan's functions, data columns, and nonlinear
+        parameters. For a distributional parameter it describes the link
+        scale.
+
+    Returns
+    -------
+    ParameterFormulas
+        A value added to a `bf` response with ``+``.
+
+    Raises
+    ------
+    ValueError
+        If a formula lacks a named left side.
+    """
+    for text in formulas:
+        parameter_names(text)
+    return ParameterFormulas(nonlinear=tuple(formulas))
+
+
+def set_nl(nl: bool = True) -> ParameterFormulas:
+    """Mark the main formula of a response as nonlinear, as brms ``set_nl``.
+
+    Parameters
+    ----------
+    nl : bool
+        Read the main formula's right-hand side as a nonlinear expression.
+
+    Returns
+    -------
+    ParameterFormulas
+        A value added to a `bf` response with ``+``.
+
+    Raises
+    ------
+    TypeError
+        If ``nl`` is not Boolean.
+    """
+    if type(nl) is not bool:
+        raise TypeError("set_nl requires a Boolean")
+    return ParameterFormulas(nl=nl)
+
+
+def parameter_names(text: str) -> tuple[str, ...]:
+    """Read the parameter names on the left of a parameter formula.
+
+    Parameters
+    ----------
+    text : str
+        Formula such as ``"sigma ~ x"`` or brms's ``"b1 + b2 ~ 1"``, which
+        gives several parameters one right-hand side.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Parameter names in authored order.
+
+    Raises
+    ------
+    ValueError
+        If the formula has no ``~``, an empty name, or a repeated name.
+    """
+    if "~" not in text or not text.split("~", 1)[0].strip():
+        raise ValueError(f"parameter formula {text!r} requires a named left side")
+    names = tuple(name.strip() for name in text.split("~", 1)[0].split("+"))
+    if not all(names) or len(set(names)) != len(names):
+        raise ValueError(
+            f"parameter formula {text!r} requires distinct parameter names "
+            "joined by '+' on its left side"
+        )
+    return names
+
+
+def _family_parameters() -> frozenset[str]:
+    """List the auxiliary parameter names of the registered families.
+
+    Returns
+    -------
+    frozenset[str]
+        Every name some registered family regresses or estimates.
+    """
+    return frozenset(
+        parameter.name
+        for family in families.values()
+        for parameter in family.aux_params
+    )
+
+
+def classify_parameters(
+    family: str | Family,
+    formulas: tuple[str, ...],
+    nonlinear_formulas: tuple[str, ...],
+    *,
+    nl: bool,
+    mixture_components: int,
+    strict: bool,
+    pending: bool = False,
+) -> tuple[dict[str, str | NonlinearExpression], dict[str, str | NonlinearExpression]]:
+    """Sort parameter formulas into distributional and nonlinear predictors.
+
+    Parameters
+    ----------
+    family : str or Family
+        Response family whose auxiliary parameters are distributional.
+    formulas : tuple[str, ...]
+        Additive parameter formulas.
+    nonlinear_formulas : tuple[str, ...]
+        Parameter formulas with a nonlinear right-hand side.
+    nl : bool
+        Whether names outside the family are nonlinear parameters.
+    mixture_components : int
+        Component count of a finite mixture response.
+    strict : bool
+        Raise for a name that is neither. False keeps the formula of a
+        parameter of some other registered family as distributional, for a
+        family stated later.
+    pending : bool
+        Keep the formula of any name outside the family as distributional,
+        for a response still being built with ``+``: a later `set_nl` or
+        family classifies it, and the compiler refuses it otherwise.
+
+    Returns
+    -------
+    tuple[dict, dict]
+        Distributional and nonlinear predictors keyed by parameter name.
+
+    Raises
+    ------
+    ValueError
+        If a formula lacks a named left side, a name is given twice, or,
+        when strict, a name is not a parameter of the family and ``nl`` is
+        False.
+    """
+    resolved = families[family] if isinstance(family, str) else family
+    resolved = expand_mixture(resolved, mixture_components)
+    auxiliary = {parameter.name for parameter in resolved.aux_params}
+    distributional: dict[str, str | NonlinearExpression] = {}
+    nonlinear: dict[str, str | NonlinearExpression] = {}
+    for text, expression in (
+        *((text, False) for text in formulas),
+        *((text, True) for text in nonlinear_formulas),
+    ):
+        right = text.split("~", 1)[1] if "~" in text else ""
+        for name in parameter_names(text):
+            if name in distributional or name in nonlinear:
+                raise ValueError(f"parameter {name!r} has two formulas")
+            # brms mu<c> category locations and mixture component parameters.
+            known = (
+                name in auxiliary
+                or name == "mu"
+                and expression
+                or is_category_parameter(resolved, name)
+                or is_scale_parameter(resolved, name)
+            )
+            # A formula kept for a later family must name a parameter of
+            # some registered family.
+            deferred = pending or (not strict and name in _family_parameters())
+            if known or (not nl and deferred):
+                distributional[name] = (
+                    NonlinearExpression(expression=right.strip(), syntax="r")
+                    if expression
+                    else f"{name} ~{right}"
+                )
+            elif nl:
+                nonlinear[name] = (
+                    NonlinearExpression(expression=right.strip(), syntax="r")
+                    if expression
+                    else "~" + right
+                )
+            else:
+                raise ValueError(
+                    f"parameter {name!r} is not an auxiliary parameter of family "
+                    f"{resolved.name!r}; nonlinear parameters require nl=True"
+                )
+    return distributional, nonlinear
 
 
 class RescorSetting(ValueModel):
@@ -595,7 +934,7 @@ def mvbf(
 def bf(
     formula: str,
     *parameters: str,
-    family: str | Family = "gaussian",
+    family: str | Family | None = None,
     nl: bool = False,
     fixed_parameters: Mapping[str, float] | None = None,
     weights: str | None = None,
@@ -620,11 +959,17 @@ def bf(
         Formulas for distributional parameters (``"sigma ~ x"``) or, with
         ``nl=True``, for nonlinear parameters (``"a ~ 1 + (1 | g)"``).
         A left-hand side naming an auxiliary parameter of the family is
-        distributional; any other name is nonlinear.
-    family : str or Family
-        Response family of every response built by this call.
+        distributional; any other name is nonlinear. Several parameters
+        joined by ``+`` share one right-hand side (``"b1 + b2 ~ 1"``).
+    family : str or Family or None
+        Response family of every response built by this call. None leaves
+        the family to the entry point (``fit(bf(...), family=...)``), which
+        then classifies the parameter formulas, and is Gaussian when the
+        entry point states none.
     nl : bool
-        Read the main formula's right-hand side as a nonlinear expression.
+        Read the main formula's right-hand side as a nonlinear expression:
+        an R expression over Stan's functions, data columns, and the
+        nonlinear parameters.
     fixed_parameters : Mapping[str, float] or None
         Auxiliary parameters fixed on their natural scale.
     weights, decision, binomial_trials, thresholds_by : str or int or None
@@ -658,29 +1003,15 @@ def bf(
         parameter without ``nl=True``, or ``mvbind`` names fewer than two
         responses.
     """
-    resolved = families[family] if isinstance(family, str) else family
-    resolved = expand_mixture(resolved, mixture_components)
-    auxiliary = {parameter.name for parameter in resolved.aux_params}
-    distributional: dict[str, str | NonlinearExpression] = {}
-    nonlinear: dict[str, str | NonlinearExpression] = {}
-    for text in parameters:
-        if "~" not in text or not text.split("~", 1)[0].strip():
-            raise ValueError(f"parameter formula {text!r} requires a named left side")
-        name = text.split("~", 1)[0].strip()
-        # brms mu<c> category locations and mixture component parameters.
-        if (
-            name in auxiliary
-            or is_category_parameter(resolved, name)
-            or is_scale_parameter(resolved, name)
-        ):
-            distributional[name] = text
-        elif nl:
-            nonlinear[name] = "~" + text.split("~", 1)[1]
-        else:
-            raise ValueError(
-                f"parameter {name!r} is not an auxiliary parameter of family "
-                f"{resolved.name!r}; nonlinear parameters require nl=True"
-            )
+    stated = "gaussian" if family is None else family
+    distributional, nonlinear = classify_parameters(
+        stated,
+        tuple(parameters),
+        (),
+        nl=nl,
+        mixture_components=mixture_components,
+        strict=family is not None,
+    )
 
     def response(text: str) -> ResponseModel:
         """Build one response with this call's shared options.
@@ -697,7 +1028,10 @@ def bf(
         """
         return ResponseModel(
             formula=text,
-            family=family,
+            family=stated,
+            family_given=family is not None,
+            parameter_formulas=tuple(parameters),
+            nl=nl,
             distributional=distributional or None,
             nonlinear=nonlinear if nl else None,
             fixed_parameters=dict(fixed_parameters) if fixed_parameters else None,

@@ -62,6 +62,7 @@ from quivers.inference.mcmc.kernel import (
     PotentialFn,
     StateValue,
     _check_observed_support,
+    _NonFiniteInitialDensity,
     _with_generator,
 )
 from quivers.inference.registry import LatentRegistry, _require_one_run
@@ -69,6 +70,12 @@ from quivers.inference.trace import trace
 
 # A structure-only recording lets laws without draws answer with a placeholder.
 from quivers.inference._latent_recording import latent_structure_recording
+
+
+INITIAL_ATTEMPTS = 100
+"""How many initial positions a chain may draw before `MCMC` gives up. A
+drawn position whose log-density is not finite is discarded and another is
+drawn from the chain's stream, as Stan does for random initial values."""
 
 
 InitStrategy = Literal["jitter", "prior", "zero", "guide", "uniform"]
@@ -865,7 +872,9 @@ class MCMC:
 
         Notes
         -----
-        Cost is one setup of the potential and one initial point per chain.
+        Cost is one setup of the potential and, per chain, one forward pass
+        of the program for each initial point drawn until one scores a finite
+        log-density.
         """
         if self.seed is None or self.generator is not None:
             raise ValueError(
@@ -877,9 +886,9 @@ class MCMC:
         return tuple(
             self._to_constrained(
                 setup.registry,
-                self._initial_position(
+                self._accepted_start(
                     setup, guide, self._chain_generator(run_seed, chain), chain
-                ),
+                )[0],
             )
             for chain in range(self.num_chains)
         )
@@ -1165,6 +1174,92 @@ class MCMC:
             run_seed=run_seed,
         )
 
+    def _accepted_start(
+        self,
+        setup: _RunSetup,
+        guide: Guide | None,
+        generator: torch.Generator,
+        chain: int,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Draw a chain's start until its log-density is finite.
+
+        Each attempt draws an initial position and the Gibbs-updated sites'
+        initial values from the chain's stream and scores them with
+        `PotentialFn.check_initial`. A position that scores without error
+        but with a non-finite log-density is discarded and the next attempt
+        draws afresh, up to `INITIAL_ATTEMPTS` attempts. The first attempt
+        consumes the stream exactly as a single draw does. An attempt that
+        repeats the discarded position, as under ``init_strategy="zero"``
+        or when named initial values fix every coordinate, ends the search.
+        Cost is one forward pass of the program per attempt.
+
+        Parameters
+        ----------
+        setup : _RunSetup
+            The run's structures.
+        guide : Guide | None
+            The guide for ``init_strategy="guide"``.
+        generator : torch.Generator
+            The chain's generator.
+        chain : int
+            The chain's index.
+
+        Returns
+        -------
+        tuple[torch.Tensor, dict[str, torch.Tensor]]
+            The accepted flat unconstrained position and the initial values
+            of the Gibbs-updated sites drawn with it.
+
+        Raises
+        ------
+        ValueError
+            If a drawn position is not finite, or no attempt scores a finite
+            log-density; the error is that of the last attempt.
+        Exception
+            Any error the program raises at a drawn position.
+        """
+        discarded: torch.Tensor | None = None
+        for attempt in range(1, INITIAL_ATTEMPTS + 1):
+            init_pos = self._initial_position(setup, guide, generator, chain)
+            if not torch.isfinite(init_pos).all():
+                raise ValueError(
+                    f"MCMC.run: chain {chain} initial_position must contain "
+                    "only finite values"
+                )
+            gibbs_values = self._initial_gibbs_values(
+                setup.model, setup.x, setup.observations, setup.gibbs_sites, generator
+            )
+            chain_potential = (
+                setup.potential.condition(gibbs_values)
+                if gibbs_values
+                else setup.potential
+            )
+            try:
+                chain_potential.check_initial(init_pos)
+            except _NonFiniteInitialDensity as error:
+                repeated = discarded is not None and torch.equal(discarded, init_pos)
+                if (
+                    attempt == INITIAL_ATTEMPTS
+                    or repeated
+                    or self.init_strategy == "zero"
+                ):
+                    error.add_note(
+                        f"MCMC.run: raised while scoring chain {chain}'s initial "
+                        f"position, before any sampling (attempt {attempt} of at "
+                        f"most {INITIAL_ATTEMPTS})"
+                    )
+                    raise
+                discarded = init_pos
+                continue
+            except Exception as error:
+                error.add_note(
+                    f"MCMC.run: raised while scoring chain {chain}'s initial "
+                    "position, before any sampling"
+                )
+                raise
+            return init_pos, gibbs_values
+        raise AssertionError("unreachable: the last attempt returns or raises")
+
     def _start_chain(
         self,
         setup: _RunSetup,
@@ -1196,26 +1291,7 @@ class MCMC:
             If the initial position is not finite or scores a
             non-finite log-density.
         """
-        init_pos = self._initial_position(setup, guide, generator, chain)
-        if not torch.isfinite(init_pos).all():
-            raise ValueError(
-                f"MCMC.run: chain {chain} initial_position must contain "
-                "only finite values"
-            )
-        gibbs_values = self._initial_gibbs_values(
-            setup.model, setup.x, setup.observations, setup.gibbs_sites, generator
-        )
-        chain_potential = (
-            setup.potential.condition(gibbs_values) if gibbs_values else setup.potential
-        )
-        try:
-            chain_potential.check_initial(init_pos)
-        except Exception as error:
-            error.add_note(
-                f"MCMC.run: raised while scoring chain {chain}'s initial "
-                "position, before any sampling"
-            )
-            raise
+        init_pos, gibbs_values = self._accepted_start(setup, guide, generator, chain)
         self.kernel._set_generator(generator)
         state = self.kernel.init(
             setup.registry, setup.model, setup.x, setup.observations, init_pos

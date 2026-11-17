@@ -55,6 +55,9 @@ from quivers.formulas.family import (
     families,
 )
 
+# brms brmsfamily(): a family from its brms name, link, and options.
+from quivers.formulas._brms_family import brmsfamily
+
 # mixtures: brms mixture() families.
 from quivers.formulas._mixture import mixture
 
@@ -84,15 +87,20 @@ from quivers.formulas._custom_family import custom_family
 from quivers.formulas._custom_types import CustomFamilySpec
 from quivers.formulas._fit import BayesianFit, fit, formula_to_qvr, get_prior
 from quivers.formulas._smooth_effects import conditional_smooths
+from quivers.formulas._brms_hypothesis import HypothesisRow, HypothesisTable
 from quivers.formulas._gp import GaussianProcessBlock, GaussianProcessConditional
 from quivers.formulas._multivariate import (
     MecorSetting,
     MultivariateFormula,
     RescorSetting,
     ResponseModel,
+    ParameterFormulas,
     bf,
+    lf,
     mvbf,
+    nlf,
     set_mecor,
+    set_nl,
     set_rescor,
 )
 from quivers.formulas._joint_fit import MultivariateFit
@@ -112,6 +120,9 @@ from quivers.formulas._postprocess_methods import (
     model_weights,
 )
 from quivers.formulas._postprocess_summary import FitSummary, VarCorrBlock
+
+# brms loo(fit1, fit2, ...) and waic(fit1, fit2, ...).
+from quivers.formulas._brms_loo import CriterionList, loo, waic
 
 # brms evidence, model averaging, conditional effects and predictive checks.
 from quivers.formulas._brms_effects import (
@@ -183,6 +194,7 @@ __all__ = [
     "custom_family",
     "links",
     "families",
+    "brmsfamily",
     "mixture",
     "MixtureSpec",
     "update_adterms",
@@ -209,12 +221,18 @@ __all__ = [
     "formula_to_qvr",
     "get_prior",
     "conditional_smooths",
+    "HypothesisRow",
+    "HypothesisTable",
     # joint (multivariate) formulas
     "MultivariateFormula",
     "MultivariateFit",
     "ResponseModel",
     "RescorSetting",
     "bf",
+    "lf",
+    "nlf",
+    "set_nl",
+    "ParameterFormulas",
     "mvbf",
     "set_rescor",
     "set_mecor",
@@ -231,6 +249,9 @@ __all__ = [
     "SinglePredictionOptions",
     "VarCorrBlock",
     "kfold_predict",
+    "CriterionList",
+    "loo",
+    "waic",
     "loo_compare",
     "loo_model_weights",
     "model_weights",

@@ -34,6 +34,15 @@ $z$, the model a
 the covariance, so new levels covered by `M` are predicted from their
 conditional distribution given the fitted levels.
 
+Correlated coefficients of a factor with a known covariance have the
+[Kronecker product](https://en.wikipedia.org/wiki/Kronecker_product)
+covariance of `M` and the coefficient covariance, for every positive
+definite `M`. brms computes them with a loop that skips the entries of $L$
+that are not above $10^{-10}$, so its coefficients have that covariance only
+when $L$ has no negative entry. The two models agree for such an `M` and
+for a single or independent coefficients, and they differ deliberately
+otherwise.
+
 `gr(g, by = f)` gives every level of the factor `f` its own standard
 deviation for each coefficient and, in a correlated block, its own LKJ
 correlation matrix. Each level of `g` must lie within one level of `f`,
@@ -159,8 +168,8 @@ weight $1/K$. `weights = cbind(w1, ..., wK)` takes the weights from columns,
 normalized to sum to one in each row unless `scale = FALSE`, which also
 permits negative weights. A covariate `x` enters every member with the same
 value. `mmc(x1, ..., xK)` gives each member its own covariate, as in
-`(1 + mmc(x1, x2) | mm(g1, g2))`. `mm()` also takes `cor` and `id` with
-their `gr()` meaning.
+`(1 + mmc(x1, x2) | mm(g1, g2))`. `mm()` also takes `cor`, `id`, and `cov`
+with their `gr()` meaning.
 
 <!-- python: run -->
 ```python
@@ -203,9 +212,14 @@ gathers the shared coefficient vector at its own level, so scoring and
 prediction cost O(n K) per coefficient for n rows, without a rows-by-levels
 matrix. Fresh rows are coded on one prediction axis that covers every
 member, and a level unseen in training is a new level for every member that
-names it. Member columns may not be missing. Multi-membership factors take
-scalar group coefficients only: ordinal category-specific coefficients,
-grouped thresholds, and `cov` on a multi-membership factor are refused. A
+names it. Member columns may not be missing. `mm(g1, g2, cov = M)` gives
+the shared coefficient vector the known covariance `M` over the union of
+the member levels, as `gr(g, cov = M)` does for one factor, and a member
+level that is absent from the training rows and covered by `M` is predicted
+from its conditional distribution. Multi-membership factors take scalar
+group coefficients only: ordinal category-specific coefficients, such as
+`(cs(1) | mm(g1, g2))`, which brms admits, and grouped thresholds are
+refused. A
 categorical or other per-category response gives each free category its own
 scalar multi-membership coefficients (see
 [category-specific formulas](formula-mixtures.md#category-specific-formulas)).

@@ -233,6 +233,26 @@ assert result.pooled.draws()["beta_x"].shape[:2] == (4, 10)
 assert len(result.rhats()) == 2
 ```
 
+brms treats the combined fit as an ordinary fit, and so does
+[`MultipleFit`](../api/formulas/index.md#quivers.formulas.MultipleFit): its
+summaries, prediction methods, criteria, `conditional_effects`, `pp_check`,
+and `hypothesis` are those of the pooled fit `result.pooled`, evaluated over
+the pooled draws. Quantities that depend on the data use the first dataset,
+as in brms. `combine=False` returns the separate fits instead, as brms's
+`combine = FALSE` does.
+
+<!-- python: run -->
+```python
+assert result.nchains() == 4
+assert result.fixef().rows == ("Intercept", "x")
+assert result.posterior_epred(new_data=first.iloc[:3]).shape == (4, 10, 3)
+separate = fit_multiple(
+    "y ~ x", data=[first, second], combine=False,
+    method="svi", num_steps=5, seed=3,
+)
+assert len(separate) == 2
+```
+
 `MultipleFit.update` refits every dataset through the recipe of the first
 fit, as brms's `update` of a `brm_multiple` fit does. The datasets must be
 given again, the remaining arguments are kept unless overridden, and the

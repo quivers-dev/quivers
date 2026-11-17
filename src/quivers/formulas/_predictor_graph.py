@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from graphlib import CycleError, TopologicalSorter
 import re
+from typing import Literal
 
 import didactic.api as dx
 from formulae.matrices import DesignMatrices
@@ -21,6 +22,7 @@ from quivers.formulas.formula import (
     _formula_and_design,
     _qvr_name,
 )
+from quivers.formulas._r_expression import translate_r_expression
 
 
 class NonlinearExpression(ValueModel):
@@ -34,11 +36,16 @@ class NonlinearExpression(ValueModel):
         Distributional expressions describe the family's link scale; inverse
         links are applied once, after evaluation. Intermediate nonlinear
         parameters have the identity link.
+    syntax : {"qvr", "r"}
+        Language of the expression text. ``"r"`` reads an R expression over
+        Stan's functions, as brms ``nlf()`` takes, with numeric data read as
+        doubles.
     """
 
     expression: str | dict[str | int, str] = dx.field(
         opaque=True, extras=OPAQUE_BY_VALUE
     )
+    syntax: Literal["qvr", "r"] = "qvr"
 
 
 class ComponentExpression(ValueModel):
@@ -131,13 +138,24 @@ def _parse_expression(text: str) -> LetExprNode:
     return _parse_value_expression(text)
 
 
-def _value_expression(value: NonlinearExpression):
+def _value_expression(
+    value: NonlinearExpression,
+    name: str,
+    integer_names: frozenset[str],
+    variables: frozenset[str],
+):
     """Parse scalar or explicitly labelled expressions through the shared parser.
 
     Parameters
     ----------
     value : NonlinearExpression
         Authored scalar expression or component mapping.
+    name : str
+        Parameter the expression defines, named in errors.
+    integer_names : frozenset[str]
+        Data columns with an integer or Boolean carrier.
+    variables : frozenset[str]
+        Data columns and nonlinear parameters.
 
     Returns
     -------
@@ -149,15 +167,40 @@ def _value_expression(value: NonlinearExpression):
     ValueError
         If coordinate labels are empty or collide after string normalization.
     """
+
+    def parse(item: str) -> LetExprNode:
+        """Parse one expression in the value's declared syntax.
+
+        Parameters
+        ----------
+        item : str
+            Expression text.
+
+        Returns
+        -------
+        LetExprNode
+            Canonical QVR expression AST.
+        """
+        if value.syntax == "qvr":
+            return _parse_expression(item)
+        return _parse_expression(
+            translate_r_expression(
+                item,
+                context=f"nonlinear formula of {name!r}",
+                integer_names=integer_names,
+                variables=variables,
+            ).expression
+        )
+
     text = value.expression
     if isinstance(text, str):
-        return _parse_expression(text)
+        return parse(text)
     labels = tuple(str(label) for label in text)
     if not labels or len(set(labels)) != len(labels):
         raise ValueError("nonlinear component labels must be nonempty and unique")
     return ComponentExpression(
         components=labels,
-        values=tuple(_parse_expression(item) for item in text.values()),
+        values=tuple(parse(item) for item in text.values()),
     )
 
 
@@ -248,13 +291,27 @@ def build_predictor_graph(
             raise TypeError(
                 f"distributional parameter {name!r} requires a formula or NonlinearExpression"
             )
+    frame = nw.from_native(data, eager_only=True).to_pandas()
+    integer_names = frozenset(
+        str(name) for name in frame.columns if frame[name].dtype.kind in "biu"
+    )
+    variables = frozenset(map(str, frame.columns)) | frozenset(nonlinear or ())
     roots = {
-        name: _value_expression(value)
+        name: _value_expression(value, name, integer_names, variables)
         for name, value in (distributional or {}).items()
         if isinstance(value, NonlinearExpression)
     }
     if nonlinear is not None and "mu" not in roots:
-        roots["mu"] = _parse_expression(formula.split("~", 1)[1])
+        # brms writes the nonlinear predictor as an R expression over Stan's
+        # functions, with numeric data read as doubles.
+        roots["mu"] = _parse_expression(
+            translate_r_expression(
+                formula.split("~", 1)[1],
+                context=f"nonlinear formula {formula.strip()!r}",
+                integer_names=integer_names,
+                variables=variables,
+            ).expression
+        )
     if (
         "mu" in roots
         and isinstance((distributional or {}).get("mu"), NonlinearExpression)
@@ -280,7 +337,7 @@ def build_predictor_graph(
     expressions: dict[str, LetExprNode | ComponentExpression] = {}
     for name, value in declarations.items():
         if isinstance(value, NonlinearExpression):
-            expressions[name] = _value_expression(value)
+            expressions[name] = _value_expression(value, name, integer_names, variables)
         elif isinstance(value, str):
             if "~" not in value:
                 raise ValueError(f"nonlinear formula for {name!r} requires '~'")
@@ -331,7 +388,6 @@ def build_predictor_graph(
         raise ValueError(
             f"family outputs cannot be nonlinear dependencies: {sorted(forbidden)}"
         )
-    frame = nw.from_native(data, eager_only=True).to_pandas()
     unknown = raw_names - set(frame.columns)
     if unknown:
         raise ValueError(

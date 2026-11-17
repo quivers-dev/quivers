@@ -912,6 +912,34 @@ contributes $\log\sum_k w_k K_{\theta,k}(E_i\cap T_i)/K_{\theta,k}(T_i)$
 and truncated prediction draws a component and then its truncated law.
 Without truncation this equals the mixture mass of $E_i$.
 
+The mean of the truncated kernel is the partial first moment over the
+normalizer,
+
+$$
+\mathbb E_{K^I_\theta}[Y]=\frac{m_\theta(I)}{Z_\theta},
+\qquad m_\theta(I)=\int_I y\,K_\theta(dy).
+$$
+
+For a nonnegative law with finite mean, $y\,K_\theta(dy)/\mathbb E_\theta[Y]$
+is a probability law, the size-biased law $\tilde K_\theta$, so
+$m_\theta(I)=\mathbb E_\theta[Y]\,\tilde K_\theta(I)$ and the truncated mean
+is the untruncated mean times a ratio of two event masses. The size-biased
+law of $\mathrm{Gamma}(k,r)$ is $\mathrm{Gamma}(k+1,r)$, that of
+$\mathrm{LogNormal}(\mu,\sigma)$ is $\mathrm{LogNormal}(\mu+\sigma^2,\sigma)$,
+that of $\mathrm{Beta}(\alpha,\beta)$ is $\mathrm{Beta}(\alpha+1,\beta)$, and
+that of an inverse Gaussian $X$ with mean $\mu$ is the law of $\mu^2/X$. For
+a Weibull law with scale $s$ and shape $k$ it is the law of $s\,G^{1/k}$ with
+$G\sim\mathrm{Gamma}(1+1/k,1)$, and for a Fréchet law with shape $\alpha>1$
+the law of $s\,G^{-1/\alpha}$ with $G\sim\mathrm{Gamma}(1-1/\alpha,1)$. For
+counts, the size-biased law of $\mathrm{Poisson}(\lambda)$ is
+$1+\mathrm{Poisson}(\lambda)$, that of $\mathrm{Binomial}(n,p)$ is
+$1+\mathrm{Binomial}(n-1,p)$, and that of a negative binomial count with
+$r$ successes is one plus the same count with $r+1$ successes. An atom at
+zero adds to $Z_\theta$ and not to $m_\theta(I)$. The Normal and Student-t
+laws use their closed forms, the latter for more than one degree of
+freedom. Every other law is summed (counts) or integrated by quadrature
+whose own estimate of $Z_\theta$ must agree with the event mass.
+
 For independent scalar coordinates truncated to a rectangle,
 $Z_\theta=\prod_j Z_{\theta,j}$, so log normalizers add over the
 event coordinates. A coupled vector event requires its joint rectangle
@@ -2269,6 +2297,55 @@ factor likewise indexes its group effects by $L_0$ or $L$. The retained coding
 evaluates new rows at any level of $L$; the likelihood of the training rows is
 the same under both, since the extra columns and effects multiply no row.
 
+### Ordered factors, integer categories, and R expressions {#ordered-factors-integer-categories-and-r-expressions}
+
+An ordered factor with $K$ levels and scores $s_k=k$ contributes, where it
+is coded by contrasts, the columns of R's `contr.poly(K)`. Let $V$ be the
+[Vandermonde matrix](https://en.wikipedia.org/wiki/Vandermonde_matrix) with
+entries $V_{kj}=(s_k-\bar s)^{j}$ for $j=0,\dots,K-1$ and $V=QR$ its
+[QR decomposition](https://en.wikipedia.org/wiki/QR_decomposition). The
+contrast matrix is $C=[\,q_1r_{11},\dots,q_{K-1}r_{K-1,K-1}\,]$ with each
+column scaled to unit length, so column $j$ is the orthonormal polynomial of
+degree $j$ in the scores, and a row at level $k$ has the design entries
+$C_{k\cdot}$. The columns are orthogonal to the intercept and to one
+another. The contrast matrix is retained, so a new row at level $k$ is coded
+by the same $C_{k\cdot}$. Where R codes the factor by indicators (a design
+without an intercept), the indicator columns are kept.
+
+An ordinal response given as positive integers has the categories
+$1,\dots,K$ with $K=\max_i y_i$ and $K-1$ thresholds, or $K=n+1$ for a
+declared `thres(n)`, and the program observes the position $y_i-1$. With
+`thres(gr = g)` and no declared count, group $h$ has
+$\max_{i:g_i=h}y_i-1$ thresholds. The retained category values map a fresh
+response to its position, and a value outside them is refused.
+
+The right-hand side of a nonlinear formula, each side of a hypothesis
+string, and an expression in an addition term are R expressions over
+Stan's functions. Each is translated to one QVR value expression: a power
+$a$`^`$b$ becomes `pow(a, b)`, numeric literals and integer columns are
+reals, and each function is its QVR composition, for instance
+`inv_logit(x)` $=1/(1+e^{-x})$ as `sigmoid(x)` and `log1m(x)` as
+`log1p(-x)`. The translated expression is checked and evaluated by the
+ordinary QVR path, so it adds no language construct.
+
+### brms hypothesis tables {#brms-hypothesis-tables}
+
+For a hypothesis `left ~ right` with relation $\sim\,\in\{=,<,>\}$ and
+draws $c_s=\mathrm{left}(\theta_s)-\mathrm{right}(\theta_s)$,
+$s=1,\dots,S$, the table reports the mean and standard deviation of the
+$c_s$, and the quantiles at $(\alpha,1-\alpha)$ for a one-sided
+hypothesis or $(\alpha/2,1-\alpha/2)$ for a two-sided one. The evidence
+ratio of $c>0$ is $\#\{c_s>0\}/\#\{c_s\le 0\}$, and likewise for
+$c<0$. For $c=0$ it is the ratio $\hat p(0)/\hat\pi(0)$ of
+[kernel density estimates](https://en.wikipedia.org/wiki/Kernel_density_estimation)
+of the posterior and prior draws of $c$ at zero, with a Gaussian kernel and
+the bandwidth $0.9\min(\hat\sigma,\mathrm{IQR}/1.34)\,S^{-1/5}$, as R's
+`density` computes it. The posterior probability is
+$\mathrm{ER}/(1+\mathrm{ER})$, which assumes equal prior probabilities of
+the two hypotheses for a point hypothesis. Cost is $O(S)$ per one-sided
+hypothesis and $O(S+m\log m)$ per point hypothesis for a density grid of
+$m=4096$ points.
+
 ### brms intercept centering and QR coordinates {#brms-intercept-centering-and-qr-coordinates}
 
 Let $X$ be the population design without its intercept column, $\bar x$ its
@@ -2399,7 +2476,23 @@ are an orthonormal basis of the null space of $T_u^\top U$
 [@wood2003thin]. Every column except the constant is divided by its training
 standard deviation. The retained state is the knots, $UZ$, $m$, and those
 column scales, and a row that is not a latitude in $[-90,90]$ and a longitude
-in $[-180,360]$ is refused. Component-valued predictors retain separate Gaussian
+in $[-180,360]$ is refused. A Duchon spline `bs = "ds"` over
+$x\in\mathbb R^d$ with derivative order $m$ and weight exponent $s$ has the
+penalty [@duchon1977splines]
+$$J_{m,s}(f)=\int_{\mathbb R^d}\lVert\tau\rVert^{2s}\sum_{|\alpha|=m}
+\frac{m!}{\alpha!}\,\bigl|\widehat{D^\alpha f}(\tau)\bigr|^2\,d\tau ,$$
+with $\widehat{g}$ the Fourier transform of $g$, $-d/2<s<d/2$, and
+$m+s>d/2$. Its kernel is $E(x,x')=c\,r^{p}$ for odd $p=2m+2s-d$ and
+$c\,r^{p}\log r$ for even $p$, with $r=\lVert x-x'\rVert$ and the sign
+$c=(-1)^{\lfloor p/2\rfloor+1}$, and its null space $T$ is the polynomials
+of degree below $m$. With centered knots $x_1,\ldots,x_u$, knot kernel
+matrix $E_u$, and $UDU^\top$ its `k` eigenpairs of largest magnitude (or
+$U=I$ and $D=E_u$ when $u=k$), the raw design is $[E(\cdot,x_j)UZ,\;T]$
+with penalty $Z^\top DZ$, where the columns of $Z$ are an orthonormal basis
+of the null space of $T_u^\top U$. The retained state is the covariate
+means, the knots, $UZ$, $m$, and $s$. User knots of a thin-plate or Duchon
+basis replace the unique covariate rows as $x_1,\ldots,x_u$, and every row
+is then evaluated as $E(x,x_j)$ against them. Component-valued predictors retain separate Gaussian
 innovations and scale coordinates for each free response component. The
 [structured predictor guide](../guides/formula-special-predictors.md) states
 the implemented constructor and its current frontend limits.
@@ -2653,6 +2746,11 @@ $$
 
 where $\lambda_i$ are the eigenvalues of $W$ [@ord1975estimation]. The prior
 support of $\rho$ is $(\min_i\lambda_i,\max_i\lambda_i)$, as in brms.
+A value of $\rho$ whose factor $1-\rho\lambda_i$ lies within the rounding
+error of the computed eigenvalue, $|\rho|\,10^{3}n\epsilon\max(1,\max_i|\lambda_i|)$
+for Float64 machine epsilon $\epsilon$ (or $|\rho|$ times the machine epsilon of
+the scoring dtype when that is larger), has log density $-\infty$, since $A$
+is then singular to working precision.
 Retained for prediction: the nonzero entries of $W$ and its eigenvalues.
 
 The pointwise likelihood of a covariance or SAR row is the leave-one-out

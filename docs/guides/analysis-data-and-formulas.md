@@ -148,6 +148,29 @@ gives a `Module` that compiles to the same program.
   correlation block across location and auxiliary formulas.
 - **Interactions** `x:z` (elementwise product, one coefficient) and
   `x*z` (expands to `x + z + x:z`, three coefficients).
+- **Ordered factors use polynomial contrasts.** A pandas ordered
+  categorical is R's ordered factor, which `model.matrix` codes by
+  [orthogonal polynomial](https://en.wikipedia.org/wiki/Orthogonal_polynomials)
+  contrasts (`contr.poly`). Its coefficients are the linear, quadratic,
+  cubic, and higher trends, named `income.L`, `income.Q`, `income.C`, and
+  `incomeE4` as brms names them. An unordered factor keeps treatment
+  coding, and so does the indicator coding of a formula without intercept.
+- **`factor(x)` reads a column as an unordered factor.** As in R,
+  `factor(k)` and `as.factor(k)` code a numeric or string column by
+  treatment contrasts against its first level. The levels are the sorted
+  distinct training values, or `factor(k, levels = c(3, 1, 2))` in the order
+  given, and the coefficients are named as brms names them (`b_factork2`).
+  The training levels are retained, so new rows are coded against them and
+  a value outside them is refused. `factor(k, ordered = TRUE)` is refused:
+  an ordered pandas categorical column carries the polynomial contrasts.
+- **An unknown name is reported with the formula.** A variable that is not
+  a data column, or a call to a function the formula layer does not know,
+  raises a `ValueError` that quotes the formula, names the variable or the
+  function, and lists the data columns.
+- **Addition-term arguments are evaluated in the data.** An argument that
+  is not a column or a number is an R expression over columns, so
+  `y | se(sqrt(1 / (n - 3))) ~ 1` computes the standard error from `n`, on
+  the training rows and on new rows.
 
 ### A single-response `bf`
 
@@ -161,6 +184,25 @@ the same names. The fit is the fit of the keyword form, a
 [`BayesianFit`](../api/formulas/index.md#quivers.formulas.BayesianFit). An
 option given both in `bf` and as a keyword with different values raises an
 error.
+
+A `bf` call that states no family takes the `family` of the entry point, as
+`brm(bf(count ~ x, zi ~ z), family = zero_inflated_poisson())` does in brms.
+The parameter formulas are classified once the family is known: `zi` is a
+distributional parameter of the zero-inflated Poisson family, and it is
+refused for a family without it.
+
+brms also builds a formula from pieces added with `+`.
+[`lf`](../api/formulas/index.md#quivers.formulas.lf) adds additive parameter
+formulas, [`nlf`](../api/formulas/index.md#quivers.formulas.nlf) adds a
+parameter defined by a nonlinear expression,
+[`set_nl`](../api/formulas/index.md#quivers.formulas.set_nl) marks the main
+formula as nonlinear, and a
+[`Family`](../api/formulas/index.md#quivers.formulas.Family) sets the family,
+so `bf("y ~ x") + lf("sigma ~ 0 + z") + brmsfamily("skew_normal")` reads as
+its brms counterpart. `acformula` is not provided: an autocorrelation term
+is written in the formula itself, as the
+[dependence guide](formula-dependence.md) describes. A parameter defined by
+`nlf` requires a nonlinear main formula.
 
 <!-- python: run -->
 ```python
@@ -181,6 +223,34 @@ fitted = fit(authored, data=data, method="svi", num_steps=5, seed=1)
 assert list(fitted.variables(num_samples=2)) == [
     "b_Intercept", "b_sigma_Intercept", "b_x", "b_sigma_z",
 ]
+```
+
+<!-- python: run -->
+```python
+import numpy as np
+import pandas as pd
+
+from quivers.formulas import bf, brmsfamily, fit, lf
+
+rows = np.arange(24)
+counts = pd.DataFrame({"x": np.sin(rows), "z": np.cos(2 * rows)})
+counts["count"] = (rows % 5) * (rows % 3 != 0)
+
+# The family of fit classifies zi as a distributional parameter.
+inflated = fit(
+    bf("count ~ x", "zi ~ z"), data=counts,
+    family="zero_inflated_poisson", method="svi", num_steps=5, seed=1,
+)
+assert "b_zi_z" in inflated.variables(num_samples=2)
+
+# The same pieces brms adds with +.
+counts["y"] = 1.0 + 0.5 * counts["x"]
+skewed = fit(
+    bf("y ~ x") + lf("sigma ~ 0 + z") + brmsfamily("skew_normal"),
+    data=counts, method="svi", num_steps=5, seed=1,
+)
+assert skewed.family.name == "skew_normal"
+assert "b_sigma_z" in skewed.variables(num_samples=2)
 ```
 
 ### Nonlinear parameter predictors
@@ -228,6 +298,48 @@ in `nonlinear`. Coefficients have the `nlpar_<parameter>_` namespace, and
 QVR retains its proper default coefficient priors when no override is
 provided; brms's [nonlinear workflow](https://paulbuerkner.com/brms/articles/brms_nonlinear.html)
 instead requires explicit priors for nonlinear population coefficients.
+
+The brms spelling builds the same graph. With `nl=True`,
+[`bf`](../api/formulas/index.md#quivers.formulas.bf) reads the main formula
+as an R expression over data columns and nonlinear parameters, and each
+further formula defines one or more parameters: `"b1 + b2 ~ 1"` gives `b1`
+and `b2` the same additive formula. The expression takes R's operators
+(`^` and `**` are powers, and a power binds tighter than a sign) and the
+mathematical functions of Stan that brms passes through, such as
+`inv_logit`, `logit`, `log1m`, `Phi`, `fmin`, and `step`. Numeric literals
+and integer columns are doubles, as in R. A malformed expression is
+refused with its position in the formula, and a function outside this set
+is checked as a QVR builtin. A prior selects a nonlinear parameter by
+`nlpar`. brms gives the intercept of a nonlinear parameter the class `b`
+with the coefficient `Intercept`, so `PriorSpec(..., nlpar="b1")` reaches
+it.
+
+<!-- python: run -->
+```python
+import numpy as np
+import pandas as pd
+
+from quivers.formulas import PriorSpec, bf, fit
+
+x = np.linspace(-1.0, 1.0, 20)
+growth = pd.DataFrame({"x": x, "y": 2.0 * np.exp(0.75 * x) + 0.1 * np.sin(9 * x)})
+priors = PriorSpec(distribution="Normal(1, 2)", nlpar="b1") + PriorSpec(
+    distribution="Normal(0, 2)", nlpar="b2"
+)
+exponential = fit(
+    bf("y ~ b1 * exp(b2 * x)", "b1 + b2 ~ 1", nl=True),
+    data=growth, priors=priors, method="svi", num_steps=5, seed=1,
+)
+assert list(exponential.variables(num_samples=2)) == [
+    "b_b1_Intercept", "b_b2_Intercept", "sigma",
+]
+# R's power operator and Stan's inv_logit.
+saturating = fit(
+    bf("y ~ top * inv_logit(rate * x)^2", "top + rate ~ 1", nl=True),
+    data=growth, method="svi", num_steps=5, seed=1,
+)
+assert saturating.posterior_epred(num_samples=2).shape == (1, 2, 20)
+```
 
 An explicit component mapping supplies a vector-valued output. For
 `family=families["multinomial"].with_reference("A")` and response
@@ -336,12 +448,59 @@ changes the recorded likelihood event. Thus raw `log_likelihood` reports
 unweighted event log probabilities under the truncated law, including exact
 response densities where status is zero.
 
+The expected value of a truncated response is the mean of the truncated
+law, computed without sampling, for bounds on one side or on both:
+
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+waits = pd.DataFrame({
+    "wait": [0.6, 1.1, 2.4, 0.9, 3.2, 1.7, 0.8, 2.1],
+    "load": [-1.0, -0.5, 0.0, 0.5, 1.0, -0.2, 0.3, 0.8],
+})
+truncated_fit = fit(
+    "wait | trunc(lb = 0.5) ~ load", data=waits, family="lognormal",
+    method="svi", num_steps=3, seed=4,
+)
+expected_waits = truncated_fit.posterior_epred(num_samples=2)
+assert expected_waits.shape == (1, 2, 8)
+assert bool((expected_waits >= 0.5).all())
+```
+
+Three deterministic rules are used. The Gaussian, Student-t, lognormal,
+shifted lognormal, gamma, exponential, Weibull, Fréchet, inverse Gaussian,
+and beta laws, the hurdle and zero-inflated laws built on them, and the
+Poisson, binomial, negative binomial, and geometric counts have closed
+forms: the mean of the untruncated law times a ratio of two interval
+probabilities, both taken from the log tails. These include every family for
+which brms computes a truncated expectation, with the same formulas for the
+continuous ones. brms sums a count law over a capped range, whereas the
+count identities here hold for a range without an upper bound. Any other
+count law is summed over its truncated range, or, without an upper bound,
+taken as its untruncated mean less the sum below the lower bound. The
+remaining continuous laws,
+such as the skew-normal, exponentially modified Gaussian, asymmetric
+Laplace, and generalized extreme-value laws, are integrated by
+[Gauss-Legendre quadrature](https://en.wikipedia.org/wiki/Gauss%E2%80%93Legendre_quadrature)
+on panels between quantiles of the truncated law. The rule also integrates
+the density, and its result is accepted only when that integral reproduces
+the probability of the interval.
+
+Where no rule applies the error says why. This is the case for the spline
+hazard of `cox`, for a count range of more than 65536 values, for an
+unbounded count range that holds less than $10^{-6}$ of a law without a
+closed form, and for an unbounded range of a law without a finite mean.
+`mc_samples` then remains available for a bounded range.
+
 `cens` and `trunc` are admitted for exactly the families whose brms family
 list admits them; every other family, including `bernoulli`, `xbeta`,
 `zero_one_inflated_beta`, `wiener`, the ordinal families, and the
 compositional families, refuses them with an error naming the family and the
 term. Every admitted family scores both tails of its law directly, so the
-far tails stay finite. Student-t tails use the regularized
+far tails stay finite at any data scale. Weibull and lognormal tails are
+those of the exponential and Normal laws they transform. Student-t tails use
+the regularized
 [incomplete beta function](https://en.wikipedia.org/wiki/Beta_function#Incomplete_beta_function),
 von Mises tails use the Bessel series of the CDF on $[-\pi,\pi]$ with a
 certified truncation bound, and Conway-Maxwell-Poisson tails sum the
@@ -695,6 +854,171 @@ value. The built-in families:
 A new family is a [`Family`](../api/formulas/family.md#quivers.formulas.family.Family)
 value with its own observation family and link. The table's priors on auxiliary
 parameters are the library's defaults.
+
+### Family names, links, and bounds that differ from brms
+
+The registry names its families after the QVR laws they bind. Five names
+differ from the brms family functions, and each brms name resolves to its
+registered family: `family="negbinomial"` is `families["negative_binomial"]`.
+Lookup follows brms's own reading of a family name. It ignores case, reads
+`normal` as `gaussian`, and expands the prefixes `zi_` and `hu_` to
+`zero_inflated_` and `hurdle_`. A fit reports the registered name.
+
+| brms | registry name |
+|---|---|
+| `negbinomial()` | `negative_binomial` |
+| `student()` | `student_t` |
+| `Gamma()` | `gamma` |
+| `Beta()` | `beta` |
+| `inverse.gaussian()` | `inverse_gaussian` |
+
+[`brmsfamily`](../api/formulas/index.md#quivers.formulas.brmsfamily) builds a
+family from its brms name with a link, as brms's function of the same name
+does: `brmsfamily("bernoulli", "identity")`,
+`brmsfamily("sratio", "cloglog")`,
+`brmsfamily("cumulative", threshold="equidistant")`, and
+`brmsfamily("student", link_sigma="identity")`.
+
+The shape of `negative_binomial` is the auxiliary parameter `disp`, where
+brms names it `shape`. A distributional formula is thus `disp ~ z`, and a
+prior on it selects `class_="disp"`.
+
+Two defaults differ from brms.
+
+- `inverse_gaussian` uses the log link for its response mean, where the
+  brms default is `1/mu^2`. The log link maps every value of the linear
+  predictor to a positive mean. brms's link remains available as
+  `families["inverse_gaussian"].with_links(mu="inverse_square")`.
+- The degrees of freedom `nu` of `student_t` have the prior
+  `Gamma(2.0, 0.1)` on the positive reals, where brms bounds `nu` below at
+  one. A Student-t law with `nu <= 1` has no mean, so `posterior_epred`
+  raises for a draw in that region. `default_priors="brms"` applies brms's
+  bound, and so does
+  `PriorSpec(distribution="Gamma(2.0, 0.1)", class_="nu", lower=1.0)`.
+
+brms exports a density, distribution function, quantile function, and
+generator for each of its families as R functions, such as `dstudent_t`,
+`pskew_normal`, `qasym_laplace`, and `rshifted_lnorm`. QVR has no such
+function layer. The laws in
+[`quivers.continuous`](../api/continuous/families.md) are
+`torch.distributions.Distribution` objects, and their `log_prob`, `cdf`,
+`icdf`, and `sample` methods take those roles. For instance,
+`SkewNormal(loc, scale, skewness).cdf(value)` is brms's `pskew_normal`.
+The Student-t, von Mises, and zero-inflated beta laws have no public `cdf`
+or `icdf` method.
+
+### Custom families
+
+brms's `custom_family` declares the parameters of a new response family and
+takes its density as Stan code.
+[`custom_family`](../api/formulas/custom.md#quivers.formulas._custom_family.custom_family)
+instead binds a `torch.distributions.Distribution` registered in a
+[`FamilyCatalog`](../api/family-catalog.md). The catalog entry states each
+parameter's constraint and the support of the response. The distribution's
+`log_prob`, `sample`, and `mean` methods then give fitting, pointwise
+likelihoods, `posterior_predict`, and `posterior_epred` without the
+`log_lik`, `posterior_predict`, and `posterior_epred` functions that brms
+asks its user to write.
+
+The example is the beta-binomial family of the brms custom-family
+vignette, parameterized by its mean probability `mu` and precision `phi`
+with a known number of trials `T`. brms passes the trials as
+`y | vint(size) ~ ...`. Here `data={"T": "size"}` reads them from the
+column `size`, and `vint()` and `vreal()` in a formula are refused.
+
+<!-- python: run -->
+```python
+import numpy as np
+import pandas as pd
+import torch
+from torch.distributions import Beta, Binomial, Distribution, constraints
+
+from quivers.family_catalog import FamilyCatalog
+from quivers.formulas import AuxParam, custom_family, fit, links
+from quivers.qiec.families import DistributionFamily, FamilyParameter
+from quivers.qiec.types import INT
+
+
+class BetaBinomial2(Distribution):
+    arg_constraints = {}
+    support = constraints.nonnegative_integer
+    has_rsample = False
+
+    def __init__(self, mu, phi, T):
+        self.mu, self.phi, self.T = torch.broadcast_tensors(mu, phi, T)
+        super().__init__(self.mu.shape, validate_args=False)
+
+    @property
+    def mean(self):
+        return self.mu * self.T
+
+    def log_prob(self, value):
+        a, b = self.mu * self.phi, (1 - self.mu) * self.phi
+        trials, y = self.T.to(a.dtype), value.to(a.dtype)
+        choose = (
+            torch.lgamma(trials + 1) - torch.lgamma(y + 1)
+            - torch.lgamma(trials - y + 1)
+        )
+        return (
+            choose + torch.lgamma(y + a) + torch.lgamma(trials - y + b)
+            - torch.lgamma(trials + a + b)
+            + torch.lgamma(a + b) - torch.lgamma(a) - torch.lgamma(b)
+        )
+
+    def sample(self, sample_shape=torch.Size()):
+        a, b = self.mu * self.phi, (1 - self.mu) * self.phi
+        probability = Beta(a, b).sample(sample_shape)
+        trials = self.T.to(probability.dtype).expand(probability.shape)
+        return Binomial(trials, probability).sample().to(torch.int64)
+
+
+contract = DistributionFamily(
+    name="beta_binomial2",
+    parameters=(
+        FamilyParameter(name="mu", constraint="unit_interval", rank=0),
+        FamilyParameter(name="phi", constraint="positive", rank=0),
+        FamilyParameter(name="T", constraint="integer", rank=0),
+    ),
+    support="integer", element=INT, event_rank=0, event_sources=(),
+    discrete=True, reparameterizable=False, compositional=False,
+)
+beta_binomial_catalog = FamilyCatalog().with_family(
+    contract,
+    lambda parameters: BetaBinomial2(
+        parameters["mu"], parameters["phi"], parameters["T"]
+    ),
+    support=BetaBinomial2.support,
+)
+beta_binomial2 = custom_family(
+    "beta_binomial2", catalog=beta_binomial_catalog, location="mu", link="logit",
+    auxiliary=(AuxParam(name="phi", prior="Gamma(2.0, 0.1)", link=links["log"]),),
+    data={"T": "size"},
+)
+index = np.arange(24)
+herds = pd.DataFrame({
+    "period": np.array(["1", "2", "3", "4"])[index % 4],
+    "herd": np.array(list("abcdef"))[index % 6],
+    "size": 8 + index % 5,
+})
+herds["incidence"] = (index * 5) % 4
+herd_fit = fit(
+    "incidence ~ period + (1 | herd)", data=herds, family=beta_binomial2,
+    method="svi", num_steps=5, seed=4,
+)
+fresh_herds = herds.iloc[:3].drop(columns="incidence")
+assert herd_fit.posterior_epred(
+    new_data=fresh_herds, num_samples=4, seed=5
+).shape == (1, 4, 3)
+counts = herd_fit.posterior_predict(new_data=fresh_herds, num_samples=4, seed=5)
+assert bool((counts <= torch.tensor(fresh_herds["size"].tolist())).all())
+```
+
+The [custom family reference](../api/formulas/custom.md) describes
+parameter roles, catalog ownership, and artifacts. Two limits differ from
+brms. A custom family cannot be ordinal: brms's `type = "int"` with
+thresholds has no counterpart, and the built-in ordinal families take that
+role. `conditional_effects` refuses a `conditions` value for a column bound
+through `data`, because the column keeps its fitted numeric carrier.
 
 ### Factor and vector responses
 
@@ -1572,7 +1896,9 @@ with the reference. With logits `[0, 0, 0]`, for instance, each category has
 probability `1/3`.
 
 The categorical family infers `K` from contiguous integer labels
-`0, ..., K-1` and uses category zero as the reference. Every fixed-effect
+`0, ..., K-1` and uses category zero as the reference. Any other integer
+response takes its sorted distinct values as categories, as brms does, with
+the smallest as the reference. Every fixed-effect
 coefficient and random effect is thus a vector of `K - 1` logits.
 The compiler prepends the reference logit of zero and applies softmax to
 the resulting `K`-vector of each row. This parameterization removes the
@@ -1637,9 +1963,50 @@ Five formula families model ordered response labels: `cumulative`,
 (continuation ratio), and `hurdle_cumulative`. Their static
 [`OrdinalSpec`](../api/formulas/family.md#quivers.formulas.family.OrdinalSpec)
 selects the probability construction, link, and threshold structure.
-Labels are contiguous integers `0, ..., K-1`; hurdle category zero is a
-separate atom, leaving `K-1` positive categories and `K-2` cutpoints.
-A binary hurdle model thus requires no cutpoints for its positive part.
+The response is an ordered factor or integer codes. brms codes an ordinal
+response by the positive integers `1, ..., K` and takes `K` from the largest
+response, so a model has `max(y) - 1` thresholds whether or not every
+category is observed, and `thres(gr = g)` gives each group
+`max(y) - 1` thresholds from the responses of that group. An integer
+response whose smallest value is at least one is read this way, and
+[`category_labels`](../api/formulas/index.md#quivers.formulas.BayesianFit.category_labels)
+reports the labels `1, ..., K`. A response that holds a zero keeps the
+codes `0, ..., K-1`, which brms refuses for these families. A refit
+(`update`, a cross-validation fold) reads the response as the original fit
+did, also on rows where the zero is absent. The hurdle
+family reads nonnegative integers: category zero is a separate atom,
+leaving `K-1` positive categories and `K-2` cutpoints. A binary hurdle model
+thus requires no cutpoints for its positive part. Predicted categories are
+positions in `category_labels`, counted from zero, where brms returns the
+codes `1, ..., K`: the label of a predicted position `p` is
+`category_labels[p]`.
+
+<!-- python: run -->
+```python
+import numpy as np
+import pandas as pd
+
+from quivers.formulas import fit
+
+ratings = pd.DataFrame({
+    "rating": np.tile([1, 2, 3, 4], 6),
+    "treat": np.tile([0.5, -0.5], 12),
+    "clinic": np.tile(["a", "b"], 12),
+})
+rated = fit(
+    "rating ~ treat", data=ratings, family="cumulative",
+    method="svi", num_steps=5, seed=1,
+)
+assert rated.category_labels == (1, 2, 3, 4)
+assert len(rated.threshold_labels) == 3
+
+# Clinic a uses the ratings 1 and 3, clinic b the ratings 2 and 4.
+grouped = fit(
+    "rating | thres(gr = clinic) ~ treat", data=ratings, family="cumulative",
+    method="svi", num_steps=5, seed=1,
+)
+assert grouped.formula.modifiers.threshold_groups.counts == (2, 3)
+```
 
 All five support `logit`, `probit`, `probit_approx`, `cloglog`, and
 `cauchit`. Cumulative, adjacent-category, and hurdle-cumulative models
@@ -1952,6 +2319,13 @@ asymmetric Laplace predictor specifies a quantile, while its expected response
 is the distribution's mean. Mixture expectations include component weights, and
 inflated-beta expectations include boundary mass.
 
+`parameter=` names the predictor to return, the location `mu` by default. An
+auxiliary parameter without a formula, such as `sigma` in `y ~ x`, has no
+predictor and is constant over the rows. `posterior_linpred(parameter="sigma")`
+then repeats each draw of the parameter for every row, on the parameter's own
+scale whatever `transform` is, as brms's `dpar = "sigma"` does. `fitted`
+summarizes the same draws.
+
 `posterior_predict` returns a tensor of replicated responses with shape
 `(chain, draw, row)`. Each posterior draw supplies an independent response
 for each requested row, including when rows share all distribution parameters.
@@ -2219,6 +2593,13 @@ column, grouping factor, distributional parameter, or nonlinear leaf.
 Thus a selector follows the design metadata even when a generated QVR name
 contains an escaped column name or a distributional prefix.
 
+`coef` takes the coefficient label that the prior table lists. A term with
+several columns, such as a factor `f` with levels `t`, `u`, and `v`, numbers
+its columns from one: the label of the first level after the reference is
+`f_1`, where brms joins the term and the level into `fu`. brms's label is
+not accepted as a `coef` selector. `variables()` and the summaries report
+the coefficient under its brms name, `b_fu`.
+
 ```python
 import pandas as pd
 from quivers.formulas import PriorSpec, RegularizedHorseshoe, fit, get_prior
@@ -2298,6 +2679,73 @@ using existing QVR distribution primitives. They differ from the native
 `Horseshoe` marginal kernel, whose global scale is a learnable module parameter
 and whose local scales are integrated numerically.
 
+## brms hypothesis strings
+
+[`hypothesis`](../api/formulas/index.md#quivers.formulas.BayesianFit.hypothesis)
+reads the strings of brms's `hypothesis()`. A string has the form
+`"left (= | < | >) right"`. Each side is an R expression over parameter
+names, and each name takes the prefix of the class: with the default
+`class_="b"` the name `x` is the population coefficient `b_x`, with
+`class_="sd"` and `group="g"` the name `Intercept` is `sd_g__Intercept`, and
+`class_=None` reads names as
+[`variables`](../api/formulas/index.md#quivers.formulas.BayesianFit.variables)
+reports them. Several strings are given as a list, or as a mapping from
+names to strings. `scope="ranef"` and `scope="coef"` test the per-level
+coefficients of `group`, one row per level.
+
+The result is a
+[`HypothesisTable`](../api/formulas/index.md#quivers.formulas.HypothesisTable)
+with brms's columns. `Estimate` and `Est.Error` are the mean and standard
+deviation of the draws of `left - right` (the median and the scaled median
+absolute deviation with `robust=True`). The interval runs from the `alpha`
+to the `1 - alpha` quantile for a one-sided hypothesis and from `alpha / 2`
+to `1 - alpha / 2` for a two-sided one. `Evid.Ratio` is the posterior odds
+of a one-sided hypothesis. For a point hypothesis it is the ratio of the
+posterior to the prior density at zero, the
+[Savage-Dickey density ratio](https://en.wikipedia.org/wiki/Bayes_factor),
+computed with R's kernel density estimate as brms computes it. It needs
+prior draws (`sample_prior="yes"` or `prior=True`) and is missing without
+them. `Post.Prob` is `Evid.Ratio / (1 + Evid.Ratio)`, and `Star` marks a
+one-sided probability above `1 - alpha` or a two-sided interval that
+excludes zero.
+
+<!-- python: run -->
+```python
+import numpy as np
+import pandas as pd
+
+from quivers.formulas import fit
+
+rows = np.arange(40)
+trial = pd.DataFrame({
+    "x": np.sin(rows), "z": np.cos(2 * rows),
+    "g": np.array(list("abcd"))[rows % 4],
+})
+trial["y"] = 1.0 + 0.8 * trial["x"] + 0.3 * np.sin(7 * rows)
+trial_fit = fit(
+    "y ~ x + z + (1 + x | g)", data=trial,
+    method="svi", num_steps=5, seed=3, sample_prior="yes",
+)
+tests = trial_fit.hypothesis(["x > 0", "x - z = 0"], alpha=0.05)
+assert list(tests.to_frame().columns) == [
+    "Hypothesis", "Estimate", "Est.Error", "CI.Lower", "CI.Upper",
+    "Evid.Ratio", "Post.Prob", "Star",
+]
+assert tests.rows[0].hypothesis == "(x) > 0"
+
+# Group standard deviations, and a function of named variables.
+scales = trial_fit.hypothesis("Intercept - x > 0", class_="sd", group="g")
+share = trial_fit.hypothesis(
+    "sd_g__Intercept^2 / (sd_g__Intercept^2 + sigma^2) = 0", class_=None
+)
+assert 0.0 < share.rows[0].estimate < 1.0
+by_level = trial_fit.hypothesis("Intercept + x > 0", scope="coef", group="g")
+assert [row.group for row in by_level.rows] == ["a", "b", "c", "d"]
+```
+
+A string without a relation outside parentheses is a contrast expression,
+described next.
+
 ## Checked hypotheses over fitted coefficients
 
 `BayesianFit.hypothesis` evaluates a QVR expression over jointly retained
@@ -2358,7 +2806,7 @@ component order and labels; a reference component is absent. Category-specific
 ordinal effects use adjacent category pairs. Group axes remain distinct from
 component axes even when their lengths coincide.
 
-Expressions use QVR arithmetic and functions, such as `exp(x)` or `pow(x, 2)`.
+Expressions use QVR arithmetic and functions, such as `exp(x)` or `pow(x, 2.0)`.
 For an expanded coefficient label that is not an identifier, use
 `ContrastExpression(expression="a - x", bindings={"a": original_label})`
 from `quivers.diagnostics`. Indices and reductions act on event axes;

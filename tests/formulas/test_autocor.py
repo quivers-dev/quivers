@@ -19,6 +19,7 @@ from quivers.formulas._autocor import parse_autocor_call, split_autocor_terms
 from quivers.formulas._residual_dependence import (
     ResidualResponse,
     sar_weights,
+    spectrum_tolerance,
 )
 from quivers.modeling import load_fit, save_fit
 
@@ -459,6 +460,22 @@ def test_sar_rejects_complex_spectra_and_singular_parameters():
     )
     scores = law.log_prob(_t(frame.y.tolist()))
     assert torch.isfinite(scores[0]).all() and (scores[1] == -torch.inf).all()
+    # The largest eigenvalue of the row-stochastic PATH is exactly one, and its
+    # computed value lies within rounding of one on either side. The bound is
+    # 1e3 * 5 * eps = 1.1e-12: every rho closer to one than that is singular,
+    # whichever side the platform rounds to, and rho further away is scored.
+    assert spectrum_tolerance(layout.eigenvalues) == pytest.approx(
+        5e3 * np.finfo(np.float64).eps, rel=1e-12
+    )
+    near = [np.nextafter(1.0, 0.0), np.nextafter(1.0, 2.0), 1 - 1e-13, 1 - 1e-11]
+    law = ResidualResponse(
+        layout,
+        _t([0.0] * 5).expand(4, 5),
+        _t([1.0] * 5),
+        {"lagsar": _t(near)[:, None].expand(4, 5)},
+    )
+    scores = law.log_prob(_t(frame.y.tolist()))
+    assert (scores[:3] == -torch.inf).all() and torch.isfinite(scores[3]).all()
 
 
 def test_cosy_sampling_reproduces_the_covariance_and_student_radius_per_series():

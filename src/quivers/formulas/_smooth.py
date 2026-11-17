@@ -40,6 +40,7 @@ from quivers.formulas._mgcv_smooth import (
     cubic_regression,
     cyclic_cubic,
     factor_smooth,
+    duchon_spline,
     gp_smooth,
     markov_random_field,
     mixed_model_blocks,
@@ -62,8 +63,10 @@ _UNIVARIATE = frozenset({"cr", "cs", "cc", "ps", "bs"})
 #: Bases that read an ``xt`` entry.
 _XT_BASES = frozenset({"fs", "mrf"})
 _SMOOTH_BASES = frozenset(
-    {"tp", "ts", "cr", "cs", "cc", "ps", "bs", "re", "fs", "gp", "mrf", "sos"}
+    {"tp", "ts", "cr", "cs", "cc", "ps", "bs", "re", "fs", "gp", "mrf", "sos", "ds"}
 )
+#: Bases whose knots are rows of several covariates.
+_JOINT_KNOT_BASES = frozenset({"tp", "ts", "ds"})
 _MARGIN_BASES = _SMOOTH_BASES - {"re", "fs", "gp", "mrf", "sos"}
 #: Bases a factor-smooth interaction can copy per level: one penalty with a
 #: polynomial null space.
@@ -525,8 +528,9 @@ def _construct(
         Authored penalty order.
     knots : numpy.ndarray or None
         brms ``knots`` of the covariate, passed to the ``cr``, ``cs``,
-        ``cc``, ``ps`` and ``bs`` constructors as mgcv passes them; a
-        random-effect basis reads none, as in mgcv.
+        ``cc``, ``ps`` and ``bs`` constructors as mgcv passes them, or the
+        knot rows (knots by covariates) of a ``tp``, ``ts``, ``ds`` or
+        ``sos`` basis; a random-effect basis reads none, as in mgcv.
     xt : str, Mapping, or None
         mgcv's ``xt``: the base of a ``bs = "fs"`` smooth. Other bases
         read no ``xt`` entry and refuse one.
@@ -539,8 +543,7 @@ def _construct(
     Raises
     ------
     ValueError
-        If the basis, dimension, covariates, or knots are invalid, or knots
-        are given for a thin-plate basis.
+        If the basis, dimension, covariates, or knots are invalid.
     """
     if bs in {"ad", "so", "sf", "sw"}:
         raise ValueError(
@@ -651,15 +654,26 @@ def _construct(
         ):
             raise ValueError("bs='gp' takes numeric m = c(type, range, power)")
         return gp_smooth(x, k, tuple(float(value) for value in definition))
+    if bs == "ds":
+        definition = () if m is None else (m,) if not isinstance(m, tuple) else m
+        if len(definition) > 2 or any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in definition
+        ):
+            raise ValueError("bs='ds' takes numeric m = c(m, s)")
+        if definition and definition[0] != round(definition[0]):
+            raise ValueError("bs='ds' takes an integer penalty order m[1]")
+        return duchon_spline(
+            x,
+            k,
+            round(definition[0]) if definition else 2,
+            float(definition[1]) if len(definition) > 1 else 0.0,
+            knots=None if knots is None else knots.reshape(-1, x.shape[1]),
+        )
     order = _orders(m, bs)
     if bs in _UNIVARIATE and x.shape[1] != 1:
         raise ValueError(
             f"bs={bs!r} is a one-dimensional basis; use bs='tp' or t2() for several covariates"
-        )
-    if bs in {"tp", "ts"} and knots is not None:
-        raise ValueError(
-            f"knots for a bs={bs!r} smooth are not supported: mgcv builds its "
-            "thin-plate eigenbasis on the knots; use bs='cr', 'cc', 'ps' or 'bs'"
         )
     if bs in {"tp", "ts"}:
         assert isinstance(order, int)
@@ -670,6 +684,7 @@ def _construct(
             -order - 1 if drop else order,
             shrink=0.1 if bs == "ts" else None,
             drop_null=drop,
+            knots=None if knots is None else knots.reshape(-1, x.shape[1]),
         )
     if bs in {"cr", "cs"}:
         return cubic_regression(x, k, shrink=0.1 if bs == "cs" else None, knots=knots)
@@ -935,6 +950,44 @@ def _sphere_knots(names: tuple[str, ...]) -> npt.NDArray[np.float64] | None:
     return np.column_stack(given)
 
 
+def _joint_knots(names: tuple[str, ...], bs: str) -> npt.NDArray[np.float64] | None:
+    """Collect the brms ``knots`` of a smooth of several covariates.
+
+    Parameters
+    ----------
+    names : tuple[str, ...]
+        Covariate names of one smooth or one tensor margin.
+    bs : str
+        Basis name used in errors.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        Knot rows, shape knots by covariates, or None when no knots were
+        given for any covariate.
+
+    Raises
+    ------
+    ValueError
+        If knots are given for some covariates alone, which mgcv ignores,
+        or the knot vectors differ in length.
+    """
+    found = [smooth_knots(name) for name in names]
+    given = [values for values in found if values is not None]
+    if not given:
+        return None
+    if len(given) != len(names):
+        raise ValueError(
+            f"knots for a bs={bs!r} smooth of {list(names)} must be given for "
+            "every covariate; mgcv ignores knots for some of them"
+        )
+    if len({values.size for values in given}) != 1:
+        raise ValueError(
+            "components of knots relating to a single smooth must be of same length"
+        )
+    return np.column_stack(given)
+
+
 class Smooth(SmoothTransform):
     """The brms and mgcv ``s()`` term, retaining its training basis."""
 
@@ -961,9 +1014,9 @@ class Smooth(SmoothTransform):
             Basis dimension, negative for mgcv's default.
         bs : str
             Basis: ``tp`` (default), ``ts``, ``cr``, ``cs``, ``cc``, ``ps``,
-            ``bs``, ``re``, ``gp``, ``fs`` (one factor among the
-            covariates), ``mrf`` (one factor of regions), or ``sos``
-            (latitude and longitude in degrees).
+            ``bs``, ``re``, ``gp``, ``ds`` (Duchon spline), ``fs`` (one
+            factor among the covariates), ``mrf`` (one factor of regions),
+            or ``sos`` (latitude and longitude in degrees).
         m : int, tuple of int, or None
             Penalty order, as mgcv's ``m``.
         by : pandas.Series, numpy.ndarray, or None
@@ -1030,10 +1083,10 @@ class Smooth(SmoothTransform):
                 )
             # brms knots of the covariates.
             given = [name for name in names if smooth_knots(name) is not None]
-            if given and len(names) > 1 and bs != "sos":
+            if given and len(names) > 1 and bs != "sos" and bs not in _JOINT_KNOT_BASES:
                 raise ValueError(
-                    f"knots for {given} of a multivariate s() are not supported: "
-                    "mgcv builds its thin-plate eigenbasis on the knots"
+                    f"knots for {given} of a multivariate bs={bs!r} smooth are "
+                    "not supported"
                 )
             raw = _construct(
                 bs,
@@ -1042,6 +1095,8 @@ class Smooth(SmoothTransform):
                 m,
                 _sphere_knots(names)
                 if bs == "sos"
+                else _joint_knots(names, bs)
+                if len(names) > 1
                 else smooth_knots(given[0])
                 if given
                 else None,
@@ -1178,12 +1233,6 @@ class TensorSmooth(SmoothTransform):
                 raise ValueError(
                     "t2() ord must list interaction orders between 0 and the margin count"
                 )
-            # brms knots reach t2() margins in mgcv; not supported here.
-            given = [name for name in names if smooth_knots(name) is not None]
-            if given:
-                raise ValueError(
-                    f"knots for the t2() covariates {given} are not supported"
-                )
             margins = []
             start = 0
             for dim, basis, width, order in zip(dims, bss, ks, ms, strict=True):
@@ -1195,9 +1244,17 @@ class TensorSmooth(SmoothTransform):
                     or type(width) is not int
                 ):
                     raise ValueError("t2() m must give one integer order per margin")
+                # mgcv hands each margin the knots of its own covariates.
+                margin_names = names[start : start + dim]
                 margins.append(
                     _construct(
-                        basis, list(covariates[start : start + dim]), width, order
+                        basis,
+                        list(covariates[start : start + dim]),
+                        width,
+                        order,
+                        _joint_knots(margin_names, basis)
+                        if dim > 1
+                        else smooth_knots(margin_names[0]),
                     )
                 )
                 start += dim

@@ -420,7 +420,11 @@ def _parameter_effects(view: BayesianFit) -> list[tuple[str, ...]]:
         del parameter
     graph = view.predictor_graph
     if graph is not None and graph.inputs:
-        covariates = list(graph.inputs)
+        # The data columns of a custom family (brms vreal()/vint()) are
+        # addition-term data, which brms does not plot as effects.
+        custom = view.family.custom
+        reserved = {column for _, column in custom.data} if custom is not None else ()
+        covariates = [name for name in graph.inputs if name not in reserved]
         out.extend((v,) for v in covariates)
         out.extend(combinations(covariates, 2))
     unique: list[tuple[str, ...]] = []

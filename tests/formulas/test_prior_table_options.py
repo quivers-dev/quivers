@@ -91,8 +91,9 @@ def test_prior_tables_take_knots_as_brms():
     assert any(row.source == "user" for row in checked.rows)
     with pytest.raises(ValueError, match="increas"):
         default_prior(formula, data=frame, knots={"x": [0.0, 0.5, 0.2, 0.8, 1.0]})
-    with pytest.raises(ValueError, match="knots"):
-        default_prior("y ~ s(x, k = 5)", data=frame, knots=KNOTS)
+    # A thin-plate basis needs at least k knots.
+    with pytest.raises(ValueError, match="needs at least 6 knots, got 5"):
+        default_prior("y ~ s(x, k = 6)", data=frame, knots=KNOTS)
 
 
 def test_joint_prior_tables_take_both_options():
