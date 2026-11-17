@@ -209,16 +209,10 @@ from quivers.formulas._gp import (
     gp_runtime_parameters,
 )
 from quivers.formulas._grouping_emission import (
-    all_group_options,
     append_group_options,
-    by_correlations,
     joint_group_blocks,
-    level_scale,
-    mixing,
     option_observations,
     option_runtime_parameters,
-    prior_weight_score,
-    scale_index,
     membership_observations,
     membership_runtime_parameters,
 )
@@ -4125,46 +4119,18 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             )
         return result
 
-    def _append_indexed_correlations(
+    def _emit_joint_block(
         self,
-        formula: Formula,
-        group: str,
-        identity: str,
-        members: list[tuple[str, RandomTerm]],
+        law: GroupBlockLaw,
         statements: list[Statement],
         steps: list[ProgramStep],
-        *,
-        coordinate_axis: str | None = None,
-        coordinate_count: int | None = None,
-        coordinate_axes: Mapping[str, tuple[str, int]] | None = None,
-        member_axes: tuple[tuple[str, int] | None, ...] | None = None,
-        law: GroupBlockLaw | None = None,
     ) -> dict[tuple[str, str, str], LetExprNode]:
-        """Correlate scalar and indexed coefficients in one block.
+        """Emit one block ahead of the predictors that read it.
 
         Parameters
         ----------
-        formula : Formula
-            Full location predictor and response category metadata.
-        group : str
-            Shared grouping factor.
-        identity : str
-            Prior correlation-block identity.
-        coordinate_axis : str | None
-            Shared vector axis, or transition axes only for category-specific terms.
-        coordinate_count : int or None
-            Explicit extent of the shared component axis.
-        coordinate_axes : Mapping[str, tuple[str, int]] or None
-            Predictor-prefix axes and extents for mixed scalar/vector blocks.
-        member_axes : tuple or None
-            Exact per-member axes for a joint block spanning response graphs.
-            This preserves distinct category axes even when predictors share
-            a prefix or their cardinalities happen to coincide.
-        law : GroupBlockLaw or None
-            Planned law of the block; None for one scalar coordinate without
-            a known covariance, which is an independent coefficient.
-        members : list[tuple[str, RandomTerm]]
-            Prefix and term pairs in fitted block order.
+        law : GroupBlockLaw
+            Planned joint block.
         statements : list[Statement]
             Module objects receiving finite coordinate axes.
         steps : list[ProgramStep]
@@ -4173,271 +4139,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         Returns
         -------
         dict[tuple[str, str, str], LetExprNode]
-            Row gathers of scalar or transition-indexed group coefficients.
-
-        Raises
-        ------
-        ValueError
-            If the correlation prior is not an LKJ Cholesky distribution.
+            Each member's coefficient gathered at the response rows' levels.
         """
-        transitions = (
-            coordinate_count
-            if coordinate_count is not None
-            else (
-                self._category_count(formula, family=self._family.name) - 1
-                if coordinate_axis is not None
-                or any(
-                    term.column is not None and term.column.category_specific
-                    for _, term in members
-                )
-                else 1
-            )
-        )
-        if (
-            coordinate_axis is None
-            and self._family.ordinal is not None
-            and self._family.ordinal.kind == "hurdle_cumulative"
-        ):
-            transitions -= 1
-        axes = (
-            list(member_axes)
-            if member_axes is not None
-            else [
-                (coordinate_axes or {}).get(prefix)
-                or (
-                    (coordinate_axis, transitions)
-                    if coordinate_axis is not None
-                    else ("FormulaCutpoint", transitions)
-                    if term.column is not None and term.column.category_specific
-                    else None
-                )
-                for prefix, term in members
-            ]
-        )
-        if len(axes) != len(members):
-            raise ValueError("group member axes must align with every coefficient")
-        widths = [axis[1] if axis is not None else 1 for axis in axes]
-        dimension_size = sum(widths)
-        if law is None:
-            return {}
         if law.level.basis is not None:
             return self._append_covariance_coefficients(law, statements, steps)
-        qgroup = _qvr_name(group)
-        correlation = f"cor_{_qvr_name(identity)}"
-        dimension = f"FormulaCorrelation_{_qvr_name(identity)}"
-        self._append_finite_object(statements, dimension, dimension_size)
-        # brms gr(by =): one correlation matrix per by level.
-        option = all_group_options(self._predictor_items(formula)).get(group)
-        if option is None or not option.by_levels:
-            prior_draw = self._prior_draw(
-                correlation, self._correlation_prior, index=TypeName(name=dimension)
-            )
-            if prior_draw.morphism != "LKJCholesky":
-                raise ValueError("correlation priors must use LKJCholesky")
-            steps.append(prior_draw)
-        joint_raw = f"group_coefficients_{_qvr_name(identity)}"
-        layout = law.layout
-        self._emitted_groups.append(law)
-        scales: list[str] = []
-        innovation_cases: list[tuple[int, LetExprNode]] = []
-        coordinate = 0
-        for (prefix, term), width, axis in zip(members, widths, axes, strict=True):
-            qslope = _qvr_name(term.slope)
-            sigma = f"{prefix}sigma_{qgroup}_{qslope}"
-            innovation = f"{prefix}z_{qgroup}_{qslope}"
-            is_transition = axis is not None
-            steps.append(
-                self._prior_draw(
-                    sigma,
-                    self._random_scale_prior,
-                    index=TypeName(name=axis[0])
-                    if axis is not None
-                    else scale_index(option),
-                )
-            )
-            if self._reparameterize == "centered":
-                scales.append(sigma)
-                continue
-            plate_index = qgroup
-            if is_transition:
-                plate_index = f"{prefix}FormulaRandomCell_{qgroup}_{qslope}"
-                self._append_finite_object(
-                    statements, plate_index, len(formula.group_levels[group]) * width
-                )
-            if self._reparameterize == "noncentered":
-                steps.append(
-                    _draw(
-                        innovation,
-                        "Normal",
-                        (0.0, 1.0),
-                        index=TypeName(name=plate_index),
-                    )
-                )
-            for component in range(width):
-                coordinate_index: LetExprNode = _var("random_group")
-                if is_transition:
-                    coordinate_index = _add(
-                        _mul(
-                            coordinate_index, LetExprLiteral(value=width, integral=True)
-                        ),
-                        LetExprLiteral(value=component, integral=True),
-                    )
-                innovation_cases.append(
-                    (
-                        coordinate,
-                        _factor(
-                            (("random_group", qgroup),),
-                            body=_index(innovation, coordinate_index),
-                        ),
-                    )
-                )
-                coordinate += 1
-            scales.append(sigma)
-        # Form the block once, multiply once, then gather each member's
-        # coordinates. The source grows linearly in the joint dimension;
-        # it does not duplicate a triangular sum for every coefficient.
-        innovation_matrix = f"__formula_group_{_qvr_name(identity)}_innovations"
-        transformed_matrix = f"__formula_group_{_qvr_name(identity)}_transformed"
-        if self._reparameterize == "centered":
-            scale_cases = []
-            for member, sigma in zip(layout.members, scales, strict=True):
-                for component in range(member.width):
-                    scale_cases.append(
-                        (
-                            member.offset + component,
-                            _index(
-                                sigma, LetExprLiteral(value=component, integral=True)
-                            )
-                            if member.axis is not None
-                            else _var(sigma),
-                        )
-                    )
-            scale_vector = f"__formula_group_{_qvr_name(identity)}_scales"
-            factor = f"__formula_group_{_qvr_name(identity)}_factor"
-            zero = f"__formula_group_{_qvr_name(identity)}_zero"
-            steps.extend(
-                (
-                    _let(
-                        scale_vector,
-                        _factor(
-                            (("group_coordinate", dimension),), cases=tuple(scale_cases)
-                        ),
-                    ),
-                    _let(
-                        zero,
-                        _factor(
-                            (("group_coordinate", dimension),),
-                            body=LetExprLiteral(value=0.0),
-                        ),
-                    ),
-                    _let(
-                        factor,
-                        _factor(
-                            (("group_row", dimension), ("group_column", dimension)),
-                            body=_mul(
-                                _index(scale_vector, _var("group_row")),
-                                _index(
-                                    correlation, _var("group_row"), _var("group_column")
-                                ),
-                            ),
-                        ),
-                    ),
-                )
-            )
-            draw = _draw(
-                joint_raw,
-                "MultivariateNormal",
-                (zero, factor),
-                index=TypeName(name=qgroup),
-            )
-            steps.append(
-                draw.with_(
-                    axes=AxisSpec(over=(dimension,), iid_over=(qgroup,)),
-                    options=(
-                        OptionEntry(key="over", value=OptionName(value=dimension)),
-                        OptionEntry(key="iid_over", value=OptionName(value=qgroup)),
-                    ),
-                )
-            )
-        else:
-            steps.append(
-                _let(
-                    innovation_matrix,
-                    _factor(
-                        (("group_coordinate", dimension),),
-                        cases=tuple(innovation_cases),
-                    ),
-                )
-            )
-            steps.append(
-                _let(
-                    transformed_matrix,
-                    _call("matmul", _var(correlation), _var(innovation_matrix))
-                    if option is None or not option.by_levels
-                    else by_correlations(
-                        self,
-                        option,
-                        identity,
-                        dimension,
-                        innovation_matrix,
-                        steps,
-                    ),
-                )
-            )
-            weighted = prior_weight_score(
-                option,
-                f"__formula_group_{_qvr_name(identity)}_prior_weight",
-                tuple(
-                    f"{prefix}z_{qgroup}_{_qvr_name(term.slope)}"
-                    for prefix, term in members
-                ),
-            )
-            if weighted is not None:
-                steps.append(weighted)
-        result = {}
-        offset = 0
-        for position, ((prefix, term), width, axis) in enumerate(
-            zip(members, widths, axes, strict=True)
-        ):
-            is_transition = axis is not None
-            latent = prefix + (
-                f"alpha_{qgroup}"
-                if term.slope == "Intercept"
-                else f"beta_{qgroup}_{_qvr_name(term.slope)}"
-            )
-            member_coordinate: LetExprNode = LetExprLiteral(value=offset, integral=True)
-            scale: LetExprNode = _var(scales[position])
-            binders = (("random_group", qgroup),)
-            if is_transition:
-                assert axis is not None
-                member_coordinate = _add(member_coordinate, _var("category_logit"))
-                scale = _index(scales[position], _var("category_logit"))
-                binders = (
-                    ("category_logit", axis[0]),
-                    *binders,
-                )
-            if not is_transition:
-                scale = level_scale(option, scales[position], _var("random_group"))
-            coefficient_value = (
-                _index(joint_raw, _var("random_group"), member_coordinate)
-                if self._reparameterize == "centered"
-                else _mul(
-                    scale,
-                    _index(transformed_matrix, member_coordinate, _var("random_group")),
-                )
-            )
-            multiplier = mixing(option, _var("random_group"))
-            if multiplier is not None:
-                coefficient_value = _mul(multiplier, coefficient_value)
-            value = _factor(binders, body=coefficient_value)
-            steps.append(_let(latent, value))
-            result[(prefix, group, term.slope)] = (
-                _index(latent, _var("category_logit"), _var(f"{qgroup}_idx"))
-                if is_transition
-                else _index(latent, _var(f"{qgroup}_idx"))
-            )
-            offset += width
-        return result
+        return emit_group_block(self, law, statements, steps)
 
     def _transition_axis(self, formula: Formula) -> tuple[str, int] | None:
         """Read the axis of category-specific group coefficients.
@@ -4518,25 +4224,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for law in laws
             for member in law.members
         }
-        blocks = joint_group_blocks(
-            self._predictor_items(formula), self._group_covariances, supplied or {}
-        )
         result: dict[tuple[str, str, str], LetExprNode] = dict(supplied or {})
-        for (group, identity), members in blocks.items():
-            prefix, term = members[0]
-            law = self._group_plan[(prefix, group, term.slope)]
-            result.update(
-                self._append_indexed_correlations(
-                    formula,
-                    group,
-                    identity,
-                    members,
-                    statements,
-                    steps,
-                    coordinate_axes=coordinate_axes,
-                    law=law if law.placement == "joint" else None,
-                )
-            )
+        for law in laws:
+            if law.placement == "joint":
+                result.update(self._emit_joint_block(law, statements, steps))
         return result
 
     def _append_predictor(

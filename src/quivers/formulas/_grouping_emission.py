@@ -26,22 +26,18 @@ from quivers.dsl.ast_nodes import (
     DrawArgName,
     DrawArgNamed,
     DrawArgScalar,
-    LetExprBinOp,
-    LetExprIndex,
     LetExprLiteral,
     ProgramStep,
     SampleStep,
-    ScoreStep,
     Statement,
     TypeName,
-    LetExprNode,
     QiecIndexName,
     QiecShapeIndex,
     QiecTypeApplication,
     QiecTypeName,
     QiecValueParameter,
 )
-from quivers.formulas._ast import _add, _call, _factor, _index, _let, _mul, _sub, _var
+from quivers.formulas._ast import _call, _factor, _index, _let, _mul, _var
 from quivers.formulas._category_formulas import component_valued_prefixes
 from quivers.formulas._grouping import (
     GroupLevelOptions,
@@ -555,126 +551,6 @@ def append_group_options(
         )
 
 
-def scale_index(option: GroupLevelOptions | None) -> TypeName | None:
-    """Index a group-level standard deviation by the ``by`` levels.
-
-    Parameters
-    ----------
-    option : GroupLevelOptions or None
-        The coefficient's grouping options.
-
-    Returns
-    -------
-    TypeName or None
-        The ``by`` axis, or None for one standard deviation.
-    """
-    if option is None or not option.by_levels:
-        return None
-    return TypeName(name=by_axis(option.group))
-
-
-def level_scale(
-    option: GroupLevelOptions | None, sigma: str, level: LetExprNode
-) -> LetExprNode:
-    """Read a coefficient's standard deviation at one grouping level.
-
-    Parameters
-    ----------
-    option : GroupLevelOptions or None
-        The coefficient's grouping options.
-    sigma : str
-        Standard-deviation site.
-    level : LetExprNode
-        Grouping level.
-
-    Returns
-    -------
-    LetExprNode
-        ``sigma``, or ``sigma[by[level]]`` with ``by``.
-    """
-    if option is None or not option.by_levels:
-        return _var(sigma)
-    return LetExprIndex(
-        array=_var(sigma), indices=(_index(by_input(option.group), level),)
-    )
-
-
-def mixing(option: GroupLevelOptions | None, level: LetExprNode) -> LetExprNode | None:
-    """Read the Student-t multiplier ``dfm`` at one grouping level.
-
-    Parameters
-    ----------
-    option : GroupLevelOptions or None
-        The coefficient's grouping options.
-    level : LetExprNode
-        Grouping level.
-
-    Returns
-    -------
-    LetExprNode or None
-        ``dfm[level]`` for Student-t effects, None otherwise.
-    """
-    if option is None or not option.options.student:
-        return None
-    return _index(student_sites(option.group)[2], level)
-
-
-_LOG_ROOT_TWO_PI = 0.9189385332046727
-
-
-def prior_weight_score(
-    option: GroupLevelOptions | None, name: str, innovations: tuple[str, ...]
-) -> ScoreStep | None:
-    """Weight the standard-normal prior of each level's innovations, as brms ``pw``.
-
-    brms adds ``PW_j * std_normal_lpdf(z_j)`` per level. The innovations keep
-    their unit-weight standard-normal draws, so this factor adds
-    ``(PW_j - 1) * std_normal_lpdf(z_j)``.
-
-    Parameters
-    ----------
-    option : GroupLevelOptions or None
-        The block's grouping options.
-    name : str
-        Binder of the score.
-    innovations : tuple[str, ...]
-        Standard-normal level-indexed sites of the block.
-
-    Returns
-    -------
-    ScoreStep or None
-        The log-density factor, or None without prior weights.
-    """
-    if option is None or not option.prior_weights or not innovations:
-        return None
-    level = _var("weighted_level")
-    density = _add(
-        *(
-            _sub(
-                _mul(
-                    LetExprLiteral(value=-0.5),
-                    _mul(_index(site, level), _index(site, level)),
-                ),
-                LetExprLiteral(value=_LOG_ROOT_TWO_PI),
-            )
-            for site in innovations
-        )
-    )
-    value = _call(
-        "sum",
-        _factor(
-            (("weighted_level", _qvr_name(option.group)),),
-            body=_mul(
-                _sub(
-                    _index(weight_input(option.group), level), LetExprLiteral(value=1.0)
-                ),
-                density,
-            ),
-        ),
-    )
-    return ScoreStep(name=name, value=value)
-
-
 def option_runtime_parameters(
     predictors: Iterable[tuple[str, str, Formula]],
 ) -> tuple[QiecValueParameter, ...]:
@@ -818,82 +694,6 @@ def by_correlation_sites(identity: str, option: GroupLevelOptions) -> tuple[str,
     return tuple(
         f"cor_{_qvr_name(identity)}_by{index + 1}"
         for index in range(len(option.by_levels))
-    )
-
-
-def by_correlations(
-    lens: FormulaToQVRModule,
-    option: GroupLevelOptions,
-    identity: str,
-    dimension: str,
-    innovations: str,
-    steps: list[ProgramStep],
-) -> LetExprNode:
-    """Correlate each level's innovations with the factor of its ``by`` level.
-
-    brms's ``scale_r_cor_by`` multiplies the innovations of level ``j`` by
-    ``L[by_j]``, one LKJ Cholesky factor per ``by`` level. Each factor has its
-    own site and the configured correlation prior; the product costs
-    O(levels times by levels times the block dimension squared).
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the prior configuration.
-    option : GroupLevelOptions
-        The block's grouping options.
-    identity : str
-        Correlation-block identity.
-    dimension : str
-        Finite axis of the block's coordinates.
-    innovations : str
-        Binding of the coordinate-by-level standard-normal innovations.
-    steps : list[ProgramStep]
-        Program steps receiving the correlation draws.
-
-    Returns
-    -------
-    LetExprNode
-        The correlated innovations, coordinate by level.
-
-    Raises
-    ------
-    ValueError
-        If the correlation prior is not an LKJ Cholesky distribution.
-    """
-    qgroup = _qvr_name(option.group)
-    level, row, column = _var("random_group"), _var("group_coordinate"), _var("k")
-    terms = []
-    for index, site in enumerate(by_correlation_sites(identity, option)):
-        draw = lens._prior_draw(
-            site, lens._correlation_prior, index=TypeName(name=dimension)
-        )
-        if draw.morphism != "LKJCholesky":
-            raise ValueError("correlation priors must use LKJCholesky")
-        steps.append(draw)
-        product = _call(
-            "sum",
-            _factor(
-                (("k", dimension),),
-                body=_mul(
-                    _index(site, row, column), _index(innovations, column, level)
-                ),
-            ),
-        )
-        terms.append(
-            _call(
-                "select",
-                LetExprBinOp(
-                    op="==",
-                    left=_index(by_input(option.group), level),
-                    right=LetExprLiteral(value=index, integral=True),
-                ),
-                product,
-                LetExprLiteral(value=0.0),
-            )
-        )
-    return _factor(
-        (("group_coordinate", dimension), ("random_group", qgroup)), body=_add(*terms)
     )
 
 

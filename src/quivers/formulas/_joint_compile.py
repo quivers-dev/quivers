@@ -45,7 +45,10 @@ from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
 from quivers.formulas._group_law import GroupBlockLaw, renamed_law
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_plan import plan_joint_block
-from quivers.formulas._grouping_emission import all_group_options
+from quivers.formulas._grouping_emission import (
+    all_group_options,
+    check_group_options,
+)
 from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
     apply_prior_plan,
@@ -921,6 +924,7 @@ def _shared_groups(
     labels: dict[str, tuple[str, ...]] = {}
     predictors: list[tuple[str, str, Formula]] = []
     supplied: dict[str, _GroupValues] = {name: {} for name in components}
+    check_group_options(emitter, emitter._predictor_items(grouping))
     for (group, identity), members in blocks.items():
         if len({item[0] for item in members}) < 2:
             continue
@@ -948,16 +952,8 @@ def _shared_groups(
                     for index in lens._family.response.coordinate_indices(names)
                 )
             predictors.append((parameter, actual_prefix, predictor))
-        values = emitter._append_indexed_correlations(
-            grouping,
-            group,
-            "joint_shared_" + identity,
-            actual,
-            statements,
-            steps,
-            coordinate_count=1,
-            member_axes=tuple(axes),
-            law=plan_joint_block(
+        values = emitter._emit_joint_block(
+            plan_joint_block(
                 group,
                 "joint_shared_" + identity,
                 [
@@ -974,6 +970,8 @@ def _shared_groups(
                 correlate=True,
                 parameterization=emitter._reparameterize,
             ),
+            statements,
+            steps,
         )
         for name, _parameter, prefix, _predictor, term in members:
             actual_prefix = "response_" + _qvr_name(name) + "__" + prefix
