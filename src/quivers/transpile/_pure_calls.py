@@ -69,6 +69,7 @@ from quivers.qiec.terms import (
     Resume,
     Return,
     Rowwise,
+    CholeskyFactor,
     TensorValue,
     Value,
     Var,
@@ -761,6 +762,11 @@ def _expression(
     if isinstance(value, Rowwise):
         return LetExprCall(
             func=value.operator,
+            args=(_expression(value.value, cards, target, program, families=families),),
+        )
+    if isinstance(value, CholeskyFactor):
+        return LetExprCall(
+            func="cholesky",
             args=(_expression(value.value, cards, target, program, families=families),),
         )
     if isinstance(value, Comprehension):

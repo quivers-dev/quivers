@@ -334,7 +334,7 @@ choice_fit = fit(
 
 ## A finite mixture of regressions {#a-finite-mixture-regression}
 
-Each observation comes from one of three Gaussian components, and `x` shifts every component's location:
+Each observation comes from one of three Gaussian components, and `x` shifts the component locations:
 
 ```python
 rng = np.random.default_rng(8)
@@ -356,7 +356,7 @@ mixture_fit = fit(
 )
 ```
 
-The formula intercept is the common location. The compiler centers three component offsets around it, maps two free contrasts of the logits and of the offsets through an orthonormal Helmert basis ([contrasts](https://en.wikipedia.org/wiki/Contrast_(statistics))), turns the three logits into mixture weights, and learns one positive scale for each component. `MixtureNormal` sums over the component assignment inside the likelihood, so the guide has only continuous sites. The components are exchangeable (label switching [@stephens2000labels]), so summarize them by quantities invariant to permutation, or by a labeling convention the application motivates. The SVI budgets of 250 steps keep these fits short. Raise them and check diagnostics before reading either posterior.
+`family="mixture"` with `mixture_components=3` is brms's `mixture(gaussian, nmix = 3)`: each component has its own intercept, slope, and scale (`mu1`, `sigma1`, ...), and the mixing proportions share one Dirichlet simplex `theta`. Relabelling the components leaves the likelihood unchanged [@stephens2000labels], so the intercepts are ordered: the second and third are the first plus positive gaps, which removes the relabelled modes from the parameter space. `MixtureNormal` sums over the component assignment inside the likelihood, so the guide has only continuous sites, and `mixture_fit.pp_mixture()` returns each row's posterior component probabilities. The [mixture guide](../../guides/formula-mixtures.md) covers heterogeneous components, predicted proportions, and the brms correspondence. The SVI budgets of 250 steps keep these fits short. Raise them and check diagnostics before reading either posterior.
 
 ## Model comparison with PSIS-LOO
 
@@ -440,7 +440,7 @@ predictive mean: 0.314
 ppp (mean):    0.527
 ```
 
-A p-value near 0.5 puts the observed mean in the middle of the replicated distribution. Values near 0 or 1 suggest that the model misses the statistic. The mean of a Bernoulli outcome is a weak test, since a model with an intercept tends to reproduce it. The built-in statistics are `mean`, `median`, `sd`, `var`, `min`, `max`, `q05`, and `q95`, and a callable is also accepted. `by=` computes the check separately for each level of a named dimension of the data.
+A p-value near 0.5 puts the observed mean in the middle of the replicated distribution. Values near 0 or 1 suggest that the model misses the statistic. The mean of a Bernoulli outcome is a weak test, since a model with an intercept tends to reproduce it. The built-in statistics are `mean`, `median`, `sd`, `var`, `min`, `max`, `mad`, `IQR`, `q05`, and `q95`, and a callable is also accepted. `sd` and `var` divide by $n - 1$, as in R. `by=` computes the check separately for each level of a named dimension of the data.
 
 ## Recovering the formula
 

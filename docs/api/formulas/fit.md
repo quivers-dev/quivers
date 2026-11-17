@@ -197,6 +197,16 @@ The [executable workflow](../../guides/analysis-data-and-formulas.md#raw-likelih
 and [shared API](../diagnostics/posterior.md) describe score units, optional
 ArviZ dependencies, and the distinction between uncertainty and convergence.
 
+## Smooth contributions
+
+`conditional_smooths(fitted, term, new_data)` returns one fitted `s()`,
+`t2()`, or approximate `gp()` term's posterior contribution to its linear predictor at explicit
+rows, as brms's `conditional_smooths` reports it. The
+[structured predictor guide](../../guides/formula-special-predictors.md)
+states the bases and their retained prediction state.
+
+::: quivers.formulas.conditional_smooths
+
 ## Named initial values
 
 `fit(..., initial_values={...})` initializes latent sites by their generated
@@ -258,5 +268,93 @@ remains signed 64-bit. The same metadata and validation apply
 to fitting and new-data prediction, including the zero-inflated binomial
 and beta-binomial variants. See the
 [count-family example](../../guides/analysis-data-and-formulas.md#zero-inflated-and-hurdle-counts).
+
+## brms post-processing
+
+`BayesianFit` and `MultivariateFit` carry brms's summary, residual, accessor,
+and leave-one-out methods: `summary`, `fixef`, `ranef`, `coef`, `varcorr`,
+`vcov`, `variables`, `posterior_summary`, `posterior_interval`, `predict`,
+`fitted`, `residuals`, `predictive_error`, `predictive_interval`, `ndraws`,
+`nchains`, `niterations`, `nobs`, `ngrps`, `rhat`, `neff_ratio`,
+`nuts_params`, `log_posterior`, `loo`, `loo_moment_match`, `loo_subsample`,
+`waic`, `psis`, `loo_predict`, `loo_epred`, `loo_linpred`,
+`loo_predictive_interval`, `loo_r2`, `kfold`, and `add_criterion`. The
+[analysis guide](../../guides/analysis-fitting-and-diagnostics.md#brms-summaries-residuals-and-predictive-criteria)
+states their brms counterparts and the deliberate differences.
+
+::: quivers.formulas.FitSummary
+
+::: quivers.formulas.VarCorrBlock
+
+::: quivers.formulas.KFoldResult
+
+::: quivers.formulas.KFoldPrediction
+
+::: quivers.formulas.SinglePredictionOptions
+
+::: quivers.formulas.JointPredictionOptions
+
+::: quivers.formulas.kfold_predict
+
+::: quivers.formulas.loo_compare
+
+::: quivers.formulas.loo_model_weights
+
+::: quivers.formulas.model_weights
+
+::: quivers.formulas._postprocess_methods.SinglePostprocess
+
+::: quivers.formulas._postprocess_methods.JointPostprocess
+
+## brms evidence, effects, and predictive checks
+
+`BayesianFit` and `MultivariateFit` carry brms's marginal-likelihood,
+conditional-effects, predictive-check and MCMC-plot methods:
+`bridge_sampler`, `bayes_factor`, automatic `conditional_effects`,
+`conditional_smooths`, `pp_check`, `mcmc_plot`, `plot`, and `pairs`. The
+functions `post_prob`, `posterior_average`, `pp_average`, and
+`make_conditions` take several fits or a data frame. The
+[analysis guide](../../guides/analysis-fitting-and-diagnostics.md#evidence-effects-and-predictive-checks)
+states their brms counterparts and the deliberate differences.
+
+::: quivers.formulas.bridge_sampler
+
+::: quivers.formulas.bayes_factor
+
+::: quivers.formulas.post_prob
+
+::: quivers.formulas.BayesFactor
+
+::: quivers.formulas.posterior_average
+
+::: quivers.formulas.pp_average
+
+::: quivers.formulas.PosteriorAverage
+
+::: quivers.formulas.PredictionAverage
+
+::: quivers.formulas.make_conditions
+
+::: quivers.formulas.BrmsConditionalEffects
+
+::: quivers.formulas.EffectFrame
+
+::: quivers.formulas.pp_check
+
+::: quivers.formulas.PPCheck
+
+::: quivers.formulas.mcmc_plot
+
+::: quivers.formulas._evidence
+
+::: quivers.formulas._model_averaging
+
+::: quivers.formulas._brms_effects
+
+::: quivers.formulas._pp_check
+
+::: quivers.formulas._mcmc_plot
+
+::: quivers.formulas._evidence_effects.EvidenceEffectsMethods
 
 ::: quivers.formulas._fit

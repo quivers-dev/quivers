@@ -320,3 +320,38 @@ def test_raw_scaled_measure_mass_and_gradients_survive_independent_event_composi
     wanted = torch.autograd.grad(expected, weights)[0]
     torch.testing.assert_close(got, wanted)
     torch.testing.assert_close(log_mass(Normalize(joint)), torch.zeros_like(mass))
+
+
+@pytest.mark.parametrize(
+    ("family", "arguments"),
+    [
+        ("Normal", {"loc": 0, "scale": 1}),
+        ("Uniform", {"low": 0, "high": 2}),
+        ("HalfNormal", {"scale": 1}),
+        ("Gamma", {"concentration": 2, "rate": 1}),
+    ],
+)
+def test_integer_literals_of_real_parameters_draw_floating_values(family, arguments):
+    carrier = Euclidean(name="scalar", dim=1)
+
+    def fixed(values):
+        return inline.make_inline_distribution(
+            family,
+            tuple(
+                DrawArgNamed(parameter=k, value=DrawArgScalar(value=v))
+                for k, v in values.items()
+            ),
+            carrier,
+        )[0]
+
+    x = torch.zeros(3, 1)
+    torch.manual_seed(0)
+    draw = fixed(arguments).rsample(x)
+    torch.manual_seed(0)
+    reference = fixed({k: float(v) for k, v in arguments.items()}).rsample(x)
+    assert draw.dtype == torch.get_default_dtype()
+    torch.testing.assert_close(draw, reference)
+    torch.testing.assert_close(
+        fixed(arguments).log_prob(x, reference),
+        fixed({k: float(v) for k, v in arguments.items()}).log_prob(x, reference),
+    )

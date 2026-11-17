@@ -122,8 +122,8 @@ def _positive_left_logcdf(h: Tensor, alpha: Tensor) -> Tensor:
     return torch.where(central, first, torch.where(near_zero, second, third))
 
 
-def _positive_logcdf(z: Tensor, alpha: Tensor) -> Tensor:
-    """Combine stable left probabilities with their complementary right tails.
+def _positive_log_tails(z: Tensor, alpha: Tensor) -> tuple[Tensor, Tensor]:
+    """Score both tails for nonnegative skewness, each from its small side.
 
     Parameters
     ----------
@@ -134,14 +134,21 @@ def _positive_logcdf(z: Tensor, alpha: Tensor) -> Tensor:
 
     Returns
     -------
-    Tensor
-        Log cumulative probabilities.
+    tuple[Tensor, Tensor]
+        Log cumulative and log survival probabilities. Below zero the
+        cumulative probability is computed directly and the survival is its
+        complement; above zero the survival is computed directly, so it
+        stays finite where the cumulative probability rounds to one.
     """
     h = z.abs()
     left = _positive_left_logcdf(h, alpha)
     normal = torch.special.log_ndtr(-h)
     log_survival = normal + torch.log(2 - torch.exp((left - normal).clamp_max(0)))
-    return torch.where(z <= 0, left, _log1mexp(log_survival))
+    lower = z <= 0
+    return (
+        torch.where(lower, left, _log1mexp(log_survival)),
+        torch.where(lower, _log1mexp(left), log_survival),
+    )
 
 
 def _log_density(z: Tensor, alpha: Tensor) -> Tensor:
@@ -190,8 +197,8 @@ class _SkewLogCDF(torch.autograd.Function):
         """
         reflected = alpha < 0
         point = torch.where(reflected, -z, z)
-        positive = _positive_logcdf(point, alpha.abs())
-        return torch.where(reflected, _log1mexp(positive), positive)
+        log_cdf, log_survival = _positive_log_tails(point, alpha.abs())
+        return torch.where(reflected, log_survival, log_cdf)
 
     @staticmethod
     def setup_context(ctx, inputs, output):

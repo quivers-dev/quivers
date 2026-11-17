@@ -52,6 +52,7 @@ from quivers.qiec.terms import (
     TableMap,
     Reduction,
     Rowwise,
+    CholeskyFactor,
     Comprehension,
     LetBinding,
     LetValue,
@@ -637,6 +638,11 @@ def substitute_value(value: Value, substitution: StaticSubstitution) -> Value:
     if isinstance(value, Rowwise):
         return Rowwise(
             operator=value.operator,
+            value=substitute_value(value.value, substitution),
+            result_type=substitute_type(value.result_type, substitution),
+        )
+    if isinstance(value, CholeskyFactor):
+        return CholeskyFactor(
             value=substitute_value(value.value, substitution),
             result_type=substitute_type(value.result_type, substitution),
         )

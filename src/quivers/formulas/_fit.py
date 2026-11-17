@@ -14,7 +14,9 @@ to produce canonical ``.qvr`` source.
 
 from __future__ import annotations
 
+import inspect
 import math
+import re
 from dataclasses import dataclass
 import numpy as np
 from quivers._count_capacity import _MAX_EXACT_COUNT
@@ -37,6 +39,15 @@ from quivers.dsl.emit import module_to_source
 from quivers.dsl.ast_nodes import Module
 from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas.family import Family, families
+from quivers.formulas._mixture import mixture_component_count, mixture_distributional
+from quivers.formulas._mixture_predict import pp_mixture
+from quivers.formulas._category_formulas import (
+    category_distributional,
+    check_scale_formulas,
+    is_category_parameter,
+    main_without_terms,
+    requires_category_predictors,
+)
 from quivers.formulas.formula import (
     Formula,
     FormulaData,
@@ -60,6 +71,53 @@ from quivers.formulas._predictor_graph import (
 )
 
 from quivers.formulas._prediction import FormulaPredictionPlan
+from quivers.formulas._grouping import resolve_group_covariances
+from quivers.formulas._latent_effects import (
+    formula_families,
+    latent_observations,
+)
+from quivers.formulas._autocor import (
+    AutocorMatrix,
+    autocor_binding,
+    autocor_joint,
+    autocor_linear_predictor,
+    bind_autocor_terms,
+    autocor_log_likelihood,
+    split_autocor_terms,
+)
+
+# Joint (multivariate) formulas: typed overload contracts and dispatch target.
+from typing import overload
+from quivers.formulas._joint_options import FormulaFitOptions, JointFitOptions
+from quivers.formulas._multivariate import (
+    MultivariateFormula,
+    ResponseModel,
+    is_mvbind,
+    uses_missing_syntax,
+)
+
+# brms brm(bf(y ~ x, sigma ~ z)): a single-response bf as the formula.
+from quivers.formulas._single_response import single_response
+from quivers.formulas._ordinal_coding import CategoryCoding, family_category_coding
+from quivers.formulas._brms_hypothesis import (
+    HypothesisInput,
+    HypothesisTable,
+    fit_hypothesis,
+    is_brms_hypothesis,
+)
+from quivers.formulas._threshold_groups import (
+    absent_thresholds,
+    threshold_family,
+    threshold_kinds,
+)
+
+# brms inits(): the chains' initial values, read at the driver.
+from quivers.formulas._initial_values import report_initial_values
+
+# gr(by = ) and gr(dist = "student"): per-level structure of group coefficients.
+from quivers.formulas._group_layout import GroupLevelStructure
+from quivers.formulas._grouping_emission import group_level_structures
+
 from quivers.formulas._group_covariance import GroupCovariance
 from quivers.formulas._response import (
     count_totals,
@@ -67,6 +125,42 @@ from quivers.formulas._response import (
     response_tensor,
 )
 from quivers.formulas._priors import PriorInput, PriorSet, normalize_priors
+
+# brms sampler and fitting controls.
+from quivers.formulas._fit_controls import (
+    Algorithm,
+    FileRefit,
+    InferenceControls,
+    InitSpec,
+    SamplerControl,
+    chain_initialization,
+    mcmc_kernel,
+    needs_refit,
+    resolve_algorithm,
+    sampler_control,
+)
+
+# Pathfinder variational inference.
+from quivers.formulas._fit_controls import (
+    FitMethod,
+    PathfinderOptions,
+    checked_cores,
+    pathfinder_driver,
+    pathfinder_options,
+)
+import quivers.modeling.artifact as artifact_store
+
+from quivers.formulas._formula_options import checked_unused, sparse_center
+
+# brms prior policy, improper flat laws, and derived coefficient sites.
+from quivers.formulas._brms_priors import (
+    DefaultPriorPolicy,
+    PriorTable,
+    prior_table,
+    require_proper,
+    user_selection,
+    with_flat_catalog,
+)
 from quivers.formulas._response_modifiers import (
     ResponseDraws,
     ExpectationOptions,
@@ -75,9 +169,7 @@ from quivers.formulas._response_modifiers import (
 )
 from quivers.inference import (
     ELBO,
-    HMCKernel,
     MCMC,
-    NUTSKernel,
     SVI,
     AutoNormalGuide,
     PriorDraws,
@@ -97,8 +189,36 @@ from quivers.diagnostics.contrast import ContrastExpression
 from quivers.diagnostics.hypothesis import HypothesisSummary
 from quivers.diagnostics.density import PointNullSpec
 
+# brms post-processing methods (summaries, accessors, LOO family) and stored criteria.
+from quivers.diagnostics.elpd import NO_CRITERIA, ELPDEstimate
+from quivers.formulas._postprocess_methods import SinglePostprocess
 
-class BayesianFit(ValueModel):
+# brms evidence, effects and predictive checks.
+from quivers.formulas._evidence_effects import EvidenceEffectsMethods
+from quivers.formulas._brms_effects import (
+    BrmsConditionalEffects,
+    ConditionalEffectsOptions,
+    EffectMethod,
+    automatic_conditional_effects,
+    grid_options,
+)
+
+# Pathfinder draws report variational provenance.
+from quivers.inference.pathfinder import draw_provenance
+
+# brms knots and drop_unused_levels.
+from quivers.formulas._data_options import Knots, formula_data_options
+
+# brms cores: chains in worker processes.
+from quivers.inference.mcmc.parallel import parallel_chains, run_chains
+from quivers.formulas._parallel_chains import (
+    ChainsRan,
+    FormulaChainWorker,
+    assigned_chains,
+)
+
+
+class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
     """A fitted Bayesian regression: the compiled program, the
     parsed formula, the family, the user-supplied data, and the
     posterior samples.
@@ -141,6 +261,14 @@ class BayesianFit(ValueModel):
     prediction_plan : FormulaPredictionPlan or None
         Live fitted evaluators for new-data prediction. The versioned runtime
         plan is held by identity and explicitly refuses durable serialization.
+    criteria : Mapping[str, ELPDEstimate or torch.Tensor]
+        Criteria stored by `add_criterion`: ELPD estimates, or R-squared draws.
+    default_priors : {"quivers", "brms"}
+        Default prior policy the model was compiled with.
+    center : bool or None
+        brms intercept centering option.
+    decomp : {"none", "QR"}
+        brms population-coefficient decomposition.
 
     Notes
     -----
@@ -200,6 +328,14 @@ class BayesianFit(ValueModel):
     refit_recipe: (
         RefitRecipe[IntoDataFrame, Mapping[str, object], BayesianFit] | None
     ) = dx.field(default=None, opaque=True, extras=OPAQUE_BY_IDENTITY)
+    # Criteria stored by add_criterion (brms ``x$criteria``), kept in artifacts.
+    criteria: Mapping[str, ELPDEstimate | torch.Tensor] = dx.field(
+        default=NO_CRITERIA, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    # brms prior policy and population-coordinate options.
+    default_priors: DefaultPriorPolicy = "quivers"
+    center: bool | None = None
+    decomp: Literal["none", "QR"] = "none"
 
     def update(
         self, data: IntoDataFrame | None = None, **overrides: object
@@ -307,42 +443,118 @@ class BayesianFit(ValueModel):
         tensors are reused without recompilation. The fitted posterior is
         neither sampled nor modified. Seeded drivers restore the caller's RNG.
         """
+        # An improper flat prior has no normalizing constant.
+        self._require_proper("SMC evidence")
         return sampler.run(self.program, torch.zeros(1, 1), dict(self.observations))
 
+    def _require_proper(self, purpose: str) -> None:
+        """Refuse an operation needing a normalized prior on every site.
+
+        Parameters
+        ----------
+        purpose : str
+            Operation named in the error.
+
+        Raises
+        ------
+        ValueError
+            If a site carries the improper flat prior.
+        """
+        if self.prediction_plan is not None:
+            require_proper(self.prediction_plan.module, purpose)
+
+    def prior_summary(self) -> PriorTable:
+        """Tabulate the effective prior of every parameter, as brms ``prior_summary``.
+
+        Returns
+        -------
+        PriorTable
+            brms's columns, with ``source`` ``user`` for rules given to `fit`.
+
+        Raises
+        ------
+        ValueError
+            If the fit retains no emission.
+        """
+        plan = self.prediction_plan
+        if plan is None:
+            raise ValueError("prior_summary requires the fit's retained emission")
+        return prior_table(
+            plan.module,
+            plan.prior_targets,
+            user_selection(self.priors, plan.prior_targets),
+            policy=self.default_priors,
+        )
+
+    @overload
     def conditional_effects(
         self,
         grid: PredictionGrid,
         *,
-        method: Literal["epred", "linpred", "predict"] = "epred",
+        method: EffectMethod = ...,
+        parameter: str = ...,
+        transform: bool = ...,
+        **options: Unpack[ConditionalEffectsOptions],
+    ) -> ConditionalEffects: ...
+
+    @overload
+    def conditional_effects(
+        self,
+        grid: str | Sequence[str] | None = ...,
+        *,
+        method: EffectMethod = ...,
+        parameter: str = ...,
+        transform: bool = ...,
+        **options: Unpack[ConditionalEffectsOptions],
+    ) -> BrmsConditionalEffects: ...
+
+    def conditional_effects(
+        self,
+        grid: PredictionGrid | str | Sequence[str] | None = None,
+        *,
+        method: EffectMethod = "epred",
         parameter: str = "mu",
         transform: bool = False,
-        **options: Unpack[ExpectationOptions],
-    ) -> ConditionalEffects:
+        **options: Unpack[ConditionalEffectsOptions],
+    ) -> ConditionalEffects | BrmsConditionalEffects:
         """Predict one joint grid and retain conditional or empirical effects.
+
+        Without a grid, or with brms ``effects`` such as ``"x"`` or
+        ``"x:z"``, this computes brms's automatic conditional effects
+        (`quivers.formulas._brms_effects.brms_conditional_effects`): default
+        effects and conditions, grids, and labeled summary frames.
 
         Parameters
         ----------
-        grid : PredictionGrid
+        grid : PredictionGrid or str or Sequence[str] or None
             Explicit effect coordinates and conditioning/reference rows,
-            constructed with `quivers.diagnostics.prediction_grid`.
-        method : {"epred", "linpred", "predict"}
-            Expected responses, linear predictors, or response replications.
+            constructed with `quivers.diagnostics.prediction_grid`; or brms
+            ``effects`` (None for brms's default effects).
+        method : str
+            ``epred``, ``linpred``, ``predict``, or brms's names
+            ``posterior_epred``, ``posterior_linpred``, ``posterior_predict``.
             Expectations average response laws, not sampled replications.
         parameter : str
             Predictor selected only for linpred; other methods require mu.
         transform : bool
             Apply the inverse link only for linpred.
-        **options : ExpectationOptions
+        **options : ConditionalEffectsOptions
             Existing prediction keywords, including varying-effect selectors,
             new-level policies, trial/neural inputs, draw budget, and seed.
             The grid supplies new_data; mc_samples applies only to epred.
+            Without a grid, brms's ``conditional_effects`` arguments
+            (``conditions``, ``int_conditions``, ``re_formula`` defaulting to
+            ``"~0"``, ``prob``, ``robust``, ``spaghetti``, ``surface``,
+            ``categorical``, ``ordinal``, ``resolution``, ``select_points``,
+            ``too_far``, ``dpar``, ``nlpar``, ``ndraws``, ``draw_ids``, ``seed``).
 
         Returns
         -------
-        ConditionalEffects
+        ConditionalEffects or BrmsConditionalEffects
             Joint chain/draw/point/condition/event predictions, with reference
             rows averaged within each draw only for empirical grids. Retained
             draws support paired contrasts, covariance, and common summaries.
+            Without a grid, brms's labeled effect frames.
 
         Raises
         ------
@@ -350,15 +562,29 @@ class BayesianFit(ValueModel):
             If the method/options or grid are invalid, or the existing fitted
             prediction contract rejects a predictor, group, or response law.
         """
+        # brms automatic conditional effects.
+        if not isinstance(grid, PredictionGrid):
+            return automatic_conditional_effects(
+                self,
+                grid,
+                method=method,
+                parameter=parameter,
+                transform=transform,
+                resp=None,
+                options=options,
+            )
+        expectation = grid_options(options)
+        short = method.removeprefix("posterior_")
         if "new_data" in options:
             raise ValueError("conditional_effects takes new_data from its grid")
-        if method not in {"epred", "linpred", "predict"}:
+        if short not in {"epred", "linpred", "predict"}:
             raise ValueError("method must be epred, linpred, or predict")
+        method = cast(Literal["epred", "linpred", "predict"], short)
         if method != "linpred" and (parameter != "mu" or transform):
             raise ValueError("parameter and transform apply only to linpred effects")
         if method != "epred" and "mc_samples" in options:
             raise ValueError("mc_samples applies only to epred effects")
-        request = options.copy()
+        request = expectation.copy()
         request["new_data"] = grid.to_frame()
         if method == "epred":
             predictions = self.posterior_epred(**request)
@@ -375,11 +601,7 @@ class BayesianFit(ValueModel):
                 predictions = self.posterior_predict(**prediction_options)
         return grid.result(
             predictions,
-            kind="mcmc"
-            if isinstance(self.posterior, MCMCResult)
-            else "prior"
-            if isinstance(self.posterior, PriorDraws)
-            else "variational",
+            kind=draw_provenance(self.posterior),
             method=method,
             labels=self.predictor_labels(parameter)
             if method == "linpred"
@@ -412,6 +634,7 @@ class BayesianFit(ValueModel):
         """
         from quivers.inference.prior import prior_draws
 
+        self._require_proper("prior_draws")
         return prior_draws(
             self.program,
             torch.zeros(1, 1),
@@ -495,6 +718,9 @@ class BayesianFit(ValueModel):
             predictor_graph=self.predictor_graph
             if nonlinear_leaves is None or self.predictor_graph is None
             else self.predictor_graph.with_(leaves=dict(nonlinear_leaves)),
+            default_priors=self.default_priors,
+            center=self.center,
+            decomp=self.decomp,
         )
 
     @property
@@ -551,12 +777,17 @@ class BayesianFit(ValueModel):
 
         Returns
         -------
-        tuple[int, ...]
-            Codes ``0..K-1`` for categorical and ordinal responses; empty
-            for other families. Categorical coefficient arrays omit code zero.
+        tuple[int or str, ...]
+            Factor levels, the integer values ``1..K`` of an ordinal response
+            coded as brms codes it, or the codes ``0..K-1``; empty for other
+            families. Predicted categories are positions in this tuple.
+            Categorical coefficient arrays omit the first category.
         """
         if self.formula.response_layout.component_names:
             return self.formula.response_layout.component_names
+        # brms integer categories keep their integer values as labels.
+        if self.formula.response_layout.category_values:
+            return self.formula.response_layout.category_values
         if self.formula.response_layout.category_levels:
             return self.formula.response_layout.category_levels
         if self.family.observe_family not in {
@@ -777,7 +1008,9 @@ class BayesianFit(ValueModel):
             and axis labels `threshold_labels`. They include centered group
             shapes, selected varying location/slope shifts, and category-specific
             shifts. The proportional population predictor, its offsets, neural
-            contribution, and discrimination are excluded. Cumulative profiles
+            contribution, and discrimination are excluded. With threshold
+            groups (``thres(n, gr)``) a row holds its group's thresholds and
+            NaN at the positions its group lacks. Cumulative profiles
             are strictly ordered at every row.
 
         Raises
@@ -817,11 +1050,22 @@ class BayesianFit(ValueModel):
                     continue
                 cuts = row_binding(
                     recorded.sites[
-                        "row_cutpoints" if self.thresholds_by else "cutpoints"
+                        "row_cutpoints"
+                        if self.thresholds_by
+                        or self.formula.modifiers.threshold_groups is not None
+                        else "cutpoints"
                     ].value,
                     context.rows,
                     width,
                 )
+                threshold_groups = self.formula.modifiers.threshold_groups
+                if threshold_groups is not None:
+                    # brms thres(n, gr): a row has only its group's thresholds.
+                    cuts = absent_thresholds(
+                        cuts,
+                        threshold_groups,
+                        context.observations[threshold_groups.column.qvr_name],
+                    )
                 if "eta_nonbaseline" in recorded.sites:
                     cuts = cuts - row_binding(
                         recorded.sites["eta_nonbaseline"].value, context.rows, width
@@ -862,13 +1106,18 @@ class BayesianFit(ValueModel):
         ] = "uncertainty",
         num_samples: int | None = None,
         seed: int = 0,
+        incl_autocor: bool = True,
+        data2: Mapping[str, AutocorMatrix] | None = None,
     ) -> torch.Tensor:
         """Replay a fitted linear predictor on training or fresh predictor rows.
 
         Parameters
         ----------
         parameter : str
-            ``mu`` or a distributionally regressed auxiliary parameter.
+            ``mu`` or an auxiliary parameter of the family. An auxiliary
+            parameter without a formula is constant over the rows: its
+            draws are repeated for every row on the parameter's own scale
+            whatever ``transform`` is, as brms does.
         transform : bool
             Return the native inverse-link binding instead of its linear
             predictor. For binomial data this is a probability, not a count.
@@ -908,6 +1157,12 @@ class BayesianFit(ValueModel):
             Draw count under the convention of `draws`.
         seed : int
             Seed for variational draws, restored on exit.
+        incl_autocor : bool
+            Include an autocorrelation term (brms ``incl_autocor``). False
+            treats rows as independent with the fitted residual scale.
+        data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+            Matrices of ``sar`` and ``fcor`` terms over the rows of
+            ``new_data`` (brms ``newdata2``).
 
         Returns
         -------
@@ -932,7 +1187,15 @@ class BayesianFit(ValueModel):
         graph_parameter = graph is not None and parameter in (
             graph.leaves.keys() | graph.expressions.keys() | graph.roots.keys()
         )
-        if not graph_parameter:
+        # brms: an auxiliary parameter without a formula is constant over the
+        # rows, and its draws are returned on the parameter's own scale.
+        constant = self._constant_parameter(parameter)
+        # mixtures: parameter="mu" returns every component location.
+        if (
+            not graph_parameter
+            and not constant
+            and not (parameter == "mu" and self.family.mixture is not None)
+        ):
             self._formula_predictor(parameter)
         ordinal = self.family.ordinal is not None
         if transform and parameter == "mu" and ordinal:
@@ -963,6 +1226,8 @@ class BayesianFit(ValueModel):
             seed=seed,
             trials=trials,
             require_trials=False,
+            incl_autocor=incl_autocor,
+            data2=data2,
         )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
@@ -994,7 +1259,21 @@ class BayesianFit(ValueModel):
                 One checked row/event value per retained chain and draw.
             """
             for recorded in replay(self, draws, shape, context=context):
+                if constant:
+                    fixed = recorded.sites[parameter].value
+                    if fixed.numel() != 1:
+                        raise ValueError(
+                            f"parameter {parameter!r} has no fitted predictor "
+                            "and is not one scalar per draw"
+                        )
+                    yield fixed.reshape(()).expand(rows)
+                    continue
                 value = recorded.sites[binding].value
+                # brms's mu includes conditional ARMA terms.
+                if parameter == "mu" and autocor_binding(self.family) is not None:
+                    value = autocor_linear_predictor(
+                        recorded, _qvr_name(self.formula.response_name)
+                    )
                 if retained_log_rate and transform:
                     value = value.exp()
                 if category_specific:
@@ -1026,6 +1305,8 @@ class BayesianFit(ValueModel):
         mc_samples: int | None = None,
         component: Literal["response", "decision"] = "response",
         seed: int = 0,
+        incl_autocor: bool = True,
+        data2: Mapping[str, AutocorMatrix] | None = None,
     ) -> torch.Tensor:
         """Evaluate native expected responses on training or fresh rows.
 
@@ -1072,6 +1353,12 @@ class BayesianFit(ValueModel):
             Decision returns lower/upper probabilities for a decision response.
         seed : int
             Seed for variational draws, restored on exit.
+        incl_autocor : bool
+            Include an autocorrelation term (brms ``incl_autocor``). False
+            treats rows as independent with the fitted residual scale.
+        data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+            Matrices of ``sar`` and ``fcor`` terms over the rows of
+            ``new_data`` (brms ``newdata2``).
 
         Returns
         -------
@@ -1119,6 +1406,8 @@ class BayesianFit(ValueModel):
             sample_new_levels=sample_new_levels,
             seed=seed,
             trials=trials,
+            incl_autocor=incl_autocor,
+            data2=data2,
         )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
@@ -1127,7 +1416,7 @@ class BayesianFit(ValueModel):
         categories = (
             len(self.category_labels)
             if self.family.observe_family == "Categorical"
-            or self.family.ordinal is not None
+            or self.family.response_ordinal() is not None
             else 0
         )
         if component == "decision":
@@ -1160,7 +1449,19 @@ class BayesianFit(ValueModel):
                 )
 
         with response_rng(seed + 2, (*draws.values(), *context.observations.values())):
-            return collect_draws(values(), shape)
+            try:
+                return collect_draws(values(), shape)
+            except TypeError as error:
+                if self.family.name == "cox":
+                    # brms: "Cannot compute expected values of the posterior
+                    # predictive distribution for family 'cox'."
+                    error.add_note(
+                        "brms refuses posterior_epred for family 'cox' as well: "
+                        "the baseline hazard is a spline on the observed time "
+                        "range, which fixes no mean survival time. Use "
+                        "posterior_linpred for the log hazard ratio."
+                    )
+                raise
 
     def bayes_r2(
         self,
@@ -1218,6 +1519,69 @@ class BayesianFit(ValueModel):
         """
         return self.posterior_epred(component="decision", **options)
 
+    # mixtures: brms pp_mixture.
+    def pp_mixture(
+        self,
+        *,
+        new_data: IntoDataFrame | None = None,
+        re_formula: str | None = None,
+        allow_new_levels: bool = False,
+        sample_new_levels: Literal[
+            "uncertainty",
+            "old_levels",
+            "gaussian",
+            "feasible_uncertainty",
+            "feasible_gaussian",
+        ] = "uncertainty",
+        log: bool = False,
+        num_samples: int | None = None,
+        seed: int = 0,
+    ) -> torch.Tensor:
+        """Posterior probabilities of mixture component membership, brms ``pp_mixture``.
+
+        ``P(K = k | y_i) = theta_k p_k(y_i) / sum_j theta_j p_j(y_i)`` at each
+        posterior draw, scoring censored rows by their recorded event. Cost:
+        O(S n K) for S draws, n rows and K components.
+
+        Parameters
+        ----------
+        new_data : IntoDataFrame or None
+            Rows with recorded responses and any censoring columns; None
+            scores the training rows.
+        re_formula : str or None
+            Varying-effect selector, as for prediction.
+        allow_new_levels : bool
+            Permit unseen grouping levels in ``new_data``.
+        sample_new_levels : str
+            Policy for unseen grouping levels.
+        log : bool
+            Return log probabilities.
+        num_samples : int or None
+            Draw count under the convention of `draws`.
+        seed : int
+            Seed for variational draws and new-level policies.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(chain, draw, row, component)``.
+
+        Raises
+        ------
+        ValueError
+            If the fit is not a mixture model.
+        """
+        return pp_mixture(
+            self,
+            new_data=new_data,
+            re_formula=re_formula,
+            allow_new_levels=allow_new_levels,
+            sample_new_levels=sample_new_levels,
+            log=log,
+            num_samples=num_samples,
+            seed=seed,
+        )
+
     def posterior_response(self, **options: Unpack[PredictionOptions]) -> ResponseDraws:
         """Draw responses in original measurement coordinates in one replay.
 
@@ -1239,7 +1603,7 @@ class BayesianFit(ValueModel):
 
     def hypothesis(
         self,
-        expression: str | ContrastExpression,
+        expression: str | ContrastExpression | Sequence[str] | Mapping[str, str],
         *,
         class_: str | None = "b",
         parameter: str = "mu",
@@ -1254,13 +1618,22 @@ class BayesianFit(ValueModel):
         robust: bool = False,
         point: PointNullSpec | None = None,
         name: str = "contrast",
-    ) -> HypothesisSummary:
-        """Evaluate a checked contrast using original fitted parameter labels.
+        alpha: float = 0.05,
+    ) -> HypothesisSummary | HypothesisTable:
+        """Test a brms hypothesis string, or evaluate a checked contrast.
+
+        A string of the form ``"left (= | < | >) right"``, or several such
+        strings, is a brms hypothesis: every name is prefixed with the
+        class (``"x > 0"`` tests ``b_x``, and with ``class_="sd"`` and
+        ``group="g"`` the name ``Intercept`` is ``sd_g__Intercept``), the
+        sides are R expressions (``^``, ``exp``), and the result is brms's
+        table. ``class_=None`` reads names as `variables` reports them.
 
         Parameters
         ----------
-        expression : str or ContrastExpression
-            QVR value expression over authored labels, with optional aliases.
+        expression : str or ContrastExpression or Sequence[str] or Mapping[str, str]
+            brms hypothesis strings (a mapping names them), or a QVR value
+            expression over authored labels, with optional aliases.
         class_ : str or None
             Parameter role such as b, Intercept, sd, cor, or an auxiliary name.
             The b role includes population intercepts. None selects exact
@@ -1291,18 +1664,48 @@ class BayesianFit(ValueModel):
             contrast streams. Requires prior=True and a checked Real result.
         name : str
             Output contrast label.
+        alpha : float
+            brms ``alpha`` of a hypothesis string: the interval is
+            ``alpha`` to ``1 - alpha`` for a one-sided hypothesis and
+            ``alpha / 2`` to ``1 - alpha / 2`` for a two-sided one.
 
         Returns
         -------
-        HypothesisSummary
-            Chain/draw/event-aware uncertainty and strict-region evidence.
+        HypothesisSummary or HypothesisTable
+            For a brms hypothesis string, brms's table (``Estimate``,
+            ``Est.Error``, ``CI.Lower``, ``CI.Upper``, ``Evid.Ratio``,
+            ``Post.Prob``, ``Star``); its evidence ratio of a point
+            hypothesis needs prior draws (``sample_prior`` or
+            ``prior=True``). For a contrast expression,
+            chain/draw/event-aware uncertainty and strict-region evidence.
             Posterior odds and prior-corrected region Bayes factors are distinct;
             equality frequencies do not estimate a point-null Bayes factor.
             Optional point_evidence uses the shared density estimator and retains
             its bandwidth and explicit assumption declarations.
+
+        Raises
+        ------
+        ValueError
+            If a hypothesis string is malformed or names a parameter that
+            is not in the model (the message lists the class's parameters),
+            or the contrast selectors match nothing.
         """
         from quivers.formulas._hypothesis import _formula_hypothesis
 
+        if is_brms_hypothesis(expression):
+            return fit_hypothesis(
+                self,
+                cast("HypothesisInput", expression),
+                class_=class_,
+                group=group,
+                scope=scope,
+                alpha=alpha,
+                robust=robust,
+                prior=prior,
+                num_samples=num_samples,
+                num_prior_samples=num_prior_samples,
+                seed=seed,
+            )
         return _formula_hypothesis(
             self,
             expression,
@@ -1347,19 +1750,23 @@ class BayesianFit(ValueModel):
         draws = self.draws(num_samples=num_samples, seed=seed)
         response = _qvr_name(self.formula.response_name)
         with torch.no_grad():
-            likelihood = collect_log_likelihood(
-                replay(self, draws, shape, score_observations=True), {response}, shape
+            likelihood = (
+                autocor_log_likelihood(
+                    replay(self, draws, shape, score_observations=True), response, shape
+                )
+                if autocor_joint(self.family)
+                else collect_log_likelihood(
+                    replay(self, draws, shape, score_observations=True),
+                    {response},
+                    shape,
+                )
             )
         return PosteriorAnalysis(
             samples=draws,
             log_likelihood=likelihood,
             observed_data={response: response_tensor(self.formula, self.family)},
             sample_stats=_sample_stats(self.posterior, shape[1]),
-            kind="mcmc"
-            if isinstance(self.posterior, MCMCResult)
-            else "prior"
-            if isinstance(self.posterior, PriorDraws)
-            else "variational",
+            kind=draw_provenance(self.posterior),
         )
 
     def log_likelihood(
@@ -1379,6 +1786,8 @@ class BayesianFit(ValueModel):
         ] = "uncertainty",
         num_samples: int | None = None,
         seed: int = 0,
+        incl_autocor: bool = True,
+        data2: Mapping[str, AutocorMatrix] | None = None,
     ) -> dict[str, torch.Tensor]:
         """Evaluate raw response log likelihoods on fitted or recorded fresh rows.
 
@@ -1402,6 +1811,12 @@ class BayesianFit(ValueModel):
             Maximum retained draws per chain, or fresh variational draws.
         seed : int
             Seed for variational draws; the caller's CPU RNG is preserved.
+        incl_autocor : bool
+            Include an autocorrelation term (brms ``incl_autocor``). False
+            treats rows as independent with the fitted residual scale.
+        data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+            Matrices of ``sar`` and ``fcor`` terms over the rows of
+            ``new_data`` (brms ``newdata2``).
 
         Returns
         -------
@@ -1430,6 +1845,8 @@ class BayesianFit(ValueModel):
                 allow_new_levels=allow_new_levels,
                 sample_new_levels=sample_new_levels,
                 seed=seed,
+                incl_autocor=incl_autocor,
+                data2=data2,
             )
         else:
             from quivers.formulas._prediction import prepare_prediction
@@ -1456,6 +1873,8 @@ class BayesianFit(ValueModel):
                 allow_new_levels=allow_new_levels,
                 sample_new_levels=sample_new_levels,
                 seed=seed,
+                incl_autocor=incl_autocor,
+                data2=data2,
             )
             if trials is not None:
                 name = response_input_name(self.formula)
@@ -1469,6 +1888,15 @@ class BayesianFit(ValueModel):
         draws = self.draws(num_samples=num_samples, seed=seed)
         response = _qvr_name(self.formula.response_name)
         with torch.no_grad():
+            # Non-factorized residual structures score brms's LOO conditionals.
+            if incl_autocor and autocor_joint(self.family):
+                return autocor_log_likelihood(
+                    replay(
+                        self, draws, shape, context=context, score_observations=True
+                    ),
+                    response,
+                    shape,
+                )
             return collect_log_likelihood(
                 replay(self, draws, shape, context=context, score_observations=True),
                 {response},
@@ -1492,6 +1920,8 @@ class BayesianFit(ValueModel):
         ] = "uncertainty",
         num_samples: int | None = None,
         seed: int = 0,
+        incl_autocor: bool = True,
+        data2: Mapping[str, AutocorMatrix] | None = None,
     ) -> torch.Tensor:
         """Sample native response distributions on training or fresh rows.
 
@@ -1532,6 +1962,12 @@ class BayesianFit(ValueModel):
         seed : int
             Seed for separate latent and response random streams. The
             caller's CPU RNG state is restored on return or failure.
+        incl_autocor : bool
+            Include an autocorrelation term (brms ``incl_autocor``). False
+            treats rows as independent with the fitted residual scale.
+        data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+            Matrices of ``sar`` and ``fcor`` terms over the rows of
+            ``new_data`` (brms ``newdata2``).
 
         Returns
         -------
@@ -1569,6 +2005,8 @@ class BayesianFit(ValueModel):
             sample_new_levels=sample_new_levels,
             seed=seed,
             trials=trials,
+            incl_autocor=incl_autocor,
+            data2=data2,
         )
         shape = draw_count(self.posterior, num_samples)
         draws = self.draws(num_samples=num_samples, seed=seed)
@@ -1632,6 +2070,12 @@ class BayesianFit(ValueModel):
         if graph is not None and parameter in graph.leaves:
             return ()
         response = self.family.response
+        # mixtures: mu stacks the component locations mu1, ..., muK.
+        if parameter == "mu" and self.family.mixture is not None:
+            return tuple(
+                f"mu{index}"
+                for index in range(1, mixture_component_count(self.family) + 1)
+            )
         if parameter == "mu":
             if response is None:
                 return ()
@@ -1656,6 +2100,8 @@ class BayesianFit(ValueModel):
                     tuple(str(label) for label in labels)
                 )
             )
+        if self._constant_parameter(parameter):
+            return ()
         self._formula_predictor(parameter)
         return (
             self.coefficient_labels
@@ -1695,6 +2141,9 @@ class BayesianFit(ValueModel):
                     else 0
                 )
         response = self.family.response
+        # mixtures: mu stacks the component locations mu1, ..., muK.
+        if parameter == "mu" and self.family.mixture is not None:
+            return mixture_component_count(self.family)
         if response is None:
             return 0
         if parameter == "mu":
@@ -1733,6 +2182,33 @@ class BayesianFit(ValueModel):
         """
         return predictor_items(self.formula, self.distributional, self.predictor_graph)
 
+    def _constant_parameter(self, parameter: str) -> bool:
+        """Report whether an auxiliary parameter has no predictor of its own.
+
+        Parameters
+        ----------
+        parameter : str
+            Parameter name.
+
+        Returns
+        -------
+        bool
+            True for an auxiliary parameter of the family that neither a
+            distributional formula nor the predictor graph predicts, so its
+            value is constant over the rows.
+        """
+        graph = self.predictor_graph
+        return (
+            parameter != "mu"
+            and parameter not in self.distributional
+            and not (
+                graph is not None
+                and parameter
+                in (graph.leaves.keys() | graph.expressions.keys() | graph.roots.keys())
+            )
+            and any(aux.name == parameter for aux in self.family.aux_params)
+        )
+
     def _formula_predictor(self, parameter: str) -> tuple[Formula, str]:
         """Read retained predictor metadata without re-evaluating its formula.
 
@@ -1756,6 +2232,12 @@ class BayesianFit(ValueModel):
             and parameter in self.predictor_graph.leaves
         ):
             return self.predictor_graph.leaves[parameter], f"nlpar_{parameter}_"
+        # mixtures: coefficients belong to the component locations mu<k>.
+        if parameter == "mu" and self.family.mixture is not None:
+            raise ValueError(
+                "a mixture has no single location predictor; select a component "
+                f"location {self.predictor_labels('mu')}"
+            )
         if parameter == "mu":
             return self.formula, ""
         if parameter not in self.distributional:
@@ -1791,6 +2273,21 @@ class BayesianFit(ValueModel):
             ]
             for column in predictor.fixed_columns
         }
+
+    def _group_structures(self) -> dict[str, GroupLevelStructure]:
+        """Return the per-level ``gr()`` structure of each grouping factor.
+
+        Returns
+        -------
+        dict[str, GroupLevelStructure]
+            Factors with a ``by`` variable or ``dist = "student"``; empty
+            without retained emission metadata.
+        """
+        if self.prediction_plan is None:
+            return {}
+        return group_level_structures(
+            self._predictor_items(), self.prediction_plan.group_layouts
+        )
 
     def _random_effects(
         self,
@@ -1836,6 +2333,8 @@ class BayesianFit(ValueModel):
                 if any(member.prefix == prefix for member in layout.members)
             ),
             self.group_levels,
+            # gr(by = ) and gr(dist = "student") structure of each factor.
+            self._group_structures(),
         )
         result: dict[str, dict[str, torch.Tensor]] = {}
         for term in predictor.random_terms:
@@ -1846,17 +2345,36 @@ class BayesianFit(ValueModel):
         return result
 
 
+@overload
 def fit(
-    formula: str,
+    formula: MultivariateFormula,
+    *,
+    data: IntoDataFrame,
+    **options: Unpack[JointFitOptions],
+) -> _joint_fit.MultivariateFit: ...
+
+
+@overload
+def fit(
+    formula: str | ResponseModel,
+    *,
+    data: IntoDataFrame,
+    **options: Unpack[FormulaFitOptions],
+) -> BayesianFit: ...
+
+
+def fit(
+    formula: str | ResponseModel | MultivariateFormula,
     *,
     data: IntoDataFrame,
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
+    data2: Mapping[str, AutocorMatrix] | None = None,
     distributional: Mapping[str, str | NonlinearExpression] | None = None,
     nonlinear: Mapping[str, str | NonlinearExpression] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
-    method: Literal["nuts", "hmc", "svi"] = "nuts",
+    method: FitMethod = "nuts",
     num_warmup: int | None = None,
     num_samples: int | None = None,
     num_chains: int | None = None,
@@ -1880,7 +2398,24 @@ def fit(
     num_prior_samples: int = 100,
     prior_seed: int | None = None,
     snapshot_policy: SnapshotPolicy = "clone",
-) -> BayesianFit:
+    default_priors: DefaultPriorPolicy = "quivers",
+    center: bool | None = None,
+    decomp: Literal["none", "QR"] = "none",
+    cmc: bool = True,
+    sparse: bool = False,
+    unused: Sequence[str] = (),
+    control: SamplerControl | Mapping[str, float | int | str] | None = None,
+    thin: int = 1,
+    init: InitSpec | None = None,
+    init_r: float = 2.0,
+    algorithm: Algorithm | None = None,
+    file: str | Path | None = None,
+    file_refit: FileRefit = "never",
+    pathfinder: PathfinderOptions | Mapping[str, float | int | bool] | None = None,
+    cores: int = 1,
+    knots: Knots | None = None,
+    drop_unused_levels: bool = True,
+) -> BayesianFit | _joint_fit.MultivariateFit:
     """Compile a brms-style formula, fit it, and return the result.
 
     See [`quivers.formulas`][quivers.formulas] for surface details.  This entry
@@ -1895,8 +2430,14 @@ def fit(
 
     Parameters
     ----------
-    formula : str
-        brms/lme4-style response formula.
+    formula : str or ResponseModel or MultivariateFormula
+        brms/lme4-style response formula, or a joint formula built with
+        `bf` (``bf("mvbind(y1, y2) ~ x")`` or ``bf(...) + bf(...)``), which
+        returns a `MultivariateFit`. Response-level keywords then belong
+        to each `bf` call. A single-response ``bf("y ~ x", "sigma ~ z")``
+        is fitted as the string formula with the response keywords it
+        carries; a keyword given both there and here with different values
+        raises.
     data : IntoDataFrame
         Pandas, Polars, or another Narwhals-compatible dataframe.
     family : str or Family
@@ -1914,6 +2455,13 @@ def fit(
         Supplying this mapping interprets the response RHS as a value
         expression. Defaults retain the same proper coefficient priors as
         ordinary QVR formulas; get_prior reports their exact site names.
+    data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+        Named matrices referenced by autocorrelation terms, as in brms:
+        the spatial weights of ``sar(M)`` and the fixed covariance of
+        ``fcor(M)``, each over the included response rows. A group-level
+        ``gr(g, cov = M)`` reads a labeled ``DataFrame`` covariance between
+        the levels of ``g``, and ``s(g, bs = "mrf", xt = list(penalty = M))``
+        a penalty or neighbourhood matrix over them.
     distributional : Mapping[str, str or NonlinearExpression] or None
         Auxiliary-parameter formulas, for instance
         ``{"sigma": "~ z + (1 | g)"}``. The optional left-hand side must
@@ -1922,7 +2470,7 @@ def fit(
     fixed_parameters : Mapping[str, float] or None
         Auxiliary parameters held constant on their natural scale, for instance
         ``{"quantile": 0.9}``. A fixed parameter has no latent site or prior.
-    method : {"nuts", "hmc", "svi"}
+    method : {"nuts", "hmc", "svi", "fixed_param", "pathfinder"}
         Inference algorithm.
     num_warmup : int or None
         MCMC warmup iterations per chain (NUTS and HMC only); 500 when
@@ -1931,7 +2479,8 @@ def fit(
         MCMC draws kept per chain after warmup (NUTS and HMC only); 1000
         when omitted.
     num_chains : int or None
-        MCMC chains (NUTS and HMC only); 4 when omitted.
+        MCMC chains (NUTS and HMC only), or Pathfinder paths as brms's
+        ``chains``; 4 when omitted.
     num_steps : int or None
         SVI optimization steps (SVI only); 1000 when omitted.
     learning_rate : float
@@ -1991,11 +2540,76 @@ def fit(
         Retain one independent original-data snapshot for update/refit by default.
         Reference mode shares caller data explicitly. Predictor initial states are
         copied before each refit, so fits do not share trained mutable parameters.
+    default_priors : {"quivers", "brms"}
+        Default prior policy: the proper, autoscaled quivers defaults, or
+        ``brms::default_prior`` (flat ``b``; Student-t intercept, ``sd`` and
+        ``sigma`` priors scaled by the response). Explicit priors win either way.
+    center : bool or None
+        brms ``bf(center = )``: sample the intercept of the column-centered
+        design and report ``b_Intercept = Intercept_c - mean(X) b``. None
+        centers under the brms policy only.
+    decomp : {"none", "QR"}
+        brms ``bf(decomp = "QR")``: sample the location coefficients in scaled
+        QR coordinates; class ``b`` priors act on those coordinates.
+    cmc : bool
+        brms ``cmc``: with False, a formula without intercept keeps treatment
+        coding (no cell-mean coding of its first factor).
+    sparse : bool
+        brms ``sparse``: the same model with centering disabled, as brms
+        disables it for sparse designs; incompatible with ``decomp="QR"``.
+    unused : Sequence[str]
+        brms ``unused``: further columns kept with the model rows, so rows
+        missing them are excluded as for model variables.
+    control : SamplerControl or Mapping or None
+        brms ``control``: ``adapt_delta`` (NUTS target acceptance),
+        ``max_treedepth``, initial ``stepsize``, and ``metric`` (``diag_e``,
+        ``dense_e``, ``unit_e``). MCMC only.
+    thin : int
+        Keep every ``thin``-th post-warmup transition; ``num_samples`` stays
+        the retained draw count per chain. MCMC only.
+    init : str or float or Mapping or Sequence or Callable or None
+        brms ``init``: ``"random"`` draws unconstrained starts uniformly from
+        ``(-init_r, init_r)``, ``0`` or ``"0"`` starts at zero, a mapping
+        gives named natural-scale starts, a list gives one mapping per chain,
+        and a function of the one-based chain index returns one. None keeps
+        the driver's seeded jitter. Formula starts and ``initial_values``
+        apply under every choice.
+    init_r : float
+        Half-width of ``init = "random"``.
+    algorithm : {"sampling", "meanfield", "fullrank", "laplace", "fixed_param", "pathfinder"} or None
+        brms ``algorithm``: NUTS, SVI with a mean-field, full-rank, or Laplace
+        guide, the fixed-parameter sampler, which keeps every draw at the
+        initial values, or multi-path Pathfinder with ``num_chains`` paths.
+    file : str or Path or None
+        brms ``file``: load the fit saved there, or fit and save it there.
+    file_refit : {"never", "always", "on_change"}
+        brms ``file_refit``: reuse a saved fit, always refit, or refit when the
+        formula, data, priors, or settings differ from the saved recipe.
+    pathfinder : PathfinderOptions or Mapping or None
+        cmdstanr ``pathfinder`` arguments for ``algorithm="pathfinder"``
+        (``draws``, ``single_path_draws``, ``history_size``,
+        ``max_lbfgs_iters``, ``num_elbo_draws``, ``psis_resample``,
+        ``calculate_lp``, ``save_single_paths``, ``init_alpha`` and the
+        ``tol_*`` tolerances), which brms passes through its ``...``.
+    cores : int
+        brms ``cores``: run the MCMC chains in up to this many worker
+        processes. Each worker rebuilds the fit from the retained arguments
+        and data and runs its share of the chains; the draws equal those of
+        the serial run with the same seed. Every argument must be picklable.
+    knots : Mapping[str, Sequence[float]] or None
+        brms ``knots``: knot values keyed by smooth covariate, passed to the
+        ``cr``, ``cs``, ``cc``, ``ps`` and ``bs`` constructors of ``s()`` as
+        mgcv's ``smoothCon(knots = )`` does.
+    drop_unused_levels : bool
+        brms ``drop_unused_levels``: with False, factor levels that no row
+        uses keep their population columns (of zeros) and grouping-factor
+        levels their group effects, as brms keeps them.
 
     Returns
     -------
-    BayesianFit
-        Parsed formula, compiled program, fitted posterior, and observations.
+    BayesianFit or MultivariateFit
+        Parsed formula, compiled program, fitted posterior, and observations;
+        a `MultivariateFit` for a joint formula.
 
     Raises
     ------
@@ -2008,9 +2622,72 @@ def fit(
     """
     from quivers.formulas._refit import capture_recipe
 
+    # A single-response bf carries the response keywords of this call.
+    if isinstance(formula, ResponseModel):
+        authored = single_response(
+            formula,
+            family=family,
+            distributional=distributional,
+            nonlinear=nonlinear,
+            fixed_parameters=fixed_parameters,
+            weights=weights,
+            decision=decision,
+            binomial_trials=binomial_trials,
+            thresholds_by=thresholds_by,
+            mixture_components=mixture_components,
+            center=center,
+            decomp=decomp,
+            cmc=cmc,
+            sparse=sparse,
+            unused=unused,
+            caller="fit",
+        )
+        formula, family = authored["formula"], authored["family"]
+        distributional = authored["distributional"]
+        nonlinear = authored["nonlinear"]
+        fixed_parameters = authored["fixed_parameters"]
+        weights, decision = authored["weights"], authored["decision"]
+        binomial_trials = authored["binomial_trials"]
+        thresholds_by = authored["thresholds_by"]
+        mixture_components = authored["mixture_components"]
+        center, decomp = authored["center"], authored["decomp"]
+        cmc, sparse = authored["cmc"], authored["sparse"]
+        unused = authored["unused"]
+    # brms file / file_refit: reuse or refresh a fit in the artifact store.
+    if file is not None:
+        arguments = {
+            name: value
+            for name, value in locals().items()
+            if name in _FIT_ARGUMENTS and name not in {"file", "file_refit"}
+        }
+        if not needs_refit(Path(file), file_refit, arguments):
+            return cast(
+                "BayesianFit | _joint_fit.MultivariateFit",
+                artifact_store.load_fit(file),
+            )
+        result = fit(**arguments)
+        artifact_store.save_fit(result, file)
+        return result
+    # brms algorithm selects the method and guide.
+    method, guide = resolve_algorithm(algorithm, method, guide)
+    controls = InferenceControls(
+        control=sampler_control(control),
+        thin=thin,
+        init=init,
+        init_r=init_r,
+        pathfinder=pathfinder_options(pathfinder),
+    )
     refit_recipe = capture_recipe(
         fit, data=data, arguments=locals(), snapshot_policy=snapshot_policy
     )
+    # brms cores: workers rebuild the fit from the recipe.
+    if checked_cores(cores) != 1:
+        controls = controls.with_(
+            cores=cores,
+            chain_worker=FormulaChainWorker(
+                arguments=dict(refit_recipe.method), data=refit_recipe._data
+            ),
+        )
     from quivers.modeling.refit import _snapshot
 
     preparation_data = (
@@ -2018,6 +2695,12 @@ def fit(
     )
     with torch.random.fork_rng(devices=[]):
         torch.random.set_rng_state(torch.Generator().manual_seed(seed).get_state())
+        # Joint (multivariate) formulas share the recipe and inference seam.
+        if isinstance(formula, MultivariateFormula):
+            return _joint_fit.fit_entry(
+                formula, preparation_data, refit_recipe.method, refit_recipe
+            )
+        _refuse_joint_syntax(formula, "fit")
         if method == "svi":
             given = [
                 name
@@ -2034,7 +2717,7 @@ def fit(
                     "method='svi' runs none; give the optimization steps as "
                     "num_steps"
                 )
-        elif num_steps is not None:
+        elif method != "pathfinder" and num_steps is not None:
             raise ValueError(
                 f"fit: num_steps counts SVI optimization steps, and method={method!r} "
                 "runs MCMC; give num_warmup, num_samples, and num_chains"
@@ -2046,6 +2729,7 @@ def fit(
             family=family,
             weights=weights,
             decision=decision,
+            data2=data2,
             distributional=distributional,
             nonlinear=nonlinear,
             fixed_parameters=fixed_parameters,
@@ -2060,6 +2744,14 @@ def fit(
             mixture_components=mixture_components,
             predictor_name=predictor_name,
             caller="fit",
+            default_priors=default_priors,
+            center=center,
+            decomp=decomp,
+            cmc=cmc,
+            sparse=sparse,
+            unused=unused,
+            knots=knots,
+            drop_unused_levels=drop_unused_levels,
         )
         native = _prepare_fit(
             prepared,
@@ -2068,6 +2760,9 @@ def fit(
             method=method,
             preparation_data=preparation_data,
         )
+        # brms refuses prior sampling with improper flat priors.
+        if sample_prior != "no":
+            require_proper(native.module, f"sample_prior={sample_prior!r}")
         result = _run_inference(
             native.program,
             native.observations,
@@ -2088,6 +2783,7 @@ def fit(
             predictor_categories=native.predictor_categories,
             predictor_reference=native.predictor_reference,
             initial_values=_initial_values(prepared, fixed_parameters, initial_values),
+            controls=controls,
         )
         return _assemble_fit(
             native,
@@ -2102,16 +2798,27 @@ def fit(
             group_covariances=group_covariances,
             priors=priors,
             fixed_parameters=fixed_parameters,
+            default_priors=default_priors,
+            center=center,
+            decomp=decomp,
+            cmc=cmc,
+            sparse=sparse,
+            unused=unused,
         )
 
 
+_FIT_ARGUMENTS = frozenset(inspect.signature(fit).parameters)
+"""The canonical `fit` arguments a cached fit is compared on."""
+
+
 def formula_to_qvr(
-    formula: str,
+    formula: str | ResponseModel | MultivariateFormula,
     *,
     data: IntoDataFrame,
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
+    data2: Mapping[str, AutocorMatrix] | None = None,
     distributional: Mapping[str, str | NonlinearExpression] | None = None,
     nonlinear: Mapping[str, str | NonlinearExpression] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
@@ -2125,7 +2832,15 @@ def formula_to_qvr(
     thresholds_by: str | None = None,
     mixture_components: int = 2,
     predictor_name: str | None = None,
+    default_priors: DefaultPriorPolicy = "quivers",
+    center: bool | None = None,
+    decomp: Literal["none", "QR"] = "none",
+    cmc: bool = True,
+    sparse: bool = False,
+    unused: Sequence[str] = (),
     path: str | Path | None = None,
+    knots: Knots | None = None,
+    drop_unused_levels: bool = True,
 ) -> str:
     """Emit ``.qvr`` source for a brms-style formula without fitting.
 
@@ -2145,14 +2860,22 @@ def formula_to_qvr(
 
     Parameters
     ----------
-    formula : str
-        Authored formula over original dataframe rows.
+    formula : str or ResponseModel or MultivariateFormula
+        Authored formula over original dataframe rows, a single-response
+        `bf` carrying its response keywords, or a joint formula whose one
+        composed program is emitted.
     data : IntoDataFrame
         Original training columns, including response modifiers.
     family : str or Family
         Checked response law and retained link, threshold, and event choices.
     weights, decision : str or None
         Optional existing response-role columns.
+    data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+        Named matrices referenced by autocorrelation terms, as in brms:
+        the spatial weights of ``sar(M)`` and the fixed covariance of
+        ``fcor(M)``, each over the included response rows. A group-level
+        ``gr(g, cov = M)`` reads a labeled ``DataFrame`` covariance between
+        the levels of ``g``.
     distributional, nonlinear : Mapping or None
         Auxiliary designs and checked derived predictor graph.
     fixed_parameters : Mapping[str, float] or None
@@ -2174,17 +2897,65 @@ def formula_to_qvr(
     predictor_name : str or None
         Checked external neural binding.
 
+    default_priors : {"quivers", "brms"}
+        Default prior policy: the proper, autoscaled quivers defaults, or
+        ``brms::default_prior`` (flat ``b``; Student-t intercept, ``sd`` and
+        ``sigma`` priors scaled by the response). Explicit priors win either way.
+    center : bool or None
+        brms ``bf(center = )``: sample the intercept of the column-centered
+        design and report ``b_Intercept = Intercept_c - mean(X) b``. None
+        centers under the brms policy only.
+    decomp : {"none", "QR"}
+        brms ``bf(decomp = "QR")``: sample the location coefficients in scaled
+        QR coordinates; class ``b`` priors act on those coordinates.
+    cmc : bool
+        brms ``cmc``: with False, a formula without intercept keeps treatment
+        coding (no cell-mean coding of its first factor).
+    sparse : bool
+        brms ``sparse``: the same model with centering disabled, as brms
+        disables it for sparse designs; incompatible with ``decomp="QR"``.
+    unused : Sequence[str]
+        brms ``unused``: further columns kept with the model rows, so rows
+        missing them are excluded as for model variables.
+    knots : Mapping[str, Sequence[float]] or None
+        brms ``knots``: knot values keyed by smooth covariate, passed to the
+        ``cr``, ``cs``, ``cc``, ``ps`` and ``bs`` constructors of ``s()`` as
+        mgcv's ``smoothCon(knots = )`` does.
+    drop_unused_levels : bool
+        brms ``drop_unused_levels``: with False, factor levels that no row
+        uses keep their population columns (of zeros) and grouping-factor
+        levels their group effects, as brms keeps them.
     Returns
     -------
     str
         Canonical checked source, without fitting a posterior.
     """
+    # Joint (multivariate) formulas emit one composed program.
+    if isinstance(formula, MultivariateFormula):
+        with formula_data_options(knots, drop_unused_levels):
+            module, _ = _joint_fit.joint_module(
+                formula.with_default_priors(default_priors),
+                data,
+                fixed_prior=fixed_prior,
+                random_scale_prior=random_scale_prior,
+                correlation_prior=correlation_prior,
+                group_covariances=group_covariances,
+                priors=priors,
+                reparameterize=reparameterize,
+                data2=data2,
+            )
+        source = module_to_source(module)
+        if path is not None:
+            Path(path).write_text(source)
+        return source
+    _refuse_joint_syntax(formula, "formula_to_qvr")
     lens, parsed = _formula_lens(
         formula,
         data=data,
         family=family,
         weights=weights,
         decision=decision,
+        data2=data2,
         distributional=distributional,
         nonlinear=nonlinear,
         fixed_parameters=fixed_parameters,
@@ -2198,6 +2969,14 @@ def formula_to_qvr(
         thresholds_by=thresholds_by,
         mixture_components=mixture_components,
         predictor_name=predictor_name,
+        default_priors=default_priors,
+        center=center,
+        decomp=decomp,
+        cmc=cmc,
+        sparse=sparse,
+        unused=unused,
+        knots=knots,
+        drop_unused_levels=drop_unused_levels,
     )
     module, _ = lens.forward(parsed)
     source = module_to_source(module)
@@ -2207,12 +2986,13 @@ def formula_to_qvr(
 
 
 def get_prior(
-    formula: str,
+    formula: str | ResponseModel | MultivariateFormula,
     *,
     data: IntoDataFrame,
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
+    data2: Mapping[str, AutocorMatrix] | None = None,
     distributional: Mapping[str, str | NonlinearExpression] | None = None,
     nonlinear: Mapping[str, str | NonlinearExpression] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
@@ -2226,6 +3006,14 @@ def get_prior(
     thresholds_by: str | None = None,
     mixture_components: int = 2,
     predictor_name: str | None = None,
+    default_priors: DefaultPriorPolicy = "quivers",
+    center: bool | None = None,
+    decomp: Literal["none", "QR"] = "none",
+    cmc: bool = True,
+    sparse: bool = False,
+    unused: Sequence[str] = (),
+    knots: Knots | None = None,
+    drop_unused_levels: bool = True,
 ) -> dict[str, str]:
     """Return effective named priors without running inference.
 
@@ -2236,8 +3024,10 @@ def get_prior(
 
     Parameters
     ----------
-    formula : str
-        Response formula in brms/lme4 notation.
+    formula : str or ResponseModel or MultivariateFormula
+        Response formula in brms/lme4 notation, a single-response `bf`
+        carrying its response keywords, or a joint formula whose
+        namespaced sites (``response_<resp>__...``, ``rescor``) are listed.
     data : IntoDataFrame
         Rows used to evaluate design matrices and autoscale default priors.
     family : str or Family
@@ -2249,6 +3039,12 @@ def get_prior(
     decision : str or None
         Wiener boundary-choice column, equivalent to response-side dec(column).
         Numeric codes must be exactly zero/lower or one/upper.
+    data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+        Named matrices referenced by autocorrelation terms, as in brms:
+        the spatial weights of ``sar(M)`` and the fixed covariance of
+        ``fcor(M)``, each over the included response rows. A group-level
+        ``gr(g, cov = M)`` reads a labeled ``DataFrame`` covariance between
+        the levels of ``g``.
     distributional : Mapping[str, str] or None
         Separate formulas for auxiliary parameters.
     fixed_parameters : Mapping[str, float] or None
@@ -2272,6 +3068,34 @@ def get_prior(
     predictor_name : str or None
         External contribution on the linear-predictor scale.
 
+    default_priors : {"quivers", "brms"}
+        Default prior policy: the proper, autoscaled quivers defaults, or
+        ``brms::default_prior`` (flat ``b``; Student-t intercept, ``sd`` and
+        ``sigma`` priors scaled by the response). Explicit priors win either way.
+    center : bool or None
+        brms ``bf(center = )``: sample the intercept of the column-centered
+        design and report ``b_Intercept = Intercept_c - mean(X) b``. None
+        centers under the brms policy only.
+    decomp : {"none", "QR"}
+        brms ``bf(decomp = "QR")``: sample the location coefficients in scaled
+        QR coordinates; class ``b`` priors act on those coordinates.
+    cmc : bool
+        brms ``cmc``: with False, a formula without intercept keeps treatment
+        coding (no cell-mean coding of its first factor).
+    sparse : bool
+        brms ``sparse``: the same model with centering disabled, as brms
+        disables it for sparse designs; incompatible with ``decomp="QR"``.
+    unused : Sequence[str]
+        brms ``unused``: further columns kept with the model rows, so rows
+        missing them are excluded as for model variables.
+    knots : Mapping[str, Sequence[float]] or None
+        brms ``knots``: knot values keyed by smooth covariate, passed to the
+        ``cr``, ``cs``, ``cc``, ``ps`` and ``bs`` constructors of ``s()`` as
+        mgcv's ``smoothCon(knots = )`` does.
+    drop_unused_levels : bool
+        brms ``drop_unused_levels``: with False, factor levels that no row
+        uses keep their population columns (of zeros) and grouping-factor
+        levels their group effects, as brms keeps them.
     Returns
     -------
     dict[str, str]
@@ -2282,12 +3106,30 @@ def get_prior(
     ValueError
         If a formula or family setting is invalid, or a prior is unused.
     """
+    # Joint (multivariate) formulas read priors from the composed program.
+    if isinstance(formula, MultivariateFormula):
+        with formula_data_options(knots, drop_unused_levels):
+            module, targets = _joint_fit.joint_module(
+                formula.with_default_priors(default_priors),
+                data,
+                fixed_prior=fixed_prior,
+                random_scale_prior=random_scale_prior,
+                correlation_prior=correlation_prior,
+                group_covariances=group_covariances,
+                priors=priors,
+                reparameterize=reparameterize,
+                data2=data2,
+                caller="get_prior",
+            )
+        return _joint_fit.joint_prior(module, targets)
+    _refuse_joint_syntax(formula, "get_prior")
     lens, parsed = _formula_lens(
         formula,
         data=data,
         family=family,
         weights=weights,
         decision=decision,
+        data2=data2,
         distributional=distributional,
         nonlinear=nonlinear,
         fixed_parameters=fixed_parameters,
@@ -2301,6 +3143,14 @@ def get_prior(
         thresholds_by=thresholds_by,
         mixture_components=mixture_components,
         predictor_name=predictor_name,
+        default_priors=default_priors,
+        center=center,
+        decomp=decomp,
+        cmc=cmc,
+        sparse=sparse,
+        unused=unused,
+        knots=knots,
+        drop_unused_levels=drop_unused_levels,
     )
     return lens.get_prior(parsed)
 
@@ -2409,7 +3259,7 @@ def _prepare_fit(
     *,
     predictor: nn.Module | None = None,
     predictor_data: torch.Tensor | None = None,
-    method: Literal["nuts", "hmc", "svi"] = "nuts",
+    method: FitMethod = "nuts",
     predictor_value: torch.Tensor | None = None,
     preparation_data: IntoDataFrame | None = None,
 ) -> _PreparedFit:
@@ -2468,9 +3318,16 @@ def _prepare_fit(
         )
     module, complement = lens.forward(parsed)
     compiler = (
-        Compiler(module, families=family_obj.custom.catalog)
+        Compiler(
+            module,
+            families=with_flat_catalog(
+                formula_families(family_obj.custom.catalog, parsed), module
+            ),
+        )
         if family_obj.custom is not None
-        else Compiler(module)
+        else Compiler(
+            module, families=with_flat_catalog(formula_families(None, parsed), module)
+        )
     )
     program_runtime = compiler.compile()
     morphism = program_runtime.morphism
@@ -2556,6 +3413,7 @@ def _formula_observations(
     observations.update(lens.fixed_column_observations(parsed))
 
     observations[response_input_name(parsed)] = response_tensor(parsed, family_obj)
+    observations.update(latent_observations(parsed))
     for _, _, predictor_formula in lens._predictor_items(parsed):
         for group, codes in predictor_formula.group_indices.items():
             observations[f"{_qvr_name(group)}_idx"] = torch.as_tensor(
@@ -2630,7 +3488,7 @@ def _run_inference(
     program: MonadicProgram,
     observations: dict[str, torch.Tensor],
     *,
-    method: Literal["nuts", "hmc", "svi"],
+    method: FitMethod,
     num_steps: int | None = None,
     num_warmup: int | None = None,
     num_samples: int | None = None,
@@ -2647,6 +3505,7 @@ def _run_inference(
     predictor_categories: int | None = None,
     predictor_reference: int | None = 0,
     initial_values: Mapping[str, torch.Tensor | float] | None = None,
+    controls: InferenceControls | None = None,
 ) -> _InferenceResult:
     """Run the canonical inference and prior collectors for one native program.
 
@@ -2684,11 +3543,19 @@ def _run_inference(
         Reference component, or None for all-component heads.
     initial_values : Mapping[str, torch.Tensor or float] or None
         Named natural-scale starts.
+    controls : InferenceControls or None
+        brms ``control``, ``thin``, ``init`` and ``init_r``, and the
+        Pathfinder arguments.
 
     Returns
     -------
     _InferenceResult
         Posterior, losses, and separately retained priors, with no result-view policy.
+
+    Raises
+    ------
+    ValueError
+        If a control, budget, or initialization does not apply to the method.
     """
     from quivers.effects.observation_scoring import observation_scoring
     from quivers.inference.prior import _ancestral_program, _prior_mode, prior_draws
@@ -2700,8 +3567,53 @@ def _run_inference(
         sample_count(num_prior_samples)
         _ancestral_program(program)
     losses: tuple[float, ...] = ()
+    controls = InferenceControls() if controls is None else controls
+    if method == "svi" and (
+        controls.control is not None
+        or controls.thin != 1
+        or (controls.init is not None and not isinstance(controls.init, Mapping))
+    ):
+        raise ValueError(
+            "control, thin, and init strategies configure MCMC; method='svi' "
+            "takes named initial values only"
+        )
+    if method == "svi" and isinstance(controls.init, Mapping):
+        initial_values = {**dict(initial_values or {}), **controls.init}
+    # Pathfinder: num_chains counts paths, as brms's chains.
+    if controls.pathfinder is not None and method != "pathfinder":
+        raise ValueError("pathfinder arguments apply to algorithm='pathfinder'")
+    if method == "pathfinder":
+        given = [
+            name
+            for name, value in (
+                ("num_warmup", num_warmup),
+                ("num_samples", num_samples),
+                ("num_steps", num_steps),
+                ("control", controls.control),
+                ("thin", None if controls.thin == 1 else controls.thin),
+            )
+            if value is not None
+        ]
+        if given:
+            raise ValueError(
+                f"fit: {', '.join(given)} configure MCMC or SVI and do not apply "
+                "to algorithm='pathfinder'; give num_chains (the number of paths) "
+                "and pathfinder arguments such as draws and history_size"
+            )
     with observation_scoring(mode != "only"):
-        if method == "svi":
+        if method == "pathfinder":
+            driver = pathfinder_driver(
+                controls.pathfinder,
+                num_paths=4 if num_chains is None else num_chains,
+                seed=seed,
+                init=controls.init,
+                init_r=controls.init_r,
+                starts=dict(initial_values or {}),
+            )
+            posterior = driver.run(
+                program, torch.zeros(1, 1, dtype=torch.long), observations
+            )
+        elif method == "svi":
             posterior, losses = _fit_svi(
                 program,
                 observations,
@@ -2720,11 +3632,16 @@ def _run_inference(
                 program,
                 observations,
                 sampler=method,
-                num_warmup=500 if num_warmup is None else num_warmup,
+                num_warmup=0
+                if method == "fixed_param"
+                else 500
+                if num_warmup is None
+                else num_warmup,
                 num_samples=1000 if num_samples is None else num_samples,
                 num_chains=4 if num_chains is None else num_chains,
                 seed=seed,
                 initial_values=initial_values,
+                controls=controls,
             )
 
     retained_prior = (
@@ -2756,6 +3673,12 @@ def _assemble_fit(
     group_covariances: Mapping[str, GroupCovariance] | None = None,
     priors: PriorInput | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
+    default_priors: DefaultPriorPolicy = "quivers",
+    center: bool | None = None,
+    decomp: Literal["none", "QR"] = "none",
+    cmc: bool = True,
+    sparse: bool = False,
+    unused: Sequence[str] = (),
 ) -> BayesianFit:
     """Assemble the same retained formula view after fitting or state restoration.
 
@@ -2782,6 +3705,26 @@ def _assemble_fit(
     fixed_parameters : Mapping[str, float] or None
         Fixed auxiliary values.
 
+    default_priors : {"quivers", "brms"}
+        Default prior policy: the proper, autoscaled quivers defaults, or
+        ``brms::default_prior`` (flat ``b``; Student-t intercept, ``sd`` and
+        ``sigma`` priors scaled by the response). Explicit priors win either way.
+    center : bool or None
+        brms ``bf(center = )``: sample the intercept of the column-centered
+        design and report ``b_Intercept = Intercept_c - mean(X) b``. None
+        centers under the brms policy only.
+    decomp : {"none", "QR"}
+        brms ``bf(decomp = "QR")``: sample the location coefficients in scaled
+        QR coordinates; class ``b`` priors act on those coordinates.
+    cmc : bool
+        brms ``cmc``: with False, a formula without intercept keeps treatment
+        coding (no cell-mean coding of its first factor).
+    sparse : bool
+        brms ``sparse``: the same model with centering disabled, as brms
+        disables it for sparse designs; incompatible with ``decomp="QR"``.
+    unused : Sequence[str]
+        brms ``unused``: further columns kept with the model rows, so rows
+        missing them are excluded as for model variables.
     Returns
     -------
     BayesianFit
@@ -2804,7 +3747,11 @@ def _assemble_fit(
         fixed_prior=fixed_prior,
         random_scale_prior=random_scale_prior,
         correlation_prior=correlation_prior,
-        group_covariances=dict(group_covariances or {}),
+        # Includes gr(cov = M) covariances resolved during preparation.
+        group_covariances={
+            **dict(group_covariances or {}),
+            **prepared.formula.lens.group_covariances,
+        },
         priors=normalize_priors(priors),
         predictor=prepared.predictor,
         predictor_data=prepared.predictor_data,
@@ -2812,6 +3759,9 @@ def _assemble_fit(
         distributional=prepared.formula.distributional,
         predictor_graph=prepared.formula.graph,
         fixed_parameters=dict(fixed_parameters or {}),
+        default_priors=default_priors,
+        center=sparse_center(center, decomp, sparse=sparse),
+        decomp=decomp,
         prediction_plan=FormulaPredictionPlan(
             module=prepared.module,
             preparation_data=prepared.preparation_data,
@@ -2822,13 +3772,40 @@ def _assemble_fit(
     )
 
 
+def _refuse_joint_syntax(formula: str | ResponseModel, caller: str) -> None:
+    """Refuse joint-program terms written in a plain formula string.
+
+    Parameters
+    ----------
+    formula : str or ResponseModel
+        Authored formula. Only a string is inspected.
+    caller : str
+        Public entry point named in the diagnostic.
+
+    Raises
+    ------
+    ValueError
+        If a formula string uses ``mvbind()``, ``mi()``, ``me()``, or
+        ``index()``, which compile through the joint program reached by
+        `bf`.
+    """
+    if isinstance(formula, str) and (
+        is_mvbind(formula) or uses_missing_syntax(formula)
+    ):
+        raise ValueError(
+            f"{caller}: mvbind(), mi(), me(), and index() terms compile through "
+            f"the joint program; pass bf({formula!r})"
+        )
+
+
 def _formula_lens(
-    formula: str,
+    formula: str | ResponseModel,
     *,
     data: IntoDataFrame,
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
+    data2: Mapping[str, AutocorMatrix] | None = None,
     distributional: Mapping[str, str | NonlinearExpression] | None = None,
     nonlinear: Mapping[str, str | NonlinearExpression] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
@@ -2842,19 +3819,34 @@ def _formula_lens(
     thresholds_by: str | None = None,
     mixture_components: int = 2,
     predictor_name: str | None = None,
+    default_priors: DefaultPriorPolicy = "quivers",
+    center: bool | None = None,
+    decomp: Literal["none", "QR"] = "none",
+    cmc: bool = True,
+    sparse: bool = False,
+    unused: Sequence[str] = (),
+    knots: Knots | None = None,
+    drop_unused_levels: bool = True,
 ) -> tuple[FormulaToQVRModule, Formula]:
     """Use common preparation for source emission and prior inspection.
 
     Parameters
     ----------
-    formula : str
-        Authored formula over original dataframe rows.
+    formula : str or ResponseModel
+        Authored formula over original dataframe rows, or a single-response
+        `bf` whose response keywords merge with this call's.
     data : IntoDataFrame
         Original training columns, including response modifiers.
     family : str or Family
         Checked response law and retained link, threshold, and event choices.
     weights, decision : str or None
         Optional existing response-role columns.
+    data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+        Named matrices referenced by autocorrelation terms, as in brms:
+        the spatial weights of ``sar(M)`` and the fixed covariance of
+        ``fcor(M)``, each over the included response rows. A group-level
+        ``gr(g, cov = M)`` reads a labeled ``DataFrame`` covariance between
+        the levels of ``g``.
     distributional, nonlinear : Mapping or None
         Auxiliary designs and checked derived predictor graph.
     fixed_parameters : Mapping[str, float] or None
@@ -2876,17 +3868,77 @@ def _formula_lens(
     predictor_name : str or None
         Checked external neural binding.
 
+    default_priors : {"quivers", "brms"}
+        Default prior policy: the proper, autoscaled quivers defaults, or
+        ``brms::default_prior`` (flat ``b``; Student-t intercept, ``sd`` and
+        ``sigma`` priors scaled by the response). Explicit priors win either way.
+    center : bool or None
+        brms ``bf(center = )``: sample the intercept of the column-centered
+        design and report ``b_Intercept = Intercept_c - mean(X) b``. None
+        centers under the brms policy only.
+    decomp : {"none", "QR"}
+        brms ``bf(decomp = "QR")``: sample the location coefficients in scaled
+        QR coordinates; class ``b`` priors act on those coordinates.
+    cmc : bool
+        brms ``cmc``: with False, a formula without intercept keeps treatment
+        coding (no cell-mean coding of its first factor).
+    sparse : bool
+        brms ``sparse``: the same model with centering disabled, as brms
+        disables it for sparse designs; incompatible with ``decomp="QR"``.
+    unused : Sequence[str]
+        brms ``unused``: further columns kept with the model rows, so rows
+        missing them are excluded as for model variables.
+    knots : Mapping[str, Sequence[float]] or None
+        brms ``knots``: knot values keyed by smooth covariate, passed to the
+        ``cr``, ``cs``, ``cc``, ``ps`` and ``bs`` constructors of ``s()`` as
+        mgcv's ``smoothCon(knots = )`` does.
+    drop_unused_levels : bool
+        brms ``drop_unused_levels``: with False, factor levels that no row
+        uses keep their population columns (of zeros) and grouping-factor
+        levels their group effects, as brms keeps them.
     Returns
     -------
     tuple[FormulaToQVRModule, Formula]
         Existing compiler lens and its evaluated input.
     """
+    # A single-response bf carries the response keywords of this call.
+    if isinstance(formula, ResponseModel):
+        authored = single_response(
+            formula,
+            family=family,
+            distributional=distributional,
+            nonlinear=nonlinear,
+            fixed_parameters=fixed_parameters,
+            weights=weights,
+            decision=decision,
+            binomial_trials=binomial_trials,
+            thresholds_by=thresholds_by,
+            mixture_components=mixture_components,
+            center=center,
+            decomp=decomp,
+            cmc=cmc,
+            sparse=sparse,
+            unused=unused,
+            caller="a formula entry point",
+        )
+        formula, family = authored["formula"], authored["family"]
+        distributional = authored["distributional"]
+        nonlinear = authored["nonlinear"]
+        fixed_parameters = authored["fixed_parameters"]
+        weights, decision = authored["weights"], authored["decision"]
+        binomial_trials = authored["binomial_trials"]
+        thresholds_by = authored["thresholds_by"]
+        mixture_components = authored["mixture_components"]
+        center, decomp = authored["center"], authored["decomp"]
+        cmc, sparse = authored["cmc"], authored["sparse"]
+        unused = authored["unused"]
     prepared = _prepare_formula(
         formula,
         data=data,
         family=family,
         weights=weights,
         decision=decision,
+        data2=data2,
         distributional=distributional,
         nonlinear=nonlinear,
         fixed_parameters=fixed_parameters,
@@ -2900,6 +3952,14 @@ def _formula_lens(
         thresholds_by=thresholds_by,
         mixture_components=mixture_components,
         predictor_name=predictor_name,
+        default_priors=default_priors,
+        center=center,
+        decomp=decomp,
+        cmc=cmc,
+        sparse=sparse,
+        unused=unused,
+        knots=knots,
+        drop_unused_levels=drop_unused_levels,
     )
     return prepared.lens, prepared.formula
 
@@ -2911,6 +3971,7 @@ def _prepare_formula(
     family: str | Family = "gaussian",
     weights: str | None = None,
     decision: str | None = None,
+    data2: Mapping[str, AutocorMatrix] | None = None,
     distributional: Mapping[str, str | NonlinearExpression] | None = None,
     nonlinear: Mapping[str, str | NonlinearExpression] | None = None,
     fixed_parameters: Mapping[str, float] | None = None,
@@ -2925,7 +3986,15 @@ def _prepare_formula(
     mixture_components: int = 2,
     predictor_name: str | None = None,
     caller: str = "formula_to_qvr",
+    default_priors: DefaultPriorPolicy = "quivers",
+    center: bool | None = None,
+    decomp: Literal["none", "QR"] = "none",
+    cmc: bool = True,
+    sparse: bool = False,
+    unused: Sequence[str] = (),
     rows: tuple[int, ...] | None = None,
+    knots: Knots | None = None,
+    drop_unused_levels: bool | None = None,
 ) -> _PreparedFormula:
     """Prepare one retained design and compiler configuration for every entry.
 
@@ -2939,6 +4008,12 @@ def _prepare_formula(
         Checked response law and retained link, threshold, and event choices.
     weights, decision : str or None
         Optional existing response-role columns.
+    data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+        Named matrices referenced by autocorrelation terms, as in brms:
+        the spatial weights of ``sar(M)`` and the fixed covariance of
+        ``fcor(M)``, each over the included response rows. A group-level
+        ``gr(g, cov = M)`` reads a labeled ``DataFrame`` covariance between
+        the levels of ``g``.
     distributional, nonlinear : Mapping or None
         Auxiliary designs and checked derived predictor graph.
     fixed_parameters : Mapping[str, float] or None
@@ -2965,6 +4040,33 @@ def _prepare_formula(
         Rows decided for a whole multivariate model, replacing this
         response's own decision; None decides from this response's variables.
 
+    default_priors : {"quivers", "brms"}
+        Default prior policy: the proper, autoscaled quivers defaults, or
+        ``brms::default_prior`` (flat ``b``; Student-t intercept, ``sd`` and
+        ``sigma`` priors scaled by the response). Explicit priors win either way.
+    center : bool or None
+        brms ``bf(center = )``: sample the intercept of the column-centered
+        design and report ``b_Intercept = Intercept_c - mean(X) b``. None
+        centers under the brms policy only.
+    decomp : {"none", "QR"}
+        brms ``bf(decomp = "QR")``: sample the location coefficients in scaled
+        QR coordinates; class ``b`` priors act on those coordinates.
+    cmc : bool
+        brms ``cmc``: with False, a formula without intercept keeps treatment
+        coding (no cell-mean coding of its first factor).
+    sparse : bool
+        brms ``sparse``: the same model with centering disabled, as brms
+        disables it for sparse designs; incompatible with ``decomp="QR"``.
+    unused : Sequence[str]
+        brms ``unused``: further columns kept with the model rows, so rows
+        missing them are excluded as for model variables.
+    knots : Mapping[str, Sequence[float]] or None
+        brms ``knots`` of the smooth constructors. None keeps the knots of an
+        enclosing `formula_data_options` scope, which joint preparation sets
+        once for every response.
+    drop_unused_levels : bool or None
+        brms ``drop_unused_levels``; None keeps the enclosing scope's (True
+        outside every scope).
     Returns
     -------
     _PreparedFormula
@@ -2975,6 +4077,8 @@ def _prepare_formula(
     ValueError
         If a family, response role, predictor, or trial contract is invalid.
     """
+    # brms gr(g, cov = M) reads a known level covariance from data2.
+    group_covariances = resolve_group_covariances(formula, data2, group_covariances)
     if isinstance(family, str):
         if family not in families:
             raise ValueError(
@@ -2988,8 +4092,15 @@ def _prepare_formula(
     distributional = custom_distributional(
         family_obj, distributional, fixed_parameters=fixed_parameters
     )
+    # mixtures: expand family="mixture" and copy the main formula to mu<k>.
+    family_obj, distributional = mixture_distributional(
+        family_obj, formula, distributional, mixture_components
+    )
     # brms na_omit: one decision over every variable of every model part.
     original = nw.from_native(data, eager_only=True).to_pandas()
+    # brms sparse disables centering; unused columns join row retention.
+    center = sparse_center(center, decomp, sparse=sparse)
+    unused = checked_unused(unused, original, caller=caller)
     retained = rows
     if rows is None:
         retained = complete_rows(
@@ -3001,23 +4112,38 @@ def _prepare_formula(
                 thresholds_by,
                 binomial_trials,
                 family_obj.baseline.by if family_obj.baseline is not None else None,
+                *unused,
             ),
         )
     if retained is not None:
         # A column holding missing values recovers its observed type.
         data = original.iloc[list(retained)].infer_objects()
-    parsed, design = _threshold_formula_and_design(
-        nonlinear_response_source(formula, nonlinear),
-        data,
-        thresholds_by=thresholds_by,
-        weights=weights,
-        decision=decision,
-        groups=(family_obj.baseline.by,)
-        if family_obj.baseline is not None and family_obj.baseline.by is not None
-        else (),
-    )
+    # Autocorrelation terms (brms ar/ma/arma/cosy/unstr/sar/fcor) leave the
+    # predictor and bind the response law; see quivers.formulas._autocor.
+    authored = formula
+    formula, autocor_terms = split_autocor_terms(formula)
+    # brms knots and drop_unused_levels reach every evaluation below; None
+    # keeps the enclosing scope's.
+    with formula_data_options(knots, drop_unused_levels, data2):
+        parsed, design = _threshold_formula_and_design(
+            nonlinear_response_source(formula, nonlinear),
+            data,
+            thresholds_by=thresholds_by,
+            weights=weights,
+            decision=decision,
+            cmc=cmc,
+            groups=(family_obj.baseline.by,)
+            if family_obj.baseline is not None and family_obj.baseline.by is not None
+            else (),
+            # brms counts the thresholds of a hurdle family above the hurdle.
+            extra_category="hurdle_cumulative" in threshold_kinds(family_obj),
+            # brms integer categories: ordinal codes 1, ..., max(y).
+            category_coding=family_category_coding(family_obj),
+        )
     from quivers.formulas._response_roles import included_data, retained_trials
 
+    # brms thres(n, gr): group thresholds are scored on category log masses.
+    family_obj = threshold_family(family_obj, parsed)
     if retained is not None:
         # Retained rows keep their positions in the caller's frame.
         selection = parsed.modifiers.subset
@@ -3033,29 +4159,62 @@ def _prepare_formula(
         data = original
     data = included_data(parsed, data)
     binomial_trials = retained_trials(parsed, family_obj, data, binomial_trials)
-    parsed = parsed.with_(formula=formula)
+    if autocor_terms:
+        family_obj, parsed = bind_autocor_terms(
+            autocor_terms,
+            family_obj,
+            parsed,
+            data=data,
+            data2=data2,
+            distributional=distributional,
+            nonlinear=bool(nonlinear),
+            caller=caller,
+        )
+    parsed = parsed.with_(formula=authored)
+    # brms mu<c>: complete category-specific formulas with the main formula.
+    if family_obj.response is not None:
+        distributional = category_distributional(
+            family_obj,
+            FormulaToQVRModule._component_labels(parsed),
+            formula,
+            distributional,
+            every_category=requires_category_predictors(parsed),
+        )
+        # brms sigma<c>: per-category logistic-normal scale formulas.
+        check_scale_formulas(
+            family_obj,
+            FormulaToQVRModule._component_labels(parsed),
+            (distributional or {}).keys() | (fixed_parameters or {}).keys(),
+        )
+    # Mixture components and per-category formulas own every predictor term;
+    # the main formula keeps the response, modifiers, and group coding.
+    if family_obj.mixture is not None or any(
+        is_category_parameter(family_obj, name) for name in distributional or {}
+    ):
+        parsed = main_without_terms(parsed)
     parameter_designs: dict[str, DesignMatrices] = {}
-    graph = build_predictor_graph(
-        formula,
-        nonlinear,
-        distributional,
-        data,
-        parsed.response_name,
-        family_parameters=frozenset(
-            {"mu", *(aux.name for aux in family_obj.aux_params)}
-        ),
-        designs=parameter_designs,
-    )
-    parameter_formulas = _parse_distributional(
-        {
-            name: value
-            for name, value in (distributional or {}).items()
-            if isinstance(value, str)
-        },
-        data,
-        parsed.response_name,
-        designs=parameter_designs,
-    )
+    with formula_data_options(knots, drop_unused_levels, data2):
+        graph = build_predictor_graph(
+            formula,
+            nonlinear,
+            distributional,
+            data,
+            parsed.response_name,
+            family_parameters=frozenset(
+                {"mu", *(aux.name for aux in family_obj.aux_params)}
+            ),
+            designs=parameter_designs,
+        )
+        parameter_formulas = _parse_distributional(
+            {
+                name: value
+                for name, value in (distributional or {}).items()
+                if isinstance(value, str)
+            },
+            data,
+            parsed.response_name,
+            designs=parameter_designs,
+        )
     trials = (
         _response_trials(parsed, data, binomial_trials, caller=caller)
         if family_obj.trials_parameter is not None
@@ -3076,6 +4235,9 @@ def _prepare_formula(
         distributional=parameter_formulas,
         predictor_graph=graph,
         fixed_parameters=fixed_parameters,
+        default_priors=default_priors,
+        center=center,
+        decomp=decomp,
     )
     return _PreparedFormula(
         lens,
@@ -3097,6 +4259,9 @@ def _threshold_formula_and_design(
     weights: str | None,
     decision: str | None = None,
     groups: tuple[str, ...] = (),
+    cmc: bool = True,
+    extra_category: bool = False,
+    category_coding: CategoryCoding | None = None,
 ) -> tuple[Formula, DesignMatrices]:
     """Evaluate a full threshold profile with one shared group location.
 
@@ -3114,6 +4279,13 @@ def _threshold_formula_and_design(
         Optional lower/upper decision column.
     groups : tuple[str, ...]
         Additional structural groups without implied varying coefficients.
+    cmc : bool
+        brms cell-mean coding of a formula without intercept.
+    extra_category : bool
+        Whether response code zero is the hurdle category, outside the
+        thresholds that ``thres(n)`` counts.
+    category_coding : {"ordinal", "hurdle", "nominal"} or None
+        How the family reads an integer response as categories.
 
     Returns
     -------
@@ -3122,7 +4294,14 @@ def _threshold_formula_and_design(
         varying intercept for the threshold group.
     """
     parsed, design = _formula_and_design(
-        formula, data, weights=weights, decision=decision, groups=groups
+        formula,
+        data,
+        weights=weights,
+        decision=decision,
+        groups=groups,
+        cmc=cmc,
+        extra_category=extra_category,
+        category_coding=category_coding,
     )
     if thresholds_by is None or any(
         term.group == thresholds_by and term.slope == "Intercept"
@@ -3131,7 +4310,14 @@ def _threshold_formula_and_design(
         return parsed, design
     expanded = f"{formula} + (1 | {thresholds_by})"
     parsed, design = _formula_and_design(
-        expanded, data, weights=weights, decision=decision, groups=groups
+        expanded,
+        data,
+        weights=weights,
+        decision=decision,
+        groups=groups,
+        cmc=cmc,
+        extra_category=extra_category,
+        category_coding=category_coding,
     )
     return parsed.with_(formula=formula), design
 
@@ -3164,7 +4350,8 @@ def _parse_distributional(
     Raises
     ------
     ValueError
-        If a formula lacks a tilde or names a different parameter.
+        If a formula lacks a tilde, names a different parameter, or holds a
+        measurement-error ``me()`` term.
     """
     parsed: dict[str, Formula] = {}
     for parameter, formula in (formulas or {}).items():
@@ -3174,6 +4361,11 @@ def _parse_distributional(
         if lhs.strip() not in ("", parameter):
             raise ValueError(
                 f"distributional formula for {parameter!r} has mismatched left-hand side {lhs.strip()!r}"
+            )
+        if re.search(r"(?<![A-Za-z0-9_.])me\(", rhs):
+            raise ValueError(
+                f"distributional formula for {parameter!r}: me() terms are "
+                "supported in the main formula of a joint model only"
             )
         if designs is None:
             parsed[parameter] = formula_from_data(f"{response} ~ {rhs}", data)
@@ -3188,12 +4380,13 @@ def _fit_mcmc(
     program: MonadicProgram,
     observations: dict[str, torch.Tensor],
     *,
-    sampler: Literal["nuts", "hmc"],
+    sampler: Literal["nuts", "hmc", "fixed_param"],
     num_warmup: int,
     num_samples: int,
     num_chains: int,
     seed: int,
     initial_values: Mapping[str, torch.Tensor | float] | None = None,
+    controls: InferenceControls | None = None,
 ) -> MCMCResult:
     """Run seeded NUTS or HMC on the compiled program.
 
@@ -3215,24 +4408,46 @@ def _fit_mcmc(
         Seed from which the driver derives each chain's stream.
     initial_values
         Optional natural-scale values for named latent sites.
+    controls
+        brms kernel control, thinning, and initialization.
 
     Returns
     -------
     MCMCResult
         Retained samples and sampler statistics.
     """
-    kernel = NUTSKernel() if sampler == "nuts" else HMCKernel()
+    controls = InferenceControls() if controls is None else controls
+    strategy, starts = chain_initialization(
+        controls.init, dict(initial_values or {}), num_chains
+    )
     mcmc = MCMC(
-        kernel=kernel,
+        kernel=mcmc_kernel(sampler, controls.control),
         num_warmup=num_warmup,
         num_samples=num_samples,
         num_chains=num_chains,
+        init_strategy=strategy,
         seed=seed,
-        initial_values=initial_values,
+        initial_values=starts,
+        thin=controls.thin,
+        init_radius=controls.init_r,
     )
     # One run of the program: its observation rows come from the data
     # through the formula's plate, not from the input's rows.
     x = torch.zeros(1, 1, dtype=torch.long)
+    # brms inits(): a rerun of the fit's arguments stops here with the
+    # chains' initial values.
+    report_initial_values(mcmc, program, x, observations)
+    # brms cores: a worker runs its assigned chains only; the
+    # parent deals the chains to workers that rebuild this fit.
+    assigned = assigned_chains()
+    if assigned is not None:
+        raise ChainsRan(run_chains(mcmc, program, x, observations, assigned))
+    if controls.cores > 1 and num_chains > 1:
+        if controls.chain_worker is None:
+            raise ValueError("cores > 1 needs the fit's recipe to rebuild it")
+        return parallel_chains(
+            mcmc, program, x, observations, controls.chain_worker, controls.cores
+        )
     return mcmc.run(program, x, observations)
 
 
@@ -3565,3 +4780,8 @@ def _validate_binomial_response(
             f"{caller}: binomial responses must lie between zero and "
             "binomial_trials for every row"
         )
+
+
+# Joint (multivariate) fitting imports this module's shared preparation and
+# inference seam, so its module is bound after every name above is defined.
+from quivers.formulas import _joint_fit  # noqa: E402

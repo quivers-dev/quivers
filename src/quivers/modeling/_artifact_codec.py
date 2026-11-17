@@ -173,6 +173,11 @@ def _builtin_types(formula: bool = False) -> dict[str, type]:
     from quivers.modeling.methods import MCMCMethod, VariationalMethod
 
     constructors = (MCMCResult, PriorDraws, MCMCMethod, VariationalMethod)
+    # Pathfinder draws, driver, and method.
+    from quivers.inference.pathfinder import LBFGSSettings, Pathfinder, PathfinderDraws
+    from quivers.modeling.methods import PathfinderMethod
+
+    constructors += (LBFGSSettings, Pathfinder, PathfinderDraws, PathfinderMethod)
     if formula:
         from quivers.formulas.family import (
             Family,
@@ -180,6 +185,7 @@ def _builtin_types(formula: bool = False) -> dict[str, type]:
             AuxParam,
             OrdinalSpec,
             ResponseSpec,
+            MixtureSpec,
         )
         from quivers.formulas._survival import BaselineSpec
         from quivers.formulas._predictor_graph import NonlinearExpression
@@ -191,13 +197,25 @@ def _builtin_types(formula: bool = False) -> dict[str, type]:
         )
         from quivers.formulas._group_covariance import GroupCovariance
         from quivers.formulas._custom_types import CustomFamilySpec
+        from quivers.formulas._multivariate import MultivariateFormula, ResponseModel
+        from quivers.diagnostics.elpd import ELPDEstimate
+
+        # brms flat and constant priors and sampler control.
+        from quivers.formulas._priors import ConstantPrior, ImproperFlat
+        from quivers.formulas._fit_controls import SamplerControl
+        from quivers.formulas._fit_controls import PathfinderOptions
 
         constructors += (
+            PathfinderOptions,
+            ConstantPrior,
+            ImproperFlat,
+            SamplerControl,
             Family,
             Link,
             AuxParam,
             OrdinalSpec,
             ResponseSpec,
+            MixtureSpec,
             BaselineSpec,
             NonlinearExpression,
             PriorSpec,
@@ -206,6 +224,9 @@ def _builtin_types(formula: bool = False) -> dict[str, type]:
             R2D2,
             GroupCovariance,
             CustomFamilySpec,
+            MultivariateFormula,
+            ResponseModel,
+            ELPDEstimate,
         )
     return {cls.__name__: cls for cls in constructors}
 

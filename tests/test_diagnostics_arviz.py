@@ -34,8 +34,8 @@ def test_arviz_dependency_floor_matches_datatree_api() -> None:
     metadata = tomllib.loads(
         (Path(__file__).parents[1] / "pyproject.toml").read_text()
     )["project"]["optional-dependencies"]
-    assert "arviz>=1.0" in metadata["diagnostics"]
-    assert "arviz>=1.0" in metadata["formulas"]
+    assert "arviz>=1.3" in metadata["diagnostics"]
+    assert "arviz>=1.3" in metadata["formulas"]
 
 
 def _make_result(samples: dict[str, torch.Tensor]) -> MCMCResult:

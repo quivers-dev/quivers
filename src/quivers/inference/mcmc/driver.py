@@ -11,9 +11,9 @@ post-warmup samples per chain.
 Chains are run sequentially within a process. Each chain receives
 a local generator and fresh kernel adaptation state. An explicit
 ``seed`` reproduces a run; an explicit ``generator`` advances once
-per run. Neither mode mutates Torch's global RNG state. For parallel
-chains across a real multi-core / multi-GPU workload, wrap an
-`MCMC` instance in a `torch.multiprocessing` pool.
+per run. Neither mode mutates Torch's global RNG state. To run the
+chains of a seeded run in worker processes with the same result,
+use `quivers.inference.mcmc.parallel.parallel_chains`.
 
 The result is an `MCMCResult` carrying per-site posterior
 draws (already pushed through the constraint bijectors so they
@@ -26,7 +26,7 @@ and tail effective sample sizes are computed from those draws by
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 import math
 from pathlib import Path
@@ -62,20 +62,32 @@ from quivers.inference.mcmc.kernel import (
     PotentialFn,
     StateValue,
     _check_observed_support,
+    _NonFiniteInitialDensity,
     _with_generator,
 )
 from quivers.inference.registry import LatentRegistry, _require_one_run
 from quivers.inference.trace import trace
 
+# A structure-only recording lets laws without draws answer with a placeholder.
+from quivers.inference._latent_recording import latent_structure_recording
 
-InitStrategy = Literal["jitter", "prior", "zero", "guide"]
+
+INITIAL_ATTEMPTS = 100
+"""How many initial positions a chain may draw before `MCMC` gives up. A
+drawn position whose log-density is not finite is discarded and another is
+drawn from the chain's stream, as Stan does for random initial values."""
+
+
+InitStrategy = Literal["jitter", "prior", "zero", "guide", "uniform"]
 """How `MCMC` chooses each chain's initial point in the unconstrained
 latent space: ``"jitter"`` draws a seeded perturbation ``0.1 * N(0, I)``
 of the origin, ``"prior"`` draws every latent from its prior given the
 data (the model run forward with its observed sites held at their
 values) and maps the draw into the unconstrained space, ``"zero"``
-starts at the origin, and ``"guide"`` maps one draw of a fitted guide
-into the unconstrained space."""
+starts at the origin, ``"guide"`` maps one draw of a fitted guide
+into the unconstrained space, and ``"uniform"`` draws every coordinate
+uniformly from ``(-init_radius, init_radius)``, Stan's and brms's
+``init = "random"`` with ``init_r``."""
 
 
 StopReason = Literal["draws", "seconds", "evaluations"]
@@ -584,12 +596,20 @@ class MCMC:
         chain and per call.
     callback : MCMCCallback, optional
         Progress hook called after every transition.
-    initial_values : Mapping[str, torch.Tensor or float], optional
+    initial_values : Mapping[str, torch.Tensor or float] or Sequence, optional
         Natural-scale starting values for named latent sites. Scalars
         broadcast to the site's shape; arrays must match it exactly.
         Values must be finite and strictly inside the prior support.
         They replace the configured strategy's corresponding coordinates
-        in every chain and are included in checkpoint compatibility.
+        in every chain and are included in checkpoint compatibility. A
+        sequence of ``num_chains`` mappings gives each chain its own values,
+        as brms's ``init`` list does.
+    thin : int
+        Keep every ``thin``-th post-warmup transition; each chain runs
+        ``num_samples * thin`` sampling transitions and keeps
+        ``num_samples`` draws (Stan's and brms's ``thin``).
+    init_radius : float
+        Half-width of the ``"uniform"`` initialization (brms ``init_r``).
 
     Raises
     ------
@@ -615,7 +635,11 @@ class MCMC:
         max_seconds: float | None = None,
         max_evaluations: int | None = None,
         callback: MCMCCallback | None = None,
-        initial_values: Mapping[str, torch.Tensor | float] | None = None,
+        initial_values: Mapping[str, torch.Tensor | float]
+        | Sequence[Mapping[str, torch.Tensor | float]]
+        | None = None,
+        thin: int = 1,
+        init_radius: float = 2.0,
     ) -> None:
         if num_warmup < 0:
             raise ValueError(f"MCMC: num_warmup must be >= 0, got {num_warmup}")
@@ -655,9 +679,35 @@ class MCMC:
         self.max_seconds = max_seconds
         self.max_evaluations = max_evaluations
         self.callback = callback
+        # brms thin, init_r, and per-chain init lists.
+        if isinstance(thin, bool) or not isinstance(thin, int) or thin < 1:
+            raise ValueError(f"MCMC: thin must be an integer >= 1, got {thin!r}")
+        if not (isinstance(init_radius, (int, float)) and init_radius > 0):
+            raise ValueError(f"MCMC: init_radius must be > 0, got {init_radius!r}")
+        self.thin = thin
+        self.init_radius = float(init_radius)
+        per_chain = (
+            ()
+            if initial_values is None or isinstance(initial_values, Mapping)
+            else tuple(initial_values)
+        )
+        if per_chain and len(per_chain) != num_chains:
+            raise ValueError(
+                f"MCMC: {len(per_chain)} per-chain initial values for "
+                f"{num_chains} chains"
+            )
+        self.chain_initial_values: tuple[dict[str, torch.Tensor], ...] = tuple(
+            {
+                name: torch.as_tensor(value).detach().clone()
+                for name, value in values.items()
+            }
+            for values in per_chain
+        )
         self.initial_values = {
             name: torch.as_tensor(value).detach().clone()
-            for name, value in (initial_values or {}).items()
+            for name, value in (
+                initial_values if isinstance(initial_values, Mapping) else {}
+            ).items()
         }
 
     def _run_seed(self) -> int:
@@ -708,6 +758,7 @@ class MCMC:
         setup: _RunSetup,
         guide: Guide | None,
         generator: torch.Generator,
+        chain: int = 0,
     ) -> torch.Tensor:
         """A chain's initial point in the unconstrained latent space.
 
@@ -719,6 +770,9 @@ class MCMC:
             The guide for ``init_strategy="guide"``.
         generator : torch.Generator
             The chain's generator, which every random strategy draws from.
+        chain : int
+            The chain's index, selecting its own initial values when they
+            are given per chain.
 
         Returns
         -------
@@ -731,11 +785,16 @@ class MCMC:
             If ``init_strategy="guide"`` has no guide.
         """
         position = self._strategy_position(setup, guide, generator)
-        if self.initial_values:
+        named = (
+            self.chain_initial_values[chain]
+            if self.chain_initial_values
+            else self.initial_values
+        )
+        if named:
             from quivers.inference._initialization import unconstrained_initial_values
 
             for name, value in unconstrained_initial_values(
-                setup.registry, self.initial_values
+                setup.registry, named
             ).items():
                 site = setup.registry[name]
                 position[site.flat_offset : site.flat_offset + site.flat_length] = (
@@ -751,6 +810,8 @@ class MCMC:
         D = registry.total_unconstrained_dim
         if self.init_strategy == "zero":
             return torch.zeros(D)
+        if self.init_strategy == "uniform":
+            return self.init_radius * (2.0 * torch.rand(D, generator=generator) - 1.0)
         if self.init_strategy == "prior":
             prior_trace = _with_generator(
                 generator, lambda: trace(setup.model, setup.x, setup.observations)
@@ -771,6 +832,66 @@ class MCMC:
         # "jitter": a seeded standard-normal position, scaled mildly so
         # chains spread out near the origin.
         return 0.1 * torch.randn(D, generator=generator)
+
+    def chain_start_values(
+        self,
+        model: MonadicProgram,
+        x: torch.Tensor,
+        observations: dict[str, torch.Tensor],
+        guide: Guide | None = None,
+    ) -> tuple[dict[str, torch.Tensor], ...]:
+        """Return the initial values `run` gives each chain, without sampling.
+
+        A chain's initial point is the first draw from the chain's stream,
+        which `run` derives from the run seed and the chain index. With an
+        explicit seed the values here are thus those of `run` on the same
+        model and data.
+
+        Parameters
+        ----------
+        model : MonadicProgram
+            The model.
+        x : torch.Tensor
+            The input.
+        observations : dict[str, torch.Tensor]
+            The data.
+        guide : Guide or None
+            The guide for ``init_strategy="guide"``.
+
+        Returns
+        -------
+        tuple[dict[str, torch.Tensor], ...]
+            One mapping per chain from latent site to its initial value on
+            the constrained scale, at the site's constrained shape.
+
+        Raises
+        ------
+        ValueError
+            If the driver has no explicit integer seed, so that a later call
+            cannot reproduce the chain streams.
+
+        Notes
+        -----
+        Cost is one setup of the potential and, per chain, one forward pass
+        of the program for each initial point drawn until one scores a finite
+        log-density.
+        """
+        if self.seed is None or self.generator is not None:
+            raise ValueError(
+                "MCMC.chain_start_values: chain streams are reproducible only "
+                "from an explicit integer seed"
+            )
+        run_seed = self._run_seed()
+        setup = self._setup(model, x, observations, "MCMC.chain_start_values", run_seed)
+        return tuple(
+            self._to_constrained(
+                setup.registry,
+                self._accepted_start(
+                    setup, guide, self._chain_generator(run_seed, chain), chain
+                )[0],
+            )
+            for chain in range(self.num_chains)
+        )
 
     @staticmethod
     def _to_constrained(
@@ -992,7 +1113,7 @@ class MCMC:
         # Torch's global RNG is left as it was.
         recording = self._chain_generator(run_seed, -1)
         try:
-            with torch.random.fork_rng(devices=[]):
+            with torch.random.fork_rng(devices=[]), latent_structure_recording():
                 torch.random.set_rng_state(recording.get_state())
                 recorded = trace(model, x, observations=observations)
         except Exception as error:
@@ -1035,6 +1156,15 @@ class MCMC:
                 name: tensor_digest(value)
                 for name, value in sorted(self.initial_values.items())
             }
+        if self.chain_initial_values:
+            settings["chain_initial_values"] = [
+                {name: tensor_digest(value) for name, value in sorted(values.items())}
+                for values in self.chain_initial_values
+            ]
+        if self.thin != 1:
+            settings["thin"] = self.thin
+        if self.init_strategy == "uniform":
+            settings["init_radius"] = self.init_radius
         return _CheckpointHeader(
             format_version=CHECKPOINT_FORMAT_VERSION,
             library="quivers",
@@ -1043,6 +1173,92 @@ class MCMC:
             run_fingerprint=_digest(settings),
             run_seed=run_seed,
         )
+
+    def _accepted_start(
+        self,
+        setup: _RunSetup,
+        guide: Guide | None,
+        generator: torch.Generator,
+        chain: int,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Draw a chain's start until its log-density is finite.
+
+        Each attempt draws an initial position and the Gibbs-updated sites'
+        initial values from the chain's stream and scores them with
+        `PotentialFn.check_initial`. A position that scores without error
+        but with a non-finite log-density is discarded and the next attempt
+        draws afresh, up to `INITIAL_ATTEMPTS` attempts. The first attempt
+        consumes the stream exactly as a single draw does. An attempt that
+        repeats the discarded position, as under ``init_strategy="zero"``
+        or when named initial values fix every coordinate, ends the search.
+        Cost is one forward pass of the program per attempt.
+
+        Parameters
+        ----------
+        setup : _RunSetup
+            The run's structures.
+        guide : Guide | None
+            The guide for ``init_strategy="guide"``.
+        generator : torch.Generator
+            The chain's generator.
+        chain : int
+            The chain's index.
+
+        Returns
+        -------
+        tuple[torch.Tensor, dict[str, torch.Tensor]]
+            The accepted flat unconstrained position and the initial values
+            of the Gibbs-updated sites drawn with it.
+
+        Raises
+        ------
+        ValueError
+            If a drawn position is not finite, or no attempt scores a finite
+            log-density; the error is that of the last attempt.
+        Exception
+            Any error the program raises at a drawn position.
+        """
+        discarded: torch.Tensor | None = None
+        for attempt in range(1, INITIAL_ATTEMPTS + 1):
+            init_pos = self._initial_position(setup, guide, generator, chain)
+            if not torch.isfinite(init_pos).all():
+                raise ValueError(
+                    f"MCMC.run: chain {chain} initial_position must contain "
+                    "only finite values"
+                )
+            gibbs_values = self._initial_gibbs_values(
+                setup.model, setup.x, setup.observations, setup.gibbs_sites, generator
+            )
+            chain_potential = (
+                setup.potential.condition(gibbs_values)
+                if gibbs_values
+                else setup.potential
+            )
+            try:
+                chain_potential.check_initial(init_pos)
+            except _NonFiniteInitialDensity as error:
+                repeated = discarded is not None and torch.equal(discarded, init_pos)
+                if (
+                    attempt == INITIAL_ATTEMPTS
+                    or repeated
+                    or self.init_strategy == "zero"
+                ):
+                    error.add_note(
+                        f"MCMC.run: raised while scoring chain {chain}'s initial "
+                        f"position, before any sampling (attempt {attempt} of at "
+                        f"most {INITIAL_ATTEMPTS})"
+                    )
+                    raise
+                discarded = init_pos
+                continue
+            except Exception as error:
+                error.add_note(
+                    f"MCMC.run: raised while scoring chain {chain}'s initial "
+                    "position, before any sampling"
+                )
+                raise
+            return init_pos, gibbs_values
+        raise AssertionError("unreachable: the last attempt returns or raises")
 
     def _start_chain(
         self,
@@ -1075,26 +1291,7 @@ class MCMC:
             If the initial position is not finite or scores a
             non-finite log-density.
         """
-        init_pos = self._initial_position(setup, guide, generator)
-        if not torch.isfinite(init_pos).all():
-            raise ValueError(
-                f"MCMC.run: chain {chain} initial_position must contain "
-                "only finite values"
-            )
-        gibbs_values = self._initial_gibbs_values(
-            setup.model, setup.x, setup.observations, setup.gibbs_sites, generator
-        )
-        chain_potential = (
-            setup.potential.condition(gibbs_values) if gibbs_values else setup.potential
-        )
-        try:
-            chain_potential.check_initial(init_pos)
-        except Exception as error:
-            error.add_note(
-                f"MCMC.run: raised while scoring chain {chain}'s initial "
-                "position, before any sampling"
-            )
-            raise
+        init_pos, gibbs_values = self._accepted_start(setup, guide, generator, chain)
         self.kernel._set_generator(generator)
         state = self.kernel.init(
             setup.registry, setup.model, setup.x, setup.observations, init_pos
@@ -1192,7 +1389,10 @@ class MCMC:
                 record.phase = "sampling"
                 record.iteration = 0
                 continue
-            if record.phase == "sampling" and record.iteration == self.num_samples:
+            if (
+                record.phase == "sampling"
+                and record.iteration == self.num_samples * self.thin
+            ):
                 record.phase = "done"
                 record.stopped_by = "draws"
                 self._write(header, records, record, generator)
@@ -1217,7 +1417,7 @@ class MCMC:
                 potential.num_gradient_evaluations - gradients
             )
             phase: MCMCPhase = "warmup" if record.phase == "warmup" else "sampling"
-            if phase == "sampling":
+            if phase == "sampling" and (record.iteration + 1) % self.thin == 0:
                 self._record_draw(setup, record)
             if self.callback is not None:
                 self.callback(chain, record.iteration, record.state, phase)

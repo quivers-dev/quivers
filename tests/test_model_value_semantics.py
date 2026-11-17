@@ -150,6 +150,8 @@ def test_bayesian_fit_compares_formula_by_value_and_live_objects_by_identity():
 
     fit = build(_formula())
     assert fit == build(_formula())
+    # Fits without stored criteria share one read-only mapping.
+    assert fit.criteria is build(_formula()).criteria
     assert hash(fit) == hash(build(_formula()))
     assert fit != build(_formula(), priors={"x": "Normal(0, 2)"})
     response = np.array([0.1, 0.4, 0.2, 1.0])

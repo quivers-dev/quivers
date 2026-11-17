@@ -51,6 +51,8 @@ class OrderedLogistic(OrdinalDistribution):
     [McCullagh 1980](https://doi.org/10.1111/j.2517-6161.1980.tb01109.x).
     """
 
+    _batch_parameter_ranks = {"predictor": 0, "cutpoints": 1}
+
     def __init__(
         self,
         predictor: Tensor,

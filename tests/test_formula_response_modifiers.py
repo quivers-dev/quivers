@@ -82,8 +82,6 @@ def test_rows_with_missing_decisions_are_removed_as_brms_na_omit(frame, missing)
         ("rt | weights(w) ~ x", dict(weights="x")),
         ("rt | unknown(choice) ~ x", {}),
         ("rt | dec(choice,x) ~ x", {}),
-        ("rt | dec(choice+1) ~ x", {}),
-        ('rt | dec("choice") ~ x', {}),
     ],
 )
 def test_modifiers_reject_conflicts_and_unevaluated_expression_arguments(
@@ -91,6 +89,16 @@ def test_modifiers_reject_conflicts_and_unevaluated_expression_arguments(
 ):
     with pytest.raises(ValueError, match="modifier|requires|conflicting"):
         formula_from_data(source, frame, **kwargs)
+
+
+def test_decision_expression_is_evaluated_and_its_values_checked(frame):
+    with pytest.raises(ValueError, match="decisions must be exactly"):
+        formula_from_data("rt | dec(choice+1) ~ x", frame)
+
+
+def test_decision_string_literal_is_a_located_syntax_error(frame):
+    with pytest.raises(ValueError, match="decision: expected a number, a name"):
+        formula_from_data('rt | dec("choice") ~ x', frame)
 
 
 def test_matching_duplicate_declarations_are_allowed(frame):

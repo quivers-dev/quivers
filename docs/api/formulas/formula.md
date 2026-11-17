@@ -12,7 +12,24 @@ values. Their innovation coordinates and positive penalty scales are distinct
 from ordinary fixed columns; `FormulaData.design_terms` preserves the same
 immutable records across source-lens round trips. The
 [structured predictor guide](../../guides/formula-special-predictors.md)
-describes the current P-spline constructor and retained new-data transforms.
+describes the mgcv `s()` and `t2()` constructors and retained new-data
+transforms. `GaussianDesignTerm.scale_group` names a smoothing scale shared
+by smooths with one mgcv `id`.
+`GaussianDesignTerm.gp` holds a
+[`GaussianProcessBlock`](#quivers.formulas.GaussianProcessBlock) for an
+approximate `gp()` term: its coordinate scales are the square roots of the
+kernel's spectral density at the retained frequencies, as functions of the
+sampled `sdgp` and `lscale`. For an exact `gp()` term (no `k`) the block
+retains the distinct scaled training inputs, and its coordinates are the
+latent function there, `cholesky(K + 1e-12 I)` times standard-Normal
+innovations, written with the QVR builtin `cholesky`. Predictions at new
+inputs draw from
+[`GaussianProcessConditional`](#quivers.formulas.GaussianProcessConditional),
+brms's conditional Gaussian law given the training values.
+
+::: quivers.formulas.GaussianProcessBlock
+
+::: quivers.formulas.GaussianProcessConditional
 
 `Formula`, `FormulaData`, and `FixedColumn` are immutable values that
 compare by every field. Two formulas are equal only when their formula
@@ -67,4 +84,38 @@ if the caller already uses its reserved name. The
 [ordinal guide](../../guides/analysis-data-and-formulas.md#ordinal-families-thresholds-and-category-specific-effects)
 states supported constructions and prediction shapes.
 
+`Formula.monotonic_terms` retains each brms `mo()` special-effects column as a
+`MonotonicTerm`: one `MonotonicFactor` per `mo()` factor, holding the training
+matrix of cumulative category indicators and the brms `simo` label, the
+covariate of the term's other components, and the brms coefficient label.
+`FormulaData.monotonic_terms` preserves them across source-lens round trips.
+The `mo()` formulae transform retains the training coding, so fresh rows are
+coded and validated the same way. The
+[structured predictor guide](../../guides/formula-special-predictors.md#monotonic-effects)
+states the model, priors, and prediction rules.
+
 ::: quivers.formulas.formula
+
+::: quivers.formulas._monotonic.MonotonicTerm
+
+::: quivers.formulas._monotonic.MonotonicFactor
+
+`Formula.grouping` retains brms's grouping-term syntax as a `GroupingPlan`.
+Each `GroupingSpec` builds an interaction factor `g1:g2` or a
+multi-membership factor `mm(g1, g2)` from its source columns, for training
+and fresh rows alike. A `Membership` holds the member codes and weights of a
+multi-membership factor, and a `MemberCovariate` the member values of one of
+its coefficients. The [grouping guide](../../guides/formula-grouping.md)
+states the syntax and the model.
+
+::: quivers.formulas._grouping.GroupingPlan
+
+::: quivers.formulas._grouping.GroupingSpec
+
+::: quivers.formulas._grouping.Membership
+
+::: quivers.formulas._grouping.MemberCovariate
+
+::: quivers.formulas._grouping.GroupOptions
+
+::: quivers.formulas._grouping.GroupLevelOptions

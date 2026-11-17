@@ -1305,10 +1305,10 @@ class TestFamilyLinkDefaults:
         module, complement = lens.forward(parsed)
         assert lens.backward(module, complement) == parsed
 
-    def test_categorical_rejects_noncontiguous_categories(self):
+    def test_categorical_codes_observed_labels_as_factor_levels(self):
         df = pd.DataFrame({"y": [0, 2, 0, 2], "x": np.arange(4.0)})
-        with pytest.raises(ValueError, match="contiguous category labels"):
-            formula_to_qvr("y ~ x", data=df, family="categorical")
+        result = fit("y ~ x", data=df, family="categorical", method="svi", num_steps=1)
+        assert result.posterior_epred(num_samples=1).shape == (1, 1, 4, 2)
 
     def test_categorical_centered_random_effects_use_direct_coefficients(
         self, categorical_df
@@ -1330,26 +1330,32 @@ class TestFamilyLinkDefaults:
             family="mixture",
             mixture_components=3,
             priors={
-                "mixture_logit": "Normal(loc=0.0, scale=0.5)",
-                "mixture_offset": "Normal(loc=0.0, scale=2.0)",
-                "mixture_scale": "HalfNormal(scale=1.0)",
+                "theta": "Dirichlet(concentration=[2.0, 2.0, 2.0])",
+                "mixture_intercept_spacing": "HalfNormal(scale=2.0)",
+                "sigma2": "HalfNormal(scale=1.0)",
             },
         )
-        assert "object FormulaComponent : FinSet 3" in src
-        assert "object FormulaComponentContrast : FinSet 2" in src
+        assert "object FormulaMixtureComponent : FinSet 3" in src
+        assert "object FormulaMixtureSpacing : FinSet 2" in src
+        assert "theta <- Dirichlet(concentration=[2.0, 2.0, 2.0])" in src
         assert (
-            "mixture_logit : FormulaComponentContrast <- "
-            "Normal(loc=0.0, scale=0.5)" in src
+            "mixture_intercept_spacing : FormulaMixtureSpacing <- "
+            "HalfNormal(scale=2.0)" in src
+        )
+        assert "sigma2 <- HalfNormal(scale=1.0)" in src
+        for k in (1, 2, 3):
+            assert f"dpar_mu{k}_sigma_g_Intercept" in src
+        assert (
+            "let dpar_mu3_intercept = dpar_mu1_intercept + "
+            "mixture_intercept_spacing[0] + mixture_intercept_spacing[1]" in src
         )
         assert (
-            "mixture_offset : FormulaComponentContrast <- "
-            "Normal(loc=0.0, scale=2.0)" in src
+            "mixture_loc_by_component = factor component : FormulaMixtureComponent "
+            "in {0 -> mixture_row_zero + mu1, 1 -> mixture_row_zero + mu2, "
+            "2 -> mixture_row_zero + mu3}" in src
         )
-        assert "mixture_scale : FormulaComponent <- HalfNormal(scale=1.0)" in src
-        assert "mixture_weights = softmax(mixture_logits)" in src
-        assert "mixture_offsets = factor component : FormulaComponent" in src
         assert (
-            "MixtureNormal(weights=mixture_weights, loc=mixture_locations, "
+            "MixtureNormal(weights=mixture_weights, loc=mixture_loc, "
             "scale=mixture_scale)" in src
         )
         loads(src)
@@ -1373,21 +1379,8 @@ class TestFamilyLinkDefaults:
             family="mixture",
             mixture_components=components,
         )
-        assert f"object FormulaComponent : FinSet {components}" in src
+        assert f"object FormulaMixtureComponent : FinSet {components}" in src
         loads(src)
-
-    @pytest.mark.parametrize("components", [2, 4, 7])
-    def test_mixture_contrast_is_orthonormal_and_sum_zero(self, components):
-        from quivers.formulas.compile import _helmert_contrast
-
-        contrast = _helmert_contrast(components)
-        assert contrast.shape == (components, components - 1)
-        assert np.allclose(contrast.T @ contrast, np.eye(components - 1))
-        assert np.allclose(contrast.sum(axis=0), 0.0)
-        expected_projection = (
-            np.eye(components) - np.ones((components, components)) / components
-        )
-        assert np.allclose(contrast @ contrast.T, expected_projection)
 
     def test_thresholds_by_rejects_noncumulative_family(self, base_df):
         with pytest.raises(ValueError, match="only valid for the cumulative family"):
@@ -1546,10 +1539,11 @@ class TestCategoricalAndMixtureInference:
             num_steps=2,
             seed=0,
         )
-        assert f"object FormulaComponent : FinSet {components}" in result.qvr_source
         assert (
-            "MixtureNormal(weights=mixture_weights, loc=mixture_locations, "
-            "scale=mixture_scale)" in result.qvr_source
+            f"object FormulaMixtureComponent : FinSet {components}" in result.qvr_source
+        )
+        assert "observe y : Resp <- MixtureNormal(weights=mixture_weights" in (
+            result.qvr_source
         )
 
     def test_fitted_source_preserves_requested_priors(self, mixture_df):
@@ -1559,15 +1553,13 @@ class TestCategoricalAndMixtureInference:
             family="mixture",
             mixture_components=3,
             fixed_prior="Normal(loc=0.0, scale=3.0)",
-            priors={"mixture_scale": "HalfNormal(scale=0.75)"},
+            priors={"sigma3": "HalfNormal(scale=0.75)"},
             method="svi",
             num_steps=1,
             seed=0,
         )
-        assert "intercept <- Normal(loc=0.0, scale=3.0)" in result.qvr_source
-        assert "mixture_scale : FormulaComponent <- HalfNormal(scale=0.75)" in (
-            result.qvr_source
-        )
+        assert "dpar_mu1_intercept <- Normal(loc=0.0, scale=3.0)" in result.qvr_source
+        assert "sigma3 <- HalfNormal(scale=0.75)" in result.qvr_source
 
 
 # ---------------------------------------------------------------------------

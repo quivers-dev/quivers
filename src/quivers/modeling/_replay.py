@@ -20,6 +20,9 @@ from quivers.inference.prior import PriorDraws
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import Trace, trace
 
+# Pathfinder draws report variational provenance.
+from quivers.inference.pathfinder import draw_provenance
+
 if TYPE_CHECKING:
     from quivers.modeling.model import BoundModel
 
@@ -127,11 +130,7 @@ def source_analysis(
         log_likelihood=likelihood,
         observed_data={name: values[name] for name in observations},
         sample_stats=_sample_stats(posterior, shape[1]),
-        kind="mcmc"
-        if isinstance(posterior, MCMCResult)
-        else "prior"
-        if isinstance(posterior, PriorDraws)
-        else "variational",
+        kind=draw_provenance(posterior),
     )
     result._validate_axes()
     return result

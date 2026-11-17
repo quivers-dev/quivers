@@ -56,6 +56,7 @@ from quivers.dsl.let_expr_traversal import let_expr_children, substitute_let_exp
 from quivers.dsl.pure_builtins import (
     HOST_ONLY_BUILTINS,
     LAYER_NORM_EPS,
+    MATRIX_FUNCTIONS,
     RMS_NORM_EPS,
     SHAPE_BUILTINS,
     _BINARY_PRIMITIVES,
@@ -95,6 +96,7 @@ from quivers.qiec import (
     Reduction,
     ReductionOperator,
     Rowwise,
+    CholeskyFactor,
     Comprehension,
     LetBinding,
     LetValue,
@@ -3310,6 +3312,21 @@ class _Elaborator(
                         path,
                         frozenset(local.name for local in context.locals),
                     )
+            if authored.func in MATRIX_FUNCTIONS:
+                split = tensor_shape(types[0]) if len(arguments) == 1 else None
+                if (
+                    split is None
+                    or split[0] != REAL
+                    or len(split[1]) < 2
+                    or split[1][-1] != split[1][-2]
+                ):
+                    self._fail(
+                        authored,
+                        f"builtin {authored.func!r} takes one Tensor[Real] whose "
+                        "last two axes have one extent",
+                        code="qiec-primitive",
+                    )
+                return CholeskyFactor(value=arguments[0], result_type=types[0])
             if authored.func in _ROWWISE:
                 if len(arguments) != 1 or tensor_shape(types[0]) is None:
                     self._fail(

@@ -1,0 +1,274 @@
+{
+  "brms": "2.20.4",
+  "data": [
+    {
+      "y": 0.3,
+      "x": 0.5,
+      "g": "a",
+      "f": "p"
+    },
+    {
+      "y": -1.2,
+      "x": -1.1,
+      "g": "b",
+      "f": "p"
+    },
+    {
+      "y": 0.8,
+      "x": 0.3,
+      "g": "c",
+      "f": "q"
+    },
+    {
+      "y": 1.9,
+      "x": 1.7,
+      "g": "d",
+      "f": "q"
+    },
+    {
+      "y": -0.4,
+      "x": -0.2,
+      "g": "a",
+      "f": "p"
+    },
+    {
+      "y": 0.1,
+      "x": 0.9,
+      "g": "b",
+      "f": "p"
+    },
+    {
+      "y": 1.4,
+      "x": -1.4,
+      "g": "c",
+      "f": "q"
+    },
+    {
+      "y": -0.7,
+      "x": 0.6,
+      "g": "d",
+      "f": "q"
+    },
+    {
+      "y": 0.6,
+      "x": 1.2,
+      "g": "a",
+      "f": "p"
+    },
+    {
+      "y": 2.2,
+      "x": -0.8,
+      "g": "b",
+      "f": "p"
+    },
+    {
+      "y": -1.5,
+      "x": 0.4,
+      "g": "c",
+      "f": "q"
+    },
+    {
+      "y": 0.9,
+      "x": -0.3,
+      "g": "d",
+      "f": "q"
+    }
+  ],
+  "cases": [
+    {
+      "formula": "y ~ x + (1 + x | gr(g, by = f))",
+      "data": {
+        "J_1": [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4],
+        "N_1": 4,
+        "M_1": 2,
+        "Nby_1": 2,
+        "Jby_1": [1, 1, 2, 2]
+      },
+      "stan": ["matrix scale_r_cor_by(matrix z, matrix SD, matrix[] L, int[] Jby) {", "matrix<lower=0>[M_1, Nby_1] sd_1;  // group-level standard deviations", "cholesky_factor_corr[M_1] L_1[Nby_1];  // cholesky factor of correlation matrix", "matrix[N_1, M_1] r_1;  // actual group-level effects", "vector[N_1] r_1_1;", "vector[N_1] r_1_2;", "r_1 = scale_r_cor_by(z_1, sd_1, L_1, Jby_1);", "r_1_1 = r_1[, 1];", "r_1_2 = r_1[, 2];", "lprior += student_t_lpdf(to_vector(sd_1) | 3, 0, 2.5)", "lprior += lkj_corr_cholesky_lpdf(L_1[1] | 1);", "lprior += lkj_corr_cholesky_lpdf(L_1[2] | 1);", "mu[n] += r_1_1[J_1[n]] * Z_1_1[n] + r_1_2[J_1[n]] * Z_1_2[n];", "corr_matrix[M_1] Cor_1_1 = multiply_lower_tri_self_transpose(L_1[1]);", "vector<lower=-1,upper=1>[NC_1] cor_1_1;", "corr_matrix[M_1] Cor_1_2 = multiply_lower_tri_self_transpose(L_1[2]);", "vector<lower=-1,upper=1>[NC_1] cor_1_2;", "cor_1_1[choose(k - 1, 2) + j] = Cor_1_1[j, k];", "cor_1_2[choose(k - 1, 2) + j] = Cor_1_2[j, k];"],
+      "prior": [
+        {
+          "prior": "lkj(1)",
+          "class": "cor",
+          "coef": "",
+          "group": "",
+          "lb": ""
+        },
+        {
+          "prior": "",
+          "class": "cor",
+          "coef": "",
+          "group": "g",
+          "lb": ""
+        },
+        {
+          "prior": "student_t(3, 0, 2.5)",
+          "class": "sd",
+          "coef": "",
+          "group": "",
+          "lb": "0"
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "",
+          "group": "g",
+          "lb": ""
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "Intercept",
+          "group": "g",
+          "lb": ""
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "x",
+          "group": "g",
+          "lb": ""
+        }
+      ]
+    },
+    {
+      "formula": "y ~ x + (1 + x || gr(g, by = f))",
+      "data": {
+        "J_1": [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4],
+        "N_1": 4,
+        "M_1": 2,
+        "Nby_1": 2,
+        "Jby_1": [1, 1, 2, 2]
+      },
+      "stan": ["matrix<lower=0>[M_1, Nby_1] sd_1;  // group-level standard deviations", "vector[N_1] r_1_1;  // actual group-level effects", "vector[N_1] r_1_2;  // actual group-level effects", "r_1_1 = (transpose(sd_1[1, Jby_1]) .* (z_1[1]));", "r_1_2 = (transpose(sd_1[2, Jby_1]) .* (z_1[2]));", "lprior += student_t_lpdf(to_vector(sd_1) | 3, 0, 2.5)", "mu[n] += r_1_1[J_1[n]] * Z_1_1[n] + r_1_2[J_1[n]] * Z_1_2[n];"],
+      "prior": [
+        {
+          "prior": "student_t(3, 0, 2.5)",
+          "class": "sd",
+          "coef": "",
+          "group": "",
+          "lb": "0"
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "",
+          "group": "g",
+          "lb": ""
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "Intercept",
+          "group": "g",
+          "lb": ""
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "x",
+          "group": "g",
+          "lb": ""
+        }
+      ]
+    },
+    {
+      "formula": "y ~ x + (1 + x | gr(g, dist = 'student'))",
+      "data": {
+        "J_1": [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4],
+        "N_1": 4,
+        "M_1": 2
+      },
+      "stan": ["matrix scale_r_cor(matrix z, vector SD, matrix L) {", "real<lower=1> df_1;", "vector<lower=0>[N_1] udf_1;", "vector<lower=0>[M_1] sd_1;  // group-level standard deviations", "cholesky_factor_corr[M_1] L_1;  // cholesky factor of correlation matrix", "vector[N_1] dfm_1;", "matrix[N_1, M_1] r_1;  // actual group-level effects", "vector[N_1] r_1_1;", "vector[N_1] r_1_2;", "dfm_1 = sqrt(df_1 * udf_1);", "r_1 = rep_matrix(dfm_1, M_1) .* scale_r_cor(z_1, sd_1, L_1);", "r_1_1 = r_1[, 1];", "r_1_2 = r_1[, 2];", "lprior += gamma_lpdf(df_1 | 2, 0.1)", "lprior += student_t_lpdf(sd_1 | 3, 0, 2.5)", "lprior += lkj_corr_cholesky_lpdf(L_1 | 1);", "mu[n] += r_1_1[J_1[n]] * Z_1_1[n] + r_1_2[J_1[n]] * Z_1_2[n];", "target += inv_chi_square_lpdf(udf_1 | df_1);", "corr_matrix[M_1] Cor_1 = multiply_lower_tri_self_transpose(L_1);", "vector<lower=-1,upper=1>[NC_1] cor_1;", "cor_1[choose(k - 1, 2) + j] = Cor_1[j, k];"],
+      "prior": [
+        {
+          "prior": "lkj(1)",
+          "class": "cor",
+          "coef": "",
+          "group": "",
+          "lb": ""
+        },
+        {
+          "prior": "",
+          "class": "cor",
+          "coef": "",
+          "group": "g",
+          "lb": ""
+        },
+        {
+          "prior": "gamma(2, 0.1)",
+          "class": "df",
+          "coef": "",
+          "group": "g",
+          "lb": "1"
+        },
+        {
+          "prior": "student_t(3, 0, 2.5)",
+          "class": "sd",
+          "coef": "",
+          "group": "",
+          "lb": "0"
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "",
+          "group": "g",
+          "lb": ""
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "Intercept",
+          "group": "g",
+          "lb": ""
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "x",
+          "group": "g",
+          "lb": ""
+        }
+      ]
+    },
+    {
+      "formula": "y ~ x + (1 | gr(g, dist = 'student'))",
+      "data": {
+        "J_1": [1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4],
+        "N_1": 4,
+        "M_1": 1
+      },
+      "stan": ["real<lower=1> df_1;", "vector<lower=0>[N_1] udf_1;", "vector<lower=0>[M_1] sd_1;  // group-level standard deviations", "vector[N_1] dfm_1;", "vector[N_1] r_1_1;  // actual group-level effects", "dfm_1 = sqrt(df_1 * udf_1);", "r_1_1 = dfm_1 .* (sd_1[1] * (z_1[1]));", "lprior += gamma_lpdf(df_1 | 2, 0.1)", "lprior += student_t_lpdf(sd_1 | 3, 0, 2.5)", "mu[n] += r_1_1[J_1[n]] * Z_1_1[n];", "target += inv_chi_square_lpdf(udf_1 | df_1);"],
+      "prior": [
+        {
+          "prior": "gamma(2, 0.1)",
+          "class": "df",
+          "coef": "",
+          "group": "g",
+          "lb": "1"
+        },
+        {
+          "prior": "student_t(3, 0, 2.5)",
+          "class": "sd",
+          "coef": "",
+          "group": "",
+          "lb": "0"
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "",
+          "group": "g",
+          "lb": ""
+        },
+        {
+          "prior": "",
+          "class": "sd",
+          "coef": "Intercept",
+          "group": "g",
+          "lb": ""
+        }
+      ]
+    }
+  ]
+}

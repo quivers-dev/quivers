@@ -326,7 +326,7 @@ def expected_response(
                 "the categorical response has no native class probabilities"
             )
         value = distribution.probs
-    elif family.ordinal is not None:
+    elif family.response_ordinal() is not None:
         value = category_probabilities(distribution, categories)
     else:
         value = response_mean(distribution, mc_samples)

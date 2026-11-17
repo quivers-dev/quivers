@@ -1312,6 +1312,24 @@ class IRQiecRowwise(IRQiecValue):
     kind: Literal["rowwise"] = "rowwise"
 
 
+class IRQiecCholeskyFactor(IRQiecValue):
+    """The lower Cholesky factor of each matrix in a tensor's last two axes.
+
+    Parameters
+    ----------
+    value
+        The tensor of symmetric positive-definite matrices.
+    result_type
+        The tensor's type.
+    kind
+        The discriminator; always ``"cholesky_factor"``.
+    """
+
+    value: IRQiecValue
+    result_type: IRQiecStatic
+    kind: Literal["cholesky_factor"] = "cholesky_factor"
+
+
 class IRQiecComprehension(IRQiecValue):
     """A tensor built by evaluating a body at every index of an axis.
 
@@ -2396,6 +2414,11 @@ def _convert(value: object) -> object:  # noqa: C901, PLR0911, PLR0912
             value=cast(IRQiecValue, _convert(value.value)),
             result_type=cast(IRQiecStatic, _convert(value.result_type)),
         )
+    if isinstance(value, tm.CholeskyFactor):
+        return IRQiecCholeskyFactor(
+            value=cast(IRQiecValue, _convert(value.value)),
+            result_type=cast(IRQiecStatic, _convert(value.result_type)),
+        )
     if isinstance(value, tm.Comprehension):
         return IRQiecComprehension(
             binder=cast(IRQiecLocal, _convert(value.binder)),
@@ -2688,6 +2711,7 @@ type QiecFeature = Literal[
     "search",
     "reduction",
     "rowwise",
+    "cholesky-factor",
     "comprehension",
     "let",
     "special",
@@ -3051,6 +3075,9 @@ def _body_features(node: IRQiecComputation) -> set[QiecFeature]:
             value(item.value)
         elif isinstance(item, IRQiecRowwise):
             required.add("rowwise")
+            value(item.value)
+        elif isinstance(item, IRQiecCholeskyFactor):
+            required.add("cholesky-factor")
             value(item.value)
         elif isinstance(item, IRQiecComprehension):
             required.add("comprehension")
@@ -3638,6 +3665,7 @@ __all__ = [
     "IRQiecSiteValue",
     "IRQiecReduction",
     "IRQiecRowwise",
+    "IRQiecCholeskyFactor",
     "IRQiecComprehension",
     "IRQiecLetBinding",
     "IRQiecLetValue",

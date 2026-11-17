@@ -11,6 +11,7 @@ import subprocess
 import sys
 import textwrap
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Literal
 
 import didactic.api as dx
@@ -401,6 +402,27 @@ def test_copy_keeps_identity_fields_and_deepcopy_replaces_them():
     assert clone != table
     restored = pickle.loads(pickle.dumps(table))
     torch.testing.assert_close(restored.handle, handle)
+
+
+_NO_NOTES: Mapping[str, torch.Tensor] = MappingProxyType({})
+
+
+class _Annotated(ValueModel):
+    notes: Mapping[str, torch.Tensor] = dx.field(
+        default=_NO_NOTES, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+
+def test_a_shared_read_only_identity_default_survives_copy_and_pickle():
+    first, second = _Annotated(), _Annotated()
+    assert first == second and hash(first) == hash(second)
+    shallow = copy.copy(first)
+    assert shallow.notes is _NO_NOTES and shallow == first
+    # A pickle cannot hold a mapping proxy; the restored field is a dict.
+    restored = pickle.loads(pickle.dumps(first))
+    assert restored.notes == {} and restored != first
+    # A fresh mapping per instance is a distinct object under identity.
+    assert _Annotated(notes={}) != _Annotated(notes={})
 
 
 def test_tagged_union_variants_copy_and_pickle():

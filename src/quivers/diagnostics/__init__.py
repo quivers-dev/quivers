@@ -35,7 +35,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import importlib
 from types import FunctionType, GenericAlias, UnionType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAliasType
 
 from quivers.diagnostics.convergence import (
     ConvergenceSummary,
@@ -96,9 +96,69 @@ if TYPE_CHECKING:
     )
     from quivers.diagnostics.comparison import compare, loo
     from quivers.diagnostics.predictive_checks import (
-        STATISTICS,
         loo_pit,
         posterior_predictive_check,
+    )
+    from quivers.diagnostics._ppc_data import (
+        STATISTICS,
+        km_data,
+        loo_pit_values,
+        pit_ecdf_data,
+        pit_values,
+        ppc_bars_data,
+        ppc_data,
+        ppc_error_binned_data,
+        ppc_error_data,
+        ppc_intervals_data,
+        ppc_rootogram_data,
+        ppc_scatter_avg_data,
+        ppc_scatter_data,
+        ppc_stat_data,
+        predictive_errors,
+    )
+    from quivers.diagnostics.posterior_tables import (
+        SummaryTable,
+        posterior_interval,
+        posterior_summary,
+        posterior_table,
+        predictive_interval,
+    )
+    from quivers.diagnostics.elpd import ELPDEstimate, LooExpectation, PSISWeights
+    from quivers.diagnostics.bridge import (
+        BridgeRelativeError,
+        BridgeRepetitionSpread,
+        BridgeResult,
+    )
+    from quivers.diagnostics.bridge import (
+        BridgeMethod,
+        ar_spectrum0,
+        bayes_factor_from_logml,
+        bridge_sampler,
+        effective_size,
+        near_pd,
+        posterior_model_probabilities,
+    )
+    from quivers.diagnostics.elpd import (
+        Criterion,
+        compare_estimates,
+        from_arviz,
+        good_k,
+        information_weights,
+        kfold_estimate,
+        loo_expectation,
+        loo_r2_draws,
+        pointwise_lpd,
+        psis_weights,
+        require_psis_draws,
+        require_scores,
+        response_hash,
+        stacking_weights,
+        subsample_estimate,
+        waic_estimate,
+        weighted_quantile,
+    )
+    from quivers.diagnostics.posterior_tables import (
+        MAD_CONSTANT,
     )
     from quivers.diagnostics.calibration import (
         SBCCoverage,
@@ -157,12 +217,64 @@ _LAZY_EXPORTS: dict[str, str] = {
     "loo": "quivers.diagnostics.comparison",
     "posterior_predictive_check": "quivers.diagnostics.predictive_checks",
     "loo_pit": "quivers.diagnostics.predictive_checks",
-    "STATISTICS": "quivers.diagnostics.predictive_checks",
+    "STATISTICS": "quivers.diagnostics._ppc_data",
+    "km_data": "quivers.diagnostics._ppc_data",
+    "loo_pit_values": "quivers.diagnostics._ppc_data",
+    "pit_ecdf_data": "quivers.diagnostics._ppc_data",
+    "pit_values": "quivers.diagnostics._ppc_data",
+    "ppc_bars_data": "quivers.diagnostics._ppc_data",
+    "ppc_data": "quivers.diagnostics._ppc_data",
+    "ppc_error_binned_data": "quivers.diagnostics._ppc_data",
+    "ppc_error_data": "quivers.diagnostics._ppc_data",
+    "ppc_intervals_data": "quivers.diagnostics._ppc_data",
+    "ppc_rootogram_data": "quivers.diagnostics._ppc_data",
+    "ppc_scatter_avg_data": "quivers.diagnostics._ppc_data",
+    "ppc_scatter_data": "quivers.diagnostics._ppc_data",
+    "ppc_stat_data": "quivers.diagnostics._ppc_data",
+    "predictive_errors": "quivers.diagnostics._ppc_data",
+    "SummaryTable": "quivers.diagnostics.posterior_tables",
+    "posterior_summary": "quivers.diagnostics.posterior_tables",
+    "posterior_interval": "quivers.diagnostics.posterior_tables",
+    "posterior_table": "quivers.diagnostics.posterior_tables",
+    "predictive_interval": "quivers.diagnostics.posterior_tables",
+    "ELPDEstimate": "quivers.diagnostics.elpd",
+    "PSISWeights": "quivers.diagnostics.elpd",
+    "LooExpectation": "quivers.diagnostics.elpd",
+    "BridgeResult": "quivers.diagnostics.bridge",
+    "BridgeRelativeError": "quivers.diagnostics.bridge",
+    "BridgeRepetitionSpread": "quivers.diagnostics.bridge",
+    "BridgeMethod": "quivers.diagnostics.bridge",
+    "ar_spectrum0": "quivers.diagnostics.bridge",
+    "bayes_factor_from_logml": "quivers.diagnostics.bridge",
+    "bridge_sampler": "quivers.diagnostics.bridge",
+    "effective_size": "quivers.diagnostics.bridge",
+    "near_pd": "quivers.diagnostics.bridge",
+    "posterior_model_probabilities": "quivers.diagnostics.bridge",
+    "Criterion": "quivers.diagnostics.elpd",
+    "compare_estimates": "quivers.diagnostics.elpd",
+    "from_arviz": "quivers.diagnostics.elpd",
+    "good_k": "quivers.diagnostics.elpd",
+    "information_weights": "quivers.diagnostics.elpd",
+    "kfold_estimate": "quivers.diagnostics.elpd",
+    "loo_expectation": "quivers.diagnostics.elpd",
+    "loo_r2_draws": "quivers.diagnostics.elpd",
+    "pointwise_lpd": "quivers.diagnostics.elpd",
+    "psis_weights": "quivers.diagnostics.elpd",
+    "require_psis_draws": "quivers.diagnostics.elpd",
+    "require_scores": "quivers.diagnostics.elpd",
+    "response_hash": "quivers.diagnostics.elpd",
+    "stacking_weights": "quivers.diagnostics.elpd",
+    "subsample_estimate": "quivers.diagnostics.elpd",
+    "waic_estimate": "quivers.diagnostics.elpd",
+    "weighted_quantile": "quivers.diagnostics.elpd",
+    "MAD_CONSTANT": "quivers.diagnostics.posterior_tables",
 }
 
 type _LazyExport = (
     FunctionType
     | type
+    | TypeAliasType
+    | float
     | UnionType
     | GenericAlias
     | dict[str, Callable[[np.ndarray], float]]
@@ -251,4 +363,54 @@ __all__ = [
     "posterior_predictive_check",
     "loo_pit",
     "STATISTICS",
+    "km_data",
+    "loo_pit_values",
+    "pit_ecdf_data",
+    "pit_values",
+    "ppc_bars_data",
+    "ppc_data",
+    "ppc_error_binned_data",
+    "ppc_error_data",
+    "ppc_intervals_data",
+    "ppc_rootogram_data",
+    "ppc_scatter_avg_data",
+    "ppc_scatter_data",
+    "ppc_stat_data",
+    "predictive_errors",
+    "SummaryTable",
+    "posterior_summary",
+    "posterior_interval",
+    "posterior_table",
+    "predictive_interval",
+    "ELPDEstimate",
+    "PSISWeights",
+    "LooExpectation",
+    "BridgeResult",
+    "BridgeRelativeError",
+    "BridgeRepetitionSpread",
+    "BridgeMethod",
+    "ar_spectrum0",
+    "bayes_factor_from_logml",
+    "bridge_sampler",
+    "effective_size",
+    "near_pd",
+    "posterior_model_probabilities",
+    "Criterion",
+    "compare_estimates",
+    "from_arviz",
+    "good_k",
+    "information_weights",
+    "kfold_estimate",
+    "loo_expectation",
+    "loo_r2_draws",
+    "pointwise_lpd",
+    "psis_weights",
+    "require_psis_draws",
+    "require_scores",
+    "response_hash",
+    "stacking_weights",
+    "subsample_estimate",
+    "waic_estimate",
+    "weighted_quantile",
+    "MAD_CONSTANT",
 ]

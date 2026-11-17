@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 import torch
 
-from quivers.formulas import fit, formula_from_data
+from quivers.formulas import MultivariateFormula, bf, fit, formula_from_data
 from quivers.formulas._fit import BayesianFit
 from quivers.formulas._row_retention import (
     complete_rows,
@@ -211,7 +211,7 @@ def test_complete_rows_ignores_unused_columns_and_mi_variables():
         assert complete_rows(frame, ("y ~ u",)) == tuple(i for i in range(24) if i != 3)
 
 
-def test_joint_decision_removes_rows_for_every_response_except_subset_exclusions():
+def test_joint_model_removes_rows_for_every_response_except_subset_exclusions():
     frame = _frame()
     frame["y2"] = frame["z"] + 1.0
     frame.loc[3, "x"] = np.nan
@@ -224,6 +224,21 @@ def test_joint_decision_removes_rows_for_every_response_except_subset_exclusions
     # Row 3 is missing x, used by the first response: removed for both.
     # Row 5 is missing u, used only by a response whose subset excludes it.
     assert rows == tuple(i for i in range(24) if i != 3)
+    with pytest.warns(UserWarning):
+        specification = bf("y ~ x") + bf("y2 ~ z + u")
+        assert isinstance(specification, MultivariateFormula)
+        joint = fit(specification, data=frame, method="svi", num_steps=2)
+    selections = {
+        name: response.formula.modifiers.subset
+        for name, response in joint.emission.responses.items()
+    }
+    expected = tuple(i for i in range(24) if i not in (3, 5))
+    assert all(selection is not None for selection in selections.values())
+    assert {
+        selection.positions
+        for selection in selections.values()
+        if selection is not None
+    } == {expected}
 
 
 def _tiny(method: Literal["svi", "hmc", "nuts"], frame: pd.DataFrame) -> BayesianFit:

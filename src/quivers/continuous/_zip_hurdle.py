@@ -16,6 +16,7 @@ from torch.distributions.distribution import Distribution
 
 from quivers.continuous._closed_probability import ClosedPoisson, _count_log
 from quivers.continuous._recorded_event_tails import (
+    _log_mass,
     log_normal_mixture_tails,
     log_zero_one_inflated_beta_tails,
 )
@@ -27,6 +28,7 @@ from quivers.continuous._zero_truncated_poisson import (
 )
 from quivers.continuous._observation_events import event_log_prob
 from quivers.continuous.measure import Mixture, Normalize, Restrict
+from quivers.continuous._truncated_mean import size_biased_log_moment
 
 
 class ZeroInflatedPoisson(_InflatedCount):
@@ -41,6 +43,8 @@ class ZeroInflatedPoisson(_InflatedCount):
 
     Reference: [Lambert 1992](https://doi.org/10.2307/1269547).
     """
+
+    _semantic_family = "ZeroInflatedPoisson"
 
     arg_constraints = {
         "zero_prob": _constraints.unit_interval,
@@ -74,6 +78,8 @@ class HurdlePoisson(_CountCDF, Distribution):
 
     Reference: [Mullahy 1986](https://doi.org/10.1016/0304-4076(86)90002-3).
     """
+
+    _semantic_family = "HurdlePoisson"
 
     arg_constraints = {
         "zero_prob": _constraints.unit_interval,
@@ -118,8 +124,7 @@ class HurdlePoisson(_CountCDF, Distribution):
         second = first + torch.log1p(rate / 2)
         lc, ls = positive_count_log_tails(
             value,
-            base.log_cdf(value),
-            base.log_survival_function(value),
+            *base._count_log_tails(value),
             -rate,
             first,
             second,
@@ -486,6 +491,49 @@ class ZeroOneInflatedBeta(Distribution):
             The atom-at-one contribution plus the weighted interior mean.
         """
         return self.zoi * self.coi + (1 - self.zoi) * self.mu
+
+    def log_partial_first_moment(
+        self,
+        low: Tensor,
+        high: Tensor,
+        *,
+        lower_closed: bool | Tensor = True,
+        upper_closed: bool | Tensor = True,
+    ) -> Tensor:
+        """Log of the first moment restricted to an interval.
+
+        The atom at zero adds nothing, the atom at one adds its mass when
+        the interval holds one, and the interior adds ``1 - zoi`` times the
+        partial moment of the beta law, which is its mean times an interval
+        mass of the beta law with its first shape raised by one.
+
+        Parameters
+        ----------
+        low, high : Tensor
+            Float64 interval ends, possibly infinite.
+        lower_closed, upper_closed : bool or Tensor
+            Endpoint membership, which decides whether an end at one holds
+            the atom there.
+
+        Returns
+        -------
+        Tensor
+            Float64 ``log int_I y dF(y)``, negative infinity when the
+            interval carries no positive response.
+        """
+        beta = self._beta()
+        interior = size_biased_log_moment(
+            beta, low.clamp(0.0, 1.0), high.clamp(0.0, 1.0), True, True
+        )
+        assert interior is not None
+        holds_one = ((low < 1) | ((low == 1) & torch.as_tensor(lower_closed))) & (
+            (high > 1) | ((high == 1) & torch.as_tensor(upper_closed))
+        )
+        zoi, coi = self.zoi.double(), self.coi.double()
+        return torch.logaddexp(
+            _log_mass(1 - zoi) + interior,
+            torch.where(holds_one, _log_mass(zoi * coi), -torch.inf),
+        )
 
     def log_prob(self, value: Tensor) -> Tensor:
         if self._validate_args:

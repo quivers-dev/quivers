@@ -649,7 +649,14 @@ first axis of `b`, which is a vector or a matrix with that axis's extent. A matr
 a vector is a vector, a vector times a matrix is a vector, a vector times a vector is a
 number, and an `a` of higher rank is multiplied row by row, so `matmul(X, W)` with
 `X : (T, D)` and `W : (D, H)` is `(T, H)`. The compiler checks that the two extents
-agree. `layer_norm(v)` and `rms_norm(v)` normalize each row along the last axis and keep
+agree. `cholesky(a)` returns the lower-triangular
+[Cholesky factor](https://en.wikipedia.org/wiki/Cholesky_decomposition) $L$, with a positive
+diagonal and $L L^\top = a$, of each matrix in the last two axes of a real tensor whose last
+two extents agree. Only the lower triangle of $a$ is read. It costs O(n^3) for an
+$n$-by-$n$ matrix and is differentiable, so `matmul(cholesky(K), z)` with standard-Normal
+`z` draws from $\mathcal N(0, K)$ in non-centered form. A matrix that is not numerically
+positive definite has no factor, and its entries are not numbers, so a sampler rejects that
+proposal. Transpile targets refuse `cholesky`. `layer_norm(v)` and `rms_norm(v)` normalize each row along the last axis and keep
 the shape: `layer_norm(v)` is
 $(v - \bar v) / \sqrt{\overline{(v - \bar v)^2} + \epsilon}$, with the biased variance as
 `torch.nn.functional.layer_norm` computes it [@ba2016layer], and `rms_norm(v)` is

@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING
 
 from quivers.diagnostics.contrast import _contrast_hypothesis
 from quivers.formulas._group_layout import _group_coefficients
-from quivers.inference import MCMCResult, PriorDraws
+
+# Pathfinder draws report variational provenance.
+from quivers.inference.pathfinder import draw_provenance
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
@@ -178,6 +180,7 @@ def _formula_contrast_inputs(
                 and any(member.prefix == prefix for member in layout.members)
             ),
             fit.group_levels,
+            fit._group_structures(),
         )
         varying = {
             term.slope: coefficients[(prefix, group, term.slope)]
@@ -372,13 +375,7 @@ def _formula_hypothesis(
         )
         if prior_dims != dims or prior_coords != coords:
             raise ValueError("prior and posterior formula coordinates disagree")
-    kind = (
-        "mcmc"
-        if isinstance(fit.posterior, MCMCResult)
-        else "prior"
-        if isinstance(fit.posterior, PriorDraws)
-        else "variational"
-    )
+    kind = draw_provenance(fit.posterior)
     return _contrast_hypothesis(
         samples,
         expression,

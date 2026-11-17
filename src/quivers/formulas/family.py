@@ -23,6 +23,7 @@ from quivers._splines import MSplineBasis
 from quivers.formulas._survival import BaselineSpec
 from quivers.formulas._custom_types import CustomFamilySpec
 from quivers.formulas._link_whitelist import check_family_links
+from quivers.formulas._family_registry import FamilyRegistry
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 
 
@@ -171,6 +172,29 @@ class ResponseSpec(dx.Model):
         return tuple(index for index in range(len(labels)) if index != reference)
 
 
+# mixtures: brms mixture() components and ordering (quivers.formulas._mixture).
+class MixtureSpec(ValueModel):
+    """Retain the components and identification of a finite mixture family.
+
+    Parameters
+    ----------
+    components : tuple[Family, ...]
+        Component families in brms order; ``nmix`` repetitions are expanded.
+    order : {"mu", "none"}
+        ``"mu"`` orders the component location intercepts; ``"none"``
+        applies no ordering constraint.
+    equal : tuple[tuple[str, str], ...]
+        Distributional parameters set equal to another parameter of the same
+        class, brms ``sigma2 = "sigma1"``, as (target, source) pairs.
+    """
+
+    components: tuple[Family, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    order: Literal["mu", "none"] = "none"
+    equal: tuple[tuple[str, str], ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+
+
 class Family(ValueModel):
     """Response family: observation kernel plus its link and any
     auxiliary parameters.
@@ -216,6 +240,9 @@ class Family(ValueModel):
         Retained normalized spline structure for proportional hazards.
     custom : CustomFamilySpec or None
         Checked custom constructor bindings and compilation-local native law.
+    mixture : MixtureSpec or None
+        Components and ordering of a finite mixture built by
+        `quivers.formulas.mixture`.
     """
 
     name: str
@@ -228,6 +255,9 @@ class Family(ValueModel):
     response: ResponseSpec | None = None
     baseline: BaselineSpec | None = None
     custom: CustomFamilySpec | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    mixture: MixtureSpec | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
@@ -284,6 +314,20 @@ class Family(ValueModel):
                 by=by,
             )
         )
+
+    def response_ordinal(self) -> OrdinalSpec | None:
+        """Read the ordinal construction that codes the response categories.
+
+        Returns
+        -------
+        OrdinalSpec or None
+            The family's own ordinal specification, that of the first
+            component for a mixture of ordinal families, or None for a
+            response without ordered categories.
+        """
+        if self.mixture is not None:
+            return self.mixture.components[0].ordinal
+        return self.ordinal
 
     def with_reference(self, reference: int | str | None) -> Family:
         """Select the reference component of a joint categorical predictor.
@@ -363,6 +407,10 @@ class Family(ValueModel):
             links. Categorical models require their multinomial softmax
             location link.
         """
+        if self.mixture is not None:
+            raise ValueError(
+                "mixture links belong to the components; set them before mixture()"
+            )
         known = {"mu", *(aux.name for aux in self.aux_params)}
         unknown = parameters.keys() - known
         if unknown:
@@ -500,7 +548,7 @@ links: Mapping[str, Link] = {
 """The built-in inverse links, keyed by link name."""
 
 
-families: Mapping[str, Family] = {
+families: Mapping[str, Family] = FamilyRegistry({
     "wiener": Family(
         name="wiener",
         location_link=_IDENTITY,
@@ -956,16 +1004,20 @@ families: Mapping[str, Family] = {
         observe_family="BernsteinHazard",
         baseline=BaselineSpec(),
     ),
+    # Expanded by quivers.formulas._mixture to mixture(gaussian, ...).
     "mixture": Family(
         name="mixture",
         location_link=_IDENTITY,
-        observe_family="MixtureNormal",
+        observe_family="Mixture",
     ),
-}
+})  # fmt: skip
 """The built-in response families, keyed by brms-style family name.
 
 The compiler dispatches on the family name and slots each family's
-observe step and link into the emitted ``.qvr`` source.
+observe step and link into the emitted ``.qvr`` source. Lookup also
+accepts the brms spellings of a name (``negbinomial``, ``student``,
+``Gamma``, ``inverse.gaussian``, ``zi_poisson``), each resolving to the
+one registered family.
 """
 
 
@@ -975,6 +1027,7 @@ __all__ = [
     "OrdinalSpec",
     "ResponseSpec",
     "BaselineSpec",
+    "MixtureSpec",
     "Family",
     "links",
     "families",

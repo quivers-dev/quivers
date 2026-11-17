@@ -16,6 +16,8 @@ from quivers.formulas._group_covariance import (
     GroupCovarianceBasis,
     _tolerance,
 )
+from quivers.formulas._grouping import rewrite_grouping
+from quivers.formulas._grouping_emission import student_groups, student_sites
 from quivers.formulas._group_layout import (
     GroupBlockLayout,
     _covariance_coefficients,
@@ -79,6 +81,9 @@ class GroupRemap(ValueModel):
         Once-per-request compact and Schur-conditional support factors.
     covariance_mean_map : tuple[tuple[float, ...], ...]
         Once-per-request conditional mean map from all fitted levels.
+    member_indices : tuple[torch.Tensor, ...]
+        Compact codes of every member of a brms ``mm()`` factor, in member
+        order; empty for an ordinary factor, whose codes are ``row_indices``.
     """
 
     group: str
@@ -102,6 +107,9 @@ class GroupRemap(ValueModel):
     )
     covariance_mean_map: tuple[tuple[float, ...], ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    member_indices: tuple[torch.Tensor, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_IDENTITY
     )
 
 
@@ -142,7 +150,10 @@ def selected_effects(
     expression = re_formula.lstrip()[1:].strip()
     if expression in {"0", "-1"}:
         return frozenset()
-    normalized, _ = _random_blocks(_normalize_cs_intercept(expression))
+    # gr(), mm(), g1:g2, and g1/g2 select the factors they name in the fit.
+    normalized, _ = _random_blocks(
+        rewrite_grouping(_normalize_cs_intercept(expression)).formula
+    )
     model = fo.model_description(normalized)
     if any(term.name != "Intercept" for term in model.common_terms):
         raise ValueError("re_formula can select only fitted group-level terms")
@@ -223,22 +234,38 @@ def compact_groups(
         keys: list[str | None] = []
         row_codes = []
         key_codes: dict[str | None, int] = {}
-        if active and group not in frame and not allow_new_levels:
-            raise ValueError(f"new_data is missing predictors {[group]}")
-        values = frame[group] if group in frame else [None] * len(frame)
-        for value in values:
-            key = None if bool(pd.isna(value)) else str(value)
-            if not active:
-                key = levels[0]
-            elif (key is None or key not in positions) and not allow_new_levels:
-                raise ValueError(
-                    f"new_data contains unknown groups or missing group identities for {group!r}; "
-                    "set allow_new_levels=True to sample new group effects"
-                )
-            if key not in key_codes:
-                key_codes[key] = len(keys)
-                keys.append(key)
-            row_codes.append(key_codes[key])
+        # A brms mm() factor codes every member column on one compact axis.
+        membership = next(
+            (
+                formula.grouping.membership(group)
+                for formula in predictors.values()
+                if formula.grouping.membership(group) is not None
+            ),
+            None,
+        )
+        sources = membership.spec.sources if membership is not None else (group,)
+        missing = [source for source in sources if source not in frame]
+        if active and missing and not allow_new_levels:
+            raise ValueError(f"new_data is missing predictors {missing}")
+        member_rows = []
+        for source in sources:
+            row_codes = []
+            values = frame[source] if source in frame else [None] * len(frame)
+            for value in values:
+                key = None if bool(pd.isna(value)) else str(value)
+                if not active:
+                    key = levels[0]
+                elif (key is None or key not in positions) and not allow_new_levels:
+                    raise ValueError(
+                        f"new_data contains unknown groups or missing group identities for {group!r}; "
+                        "set allow_new_levels=True to sample new group effects"
+                    )
+                if key not in key_codes:
+                    key_codes[key] = len(keys)
+                    keys.append(key)
+                row_codes.append(key_codes[key])
+            member_rows.append(row_codes)
+        row_codes = member_rows[0]
         sites = {}
         standard_normal_sites: set[str] = set()
         layouts = (
@@ -264,6 +291,9 @@ def compact_groups(
                     f"fitted group term {term.slope!r} for {group!r} has no "
                     "compiled coordinate layout"
                 )
+        # brms gr(dist = "student"): each level also owns its mixing scale.
+        if student_groups(fit._predictor_items()) >= {group}:
+            sites[student_sites(group)[1]] = 1
         threshold_raw = next(
             (
                 name
@@ -340,6 +370,11 @@ def compact_groups(
             covariance_target=target_basis,
             covariance_conditional=conditional_basis,
             covariance_mean_map=mean_map,
+            member_indices=tuple(
+                torch.tensor(codes, dtype=torch.long) for codes in member_rows
+            )
+            if membership is not None
+            else (),
         )
     return result
 

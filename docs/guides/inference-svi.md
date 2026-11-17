@@ -494,6 +494,12 @@ an [independent run](inference-foundations.md#input-rows-are-independent-runs) w
 own guide draws, so a minibatch of input rows is a minibatch of runs, and a program
 whose observations live in a plate takes an input with one row.
 
+`SVI.run(x, observations, num_steps=n)` repeats `step` and returns the losses. A
+non-finite objective raises an error naming the step. At the first step the objective
+is drawn again instead, up to 100 times and without a parameter update, because a draw
+of the untrained guide may fall outside the support of the model. The
+[MCMC driver](inference-mcmc.md) redraws a non-finite initial position in the same way.
+
 ## Minibatches: subsampled plates
 
 A program whose records live in a plate scores every record on every

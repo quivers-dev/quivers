@@ -82,6 +82,9 @@ class TestBuiltinPrimitives:
             x = x.sigmoid()
         elif name == "observation_status":
             x = torch.randint(-1, 3, x.shape)
+        elif name == "cholesky":
+            # The factorization reads a square positive-definite matrix.
+            x = x @ x.T + torch.eye(4)
         fn = _compile(_call(name, _var("x")))
         out = fn({"x": x})
         # min/max/argmin/argmax etc collapse the last axis; sum/mean

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass
 from typing import TypeVar, cast
@@ -40,8 +40,10 @@ from quivers.dsl.program_templates import (
     draw_argument_expression,
 )
 from quivers.dsl.step_resolution import _step_value_names
+from quivers.formulas._autocor import autocor_binding
 from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
     apply_prior_plan,
     build_prior_targets,
@@ -251,6 +253,7 @@ def _namespace(
     global_names: set[str],
     supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None = None,
     supplied_inputs: Mapping[str, LetExprNode] | None = None,
+    local_module: Callable[[str, Module], Module] | None = None,
 ) -> _ResponseEmission:
     """Apply the existing program-template substitution to one emitted response.
 
@@ -270,6 +273,9 @@ def _namespace(
         Shared group coefficients replacing the response's own group blocks.
     supplied_inputs : Mapping[str, LetExprNode] or None
         Explicit expressions for response inputs over joint bindings.
+    local_module : Callable[[str, Module], Module] or None
+        Rewrite of the response's local module before namespacing, used by
+        prediction to resize the row axis and select varying effects.
 
     Returns
     -------
@@ -287,6 +293,8 @@ def _namespace(
     module, complement = lens._forward(
         formula, supplied_groups=supplied_groups, check=False
     )
+    if local_module is not None:
+        module = local_module(name, module)
     program = next(item for item in module.statements if isinstance(item, ProgramDecl))
     prefix = "response_" + _qvr_name(name) + "__"
     objects = {
@@ -596,6 +604,22 @@ def _validate_residual_rows(components: _Components) -> None:
         share one ``nu``.
     """
     kinds = {lens._family.name for lens, _ in components.values()}
+    # Residual autocorrelation terms replace a response's law. brms refuses
+    # its covariance terms beside estimated residual correlations; it admits
+    # the conditional ARMA formulation there, which this emission lacks.
+    for label, (lens, _) in components.items():
+        binding = autocor_binding(lens._family)
+        if binding is None:
+            continue
+        if binding.term.cov:
+            raise ValueError(
+                "Explicit covariance terms cannot be modeled when 'rescor' is "
+                "estimated at the same time."
+            )
+        raise ValueError(
+            f"response {label!r}: {binding.term.label} beside estimated residual "
+            "correlations is not supported; use set_rescor(False)"
+        )
     if len(kinds) != 1 or not kinds <= {"gaussian", "student_t"}:
         raise ValueError(
             "residual correlations require homogeneous Gaussian or Student responses"
@@ -678,7 +702,7 @@ def _correlated_residual(
     axis, row = "FormulaJointResponse", "FormulaJointRow"
     emitter._append_finite_object(statements, axis, width)
     removed = {
-        response.names[response.formula.response_name]
+        response.names[_qvr_name(response.formula.response_name)]
         for response in responses.values()
     }
     arguments_by_response = {}
@@ -687,7 +711,8 @@ def _correlated_residual(
             step
             for step in program.draws
             if isinstance(step, ObserveStep)
-            and step.vars[0] == response.names[response.formula.response_name]
+            and step.vars[0]
+            == response.names[_qvr_name(response.formula.response_name)]
         )
         arguments_by_response[name] = {
             argument.parameter: draw_argument_expression(argument.value)
@@ -961,6 +986,7 @@ def emit_joint(
     preamble: tuple[ProgramStep, ...] = (),
     external_inputs: tuple[QiecValueParameter, ...] = (),
     external_objects: tuple[ObjectDecl, ...] = (),
+    local_module: Callable[[str, Module], Module] | None = None,
 ) -> _JointEmission:
     """Compose existing response emissions, shared groups, and one prior plan.
 
@@ -983,6 +1009,8 @@ def emit_joint(
         Joint runtime parameters preceding every response parameter.
     external_objects : tuple[ObjectDecl, ...]
         Joint object declarations preceding every response object.
+    local_module : Callable[[str, Module], Module] or None
+        Rewrite applied to each response's local module before namespacing.
 
     Returns
     -------
@@ -992,12 +1020,12 @@ def emit_joint(
     Raises
     ------
     ValueError
-        If fewer than two responses are given, explicit inputs name an unknown
+        If no response is given, explicit inputs name an unknown
         response, a response lens carries its own prior rules, or the response
         graphs, residual rows, or prior selections are inconsistent.
     """
-    if len(components) < 2:
-        raise ValueError("joint emission requires at least two response graphs")
+    if not components:
+        raise ValueError("joint emission requires at least one response graph")
     components, levels = _normalized_components(components)
     if rescor:
         _validate_residual_rows(components)
@@ -1039,6 +1067,7 @@ def emit_joint(
             global_names=global_names,
             supplied_groups=supplied[name],
             supplied_inputs=supplied_inputs.get(name),
+            local_module=local_module,
         )
         for name, (lens, formula) in components.items()
     }
@@ -1133,6 +1162,7 @@ def emit_joint(
                     global_names=global_names,
                     supplied_groups=supplied[name],
                     supplied_inputs=supplied_inputs.get(name),
+                    local_module=local_module,
                 )
         statements, steps, parameters, returned, _, layouts = _response_parts(
             responses,
@@ -1205,6 +1235,9 @@ def emit_joint(
         custom = response.lens._family.custom
         if custom is not None:
             catalog = catalog.with_catalog(custom.catalog)
+    # Improper flat priors are compilation-local native laws.
+    if improper_sites(module):
+        catalog = catalog.with_catalog(FLAT_CATALOG)
     return _JointEmission(
         module, responses, tuple(layouts), tuple(targets), fixed_inputs, catalog
     )

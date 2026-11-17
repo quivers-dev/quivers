@@ -228,7 +228,7 @@ def test_mixed_scalar_component_shared_block_matches_every_native_binding(coordi
         family="acat",
         distributional={"disc": "~1+(1|joint|g)"},
         reparameterize=coordinates,
-        priors=PriorSpec(distribution=R2D2(), class_="sd", lower=0.1, upper=0.9),
+        priors=PriorSpec(distribution=R2D2(), class_="sd"),
         method="svi",
         num_steps=1,
     )

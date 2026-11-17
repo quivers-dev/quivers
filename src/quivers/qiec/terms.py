@@ -498,6 +498,28 @@ class Rowwise(QiecModel):
     tag: Literal["rowwise"] = "rowwise"
 
 
+class CholeskyFactor(QiecModel):
+    """The lower Cholesky factor of a symmetric positive-definite matrix.
+
+    The factor ``L`` of ``A`` is the lower-triangular matrix with a positive
+    diagonal and ``L L^T = A``. Leading axes, if any, index independent
+    matrices.
+
+    Parameters
+    ----------
+    value
+        A tensor of reals whose last two axes have one extent.
+    result_type
+        The tensor's own type.
+    tag
+        The serialization discriminator; always ``"cholesky_factor"``.
+    """
+
+    value: Value = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    result_type: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    tag: Literal["cholesky_factor"] = "cholesky_factor"
+
+
 class Comprehension(QiecModel):
     """A tensor built by evaluating a body at every index of an axis.
 
@@ -767,6 +789,7 @@ type Value = (
     | TableMap
     | Reduction
     | Rowwise
+    | CholeskyFactor
     | Comprehension
     | ConditionalValue
     | LetValue
@@ -1049,6 +1072,7 @@ __all__ = [
     "Case",
     "CaseBranch",
     "CaseMotive",
+    "CholeskyFactor",
     "Comprehension",
     "Computation",
     "ConstructorValue",

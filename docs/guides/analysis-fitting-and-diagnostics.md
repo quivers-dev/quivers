@@ -490,6 +490,482 @@ writes the ranks into the `prior_sbc` group that ArviZ's
 `plot_ecdf_pit` reads, for the graphical version of the uniformity
 test.
 
+## brms summaries, residuals, and predictive criteria
+
+Formula fits ([`BayesianFit`](../api/formulas/fit.md) and
+[`MultivariateFit`](../api/formulas/multivariate.md)) carry brms's
+post-processing methods [@burkner2017brms]. They replay the fit's retained
+draws through its own prediction and scoring methods, so every table describes
+the same posterior as `draws`, `posterior_predict`, and `log_likelihood`.
+
+### Parameter summaries
+
+`variables` returns draws under brms's parameter names: `b_<coef>` for
+population coefficients (`b_sigma_<coef>` for a distributional parameter),
+`b_Intercept[k]` for cumulative thresholds, the family parameter's own name
+(`sigma`) when it is not regressed, `sd_<group>__<coef>` and
+`cor_<group>__<a>__<b>` for group scales and correlations, and
+`r_<group>[<level>,<coef>]` for group coefficients. Coefficient labels pass
+through brms's renaming of special characters, so the factor column `f[q]` is
+`fq` and `I(x^2)` is `IxE2`, in single and joint fits alike (`b_y_fq` for
+response `y`).
+
+Every variable is one scalar per draw, as in brms. A vector parameter is
+listed per coordinate (`simo_mok1[2]`), a correlation matrix per pair
+(`cor_g__Intercept__x`, `cortime__0__1`, `rescor__y__y2`), and the mixing
+proportions of a mixture per component (`theta1`). The terms of a formula
+share one catalogue of names:
+
+| term | variables |
+| --- | --- |
+| `0 + Intercept` | `b_Intercept` |
+| `s()`, `t2()` | `bs_<term>_<k>` (unpenalized columns), `sds_<term>_<j>` (penalty scales), `s_<term>_<j>[k]` (penalized coefficients), where `<term>` is the function name followed by its covariates and `by` variable (`sx` for `s(x, k = 5)`, `sxg` for `s(x, g, bs = "fs")`). Each level of a factor `by` has its own block: `sds_sxga_1` and `s_sxga_1[k]` for level `a` of `s(x, by = g)`, and `bs_sx:ga_1` for its unpenalized column |
+| `gp()` | `sdgp_<term>`, `lscale_<term>`, `zgp_<term>[k]` |
+| `mo()` | `bsp_mo<x>`, `simo_mo<x>1[k]` |
+| `me()`, `mi()` | `bsp_me<x><sd>`, `bsp_mi<x>`, `meanme_me<x>`, `sdme_me<x>`, `Ymi_<resp>[row]` |
+| `cs()` | `bcs_<x>[k]` |
+| `gr(g, by = b)` | `sd_<g>__<coef>:<b><level>`, `cor_<g>__<a>:<b><level>__<c>:<b><level>` |
+| `gr(g, dist = "student")` | `df_<g>`, `udf_<g>[level]` |
+| `ar()`, `ma()`, `cosy()`, `unstr()` | `ar[k]`, `ma[k]`, `cosy`, `cortime__<t1>__<t2>`, with `sderr` and `err[row]` for latent residuals |
+| `sar()`, `car()` | `lagsar` or `errorsar`, `car`, `sdcar`, `rhocar`, `rcar[level]` (for `type = "bym2"` the standardized components `zcar[level]` and `nszcar[level]`) |
+| `mixture()` | `theta<k>`, `b_mu<k>_<coef>`, `sigma<k>` |
+| `cox` | `sbhaz[k]` |
+| `logistic_normal` | `sigma<category>`, `lncor__<a>__<b>` |
+| horseshoe, R2D2 priors | `hs_global`, `hs_slab`, `hs_local[k]`, `R2D2_R2`, `R2D2_phi[k]`, `R2D2_tau2`, and the prior scale `sdb_<coef>` of each shrunk coefficient |
+
+The latent values of `me()` terms are omitted, as brms omits them unless
+`save_pars(latent = TRUE)` is set, and `draws` holds their innovations.
+
+These names match brms's `variables()` for one small model per term, with
+four differences.
+brms's constant `disc` of an ordinal model is absent. An ordinal family other than a cumulative
+one without `cs()` lists `b_Intercept` and `cutpoint_offset[k]` where brms
+lists `b_Intercept[k]`. A mixture adds the positive gap
+`mixture_intercept_spacing[k]` that orders its intercepts. A BYM2 term lists
+its two standardized components where brms lists their weighted sum
+`rcar[level]`.
+
+The variables are listed in the order of brms's `variables()`. brms sorts
+parameters by class: the population coefficients `b`, then `bs`, `bsp`,
+`bcs`, the autocorrelation parameters, `sd`, `cor`, `df`, `sds`, `sdgp`,
+`lscale`, the family's parameters, the shrinkage parameters, `lncor`,
+`rescor`, `simo`, and last the classes with one variable per level or row
+(`r`, `s`, `zgp`, `rcar`, `sbhaz`, `Ymi`, `meanme`, `sdme`). Within a class,
+intercepts come first. Variables without a brms counterpart follow the
+others.
+
+Two smooths of one covariate, such as `s(x, k = 4) + s(x, bs = "cr")`, have
+the same label. brms repairs the repeated names with R's `make.unique`, so the
+second smooth is listed as `bs_sx_1__1`, `sds_sx_1__1`, and `s_sx_1[k]__1`,
+and `variables` lists the same names.
+
+`summary` groups the variables into brms's sections: population effects
+(a smooth's unpenalized column `bs_sx_1` is the row `sx_1`), family
+parameters, group-level standard deviations and correlations, smoothing
+standard deviations (`sds(sx_1)` in the `splines` table), and residual
+correlations of a joint fit. `fixef`, `ranef`, `coef`, `varcorr`, and `vcov`
+return the corresponding brms tables, and `posterior_summary` and
+`posterior_interval` summarize any named parameters.
+
+Each table is a [`SummaryTable`](../api/diagnostics/posterior_tables.md):
+labeled rows, labeled statistic columns, and, for brms's three-way arrays such
+as `ranef`, a component axis. Statistics are brms's: the mean and standard
+deviation, or with `robust=True` the median and R's `mad`, with type-7
+quantiles. Recorded MCMC chains add `Rhat`, `Bulk_ESS`, and `Tail_ESS`
+[@vehtari2021rhat]. Variational and prior draws have no convergence columns,
+since a single pseudo-chain cannot diagnose mixing.
+
+<!-- python: run -->
+```python
+import pandas as pd
+from quivers.formulas import fit
+
+data = pd.DataFrame({
+    "y": [0.3, -1.2, 0.8, 1.9, -0.4, 0.1, 1.4, -0.7, 0.6, 2.2, -1.5, 0.9],
+    "x": [0.5, -1.1, 0.3, 1.7, -0.2, 0.9, -1.4, 0.6, 1.2, -0.8, 0.4, -0.3],
+    "g": ["a", "b", "c"] * 4,
+})
+model = fit("y ~ x + (1 | g)", data=data, method="svi", num_steps=50, seed=1)
+assert list(model.fixef(num_samples=20).rows) == ["Intercept", "x"]
+summary = model.summary(num_samples=20)
+assert list(summary.random["g"].rows) == ["sd(Intercept)"]
+assert model.ranef(num_samples=20)["g"].rows == ("a", "b", "c")
+assert "residual__" in model.varcorr(num_samples=20)
+```
+
+Two brms names have no counterpart here. Native sites without a brms class,
+such as the log-spacing coordinates of ordinal thresholds that are not
+cumulative, keep their QVR names, one variable per coordinate. The log
+posterior density, Stan's `lp__`, is
+returned by `log_posterior` rather than among the variables. It is the
+sampler's Jacobian-corrected log density and differs from Stan's by the
+constant terms Stan drops. `nuts_params` returns the sampler statistics with
+Stan's names in bayesplot's long format.
+
+### Predictions, residuals, and draw selection
+
+`predict`, `fitted`, and `residuals` summarize `posterior_predict`,
+`posterior_epred` (or `posterior_linpred` with `scale="linear"`), and
+`predictive_error`, the draws of observed minus predicted responses.
+Ordinal and categorical predictions are tabulated as category frequencies, as
+brms's `posterior_table` does, and their errors are refused. Pearson residuals
+divide each error by the row's predictive standard deviation. `draw_ids`
+selects pooled draws by 0-based position, and every prediction keyword
+(`new_data`, `re_formula`, new-level policies) has its existing meaning.
+brms also takes `draw_ids` on `posterior_predict`, `posterior_epred`,
+`posterior_linpred`, and `log_lik`. Their counterparts here
+(`log_likelihood` for `log_lik`) take `num_samples` and `seed` and have no
+`draw_ids`, so a chosen set of draws is read through the summary methods
+with `summary=False`, as in the last call below.
+
+<!-- python: run -->
+```python
+table = model.predict(num_samples=20)
+assert list(table.columns) == ["Estimate", "Est.Error", "Q2.5", "Q97.5"]
+errors = model.predictive_error(method="posterior_epred", num_samples=20)
+assert errors.shape == (1, 20, 12)
+chosen = model.fitted(scale="linear", draw_ids=[0, 5], summary=False, num_samples=20)
+assert chosen.shape == (1, 2, 12)
+```
+
+### Leave-one-out criteria
+
+`loo` estimates the expected log pointwise predictive density (ELPD) by
+Pareto-smoothed importance sampling (PSIS) through ArviZ [@vehtari2017loo;
+@vehtari2024psis]. A Pareto shape above the threshold (0.7 by default, as in
+brms) marks an observation whose importance weights are unreliable.
+`moment_match=True` applies moment matching to those observations: affine maps
+of the unconstrained draws match the moments of each leave-one-out posterior,
+and the moved draws are reweighted with the fit's own log joint density
+[@paananen2021implicitly]. `reloo=True` instead refits the model without each
+remaining problematic observation. `waic` estimates WAIC, and `psis` returns the
+smoothed weights. Each criterion is an [`ELPDEstimate`](../api/diagnostics/elpd.md)
+with brms's estimates table and pointwise terms.
+
+`loo_subsample` estimates the ELPD from a simple random subsample of rows
+[@magnusson2019bayesian; @magnusson2020leave]. Every row is approximated by
+its log density at the posterior mean (`"plpd"`, brms's default), only the
+subsample is scored at every draw, and the difference estimator corrects the
+approximation. The estimate reports the subsampling standard error separately.
+The posterior mean is taken in the sampler's unconstrained coordinates, which
+gives a valid point for correlation and simplex sites. brms averages
+constrained draws instead. The estimator stays unbiased for either point.
+
+`loo_predict`, `loo_epred`, `loo_linpred`, and `loo_predictive_interval` weight
+predictions by the same importance weights, and `loo_r2` computes brms's
+leave-one-out R-squared by the Bayesian bootstrap [@gelman2019rsquared]. These
+expectations assume reliable weights, and each reports a function-specific
+Pareto shape.
+
+`kfold` refits the model on each fold through the existing refit callback,
+with brms's partitions: random folds, one fold per level of `group`,
+`"stratified"` or `"grouped"` folds, or `"loo"` (with `group`, each fold omits
+the observation's whole group). `joint` selects the predictive unit:
+observations, whole folds, or groups within folds. With `save_fits=True`,
+`kfold_predict` predicts each held-out row from its own refit. Folds are drawn
+from a seeded quivers stream, not from R's generator, so a fold assignment
+reproduces only within quivers.
+
+`add_criterion` stores criteria on a new fit, and they persist through
+`save_fit` and `load_fit`. `loo_compare`, `loo_model_weights`, and
+`model_weights` compare fits by stored criteria or by precomputed estimates, and
+refuse fits that score different responses.
+
+<!-- python: run -->
+```python
+from quivers.formulas import loo_compare
+
+simple = fit("y ~ 1", data=data, method="svi", num_steps=50, seed=1)
+first = model.add_criterion("loo", num_samples=100)
+second = simple.add_criterion("loo", num_samples=100)
+table = loo_compare({"group": first, "intercept": second})
+assert table.columns[:2] == ("elpd_diff", "se_diff")
+assert first.criterion("loo").pareto_k.shape == (12,)
+```
+
+[`loo`](../api/formulas/index.md#quivers.formulas.loo) and
+[`waic`](../api/formulas/index.md#quivers.formulas.waic) take several fits at
+once, as brms's `loo(fit1, fit2)` does. Each fit's criterion is computed
+unless it is stored, and the result holds the estimates and the comparison
+table.
+
+<!-- python: run -->
+```python
+from quivers.formulas import loo
+
+compared = loo(model, simple, model_names=["group", "intercept"])
+assert set(compared.estimates) == {"group", "intercept"}
+assert compared.diffs.columns[:2] == ("elpd_diff", "se_diff")
+```
+
+A joint fit scores the units of `MultivariateFit.log_likelihood`: one row's
+vector under residual correlation, or the sum over the selected responses, and
+`resp` selects responses as in brms.
+
+## Evidence, effects, and predictive checks
+
+This section covers the brms functions that compare models by their marginal
+likelihood, average models, display conditional effects, and check
+predictions against data: `bridge_sampler`, `bayes_factor`, `post_prob`,
+`posterior_average`, `pp_average`, `conditional_effects`, `make_conditions`,
+`conditional_smooths`, `pp_check`, `mcmc_plot`, `plot`, and `pairs`
+[@burkner2017brms]. Each works on single-response fits and on joint
+multivariate fits (with `resp`), and each predicts through the fit's own
+prediction methods.
+
+### Marginal likelihoods by bridge sampling
+
+The [marginal likelihood](https://en.wikipedia.org/wiki/Marginal_likelihood)
+of a model is the normalizing constant
+
+$$
+p(y) = \int p(y \mid \theta)\, p(\theta)\, d\theta
+$$
+
+of its posterior. [`bridge_sampler`][quivers.formulas._evidence.bridge_sampler]
+estimates it by bridge sampling [@meng1996simulating] as the R
+`bridgesampling` package does when brms calls it
+[@gronau2017tutorial; @gronau2020bridgesampling]. The posterior draws are
+mapped to the sampler's unconstrained coordinates, where the log density is
+the fit's log joint plus the log Jacobian of the constraining transforms. The
+first half of every chain fits a proposal, either a normal with the draws'
+mean and covariance (`method="normal"`) or the standard normal after the
+third-order warp of @meng2002warp (`method="warp3"`). The second half and as
+many proposal draws then enter the fixed-point iteration for the optimal
+bridge function. The [`BridgeResult`][quivers.diagnostics.bridge.BridgeResult]
+holds the estimate and the log densities, and `error_measures()` gives the
+approximate relative mean-squared error of a `"normal"` estimate
+[@fruhwirth2004estimating], or the spread of several repetitions.
+
+Every density of a compiled formula program keeps its normalizing constant,
+so the requirement brms states as `save_pars(all = TRUE)` with a normalized
+Stan model holds by construction. What cannot hold is refused with an error
+that names it: an improper flat prior (the marginal likelihood is not
+defined), an explicit score potential whose mass is unknown, draws that are
+not posterior MCMC draws (an SVI guide or prior draws), and discrete latent
+sites outside the unconstrained coordinates. Proposal draws come from a
+seeded Torch stream, so an estimate agrees with R's only within its Monte
+Carlo error, and every deterministic step (the effective sample size, the
+proposal covariance, the iteration and its restart, the error measure) is
+tested against the R implementation.
+
+<!-- python: run -->
+```python
+import math
+
+import numpy as np
+import pandas as pd
+
+from quivers.formulas import PriorSpec, fit
+
+rng = np.random.default_rng(1)
+data = pd.DataFrame({"x": rng.normal(size=12)})
+data["y"] = 0.5 + data["x"] + rng.normal(size=12)
+priors = [
+    PriorSpec(distribution="Normal(0.0, 1.0)", class_="Intercept"),
+    PriorSpec(distribution="Normal(0.0, 1.0)", class_="b"),
+]
+full = fit(
+    "y ~ x",
+    data=data,
+    fixed_parameters={"sigma": 1.0},
+    priors=priors,
+    method="nuts",
+    num_warmup=100,
+    num_samples=100,
+    num_chains=2,
+    seed=2,
+)
+estimate = full.bridge_sampler()
+print(round(estimate.logml, 2), estimate.error_measures())
+
+# With sigma fixed and Normal(0, 1) coefficients, y is Gaussian with
+# covariance X X' + I, so the exact value is available.
+X = np.column_stack([np.ones(12), data["x"]])
+covariance = X @ X.T + np.eye(12)
+y = data["y"].to_numpy()
+exact = -0.5 * (
+    12 * math.log(2 * math.pi)
+    + np.linalg.slogdet(covariance)[1]
+    + y @ np.linalg.solve(covariance, y)
+)
+assert abs(estimate.logml - exact) < 0.1
+```
+
+The SMC evidence ([`BayesianFit.evidence`][quivers.formulas._fit.BayesianFit.evidence])
+estimates the same constant from prior to posterior by tempering. Both are
+tested against closed-form and quadrature marginal likelihoods, and against
+each other within their Monte Carlo errors.
+
+### Bayes factors, posterior model probabilities, and model averaging
+
+The [Bayes factor](https://en.wikipedia.org/wiki/Bayes_factor) of model 1
+over model 2 is $p(y \mid M_1) / p(y \mid M_2)$ [@kass1995bayes], and the
+posterior probability of model $k$ is proportional to
+$p(y \mid M_k)\, p(M_k)$. [`bayes_factor`][quivers.formulas._evidence.bayes_factor]
+and [`post_prob`][quivers.formulas._evidence.post_prob] accept fits, which
+they bridge-sample, or stored [`BridgeResult`][quivers.diagnostics.bridge.BridgeResult]
+estimates, and refuse fits of different response data, as brms does.
+[`model_weights`](../api/formulas/fit.md#quivers.formulas.model_weights) gives
+these probabilities with `weights="bma"`.
+
+[`posterior_average`][quivers.formulas._model_averaging.posterior_average]
+and [`pp_average`][quivers.formulas._model_averaging.pp_average] mix the
+draws of several fits in proportion to model weights, which yields draws of
+the mixture $\sum_k w_k\, p(\cdot \mid y, M_k)$ of
+[Bayesian model averaging](https://en.wikipedia.org/wiki/Ensemble_learning#Bayesian_model_averaging)
+[@hoeting1999bayesian] or of stacking [@yao2018stacking]. Model $k$
+contributes the largest-remainder rounding of $w_k S$ of $S$ draws, chosen at
+random without replacement. `posterior_average` mixes brms-named parameters
+(`missing=` fills a parameter a model lacks), and `pp_average` mixes
+predictions and summarizes them.
+
+<!-- python: run -->
+```python
+from quivers.formulas import posterior_average, pp_average
+
+reduced = fit("y ~ 1", data=data, method="svi", num_steps=50, seed=1)
+wide = fit("y ~ x", data=data, method="svi", num_steps=50, seed=1)
+models = {"wide": wide, "reduced": reduced}
+mixed = posterior_average(models, weights=[0.3, 0.7], ndraws=100, seed=3)
+print(mixed.ndraws, sorted(mixed.draws))
+average = pp_average(models, weights="waic", method="posterior_epred", ndraws=50)
+print(average.summary.values.shape)
+```
+
+### Automatic conditional effects
+
+Called without a grid, [`BayesianFit.conditional_effects`][quivers.formulas._fit.BayesianFit.conditional_effects]
+computes brms's automatic conditional effects. The default effects are every
+population-level predictor variable and every pair of variables that appear
+in one term, over all predicted parameters, with the variables of special
+terms (`mo`, `me`, `mi`, `s`, `t2`, `gp`) crossed with each other. Each
+effect is predicted on a grid: `resolution` equally spaced values over the
+observed range of a numeric variable (unit steps for trial counts and
+monotonic variables), the levels of a factor, and the mean and the mean plus
+and minus one standard deviation of a numeric second variable (or its whole
+range with `surface=True`, where `too_far` drops grid points far from the
+data). Every other variable is held at a condition: the mean of a numeric
+variable, the rounded median of an integer variable, the first level of a
+factor, one for trial counts, and no group level (`re_formula="~0"`, brms's
+`NA`). [`make_conditions`][quivers.formulas._brms_effects.make_conditions]
+builds conditions over chosen variables, and `int_conditions` fixes the
+values of effect variables. The result is a
+[`BrmsConditionalEffects`][quivers.formulas._brms_effects.BrmsConditionalEffects]:
+one labeled data frame per effect with brms's columns (`effect1__`,
+`effect2__`, `cond__`, `estimate__`, `se__`, `lower__`, `upper__`), robust
+summaries by default, the draws behind them, per-draw lines with
+`spaghetti=True`, and the observed points assigned to conditions
+(`select_points`). Columns of transformed terms that brms's frames carry,
+such as `log(w)`, are not repeated, since the grid holds the variable `w`.
+
+<!-- python: run -->
+```python
+from quivers.formulas import make_conditions
+
+data["f"] = np.tile(["p", "q", "r"], 4)
+grouped = fit("y ~ x * f", data=data, method="svi", num_steps=50, seed=1)
+effects = grouped.conditional_effects(resolution=20)
+print(effects.names())  # ('x', 'f', 'x:f')
+frame = effects["x:f"].frame
+print(frame[["x", "f", "estimate__", "lower__", "upper__"]].head(3))
+by_level = grouped.conditional_effects("x", conditions=make_conditions(data, "f"))
+print(by_level["x"].frame["cond__"].cat.categories.tolist())
+```
+
+`categorical=True` gives per-category probabilities of categorical and
+ordinal models, with a `cats__` column (brms's `ordinal` is its deprecated
+alias). `dpar` and `nlpar` predict a distributional or nonlinear parameter,
+and `method` chooses `posterior_epred`, `posterior_linpred`, or
+`posterior_predict`. A joint fit loops effects, then responses, and names
+them `<resp>.<resp>_<effects>`. An explicit
+[`prediction_grid`][quivers.diagnostics.conditional.prediction_grid] keeps
+the bounded, empirical-reference effects described above.
+
+`conditional_smooths()` evaluates the contribution of every `s()` and `t2()`
+term on a grid of its covariates (a surface for two numeric covariates), with
+`by` variables as conditions, as brms's `conditional_smooths` does. A joint
+fit evaluates the smooths of every response, or of those named by `resp`,
+and names each frame `<parameter>_<resp>: <term>`. The
+function `quivers.formulas.conditional_smooths(fit, term, new_data)`
+evaluates one smooth of a single-response fit at explicit rows. That call
+takes the role of brms's `posterior_smooths(fit, smooth, newdata)`, a name
+that is not provided.
+
+### Posterior predictive checks
+
+[`pp_check`][quivers.formulas._pp_check.pp_check] prepares the data behind
+each bayesplot plot that brms forwards to [@gabry2019visualization]. It draws
+replicated data (ten random draws, or every draw for the summary types, as
+brms chooses), reads the observed responses and the `group` and `x`
+variables, and removes censored responses (or keeps right-censored ones with
+their event indicator for `km_overlay`). Leave-one-out types also smooth the
+importance ratios by PSIS. The returned
+[`PPCheck`][quivers.formulas._pp_check.PPCheck] holds bayesplot's table for
+the type, computed by the `ppc_*` functions of
+[`quivers.diagnostics`](../api/diagnostics/predictive_checks.md), which reproduce
+bayesplot's tables: the long table of observed and replicated values, test
+statistics, predictive intervals, errors and binned errors, frequency
+tables, rootograms [@kleiber2016visualizing], LOO-PIT values, Kaplan-Meier
+curves, and PIT ECDFs [@sailynoja2022graphical]. `prefix="ppd"` on a prior
+view gives prior predictive checks.
+
+Where ArviZ implements a counterpart, `PPCheck.plot(backend=...)` draws it
+from `PPCheck.to_datatree()`: `dens_overlay`, `hist` and `ecdf_overlay` with
+`plot_ppc_dist`, `stat` with `plot_ppc_tstat`, `intervals` and `ribbon` with
+`plot_ppc_interval`, `bars` and `rootogram` with `plot_ppc_rootogram`,
+`loo_pit*` with `plot_loo_pit`, `loo_intervals` and `loo_ribbon` with
+`plot_loo_interval`, `pit_ecdf` with `plot_ppc_pit`, and `km_overlay` with
+`plot_ppc_censored`. The other types (grouped variants, scatter, error,
+`stat_2d`, violin, box, frequency polygon) have no ArviZ counterpart, so
+their tables are returned for plotting with any library. bayesplot's
+simultaneous bands of `pit_ecdf` are not computed; ArviZ's `plot_ppc_pit`
+draws its own.
+
+<!-- python: run -->
+```python
+check = grouped.pp_check("stat_grouped", group="f", stat="median")
+print(check.data.head(4))
+intervals = grouped.pp_check("intervals", x="x")
+built = intervals.plot(backend="none")  # ArviZ builds the plot without drawing
+```
+
+### MCMC plots
+
+[`mcmc_plot`][quivers.formulas._mcmc_plot.mcmc_plot] maps bayesplot's
+`mcmc_*` types onto ArviZ plots of the brms-named draws, and `plot` and
+`pairs` are its `combo` and `pairs` types, as in brms.
+
+`variable` takes brms variable names or regular expressions. With
+`regex=True` a pattern is searched for within each name, as brms's
+`variable = "^b", regex = TRUE` is: `variable="^b_", regex=True` selects the
+population coefficients and `variable="simo", regex=True` the simplexes of
+monotonic terms. Without `regex` a pattern must match a whole name, as in
+`variable="b_.*"`. A pattern matching no name raises an error.
+
+| brms / bayesplot type | ArviZ counterpart |
+| --- | --- |
+| `intervals` | `plot_forest` |
+| `areas`, `areas_ridges` | `plot_ridge` |
+| `dens`, `dens_overlay`, `dens_chains`, `hist`, `hist_by_chain`, `violin` | `plot_dist` |
+| `trace`, `trace_highlight` | `plot_trace` |
+| `combo` (brms `plot`) | `plot_trace_dist` |
+| `rank_hist`, `rank_overlay` | `plot_rank_dist` |
+| `rank_ecdf` | `plot_rank` |
+| `acf`, `acf_bar` | `plot_autocorr` |
+| `neff`, `neff_hist` | `plot_ess` |
+| `rhat`, `rhat_hist` | `plot_convergence_dist` |
+| `pairs` (brms `pairs`), `scatter`, `hex` | `plot_pair` |
+| `parcoord` | `plot_parallel` |
+| `nuts_energy` | `plot_energy` |
+
+The NUTS acceptance, divergence, step size, and tree depth plots have no
+ArviZ counterpart, and their values are returned by `nuts_params()`. The
+`recover_*` types need known true parameter values, which a fit does not
+hold. brms's `stanplot` is a deprecated alias of `mcmc_plot` and is not
+provided, and the ggplot themes (`theme_default`, `theme_black`) have no
+meaning without ggplot.
+
 ## Initialization tools {#algebra-guided-training-tooling}
 
 `quivers.analysis` reads a parsed QVR module and returns data about it: the shape of its

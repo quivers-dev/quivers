@@ -27,6 +27,7 @@ transforms : Learnable bijections that normalizing-flow guides stack.
 dais : Differentiable annealed importance sampling guide.
 warmup : Variational warmup before HMC.
 lifts : Bayesian lifts of non-Bayesian models.
+pathfinder : Single- and multi-path Pathfinder variational inference.
 """
 
 from __future__ import annotations
@@ -124,7 +125,45 @@ from quivers.inference.lifts import (
     monte_carlo_log_joint,
 )
 
+# Pathfinder variational inference.
+from quivers.inference.pathfinder import (
+    DiagonalRecovery,
+    LBFGSSettings,
+    NormalApproximation,
+    OptimizationPath,
+    Pathfinder,
+    PathfinderDraws,
+    PathfinderTarget,
+    SinglePath,
+    bfgs_approximation,
+    compact_factors,
+    draw_provenance,
+    lbfgs_path,
+    normal_approximation,
+    psis_log_weights,
+    recover_diagonal,
+    single_path,
+    stream,
+)
+
 __all__ = [
+    "DiagonalRecovery",
+    "NormalApproximation",
+    "OptimizationPath",
+    "PathfinderTarget",
+    "SinglePath",
+    "bfgs_approximation",
+    "compact_factors",
+    "draw_provenance",
+    "lbfgs_path",
+    "normal_approximation",
+    "psis_log_weights",
+    "recover_diagonal",
+    "single_path",
+    "stream",
+    "LBFGSSettings",
+    "Pathfinder",
+    "PathfinderDraws",
     "PriorDraws",
     "PriorMode",
     "prior_draws",

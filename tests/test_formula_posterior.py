@@ -257,25 +257,25 @@ def test_undefined_mean_refusal_and_missing_auxiliary_predictor(data):
     result = fit("y ~ x", data=data, family=cauchy, method="svi", num_steps=1)
     with pytest.raises(ValueError, match="undefined or nonfinite"):
         result.posterior_epred(num_samples=1)
-    with pytest.raises(ValueError, match="no fitted distributional predictor"):
-        result.posterior_linpred(parameter="sigma", num_samples=1)
+    scale = result.posterior_linpred(parameter="sigma", num_samples=1)
+    assert scale.shape == (1, 1, len(data))
+    assert torch.isfinite(scale).all()
 
 
 def test_mixture_epred_weights_component_means_and_quantile_epred_is_mean(data):
     mixture = fit("y ~ 1", data=data, family="mixture", method="svi", num_steps=1)
-    contrast = torch.tensor(1 / (2.0**0.5))
     mixture = _recorded(
         mixture,
         {
-            "intercept": torch.tensor(0.3),
-            "mixture_logit": torch.tensor([0.8]),
-            "mixture_offset": torch.tensor([1.2]),
-            "mixture_scale": torch.tensor([0.5, 0.9]),
+            "dpar_mu1_intercept": torch.tensor(0.3),
+            "mixture_intercept_spacing": torch.tensor([1.2]),
+            "sigma1": torch.tensor(0.5),
+            "sigma2": torch.tensor(0.9),
+            "theta": torch.tensor([0.35, 0.65]),
         },
     )
-    logits = torch.tensor([0.8 * contrast, -0.8 * contrast])
-    means = torch.tensor([0.3 + 1.2 * contrast, 0.3 - 1.2 * contrast])
-    expected = (logits.softmax(-1) * means).sum()
+    means = torch.tensor([0.3, 0.3 + 1.2])
+    expected = (torch.tensor([0.35, 0.65]) * means).sum()
     torch.testing.assert_close(mixture.posterior_epred(), expected.expand(2, 3, 4))
     assert abs(expected.item() - 0.3) > 0.1
     quantile = fit(

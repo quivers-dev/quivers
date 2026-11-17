@@ -1,0 +1,15 @@
+{
+  "rescor_variables": ["b_y1_Intercept", "b_y2_Intercept", "b_y1_x", "b_y2_x", "sd_g__y1_Intercept", "sd_g__y2_Intercept", "cor_g__y1_Intercept__y2_Intercept", "sigma_y1", "sigma_y2", "rescor__y1__y2", "r_g__y1[a,Intercept]", "r_g__y1[b,Intercept]", "r_g__y1[c,Intercept]", "r_g__y2[a,Intercept]", "r_g__y2[b,Intercept]", "r_g__y2[c,Intercept]"],
+  "mixed_variables": ["b_y1_Intercept", "b_sigma_y1_Intercept", "b_k_Intercept", "b_y1_x", "b_sigma_y1_z", "b_k_x", "sd_g__y1_Intercept", "sd_g__sigma_y1_Intercept", "sd_g__k_Intercept", "cor_g__y1_Intercept__sigma_y1_Intercept", "cor_g__y1_Intercept__k_Intercept", "cor_g__sigma_y1_Intercept__k_Intercept", "r_g__y1[a,Intercept]", "r_g__y1[b,Intercept]", "r_g__y1[c,Intercept]", "r_g__sigma_y1[a,Intercept]", "r_g__sigma_y1[b,Intercept]", "r_g__sigma_y1[c,Intercept]", "r_g__k[a,Intercept]", "r_g__k[b,Intercept]", "r_g__k[c,Intercept]"],
+  "rescor_log_lik_dim": [10, 12],
+  "rescor_log_lik_resp_dim": [10, 12],
+  "mixed_log_lik_dim": [10, 12],
+  "mixed_log_lik_resp_dim": [10, 12],
+  "rescor_predict_dim": [10, 12, 2],
+  "rescor_stan": ["  cholesky_factor_corr[nresp] Lrescor;  // parameters for multivariate linear models", "  lprior += lkj_corr_cholesky_lpdf(Lrescor | 1);", "    matrix[nresp, nresp] LSigma = diag_pre_multiply(sigma, Lrescor);", "    target += multi_normal_cholesky_lpdf(Y | Mu, LSigma);", "  corr_matrix[nresp] Rescor = multiply_lower_tri_self_transpose(Lrescor);"],
+  "student_stan": ["  cholesky_factor_corr[nresp] Lrescor;  // parameters for multivariate linear models", "  real<lower=1> nu;", "  lprior += lkj_corr_cholesky_lpdf(Lrescor | 1);", "    matrix[nresp, nresp] Sigma = multiply_lower_tri_self_transpose(diag_pre_multiply(sigma, Lrescor));", "    target += multi_student_t_lpdf(Y | nu, Mu, Sigma);", "  corr_matrix[nresp] Rescor = multiply_lower_tri_self_transpose(Lrescor);"],
+  "default_rescor_gaussian": true,
+  "default_rescor_student": true,
+  "default_rescor_mixed": false,
+  "responses": ["N_y1", "N_y2"]
+}

@@ -167,8 +167,10 @@ def response_mean(
             )
         finite = bounded or 1 in getattr(distribution, "finite_moment_orders", ())
         if mc_samples is None or not finite:
+            reason = f" ({error})" if str(error) else ""
             raise TypeError(
-                "no analytic response expectation; bounded or certified finite-mean response laws permit an explicit mc_samples budget"
+                "no analytic response expectation; bounded or certified finite-mean "
+                f"response laws permit an explicit mc_samples budget{reason}"
             ) from error
     else:
         if not torch.isfinite(result).all():

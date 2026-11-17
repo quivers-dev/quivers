@@ -96,9 +96,20 @@ def test_unused_prior_overrides_fail_before_fitting(data, name):
 
 def test_mixture_prior_inspection_has_all_component_hyperpriors(data):
     priors = get_prior("y ~ x", data=data, family="mixture", mixture_components=3)
-    assert {"mixture_scale", "mixture_offset", "mixture_logit"} <= priors.keys()
-    source = formula_to_qvr("y ~ x", data=data, family="mixture", priors=priors)
-    assert "sample mixture_scale" in source
+    assert {
+        "theta",
+        "mixture_intercept_spacing",
+        "sigma1",
+        "sigma2",
+        "sigma3",
+        "dpar_mu1_intercept",
+        "dpar_mu3_beta_x",
+    } <= priors.keys()
+    assert "dpar_mu2_intercept" not in priors
+    source = formula_to_qvr(
+        "y ~ x", data=data, family="mixture", mixture_components=3, priors=priors
+    )
+    assert "sample sigma3" in source
 
 
 def test_categorical_inspection_preserves_reference_coefficient_prior_names(data):

@@ -24,6 +24,10 @@ class RegularizedHorseshoe(ValueModel):
     autoscale : bool
         Multiply the global scale by a scalar residual sigma when available.
         Distributional-parameter coefficients are not autoscaled.
+    main : bool
+        brms ``main = TRUE``: when one predictor's shrinkage spans several
+        parameter classes, the classes join one hierarchy whose arguments
+        are taken from the single rule marked main.
     """
 
     df: float = 1.0
@@ -33,6 +37,7 @@ class RegularizedHorseshoe(ValueModel):
     df_slab: float = 4.0
     par_ratio: float | None = None
     autoscale: bool = True
+    main: bool = False
 
     @dx.model_validator()
     def _validate(self) -> None:
@@ -40,8 +45,8 @@ class RegularizedHorseshoe(ValueModel):
             _positive(getattr(self, name), name)
         if self.par_ratio is not None:
             _positive(self.par_ratio, "par_ratio")
-        if type(self.autoscale) is not bool:
-            raise TypeError("autoscale must be Boolean")
+        if type(self.autoscale) is not bool or type(self.main) is not bool:
+            raise TypeError("autoscale and main must be Boolean")
 
 
 class R2D2(ValueModel):
@@ -57,6 +62,9 @@ class R2D2(ValueModel):
         Positive Dirichlet concentration, shared or per selected coordinate.
     autoscale : bool
         Multiply coefficient scales by a scalar residual sigma when available.
+    main : bool
+        brms ``main = TRUE``: the rule whose arguments a hierarchy spanning
+        several parameter classes of one predictor uses.
     """
 
     mean_R2: float = 0.5
@@ -65,6 +73,7 @@ class R2D2(ValueModel):
         default=0.5, opaque=True, extras=OPAQUE_BY_VALUE
     )
     autoscale: bool = True
+    main: bool = False
 
     @dx.model_validator()
     def _validate(self) -> None:
@@ -77,8 +86,49 @@ class R2D2(ValueModel):
             raise ValueError("cons_D2 must not be empty")
         for value in values:
             _positive(value, "cons_D2")
-        if type(self.autoscale) is not bool:
-            raise TypeError("autoscale must be Boolean")
+        if type(self.autoscale) is not bool or type(self.main) is not bool:
+            raise TypeError("autoscale and main must be Boolean")
+
+
+class ImproperFlat(ValueModel):
+    """The improper flat prior brms writes as an empty prior string.
+
+    Its density is constant on the target's domain, so it is the Lebesgue
+    measure there and has no normalizing constant. Fitting accepts it, since
+    the posterior can still be proper. Prior draws, ``sample_prior``, and
+    marginal-likelihood estimates require a normalized prior and refuse it
+    with an error naming the flat sites.
+    """
+
+
+class ConstantPrior(ValueModel):
+    """brms ``constant(const, broadcast)``: fix a parameter to known values.
+
+    Parameters
+    ----------
+    value : float or tuple[float, ...]
+        One value, or one value per selected coordinate in the target's
+        coefficient order.
+    broadcast : bool
+        Repeat a single value over every coordinate of the target, as brms
+        does by default. With False, a tuple must match the target's width.
+    """
+
+    value: float | tuple[float, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    broadcast: bool = True
+
+    @dx.model_validator()
+    def _validate(self) -> None:
+        values = self.value if isinstance(self.value, tuple) else (self.value,)
+        if not values or any(
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(item)
+            for item in values
+        ):
+            raise ValueError("a constant prior requires finite real values")
+        if type(self.broadcast) is not bool:
+            raise TypeError("broadcast must be Boolean")
 
 
 def _positive(value, name):
@@ -92,8 +142,11 @@ def _positive(value, name):
         raise ValueError(f"{name} must be a finite positive number")
 
 
-type PriorDistribution = str | RegularizedHorseshoe | R2D2
-"""A compositional QVR prior expression or an explicit sampled shrinkage hierarchy."""
+type PriorDistribution = (
+    str | RegularizedHorseshoe | R2D2 | ImproperFlat | ConstantPrior
+)
+"""A compositional QVR prior expression, a sampled shrinkage hierarchy, the
+improper flat prior, or a constant."""
 
 
 class PriorSpec(ValueModel):
@@ -104,8 +157,10 @@ class PriorSpec(ValueModel):
     distribution : str or RegularizedHorseshoe or R2D2
         A compositional QVR distribution or a sampled shrinkage hierarchy.
     class_ : str or None
-        Parameter class: b excludes intercepts; Intercept, sd, cor, and
-        auxiliary parameter names select their corresponding roles.
+        Parameter class: b excludes intercepts, except the intercept of a
+        nonlinear parameter, which brms names class b with coefficient
+        Intercept; Intercept, sd, cor, and auxiliary parameter names select
+        their corresponding roles.
     coef, group, dpar, nlpar, site, response : str or None
         Expanded coefficient label, original group name, distributional or
         nonlinear parameter name, exact generated site, or authored joint-response
@@ -115,6 +170,9 @@ class PriorSpec(ValueModel):
     block : str or None
         Shared shrinkage identity. Rules with the same block share global
         hyperparameters and allocations and must specify identical hierarchies.
+    tag : str or None
+        brms ``tag``: a label carried into the prior table, so a subset of
+        priors can be selected for sensitivity analysis.
     """
 
     distribution: PriorDistribution = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -128,11 +186,18 @@ class PriorSpec(ValueModel):
     lower: float | None = None
     upper: float | None = None
     block: str | None = None
+    tag: str | None = None
 
     @dx.model_validator()
     def _validate(self) -> None:
         if isinstance(self.distribution, str) and not self.distribution.strip():
             raise ValueError("a prior distribution must not be empty")
+        if self.tag is not None and (not isinstance(self.tag, str) or not self.tag):
+            raise ValueError("a prior tag must be nonempty text or None")
+        if isinstance(self.distribution, ConstantPrior) and (
+            self.lower is not None or self.upper is not None
+        ):
+            raise ValueError("a constant prior takes no bounds")
         for name in (*_SELECTORS, "block"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value):
@@ -153,7 +218,9 @@ class PriorSpec(ValueModel):
             and self.lower >= self.upper
         ):
             raise ValueError("prior lower bound must be below upper bound")
-        if self.block is not None and isinstance(self.distribution, str):
+        if self.block is not None and isinstance(
+            self.distribution, (str, ImproperFlat, ConstantPrior)
+        ):
             raise ValueError(
                 "a shared block is only meaningful for a shrinkage hierarchy"
             )
@@ -283,6 +350,81 @@ class PriorTarget(ValueModel):
         return math.prod(self.shape)
 
 
+def brms_class_names(target: PriorTarget) -> frozenset[str]:
+    """Return the brms prior class names that select a target.
+
+    brms names the residual correlation of a multivariate model ``rescor``,
+    the correlation of a logistic-normal response ``lncor``, the spacing of
+    equidistant ordinal thresholds ``delta``, and accepts the Cholesky
+    spellings ``L``, ``Lrescor`` and ``Llncor`` of the correlation classes.
+
+    Parameters
+    ----------
+    target : PriorTarget
+        One registered site.
+
+    Returns
+    -------
+    frozenset[str]
+        The target's own class and its brms names.
+    """
+    names = {target.class_}
+    if target.class_ == "cor":
+        names |= {"L"} if target.group is not None else {"rescor", "Lrescor"}
+    elif target.class_ == "rescor":
+        names |= {"lncor", "Llncor"}
+    elif target.class_ == "cutpoint_spacing":
+        names |= {"delta"}
+    elif _nonlinear_intercept(target):
+        names |= {"b"}
+    return frozenset(names)
+
+
+def _nonlinear_intercept(target: PriorTarget) -> bool:
+    """Report whether a target is the intercept of a nonlinear parameter.
+
+    brms gives the intercept of a nonlinear parameter the class ``b`` and
+    the coefficient name ``Intercept``, so ``prior(..., nlpar = "b1")``
+    selects it.
+
+    Parameters
+    ----------
+    target : PriorTarget
+        One registered site.
+
+    Returns
+    -------
+    bool
+        True for a class ``Intercept`` target of a nonlinear parameter.
+    """
+    return target.class_ == "Intercept" and target.nlpar is not None
+
+
+def _selects(target: PriorTarget, key: str, value: str | None) -> bool:
+    """Report whether one selector field admits a target.
+
+    Parameters
+    ----------
+    target : PriorTarget
+        One registered site.
+    key : str
+        Selector field.
+    value : str or None
+        Its authored value.
+
+    Returns
+    -------
+    bool
+        Equality on the field; a class also matches by its brms names, and
+        the coefficient ``Intercept`` matches a nonlinear intercept.
+    """
+    if key == "class_" and value is not None:
+        return value in brms_class_names(target)
+    if key == "coef" and value == "Intercept" and _nonlinear_intercept(target):
+        return True
+    return getattr(target, key) == value
+
+
 def resolve_priors(
     priors: PriorSet, targets: Sequence[PriorTarget]
 ) -> dict[str, PriorSpec]:
@@ -313,7 +455,7 @@ def resolve_priors(
         candidates = []
         for index, rule in enumerate(priors.rules):
             if all(
-                getattr(target, key) == value for key, value in rule.selector.items()
+                _selects(target, key, value) for key, value in rule.selector.items()
             ):
                 matched[index] = True
                 candidates.append(index)
@@ -351,6 +493,8 @@ __all__ = [
     "PriorTarget",
     "RegularizedHorseshoe",
     "R2D2",
+    "ImproperFlat",
+    "ConstantPrior",
     "PriorInput",
     "PriorDistribution",
     "normalize_priors",

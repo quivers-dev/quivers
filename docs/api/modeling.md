@@ -10,10 +10,14 @@ Annotations constrain values; `observe` determines which inputs are responses.
 The [parameter reference](../reference/qvr/index.md#parameter-telescopes) explains
 the convention across language constructs.
 
-`MCMCMethod` and `VariationalMethod` return `ModelFit`. `SMCMethod` instead
-returns the existing `SMCResult` with its particles, normalizing-constant
-estimate, and tempering diagnostics. All three consume the same checked
-`BoundModel`; their result contracts remain specific to the inference method.
+`MCMCMethod`, `VariationalMethod`, and `PathfinderMethod` return `ModelFit`.
+`SMCMethod` instead returns the existing `SMCResult` with its particles,
+normalizing-constant estimate, and tempering diagnostics. All four consume the
+same checked `BoundModel`, and their result contracts remain specific to the
+inference method. [Pathfinder](inference/pathfinder.md) retains independent
+approximate draws. `MCMCMethod(cores=2)` runs the chains in two worker
+processes that recompile the model from its source and binding, with the
+result of the serial run ([parallel chains](inference/mcmc.md#parallel-chains)).
 
 An existing `ModelFit` exposes `fit.evidence(sampler)`. This applies the same
 SMC driver to the retained checked program and data, including a fit initialized

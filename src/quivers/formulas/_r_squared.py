@@ -65,7 +65,8 @@ def formula_r2(
         raise TypeError("R-squared observed responses must be a real tensor")
     if fit.family.observe_family == "Categorical" and fit.family.ordinal is None:
         raise ValueError(
-            "unordered categorical responses require an explicit response metric"
+            "bayes_R2 is not defined for unordered categorical models, as in "
+            "brms: unordered categories have no residual"
         )
     if method == "auto":
         method = (
@@ -89,7 +90,7 @@ def formula_r2(
                 )
             observed = _responses(fit, options)
         expected = fit.posterior_epred(**options)
-        if fit.family.ordinal is not None:
+        if fit.family.response_ordinal() is not None:
             codes = torch.arange(
                 expected.shape[-1], device=expected.device, dtype=expected.dtype
             )
@@ -137,7 +138,7 @@ def formula_r2(
 
                     assert isinstance(law, Wiener)
                     mean, variance = law.mean_response_time, law.variance_response_time
-                elif fit.family.ordinal is not None:
+                elif fit.family.response_ordinal() is not None:
                     from quivers.formulas._posterior import category_probabilities
 
                     probs = category_probabilities(law, len(fit.category_labels))

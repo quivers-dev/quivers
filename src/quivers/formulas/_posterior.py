@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import math
 
 from collections.abc import Iterator
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from quivers._rng import seeded_rng
 from quivers.inference._posterior import constrained_draws
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import Trace, trace
@@ -18,6 +20,13 @@ from quivers.inference._response import (
     category_probabilities as category_probabilities,
     response_mean as response_mean,
 )
+
+from quivers.formulas._prediction import OrdinalReplay
+
+# Constants, centered intercepts and QR coefficients are derived sites.
+from quivers.formulas._brms_priors import derived_site_draws
+from quivers.formulas._mixture import equated_sites
+from quivers.formulas._population_coordinates import reported_coefficients
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
@@ -54,12 +63,23 @@ def posterior_draws(
     registry = LatentRegistry.from_model(
         fit.program, observed_names=set(fit.observations)
     )
-    return constrained_draws(
+    draws = constrained_draws(
         fit.posterior,
         torch.zeros(1, 1, dtype=torch.long),
         num_samples=num_samples,
         seed=seed,
         registry=registry,
+    )
+    plan = fit.prediction_plan
+    if plan is None:
+        return draws
+    return derived_site_draws(
+        plan.module,
+        draws,
+        reported_coefficients(fit._predictor_items())
+        + [target.site for target in plan.prior_targets]
+        # mixtures: parameters equated to a sampled one keep their own name.
+        + equated_sites(fit.family, draws),
     )
 
 
@@ -109,6 +129,15 @@ def replay(
         generator = torch.Generator().manual_seed(
             (context.seed + 2) % 2**64 if context is not None else 0
         )
+        # Fresh latent sites of prediction rows (the latent function of an
+        # exact gp() at new inputs) are sampled by the program. Their stream
+        # depends on the prediction seed and the draw alone, so every
+        # prediction method sees the same latent draws for one seed.
+        fresh = (
+            torch.Generator().manual_seed((context.seed + 3) % 2**64)
+            if context is not None and context.fresh_sites
+            else None
+        )
         fixed_donors: dict[str, torch.Tensor] = {}
         specialized_shapes = {}
         if context is not None and context.groups:
@@ -121,18 +150,40 @@ def replay(
         for chain in range(shape[0]):
             for draw in range(shape[1]):
                 original_latents = {
-                    name: values[chain, draw] for name, values in draws.items()
+                    name: values[chain, draw]
+                    for name, values in draws.items()
+                    if context is None or name not in context.fresh_sites
                 }
                 retained: dict[str, torch.Tensor] = {}
                 fitted: Trace | None = None
-                if context is not None and context.retain_ordinal_cutpoints:
+                # Retained threshold replays: one per ordinal response, named by
+                # its site prefix (empty for a single response, namespaced in
+                # a joint program).
+                replays = (
+                    ()
+                    if context is None or not context.retain_ordinal_cutpoints
+                    else context.ordinal_replays
+                    or (
+                        OrdinalReplay(
+                            prefix="",
+                            thresholds_by=fit.thresholds_by,
+                            fitted_levels=len(
+                                fit.formula.group_levels[fit.thresholds_by]
+                            )
+                            if fit.thresholds_by is not None
+                            else 0,
+                            rows=context.rows,
+                        ),
+                    )
+                )
+                if replays:
                     fitted = trace(
                         fit.program, input, dict(fit.observations) | original_latents
                     )
-                    if "cutpoints" in fitted.sites:
-                        retained["cutpoints"] = fitted.sites["cutpoints"].value.reshape(
-                            -1
-                        )
+                    for entry in replays:
+                        site = entry.prefix + "cutpoints"
+                        if site in fitted.sites:
+                            retained[site] = fitted.sites[site].value.reshape(-1)
                 feasible = (
                     context is not None
                     and context.new_level_policy.startswith("feasible_")
@@ -158,27 +209,35 @@ def replay(
                             fixed_donors,
                             donors,
                         )
-                    if (
-                        context is not None
-                        and context.retain_ordinal_cutpoints
-                        and fitted is not None
-                        and "cutpoint_matrix" in fitted.sites
-                    ):
-                        retained.update(
-                            _retained_group_cutpoints(
-                                fit,
-                                context,
-                                fitted,
-                                latents,
-                                observations,
-                                donors,
-                                input,
+                    for entry in replays:
+                        if (
+                            context is not None
+                            and fitted is not None
+                            and entry.prefix + "cutpoint_matrix" in fitted.sites
+                        ):
+                            retained.update(
+                                _retained_group_cutpoints(
+                                    entry,
+                                    context,
+                                    fitted,
+                                    latents,
+                                    observations,
+                                    donors,
+                                    input,
+                                )
                             )
-                        )
                     try:
-                        recorded = trace(
-                            program, input, observations | latents | retained
-                        )
+                        with (
+                            nullcontext()
+                            if fresh is None
+                            else seeded_rng(
+                                int(torch.randint(2**62, (), generator=fresh)),
+                                devices=(input.device,),
+                            )
+                        ):
+                            recorded = trace(
+                                program, input, observations | latents | retained
+                            )
                     except ValueError as exc:
                         if (
                             context is None
@@ -206,7 +265,7 @@ def replay(
 
 
 def _retained_group_cutpoints(
-    fit: BayesianFit,
+    entry: OrdinalReplay,
     context: PredictionContext,
     fitted: Trace,
     latents: dict[str, torch.Tensor],
@@ -218,8 +277,9 @@ def _retained_group_cutpoints(
 
     Parameters
     ----------
-    fit : BayesianFit
-        Original grouped cumulative fit.
+    entry : OrdinalReplay
+        Site prefix, threshold group, fitted level count, and rows of one
+        grouped cumulative response.
     context : PredictionContext
         Prepared compact group metadata and prediction program.
     fitted : Trace
@@ -241,19 +301,24 @@ def _retained_group_cutpoints(
         hierarchical law and subsequently conditioned on fresh-row order by
         the caller's explicit rejection policy.
     """
-    assert fit.thresholds_by is not None
-    group = fit.thresholds_by
-    original_groups = len(fit.formula.group_levels[group])
-    matrix = fitted.sites["cutpoint_matrix"].value.reshape(original_groups, -1)
+    assert entry.thresholds_by is not None
+    group = entry.thresholds_by
+    prefix = entry.prefix
+    rows = entry.rows
+    matrix = fitted.sites[prefix + "cutpoint_matrix"].value.reshape(
+        entry.fitted_levels, -1
+    )
     if group not in context.groups:
-        return {"cutpoint_matrix": matrix}
+        return {prefix + "cutpoint_matrix": matrix}
     mapping = context.groups[group]
     indices = torch.tensor(mapping.fitted_indices, dtype=torch.long)
     cuts = matrix[indices.clamp_min(0)].clone()
     gaps = max(0, matrix.shape[-1] - 1)
     overrides: dict[str, torch.Tensor] = {}
     if gaps:
-        overrides["ordinal_spacing_bound"] = matrix.new_zeros(len(indices), gaps)
+        overrides[prefix + "ordinal_spacing_bound"] = matrix.new_zeros(
+            len(indices), gaps
+        )
     new = indices < 0
     if bool(new.any()):
         if group in donors:
@@ -271,15 +336,17 @@ def _retained_group_cutpoints(
                 | latents
                 | overrides
                 | {
-                    "ordinal_contrasts": safe.expand(context.rows, transitions),
-                    "ordinal_effective_spacing": matrix.new_ones(context.rows, gaps),
+                    prefix + "ordinal_contrasts": safe.expand(rows, transitions),
+                    prefix + "ordinal_effective_spacing": matrix.new_ones(rows, gaps),
                 },
             )
-            proposed = proposal.sites["cutpoint_matrix"].value.reshape(len(indices), -1)
+            proposed = proposal.sites[prefix + "cutpoint_matrix"].value.reshape(
+                len(indices), -1
+            )
             cuts[new] = proposed[new]
         else:
             cuts[new] = 0
-    overrides["cutpoint_matrix"] = cuts
+    overrides[prefix + "cutpoint_matrix"] = cuts
     return overrides
 
 

@@ -73,6 +73,7 @@ from quivers.qiec.terms import (
     SCALE_FLOOR,
     Reduction,
     Rowwise,
+    CholeskyFactor,
     Comprehension,
     LetValue,
     Value,
@@ -1817,6 +1818,55 @@ def _rowwise(operator: str, value: object) -> object:
     return tuple(item / total for item in row)
 
 
+def _cholesky(value: object) -> object:
+    """Factor each symmetric positive-definite matrix of a host tensor.
+
+    The Cholesky-Banachiewicz recursion computes the lower factor row by row
+    in O(n^3) operations for an ``n``-by-``n`` matrix, reading only the lower
+    triangle, as `torch.linalg.cholesky` does.
+
+    Parameters
+    ----------
+    value : object
+        A matrix, or a tensor whose last two axes are matrices.
+
+    Returns
+    -------
+    object
+        Lower-triangular factors of the same shape.
+
+    Raises
+    ------
+    EvaluationError
+        If the value is not a square matrix, or a matrix is not positive
+        definite.
+    """
+    if not isinstance(value, tuple) or not value or not isinstance(value[0], tuple):
+        raise EvaluationError("cholesky takes a square matrix")
+    if value[0] and isinstance(value[0][0], tuple):
+        return tuple(_cholesky(item) for item in value)
+    size = len(value)
+    rows = [[float(entry) for entry in row] for row in value]  # type: ignore[union-attr]
+    if any(len(row) != size for row in rows):
+        raise EvaluationError("cholesky takes a square matrix")
+    factor = [[0.0] * size for _ in range(size)]
+    for i in range(size):
+        for j in range(i + 1):
+            partial = rows[i][j] - math.fsum(
+                factor[i][k] * factor[j][k] for k in range(j)
+            )
+            if i == j:
+                if not partial > 0:
+                    raise EvaluationError(
+                        "cholesky takes a positive-definite matrix; the leading "
+                        f"minor of order {i + 1} is not positive definite"
+                    )
+                factor[i][j] = math.sqrt(partial)
+            else:
+                factor[i][j] = partial / factor[j][j]
+    return tuple(tuple(row) for row in factor)
+
+
 def _gather(source: object, index: object) -> object:
     """Select along a host tensor's outermost axis.
 
@@ -2391,6 +2441,8 @@ class Evaluator:
             return _reduce(value.operator, self._value(value.value, environment))
         if isinstance(value, Rowwise):
             return _rowwise(value.operator, self._value(value.value, environment))
+        if isinstance(value, CholeskyFactor):
+            return _cholesky(self._value(value.value, environment))
         if isinstance(value, Comprehension):
             extent = _extent(PlateAxis(name="comprehension", size=value.extent))
             return tuple(

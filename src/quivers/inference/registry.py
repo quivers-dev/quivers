@@ -42,7 +42,7 @@ site in declaration order.
 from __future__ import annotations
 
 import math
-from typing import cast
+from typing import Protocol, cast, runtime_checkable
 
 import didactic.api as dx
 import torch
@@ -59,6 +59,26 @@ from quivers.continuous.program_steps import Call, Draw, Let, Observe, Scan, Sco
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import ContinuousSpace
 from quivers.effects.trace_types import Trace
+
+
+@runtime_checkable
+class ReducedSupport(Protocol):
+    """A support with fewer free coordinates than its constrained vector."""
+
+    def unconstrained_dim(self, constrained_dim: int) -> int:
+        """Count the free coordinates of a constrained vector.
+
+        Parameters
+        ----------
+        constrained_dim : int
+            Length of the constrained vector.
+
+        Returns
+        -------
+        int
+            Number of free coordinates.
+        """
+        ...
 
 
 def _unconstrained_event_dim(
@@ -83,6 +103,10 @@ def _unconstrained_event_dim(
     `SigmoidTransform`, `ExpTransform`, or a composition
     thereof).
     """
+    # A support that maps fewer free coordinates onto a linear subspace (the
+    # component-centered intrinsic CAR support) reports its own dimension.
+    if isinstance(support, ReducedSupport):
+        return support.unconstrained_dim(constrained_dim)
     if support is _constraints.simplex:
         return constrained_dim - 1
     if support is _constraints.corr_cholesky:

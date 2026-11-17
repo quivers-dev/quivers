@@ -409,6 +409,16 @@ class KernelState(ValueModel):
             raise ValueError(f"KernelState.from_state_dict: {error}") from error
 
 
+class _NonFiniteInitialDensity(ValueError):
+    """A finite initial position whose log-density is not finite.
+
+    `PotentialFn.check_initial` raises it when the program scores without
+    error but the Jacobian-corrected log-density is infinite or NaN, which
+    distinguishes a start outside the numerically representable region from
+    an error in the program or its data.
+    """
+
+
 class PotentialFn:
     """Callable that maps a flat unconstrained position to the
     unconstrained-space negative log-density and its gradient.
@@ -695,7 +705,7 @@ class PotentialFn:
         )
         if not torch.isfinite(log_det_total):
             offending.append("the bijector log-Jacobian")
-        raise ValueError(
+        raise _NonFiniteInitialDensity(
             f"PotentialFn: the log-density at the initial position is "
             f"{float(result)}; non-finite terms: {', '.join(offending) or 'none recorded'}"
         )

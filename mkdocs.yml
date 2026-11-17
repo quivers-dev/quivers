@@ -195,6 +195,12 @@ nav:
       - "Tree and Graph Autoencoders: Decoders and Losses": guides/structural-compression-decoders-and-losses.md
       - "Analysis: Data and Formulas": guides/analysis-data-and-formulas.md
       - Structured Predictor Terms: guides/formula-special-predictors.md
+      - Grouping Terms: guides/formula-grouping.md
+      - Residual Dependence Structures: guides/formula-dependence.md
+      - Multivariate Formula Models: guides/formula-multivariate.md
+      - Mixtures, Category Formulas, and Rates: guides/formula-mixtures.md
+      - Missing Data and Measurement Error: guides/formula-missing-data.md
+      - Priors, Formula Options, and Fitting Controls: guides/formula-priors-and-options.md
       - "Analysis: Fitting and Diagnostics": guides/analysis-fitting-and-diagnostics.md
       - Conditional Effects: guides/conditional-effects.md
       - "Interactive tools: REPL, kernel, and language server": guides/repl-and-lsp.md
@@ -409,6 +415,7 @@ nav:
       - Bayesian Lifts: api/inference/lifts.md
       - Predictive: api/inference/predictive.md
       - Prior sampling: api/inference/prior.md
+      - Pathfinder: api/inference/pathfinder.md
     - Data:
       - Overview: api/data/index.md
       - Dataset Schema: api/data/schema.md
@@ -424,6 +431,8 @@ nav:
       - Simulation-Based Calibration: api/diagnostics/calibration.md
       - ArviZ DataTree Adapter: api/diagnostics/arviz_io.md
       - Model Comparison: api/diagnostics/comparison.md
+      - ELPD Estimates and Criteria: api/diagnostics/elpd.md
+      - brms Summary Tables: api/diagnostics/posterior_tables.md
       - Refit Cross-Validation: api/diagnostics/cross_validation.md
       - Predictive Checks: api/diagnostics/predictive_checks.md
     - Model Binding and Fitting: api/modeling.md
@@ -435,6 +444,8 @@ nav:
       - Families & Links: api/formulas/family.md
       - Custom Response Families: api/formulas/custom.md
       - Fit Entry Point: api/formulas/fit.md
+      - Multivariate Formulas: api/formulas/multivariate.md
+      - Priors, Options, and Controls: api/formulas/priors-options.md
     - Analysis:
       - Overview: api/analysis/index.md
       - Chain shapes: api/analysis/chain_shape.md

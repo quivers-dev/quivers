@@ -244,7 +244,7 @@ def _event_sets(kind: str, frame: pd.DataFrame, status: np.ndarray, lower, upper
     return events, (low_t, high_t)
 
 
-def _oracle_log_mass(plain, name, kind, frame, row, low, high, low_open, kinks):
+def _oracle_log_mass(score, name, kind, row, low, high, low_open, kinks):
     """Integrate or sum the uncensored density of one row over an interval.
 
     ``kinks`` holds per-draw points where the density is not smooth; the
@@ -257,7 +257,7 @@ def _oracle_log_mass(plain, name, kind, frame, row, low, high, low_open, kinks):
         grid = np.arange(max(first, 0), last + 1, dtype=float)
         if grid.size == 0:
             return torch.full((1, 2), -torch.inf, dtype=torch.float64)
-        values = _plain_log_density(plain, frame, row, grid)
+        values = score(row, grid)
         return torch.logsumexp(values, dim=-1)
     support_low, support_high = SUPPORT[kind]
     a, b = max(low, support_low), min(high, support_high)
@@ -266,7 +266,7 @@ def _oracle_log_mass(plain, name, kind, frame, row, low, high, low_open, kinks):
         # which hides about 1e-6 of a Beta mass with a shape below one.
         # Nodes approach 0 without that limit, so the upper tail is taken
         # as the complement of the normalized law's mass on [0, a].
-        below = _oracle_log_mass(plain, name, kind, frame, row, -1.0, a, False, kinks)
+        below = _oracle_log_mass(score, name, kind, row, -1.0, a, False, kinks)
         return torch.log1p(-below.exp())
     pieces = []
     if b > a:
@@ -276,14 +276,14 @@ def _oracle_log_mass(plain, name, kind, frame, row, low, high, low_open, kinks):
             parts = []
             for left, right in zip(cuts[:-1], cuts[1:], strict=True):
                 points, weights = _graded_rule(left, right)
-                values = _plain_log_density(plain, frame, row, points)[..., draw, :]
+                values = score(row, points)[..., draw, :]
                 parts.append(
                     torch.logsumexp(values + torch.tensor(np.log(weights)), dim=-1)
                 )
             per_draw.append(torch.logsumexp(torch.stack(parts), dim=0))
         pieces.append(torch.stack(per_draw, dim=-1))
     if name in ATOM_AT_ZERO and (low < 0 or (low == 0 and not low_open)) and high >= 0:
-        pieces.append(_plain_log_density(plain, frame, row, np.array([0.0]))[..., 0])
+        pieces.append(score(row, np.array([0.0]))[..., 0])
     if not pieces:
         return torch.full((1, 2), -torch.inf, dtype=torch.float64)
     return torch.logsumexp(torch.stack(pieces), dim=0)
@@ -298,19 +298,61 @@ def _float64_response_dtype(formula, family=None):
 _RESPONSE_DTYPE = response_module.response_dtype
 
 
-def _plain_log_density(plain, frame, row, points):
-    """Score the uncensored density at quadrature nodes.
+class _NodeScorer:
+    """Score the uncensored density at every quadrature node in one replay.
 
     Scalar real responses are carried in float32 by the formula pipeline. The
     oracle evaluates its nodes in float64 instead, so nodes within float32
     resolution of a singular endpoint stay distinct from it.
+
+    The node sets of one cell do not depend on the scored values, so the
+    oracle is traversed twice: the first traversal records each ``(row,
+    points)`` request and answers zeros, `score` replays the uncensored model
+    once over the concatenated nodes, and the second traversal receives the
+    scored values in the recorded order.
     """
-    data = pd.DataFrame(
-        {"y": points, "x": frame.x.iloc[row], "n": TRIALS, "st": 0, "up": 0.0}
-    )
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(response_module, "response_dtype", _float64_response_dtype)
-        return next(iter(plain.log_likelihood(new_data=data).values()))
+
+    def __init__(self, plain, frame: pd.DataFrame) -> None:
+        self.plain = plain
+        self.frame = frame
+        self.requests: list[tuple[int, np.ndarray]] = []
+        self.values: list[torch.Tensor] | None = None
+        self.cursor = 0
+
+    def __call__(self, row: int, points: np.ndarray) -> torch.Tensor:
+        points = np.asarray(points, dtype=np.float64)
+        if self.values is None:
+            self.requests.append((row, points))
+            return torch.zeros((1, 2, points.size), dtype=torch.float64)
+        recorded_row, recorded_points = self.requests[self.cursor]
+        assert recorded_row == row
+        np.testing.assert_array_equal(recorded_points, points)
+        value = self.values[self.cursor]
+        self.cursor += 1
+        return value
+
+    def score(self) -> None:
+        """Replay the uncensored model once over every recorded node."""
+        sizes = [points.size for _, points in self.requests]
+        data = pd.DataFrame(
+            {
+                "y": np.concatenate([points for _, points in self.requests]),
+                "x": np.concatenate(
+                    [
+                        np.full(points.size, self.frame.x.iloc[row])
+                        for row, points in self.requests
+                    ]
+                ),
+                "n": TRIALS,
+                "st": 0,
+                "up": 0.0,
+            }
+        )
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(response_module, "response_dtype", _float64_response_dtype)
+            scored = next(iter(self.plain.log_likelihood(new_data=data).values()))
+        assert scored.shape[-1] == sum(sizes)
+        self.values = list(torch.split(scored, sizes, dim=-1))
 
 
 KINKS = {
@@ -361,50 +403,60 @@ def _oracle(name: str, formula: str, frame, fitted, lower, upper):
     status = frame.st.to_numpy() if "cens" in formula else np.zeros(len(frame), int)
     events, (low_t, high_t) = _event_sets(kind, frame, status, lower, upper)
     truncated = lower is not None or upper is not None
-    rows = []
-    for row, event in enumerate(events):
-        row_kinks = kinks[..., row].reshape(-1, kinks.shape[-2])
-        if event is None:
-            numerator = _plain_log_density(
-                plain, frame, row, np.array([frame.y.iloc[row]])
-            )[..., 0]
-        else:
-            low, high, low_open = event
-            numerator = _oracle_log_mass(
-                plain, name, kind, frame, row, low, high, low_open, row_kinks
-            )
-        if truncated:
-            numerator = numerator - _oracle_log_mass(
-                plain, name, kind, frame, row, low_t, high_t, False, row_kinks
-            )
-        rows.append(numerator)
-    return torch.stack(rows, dim=-1)
+    score = _NodeScorer(plain, frame)
+
+    def traverse() -> torch.Tensor:
+        rows = []
+        for row, event in enumerate(events):
+            row_kinks = kinks[..., row].reshape(-1, kinks.shape[-2])
+            if event is None:
+                numerator = score(row, np.array([frame.y.iloc[row]]))[..., 0]
+            else:
+                low, high, low_open = event
+                numerator = _oracle_log_mass(
+                    score, name, kind, row, low, high, low_open, row_kinks
+                )
+            if truncated:
+                numerator = numerator - _oracle_log_mass(
+                    score, name, kind, row, low_t, high_t, False, row_kinks
+                )
+            rows.append(numerator)
+        return torch.stack(rows, dim=-1)
+
+    traverse()
+    score.score()
+    return traverse()
 
 
 def _mixture_oracle(fitted, frame, formula, lower, upper):
     """Component-wise truncation as in brms: sum_k w_k P_k(event) / P_k(bounds).
 
-    The two-component Helmert coordinates are those printed by the compiled
-    QVR source: component k has offset and logit ``c_k`` times the sampled
-    contrast, with ``c = (1, -1) / sqrt(2)``.
+    The default ``mixture`` family is ``mixture(gaussian, gaussian)`` with
+    ordered intercepts: ``mu_k = intercept_k + beta_k x`` where the second
+    intercept is the first plus the sampled positive gap, one scale per
+    component, and Dirichlet weights ``theta``.
     """
     draws = {site: value.detach().numpy() for site, value in fitted.draws().items()}
-    contrast = np.array([1.0, -1.0]) / math.sqrt(2.0)
     x, y = frame.x.to_numpy(), frame.y.to_numpy()
     up = frame.up.to_numpy()
     status = frame.st.to_numpy() if "cens" in formula else np.zeros(len(frame), int)
     low_t = -np.inf if lower is None else lower
     high_t = np.inf if upper is None else upper
-    chains, count = draws["intercept"].shape[:2]
+    chains, count = draws["dpar_mu1_intercept"].shape[:2]
     out = np.empty((chains, count, len(frame)))
     for c in range(chains):
         for d in range(count):
-            eta = draws["intercept"][c, d] + draws["beta_x"][c, d] * x
-            loc = eta[:, None] + contrast * draws["mixture_offset"][c, d].reshape(-1)[0]
-            scale = draws["mixture_scale"][c, d].reshape(-1)
-            logits = contrast * draws["mixture_logit"][c, d].reshape(-1)[0]
-            weights = np.exp(logits - logits.max())
-            weights = weights / weights.sum()
+            first = draws["dpar_mu1_intercept"][c, d]
+            gap = draws["mixture_intercept_spacing"][c, d].reshape(-1)[0]
+            loc = np.stack(
+                (
+                    first + draws["dpar_mu1_beta_x"][c, d] * x,
+                    first + gap + draws["dpar_mu2_beta_x"][c, d] * x,
+                ),
+                axis=-1,
+            )
+            scale = np.array([draws["sigma1"][c, d], draws["sigma2"][c, d]])
+            weights = draws["theta"][c, d].reshape(-1)
 
             def cdf(value):
                 return stats.norm.cdf(value, loc, scale)
@@ -465,9 +517,58 @@ This concerns the uncensored law equally and is reported as a known gap.
 """
 
 
-@pytest.mark.parametrize("method", ["hmc", "nuts"])
-@pytest.mark.parametrize("name", SUPPORTED)
-def test_hmc_and_nuts_run_censored_truncated_fits_without_nan(name, method):
+LONG_SAMPLER_FAMILIES = frozenset(
+    {
+        "negative_binomial",
+        "negbinomial2",
+        "hurdle_negbinomial",
+        "zero_inflated_negbinomial",
+        "binomial",
+        "beta_binomial",
+        "zero_inflated_binomial",
+        "zero_inflated_beta_binomial",
+        "com_poisson",
+        "hurdle_gamma",
+        "student_t",
+    }
+)
+"""Families whose default-kernel runs take over 30 seconds on a CI runner.
+
+The count families here score each tail through the incomplete-Beta continued
+fraction, at 0.1 to 1 second per gradient on eight rows; the others build
+deep trees before the step size adapts. Their default HMC and NUTS runs carry
+the ``slow`` marker. The default tier runs NUTS on each of them with the tree
+depth capped at two doublings, which evaluates the same censored and
+truncated gradient through the same leapfrog integrator on at most three
+states per transition.
+"""
+
+
+def _sampler_cells() -> list:
+    cells = []
+    for name in SUPPORTED:
+        long = name in LONG_SAMPLER_FAMILIES
+        for method in ("hmc", "nuts"):
+            cells.append(
+                pytest.param(
+                    name,
+                    method,
+                    None,
+                    id=f"{name}-{method}",
+                    marks=(pytest.mark.slow,) if long else (),
+                )
+            )
+        if long:
+            cells.append(
+                pytest.param(
+                    name, "nuts", {"max_treedepth": 2}, id=f"{name}-nuts-depth2"
+                )
+            )
+    return cells
+
+
+@pytest.mark.parametrize(("name", "method", "control"), _sampler_cells())
+def test_hmc_and_nuts_run_censored_truncated_fits_without_nan(name, method, control):
     frame = _frame(KIND[name])
     formula, lower, upper = _formula(name, "cens_trunc")
     assert lower is not None and upper is not None
@@ -481,6 +582,7 @@ def test_hmc_and_nuts_run_censored_truncated_fits_without_nan(name, method):
         num_chains=1,
         seed=5,
         priors=SAMPLER_PRIORS.get(name),
+        control=control,
     )
     for value in fitted.draws().values():
         assert bool(torch.isfinite(value).all())

@@ -364,6 +364,26 @@ $\alpha_c=\exp(\eta_c)$, without a reference coordinate. A
 $r$, coordinate-specific scales, and a correlation factor. References
 thus select predictor coordinates; they do not permute the observed event.
 
+Write $z_{ic}=\log(y_{ic}/y_{ir})$ for the log ratio of free component $c$
+in row $i$, $L$ for the Cholesky factor of the log-ratio correlation matrix,
+and $\sigma_{ic}$ for the scale of component $c$ in row $i$. The row density
+is
+
+$$
+p(y_i)=\mathcal{N}\!\left(z_i \mid \mu_i,\;
+\operatorname{diag}(\sigma_i)\,L L^\top \operatorname{diag}(\sigma_i)\right)
+\prod_c y_{ic}^{-1},
+$$
+
+where the product over all components is the Jacobian of the log-ratio map.
+A `sigma<c>` formula sets $\sigma_{ic}=\exp(\eta^{\sigma_c}_i)$ from its own
+linear predictor, a scale without a formula is one positive parameter
+$\sigma_{ic}=\sigma_c$, and a fixed scale is a constant. The program stacks
+these into the row-by-component matrix `sigma` and scales the rows of $L$ by
+it, at cost $O(n\sum_c p_c)$ for $p_c$ columns of the formula of component
+$c$. Each predicted scale retains its design, so new rows evaluate
+$\sigma_{ic}$ from their own predictors.
+
 For count events, the training row total $n_i=\sum_c y_{ic}$ is runtime
 data, not a static category extent or a fitted random variable. New-row
 counts require supplied totals independently of their predictors. The
@@ -594,6 +614,50 @@ $p_j=(1-h)p_j^{\mathrm{base}}$ for $j>0$.
 It uses $K-2$ base thresholds, including no threshold when there is one
 positive category. This is an extra lowest category, not a second atom
 added to the base's existing category zero.
+
+A response `y | thres(n, gr = g)` gives each level $g$ of the threshold
+group its own number of thresholds $n_g$ and its own unpooled threshold
+vector, as brms does. Group $g$ has a shape $u_{g0}=0$,
+$u_{gk}=\sum_{s<k}\exp(\lambda_{gs})$ for the cumulative family and
+$u_{gk}=o_{gk}$ otherwise, with free coordinates
+$\lambda_{gs},o_{gk}\sim\operatorname{Normal}(0,1)$, and thresholds
+
+$$
+c_{gk}=u_{gk}-\frac1{n_g}\sum_{j<n_g}u_{gj}+\ell_g,\qquad k=0,\ldots,n_g-1.
+$$
+
+The locations $\ell_g$ carry the prior of a population-level coefficient.
+With a formula intercept $\alpha$, $\ell_g=0$ for the first group, so the
+map from brms's vectors $\tau_{gk}=c_{gk}-\alpha$ to
+$(\alpha,\ell,\lambda)$ or $(\alpha,\ell,o)$ is a bijection. Without an
+intercept every $\ell_g$ is free. Row $i$ uses the vector of its group
+$g(i)$ and has the categories $0,\ldots,n_{g(i)}$.
+
+One row-by-threshold matrix serves every group. With
+$K-1=\max_g n_g$, group $g$ is padded with
+$c_{gk}=c_{g,n_g-1}+(k-n_g+1)$ for $k\ge n_g$, and the padded masses
+$\tilde p_{ij}$ are reduced to the row's own categories. For the cumulative
+and sequential constructions, $\tilde p_{ij}=p_{ij}$ for $j<n_g$ and the
+padded categories partition the last one, so
+$\log p_{i,n_g}=\operatorname{logsumexp}_{j\ge n_g}\log\tilde p_{ij}$. For the
+adjacent-category construction the unnormalized log mass of category $j$
+involves only $c_{g0},\ldots,c_{g,j-1}$, so the categories $j>n_g$ are
+removed before normalization. Both reductions are exact for any finite
+padding, and $p_{ij}=0$ for $j>n_g$. Fresh rows are coded against the
+fitted groups, and a group without fitted thresholds is refused.
+Category-specific effects are refused with threshold groups, as in brms.
+
+Under the hurdle cumulative law the response codes of group $g$ are
+$0,\ldots,n_g+1$: code zero is the hurdle with mass $h$, and code $j>0$ has
+mass $(1-h)$ times the mass of base category $j-1$. The reduction above
+applies to the base categories, which all carry the factor $1-h$, and the
+hurdle mass is never padded. A mixture of ordinal laws applies the
+construction once per component $m$, with its own coordinates
+$(\alpha_m,\ell_m,\lambda_m)$ or $(\alpha_m,\ell_m,o_m)$, and mixes the
+reduced category masses, $p_{ij}=\sum_m\theta_m p^{(m)}_{ij}$. With shared
+thresholds (`order="mu"`) every component reads the group-by-threshold
+matrix and the intercept of one component, so that
+$\tau^{(m)}_{gk}=\tau_{gk}$ for all $m$.
 
 `OrdinalSpec` and threshold choices are static compiler configuration;
 cutpoints, discrimination, and category effects are runtime values.
@@ -847,6 +911,34 @@ brms: truncation normalizes each component separately, so a recorded event
 contributes $\log\sum_k w_k K_{\theta,k}(E_i\cap T_i)/K_{\theta,k}(T_i)$
 and truncated prediction draws a component and then its truncated law.
 Without truncation this equals the mixture mass of $E_i$.
+
+The mean of the truncated kernel is the partial first moment over the
+normalizer,
+
+$$
+\mathbb E_{K^I_\theta}[Y]=\frac{m_\theta(I)}{Z_\theta},
+\qquad m_\theta(I)=\int_I y\,K_\theta(dy).
+$$
+
+For a nonnegative law with finite mean, $y\,K_\theta(dy)/\mathbb E_\theta[Y]$
+is a probability law, the size-biased law $\tilde K_\theta$, so
+$m_\theta(I)=\mathbb E_\theta[Y]\,\tilde K_\theta(I)$ and the truncated mean
+is the untruncated mean times a ratio of two event masses. The size-biased
+law of $\mathrm{Gamma}(k,r)$ is $\mathrm{Gamma}(k+1,r)$, that of
+$\mathrm{LogNormal}(\mu,\sigma)$ is $\mathrm{LogNormal}(\mu+\sigma^2,\sigma)$,
+that of $\mathrm{Beta}(\alpha,\beta)$ is $\mathrm{Beta}(\alpha+1,\beta)$, and
+that of an inverse Gaussian $X$ with mean $\mu$ is the law of $\mu^2/X$. For
+a Weibull law with scale $s$ and shape $k$ it is the law of $s\,G^{1/k}$ with
+$G\sim\mathrm{Gamma}(1+1/k,1)$, and for a Fréchet law with shape $\alpha>1$
+the law of $s\,G^{-1/\alpha}$ with $G\sim\mathrm{Gamma}(1-1/\alpha,1)$. For
+counts, the size-biased law of $\mathrm{Poisson}(\lambda)$ is
+$1+\mathrm{Poisson}(\lambda)$, that of $\mathrm{Binomial}(n,p)$ is
+$1+\mathrm{Binomial}(n-1,p)$, and that of a negative binomial count with
+$r$ successes is one plus the same count with $r+1$ successes. An atom at
+zero adds to $Z_\theta$ and not to $m_\theta(I)$. The Normal and Student-t
+laws use their closed forms, the latter for more than one degree of
+freedom. Every other law is summed (counts) or integrated by quadrature
+whose own estimate of $Z_\theta$ must agree with the event mass.
 
 For independent scalar coordinates truncated to a rectangle,
 $Z_\theta=\prod_j Z_{\theta,j}$, so log normalizers add over the
@@ -1837,6 +1929,111 @@ are in `tests/continuous/test_wiener.py`, with independent formula-level
 joint-density and coefficient-gradient checks in `tests/test_formula_wiener.py`.
 Current external targets report this family as unsupported.
 
+### 6.3 Pathfinder approximations {#pathfinder-approximations}
+
+[Pathfinder](../api/inference/pathfinder.md) [@zhang2022pathfinder]
+approximates the posterior of a run on the unconstrained coordinates
+$z\in\mathbb{R}^N$ that Hamiltonian Monte Carlo uses. With $T$ the
+constraining bijection of the latent registry, the target is
+
+$$
+\pi(z)\propto p(T(z),y)\,\lvert\det J_T(z)\rvert .
+$$
+
+A path runs [L-BFGS](https://en.wikipedia.org/wiki/Limited-memory_BFGS) on
+$-\log\pi$ from $z^{(0)}\sim\operatorname{Uniform}(-r,r)^N$, with $r$
+the initial radius, and records the iterates $z^{(0)},\dots,z^{(L)}$. Write
+$g^{(l)}=\nabla\log\pi(z^{(l)})$, $s^{(l)}=z^{(l)}-z^{(l-1)}$ and
+$\zeta^{(l)}=g^{(l-1)}-g^{(l)}$. A pair with
+$s^{(l)\top}\zeta^{(l)}>10^{-12}\lVert\zeta^{(l)}\rVert^2$ updates a
+positive diagonal $\alpha^{(l)}$ by the diagonal BFGS formula of
+[@gilbert1989numerical]. At iterate $l$, with $S$ and $Z$ the last $J$
+accepted pairs as columns, $E$ the upper triangle of $S^\top Z$ and $\eta$
+its diagonal, the compact representation of [@byrd1994representations] gives
+
+$$
+\Sigma_l=\operatorname{diag}(\alpha^{(l)})+\beta\gamma\beta^\top,
+\quad
+\beta=\begin{bmatrix}\operatorname{diag}(\alpha^{(l)})Z & S\end{bmatrix},
+\quad
+\gamma=\begin{bmatrix}0 & -E^{-1}\\ -E^{-\top} &
+E^{-\top}(\operatorname{diag}(\eta)+Z^\top\operatorname{diag}(\alpha^{(l)})Z)E^{-1}\end{bmatrix},
+$$
+
+the BFGS updates of $\operatorname{diag}(\alpha^{(l)})$ by those pairs, and
+the approximation $q_l=\mathcal N(\mu_l,\Sigma_l)$ with
+$\mu_l=z^{(l)}+\Sigma_l g^{(l)}$. An iterate whose $\Sigma_l$ is not
+positive definite gives no approximation. The path keeps
+$l^\ast=\arg\max_l\hat\lambda_l$, where
+
+$$
+\hat\lambda_l=\frac1K\sum_{k=1}^K\bigl(\log\pi(\phi_k)-\log q_l(\phi_k)\bigr),
+\qquad \phi_k\sim q_l,
+$$
+
+estimates the [evidence lower bound](https://en.wikipedia.org/wiki/Evidence_lower_bound)
+up to the normalizing constant of $\pi$, and draws $M$ points from
+$q_{l^\ast}$. On a Gaussian target, an exact line search makes the pairs
+conjugate, so with $J\geq N$ the approximation after $N$ steps equals the
+target.
+
+With $I$ paths, the pooled draws come from the mixture
+$\tfrac1I\sum_i q^{(i)}$. A draw $\phi$ of path $i$ has importance ratio
+$\pi(\phi)/q^{(i)}(\phi)$ (the scheme of the paper, which leaves out the
+other components). The ratios are Pareto smoothed [@vehtari2024psis], and $R$
+draws are resampled from the pool with replacement with probabilities
+proportional to the smoothed weights. A path without any approximation gets
+weight zero. The retained draws are $T(\phi)$, read as independent draws
+with one pseudo-chain: prediction, likelihood extraction, refits, and
+artifacts treat them as any retained draw set. They carry no Markov chain
+diagnostics, and the Pareto shape $\hat k$ of the pooled ratios measures how
+far the mixture is from the target.
+
+### 6.4 Marginal likelihoods and conditional effects of fits {#marginal-likelihoods-and-conditional-effects}
+
+Let $T$ map the unconstrained coordinates $u\in\mathbb R^D$ of a fit's latent
+sites to their supports. The fit's potential is the log joint with the log
+Jacobian of $T$,
+
+$$
+\log q(u) = \log p\bigl(y, T(u)\bigr) + \log\lvert\det J_T(u)\rvert,
+$$
+
+and since every density of a compiled formula program is normalized,
+$\int q(u)\,du = p(y)$, the [marginal likelihood](https://en.wikipedia.org/wiki/Marginal_likelihood).
+It is defined only when every prior is proper, so improper flat priors and
+explicit score potentials of unknown mass are refused. Bridge sampling
+[@meng1996simulating; @gronau2017tutorial] splits the posterior draws of each
+chain into halves. The first half fixes a normal proposal $g$ with its mean
+$m$ and covariance $LL^\top$. The warp-3 proposal [@meng2002warp] instead
+compares the symmetrized density $\tfrac12\bigl(q(u)+q(2m-u)\bigr)$ with the
+standard normal after $u\mapsto L^{-1}(u-m)$. With $N_1$ draws $u_j$ of the
+second half, $N_2$ proposal draws $\tilde u_i$, the ratios
+$\ell_{1j}=q(u_j)/g(u_j)$ and $\ell_{2i}=q(\tilde u_i)/g(\tilde u_i)$, and
+$s_1=N_\text{eff}/(N_\text{eff}+N_2)$, $s_2=1-s_1$, the estimate is the fixed
+point
+
+$$
+\hat p(y) = \frac{N_1}{N_2}\,
+\frac{\sum_i \ell_{2i}/(s_1\ell_{2i}+s_2\hat p(y))}
+     {\sum_j 1/(s_1\ell_{1j}+s_2\hat p(y))}.
+$$
+
+It is consistent for $p(y)$ when the draws are posterior draws, which is why
+variational and prior draws are refused. Posterior model probabilities are
+$p(M_k\mid y)\propto \hat p(y\mid M_k)\,p(M_k)$, and model-averaged draws mix
+$\operatorname{round}(w_kS)$ draws of each fit, which samples
+$\sum_k w_k\,p(\cdot\mid y,M_k)$ up to the rounding.
+
+A conditional effect of a variable set $E$ holds the remaining predictors at a
+condition $c$ and reports, for each grid point $e$, the draws of
+$f(e,c;\theta^{(s)})$, where $f$ is the expected response, the linear
+predictor, or a response draw, with varying effects excluded unless
+`re_formula` includes them. Its summaries are the median and the scaled median
+absolute deviation of those draws, with quantile intervals. Nothing is
+averaged over the data: an empirical average over reference rows is the
+separate `prediction_grid` contract.
+
 ## 7. Wrappers that place priors on parameters {#7-bayesian-lifts}
 
 A model whose learnable parameters have no prior still denotes a kernel, with the parameters held
@@ -2041,9 +2238,12 @@ Here $a$ is a retained scalar residual scale for eligible autoscaled targets,
 and one otherwise. The implementation evaluates this expression in the log
 domain. For an R2D2 block, $R^2$ has a Beta prior and $\phi$ a Dirichlet prior;
 $s_j=a\sqrt{\phi_j R^2/(1-R^2)}$. One selected coordinate has $\phi_1=1$.
-Population coefficients use Normal kernels and group-scale coefficients use
-positive half-Normal kernels. Existing design-dependent conditional bounds
-are retained. A stable dependency order places each hyperparameter and scale
+Population coefficients use Normal kernels with scale $s_j$. A selected
+standard deviation (classes `sd`, `sds`, `sdgp`, `sderr`, `sdcar`) is the
+scale $s_j$ itself, as in brms, where R2D2 over coefficients and standard
+deviations is the R2D2M2 prior. Rules marked `main` join the shrinkage rules
+of one predictor into one block with the main rule's arguments. Existing
+design-dependent conditional bounds are retained. A stable dependency order places each hyperparameter and scale
 before its consumers without changing latent names.
 
 These are joint prior laws over explicit latent sites, so the same program
@@ -2055,6 +2255,117 @@ This defines a conditional restriction rather than joint conditioning of
 the entire hierarchy. The sampled global coordinate is dimensionless
 when residual autoscaling is enabled, making that dependency explicit in the
 coefficient kernel.
+
+### brms default priors, flat priors, and constants
+
+Under the brms default policy, each target without a user rule receives the
+prior of `brms::default_prior`. With $y$ the scalar numeric response, $g$ the
+location link (the logarithm for log-scale families), and
+$m=\operatorname{round}(\operatorname{mad}(g(y)),1)$, the scale is
+$\sigma_0=\max(2.5,m)$ when $m$ is finite and $2.5$ otherwise, and the
+centered intercept has the Student-$t$ prior
+$t_3(\operatorname{round}(\operatorname{median}(g(y)),1)-\bar o,\ \sigma_0)$
+with $\bar o$ the mean offset. Standard deviations and an estimated $\sigma$
+have the half Student-$t$ density $2\,t_3(s;0,\sigma_0)$ on $s>0$.
+Responses that are zero are moved to $0.1$ before the logarithm or inverse
+links, as in brms. The median and mad of an `mi()` response read its recorded
+values only. $\operatorname{round}$ is R's: of the two neighbours
+$\lfloor 10x\rfloor/10$ and $\lceil 10x\rceil/10$ it keeps the one nearer
+to $x$ in double precision, the even one on a tie, so $0.45$ rounds to $0.4$.
+
+The improper flat prior of class `b` (population, `mo()`, `me()` and `mi()`
+coefficients), of conditional ARMA coefficients, and of `meanme` is the
+[Lebesgue measure](https://en.wikipedia.org/wiki/Lebesgue_measure) $\lambda$
+on the target's domain, with log density zero. `sdme` takes it on
+$(0,\infty)$. The joint measure
+$\lambda(d\beta)\,p(\theta)\,p(y\mid\beta,\theta)$ is not normalized in
+$\beta$, so prior draws and marginal likelihoods are undefined and refused.
+The posterior is defined whenever the likelihood is integrable in $\beta$.
+An inference driver's structure-only recording run reads the site's shape
+from a placeholder value and discards it. On a bounded interval $(l,u)$ the
+flat prior is the uniform distribution. A constant prior replaces the latent
+site $\beta$ by the binding $\beta=c$, so $\beta$ leaves the latent space and
+`draws()` reports $c$.
+
+### brms factor levels
+
+A factor with declared levels $L$ of which the rows use $L_0\subseteq L$
+contributes the treatment-coded columns of $L_0$ by default and of $L$ under
+`drop_unused_levels=False`, in the declared order, so each unused level adds a
+column of zeros whose coefficient has its prior as its posterior. A grouping
+factor likewise indexes its group effects by $L_0$ or $L$. The retained coding
+evaluates new rows at any level of $L$; the likelihood of the training rows is
+the same under both, since the extra columns and effects multiply no row.
+
+### Ordered factors, integer categories, and R expressions {#ordered-factors-integer-categories-and-r-expressions}
+
+An ordered factor with $K$ levels and scores $s_k=k$ contributes, where it
+is coded by contrasts, the columns of R's `contr.poly(K)`. Let $V$ be the
+[Vandermonde matrix](https://en.wikipedia.org/wiki/Vandermonde_matrix) with
+entries $V_{kj}=(s_k-\bar s)^{j}$ for $j=0,\dots,K-1$ and $V=QR$ its
+[QR decomposition](https://en.wikipedia.org/wiki/QR_decomposition). The
+contrast matrix is $C=[\,q_1r_{11},\dots,q_{K-1}r_{K-1,K-1}\,]$ with each
+column scaled to unit length, so column $j$ is the orthonormal polynomial of
+degree $j$ in the scores, and a row at level $k$ has the design entries
+$C_{k\cdot}$. The columns are orthogonal to the intercept and to one
+another. The contrast matrix is retained, so a new row at level $k$ is coded
+by the same $C_{k\cdot}$. Where R codes the factor by indicators (a design
+without an intercept), the indicator columns are kept.
+
+An ordinal response given as positive integers has the categories
+$1,\dots,K$ with $K=\max_i y_i$ and $K-1$ thresholds, or $K=n+1$ for a
+declared `thres(n)`, and the program observes the position $y_i-1$. With
+`thres(gr = g)` and no declared count, group $h$ has
+$\max_{i:g_i=h}y_i-1$ thresholds. The retained category values map a fresh
+response to its position, and a value outside them is refused.
+
+The right-hand side of a nonlinear formula, each side of a hypothesis
+string, and an expression in an addition term are R expressions over
+Stan's functions. Each is translated to one QVR value expression: a power
+$a$`^`$b$ becomes `pow(a, b)`, numeric literals and integer columns are
+reals, and each function is its QVR composition, for instance
+`inv_logit(x)` $=1/(1+e^{-x})$ as `sigmoid(x)` and `log1m(x)` as
+`log1p(-x)`. The translated expression is checked and evaluated by the
+ordinary QVR path, so it adds no language construct.
+
+### brms hypothesis tables {#brms-hypothesis-tables}
+
+For a hypothesis `left ~ right` with relation $\sim\,\in\{=,<,>\}$ and
+draws $c_s=\mathrm{left}(\theta_s)-\mathrm{right}(\theta_s)$,
+$s=1,\dots,S$, the table reports the mean and standard deviation of the
+$c_s$, and the quantiles at $(\alpha,1-\alpha)$ for a one-sided
+hypothesis or $(\alpha/2,1-\alpha/2)$ for a two-sided one. The evidence
+ratio of $c>0$ is $\#\{c_s>0\}/\#\{c_s\le 0\}$, and likewise for
+$c<0$. For $c=0$ it is the ratio $\hat p(0)/\hat\pi(0)$ of
+[kernel density estimates](https://en.wikipedia.org/wiki/Kernel_density_estimation)
+of the posterior and prior draws of $c$ at zero, with a Gaussian kernel and
+the bandwidth $0.9\min(\hat\sigma,\mathrm{IQR}/1.34)\,S^{-1/5}$, as R's
+`density` computes it. The posterior probability is
+$\mathrm{ER}/(1+\mathrm{ER})$, which assumes equal prior probabilities of
+the two hypotheses for a point hypothesis. Cost is $O(S)$ per one-sided
+hypothesis and $O(S+m\log m)$ per point hypothesis for a density grid of
+$m=4096$ points.
+
+### brms intercept centering and QR coordinates {#brms-intercept-centering-and-qr-coordinates}
+
+Let $X$ be the population design without its intercept column, $\bar x$ its
+column means, and $X_c=X-\mathbf 1\bar x^\top$. With centering, the program
+samples $(\alpha_c,b)$ and binds $\alpha=\alpha_c-\bar x^\top b$, so
+
+$$\eta=\alpha+Xb=\alpha_c+X_cb.$$
+
+The map $(\alpha_c,b)\mapsto(\alpha,b)$ is a shear with unit Jacobian, so the
+posterior of $(\alpha,b)$ is the brms posterior whose intercept prior acts on
+$\alpha_c$, the expected linear predictor at the predictor means. With
+`decomp="QR"`, the thin [QR decomposition](https://en.wikipedia.org/wiki/QR_decomposition)
+$X_c=QR$ with positive diagonal $R$ gives $X_Q=Q\sqrt{N-1}$ and
+$X_R=R/\sqrt{N-1}$. The program samples $b_Q$ with the class `b` priors and
+binds $b=X_R^{-1}b_Q$, so $X_cb=X_Qb_Q$. The Jacobian of $b_Q\mapsto b$ is the
+constant $|\det X_R^{-1}|$. Without centering, $X$ includes the intercept
+column and $\alpha$ is a class `b` coefficient. The training means and
+$X_R^{-1}$ are literals of the emitted program, so prediction on new rows
+evaluates $\alpha+X_{\text{new}}b$ with the training coordinates, at cost
+$O(NK)$ for $N$ rows and $K$ columns.
 
 ### Retained contrast expressions
 
@@ -2083,33 +2394,536 @@ states the prior-compatibility and finite-sample conditions.
 
 ### Penalized Gaussian design terms
 
-The formula frontend's explicit `s(x, bs='ps')` constructor retains an
-original B-spline design $B$ and the coefficient-difference penalty
-$S=D_m^\mathsf{T}D_m$. Its training constraint is
-$c^\mathsf{T}\beta=0$, where $c$ is the column mean of $B$. Let $Q$ span
-this constraint's null space, and diagonalize
-$Q^\mathsf{T}SQ=U\Lambda U^\mathsf{T}$. Zero eigenvalues identify
-unpenalized coordinates. Positive eigenvalues identify penalized coordinates.
-The emitted coefficient map is
+A formula smooth `s()` or `t2()` follows brms's construction through mgcv
+[@wood2017generalized]. mgcv builds a raw basis $B$ (an $n\times k$ design)
+and penalties $S_1,\dots,S_J$. Each penalty is rescaled to
+$S_j\,\lVert B\rVert_\infty^2/\lVert S_j\rVert_1$. Unless a numeric `by`
+variable varies, the training constraint $c^\mathsf{T}\beta=0$ with $c$ the
+column mean of $B$ is absorbed through the Householder reflection $H$ that
+maps $c$ to a multiple of the first axis, with $Z=H_{\cdot,2:k}$. For one
+penalty, write $Z^\mathsf{T}SZ=V\Lambda V^\mathsf{T}$ with rank $r$, and let
+$E$ scale the penalized columns of $BZV$ by $\Lambda_+^{-1/2}$ and its null
+columns to the average squared norm of the penalized ones. The emitted
+coefficient map is
 
 $$
-\beta=QU_0\gamma+QU_+\Lambda_+^{-1/2}\,\tau z,
-\qquad z\sim\mathcal N(0,I).
+\beta=ZVE^{-1}\begin{pmatrix}\tau z\\ \gamma\end{pmatrix},
+\qquad z\sim\mathcal N(0,I_r).
 $$
+
+A `t2` tensor product reparameterizes each margin this way, forms the
+row-wise products of marginal penalized and null columns
+[@wood2013straightforward], and gives each product block its own identity
+penalty, scale $\tau_j$, and innovations $z_j$. A factor `by` variable
+repeats the map once per level and sets the rows of other levels to zero.
 
 The null-space coefficients $\gamma$ receive ordinary population priors.
-The positive scale $\tau$ receives the configured scale prior, selected by
-the common `sds` role. Thus the penalty defines Gaussian coordinates without
-pretending to regularize an unidentified null direction. The latent program
-uses $(\gamma,z,\tau)$ directly. Its existing inference transforms account
-for their supports and Jacobians. No separate smooth density or fitting
-engine is introduced.
+Each positive scale $\tau_j$ receives the configured scale prior, selected by
+the common `sds` role, and smooths sharing an mgcv `id` share their scales.
+Thus the penalty defines Gaussian coordinates without pretending to
+regularize an unidentified null direction. The latent program uses
+$(\gamma,z,\tau)$ directly. Its existing inference transforms account for
+their supports and Jacobians. No separate smooth density or fitting engine is
+introduced.
 
 `GaussianDesignTerm` retains the evaluated Gaussian design, named coordinate
-ownership, structural spline knots and degree, coefficient map, and training
-constraint. `FormulaData` preserves it by value. Fresh rows evaluate the same
+ownership, structural spline knots and degree, coefficient map, training
+constraint, and any shared scale. The formulae evaluator retains the raw
+basis state: thin-plate eigenvector maps and unique training covariates,
+cubic and B-spline knots, and the marginal maps of a tensor product. `FormulaData` preserves it by value. Fresh rows evaluate the same
 basis and coefficient map. They do not choose new knots or impose a new
-centering constraint. Component-valued predictors retain separate Gaussian
+centering constraint. User knots (brms `knots`) replace mgcv's knot
+placement in the `cr`, `cs`, `cc`, `ps` and `bs` constructors and are
+retained in the same way. A factor-smooth interaction `bs = "fs"` with base
+design $B$ (thin QR factorization $B=QR$) and base penalty $S$ of rank $r$
+uses the columns $Qu_j/\sqrt{d_j}$ for the nonzero eigenpairs $(d_j,u_j)$ of
+$R^{-\top}SR^{-1}$, followed by an orthonormal basis $N$ of the null-space
+polynomials taken in increasing degree. For factor levels
+$\ell=1,\ldots,L$ the row design is that base row in the block of its level,
+with coefficients $b_{\ell j}\sim\mathcal N(0,\sigma_1^2)$ for $j\le r$ and
+$b_{\ell,r+i}\sim\mathcal N(0,\sigma_{1+i}^2)$ for null column $i$. The
+retained state is the base basis, the coefficient map and the fitted levels,
+and a row of an unfitted level is refused. The base is a thin-plate smooth
+or the singly penalized basis named by `xt`, and a `by` variable multiplies
+the level-expanded rows. A Markov random field smooth `bs = "mrf"` over
+regions $1,\ldots,R$ has the indicator design of the region factor and the
+penalty $S$ given in `xt`, so its region effects $b$ have the improper
+density proportional to $\exp\{-b^\top S b/(2\sigma^2)\}$
+[@rue2005gaussian] under the sum-to-zero constraint over the training rows.
+With `k < R` and $c_r=\max(n_r,1)$ for the training count $n_r$ of region
+$r$, the retained coordinates are the eigenvectors of
+$C^{-1/2}SC^{-1/2}$, $C=\operatorname{diag}(c)$, for its `k` smallest
+eigenvalues, mapped by $C^{-1/2}$. The retained state is the region levels
+and that map, and a row of a region outside the structure is refused. A
+spline on the sphere `bs = "sos"` takes a latitude and a longitude in
+degrees and has the kernel $R(p,p')=\rho_m(\cos\gamma(p,p'))$ of the angle
+$\gamma$ between two locations [@wahba1981spline]. With $P_\nu$ the
+[Legendre polynomials](https://en.wikipedia.org/wiki/Legendre_polynomials),
+$\rho_0(z)=\frac{1}{4\pi}\sum_{\nu\ge 1}\frac{2\nu+1}{\nu^2(\nu+1)^2}P_\nu(z)
+=\frac{1}{4\pi}\{1-\pi^2/6+\operatorname{Li}_2((1+z)/2)\}$ with
+$\operatorname{Li}_2$ the
+[dilogarithm](https://en.wikipedia.org/wiki/Dilogarithm), and for
+$m=1,\ldots,4$
+$\rho_m(z)=\frac{1}{2\pi}\{q_m(z)/m!-1/(m+1)!\}$ with
+$q_m(z)=\int_0^1(1-h)^m(1-2hz+h^2)^{-1/2}\,dh$. For $m=-1$ and $m=-2$ the
+kernel is $r^2\log r/(8\pi)$ and $-r$ of the chord length
+$r=2\sin(\gamma/2)$ [@duchon1977splines]. The null space $T$ is the constant,
+joined for $m=-1$ by the three coordinates of the unit sphere. With knots
+$p_1,\ldots,p_u$, knot kernel matrix $R_u$, and $U D U^\top$ its `k`
+eigenpairs of largest magnitude, the raw design is
+$[R(\cdot,p_j)UZ,\;T]$ with penalty $Z^\top D Z$, where the columns of $Z$
+are an orthonormal basis of the null space of $T_u^\top U$
+[@wood2003thin]. Every column except the constant is divided by its training
+standard deviation. The retained state is the knots, $UZ$, $m$, and those
+column scales, and a row that is not a latitude in $[-90,90]$ and a longitude
+in $[-180,360]$ is refused. A Duchon spline `bs = "ds"` over
+$x\in\mathbb R^d$ with derivative order $m$ and weight exponent $s$ has the
+penalty [@duchon1977splines]
+
+$$
+J_{m,s}(f)=\int_{\mathbb R^d}\lVert\tau\rVert^{2s}\sum_{|\alpha|=m}
+\frac{m!}{\alpha!}\,\bigl|\widehat{D^\alpha f}(\tau)\bigr|^2\,d\tau ,
+$$
+
+with $\widehat{g}$ the Fourier transform of $g$, $-d/2<s<d/2$, and
+$m+s>d/2$. Its kernel is $E(x,x')=c\,r^{p}$ for odd $p=2m+2s-d$ and
+$c\,r^{p}\log r$ for even $p$, with $r=\lVert x-x'\rVert$ and the sign
+$c=(-1)^{\lfloor p/2\rfloor+1}$, and its null space $T$ is the polynomials
+of degree below $m$. With centered knots $x_1,\ldots,x_u$, knot kernel
+matrix $E_u$, and $UDU^\top$ its `k` eigenpairs of largest magnitude (or
+$U=I$ and $D=E_u$ when $u=k$), the raw design is $[E(\cdot,x_j)UZ,\;T]$
+with penalty $Z^\top DZ$, where the columns of $Z$ are an orthonormal basis
+of the null space of $T_u^\top U$. The retained state is the covariate
+means, the knots, $UZ$, $m$, and $s$. User knots of a thin-plate or Duchon
+basis replace the unique covariate rows as $x_1,\ldots,x_u$, and every row
+is then evaluated as $E(x,x_j)$ against them. Component-valued predictors retain separate Gaussian
 innovations and scale coordinates for each free response component. The
 [structured predictor guide](../guides/formula-special-predictors.md) states
 the implemented constructor and its current frontend limits.
+
+### Approximate Gaussian process terms
+
+A formula term `gp(x_1, ..., x_D, k = k)` follows brms's Hilbert-space
+approximation of a zero-mean
+[Gaussian process](https://en.wikipedia.org/wiki/Gaussian_process)
+[@solin2020hilbert; @riutort2023practical]. For each sub-GP (one, or one per
+contrast of a factor `by`) with rows $I$, the training covariates are scaled
+by $\delta$, the largest pairwise distance among them ($\delta=1$ when
+`scale = FALSE`), and centered by $\mu$, the mean of the scaled distinct rows
+(of every row when `gr = FALSE`). With $\tilde x=x/\delta-\mu$, boundary
+$L_d=c_d\max(1,\max\tilde x-\min\tilde x)$, and orders
+$j\in\{1,\dots,k\}^D$,
+
+$$
+\phi_j(x)=\prod_{d=1}^{D}L_d^{-1/2}\sin\Big(\omega_{jd}(\tilde x_d+L_d)\Big),
+\qquad \omega_{jd}=\frac{j_d\pi}{2L_d},
+$$
+
+and the term adds, to row $n$ with contrast value $C_n$,
+
+$$
+C_n\sum_{j}\phi_j(x_n)\exp\Big(\tfrac12\log S(\omega_j;\sigma,\ell)\Big)z_j,
+\qquad z_j\sim\mathcal N(0,1),
+$$
+
+where $S$ is brms's spectral density of the chosen kernel, with marginal
+standard deviation $\sigma$ (`sdgp`) and length scales $\ell$ (`lscale`, one
+or one per covariate). $C_n$ is the numeric `by` value, a factor contrast, or
+one. $\sigma$ and $\ell$ are latent sites with their typed priors. The
+emitted program is the shared Gaussian design block with these coordinate
+scales, so the joint density is that of $(\sigma,\ell,z)$ and the response,
+and the existing inference transforms account for the positive supports. The
+model is identified as the GP prior is: no constraint is imposed on $f$.
+
+`GaussianDesignTerm.gp` retains the frequencies $\omega$, the kernel, the
+`coef` labels, and the default length-scale priors. The formulae evaluator
+retains $\delta$, $\mu$, $L$, the orders, and the `by` levels, and fresh rows
+evaluate $\phi_j$ through them.
+
+### Exact Gaussian process terms
+
+A formula term `gp(x_1, ..., x_D)` without `k` (or with `k = NA`) is brms's
+exact GP. For each sub-GP with rows $I$ (rows of nonzero contrast value), the
+inputs are the distinct rows of $\{x_n / \delta : n \in I\}$ in order of
+first appearance, $X = (x_1, \dots, x_u)$, with $J(n)$ the input of row $n$
+(with `gr = FALSE`, every row of $I$ is its own input). The program draws
+$z \sim \mathcal N(0, I_u)$ and sets
+
+$$
+f = \operatorname{chol}\big(K(X, X;\sigma,\ell) + 10^{-12} I_u\big)\, z,
+\qquad
+K_{ij} = \sigma^2 \prod_{d} \kappa\big(r_{ij,d} / \ell_d\big),
+$$
+
+where $\kappa$ is brms's unit-variance kernel ($e^{-t^2/2}$, $e^{-t}$,
+$(1+\sqrt3 t)e^{-\sqrt3 t}$, or $(1+\sqrt5 t+5t^2/3)e^{-\sqrt5 t}$), and the
+product has one factor of the Euclidean distance $r_{ij}$ for an isotropic
+GP and one factor of $r_{ij,d}=|x_{id}-x_{jd}|$ per covariate otherwise. Row
+$n$ receives $C_n f_{J(n)}$. `cholesky` is a checked QVR builtin: its value is
+the lower-triangular $L$ with positive diagonal and $L L^\top = A$, and a
+matrix that is not numerically positive definite gives a factor whose entries
+are not numbers, so the density there is undefined. The joint density is that
+of $(\sigma,\ell,z)$ and the response, the non-centered parameterization of
+$f \sim \mathcal N(0, K + 10^{-12} I)$.
+
+The block retains $X$, $\delta$, `gr`, the kernel, and the labels. For
+$m$ distinct fresh inputs $X_*$ (computed with the retained $\delta$ and
+`gr`), prediction draws, for each posterior draw,
+
+$$
+f_* \mid f \sim \mathcal N\Big(K_*^\top K^{-1} f,\;
+K(X_*, X_*) - K_*^\top K^{-1} K_* + 10^{-8} I_m\Big),
+\qquad K_* = K(X, X_*),
+$$
+
+with $K$ including its $10^{-12}$ diagonal, as brms's `.predictor_gp_new`
+does. The draw is a fresh site of the prediction program that replay draws
+from this law under the replayed $(\sigma, \ell, z)$.
+
+### Monotonic effects
+
+A formula term `mo(x)` follows brms and Bürkner and Charpentier
+[@burkner2020modelling]. An integer predictor is coded as
+$x_n-\min_m x_m$ over the training rows and an ordered factor by the position
+of its level among the observed training levels, giving codes in
+$\{0,\dots,D\}$ with $D\ge 1$. The term contributes
+
+$$
+b\,\operatorname{mo}(x_n,\zeta),\qquad
+\operatorname{mo}(x,\zeta)=D\sum_{i=1}^{x}\zeta_i=D\,(M\zeta)_n,
+\qquad \zeta\sim\operatorname{Dirichlet}(\alpha),
+$$
+
+where $\zeta$ lies on the probability simplex of dimension $D$ and $M$ is the
+$n\times D$ matrix with $M_{ni}=1$ when $i\le x_n$. The default concentration is
+$\alpha=(1,\dots,1)$. An interaction term multiplies the values of its
+`mo()` factors, each with its own simplex, by the product $c_n$ of its other
+components, and receives one coefficient $b$. A term whose other components
+evaluate to several columns yields one such term per column. Factors with the
+same `id` share one simplex. A group-level slope on the same term adds
+$r_{j[n]}\,\operatorname{mo}(x_n,\zeta)\,c_n$ with the population simplex,
+so the varying coefficient is $b+r_j$, as in brms.
+
+$b$ is identified because $\zeta$ sums to one, so $bD$ is the contribution of
+the highest category. When every code occurs in training and $b\ne 0$, the
+contributions determine $\zeta$ as well. An integer predictor can skip codes
+between its minimum and maximum, and then the data leave the split of the
+effect across the skipped steps to the Dirichlet prior. The simplex is a
+latent site whose support transform contributes the Jacobian, as for any other
+simplex. The program retains $(b,\zeta)$ directly and evaluates
+$M\zeta$ as one matrix product. `MonotonicTerm` retains $M$, $c$, the training
+coding, and brms's labels. Fresh rows are coded with the training minimum or
+levels, and codes outside $\{0,\dots,D\}$ are refused.
+
+### Grouping terms and multi-membership
+
+The right side of a group-level bar follows brms. `gr(g, cor, id, cov)`
+denotes the factor `g`. `cor = FALSE` makes each coefficient its own block,
+and `id` joins blocks as the bar notation `|id|` does. `cov = M` takes a
+known covariance $K$ between levels from `data2`, so a coefficient's level
+values are $\sigma F u$ with $FF^\mathsf{T}=K$ and standard-normal $u$, for
+independent coefficients as for a correlated block. With `by = f`, coefficient
+$k$ of level $j$ has standard deviation $\sigma_{k,b(j)}$ and the block the
+Cholesky factor $L_{b(j)}$, where $b(j)$ is the level of `f` containing $j$, so
+level $j$'s coefficients are $\operatorname{diag}(\sigma_{\cdot,b(j)})\,L_{b(j)}\,z_j$
+with standard-normal $z_j$. With `dist = "student"`, $\nu\sim\operatorname{Gamma}(2,0.1)$
+restricted to $\nu>1$, $u_j\sim\text{inverse-}\chi^2(\nu)$, and level $j$'s
+coefficients are multiplied by $\sqrt{\nu u_j}$, which makes them multivariate
+Student-t with $\nu$ degrees of freedom. With `pw = w` the log density gains
+$(w_j-1)\log\phi(z_j)$ per level, so the prior of $z_j$ enters with weight
+$w_j$ as in brms. An interaction `g1:g2`
+is the factor whose levels are the observed combinations, labeled by pasting
+the source labels with `_`, and nesting `g1/g2` denotes the two factors `g1`
+and `g1:g2`.
+
+A multi-membership factor `mm(g_1, ..., g_K)` has the union of the member
+columns' levels. For a group-level coefficient $r$ with level values
+$r_1,\dots,r_L$ from the ordinary Gaussian group layout, row $n$ receives
+
+$$
+\sum_{k=1}^{K} W_{kn}\, r_{J_{kn}}\, Z_{kn},
+$$
+
+where $J_{kn}$ is the level named by member $k$, $W_{kn}$ its weight, and
+$Z_{kn}$ the coefficient's covariate for that member: one, a column shared by
+all members, or the $k$-th column of `mmc()`. Equal weights are $1/K$, and
+authored weights are divided by their row sum unless `scale = FALSE`
+[@browne2001multiple]. The program evaluates one gather per member and
+never forms a rows-by-levels matrix. `Membership` retains the training codes
+and weights, and `MemberCovariate` the values $Z_{kn}$. Prediction codes all
+members of the fresh rows on one compact level axis, so the new-level
+policies of the shared group layout apply to every member alike.
+
+### Joint multivariate formula responses {#joint-multivariate-formula-responses}
+
+A `MultivariateFormula` with responses $r=1,\dots,R$ is one program. Each
+response keeps its own family $F_r$, linear predictors $\eta_{r,i}$ for its
+location and distributional parameters $\theta_{r,i}$ at row $i$, and its
+own priors. A shared group identifier places the coefficients $b_{g}$ of
+every response that names it in one block,
+$b_g\sim\mathcal N(0,\operatorname{diag}(\tau)\,\Omega\,\operatorname{diag}(\tau))$
+for each level $g$, with $\Omega\sim\operatorname{LKJ}(\zeta)$
+[@lewandowski2009lkj]. Without residual correlation the joint density is
+
+$$
+p(\beta,b,\tau,\Omega)\prod_{r=1}^{R}\prod_{i=1}^{n_r}
+F_r\!\left(y_{r,i}\mid\theta_{r,i}\right),
+$$
+
+so a row's responses are conditionally independent given the shared
+coefficients. With residual correlation every response is Gaussian (or
+every response is Student with one shared $\nu$), the rows are common to
+all responses, and the row event $y_i=(y_{1,i},\dots,y_{R,i})$ has the law
+
+$$
+y_i\sim\mathcal N_R\!\left(\mu_i,\;
+\operatorname{diag}(\sigma_i)\,L L^\mathsf T\operatorname{diag}(\sigma_i)\right)
+\quad\text{or}\quad
+y_i\sim t_{\nu,R}\!\left(\mu_i,\;
+\operatorname{diag}(\sigma_i)\,L L^\mathsf T\operatorname{diag}(\sigma_i)\right),
+$$
+
+with $\mu_{i}=(\mu_{1,i},\dots,\mu_{R,i})$, $\sigma_i$ the responses'
+scales, and $L\sim\operatorname{LKJCholesky}(1)$ the Cholesky factor of the
+residual correlation matrix. This is the parameterization brms emits
+(`diag_pre_multiply(sigma, Lrescor)` in `multi_normal_cholesky` and
+`multi_student_t`) [@burkner2017brms]. The correlation matrix
+$LL^\mathsf T$ has unit diagonal, which identifies the scales $\sigma$
+separately from the correlations.
+
+Every response is emitted by the single-response compiler and renamed into
+the namespace `response_<resp>__`. The program therefore has one prior
+catalogue: a `PriorSpec` with `response=` selects one response's targets,
+and the residual factor is the target `rescor`. For prediction the fit
+retains each response's fitted design evaluators and the joint group
+layouts. Fresh rows are bound per response and the specialized joint
+program is compiled once per request. A new level of a shared factor is
+drawn once for the whole block. Pointwise log-likelihood units are the row
+event $y_i$ under residual correlation, a marginal of that event for a
+strict subset of responses, and otherwise the sum over selected responses
+of $\log F_r(y_{r,i}\mid\theta_{r,i})$, as brms `log_lik` computes.
+
+### Residual dependence structures {#residual-dependence-structures}
+
+A formula autocorrelation term replaces the independent Gaussian or Student
+response by one law over all response rows, partitioned into series $g$ by the
+grouping factor and ordered by time within each series. Write $\eta$ for the
+linear predictor, $r=y-\eta$, and $\sigma$ for the residual scale.
+
+The conditional ARMA formulation defines, within a series,
+$e_t=r_t-\sum_{k\le q}\theta_k e_{t-k}$ with $e_t=0$ before the series
+starts, and the conditional mean
+
+$$
+\mu_t=\eta_t+\sum_{k\le q}\theta_k e_{t-k}+\sum_{k\le p}\phi_k e_{t-k},
+\qquad y_t\mid y_{<t}\sim\mathcal N(\mu_t,\sigma_t^2)\ \text{or}\ t_\nu(\mu_t,\sigma_t),
+$$
+
+which is brms's Stan loop. Because the truncated autoregressive and
+moving-average operators commute, $y-\mu$ equals the innovations of the
+filter $A r=M\varepsilon$, and the joint density is the product of these
+conditionals. The parameters are unrestricted. Retained for prediction: the
+row ordering, the series boundaries, and the response history.
+
+A covariance formulation gives series $g$ of length $n_g$ the law
+$y_g\sim\mathcal N(\eta_g,D_gR_gD_g)$, or the multivariate Student law with
+the same scale matrix and one mixing variable per series, with
+$D_g=\operatorname{diag}(\sigma_g)$. The stationary ARMA(1,1) correlation is
+$R_{ii}=(1+\theta^2+2\phi\theta)/(1-\phi^2)$ and
+$R_{ij}=(1+\phi\theta)(\phi+\theta)\phi^{|i-j|-1}/(1-\phi^2)$, with
+$|\phi|<1$, so $\sigma$ is the innovation scale. Compound symmetry uses
+$R=(1-\rho)I+\rho\mathbf 1\mathbf 1^\mathsf T$ with $\rho\in[0,1]$. The
+unstructured correlation is $C_{J_g,J_g}$ for a
+[Cholesky factor](https://en.wikipedia.org/wiki/Cholesky_decomposition)
+$C=LL^\mathsf T$ over the retained time levels $J_g$ of the series. A fixed
+covariance uses $R=M$ over all rows. Retained for prediction: the series
+boundaries and, for unstructured correlations, the training time levels.
+
+A simultaneous autoregression with weights $W$ and $A=I-\rho W$ has lag form
+$Ay=\eta+\varepsilon$ and error form $A(y-\eta)=\varepsilon$, with
+independent Gaussian innovations or one multivariate Student vector
+$\varepsilon$, and
+
+$$
+\log p(y)=\log p_\varepsilon(\varepsilon(y))+\sum_i\log(1-\rho\lambda_i),
+$$
+
+where $\lambda_i$ are the eigenvalues of $W$ [@ord1975estimation]. The prior
+support of $\rho$ is $(\min_i\lambda_i,\max_i\lambda_i)$, as in brms.
+A value of $\rho$ whose factor $1-\rho\lambda_i$ lies within the rounding
+error of the computed eigenvalue, $|\rho|\,10^{3}n\epsilon\max(1,\max_i|\lambda_i|)$
+for Float64 machine epsilon $\epsilon$ (or $|\rho|$ times the machine epsilon of
+the scoring dtype when that is larger), has log density $-\infty$, since $A$
+is then singular to working precision.
+Retained for prediction: the nonzero entries of $W$ and its eigenvalues.
+
+The pointwise likelihood of a covariance or SAR row is the leave-one-out
+predictive density $p(y_i\mid y_{-i},\theta)$ within its series. With
+precision $C=\Sigma^{-1}$, $g=C(y-\mathbb E y)$, and $c_i=C_{ii}$, the
+Gaussian density has mean $y_i-g_i/c_i$ and variance $1/c_i$. The Student
+density has $\nu+n-1$ degrees of freedom and variance
+$c_i^{-1}(\nu+\beta_i)/(\nu+n-1)$ with
+$\beta_i=(y-\mathbb E y)^\mathsf T g-g_i^2/c_i$ [@burkner2021efficient].
+
+Three combinations follow brms. Known standard errors $s$ with a time-series
+covariance give series $g$ the scale matrix
+$D_gR_gD_g+\operatorname{diag}(s_g^2)$, which requires the estimated $\sigma$.
+Retained for prediction: the authored source of $s$, read again on new rows.
+A conditional ARMA term beside a simultaneous autoregression or a fixed
+covariance replaces $\eta$ by the conditional mean $\mu$ above in that law,
+with the series of the ARMA term coded by its own grouping and time and the
+matrix indexed by the rows as given. Retained for prediction: both codings
+and the response history. A censored or truncated row of the conditional ARMA
+formulation computes $e_t$ from the recorded response (the lower endpoint of
+an interval) and scores, under $F_t=\mathcal N(\mu_t,\sigma_t^2)$ or
+$t_\nu(\mu_t,\sigma_t)$ and truncation bounds $[a_t,b_t]$,
+
+$$
+\log\frac{f_t(y_t)}{F_t(b_t)-F_t(a_t)},\qquad
+\log\frac{1-F_t(y_t)}{F_t(b_t)-F_t(a_t)},\qquad
+\log\frac{F_t(y_t)}{F_t(b_t)-F_t(a_t)},\qquad
+\log\frac{F_t(u_t)-F_t(y_t)}{F_t(b_t)-F_t(a_t)}
+$$
+
+for an exact, right-censored, left-censored, and interval-censored row with
+upper endpoint $u_t$, each event intersected with the truncation interval.
+
+A conditional autoregressive term adds $r_{\ell(i)}$ to the linear predictor
+of row $i$, where $\ell(i)$ is the row's location. With adjacency $W$ (one per
+pair of neighbors), neighbor counts $D$, and $\tau=\sigma_{\mathrm{car}}^{-2}$,
+the proper law is $r\sim\mathcal N\big(0,[\tau(D-\alpha W)]^{-1}\big)$ with
+
+$$
+\log\det\big(\tau(D-\alpha W)\big)=n\log\tau+\sum_i\log d_i+\sum_i\log(1-\alpha\mu_i),
+$$
+
+where $\mu_i$ are the eigenvalues of $D^{-1/2}WD^{-1/2}$. The intrinsic law
+has precision $\tau L$ with the Laplacian $L=D-W$ on the subspace where $r$
+sums to zero within each connected component $C$. Its density of the free
+coordinates $z$, with $r=Ez$ filling the last location of each component, is
+
+$$
+\log p(z)=\sum_C\tfrac12\big[(m_C-1)\log\tfrac{\tau}{2\pi}+\log\big(m_C\operatorname{pdet}L_C\big)\big]-\tfrac\tau2\sum_{i\sim j}(r_i-r_j)^2,
+$$
+
+since $\det(E_C^\mathsf TL_CE_C)=m_C\operatorname{pdet}L_C$ for a component
+of $m_C$ locations. BYM2 sets
+$r=\sigma_{\mathrm{car}}(\sqrt{1-\rho}\,\theta+\sqrt{\rho/s_C}\,\phi)$, with
+$\theta\sim\mathcal N(0,I)$, unit-precision intrinsic $\phi$, and $s_C$ the
+geometric mean of $\operatorname{diag}(L_C^{+})$ [@riebler2016intuitive].
+Retained for prediction: the location labels, the edge list, and the
+scaling factors.
+
+Latent residuals for a family without natural residuals add a vector
+$u$ over rows to the linear predictor: $u=(I+\sum_k\phi_kL^k)\varepsilon$
+within each series with $\varepsilon\sim\mathcal N(0,\sigma_{\mathrm{err}}^2I)$
+for a conditional AR term, and $u_g\sim\mathcal N(0,\sigma_{\mathrm{err}}^2R_g)$
+for a covariance term, with $R_g$ as above.
+
+### Missing values and measurement error {#missing-values-and-measurement-error}
+
+An `mi()` response $x$ with family law $F$ and parameters $\theta_i$ has
+recorded rows $O$ and missing rows $M$. Its contribution to the joint
+density is $\prod_{i\in O}F(x_i\mid\theta_i)\prod_{i\in M}F(x^\ast_i\mid\theta_i)$,
+with a latent coordinate $x^\ast_i$ for each missing row. This is brms's
+`normal_lpdf(Yl | mu, sigma)` over the completed vector $\tilde x$ with
+$\tilde x_O=x_O$ and $\tilde x_M=x^\ast$, since brms gives $x^\ast$ a flat
+prior. With known errors $s_i$ (`mi(sdx)`), every row has a latent truth
+$x^\ast_i\sim F(\theta_i)$ and each recorded row adds
+$\log\varphi\bigl((x_i-x^\ast_i)/s_i\bigr)-\log s_i$. A predictor term
+`mi(x)` contributes $\beta\,c_i\prod_k\tilde x^{(k)}_{j_k(i)}$ to the linear
+predictor, where $c_i$ is the column with every `mi()` variable set to one
+and $j_k$ joins rows by original row identity or by `index()` identities.
+As the slope of a group-level term over a grouping factor with level
+$\ell(i)$ in row $i$, the same column contributes
+$r_{\ell(i)}\,c_i\prod_k\tilde x^{(k)}_{j_k(i)}$ with the group's varying
+coefficient $r$, so the row's coefficient of the completed values is
+$\beta+r_{\ell(i)}$, as in brms.
+The program has no other density for $\tilde x$: no value is filled in.
+
+Under estimated residual correlations the responses of row $i$ form one
+vector event, and the completed vector
+$\tilde y_i=(\tilde y_{i1},\ldots,\tilde y_{iK})$ is scored by the joint
+law, $\mathcal N_K(\tilde y_i\mid\mu_i,L_iL_i^\top)$ or the multivariate
+Student law with shared $\nu$, where $L_i=\operatorname{diag}(\sigma_i)L$
+and $L$ is the Cholesky factor of the residual correlation. This is brms's
+`multi_normal_cholesky_lpdf(Yl | Mu, LSigma)`. Each missing coordinate
+$x^\ast_i$ (under `mi(sdx)`, each true value) is a latent site under the
+improper flat law, so its density is the joint law's alone. The program
+adds the row densities as one log-density factor computed by forward
+substitution, $z_{ik}=\bigl(\tilde y_{ik}-\mu_{ik}-\sum_{j<k}L_{i,kj}z_{ij}\bigr)/L_{i,kk}$,
+giving $-\tfrac K2\log 2\pi-\sum_k\log L_{i,kk}-\tfrac12\sum_k z_{ik}^2$
+for the Normal law and
+$\log\Gamma\bigl(\tfrac{\nu+K}2\bigr)-\log\Gamma\bigl(\tfrac\nu2\bigr)-\tfrac K2\log(\nu\pi)-\sum_k\log L_{i,kk}-\tfrac{\nu+K}2\log\bigl(1+\tfrac1\nu\sum_k z_{ik}^2\bigr)$
+for the Student law, each multiplied by the row's weight. The locations
+$\mu_i$ may use completed values of any response of the same row,
+including responses that use each other. For prediction the fit rebuilds
+the vector observation with $\mu_i$ evaluated at the replayed completed
+values. Pointwise scores are those of the recorded vector and are defined
+on rows where every selected response is recorded.
+
+An `me(x, sdx)` predictor has latent values
+$X_u=\mu+\sigma\,(Lz)_u$ on its truth axis $u$ (rows, or levels of `gr`),
+with $z\sim\mathcal N(0,I)$, $L$ the identity or, under `set_mecor`, an
+LKJ Cholesky factor shared by the response's terms with the same grouping,
+and each recorded value $x_i\sim\mathcal N(X_{u(i)},s_i)$. The
+hyperparameters $\mu$, $\sigma$, and $L$ are the `meanme`, `sdme`, and
+`corme` prior targets. Fresh rows use recorded values of $x$ in place of
+$\tilde x$ or $X$. Training-row predictions replay $x^\ast$ and $X$ from
+each posterior draw. Pointwise log-likelihoods of an `mi()` response are
+defined on its recorded rows only.
+
+### Finite mixtures and category-specific predictors {#finite-mixtures-and-category-specific-predictors}
+
+A formula [`mixture`](../api/formulas/index.md#quivers.formulas.mixture)
+of component laws $F_1,\ldots,F_K$ observes each row through
+
+$$
+p(y_i)=\sum_{k=1}^{K}\theta_{ik}\,F_k\bigl(y_i\mid\mu_{ik},\phi_{ik}\bigr),
+$$
+
+where $\mu_{ik}=g_k^{-1}(\eta_{ik})$ and the auxiliary parameters
+$\phi_{ik}$ of component $k$ each have their own linear predictor or scalar
+latent, exactly as in the ordinary emission of $F_k$. Mixing proportions
+are one simplex $\theta\sim\mathrm{Dirichlet}(1,\ldots,1)$ shared by all
+rows, fixed values divided by their sum, or
+$\theta_{i\cdot}=\operatorname{softmax}(0,\eta^{\theta}_{i2},\ldots,\eta^{\theta}_{iK})$
+with the omitted component as reference. Under `order = "mu"` the sampled
+location intercepts satisfy $\alpha_k=\alpha_1+\sum_{j<k}\delta_j$ with
+$\delta_j=\exp(u_j)>0$, a bijection from
+$(\alpha_1,u)\in\mathbb R^K$ onto the ordered cone, so every relabelling
+of the components but the identity leaves the parameter space. Truncation
+to $[l_i,u_i]$ normalizes each component:
+$p(y_i)=\sum_k\theta_{ik}F_k(y_i)/F_k([l_i,u_i])$. A censored row replaces
+$F_k(y_i)$ by the component mass of its recorded event. Prediction retains
+the same program: $\mathrm E[Y_i]=\sum_k\theta_{ik}\,\mathrm E_k[Y_i]$, and
+the membership probability is
+$\theta_{ik}F_k(y_i)/\sum_j\theta_{ij}F_j(y_i)$.
+
+For ordinal components each $F_k$ is the category law of its family,
+with thresholds $\tau_{k1},\ldots,\tau_{k,C-1}$ and predictor
+$\eta_{ik}$, so the mixture has category probabilities
+$\Pr(Y_i=c)=\sum_k\theta_{ik}\,\Pr\nolimits_k(Y_i=c\mid\eta_{ik},\tau_k)$.
+Every component writes its thresholds as
+$\tau_{kj}=\kappa_{kj}-\alpha_k$ with a location intercept $\alpha_k$ and
+cutpoints constrained by $\sum_j\kappa_{kj}=0$. Under `order = "none"` each
+component has its own $(\alpha_k,\kappa_k)$. Under `order = "mu"` all
+components read one pair $(\alpha,\kappa)$, sampled in the coordinates of
+the first cumulative component when there is one, where
+$\kappa_1<\cdots<\kappa_{C-1}$, and of the first component otherwise.
+
+A categorical or simplex response with free categories $c\neq r$ (the
+reference $r$) has linear predictors $\eta_{ic}$ and $\eta_{ir}=0$. With
+category-specific formulas each $\eta_{ic}$ has its own design, coefficients
+and group effects, and the category probabilities (or mean composition)
+are $\operatorname{softmax}(\eta_{i\cdot})$. Each $\eta_{ic}$ is an
+ordinary scalar predictor, so a monotonic effect contributes
+$b_c\,D\sum_{j\le x_i}\zeta_{cj}$ with its own simplex $\zeta_c$ of length
+$D$, a Gaussian process term its own marginal standard deviation, length
+scale and coordinates, and a multi-membership factor
+$\sum_m w_{im}\,r_{c,\,j_m(i)}$ with its own standard deviation. A main
+formula holding one of these terms is the same formula for every free
+category. Prediction retains each category's simplex, hyperparameters and
+group coefficients under its `dpar_mu<c>_` prefix. A count response with
+`rate(d)` uses the law of $F$ at mean $d_i\mu_i$ and, for the negative
+binomial, shape $d_i\varphi_i$, so its expectation is $d_i\mu_i$.

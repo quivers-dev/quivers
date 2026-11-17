@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 import math
 
 import didactic.api as dx
@@ -20,8 +20,75 @@ from quivers.inference import (
     SMCResult,
     SVI,
 )
-from quivers.modeling.model import BoundModel, ModelFit
+from quivers.modeling.model import BoundModel, Model, ModelFit
+from quivers.family_catalog import FamilyCatalog
+from quivers.inference.mcmc.parallel import ChainStates, parallel_chains, run_chains
+from quivers.inference.pathfinder import Pathfinder
 from quivers.inference.svi import _prepare_optimizer
+
+
+class SourceChainWorker(ValueModel):
+    """Rebuild a bound QVR model in a worker process and run some chains.
+
+    The worker recompiles the source with the binding's data, static
+    arguments, input, and compilation seed, so it builds the program the
+    parent sampled, then runs its assigned chains with a copy of the parent's
+    driver.
+
+    Parameters
+    ----------
+    source : str
+        QVR source text.
+    entry : str
+        Selected program.
+    families : FamilyCatalog or None
+        Native family definitions of the compilation.
+    data : Mapping[str, object]
+        External values of the binding.
+    parameters : Mapping[str, object]
+        Static arguments of the binding.
+    input : torch.Tensor
+        One-run input.
+    seed : int
+        Compilation seed.
+    sampler : MCMC
+        The parent's driver.
+    """
+
+    source: str
+    entry: str
+    families: FamilyCatalog | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    data: Mapping[str, object] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    parameters: Mapping[str, object] = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    input: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    seed: int
+    sampler: MCMC = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+    def __call__(self, chains: tuple[int, ...]) -> ChainStates:
+        """Recompile the binding and run the assigned chains.
+
+        Parameters
+        ----------
+        chains : tuple[int, ...]
+            Chain indices.
+
+        Returns
+        -------
+        ChainStates
+            Their records.
+        """
+        bound = Model(self.source, entry=self.entry, families=self.families).bind(
+            self.data, parameters=self.parameters, input=self.input, seed=self.seed
+        )
+        return run_chains(
+            self.sampler,
+            bound.require_tensor_program(),
+            bound.input,
+            bound.tensor_data(),
+            chains,
+        )
 
 
 class MCMCMethod(ValueModel):
@@ -33,6 +100,10 @@ class MCMCMethod(ValueModel):
         Driver carrying kernel, chains, warmup, seed, budgets, and callbacks.
         Held by identity. The default runs four NUTS chains, with 500 warmup
         transitions and 1000 retained draws per chain, seeded with zero.
+    cores : int
+        Worker processes for the chains (brms ``cores``). With more than
+        one, each worker recompiles the model from its source and binding
+        and runs its share of the chains; the result equals the serial run.
     """
 
     sampler: MCMC = dx.field(
@@ -42,6 +113,7 @@ class MCMCMethod(ValueModel):
         opaque=True,
         extras=OPAQUE_BY_IDENTITY,
     )
+    cores: int = 1
 
     def run(self, model: BoundModel) -> ModelFit:
         """Sample the bound model using this driver's configuration.
@@ -55,8 +127,38 @@ class MCMCMethod(ValueModel):
         -------
         ModelFit
             Posterior draws and the original data binding.
+
+        Raises
+        ------
+        ValueError
+            If ``cores`` is not a positive integer, or parallel chains are
+            requested for a driver without a seed or with a checkpoint or
+            callback, or for a binding that cannot be pickled.
         """
-        return model.sample(self.sampler)
+        if isinstance(self.cores, bool) or self.cores < 1:
+            raise ValueError("cores must be a positive integer")
+        if self.cores == 1 or self.sampler.num_chains == 1:
+            return model.sample(self.sampler)
+        specification = model.specification
+        worker = SourceChainWorker(
+            source=specification.source,
+            entry=specification.entry,
+            families=specification.families,
+            data=model.data,
+            parameters=model.template_arguments,
+            input=model.input,
+            seed=model.compilation_seed,
+            sampler=self.sampler,
+        )
+        posterior = parallel_chains(
+            self.sampler,
+            model.require_tensor_program(),
+            model.input,
+            model.tensor_data(),
+            worker,
+            self.cores,
+        )
+        return ModelFit(model=model, posterior=posterior)
 
 
 class SMCMethod(ValueModel):
@@ -107,6 +209,49 @@ class SMCMethod(ValueModel):
         return self.sampler.run(
             model.require_tensor_program(), model.input, model.tensor_data()
         )
+
+
+class PathfinderMethod(ValueModel):
+    """Fit with single- or multi-path Pathfinder variational inference.
+
+    Parameters
+    ----------
+    pathfinder : Pathfinder
+        Driver carrying the path count, draw counts, L-BFGS settings,
+        initialization, and seed. The default runs CmdStan's defaults: four
+        paths of 1000 draws resampled to 1000 draws, history size 5, and
+        25 draws per ELBO estimate, seeded with zero. Held by identity.
+    """
+
+    pathfinder: Pathfinder = dx.field(
+        default_factory=Pathfinder, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+
+    def run(self, model: BoundModel) -> ModelFit:
+        """Run Pathfinder on the bound model's unconstrained log joint.
+
+        Parameters
+        ----------
+        model : BoundModel
+            Validated data binding.
+
+        Returns
+        -------
+        ModelFit
+            Bound model and `PathfinderDraws`, read as independent
+            approximate posterior draws.
+
+        Raises
+        ------
+        TypeError
+            If the entry has no tensor executor.
+        ValueError
+            If every path fails or an initial point is invalid.
+        """
+        posterior = self.pathfinder.run(
+            model.require_tensor_program(), model.input, model.tensor_data()
+        )
+        return ModelFit(model=model, posterior=posterior)
 
 
 class VariationalMethod(ValueModel):
@@ -202,4 +347,10 @@ class VariationalMethod(ValueModel):
         return ModelFit(model=model, posterior=guide, losses=tuple(losses))
 
 
-__all__ = ["MCMCMethod", "SMCMethod", "VariationalMethod"]
+__all__ = [
+    "MCMCMethod",
+    "PathfinderMethod",
+    "SMCMethod",
+    "SourceChainWorker",
+    "VariationalMethod",
+]

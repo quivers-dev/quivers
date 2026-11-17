@@ -25,9 +25,37 @@ from quivers.dsl.ast_nodes import (
     ObjectDecl,
     TypeFromExpr,
 )
-from quivers.formulas.formula import FixedColumn, Formula, _CS_ONES, _qvr_name
+from quivers.formulas._smooth import term_constants
+from quivers.formulas.formula import (
+    FixedColumn,
+    Formula,
+    _CS_ONES,
+    _qvr_name,
+)
+from quivers.formulas._gp import (
+    gp_conditional_catalog,
+    gp_observations,
+    gp_prediction,
+)
+from quivers.formulas._autocor import (
+    AutocorMatrix,
+    autocor_binding,
+    autocor_catalog,
+)
+from quivers.formulas._grouping import add_grouping_columns
+from quivers.formulas._grouping_emission import (
+    membership_prediction_bindings,
+    option_prediction_bindings,
+)
+from quivers.formulas._monotonic_emission import monotonic_prediction_bindings
+from quivers.formulas._latent_effects import formula_families
+from quivers.formulas._autocor import latent_prediction
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
+
+# Improper flat priors and the brms Intercept column.
+from quivers.formulas._brms_priors import with_flat_catalog
+from quivers.formulas._formula_options import BRMS_INTERCEPT
 from quivers.inference.registry import LatentRegistry
 from quivers.formulas._group_prediction import (
     GroupRemap,
@@ -37,6 +65,7 @@ from quivers.formulas._group_prediction import (
     select_contributions,
     specialized_formula,
 )
+from quivers.formulas._threshold_groups import threshold_selectors
 
 if TYPE_CHECKING:
     from quivers.formulas._fit import BayesianFit
@@ -98,6 +127,28 @@ class FormulaPredictionPlan(ValueModel):
         )
 
 
+class OrdinalReplay(ValueModel):
+    """Locate one ordinal response whose fitted thresholds are replayed.
+
+    Parameters
+    ----------
+    prefix : str
+        Site-name prefix of the response: empty for a single-response
+        program and ``response_<resp>__`` in a joint program.
+    thresholds_by : str or None
+        Grouping factor of grouped threshold profiles, or None.
+    fitted_levels : int
+        Number of fitted levels of that grouping factor, zero without one.
+    rows : int
+        Prediction rows of the response.
+    """
+
+    prefix: str
+    thresholds_by: str | None = None
+    fitted_levels: int = 0
+    rows: int = 0
+
+
 class PredictionContext(ValueModel):
     """Prepared row bindings shared by every draw of one prediction request.
 
@@ -123,6 +174,12 @@ class PredictionContext(ValueModel):
         row bindings or varying-effect exclusions.
     ordinal_order_groups : tuple of str
         Groups whose fresh effects or threshold profiles can affect order.
+    fresh_sites : tuple of str
+        Latent sites drawn afresh from their law for the prediction rows
+        (brms's new latent residuals) rather than replayed from the posterior.
+    ordinal_replays : tuple of OrdinalReplay
+        Ordinal responses with retained thresholds. Empty means the single
+        response of the fit, named without a prefix.
     """
 
     program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -140,6 +197,10 @@ class PredictionContext(ValueModel):
     seed: int = 0
     retain_ordinal_cutpoints: bool = False
     ordinal_order_groups: tuple[str, ...] = ()
+    fresh_sites: tuple[str, ...] = ()
+    ordinal_replays: tuple[OrdinalReplay, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 def _validate_categories(
@@ -183,7 +244,9 @@ def _validate_categories(
     seen: set[int] = set()
     for term in terms:
         # formulae's CallVarsExtractor represents literal arguments by "".
-        missing = (set(term.var_names) - {""}) - set(frame.columns)
+        missing = (set(term.var_names) - {""} - term_constants(term)) - set(
+            frame.columns
+        )
         if missing:
             raise ValueError(f"new_data is missing predictors {sorted(missing)}")
         for component in getattr(term, "components", ()):
@@ -331,12 +394,13 @@ def _predictor_bindings(
             matrices[name] = _numeric_matrix(
                 evaluated.design_matrix[:, slice_], rows, name
             )
-    result = {}
+    result = monotonic_prediction_bindings(formula, design, frame, prefix)
     for term in formula.design_terms:
         values = matrices[term.term][:, term.column_indices]
         result[prefix + term.qvr_name] = torch.as_tensor(
             values.copy(), dtype=torch.float64
         )
+        result.update(gp_observations(prefix + term.qvr_name, term.gp))
     structured_widths = {
         term.term: max(term.column_indices) + 1 for term in formula.design_terms
     }
@@ -417,6 +481,16 @@ def _predictor_bindings(
         result[f"{_qvr_name(group)}_idx"] = torch.tensor(
             [mapping[str(value)] for value in values], dtype=torch.long
         )
+    if design.group is not None:
+        result.update(
+            membership_prediction_bindings(
+                formula,
+                {term.expr.name: term.expr for term in design.group.terms.values()},
+                frame,
+                prefix,
+                groups,
+            )
+        )
     if any(
         value.is_floating_point() and not torch.isfinite(value).all()
         for value in result.values()
@@ -494,6 +568,8 @@ def prepare_prediction(
     seed: int = 0,
     trials: int | str | None = None,
     require_trials: bool = True,
+    incl_autocor: bool = True,
+    data2: Mapping[str, AutocorMatrix] | None = None,
 ) -> PredictionContext:
     """Prepare and validate prediction rows before sampling posterior draws.
 
@@ -513,6 +589,16 @@ def prepare_prediction(
         Joint donor policy or conditional Gaussian law for new identities.
     seed : int
         Seed for an independent group-effect random stream.
+    trials : int or str or None
+        Trial count or column for count families.
+    require_trials : bool
+        Require trials for fresh vector-count rows.
+    incl_autocor : bool
+        Include an autocorrelation term's structure (brms ``incl_autocor``);
+        False predicts independent rows from the same residual scale.
+    data2 : Mapping[str, numpy.ndarray or pandas.DataFrame] or None
+        Matrices of ``sar`` and ``fcor`` terms over the rows of ``new_data``
+        (brms ``newdata2``).
 
     Returns
     -------
@@ -576,7 +662,20 @@ def prepare_prediction(
             )
             retained_observations = dict(fit.observations)
             _set_trial_rows(fit, retained_observations, counts, specification=trials)
-    if new_data is None and re_formula is None:
+    # Autocorrelation terms rebuild their residual law for the requested rows.
+    autocor_families = (
+        autocor_catalog(
+            fit,
+            None
+            if new_data is None
+            else nw.from_native(new_data, eager_only=True).to_pandas(),
+            include=incl_autocor,
+            data2=data2,
+        )
+        if autocor_binding(fit.family) is not None
+        else None
+    )
+    if new_data is None and re_formula is None and incl_autocor:
         if predictor_data is not None:
             raise ValueError("predictor_data requires new_data")
         return PredictionContext(
@@ -596,9 +695,18 @@ def prepare_prediction(
         program = (
             Compiler(
                 module,
-                families=fit.family.custom.catalog
-                if fit.family.custom is not None
-                else None,
+                # Improper flat priors are compilation-local native laws.
+                families=with_flat_catalog(
+                    formula_families(
+                        autocor_families
+                        if autocor_families is not None
+                        else fit.family.custom.catalog
+                        if fit.family.custom is not None
+                        else None,
+                        fit.formula,
+                    ),
+                    module,
+                ),
             )
             .compile()
             .morphism
@@ -607,7 +715,8 @@ def prepare_prediction(
             raise TypeError("prediction requires a native monadic program")
         return PredictionContext(
             program=program,
-            observations=retained_observations,
+            observations=dict(retained_observations)
+            | latent_prediction(fit, None, include=incl_autocor)[1],
             rows=len(fit.formula.response_values),
             seed=seed,
             retain_ordinal_cutpoints=constrained_cs,
@@ -615,6 +724,18 @@ def prepare_prediction(
     if plan is None:
         raise ValueError("this fit has no retained new_data prediction plan")
     frame = nw.from_native(new_data, eager_only=True).to_pandas()
+    # brms g1:g2 and mm() factors are derived from their source columns.
+    frame = add_grouping_columns(
+        frame,
+        tuple(
+            {
+                spec.name: spec
+                for formula in formulas.values()
+                for spec in formula.grouping.specs
+            }.values()
+        ),
+        require=False,
+    )
     needs_cs_intercept = any(
         _CS_ONES in column.term
         for formula in formulas.values()
@@ -630,6 +751,16 @@ def prepare_prediction(
             )
         frame = frame.copy()
         frame[_CS_ONES] = 1.0
+    # brms 0 + Intercept reads a reserved constant column.
+    if any(
+        BRMS_INTERCEPT in column.term
+        for formula in formulas.values()
+        for column in formula.fixed_columns
+    ):
+        if BRMS_INTERCEPT in frame.columns:
+            raise ValueError(f"{BRMS_INTERCEPT!r} is reserved for the Intercept term")
+        frame = frame.copy()
+        frame[BRMS_INTERCEPT] = 1.0
     if len(frame) < 1 or not frame.columns.is_unique:
         raise ValueError("new_data requires nonempty rows and unique column names")
     if fit.predictor is not None and predictor_data is None:
@@ -680,6 +811,10 @@ def prepare_prediction(
         from quivers.formulas._predictor_graph import graph_input_bindings
 
         observations.update(graph_input_bindings(fit.predictor_graph, frame))
+    # brms gr(by =, pw =): per-level inputs on the compact prediction levels.
+    observations.update(
+        option_prediction_bindings(fit._predictor_items(), frame, groups)
+    )
 
     from quivers.formulas._fit import _binomial_trial_tensor, _predictor_output
 
@@ -701,6 +836,24 @@ def prepare_prediction(
     from quivers.formulas._response_roles import prediction_role_bindings
 
     observations.update(prediction_role_bindings(fit.formula.modifiers, frame))
+    # brms thres(n, gr): the fitted category selectors of every group.
+    observations.update(threshold_selectors(fit.observations))
+    # Latent terms (brms car, latent residuals) cover the prediction rows.
+    latent_formula, latent_values, fresh_sites = latent_prediction(
+        fit, frame, include=incl_autocor
+    )
+    observations.update(latent_values)
+    # gp-exact: exact gp() blocks draw their latent function at the new inputs.
+    gp_formulas, gp_values, gp_fresh = gp_prediction(
+        fit._predictor_items(), plan.designs, frame
+    )
+    observations.update(gp_values)
+    gp_catalog = gp_conditional_catalog(
+        (prefixes[name] + term.qvr_name, term.gp)
+        for name, formula in gp_formulas.items()
+        for term in formula.design_terms
+        if term.gp is not None
+    )
     if fit.family.trials_parameter is not None:
         retained_source = dict(fit.formula.modifiers.sources).get("trials")
         specification = (
@@ -752,10 +905,9 @@ def prepare_prediction(
         observations[fit.predictor_name] = neural
 
     module = plan.module
-    if groups or re_formula is not None:
+    if groups or re_formula is not None or gp_fresh:
         specialized = {
-            name: specialized_formula(formula, groups)
-            for name, formula in formulas.items()
+            name: specialized_formula(gp_formulas[name], groups) for name in formulas
         }
         specialized_lens = fit._formula_lens(
             distributional={
@@ -782,21 +934,33 @@ def prepare_prediction(
         )
         module = select_contributions(module, formulas, selected, prefixes=prefixes)
     statements = []
+    fresh_axes = {
+        term.axis for term in latent_formula.latent_terms if term.name in fresh_sites
+    }
     for statement in module.statements:
-        if isinstance(statement, ObjectDecl) and statement.names == ("Resp",):
+        if isinstance(statement, ObjectDecl) and (
+            statement.names == ("Resp",) or statement.names[0] in fresh_axes
+        ):
             statement = statement.with_(
                 init=TypeFromExpr(
                     expr=DiscreteConstructor(constructor="FinSet", args=(str(rows),))
                 )
             )
         statements.append(statement)
+    families = formula_families(
+        autocor_families
+        if autocor_families is not None
+        else fit.family.custom.catalog
+        if fit.family.custom is not None
+        else None,
+        latent_formula,
+    )
+    if gp_catalog is not None:
+        families = gp_catalog if families is None else families.with_catalog(gp_catalog)
+    # Improper flat priors are compilation-local native laws.
+    families = with_flat_catalog(families, module)
     program = (
-        Compiler(
-            module.with_(statements=tuple(statements)),
-            families=fit.family.custom.catalog
-            if fit.family.custom is not None
-            else None,
-        )
+        Compiler(module.with_(statements=tuple(statements)), families=families)
         .compile()
         .morphism
     )
@@ -815,6 +979,8 @@ def prepare_prediction(
         for group in groups.values()
         for layout in group.covariance_layouts
     }
+    # Fresh latent residuals are drawn for the new rows, not replayed.
+    covariance_sites = covariance_sites | set(fresh_sites) | set(gp_fresh)
     if (
         set(original.names) - covariance_sites
         != set(specialized_registry.names) - covariance_sites
@@ -856,4 +1022,5 @@ def prepare_prediction(
         seed=seed,
         retain_ordinal_cutpoints=constrained_cs,
         ordinal_order_groups=tuple(sorted(order_groups)) if constrained_cs else (),
+        fresh_sites=(*fresh_sites, *gp_fresh),
     )

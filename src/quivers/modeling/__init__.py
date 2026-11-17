@@ -6,7 +6,13 @@ from quivers.modeling.artifact import (
     load_fit,
     save_fit,
 )
-from quivers.modeling.methods import MCMCMethod, SMCMethod, VariationalMethod
+from quivers.modeling.methods import (
+    MCMCMethod,
+    PathfinderMethod,
+    SMCMethod,
+    SourceChainWorker,
+    VariationalMethod,
+)
 from quivers.modeling.refit import RefitRecipe, SnapshotPolicy, refit_callback
 from quivers.modeling.model import (
     BoundModel,
@@ -17,6 +23,7 @@ from quivers.modeling.model import (
 )
 
 __all__ = [
+    "SourceChainWorker",
     "ArtifactContext",
     "ArtifactFactory",
     "save_fit",
@@ -25,6 +32,7 @@ __all__ = [
     "SnapshotPolicy",
     "refit_callback",
     "MCMCMethod",
+    "PathfinderMethod",
     "SMCMethod",
     "VariationalMethod",
     "BoundModel",
