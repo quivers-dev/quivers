@@ -576,8 +576,10 @@ def _draw_support_coefficients(
 
     Centered coordinates carry Gaussian deviations with the block's column
     factor; noncentered coordinates are standardized and mapped through the
-    support factor and the column factor. A covariance of rank zero has no
-    draw and every level equals the mean.
+    support factor and the column factor. Under a ``by`` partition the
+    column factor of a level is that of its ``by`` level, so the mapped
+    rows are transformed one level at a time. A covariance of rank zero has
+    no draw and every level equals the mean.
 
     Parameters
     ----------
@@ -593,18 +595,14 @@ def _draw_support_coefficients(
     Raises
     ------
     ValueError
-        If the block has no known covariance or coordinate axis, or one
-        correlation factor per ``by`` level.
+        If the block has no known covariance or coordinate axis, mixes a
+        coefficient with an affine mean, or partitions the levels of
+        centered coordinates.
     """
     level, dimension = law.level, law.coordinate_axis
     basis = level.basis
     if basis is None or dimension is None:
         raise ValueError("a support-coordinate block needs a known covariance")
-    if isinstance(law.correlation, ByLKJCorrelation):
-        raise ValueError(
-            f"group block {law.identity!r}: a known level covariance has one "
-            "coefficient correlation for every level"
-        )
     if level.mixing is not None and any(
         member.mean is not None for member in law.members
     ):
@@ -639,16 +637,17 @@ def _draw_support_coefficients(
             scale_cases.append((member.offset + component, scale))
             mean_cases.append((member.offset + component, mean))
     scale_vector, mean_vector = stem + "_scales", stem + "_means"
-    steps.extend(
-        (
+    if level.by is None:
+        steps.append(
             _let(
                 scale_vector,
                 _factor((("coefficient", dimension),), cases=tuple(scale_cases)),
-            ),
-            _let(
-                mean_vector,
-                _factor((("coefficient", dimension),), cases=tuple(mean_cases)),
-            ),
+            )
+        )
+    steps.append(
+        _let(
+            mean_vector,
+            _factor((("coefficient", dimension),), cases=tuple(mean_cases)),
         )
     )
     physical = _support_binding(law)
@@ -683,21 +682,28 @@ def _draw_support_coefficients(
             ),
         )
     )
-    steps.append(
-        _let(
-            column_factor,
-            _factor(
-                square,
-                body=_mul(
-                    _index(scale_vector, _var("matrix_row")),
-                    _index(correlation, _var("matrix_row"), _var("matrix_column"))
-                    if correlation is not None
-                    else identity_value,
-                ),
-            ),
-        )
-    )
     centered = law.parameterization == "centered"
+    if level.by is None:
+        steps.append(
+            _let(
+                column_factor,
+                _factor(
+                    square,
+                    body=_mul(
+                        _index(scale_vector, _var("matrix_row")),
+                        _index(correlation, _var("matrix_row"), _var("matrix_column"))
+                        if correlation is not None
+                        else identity_value,
+                    ),
+                ),
+            )
+        )
+    elif centered:
+        raise ValueError(
+            f"group block {law.identity!r}: centered support coordinates have "
+            "one column covariance for every level, and a by partition gives "
+            "each by level its own"
+        )
     if centered:
         draw_column_factor = column_factor
         mapping = basis_stem + "_projection"
@@ -726,6 +732,9 @@ def _draw_support_coefficients(
     )
     mapped = stem + "_mapped"
     steps.append(_let(mapped, _call("matmul", _var(mapping), _var(raw))))
+    if level.by is not None:
+        _bind_by_support(law, mapped, mean_vector, steps)
+        return
     if not centered:
         transpose = _factor(
             square,
@@ -741,6 +750,93 @@ def _draw_support_coefficients(
                 (("level", level.axis), ("coefficient", dimension)),
                 body=_add(
                     _index(mapped, _var("level"), _var("coefficient")),
+                    _index(mean_vector, _var("coefficient")),
+                ),
+            ),
+        )
+    )
+
+
+def _bind_by_support(
+    law: GroupBlockLaw, mapped: str, mean_vector: str, steps: list[ProgramStep]
+) -> None:
+    """Apply each level's own column factor to mapped support innovations.
+
+    Row ``j`` of the mapped innovations ``G = F Z`` becomes
+    ``diag(sd[by_j]) L[by_j] g_j + mean``, so levels ``j`` and ``l`` have
+    cross-covariance ``V[j, l] A[by_j] A[by_l]^T`` with
+    ``A[b] = diag(sd[b]) L[b]``.
+
+    Parameters
+    ----------
+    law : GroupBlockLaw
+        Noncentered block with a known level covariance and a ``by``
+        partition.
+    mapped : str
+        Binding of the level-by-coordinate innovations with the known
+        covariance between levels.
+    mean_vector : str
+        Binding of the block mean over the coordinates.
+    steps : list[ProgramStep]
+        Program steps receiving the transformation.
+
+    Raises
+    ------
+    ValueError
+        If the block has no coordinate axis.
+    """
+    level, dimension = law.level, law.coordinate_axis
+    if dimension is None:
+        raise ValueError("a support-coordinate block needs a coordinate axis")
+    stem = f"__formula_level_{_qvr_name(law.identity)}"
+    at = _var(LEVEL)
+    rows = stem + "_rows"
+    steps.append(
+        _let(
+            rows,
+            _factor(
+                (("group_coordinate", dimension), (LEVEL, level.axis)),
+                body=_index(mapped, at, _var("group_coordinate")),
+            ),
+        )
+    )
+    correlated = rows
+    if isinstance(law.correlation, ByLKJCorrelation):
+        correlated = stem + "_correlated"
+        steps.append(_let(correlated, _by_correlated(law, law.correlation, rows)))
+    elif isinstance(law.correlation, LKJCorrelation):
+        correlated = stem + "_correlated"
+        steps.append(
+            _let(correlated, _call("matmul", _var(law.correlation.site), _var(rows)))
+        )
+    scales = stem + "_level_scales"
+    cases: list[tuple[int, LetExprNode]] = []
+    for member in law.members:
+        for component in range(member.width):
+            cases.append(
+                (
+                    member.offset + component,
+                    _factor(
+                        ((LEVEL, level.axis),),
+                        body=_index(member.scale.site, _integer(component))
+                        if member.axis is not None
+                        else _scale_at(level, member, at),
+                    ),
+                )
+            )
+    steps.append(
+        _let(scales, _factor((("group_coordinate", dimension),), cases=tuple(cases)))
+    )
+    steps.append(
+        _let(
+            _support_binding(law),
+            _factor(
+                (("level", level.axis), ("coefficient", dimension)),
+                body=_add(
+                    _mul(
+                        _index(scales, _var("coefficient"), _var("level")),
+                        _index(correlated, _var("coefficient"), _var("level")),
+                    ),
                     _index(mean_vector, _var("coefficient")),
                 ),
             ),

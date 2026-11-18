@@ -420,8 +420,9 @@ def test_responses_assigning_one_level_two_by_values_are_refused():
         ("(1 | p | gr(g, dist = 'student'))", {}),
         ("(1 | p | gr(g, dist = 'student'))", {"group_covariances": {"g": FULL}}),
         ("(1 | p | gr(g, by = fb))", {}),
+        ("(1 | p | gr(g, by = fb))", {"group_covariances": {"g": FULL}}),
     ],
-    ids=["student", "student-known", "by"],
+    ids=["student", "student-known", "by", "by-known"],
 )
 def test_shared_blocks_fit_and_predict_a_new_level(term, options):
     frame = _frame(24)

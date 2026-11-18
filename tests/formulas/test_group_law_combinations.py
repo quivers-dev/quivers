@@ -34,7 +34,13 @@ from quivers.formulas import (
     formula_from_data,
 )
 from quivers.formulas._fit import _prepare_formula
-from quivers.formulas._group_law import MembershipRows, group_coefficients
+from quivers.formulas._group_law import (
+    KnownCovariance,
+    MembershipRows,
+    group_coefficients,
+    support_coefficients,
+)
+from quivers.formulas._group_prediction import GroupRemap, _remap_covariance_group
 from quivers.inference.trace import trace
 
 Parameterization = Literal["centered", "noncentered"]
@@ -649,3 +655,254 @@ def test_multi_membership_component_coefficients_fit_and_predict(
     )
     draws = fitted.posterior_predict(new_data=frame.iloc[:4], num_samples=2, seed=1)
     assert torch.isfinite(torch.as_tensor(draws, dtype=torch.float64)).all()
+
+
+BY = {"a": "m", "b": "n", "c": "m", "d": "n"}
+BY_CHOLESKY = (
+    ((1.0, 0.0), (0.3, (1 - 0.3**2) ** 0.5)),
+    ((1.0, 0.0), (-0.5, (1 - 0.5**2) ** 0.5)),
+)
+
+
+def _by_frame(rows: int = 12) -> pd.DataFrame:
+    frame = _frame(rows)
+    # by is constant within a level of g.
+    return frame.assign(fb=[BY[level] for level in frame["g"]])
+
+
+def _by_latent(laws, basis) -> dict[str, torch.Tensor]:
+    generator = torch.Generator().manual_seed(13)
+    latent = {
+        "intercept": torch.tensor(0.1, dtype=torch.float64),
+        "beta_x": torch.tensor(-0.2, dtype=torch.float64),
+        "sigma": torch.tensor(0.8, dtype=torch.float64),
+        "sigma_g_Intercept": torch.tensor([0.7, 1.2], dtype=torch.float64),
+        "sigma_g_x": torch.tensor([0.5, 0.9], dtype=torch.float64),
+    }
+    for law in laws:
+        for site, cholesky in zip(law.correlation.sites, BY_CHOLESKY, strict=False):
+            latent[site] = torch.tensor(cholesky, dtype=torch.float64)
+        latent[law.members[0].raw_site] = torch.randn(
+            basis.rank, law.width, generator=generator, dtype=torch.float64
+        )
+    return latent
+
+
+def _by_coefficients(laws, latent, factor, codes) -> torch.Tensor:
+    """Row j is diag(sd[by_j]) L[by_j] (F Z)_j, written without the library."""
+    columns = []
+    for law in laws:
+        gaussian = factor @ latent[law.members[0].raw_site]
+        if law.correlation.sites:
+            cholesky = torch.stack([latent[site] for site in law.correlation.sites])
+            gaussian = (cholesky[codes] @ gaussian[:, :, None]).squeeze(-1)
+        scale = torch.stack(
+            [latent[member.scale.site] for member in law.members], dim=1
+        )
+        columns.append(scale[codes] * gaussian)
+    return torch.cat(columns, dim=1)
+
+
+@pytest.mark.parametrize("bar", ["|", "||"], ids=["correlated", "independent"])
+@pytest.mark.parametrize("covariance", [FULL, DEFICIENT], ids=["full", "deficient"])
+def test_by_partition_with_a_known_level_covariance(covariance, bar: str):
+    """Cov(B_j, B_l) = V[j, l] A[by_j] A[by_l]^T with A[b] = diag(sd[b]) L[b]."""
+    frame = _by_frame()
+    lens, formula, program, observed, complement = _compiled(
+        f"y ~ x + (1 + x {bar} gr(g, by = fb))",
+        frame,
+        group_covariances={"g": covariance},
+    )
+    laws = complement.group_laws
+    assert len(laws) == (1 if bar == "|" else 2)
+    by, basis = laws[0].level.by, laws[0].level.basis
+    assert by is not None and basis is not None and by.levels == ("m", "n")
+    assert by.codes == (0, 1, 0)
+    codes = torch.tensor(by.codes)
+    _, _, factor = basis.tensors()
+    x = torch.as_tensor(frame["x"].to_numpy(dtype=float))
+    y, rows = observed["y"], observed["g_idx"]
+    latent = {
+        name: value.requires_grad_() for name, value in _by_latent(laws, basis).items()
+    }
+
+    def oracle(partitioned: bool = True) -> torch.Tensor:
+        normal = torch.distributions.Normal
+        effects = _by_coefficients(
+            laws, latent, factor, codes if partitioned else torch.zeros_like(codes)
+        )
+        mu = (
+            latent["intercept"]
+            + latent["beta_x"] * x
+            + effects[rows, 0]
+            + effects[rows, 1] * x
+        )
+        total = (
+            normal(0.0, 5.0).log_prob(latent["intercept"])
+            + normal(0.0, 5.0 / x.square().mean().sqrt()).log_prob(latent["beta_x"])
+            + torch.distributions.HalfCauchy(2.0).log_prob(latent["sigma"])
+            + torch.distributions.HalfNormal(1.0)
+            .log_prob(latent["sigma_g_Intercept"])
+            .sum()
+            + torch.distributions.HalfNormal(1.0).log_prob(latent["sigma_g_x"]).sum()
+            + normal(mu, latent["sigma"]).log_prob(y).sum()
+        )
+        for law in laws:
+            total = (
+                total + normal(0.0, 1.0).log_prob(latent[law.members[0].raw_site]).sum()
+            )
+            for site in law.correlation.sites:
+                total = total + torch.distributions.LKJCholesky(
+                    2, torch.tensor(1.0, dtype=torch.float64)
+                ).log_prob(latent[site])
+        return total
+
+    actual = _log_joint(program, observed | latent)
+    torch.testing.assert_close(actual, oracle(), rtol=TOLERANCE, atol=TOLERANCE)
+    assert abs(float((oracle(partitioned=False) - actual).detach())) > 1e-3
+    heads = tuple(latent.values())
+    for got, expected in zip(
+        torch.autograd.grad(actual, heads, retain_graph=True),
+        torch.autograd.grad(oracle(), heads),
+        strict=True,
+    ):
+        torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-5)
+    # Closed form: the linear map from unit innovations to coefficients has
+    # M M^T with blocks V[j, l] A[by_j] A[by_l]^T.
+    detached = {name: value.detach() for name, value in latent.items()}
+    images = []
+    for law in laws:
+        site = law.members[0].raw_site
+        for index in range(basis.rank * law.width):
+            unit = torch.zeros(basis.rank * law.width, dtype=torch.float64)
+            unit[index] = 1.0
+            draws = dict(detached)
+            for other in laws:
+                draws[other.members[0].raw_site] = torch.zeros(
+                    basis.rank, other.width, dtype=torch.float64
+                )
+            draws[site] = unit.reshape(basis.rank, law.width)
+            rebuilt = group_coefficients(_retained(draws), laws, {"g": LEVELS})
+            images.append(
+                torch.stack(
+                    [
+                        rebuilt[("", "g", "Intercept")].reshape(3),
+                        rebuilt[("", "g", "x")].reshape(3),
+                    ],
+                    dim=1,
+                ).reshape(-1)
+            )
+    linear = torch.stack(images, dim=1)
+    known = covariance.tensor()[:3, :3]
+    columns = []
+    for level in range(2):
+        scale = torch.stack(
+            [detached["sigma_g_Intercept"][level], detached["sigma_g_x"][level]]
+        )
+        cholesky = (
+            torch.tensor(BY_CHOLESKY[level], dtype=torch.float64)
+            if bar == "|"
+            else torch.eye(2, dtype=torch.float64)
+        )
+        columns.append(scale[:, None] * cholesky)
+    expected = torch.zeros(6, 6, dtype=torch.float64)
+    for first in range(3):
+        for second in range(3):
+            expected[2 * first : 2 * first + 2, 2 * second : 2 * second + 2] = (
+                known[first, second]
+                * columns[by.codes[first]]
+                @ columns[by.codes[second]].T
+            )
+    torch.testing.assert_close(linear @ linear.T, expected, atol=1e-12, rtol=1e-12)
+    assert formula.response_name == "y" and lens is not None
+
+
+def test_new_level_of_a_by_partition_takes_the_column_factor_of_its_by_level():
+    """With V[d, a] = V[a, a], level d repeats G_a under its own by level."""
+    frame = _by_frame()
+    _, _, _, _, complement = _compiled(
+        "y ~ x + (1 + x | gr(g, by = fb))", frame, group_covariances={"g": FULL}
+    )
+    (law,) = complement.group_laws
+    by, basis = law.level.by, law.level.basis
+    assert by is not None and basis is not None
+    repeated = GroupCovariance(
+        levels=("a", "b", "c", "d"),
+        matrix=(
+            (1.0, 0.3, 0.1, 1.0),
+            (0.3, 1.0, 0.2, 0.3),
+            (0.1, 0.2, 1.0, 0.1),
+            (1.0, 0.3, 0.1, 1.0),
+        ),
+        rank=3,
+    )
+    mean_map, conditional = repeated.conditional(LEVELS, ("d",))
+    assert conditional.rank == 0
+    compact_levels = ("a", "d", "c")
+    target = repeated.basis(compact_levels)
+    group = GroupRemap(
+        group="g",
+        fitted_size=3,
+        fitted_indices=(0, -1, 2),
+        row_indices=torch.tensor([0, 1, 2]),
+        sites=law.layout.raw_sites,
+        levels=compact_levels,
+        covariance=repeated,
+        covariance_laws=(law,),
+        covariance_target=target,
+        covariance_conditional=conditional,
+        covariance_mean_map=tuple(tuple(row) for row in mean_map.tolist()),
+    )
+    latent = _by_latent((law,), basis)
+    compact_codes = torch.tensor([0, 1, 0])
+    site = law.members[0].raw_site
+    assert site is not None
+    mapped = _remap_covariance_group(
+        group,
+        latent,
+        {site: (target.rank, 2)},
+        "gaussian",
+        {},
+        {by.input: compact_codes},
+    )
+    compact = law.with_(
+        level=law.level.with_(
+            covariance=KnownCovariance(basis=target),
+            by=by.with_(codes=tuple(compact_codes.tolist())),
+        )
+    )
+    physical = support_coefficients(latent | mapped, compact, sample_ndims=0)
+    gaussian = basis.tensors()[2] @ latent[site]
+    cholesky = torch.tensor(BY_CHOLESKY, dtype=torch.float64)
+    scale = torch.stack([latent["sigma_g_Intercept"], latent["sigma_g_x"]], dim=1)
+    rows = gaussian[[0, 0, 2]]
+    expected = scale[compact_codes] * (
+        cholesky[compact_codes] @ rows[:, :, None]
+    ).squeeze(-1)
+    torch.testing.assert_close(physical, expected, atol=1e-10, rtol=1e-10)
+    # The new level differs from the level it repeats only by its by level.
+    assert (physical[1] - physical[0]).abs().max() > 1e-3
+
+
+@pytest.mark.parametrize("bar", ["|", "||"], ids=["correlated", "independent"])
+def test_by_known_covariance_fits_and_predicts_new_levels(bar: str):
+    frame = _by_frame(24)
+    fitted = fit(
+        f"y ~ x + (1 + x {bar} gr(g, by = fb))",
+        data=frame,
+        group_covariances={"g": FULL},
+        method="svi",
+        num_steps=3,
+        seed=2,
+    )
+    fresh = frame.iloc[:3].assign(g=["a", "d", "c"], fb=["m", "n", "m"])
+    for policy in ("gaussian", "uncertainty"):
+        draws = fitted.posterior_predict(
+            new_data=fresh,
+            num_samples=2,
+            seed=1,
+            allow_new_levels=True,
+            sample_new_levels=policy,
+        )
+        assert draws.shape[-1] == 3 and torch.isfinite(draws).all()
+    assert fitted.ranef() is not None

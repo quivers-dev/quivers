@@ -329,20 +329,16 @@ def plan_joint_block(
     level = _level_law(
         group, len(members[0][2].group_levels[group]), option, covariance
     )
-    correlation: CoefficientCorrelation
-    if basis is not None:
-        correlation = (
-            LKJCorrelation(site=f"cor_{token}")
-            if correlate and width > 1
-            else IndependentCoordinates()
-        )
-        shared_raw = f"group_covariance_{token}" if basis.rank else None
-    else:
+    correlation: CoefficientCorrelation = IndependentCoordinates()
+    if basis is None or (correlate and width > 1):
         correlation = (
             ByLKJCorrelation(by_sites=by_correlation_sites(identity, option))
             if option is not None and level.by is not None
             else LKJCorrelation(site=f"cor_{token}")
         )
+    if basis is not None:
+        shared_raw = f"group_covariance_{token}" if basis.rank else None
+    else:
         shared_raw = (
             f"group_coefficients_{token}" if parameterization == "centered" else None
         )
@@ -475,10 +471,10 @@ def admit_block(
     ------
     ValueError
         For a ``by`` partition, Student-t mixing, or prior weights with
-        centered coordinates; for a ``by`` partition or prior weights with a
-        known level covariance, whose innovations live in support
-        coordinates that no level owns; and for a ``by`` partition or prior
-        weights on a predictor with one coefficient per component.
+        centered coordinates; for prior weights with a known level
+        covariance, whose innovations live in support coordinates that no
+        level owns; and for a ``by`` partition or prior weights on a
+        predictor with one coefficient per component.
     """
     level = law.level
     indexed = level.by is not None or level.prior_weight is not None
@@ -487,7 +483,7 @@ def admit_block(
             f"gr({law.group}) options by, dist, and pw use brms's noncentered "
             "innovations; use reparameterize='noncentered'"
         )
-    if level.basis is not None and indexed:
+    if level.basis is not None and level.prior_weight is not None:
         raise ValueError(
             f"gr({law.group}) options by, dist, and pw are not supported together "
             "with a known level covariance"
