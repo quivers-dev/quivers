@@ -732,7 +732,7 @@ def check_group_options(
                 "with a known level covariance"
             )
         if any(
-            option.group == group
+            option.group == group and (option.by_levels or option.prior_weights)
             for _, prefix, formula in predictors
             if prefix in component_valued
             for option in formula.grouping.options

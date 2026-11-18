@@ -26,7 +26,13 @@ import torch
 
 from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import Compiler
-from quivers.formulas import GroupCovariance, fit
+from quivers.formulas import (
+    FormulaToQVRModule,
+    GroupCovariance,
+    families,
+    fit,
+    formula_from_data,
+)
 from quivers.formulas._fit import _prepare_formula
 from quivers.formulas._group_law import group_coefficients
 from quivers.inference.trace import trace
@@ -309,6 +315,121 @@ def _simplex_frame(rows: int = 24) -> pd.DataFrame:
     return _frame(rows).assign(p1=parts[:, 0], p2=parts[:, 1], p3=parts[:, 2])
 
 
+@pytest.mark.parametrize(
+    "bar,covariance",
+    [("|", FULL), ("|", None), ("||", None)],
+    ids=["correlated-known", "correlated", "independent"],
+)
+def test_student_coefficients_over_the_response_categories(
+    bar: str, covariance: GroupCovariance | None
+):
+    """One coefficient per free category: B = diag(dfm) . L_V Z . (diag(sd) L)^T."""
+    frame = _frame(24)
+    parsed = formula_from_data(f"k3 ~ x + (1 {bar} gr(g, dist = 'student'))", frame)
+    lens = FormulaToQVRModule(
+        families["categorical"],
+        group_covariances={"g": covariance} if covariance is not None else None,
+    )
+    module, complement = lens.forward(parsed)
+    program = Compiler(module).compile().morphism
+    assert isinstance(program, MonadicProgram)
+    observed = dict(lens.fixed_column_observations(parsed))
+    observed["k3"] = torch.as_tensor(parsed.response_values.copy())
+    observed["g_idx"] = torch.tensor(parsed.group_indices["g"], dtype=torch.long)
+    (law,) = complement.group_laws
+    (member,) = law.members
+    basis = law.level.basis
+    assert law.level.mixing is not None
+    assert member.axis is not None and member.width == 2
+    raw_site = member.raw_site
+    assert raw_site is not None
+    cholesky = torch.tensor(
+        [[1.0, 0.0], [0.3, (1 - 0.3**2) ** 0.5]], dtype=torch.float64
+    )
+    sites = law.correlation.sites
+    assert len(sites) == (0 if bar == "||" else 1)
+    if basis is not None:
+        _, _, factor = basis.tensors()
+        shape: tuple[int, ...] = (basis.rank, 2)
+    else:
+        factor = torch.eye(3, dtype=torch.float64)
+        shape = (6,)
+    x = torch.as_tensor(frame["x"].to_numpy(dtype=float))
+    y = observed["k3"].long()
+    rows = observed["g_idx"]
+    generator = torch.Generator().manual_seed(5)
+    latent = {
+        "intercept": torch.tensor([0.1, -0.3], dtype=torch.float64),
+        "beta_x": torch.tensor([-0.2, 0.4], dtype=torch.float64),
+        "df_g": torch.tensor(3.5, dtype=torch.float64),
+        "udf_g": torch.tensor([0.4, 0.7, 1.1], dtype=torch.float64),
+        member.scale.site: torch.tensor([0.7, 0.5], dtype=torch.float64),
+        raw_site: torch.randn(shape, generator=generator, dtype=torch.float64),
+    }
+    if sites:
+        latent[sites[0]] = cholesky
+    latent = {name: value.requires_grad_() for name, value in latent.items()}
+
+    def coefficients(mixing: bool) -> torch.Tensor:
+        correlation = latent[sites[0]] if sites else torch.eye(2, dtype=torch.float64)
+        # A flat raw site holds the levels in order, each with its components.
+        gaussian = (
+            factor
+            @ latent[raw_site].reshape(-1, 2)
+            @ (latent[member.scale.site][:, None] * correlation).T
+        )
+        if not mixing:
+            return gaussian
+        return torch.sqrt(latent["df_g"] * latent["udf_g"])[:, None] * gaussian
+
+    def oracle(mixing: bool = True) -> torch.Tensor:
+        normal = torch.distributions.Normal
+        effects = coefficients(mixing)
+        free = latent["intercept"] + latent["beta_x"] * x[:, None] + effects[rows]
+        logits = torch.cat([torch.zeros(len(x), 1, dtype=torch.float64), free], dim=1)
+        return (
+            normal(0.0, 5.0).log_prob(latent["intercept"]).sum()
+            + normal(0.0, 5.0 / x.square().mean().sqrt())
+            .log_prob(latent["beta_x"])
+            .sum()
+            + _df_log_prior(latent["df_g"])
+            + torch.distributions.InverseGamma(
+                latent["df_g"] / 2, latent["df_g"].new_tensor(0.5)
+            )
+            .log_prob(latent["udf_g"])
+            .sum()
+            + torch.distributions.HalfNormal(1.0)
+            .log_prob(latent[member.scale.site])
+            .sum()
+            + (
+                torch.distributions.LKJCholesky(
+                    2, torch.tensor(1.0, dtype=torch.float64)
+                ).log_prob(latent[sites[0]])
+                if sites
+                else 0.0
+            )
+            + normal(0.0, 1.0).log_prob(latent[raw_site]).sum()
+            + torch.distributions.Categorical(logits=logits).log_prob(y).sum()
+        )
+
+    actual = _log_joint(program, observed | latent)
+    torch.testing.assert_close(actual, oracle(), rtol=TOLERANCE, atol=TOLERANCE)
+    assert abs(float(oracle(mixing=False) - actual)) > 1e-3
+    heads = tuple(latent.values())
+    for got, expected in zip(
+        torch.autograd.grad(actual, heads, retain_graph=True),
+        torch.autograd.grad(oracle(), heads),
+        strict=True,
+    ):
+        torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-5)
+    rebuilt = group_coefficients(
+        _retained(latent), complement.group_laws, parsed.group_levels
+    )
+    torch.testing.assert_close(
+        rebuilt[("", "g", "Intercept")].reshape(3, 2), coefficients(True).detach()
+    )
+
+
 def test_student_category_known_covariance_fits_and_predicts_new_levels():
     frame = _simplex_frame()
     fitted = fit(
@@ -391,4 +512,26 @@ def test_off_main_factor_known_covariance_fits(kind: str):
         **options,
     )
     draws = fitted.posterior_predict(num_samples=2, seed=1)
+    assert torch.isfinite(torch.as_tensor(draws, dtype=torch.float64)).all()
+
+
+def test_student_scale_coefficients_over_components_fit_and_predict_new_levels():
+    frame = _simplex_frame()
+    fitted = fit(
+        "cbind(p1, p2, p3) ~ x",
+        data=frame,
+        family="logistic_normal",
+        distributional={"sigma": "~ 1 + (1 | gr(g, dist = 'student'))"},
+        method="svi",
+        num_steps=3,
+        seed=2,
+    )
+    assert fitted.prediction_plan is not None
+    (law,) = fitted.prediction_plan.group_laws
+    (member,) = law.members
+    assert member.axis is not None and law.level.mixing is not None
+    fresh = frame.iloc[:3].assign(g=["a", "new", "c"])
+    draws = fitted.posterior_predict(
+        new_data=fresh, num_samples=2, seed=1, allow_new_levels=True
+    )
     assert torch.isfinite(torch.as_tensor(draws, dtype=torch.float64)).all()

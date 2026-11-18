@@ -418,8 +418,7 @@ def plan_inline_block(
     """
     group = term.group
     coefficient = coefficient_binding(prefix, group, term.slope)
-    # A coefficient over a component axis reads none of the gr() options.
-    option = formula.grouping.option(group) if axis is None else None
+    option = formula.grouping.option(group)
     level = _level_law(
         group, len(formula.group_levels[group]), option, IdentityCovariance()
     )

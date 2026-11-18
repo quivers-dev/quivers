@@ -921,7 +921,8 @@ def _bind_independent(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
     ------
     ValueError
         If a member with a component axis declares no binding for its raw
-        site read over levels and components.
+        site read over levels and components, declares prior weights, or
+        is centered under Student-t mixing.
     """
     level = law.level
     centered = law.parameterization == "centered"
@@ -942,10 +943,24 @@ def _bind_independent(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
             )
             steps.append(_let(names.matrix, _factor(axes, body=_index(raw, flat))))
             value: LetExprNode = _index(names.matrix, *_ordered(member, component, at))
+            if level.prior_weight is not None:
+                raise ValueError(
+                    f"group coefficient {member.coefficient!r}: prior weights "
+                    "score one innovation per level, and a coefficient over a "
+                    "component axis draws one per level and component"
+                )
             if not centered:
-                value = _mul(_index(member.scale.site, component), value)
+                value = _mixed(
+                    level, _mul(_index(member.scale.site, component), value), at
+                )
                 if member.mean is not None:
                     value = _add(_index(member.mean.site, component), value)
+            elif level.mixing is not None:
+                raise ValueError(
+                    f"group coefficient {member.coefficient!r}: centered "
+                    "coordinates draw the coefficient itself, which has no "
+                    "Gaussian draw under Student-t mixing"
+                )
             steps.append(_let(member.coefficient, _factor(axes, body=value)))
             continue
         if centered:
