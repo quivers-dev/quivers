@@ -606,7 +606,10 @@ class MetropolisKernel(MCMCKernel):
         candidate = candidate.detach()
         with torch.no_grad():
             log_density = potential.log_density(candidate)
-        log_alpha = float(log_density - state.log_density + log_correction.reshape(()))
+        current_log_density, current_grad = state.density()
+        log_alpha = float(
+            log_density - current_log_density + log_correction.reshape(())
+        )
         if math.isnan(log_alpha):
             log_alpha = -math.inf
         accept_prob = math.exp(min(0.0, log_alpha))
@@ -616,7 +619,7 @@ class MetropolisKernel(MCMCKernel):
             new_log_density, new_grad = potential.value_and_grad(candidate)
             position = candidate
         else:
-            new_log_density, new_grad = state.log_density, state.grad_log_density
+            new_log_density, new_grad = current_log_density, current_grad
             position = state.position
         return KernelState(
             position=position,

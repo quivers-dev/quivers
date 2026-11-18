@@ -195,6 +195,15 @@ inside the prior support: positive scales exceed zero, bounded values exclude
 both endpoints, and simplex coordinates are positive and sum to one. Unknown
 names, observed sites, and incompatible shapes raise before sampling.
 
+A name may also be a site a [Gibbs block](#composing-kernels) updates. Those
+sites sit outside the latent vector, so the chain starts at the given value in
+place of a draw from the program, whatever `init_strategy` is. The value has the
+shape of one draw of the site in `MCMCResult.samples` (a scalar broadcasts), and
+it must be finite and inside the site's support, whose boundary is allowed here
+since no bijector is inverted: `initial_values={"side": 1}` starts a
+`Categorical(probs=[0.5, 0.5])` site at its second category. The Gibbs sites
+left unnamed are drawn from the program given the named ones.
+
 The driver detaches and copies the supplied tensors, so later changes to the
 caller's mapping or tensors do not change its initialization. Named values are
 part of [checkpoint compatibility](#checkpoints-budgets-and-sampler-statistics):
@@ -309,7 +318,17 @@ continuous ones.
   ([`GibbsUpdate`](../api/inference/mcmc.md#quivers.inference.mcmc.GibbsUpdate))
   that draws from its full conditional, such as a conjugate update. Every
   discrete latent must belong to a Gibbs block, and `MCMC.run` raises
-  naming any that does not.
+  naming any that does not. A block with an `update=` may also hold host
+  data, names the program reads (in a `score` step, say) without
+  declaring a distribution for them: `GibbsKernel(["z"], update=move,
+  host=True)`. `MCMC` conditions the potential on host data as it does on
+  sample sites, reports them in `MCMCResult.samples`, and saves them in
+  checkpoints. Since the program has no draw of them, every chain's
+  starting value comes from `initial_values`, taken with its own shape
+  and dtype, and the update must return that shape and dtype. Enumeration
+  needs the support of a sample site, so a host block without `update=`
+  is refused, and so is a host block in `SMC`, whose particles start from
+  the prior.
 - [`CycleKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.CycleKernel)
   applies its components in order on every transition, and
   [`MixtureKernel`](../api/inference/mcmc.md#quivers.inference.mcmc.MixtureKernel)
@@ -358,6 +377,15 @@ result = MCMC(kernel, num_warmup=300, num_samples=500, num_chains=2, seed=0).run
 print(result.samples["side"].shape)    # (2, 500): Gibbs sites are in the samples
 print(result.component_acceptance)     # {"nuts": ..., "side": ..., "walk": ...}
 ```
+
+The chain's state carries the log-density and gradient at its position,
+which a gradient kernel reuses from the component before it. A Gibbs
+sweep that changes a value leaves them unevaluated, and the next
+component that reads them, or the draw the driver records, evaluates
+them once. A cycle of several Gibbs blocks followed by NUTS thus pays one
+density-and-gradient evaluation for the whole run of blocks, a sweep that
+changes nothing pays none, and `KernelState.has_density` tells a callback
+whether the state it sees has been evaluated.
 
 A transition's statistics are in `KernelState.stats`, each component's
 under its name (`"nuts.tree_depth"`), and

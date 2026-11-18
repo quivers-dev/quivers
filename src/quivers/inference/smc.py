@@ -651,12 +651,20 @@ class SMC:
         ------
         ValueError
             If ``x`` has more than one row, the data are outside their
-            support, the kernel's Gibbs sites do not fit the model, a plate
+            support, the kernel's Gibbs sites do not fit the model or are
+            host data, which have no prior to draw particles from, a plate
             is subsampled, an explicit prior potential has unknown mass,
             or an opaque joint override prevents role decomposition.
         RuntimeError
             If no temperature step keeps the target ESS.
         """
+        host_sites = sorted(self.kernel.host_sites)
+        if host_sites:
+            raise ValueError(
+                f"SMC.run: the kernel's Gibbs sites {host_sites} are host data; "
+                "SMC draws every particle from the prior, and the program "
+                "declares no prior for them"
+            )
         _require_partitionable_joint(model)
         _require_one_run(x, "SMC.run")
         refuse_subsampling("SMC.run")

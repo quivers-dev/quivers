@@ -13,9 +13,13 @@ Every component sees the same chain state and the same chain-local
 generator. The state carries the log-density and gradient at the
 current position, under the potential conditioned on the current
 `KernelState.gibbs_values`, so a gradient kernel that follows a
-Metropolis move or a Gibbs sweep reuses the gradient its predecessor
-left. Each component receives the potential conditioned on the Gibbs
-values it starts from.
+Metropolis move reuses the gradient its predecessor left. A Gibbs
+sweep that changes a value leaves them unevaluated, and the next
+component that reads them evaluates them once, so a run of Gibbs
+blocks costs one density-and-gradient evaluation however many blocks
+it holds, and none when nothing reads the density before the values
+change again. Each component receives the potential conditioned on
+the Gibbs values it starts from.
 """
 
 from __future__ import annotations
@@ -121,6 +125,18 @@ class _CompositeKernel(MCMCKernel):
         self, kernels: Sequence[MCMCKernel] | Mapping[str, MCMCKernel]
     ) -> None:
         self._components = _named_components(kernels, type(self).__name__)
+        host = self.host_sites
+        mixed = sorted(
+            site
+            for _, kernel in self._components
+            for site in (kernel.gibbs_sites - kernel.host_sites) & host
+        )
+        if mixed:
+            raise ValueError(
+                f"{type(self).__name__}: {mixed} are host data for one component "
+                "and sample sites of the program for another; every block that "
+                "updates a name must declare it the same way"
+            )
 
     @property
     def components(self) -> dict[str, MCMCKernel]:
@@ -133,6 +149,14 @@ class _CompositeKernel(MCMCKernel):
         out: frozenset[str] = frozenset()
         for _, kernel in self._components:
             out = out | kernel.gibbs_sites
+        return out
+
+    @property
+    def host_sites(self) -> frozenset[str]:
+        """The union of the components' host-data Gibbs sites."""
+        out: frozenset[str] = frozenset()
+        for _, kernel in self._components:
+            out = out | kernel.host_sites
         return out
 
     def tune(self, population: torch.Tensor) -> None:

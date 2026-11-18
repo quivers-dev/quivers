@@ -25,12 +25,18 @@ The full conditional is drawn one of two ways:
   invariant) the block's full conditional; this covers conjugate
   updates of continuous sites and discrete structures too large to
   enumerate.
+
+A block with an update may also hold host data: names the program
+declares no distribution for and only reads, in a `Score` step for
+instance. The block declares this with ``host=True``. `MCMC` then
+conditions the potential on those names as it does on sample sites,
+records them as draws, and takes each chain's starting value of them
+from its ``initial_values``, since the program has no draw of them.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-import math
 
 import torch
 from torch.distributions import constraints as _constraints
@@ -57,7 +63,8 @@ latent_values) -> new_gibbs_values``.
 ``gibbs_values`` holds the block's current values and ``latent_values``
 the constrained values of the registry's sites (the flat vector), both
 as trace-side values: a non-plate site carries a leading run axis of
-one, a plate site has its constrained shape. The update returns new
+one, a plate site has its constrained shape, and host data have the
+shape and dtype of their starting value. The update returns new
 values for exactly the block's sites, in the same layout, drawn from
 their full conditional (or by any move that leaves it invariant), with
 every random draw taken from ``generator``."""
@@ -99,21 +106,41 @@ class GibbsKernel(MCMCKernel):
         A full-conditional sampler for the whole block. When omitted,
         each site is updated by enumerating its finite support element
         by element, which requires a boolean or bounded integer support.
+    host : bool
+        Whether the block's names are host data the program reads
+        rather than sample sites it declares. Such a block needs an
+        ``update``, and `MCMC` needs a starting value for each name in
+        its ``initial_values``.
 
     Raises
     ------
     ValueError
-        If ``sites`` is empty or names a site twice.
+        If ``sites`` is empty or names a site twice, or ``host`` is set
+        without an ``update``: enumeration scores the support of a
+        sample site, and host data have none.
     """
 
-    def __init__(self, sites: Sequence[str], update: GibbsUpdate | None = None) -> None:
+    def __init__(
+        self,
+        sites: Sequence[str],
+        update: GibbsUpdate | None = None,
+        *,
+        host: bool = False,
+    ) -> None:
         names = tuple(sites)
         if not names:
             raise ValueError("GibbsKernel: sites must name at least one site")
         if len(set(names)) != len(names):
             raise ValueError(f"GibbsKernel: sites {names} name a site twice")
+        if host and update is None:
+            raise ValueError(
+                f"GibbsKernel: {list(names)} are declared host data, which have no "
+                "support to enumerate; pass update= with a sampler for the block, "
+                "or declare them as sample sites of the program"
+            )
         self._sites = names
         self._update = update
+        self._host = host
         self._supports: dict[str, torch.Tensor] = {}
         self._registry: LatentRegistry | None = None
 
@@ -122,8 +149,15 @@ class GibbsKernel(MCMCKernel):
         """The block's sites."""
         return frozenset(self._sites)
 
+    @property
+    def host_sites(self) -> frozenset[str]:
+        """The block's sites when it holds host data, else none."""
+        return frozenset(self._sites) if self._host else frozenset()
+
     def configuration(self) -> dict[str, StateValue]:
         """The class, the sites, and the update function's qualified name.
+
+        A block over host data also records that it is one.
 
         Returns
         -------
@@ -136,7 +170,14 @@ class GibbsKernel(MCMCKernel):
             else f"{getattr(self._update, '__module__', '')}."
             f"{getattr(self._update, '__qualname__', type(self._update).__qualname__)}"
         )
-        return {**super().configuration(), "sites": list(self._sites), "update": update}
+        configuration: dict[str, StateValue] = {
+            **super().configuration(),
+            "sites": list(self._sites),
+            "update": update,
+        }
+        if self._host:
+            configuration["host"] = True
+        return configuration
 
     def init(
         self,
@@ -161,7 +202,8 @@ class GibbsKernel(MCMCKernel):
         x : torch.Tensor
             The one-row input.
         observations : dict[str, torch.Tensor]
-            The data.
+            The data, with the chain's current values of any host data
+            a Gibbs block updates.
         initial_position : torch.Tensor
             The flat vector's starting position, shape ``(D,)``.
 
@@ -288,11 +330,14 @@ class GibbsKernel(MCMCKernel):
         Returns
         -------
         KernelState
-            The state with the block's new values, and the log-density
-            and gradient of the flat vector under the potential
-            conditioned on them. ``stats["accepted"]`` is ``1.0`` when
-            the sweep changed a value; ``stats["accept_prob"]`` is
-            ``1.0``.
+            The state with the block's new values.
+            ``stats["accepted"]`` is ``1.0`` when the sweep changed a
+            value; ``stats["accept_prob"]`` is ``1.0``. A sweep that
+            changed a value leaves the log-density and gradient
+            unevaluated, for the transition that next reads them to
+            evaluate under the potential conditioned on the new values
+            (`KernelState.evaluated`); a sweep that changed nothing
+            passes on the density it was given.
 
         Raises
         ------
@@ -337,18 +382,11 @@ class GibbsKernel(MCMCKernel):
             not torch.equal(proposed[name], current[name]) for name in self._sites
         )
         gibbs_values = {**state.gibbs_values, **proposed}
-        log_density, grad = potential.condition(gibbs_values).value_and_grad(
-            state.position
-        )
-        if not math.isfinite(float(log_density)):
-            raise RuntimeError(
-                "GibbsKernel: the chain's log-density is not finite after the "
-                f"update of {sorted(self._sites)}"
-            )
+        keeps_density = state.has_density and not changed
         return KernelState(
             position=state.position,
-            log_density=log_density,
-            grad_log_density=grad,
+            log_density=state.log_density if keeps_density else None,
+            grad_log_density=state.grad_log_density if keeps_density else None,
             step_count=state.step_count + 1,
             accept_count=state.accept_count + int(changed),
             diverged=False,

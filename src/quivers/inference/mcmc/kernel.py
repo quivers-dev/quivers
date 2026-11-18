@@ -22,6 +22,7 @@ the kernel itself.
 from __future__ import annotations
 
 import copy
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -216,19 +217,30 @@ class KernelState(ValueModel):
     state with its own counters and density fields, retaining the runtime
     references that remain part of the chain.
 
+    The log-density and its gradient are evaluated when they are first
+    read. A transition that knows them at the state it returns (the
+    endpoint of a trajectory, an accepted candidate) stores them, and a
+    transition that changes values outside the flat vector, as a
+    `GibbsKernel` does, leaves them unevaluated, since the transition
+    that follows may change those values again without reading the
+    density. `has_density` says which, `evaluated` returns the state with
+    them evaluated, at the cost of one `PotentialFn.value_and_grad` when
+    they are not, and `density` reads them.
+
     Attributes
     ----------
     position : torch.Tensor
         Current flat unconstrained latent vector. Shape ``(D,)``
         for one chain, ``(num_chains, D)`` for parallel chains.
-    log_density : torch.Tensor
+    log_density : torch.Tensor | None
         Unconstrained-space log-density (Jacobian-corrected
         log-joint) at ``position``. Shape ``()`` or
-        ``(num_chains,)``.
-    grad_log_density : torch.Tensor
+        ``(num_chains,)``. ``None`` when not evaluated.
+    grad_log_density : torch.Tensor | None
         Gradient of ``log_density`` with respect to ``position``,
         same shape as ``position``. Cached so leapfrog re-uses the
-        last-evaluated gradient at the proposal endpoint.
+        last-evaluated gradient at the proposal endpoint. ``None``
+        exactly when ``log_density`` is.
     step_count : int
         Number of `step` calls so far (counts both warmup
         and post-warmup steps).
@@ -259,8 +271,12 @@ class KernelState(ValueModel):
     """
 
     position: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    log_density: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
-    grad_log_density: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+    log_density: torch.Tensor | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    grad_log_density: torch.Tensor | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     step_count: int = 0
     accept_count: int = 0
     diverged: bool = False
@@ -281,11 +297,20 @@ class KernelState(ValueModel):
         Raises
         ------
         TypeError
-            If a tensor or mapping has an incompatible runtime type.
+            If a tensor or mapping has an incompatible runtime type, or
+            only one of the log-density and its gradient is present.
         """
-        for name in ("position", "log_density", "grad_log_density"):
-            if not isinstance(getattr(self, name), torch.Tensor):
-                raise TypeError(f"KernelState.{name} must be a torch.Tensor")
+        if not isinstance(self.position, torch.Tensor):
+            raise TypeError("KernelState.position must be a torch.Tensor")
+        for name in ("log_density", "grad_log_density"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, torch.Tensor):
+                raise TypeError(f"KernelState.{name} must be a torch.Tensor or None")
+        if (self.log_density is None) != (self.grad_log_density is None):
+            raise TypeError(
+                "KernelState.log_density and KernelState.grad_log_density are "
+                "evaluated together: both are tensors or both are None"
+            )
         for name in ("extras", "stats", "gibbs_values"):
             value = getattr(self, name)
             if not isinstance(value, dict) or not all(
@@ -299,14 +324,77 @@ class KernelState(ValueModel):
         ):
             raise TypeError("KernelState.gibbs_values must contain tensors")
 
+    @property
+    def has_density(self) -> bool:
+        """Whether the log-density and gradient at this state are evaluated.
+
+        They are not before the chain's first transition, when the
+        fields hold whatever the kernel's `MCMCKernel.init` put there,
+        nor after a transition that left them ``None``.
+        """
+        return self.step_count > 0 and self.log_density is not None
+
+    def density(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """The stored log-density and gradient.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            ``log_density`` and ``grad_log_density``.
+
+        Raises
+        ------
+        RuntimeError
+            If they are ``None``; `evaluated` gives a state that has them.
+        """
+        if self.log_density is None or self.grad_log_density is None:
+            raise RuntimeError(
+                "KernelState.density: the state's log-density is not evaluated; "
+                "read it from KernelState.evaluated(potential)"
+            )
+        return self.log_density, self.grad_log_density
+
+    def evaluated(self, potential: PotentialFn) -> KernelState:
+        """The state with its log-density and gradient evaluated.
+
+        Parameters
+        ----------
+        potential : PotentialFn
+            The target conditioned on this state's ``gibbs_values``.
+
+        Returns
+        -------
+        KernelState
+            This state when `has_density`; otherwise a state with the
+            same fields and the potential's value and gradient at
+            ``position``, from one `PotentialFn.value_and_grad`.
+
+        Raises
+        ------
+        RuntimeError
+            If a transition left the density unevaluated and it is not
+            finite: the values the transition wrote outside the flat
+            vector have no density under the model.
+        """
+        if self.has_density:
+            return self
+        log_density, grad = potential.value_and_grad(self.position)
+        if self.step_count > 0 and not math.isfinite(float(log_density)):
+            raise RuntimeError(
+                "KernelState.evaluated: the chain's log-density is not finite at "
+                f"the values a transition left for {sorted(self.gibbs_values)}"
+            )
+        return self.with_(log_density=log_density, grad_log_density=grad)
+
     def state_dict(self) -> dict[str, StateValue]:
         """The state as a dictionary a checkpoint can store.
 
         Returns
         -------
         dict[str, StateValue]
-            Every field, with tensors detached; `from_state_dict`
-            rebuilds the state exactly.
+            Every field, with tensors detached and an unevaluated
+            density as ``None``; `from_state_dict` rebuilds the state
+            exactly.
 
         Raises
         ------
@@ -326,8 +414,14 @@ class KernelState(ValueModel):
             )
         return {
             "position": self.position.detach(),
-            "log_density": self.log_density.detach(),
-            "grad_log_density": self.grad_log_density.detach(),
+            "log_density": (
+                None if self.log_density is None else self.log_density.detach()
+            ),
+            "grad_log_density": (
+                None
+                if self.grad_log_density is None
+                else self.grad_log_density.detach()
+            ),
             "step_count": self.step_count,
             "accept_count": self.accept_count,
             "diverged": self.diverged,
@@ -369,8 +463,8 @@ class KernelState(ValueModel):
             raise ValueError(f"KernelState.from_state_dict: missing {error}") from None
         if not (
             isinstance(position, torch.Tensor)
-            and isinstance(log_density, torch.Tensor)
-            and isinstance(grad, torch.Tensor)
+            and (log_density is None or isinstance(log_density, torch.Tensor))
+            and (grad is None or isinstance(grad, torch.Tensor))
             and isinstance(step_count, int)
             and isinstance(accept_count, int)
             and isinstance(diverged, bool)
@@ -799,6 +893,19 @@ class MCMCKernel(ABC):
         """
         return frozenset()
 
+    @property
+    def host_sites(self) -> frozenset[str]:
+        """The Gibbs sites that are host data, not sample sites of the program.
+
+        A subset of `gibbs_sites`. The program declares no distribution
+        for such a name: its steps read it as data, the kernel's update
+        moves it, and `MCMC` takes each chain's starting value of it
+        from the caller. A kernel that updates only sample sites of the
+        program has none, and a composite kernel has the union of its
+        components'.
+        """
+        return frozenset()
+
     def tune(self, population: torch.Tensor) -> None:
         """Tune the kernel to a population of positions.
 
@@ -873,29 +980,35 @@ class MCMCKernel(ABC):
 
     @staticmethod
     def _evaluate_first(state: KernelState, potential: PotentialFn) -> KernelState:
-        """Return a first state with its log-density and gradient evaluated.
+        """Return the state a transition starts from with its log-density
+        and gradient evaluated.
 
-        A kernel's `init` returns a state whose log-density and
-        gradient are placeholders, since the potential is not known to
-        `init`; the first transition of the chain (``step_count == 0``)
-        evaluates them before using them.
+        A transition that reads the density calls this first. The state
+        lacks it before the chain's first transition
+        (``step_count == 0``: a kernel's `init` does not know the
+        potential, so what it puts in the fields is a placeholder) and
+        after a transition that left it unevaluated, as a `GibbsKernel`
+        does; `KernelState.evaluated` evaluates it then, once.
 
         Parameters
         ----------
         state : KernelState
             The state a transition starts from.
         potential : PotentialFn
-            The target.
+            The target, conditioned on the state's Gibbs values.
 
         Returns
         -------
         KernelState
-            An evaluated state for the first transition, otherwise ``state``.
+            ``state`` when it has its density, otherwise the state with
+            it evaluated.
+
+        Raises
+        ------
+        RuntimeError
+            If the density a transition left unevaluated is not finite.
         """
-        if state.step_count == 0:
-            ld, g = potential.value_and_grad(state.position)
-            return state.with_(log_density=ld, grad_log_density=g)
-        return state
+        return state.evaluated(potential)
 
     @abstractmethod
     def init(
