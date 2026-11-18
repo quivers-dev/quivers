@@ -4772,10 +4772,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             for membership in predictor.grouping.memberships:
                 if membership.group == self._thresholds_by:
                     raise ValueError(
-                        f"multi-membership factor {membership.group!r} supports scalar "
-                        "group coefficients only: not category-specific coefficients, "
-                        "coefficients over the response categories, or grouped "
-                        "thresholds"
+                        f"multi-membership factor {membership.group!r} cannot group "
+                        "thresholds: grouped thresholds read one level per row, "
+                        "and a row of an mm() factor has several"
                     )
 
         program_steps: list[ProgramStep] = []

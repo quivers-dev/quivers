@@ -519,11 +519,12 @@ def test_invalid_membership_covariances_are_refused():
             ordered=True,
         )
     )
-    with pytest.raises(ValueError, match="not category-specific coefficients"):
+    with pytest.raises(ValueError, match="cannot group thresholds"):
         fit(
-            "o ~ x1 + (cs(1) | mm(g1, g2))",
+            "o ~ x1 + (1 | mm(g1, g2))",
             data=ordered,
-            family="acat",
+            family="cumulative",
+            thresholds_by="mmg1g2",
             method="svi",
             num_steps=1,
         )
