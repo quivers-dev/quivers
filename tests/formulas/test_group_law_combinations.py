@@ -34,7 +34,7 @@ from quivers.formulas import (
     formula_from_data,
 )
 from quivers.formulas._fit import _prepare_formula
-from quivers.formulas._group_law import group_coefficients
+from quivers.formulas._group_law import MembershipRows, group_coefficients
 from quivers.inference.trace import trace
 
 Parameterization = Literal["centered", "noncentered"]
@@ -534,4 +534,118 @@ def test_student_scale_coefficients_over_components_fit_and_predict_new_levels()
     draws = fitted.posterior_predict(
         new_data=fresh, num_samples=2, seed=1, allow_new_levels=True
     )
+    assert torch.isfinite(torch.as_tensor(draws, dtype=torch.float64)).all()
+
+
+@pytest.mark.parametrize("bar", ["|", "||"], ids=["correlated", "independent"])
+def test_multi_membership_coefficients_over_the_response_categories(bar: str):
+    """eta[n, c] = a_c + b_c x_n + sum_k B[J_k[n], c] C_k[n]."""
+    frame = _frame(24)
+    parsed = formula_from_data(f"k3 ~ x + (1 {bar} mm(g, h))", frame)
+    lens = FormulaToQVRModule(families["categorical"])
+    module, complement = lens.forward(parsed)
+    program = Compiler(module).compile().morphism
+    assert isinstance(program, MonadicProgram)
+    observed = dict(lens.fixed_column_observations(parsed))
+    observed["k3"] = torch.as_tensor(parsed.response_values.copy())
+    (law,) = complement.group_laws
+    (member,) = law.members
+    assert member.axis is not None and member.width == 2
+    assert isinstance(member.rows, MembershipRows)
+    levels = len(parsed.group_levels[law.group])
+    raw_site = member.raw_site
+    assert raw_site is not None
+    sites = law.correlation.sites
+    x = torch.as_tensor(frame["x"].to_numpy(dtype=float))
+    y = observed["k3"].long()
+    codes = [observed[name].long() for name in member.rows.indices]
+    weights = [observed[name].to(torch.float64) for name in member.rows.covariates]
+    assert len(codes) == 2
+    generator = torch.Generator().manual_seed(7)
+    latent = {
+        "intercept": torch.tensor([0.1, -0.3], dtype=torch.float64),
+        "beta_x": torch.tensor([-0.2, 0.4], dtype=torch.float64),
+        member.scale.site: torch.tensor([0.7, 0.5], dtype=torch.float64),
+        raw_site: torch.randn(levels * 2, generator=generator, dtype=torch.float64),
+    }
+    if sites:
+        latent[sites[0]] = torch.tensor(
+            [[1.0, 0.0], [0.3, (1 - 0.3**2) ** 0.5]], dtype=torch.float64
+        )
+    latent = {name: value.requires_grad_() for name, value in latent.items()}
+
+    def oracle(members: int = 2) -> torch.Tensor:
+        normal = torch.distributions.Normal
+        correlation = latent[sites[0]] if sites else torch.eye(2, dtype=torch.float64)
+        effects = (
+            latent[raw_site].reshape(levels, 2)
+            @ (latent[member.scale.site][:, None] * correlation).T
+        )
+        free = latent["intercept"] + latent["beta_x"] * x[:, None]
+        for index, weight in list(zip(codes, weights, strict=True))[:members]:
+            free = free + effects[index] * weight[:, None]
+        logits = torch.cat([torch.zeros(len(x), 1, dtype=torch.float64), free], dim=1)
+        return (
+            normal(0.0, 5.0).log_prob(latent["intercept"]).sum()
+            + normal(0.0, 5.0 / x.square().mean().sqrt())
+            .log_prob(latent["beta_x"])
+            .sum()
+            + torch.distributions.HalfNormal(1.0)
+            .log_prob(latent[member.scale.site])
+            .sum()
+            + (
+                torch.distributions.LKJCholesky(
+                    2, torch.tensor(1.0, dtype=torch.float64)
+                ).log_prob(latent[sites[0]])
+                if sites
+                else 0.0
+            )
+            + normal(0.0, 1.0).log_prob(latent[raw_site]).sum()
+            + torch.distributions.Categorical(logits=logits).log_prob(y).sum()
+        )
+
+    actual = _log_joint(program, observed | latent)
+    torch.testing.assert_close(actual, oracle(), rtol=TOLERANCE, atol=TOLERANCE)
+    assert abs(float(oracle(members=1) - actual)) > 1e-3
+    heads = tuple(latent.values())
+    for got, expected in zip(
+        torch.autograd.grad(actual, heads, retain_graph=True),
+        torch.autograd.grad(oracle(), heads),
+        strict=True,
+    ):
+        torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "text,options",
+    [
+        (
+            "cbind(p1, p2, p3) ~ x",
+            {
+                "family": "logistic_normal",
+                "distributional": {"sigma": "~ 1 + (1 | mm(g, h))"},
+            },
+        ),
+        ("o ~ x + (cs(x) | mm(g, h))", {"family": "acat"}),
+        (
+            "o ~ x + (cs(x) || mm(g, h))",
+            {"family": "acat", "reparameterize": "centered"},
+        ),
+    ],
+    ids=["scale-components", "category-specific", "category-specific-centered"],
+)
+def test_multi_membership_component_coefficients_fit_and_predict(
+    text: str, options: dict
+):
+    frame = _simplex_frame().assign(o=[index % 4 for index in range(24)])
+    fitted = fit(text, data=frame, method="svi", num_steps=3, seed=2, **options)
+    assert fitted.prediction_plan is not None
+    members = [
+        member for law in fitted.prediction_plan.group_laws for member in law.members
+    ]
+    assert any(
+        member.axis is not None and isinstance(member.rows, MembershipRows)
+        for member in members
+    )
+    draws = fitted.posterior_predict(new_data=frame.iloc[:4], num_samples=2, seed=1)
     assert torch.isfinite(torch.as_tensor(draws, dtype=torch.float64)).all()

@@ -4766,19 +4766,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 f"mo() terms are not supported in {self._family.name} predictors "
                 "that carry one coefficient per response category"
             )
-        # brms mm() factors enter only through scalar group coefficients.
+        # Grouped thresholds read one level per row, which a row with several
+        # member levels does not have.
         for _, prefix, predictor in self._predictor_items(formula):
             for membership in predictor.grouping.memberships:
-                if (
-                    prefix in component_valued
-                    or membership.group == self._thresholds_by
-                    or any(
-                        term.group == membership.group
-                        and term.column is not None
-                        and term.column.category_specific
-                        for term in predictor.random_terms
-                    )
-                ):
+                if membership.group == self._thresholds_by:
                     raise ValueError(
                         f"multi-membership factor {membership.group!r} supports scalar "
                         "group coefficients only: not category-specific coefficients, "
