@@ -543,6 +543,14 @@ def _draw_support_coefficients(
             f"group block {law.identity!r}: a known level covariance has one "
             "coefficient correlation for every level"
         )
+    if level.mixing is not None and any(
+        member.mean is not None for member in law.members
+    ):
+        raise ValueError(
+            f"group block {law.identity!r}: Student-t mixing scales the deviation "
+            "of a coefficient from its mean, which a support block with an "
+            "affine mean does not separate"
+        )
     correlation = (
         law.correlation.site if isinstance(law.correlation, LKJCorrelation) else None
     )

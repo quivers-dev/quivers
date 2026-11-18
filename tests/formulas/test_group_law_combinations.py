@@ -189,6 +189,144 @@ def test_scale_predictor_known_covariance_fits_and_predicts_new_levels():
     assert draws.shape[-1] == 3 and torch.isfinite(draws).all()
 
 
+@pytest.mark.parametrize("covariance", [FULL, DEFICIENT], ids=["full", "deficient"])
+def test_student_coefficients_with_a_known_level_covariance(covariance):
+    """B = diag(sqrt(df * udf)) . F Z . (diag(sd) L)^T for the support factor F."""
+    frame = _frame()
+    lens, formula, program, observed, complement = _compiled(
+        "y ~ x + (1 + x | gr(g, dist = 'student'))",
+        frame,
+        group_covariances={"g": covariance},
+    )
+    (law,) = complement.group_laws
+    basis = law.level.basis
+    assert basis is not None and law.level.mixing is not None
+    _, _, factor = basis.tensors()
+    x = torch.as_tensor(frame["x"].to_numpy(dtype=float))
+    y = observed["y"]
+    rows = observed["g_idx"]
+    generator = torch.Generator().manual_seed(3)
+    latent = {
+        "intercept": torch.tensor(0.1, dtype=torch.float64),
+        "beta_x": torch.tensor(-0.2, dtype=torch.float64),
+        "sigma": torch.tensor(0.8, dtype=torch.float64),
+        "df_g": torch.tensor(3.5, dtype=torch.float64),
+        "udf_g": torch.tensor([0.4, 0.7, 1.1], dtype=torch.float64),
+        "sigma_g_Intercept": torch.tensor(0.7, dtype=torch.float64),
+        "sigma_g_x": torch.tensor(0.5, dtype=torch.float64),
+        f"cor_{law.identity}": torch.tensor(
+            [[1.0, 0.0], [0.3, (1 - 0.3**2) ** 0.5]], dtype=torch.float64
+        ),
+        f"group_covariance_{law.identity}": torch.randn(
+            basis.rank, 2, generator=generator, dtype=torch.float64
+        ),
+    }
+    latent = {name: value.requires_grad_() for name, value in latent.items()}
+
+    def coefficients(mixing: bool) -> torch.Tensor:
+        scale = torch.stack([latent["sigma_g_Intercept"], latent["sigma_g_x"]])
+        gaussian = (
+            factor
+            @ latent[f"group_covariance_{law.identity}"]
+            @ (scale[:, None] * latent[f"cor_{law.identity}"]).T
+        )
+        if not mixing:
+            return gaussian
+        return torch.sqrt(latent["df_g"] * latent["udf_g"])[:, None] * gaussian
+
+    def oracle(mixing: bool = True) -> torch.Tensor:
+        normal = torch.distributions.Normal
+        effects = coefficients(mixing)
+        mu = (
+            latent["intercept"]
+            + latent["beta_x"] * x
+            + effects[rows, 0]
+            + effects[rows, 1] * x
+        )
+        scale = torch.stack([latent["sigma_g_Intercept"], latent["sigma_g_x"]])
+        return (
+            normal(0.0, 5.0).log_prob(latent["intercept"])
+            + normal(0.0, 5.0 / x.square().mean().sqrt()).log_prob(latent["beta_x"])
+            + torch.distributions.HalfCauchy(2.0).log_prob(latent["sigma"])
+            + _df_log_prior(latent["df_g"])
+            + torch.distributions.InverseGamma(
+                latent["df_g"] / 2, latent["df_g"].new_tensor(0.5)
+            )
+            .log_prob(latent["udf_g"])
+            .sum()
+            + torch.distributions.HalfNormal(1.0).log_prob(scale).sum()
+            + torch.distributions.LKJCholesky(
+                2, torch.tensor(1.0, dtype=torch.float64)
+            ).log_prob(latent[f"cor_{law.identity}"])
+            + normal(0.0, 1.0)
+            .log_prob(latent[f"group_covariance_{law.identity}"])
+            .sum()
+            + normal(mu, latent["sigma"]).log_prob(y).sum()
+        )
+
+    actual = _log_joint(program, observed | latent)
+    torch.testing.assert_close(actual, oracle(), rtol=TOLERANCE, atol=TOLERANCE)
+    assert abs(float(oracle(mixing=False) - actual)) > 1e-3
+    heads = tuple(latent.values())
+    for got, expected in zip(
+        torch.autograd.grad(actual, heads, retain_graph=True),
+        torch.autograd.grad(oracle(), heads),
+        strict=True,
+    ):
+        torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-5)
+    rebuilt = group_coefficients(
+        _retained(latent), complement.group_laws, formula.group_levels
+    )
+    expected = coefficients(True).detach()
+    torch.testing.assert_close(
+        rebuilt[("", "g", "Intercept")].reshape(3), expected[:, 0]
+    )
+    torch.testing.assert_close(rebuilt[("", "g", "x")].reshape(3), expected[:, 1])
+
+
+def test_student_known_covariance_fits_and_predicts_new_levels():
+    frame = _frame(24)
+    fitted = fit(
+        "y ~ x + (1 + x | gr(g, dist = 'student'))",
+        data=frame,
+        group_covariances={"g": FULL},
+        method="svi",
+        num_steps=3,
+        seed=2,
+    )
+    fresh = frame.iloc[:3].assign(g=["a", "d", "c"])
+    draws = fitted.posterior_predict(
+        new_data=fresh, num_samples=2, seed=1, allow_new_levels=True
+    )
+    assert draws.shape[-1] == 3 and torch.isfinite(draws).all()
+    effects = fitted.ranef()
+    assert effects is not None
+
+
+def _simplex_frame(rows: int = 24) -> pd.DataFrame:
+    generator = np.random.default_rng(41)
+    parts = generator.dirichlet([2.0, 3.0, 4.0], size=rows)
+    return _frame(rows).assign(p1=parts[:, 0], p2=parts[:, 1], p3=parts[:, 2])
+
+
+def test_student_category_known_covariance_fits_and_predicts_new_levels():
+    frame = _simplex_frame()
+    fitted = fit(
+        "cbind(p1, p2, p3) ~ x + (1 | gr(g, dist = 'student'))",
+        data=frame,
+        family="dirichlet",
+        group_covariances={"g": FULL},
+        method="svi",
+        num_steps=3,
+        seed=2,
+    )
+    fresh = frame.iloc[:3].assign(g=["a", "d", "c"])
+    draws = fitted.posterior_predict(
+        new_data=fresh, num_samples=2, seed=1, allow_new_levels=True
+    )
+    assert torch.isfinite(torch.as_tensor(draws, dtype=torch.float64)).all()
+
+
 OFF_MAIN = {
     "scale": ("y ~ x", {"distributional": {"sigma": "~ 1 + (1 | g)"}}),
     "nonlinear": (

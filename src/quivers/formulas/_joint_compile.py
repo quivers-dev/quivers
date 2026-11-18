@@ -953,28 +953,32 @@ def _shared_groups(
                     for index in lens._family.response.coordinate_indices(names)
                 )
             predictors.append((parameter, actual_prefix, predictor))
-        values = emit_group_block(
-            emitter,
-            plan_joint_block(
-                group,
-                "joint_shared_" + identity,
-                [
-                    (actual_prefix, term, predictor)
-                    for (actual_prefix, term), (_, _, _, predictor, _) in zip(
-                        actual, members, strict=True
-                    )
-                ],
-                axes,
-                option=all_group_options(emitter._predictor_items(grouping)).get(group),
-                basis=emitter._level_basis(group, grouping.group_levels)
-                if group in emitter._group_covariances
-                else None,
-                correlate=True,
-                parameterization=emitter._reparameterize,
-            ),
-            statements,
-            steps,
+        law = plan_joint_block(
+            group,
+            "joint_shared_" + identity,
+            [
+                (actual_prefix, term, predictor)
+                for (actual_prefix, term), (_, _, _, predictor, _) in zip(
+                    actual, members, strict=True
+                )
+            ],
+            axes,
+            option=all_group_options(emitter._predictor_items(grouping)).get(group),
+            basis=emitter._level_basis(group, grouping.group_levels)
+            if group in emitter._group_covariances
+            else None,
+            correlate=True,
+            parameterization=emitter._reparameterize,
         )
+        if law.level.mixing is not None and law.level.basis is not None:
+            # The Student-t mixing sites of a factor are emitted by each
+            # response's own program, so a block shared across responses
+            # cannot read them from its support coordinates.
+            raise ValueError(
+                f"gr({group}) options by, dist, and pw are not supported together "
+                "with a known level covariance"
+            )
+        values = emit_group_block(emitter, law, statements, steps)
         for name, _parameter, prefix, _predictor, term in members:
             actual_prefix = "response_" + _qvr_name(name) + "__" + prefix
             supplied[name][(prefix, group, term.slope)] = values[

@@ -718,13 +718,15 @@ def check_group_options(
     """
     predictors = tuple(predictors)
     component_valued = component_valued_prefixes(lens._family, lens._distributional)
-    for group in all_group_options(predictors):
+    for group, option in all_group_options(predictors).items():
         if lens._reparameterize == "centered":
             raise ValueError(
                 f"gr({group}) options by, dist, and pw use brms's noncentered "
                 "innovations; use reparameterize='noncentered'"
             )
-        if group in lens._group_covariances:
+        if group in lens._group_covariances and (
+            option.by_levels or option.prior_weights
+        ):
             raise ValueError(
                 f"gr({group}) options by, dist, and pw are not supported together "
                 "with a known level covariance"
