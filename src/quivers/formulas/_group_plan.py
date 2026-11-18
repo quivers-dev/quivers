@@ -26,7 +26,6 @@ from quivers.formulas._group_law import (
     KnownCovariance,
     LevelCovariance,
     LKJCorrelation,
-    MemberBinders,
     MembershipRows,
     PriorWeight,
     RowMap,
@@ -446,9 +445,6 @@ def plan_inline_block(
                     component_axis=axis[0] if axis is not None else None,
                 ),
                 rows=row_map(formula, term, prefix),
-                binders=MemberBinders(
-                    matrix=f"{raw}_matrix", cell_scale=f"{raw}_scale"
-                ),
                 cell_axis=cell_axis(prefix, group, term.slope)
                 if axis is not None
                 else None,
@@ -459,6 +455,49 @@ def plan_inline_block(
         placement="inline",
         coordinate_axis=axis[0] if axis is not None else None,
     )
+
+
+def admit_block(
+    law: GroupBlockLaw, *, component_valued: Collection[str], family: str
+) -> None:
+    """Refuse a block whose level factors its carrier cannot express.
+
+    Parameters
+    ----------
+    law : GroupBlockLaw
+        Planned block.
+    component_valued : Collection[str]
+        Namespaces of the predictors with one coefficient per component.
+    family : str
+        Response family, named in the refusal.
+
+    Raises
+    ------
+    ValueError
+        For a ``by`` partition, Student-t mixing, or prior weights with
+        centered coordinates; for a ``by`` partition or prior weights with a
+        known level covariance, whose innovations live in support
+        coordinates that no level owns; and for a ``by`` partition or prior
+        weights on a predictor with one coefficient per component.
+    """
+    level = law.level
+    indexed = level.by is not None or level.prior_weight is not None
+    if law.parameterization == "centered" and (indexed or level.mixing is not None):
+        raise ValueError(
+            f"gr({law.group}) options by, dist, and pw use brms's noncentered "
+            "innovations; use reparameterize='noncentered'"
+        )
+    if level.basis is not None and indexed:
+        raise ValueError(
+            f"gr({law.group}) options by, dist, and pw are not supported together "
+            "with a known level covariance"
+        )
+    if indexed and any(member.prefix in component_valued for member in law.members):
+        raise ValueError(
+            f"gr({law.group}) options by, dist, and pw are supported for scalar "
+            f"group coefficients, not for {family} predictors that "
+            "carry one coefficient per response category"
+        )
 
 
 def plan_group_blocks(
@@ -591,8 +630,7 @@ def plan_threshold_block(
     Returns
     -------
     GroupBlockLaw
-        One member over the spacing axis with an affine mean, bound by
-        level before spacing.
+        One member over the spacing axis with an affine mean.
     """
     identity = f"thresholds_{_qvr_name(group)}"
     if basis is not None:
@@ -629,15 +667,6 @@ def plan_threshold_block(
                 rows=SingleLevelRows(index=f"{_qvr_name(group)}_idx"),
                 mean=GroupMean(
                     site="cutpoint_log_spacing_mean", prior="Normal(0.0, 1.0)"
-                ),
-                binders=MemberBinders(
-                    level="threshold_group",
-                    component="spacing",
-                    cell="threshold_cell",
-                    matrix="cutpoint_noise_matrix",
-                    cell_scale="cutpoint_log_spacing_cell_scale",
-                    cell_mean="cutpoint_log_spacing_cell_mean",
-                    level_major=True,
                 ),
                 cell_axis=cell_axis if basis is None else None,
             ),

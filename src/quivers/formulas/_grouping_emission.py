@@ -23,22 +23,12 @@ import pandas as pd
 import torch
 
 from quivers.dsl.ast_nodes import (
-    DrawArgName,
-    DrawArgNamed,
-    DrawArgScalar,
-    LetExprLiteral,
-    ProgramStep,
-    SampleStep,
-    Statement,
-    TypeName,
     QiecIndexName,
     QiecShapeIndex,
     QiecTypeApplication,
     QiecTypeName,
     QiecValueParameter,
 )
-from quivers.formulas._ast import _call, _factor, _index, _let, _mul, _var
-from quivers.formulas._category_formulas import component_valued_prefixes
 from quivers.formulas._grouping import (
     GroupLevelOptions,
     Membership,
@@ -49,7 +39,6 @@ from quivers.formulas.formula import Formula, RandomTerm, _qvr_name
 
 if TYPE_CHECKING:
     from quivers.formulas._group_prediction import GroupRemap
-    from quivers.formulas.compile import FormulaToQVRModule
 
 __all__: list[str] = []
 
@@ -486,71 +475,6 @@ def all_group_options(
     return merged
 
 
-def append_group_options(
-    lens: FormulaToQVRModule,
-    predictors: Iterable[tuple[str, str, Formula]],
-    statements: list[Statement],
-    steps: list[ProgramStep],
-) -> None:
-    """Declare ``by`` axes and emit Student-t mixing scales once per factor.
-
-    For ``dist = "student"`` brms draws ``df ~ gamma(2, 0.1)`` restricted to
-    ``df > 1``, one ``udf_j ~ inv_chi_square(df)`` per level, and multiplies
-    every Gaussian group coefficient of level ``j`` by
-    ``dfm_j = sqrt(df * udf_j)``, a scale mixture whose marginal law is the
-    multivariate Student-t with ``df`` degrees of freedom.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the prior configuration.
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-    statements : list[Statement]
-        Module declarations receiving the ``by`` axes.
-    steps : list[ProgramStep]
-        Program steps receiving the Student-t draws.
-    """
-    predictors = tuple(predictors)
-    check_group_options(lens, predictors)
-    for group, option in all_group_options(predictors).items():
-        if option.by_levels:
-            lens._append_finite_object(
-                statements, by_axis(group), len(option.by_levels)
-            )
-        if not option.options.student:
-            continue
-        df, udf, dfm = student_sites(group)
-        qgroup = _qvr_name(group)
-        steps.append(lens._prior_draw(df, "Gamma(2.0, 0.1)", lower=1.0))
-        steps.append(_let(df + "_half", _mul(_var(df), LetExprLiteral(value=0.5))))
-        steps.append(
-            SampleStep(
-                vars=(udf,),
-                morphism="InverseGamma",
-                args=(
-                    DrawArgNamed(
-                        parameter="concentration", value=DrawArgName(text=df + "_half")
-                    ),
-                    DrawArgNamed(parameter="rate", value=DrawArgScalar(value=0.5)),
-                ),
-                index=TypeName(name=qgroup),
-            )
-        )
-        steps.append(
-            _let(
-                dfm,
-                _factor(
-                    (("student_level", qgroup),),
-                    body=_call(
-                        "sqrt",
-                        _mul(_var(df), _index(udf, _var("student_level"))),
-                    ),
-                ),
-            )
-        )
-
-
 def option_runtime_parameters(
     predictors: Iterable[tuple[str, str, Formula]],
 ) -> tuple[QiecValueParameter, ...]:
@@ -695,51 +619,3 @@ def by_correlation_sites(identity: str, option: GroupLevelOptions) -> tuple[str,
         f"cor_{_qvr_name(identity)}_by{index + 1}"
         for index in range(len(option.by_levels))
     )
-
-
-def check_group_options(
-    lens: FormulaToQVRModule, predictors: Iterable[tuple[str, str, Formula]]
-) -> None:
-    """Refuse ``gr()`` options that the block carriers cannot express.
-
-    Parameters
-    ----------
-    lens : FormulaToQVRModule
-        Compiler and its configuration.
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-
-    Raises
-    ------
-    ValueError
-        For any option with centered coordinates; for ``by`` or ``pw``
-        together with a known level covariance, whose innovations live in
-        support coordinates that no level owns; and for ``by`` or ``pw`` on
-        a predictor with one coefficient per response category.
-    """
-    predictors = tuple(predictors)
-    component_valued = component_valued_prefixes(lens._family, lens._distributional)
-    for group, option in all_group_options(predictors).items():
-        if lens._reparameterize == "centered":
-            raise ValueError(
-                f"gr({group}) options by, dist, and pw use brms's noncentered "
-                "innovations; use reparameterize='noncentered'"
-            )
-        if group in lens._group_covariances and (
-            option.by_levels or option.prior_weights
-        ):
-            raise ValueError(
-                f"gr({group}) options by, dist, and pw are not supported together "
-                "with a known level covariance"
-            )
-        if any(
-            option.group == group and (option.by_levels or option.prior_weights)
-            for _, prefix, formula in predictors
-            if prefix in component_valued
-            for option in formula.grouping.options
-        ):
-            raise ValueError(
-                f"gr({group}) options by, dist, and pw are supported for scalar "
-                f"group coefficients, not for {lens._family.name} predictors that "
-                "carry one coefficient per response category"
-            )

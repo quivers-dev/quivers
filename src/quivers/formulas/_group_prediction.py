@@ -446,12 +446,7 @@ def select_contributions(
                 if term.slope == "Intercept"
                 else f"beta_{qgroup}_{qslope}"
             )
-            excluded.update(
-                (
-                    f"{prefix}{latent}_per_row",
-                    f"{prefix}z_{qgroup}_{qslope}_contribution",
-                )
-            )
+            excluded.add(f"{prefix}{latent}_per_row")
     statements = []
     for statement in module.statements:
         if isinstance(statement, ProgramDecl):

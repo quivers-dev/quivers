@@ -44,11 +44,11 @@ from quivers.formulas._autocor import autocor_binding
 from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
 from quivers.formulas._group_law import GroupBlockLaw, renamed_law
 from quivers.formulas._group_layout import GroupBlockLayout
+from quivers.formulas._category_formulas import component_valued_prefixes
 from quivers.formulas._group_emission import emit_group_block
-from quivers.formulas._group_plan import plan_joint_block
+from quivers.formulas._group_plan import admit_block, plan_joint_block
 from quivers.formulas._grouping_emission import (
     all_group_options,
-    check_group_options,
 )
 from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
@@ -925,7 +925,9 @@ def _shared_groups(
     labels: dict[str, tuple[str, ...]] = {}
     predictors: list[tuple[str, str, Formula]] = []
     supplied: dict[str, _GroupValues] = {name: {} for name in components}
-    check_group_options(emitter, emitter._predictor_items(grouping))
+    component_valued = component_valued_prefixes(
+        emitter._family, emitter._distributional
+    )
     for (group, identity), members in blocks.items():
         if len({item[0] for item in members}) < 2:
             continue
@@ -970,6 +972,7 @@ def _shared_groups(
             correlate=True,
             parameterization=emitter._reparameterize,
         )
+        admit_block(law, component_valued=component_valued, family=emitter._family.name)
         if law.level.mixing is not None and law.level.basis is not None:
             # The Student-t mixing sites of a factor are emitted by each
             # response's own program, so a block shared across responses

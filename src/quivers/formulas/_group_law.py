@@ -101,11 +101,17 @@ class StudentMixing(ValueModel):
         Per-level inverse-chi-square mixing site.
     multiplier : str
         Binding of the per-level multiplier ``sqrt(df * mixing)``.
+    prior : str
+        Default prior of the degrees of freedom.
+    lower : float
+        Lower bound restricting the degrees of freedom.
     """
 
     df_site: str
     mixing_site: str
     multiplier: str
+    prior: str = "Gamma(2.0, 0.1)"
+    lower: float = 1.0
 
 
 class PriorWeight(ValueModel):
@@ -280,33 +286,6 @@ class GroupMean(ValueModel):
     prior: str
 
 
-class MemberBinders(ValueModel):
-    """The private bindings one member's emission introduces.
-
-    Parameters
-    ----------
-    level, component, cell : str
-        Variables ranging over the grouping levels, the member's components,
-        and the flat level-by-component cells of its raw site.
-    matrix : str or None
-        Binding of a flat raw site read over levels and components.
-    cell_scale, cell_mean : str or None
-        Bindings of the scale and mean of each flat cell of a centered raw
-        site.
-    level_major : bool
-        Whether the coefficient binding is indexed by level before
-        component.
-    """
-
-    level: str = "random_group"
-    component: str = "category_logit"
-    cell: str = "random_cell"
-    matrix: str | None = None
-    cell_scale: str | None = None
-    cell_mean: str | None = None
-    level_major: bool = False
-
-
 class RowMap(dx.TaggedUnion, discriminator="kind"):
     """The map from a level-indexed coefficient to the response rows."""
 
@@ -370,8 +349,6 @@ class GroupMemberLaw(ValueModel):
         Its map to the response rows.
     mean : GroupMean or None
         Affine mean of the coefficient; None for a zero mean.
-    binders : MemberBinders
-        Private bindings of the member's emission.
     cell_axis : str or None
         Flat axis over the levels and components, level-major, indexing the
         raw site of a member with a component axis that owns its site.
@@ -387,9 +364,6 @@ class GroupMemberLaw(ValueModel):
     scale: GroupScale = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     rows: RowMap = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     mean: GroupMean | None = dx.field(default=None, opaque=True, extras=OPAQUE_BY_VALUE)
-    binders: MemberBinders = dx.field(
-        default_factory=MemberBinders, opaque=True, extras=OPAQUE_BY_VALUE
-    )
     cell_axis: str | None = None
 
     @property
@@ -587,11 +561,6 @@ def renamed_law(
                 else member.mean.with_(
                     site=names.get(member.mean.site, member.mean.site)
                 ),
-                binders=member.binders.with_(
-                    matrix=_rename(names, member.binders.matrix),
-                    cell_scale=_rename(names, member.binders.cell_scale),
-                    cell_mean=_rename(names, member.binders.cell_mean),
-                ),
                 cell_axis=_rename(objects, member.cell_axis),
                 scale=member.scale.with_(
                     site=names.get(member.scale.site, member.scale.site),
@@ -651,7 +620,7 @@ def option_prior_sites(
         mixing = law.level.mixing
         if mixing is not None:
             degrees.setdefault(
-                mixing.df_site, (mixing.df_site, "df", law.group, None, 1.0)
+                mixing.df_site, (mixing.df_site, "df", law.group, None, mixing.lower)
             )
     sites = list(degrees.values())
     for law in laws:

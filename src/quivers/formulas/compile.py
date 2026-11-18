@@ -139,15 +139,10 @@ from quivers.formulas._mixture import (
 )
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_law import GroupBlockLaw
-from quivers.formulas._group_emission import (
-    bind_group_block,
-    draw_group_block,
-    emit_group_block,
-    row_contribution,
-)
+from quivers.formulas._group_emission import bind_rows, emit_group_block
 from quivers.formulas._group_plan import (
+    admit_block,
     coefficient_binding,
-    innovation_site,
     plan_group_blocks,
     row_map,
     plan_threshold_block,
@@ -213,7 +208,6 @@ from quivers.formulas._gp import (
     gp_runtime_parameters,
 )
 from quivers.formulas._grouping_emission import (
-    append_group_options,
     joint_group_blocks,
     option_observations,
     option_runtime_parameters,
@@ -3486,7 +3480,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             cell_terms.append(_index(self._predictor_name, predictor_index))
 
         cell_terms.extend(
-            self._append_group_terms(
+            _index(name, logit_var, response_var)
+            for name in self._append_group_terms(
                 formula,
                 statements,
                 program_steps,
@@ -3701,8 +3696,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         ValueError
             If a correlation prior uses a different distribution family.
         """
-        # brms gr(by =, dist = "student"): by axes and Student-t mixing scales.
-        append_group_options(self, self._predictor_items(formula), statements, steps)
         laws = plan_group_blocks(
             self._predictor_items(formula),
             levels={
@@ -3716,6 +3709,11 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             transition_axis=self._transition_axis(formula),
             supplied=supplied or {},
         )
+        component_valued = component_valued_prefixes(self._family, self._distributional)
+        for law in laws:
+            admit_block(
+                law, component_valued=component_valued, family=self._family.name
+            )
         self._group_plan = {
             (member.prefix, law.group, member.slope): law
             for law in laws
@@ -3736,13 +3734,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         prefix: str,
         correlated: Mapping[tuple[str, str, str], LetExprNode] | None,
         output_axis: str | None,
-    ) -> list[LetExprNode]:
+    ) -> list[str]:
         """Emit the row contribution of every group coefficient of a predictor.
 
         Each coefficient is gathered at the rows' levels, from its joint
         block or from its own block emitted here, and carried to the rows by
-        its row map. A predictor over an output axis binds one contribution
-        per component and row.
+        its row map.
 
         Parameters
         ----------
@@ -3758,45 +3755,30 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Coefficients of blocks emitted ahead of the predictor, gathered
             at the rows' levels.
         output_axis : str or None
-            Component axis of the predictor; None for a scalar predictor.
+            Component axis of the predictor's coefficients; None for scalar
+            coefficients.
 
         Returns
         -------
-        list[LetExprNode]
-            One term per group coefficient: a row vector for a scalar
-            predictor, or its value at the predictor's component and row.
+        list[str]
+            The binding of each group coefficient's contribution: a row
+            vector for scalar coefficients, otherwise an array over the
+            output axis and the rows.
         """
         emitted = dict(correlated or {})
-        pending = [
-            self._group_plan[key]
-            for term in formula.random_terms
-            if (key := (prefix, term.group, term.slope)) not in emitted
-        ]
-        # A predictor over an output axis draws every block before binding
-        # any; a scalar predictor draws and binds one block at a time.
-        if output_axis is not None:
-            for law in pending:
-                draw_group_block(self, law, statements, steps)
-        terms: list[LetExprNode] = []
+        names: list[str] = []
         for term in formula.random_terms:
             key = (prefix, term.group, term.slope)
             if key not in emitted:
-                law = self._group_plan[key]
-                if output_axis is None:
-                    draw_group_block(self, law, statements, steps)
-                emitted.update(bind_group_block(self, law, steps))
-            value = row_contribution(row_map(formula, term, prefix), emitted[key])
-            if output_axis is None:
-                name = f"{coefficient_binding(prefix, term.group, term.slope)}_per_row"
-                steps.append(_let(name, value))
-                terms.append(_var(name))
-            else:
-                name = f"{innovation_site(prefix, term.group, term.slope)}_contribution"
-                steps.append(
-                    _let(name, _factor((("category_logit", output_axis),), body=value))
+                emitted.update(
+                    emit_group_block(self, self._group_plan[key], statements, steps)
                 )
-                terms.append(_index(name, _var("category_logit"), _var("response")))
-        return terms
+            name = f"{coefficient_binding(prefix, term.group, term.slope)}_per_row"
+            bind_rows(
+                name, row_map(formula, term, prefix), emitted[key], output_axis, steps
+            )
+            names.append(name)
+        return names
 
     def _append_predictor(
         self,
@@ -3882,7 +3864,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             linear_terms.append(_var(predictor_name))
 
         linear_terms.extend(
-            self._append_group_terms(
+            _var(name)
+            for name in self._append_group_terms(
                 formula,
                 statements,
                 program_steps,

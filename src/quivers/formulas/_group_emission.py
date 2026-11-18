@@ -3,10 +3,12 @@
 Every block is emitted by the same two phases, driven by the factors its
 `GroupBlockLaw` declares:
 
-1. `draw_group_block` declares the block's axes, draws its correlation and
-   scale hyperparameters, and draws its carrier: standard-normal innovations
-   for noncentered coordinates, the coefficients themselves for centered
-   coordinates, and support coordinates for a known level covariance.
+1. `draw_group_block` declares the block's axes, draws the hyperparameters of
+   its grouping levels when it is the first block of those levels, draws its
+   correlation and scale hyperparameters, and draws its carrier:
+   standard-normal innovations for noncentered coordinates, the coefficients
+   themselves for centered coordinates, and support coordinates for a known
+   level covariance.
 2. `bind_group_block` composes the coefficient matrix
 
        B = diag(dfm) . L_V Z . (diag(sd[by]) L_R[by])^T + mean,
@@ -15,7 +17,12 @@ Every block is emitted by the same two phases, driven by the factors its
    ``B`` over the grouping levels, and returns each member's coefficient
    gathered at the response rows' levels.
 
-`row_contribution` then applies a member's row map to that gather.
+`bind_rows` then applies a member's row map to that gather and binds the
+member's contribution to the response rows.
+
+Every coefficient binding is indexed by grouping level and then, for a
+member with a component axis, by component; a flat raw site over levels and
+components holds each level's components consecutively.
 """
 
 from __future__ import annotations
@@ -24,6 +31,9 @@ from typing import TYPE_CHECKING
 
 from quivers.dsl.ast_nodes import (
     AxisSpec,
+    DrawArgName,
+    DrawArgNamed,
+    DrawArgScalar,
     LetExprBinOp,
     LetExprIndex,
     LetExprLiteral,
@@ -32,6 +42,7 @@ from quivers.dsl.ast_nodes import (
     OptionList,
     OptionName,
     ProgramStep,
+    SampleStep,
     ScoreStep,
     Statement,
     TypeName,
@@ -66,6 +77,9 @@ if TYPE_CHECKING:
 __all__: list[str] = []
 
 _LOG_ROOT_TWO_PI = 0.9189385332046727
+# Variables ranging over the grouping levels, a member's components, and the
+# flat level-by-component cells of a raw site.
+LEVEL, COMPONENT, CELL = "group_level", "group_component", "group_cell"
 
 GroupValues = dict[tuple[str, str, str], LetExprNode]
 
@@ -285,29 +299,20 @@ def _prior_weight_score(
 
 
 def _by_correlated(
-    lens: FormulaToQVRModule,
-    law: GroupBlockLaw,
-    correlation: ByLKJCorrelation,
-    innovations: str,
-    steps: list[ProgramStep],
+    law: GroupBlockLaw, correlation: ByLKJCorrelation, innovations: str
 ) -> LetExprNode:
     """Correlate each level's innovations with the factor of its ``by`` level.
 
-    Each ``by`` level has its own Cholesky site with the configured
-    correlation prior; the product costs O(levels x by levels x width^2).
+    The product costs O(levels x by levels x width^2).
 
     Parameters
     ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the prior configuration.
     law : GroupBlockLaw
         Block with a ``by`` partition.
     correlation : ByLKJCorrelation
         One Cholesky site per ``by`` level.
     innovations : str
         Binding of the coordinate-by-level innovations.
-    steps : list[ProgramStep]
-        Program steps receiving the correlation draws.
 
     Returns
     -------
@@ -322,10 +327,9 @@ def _by_correlated(
     level, dimension = law.level, law.coordinate_axis
     if level.by is None or dimension is None:
         raise ValueError("per-by-level correlations require a by partition")
-    at, row, column = _var("random_group"), _var("group_coordinate"), _var("k")
+    at, row, column = _var(LEVEL), _var("group_coordinate"), _var("k")
     terms = []
     for index, site in enumerate(correlation.by_sites):
-        steps.append(_correlation_draw(lens, site, dimension))
         product = _call(
             "sum",
             _factor(
@@ -344,8 +348,70 @@ def _by_correlated(
             )
         )
     return _factor(
-        (("group_coordinate", dimension), ("random_group", level.axis)),
-        body=_add(*terms),
+        (("group_coordinate", dimension), (LEVEL, level.axis)), body=_add(*terms)
+    )
+
+
+def _draw_level(
+    lens: FormulaToQVRModule,
+    level: GroupLevelLaw,
+    statements: list[Statement],
+    steps: list[ProgramStep],
+) -> None:
+    """Declare and draw the hyperparameters of a block's grouping levels.
+
+    A ``by`` partition declares the axis over its levels. Student-t mixing
+    draws the degrees of freedom ``df``, restricted to its lower bound, one
+    ``udf_j ~ inv_chi_square(df)`` per level, and binds the multiplier
+    ``dfm_j = sqrt(df * udf_j)`` of every Gaussian coefficient of level
+    ``j``, a scale mixture whose marginal law is the multivariate Student-t
+    with ``df`` degrees of freedom. The mixing of a level is drawn once, by
+    the first emitted block that declares it.
+
+    Parameters
+    ----------
+    lens : FormulaToQVRModule
+        Compiler carrying the prior configuration and the emitted laws.
+    level : GroupLevelLaw
+        Level factors of the block being drawn.
+    statements : list[Statement]
+        Module declarations receiving the ``by`` axis.
+    steps : list[ProgramStep]
+        Program steps receiving the mixing draws.
+    """
+    if level.by is not None:
+        lens._append_finite_object(statements, level.by.axis, len(level.by.levels))
+    mixing = level.mixing
+    if mixing is None or any(
+        drawn.level.mixing is not None and drawn.level.mixing.df_site == mixing.df_site
+        for drawn in lens._emitted_groups
+    ):
+        return
+    half = mixing.df_site + "_half"
+    steps.append(lens._prior_draw(mixing.df_site, mixing.prior, lower=mixing.lower))
+    steps.append(_let(half, _mul(_var(mixing.df_site), LetExprLiteral(value=0.5))))
+    steps.append(
+        SampleStep(
+            vars=(mixing.mixing_site,),
+            morphism="InverseGamma",
+            args=(
+                DrawArgNamed(parameter="concentration", value=DrawArgName(text=half)),
+                DrawArgNamed(parameter="rate", value=DrawArgScalar(value=0.5)),
+            ),
+            index=TypeName(name=level.axis),
+        )
+    )
+    steps.append(
+        _let(
+            mixing.multiplier,
+            _factor(
+                ((LEVEL, level.axis),),
+                body=_call(
+                    "sqrt",
+                    _mul(_var(mixing.df_site), _index(mixing.mixing_site, _var(LEVEL))),
+                ),
+            ),
+        )
     )
 
 
@@ -376,10 +442,12 @@ def draw_group_block(
 ) -> None:
     """Declare a block's axes and draw its hyperparameters and carrier.
 
-    The carrier follows the law's factors: support coordinates for a known
-    level covariance, one joint Gaussian for centered correlated
-    coefficients, and otherwise one site per member, holding standard-normal
-    innovations or, for centered coordinates, the coefficients.
+    The hyperparameters of the grouping levels come first, then every
+    correlation factor, then each member's mean and scale. The carrier
+    follows the law's factors: support coordinates for a known level
+    covariance, one joint Gaussian for centered correlated coefficients, and
+    otherwise one site per member, holding standard-normal innovations or,
+    for centered coordinates, the coefficients.
 
     Parameters
     ----------
@@ -398,12 +466,13 @@ def draw_group_block(
         correlation, IndependentCoordinates
     )
     dimension = law.coordinate_axis
+    _draw_level(lens, level, statements, steps)
     if _owns_coordinate_axis(law):
         assert dimension is not None
         lens._append_finite_object(statements, dimension, law.width)
-    if isinstance(correlation, LKJCorrelation):
+    for site in correlation.sites:
         assert dimension is not None
-        steps.append(_correlation_draw(lens, correlation.site, dimension))
+        steps.append(_correlation_draw(lens, site, dimension))
     lens._emitted_groups.append(law)
     for member in law.members:
         if member.mean is not None:
@@ -442,10 +511,9 @@ def _draw_member_carrier(
     Raises
     ------
     ValueError
-        If the member has no raw site, or a centered member with a component
-        axis declares no binding for its per-cell scale.
+        If the member has no raw site.
     """
-    level, raw, names = law.level, member.raw_site, member.binders
+    level, raw = law.level, member.raw_site
     if raw is None:
         raise ValueError(f"group block {law.identity!r} has no raw site")
     plate = level.axis
@@ -458,28 +526,21 @@ def _draw_member_carrier(
     location: str | float = 0.0
     scale = member.scale.site
     if member.axis is not None:
-        if names.cell_scale is None:
-            raise ValueError(
-                f"centered group coefficient {member.coefficient!r} needs a "
-                "per-cell scale binding"
-            )
-        cells = [(names.cell_scale, scale)]
-        scale = names.cell_scale
-        if member.mean is not None and names.cell_mean is not None:
-            cells.insert(0, (names.cell_mean, member.mean.site))
-            location = names.cell_mean
+        cells = [(f"{raw}_cell_scale", scale)]
+        scale = f"{raw}_cell_scale"
+        if member.mean is not None:
+            cells.insert(0, (f"{raw}_cell_mean", member.mean.site))
+            location = f"{raw}_cell_mean"
         for name, site in cells:
             steps.append(
                 _let(
                     name,
                     _factor(
-                        ((names.cell, plate),),
+                        ((CELL, plate),),
                         body=_index(
                             site,
                             LetExprBinOp(
-                                op="%",
-                                left=_var(names.cell),
-                                right=_integer(member.width),
+                                op="%", left=_var(CELL), right=_integer(member.width)
                             ),
                         ),
                     ),
@@ -764,7 +825,7 @@ def _draw_joint_coefficients(law: GroupBlockLaw, steps: list[ProgramStep]) -> No
 def _member_axes(
     law: GroupBlockLaw, member: GroupMemberLaw
 ) -> tuple[tuple[str, str], ...]:
-    """Order the binders of one member's coefficient binding.
+    """List the variables and axes of one member's coefficient binding.
 
     Parameters
     ----------
@@ -776,40 +837,61 @@ def _member_axes(
     Returns
     -------
     tuple[tuple[str, str], ...]
-        Variable and axis of the component, if any, and of the level, in
-        the member's declared order.
+        Variable and axis of the level, then of the component, if any.
     """
-    names = member.binders
-    level = (names.level, law.level.axis)
+    level = (LEVEL, law.level.axis)
     if member.axis is None:
         return (level,)
-    component = (names.component, member.axis)
-    return (level, component) if names.level_major else (component, level)
+    return (level, (COMPONENT, member.axis))
 
 
-def _ordered(
-    member: GroupMemberLaw, component: LetExprNode, level: LetExprNode
-) -> tuple[LetExprNode, ...]:
-    """Order a component index and a level index as a member binds them.
+def _coordinate(member: GroupMemberLaw) -> LetExprNode:
+    """Locate a member's coordinate within its block.
 
     Parameters
     ----------
     member : GroupMemberLaw
-        Bound member.
-    component : LetExprNode
-        Component index.
-    level : LetExprNode
-        Level index.
+        Member of the block.
 
     Returns
     -------
-    tuple[LetExprNode, ...]
-        The level alone for a scalar member, otherwise both indices in the
-        member's declared order.
+    LetExprNode
+        The member's offset, plus the bound component for a member with a
+        component axis.
     """
+    offset = _integer(member.offset)
+    return offset if member.axis is None else _add(offset, _var(COMPONENT))
+
+
+def _cell(member: GroupMemberLaw, level: LetExprNode) -> LetExprNode:
+    """Read a member's own raw site at a level and the bound component.
+
+    Parameters
+    ----------
+    member : GroupMemberLaw
+        Member owning its raw site.
+    level : LetExprNode
+        Grouping level.
+
+    Returns
+    -------
+    LetExprNode
+        The site at the level, or at the level's flat cell of the bound
+        component for a member with a component axis.
+
+    Raises
+    ------
+    ValueError
+        If the member has no raw site.
+    """
+    if member.raw_site is None:
+        raise ValueError(f"group coefficient {member.coefficient!r} has no raw site")
     if member.axis is None:
-        return (level,)
-    return (level, component) if member.binders.level_major else (component, level)
+        return _index(member.raw_site, level)
+    return _index(
+        member.raw_site,
+        _add(_mul(level, _integer(member.width)), _var(COMPONENT)),
+    )
 
 
 def _gather(member: GroupMemberLaw) -> LetExprNode:
@@ -823,8 +905,8 @@ def _gather(member: GroupMemberLaw) -> LetExprNode:
     Returns
     -------
     LetExprNode
-        The coefficient indexed by its component, if any, and the row index
-        of its row map.
+        The coefficient indexed by the row index of its row map and, for a
+        member with a component axis, the bound component.
 
     Raises
     ------
@@ -834,23 +916,16 @@ def _gather(member: GroupMemberLaw) -> LetExprNode:
     rows = member.rows
     if not isinstance(rows, SingleLevelRows | MembershipRows):
         raise ValueError(f"unknown row map {type(rows).__name__}")
-    return _index(
-        member.coefficient,
-        *_ordered(member, _var(member.binders.component), _var(rows.index)),
-    )
+    if member.axis is None:
+        return _index(member.coefficient, _var(rows.index))
+    return _index(member.coefficient, _var(rows.index), _var(COMPONENT))
 
 
-def bind_group_block(
-    lens: FormulaToQVRModule,
-    law: GroupBlockLaw,
-    steps: list[ProgramStep],
-) -> GroupValues:
+def bind_group_block(law: GroupBlockLaw, steps: list[ProgramStep]) -> GroupValues:
     """Compose a drawn block's coefficients and bind each member's slice.
 
     Parameters
     ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the prior configuration.
     law : GroupBlockLaw
         Block whose carrier is drawn.
     steps : list[ProgramStep]
@@ -867,7 +942,7 @@ def bind_group_block(
     elif isinstance(law.correlation, IndependentCoordinates):
         _bind_independent(law, steps)
     else:
-        _bind_correlated(lens, law, steps)
+        _bind_correlated(law, steps)
     return {
         (member.prefix, law.group, member.slope): _gather(member)
         for member in law.members
@@ -886,22 +961,14 @@ def _bind_support(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
     """
     level = law.level
     physical = _support_binding(law)
+    at = _var(LEVEL)
     for member in law.members:
-        names = member.binders
-        if names.level_major and member.width == law.width and level.mixing is None:
-            # The member is the whole matrix in the matrix's own order.
-            steps.append(_let(member.coefficient, _var(physical)))
-            continue
-        at = _var(names.level)
-        coordinate: LetExprNode = _integer(member.offset)
-        if member.axis is not None:
-            coordinate = _add(coordinate, _var(names.component))
         steps.append(
             _let(
                 member.coefficient,
                 _factor(
                     _member_axes(law, member),
-                    body=_mixed(level, _index(physical, at, coordinate), at),
+                    body=_mixed(level, _index(physical, at, _coordinate(member)), at),
                 ),
             )
         )
@@ -920,29 +987,17 @@ def _bind_independent(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
     Raises
     ------
     ValueError
-        If a member with a component axis declares no binding for its raw
-        site read over levels and components, declares prior weights, or
-        is centered under Student-t mixing.
+        If a member with a component axis declares prior weights or is
+        centered under Student-t mixing.
     """
     level = law.level
     centered = law.parameterization == "centered"
+    at = _var(LEVEL)
     for member in law.members:
-        raw, names = member.raw_site, member.binders
+        raw = member.raw_site
         assert raw is not None
         if member.axis is not None:
-            if names.matrix is None:
-                raise ValueError(
-                    f"group coefficient {member.coefficient!r} needs a binding "
-                    "for its raw site over levels and components"
-                )
-            at, component = _var(names.level), _var(names.component)
-            axes = _member_axes(law, member)
-            flat = _add(
-                _mul(at, LetExprLiteral(value=float(member.width), integral=True)),
-                component,
-            )
-            steps.append(_let(names.matrix, _factor(axes, body=_index(raw, flat))))
-            value: LetExprNode = _index(names.matrix, *_ordered(member, component, at))
+            value = _cell(member, at)
             if level.prior_weight is not None:
                 raise ValueError(
                     f"group coefficient {member.coefficient!r}: prior weights "
@@ -951,17 +1006,19 @@ def _bind_independent(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
                 )
             if not centered:
                 value = _mixed(
-                    level, _mul(_index(member.scale.site, component), value), at
+                    level, _mul(_index(member.scale.site, _var(COMPONENT)), value), at
                 )
                 if member.mean is not None:
-                    value = _add(_index(member.mean.site, component), value)
+                    value = _add(_index(member.mean.site, _var(COMPONENT)), value)
             elif level.mixing is not None:
                 raise ValueError(
                     f"group coefficient {member.coefficient!r}: centered "
                     "coordinates draw the coefficient itself, which has no "
                     "Gaussian draw under Student-t mixing"
                 )
-            steps.append(_let(member.coefficient, _factor(axes, body=value)))
+            steps.append(
+                _let(member.coefficient, _factor(_member_axes(law, member), body=value))
+            )
             continue
         if centered:
             continue
@@ -970,12 +1027,11 @@ def _bind_independent(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
                 _let(member.coefficient, _mul(_var(member.scale.site), _var(raw)))
             )
         else:
-            at = _var("group_level")
             steps.append(
                 _let(
                     member.coefficient,
                     _factor(
-                        (("group_level", level.axis),),
+                        _member_axes(law, member),
                         body=_mixed(
                             level,
                             _mul(_scale_at(level, member, at), _index(raw, at)),
@@ -989,15 +1045,11 @@ def _bind_independent(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
             steps.append(weighted)
 
 
-def _bind_correlated(
-    lens: FormulaToQVRModule, law: GroupBlockLaw, steps: list[ProgramStep]
-) -> None:
+def _bind_correlated(law: GroupBlockLaw, steps: list[ProgramStep]) -> None:
     """Bind the members of a block with correlated coordinates.
 
     Parameters
     ----------
-    lens : FormulaToQVRModule
-        Compiler carrying the prior configuration.
     law : GroupBlockLaw
         Block with a coefficient correlation.
     steps : list[ProgramStep]
@@ -1010,7 +1062,7 @@ def _bind_correlated(
     correlation = law.correlation
     stem = f"__formula_group_{_qvr_name(law.identity)}"
     transformed = stem + "_transformed"
-    at = _var("random_group")
+    at = _var(LEVEL)
     if not centered:
         cases: list[tuple[int, LetExprNode]] = []
         for member in law.members:
@@ -1023,8 +1075,7 @@ def _bind_correlated(
                     (
                         member.offset + component,
                         _factor(
-                            (("random_group", level.axis),),
-                            body=_index(member.raw_site, cell),
+                            ((LEVEL, level.axis),), body=_index(member.raw_site, cell)
                         ),
                     )
                 )
@@ -1036,7 +1087,7 @@ def _bind_correlated(
             )
         )
         if isinstance(correlation, ByLKJCorrelation):
-            product = _by_correlated(lens, law, correlation, innovations, steps)
+            product = _by_correlated(law, correlation, innovations)
         else:
             assert isinstance(correlation, LKJCorrelation)
             product = _call("matmul", _var(correlation.site), _var(innovations))
@@ -1051,21 +1102,22 @@ def _bind_correlated(
         if weighted is not None:
             steps.append(weighted)
     for member in law.members:
-        coordinate: LetExprNode = _integer(member.offset)
-        binders: tuple[tuple[str, str], ...] = (("random_group", level.axis),)
-        if member.axis is not None:
-            coordinate = _add(coordinate, _var("category_logit"))
-            scale: LetExprNode = _index(member.scale.site, _var("category_logit"))
-            binders = (("category_logit", member.axis), *binders)
-        else:
-            scale = _scale_at(level, member, at)
+        coordinate = _coordinate(member)
         if centered:
             assert member.raw_site is not None
             value: LetExprNode = _index(member.raw_site, at, coordinate)
         else:
+            scale = (
+                _index(member.scale.site, _var(COMPONENT))
+                if member.axis is not None
+                else _scale_at(level, member, at)
+            )
             value = _mul(scale, _index(transformed, coordinate, at))
         steps.append(
-            _let(member.coefficient, _factor(binders, body=_mixed(level, value, at)))
+            _let(
+                member.coefficient,
+                _factor(_member_axes(law, member), body=_mixed(level, value, at)),
+            )
         )
 
 
@@ -1094,7 +1146,7 @@ def emit_group_block(
         Each member's coefficient gathered at the response rows' levels.
     """
     draw_group_block(lens, law, statements, steps)
-    return bind_group_block(lens, law, steps)
+    return bind_group_block(law, steps)
 
 
 def row_contribution(rows: RowMap, gathered: LetExprNode) -> LetExprNode:
@@ -1105,7 +1157,7 @@ def row_contribution(rows: RowMap, gathered: LetExprNode) -> LetExprNode:
     rows : RowMap
         Row map of the coefficient.
     gathered : LetExprNode
-        The coefficient indexed last by the single-level row index.
+        The coefficient indexed first by the single-level row index.
 
     Returns
     -------
@@ -1122,7 +1174,7 @@ def row_contribution(rows: RowMap, gathered: LetExprNode) -> LetExprNode:
     """
     if isinstance(rows, MembershipRows):
         index = _var(rows.index)
-        if not isinstance(gathered, LetExprIndex) or gathered.indices[-1:] != (index,):
+        if not isinstance(gathered, LetExprIndex) or gathered.indices[:1] != (index,):
             raise ValueError(
                 f"multi-membership rows of {rows.index!r} require a level-indexed "
                 "coefficient"
@@ -1130,7 +1182,7 @@ def row_contribution(rows: RowMap, gathered: LetExprNode) -> LetExprNode:
         return _add(
             *(
                 _mul(
-                    gathered.with_(indices=(*gathered.indices[:-1], _var(member))),
+                    gathered.with_(indices=(_var(member), *gathered.indices[1:])),
                     _var(covariate),
                 )
                 for member, covariate in zip(rows.indices, rows.covariates, strict=True)
@@ -1141,3 +1193,32 @@ def row_contribution(rows: RowMap, gathered: LetExprNode) -> LetExprNode:
             return gathered
         return _mul(gathered, _var(rows.covariate))
     raise ValueError(f"unknown row map {type(rows).__name__}")
+
+
+def bind_rows(
+    name: str,
+    rows: RowMap,
+    gathered: LetExprNode,
+    axis: str | None,
+    steps: list[ProgramStep],
+) -> None:
+    """Bind one coefficient's contribution to the response rows.
+
+    Parameters
+    ----------
+    name : str
+        Binding of the contribution.
+    rows : RowMap
+        Row map of the coefficient.
+    gathered : LetExprNode
+        The coefficient gathered at the rows' levels.
+    axis : str or None
+        Component axis of the coefficient; None for a scalar coefficient.
+    steps : list[ProgramStep]
+        Program steps receiving the binding: a row vector for a scalar
+        coefficient, otherwise an array over the components and the rows.
+    """
+    value = row_contribution(rows, gathered)
+    if axis is not None:
+        value = _factor(((COMPONENT, axis),), body=value)
+    steps.append(_let(name, value))
