@@ -700,7 +700,7 @@ def by_correlation_sites(identity: str, option: GroupLevelOptions) -> tuple[str,
 def check_group_options(
     lens: FormulaToQVRModule, predictors: Iterable[tuple[str, str, Formula]]
 ) -> None:
-    """Refuse ``gr()`` options outside the parameterizations brms defines.
+    """Refuse ``gr()`` options that the block carriers cannot express.
 
     Parameters
     ----------
@@ -712,9 +712,10 @@ def check_group_options(
     Raises
     ------
     ValueError
-        For centered coordinates, a known level covariance, or a predictor
-        with one coefficient per response category together with ``by``,
-        ``dist = "student"``, or ``pw``.
+        For any option with centered coordinates; for ``by`` or ``pw``
+        together with a known level covariance, whose innovations live in
+        support coordinates that no level owns; and for ``by`` or ``pw`` on
+        a predictor with one coefficient per response category.
     """
     predictors = tuple(predictors)
     component_valued = component_valued_prefixes(lens._family, lens._distributional)
