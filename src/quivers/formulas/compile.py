@@ -981,6 +981,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._random_scale_prior = random_scale_prior
         self._set_prior_configuration(user_priors)
         self._emitted_groups: list[GroupBlockLaw] = []
+        self._supplied_laws: tuple[GroupBlockLaw, ...] = ()
         self._group_plan: dict[tuple[str, str, str], GroupBlockLaw] = {}
         conflicting = (
             self._distributional.keys() | expression_roots
@@ -1226,6 +1227,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         /,
         *,
         supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None = None,
+        supplied_laws: Sequence[GroupBlockLaw] = (),
         check: bool = True,
     ) -> tuple[Module, FormulaData]:
         """Compile a formula to a QVR module and its complement.
@@ -1234,6 +1236,14 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         ----------
         formula : Formula
             The parsed formula with its design data.
+        supplied_groups : Mapping or None
+            Group coefficients another program emits, gathered at the
+            response rows' levels.
+        supplied_laws : Sequence[GroupBlockLaw]
+            Laws of the blocks another program emits, whose level
+            hyperparameters this program reads without drawing them.
+        check : bool
+            Whether to check the emitted module.
 
         Returns
         -------
@@ -1277,6 +1287,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     auxiliary.name: auxiliary.prior
                 }
         self._emitted_groups = []
+        self._supplied_laws = tuple(supplied_laws)
         known_groups = {
             group
             for _, _, predictor in self._predictor_items(formula)

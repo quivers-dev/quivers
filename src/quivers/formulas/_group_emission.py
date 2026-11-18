@@ -366,7 +366,8 @@ def _draw_level(
     ``dfm_j = sqrt(df * udf_j)`` of every Gaussian coefficient of level
     ``j``, a scale mixture whose marginal law is the multivariate Student-t
     with ``df`` degrees of freedom. The mixing of a level is drawn once, by
-    the first emitted block that declares it.
+    the first block that declares it, in this program or among the blocks
+    another program emits for it.
 
     Parameters
     ----------
@@ -384,7 +385,7 @@ def _draw_level(
     mixing = level.mixing
     if mixing is None or any(
         drawn.level.mixing is not None and drawn.level.mixing.df_site == mixing.df_site
-        for drawn in lens._emitted_groups
+        for drawn in (*lens._supplied_laws, *lens._emitted_groups)
     ):
         return
     half = mixing.df_site + "_half"

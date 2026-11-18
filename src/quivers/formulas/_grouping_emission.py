@@ -29,6 +29,7 @@ from quivers.dsl.ast_nodes import (
     QiecTypeName,
     QiecValueParameter,
 )
+from quivers.formulas._group_law import GroupLevelLaw
 from quivers.formulas._grouping import (
     GroupLevelOptions,
     Membership,
@@ -508,6 +509,66 @@ def option_runtime_parameters(
     return tuple(parameters)
 
 
+def level_runtime_parameters(
+    levels: Iterable[GroupLevelLaw],
+) -> tuple[QiecValueParameter, ...]:
+    """Declare the ``by`` codes and prior weights the level laws read.
+
+    Parameters
+    ----------
+    levels : Iterable[GroupLevelLaw]
+        Level factors of emitted blocks.
+
+    Returns
+    -------
+    tuple[QiecValueParameter, ...]
+        One Integer ``by`` input and one Real weight input per level axis
+        that declares the factor.
+    """
+    parameters: dict[str, QiecValueParameter] = {}
+    for level in levels:
+        if level.by is not None:
+            parameters.setdefault(
+                level.by.input,
+                QiecValueParameter(
+                    name=level.by.input, type_expr=_tensor("Int", level.axis)
+                ),
+            )
+        if level.prior_weight is not None:
+            parameters.setdefault(
+                level.prior_weight.input,
+                QiecValueParameter(
+                    name=level.prior_weight.input,
+                    type_expr=_tensor("Real", level.axis),
+                ),
+            )
+    return tuple(parameters.values())
+
+
+def level_observations(levels: Iterable[GroupLevelLaw]) -> dict[str, torch.Tensor]:
+    """Bind the training ``by`` codes and prior weights of the level laws.
+
+    Parameters
+    ----------
+    levels : Iterable[GroupLevelLaw]
+        Level factors of emitted blocks.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        Runtime bindings over the training levels.
+    """
+    values: dict[str, torch.Tensor] = {}
+    for level in levels:
+        if level.by is not None:
+            values[level.by.input] = torch.tensor(level.by.codes, dtype=torch.long)
+        if level.prior_weight is not None:
+            values[level.prior_weight.input] = torch.tensor(
+                level.prior_weight.weights, dtype=torch.float64
+            )
+    return values
+
+
 def option_observations(
     predictors: Iterable[tuple[str, str, Formula]],
 ) -> dict[str, torch.Tensor]:
@@ -534,17 +595,73 @@ def option_observations(
     return values
 
 
+def compact_option(
+    option: GroupLevelOptions, frame: pd.DataFrame, remap: GroupRemap
+) -> GroupLevelOptions:
+    """Code one factor's ``gr()`` options on its compact prediction levels.
+
+    A fitted level keeps its training ``by`` level. A new level takes the
+    ``by`` level of the fresh rows that name it, which must be a fitted
+    ``by`` level. Prior weights only shape the fitted prior, so prediction
+    levels carry unit weights.
+
+    Parameters
+    ----------
+    option : GroupLevelOptions
+        Options coded on the fitted levels.
+    frame : pandas.DataFrame
+        Fresh rows.
+    remap : GroupRemap
+        Compact prediction axis of the factor.
+
+    Returns
+    -------
+    GroupLevelOptions
+        The options coded on the compact levels.
+
+    Raises
+    ------
+    ValueError
+        If a new level has no, several, or an unfitted ``by`` level.
+    """
+    group = option.group
+    codes: list[int] = []
+    if option.by_levels:
+        by = option.options.by
+        assert by is not None
+        position = {label: index for index, label in enumerate(option.by_levels)}
+        rows = remap.row_indices.tolist()
+        for compact, fitted in enumerate(remap.fitted_indices):
+            if fitted >= 0:
+                codes.append(option.by_codes[fitted])
+                continue
+            if by not in frame.columns:
+                raise ValueError(f"new_data is missing predictors {[by]}")
+            labels = {
+                str(value)
+                for value, row in zip(frame[by].tolist(), rows, strict=True)
+                if row == compact
+            }
+            if len(labels) != 1 or not labels <= position.keys():
+                raise ValueError(
+                    f"a new level of {group!r} needs one fitted level of {by!r}, "
+                    f"got {sorted(labels)}"
+                )
+            codes.append(position[labels.pop()])
+    return option.with_(
+        by_codes=tuple(codes),
+        prior_weights=(1.0,) * len(remap.fitted_indices)
+        if option.prior_weights
+        else (),
+    )
+
+
 def option_prediction_bindings(
     predictors: Iterable[tuple[str, str, Formula]],
     frame: pd.DataFrame,
     groups: Mapping[str, GroupRemap],
 ) -> dict[str, torch.Tensor]:
     """Bind ``by`` codes and prior weights on the compact prediction levels.
-
-    A fitted level keeps its training ``by`` level. A new level takes the
-    ``by`` level of the fresh rows that name it, which must be a fitted
-    ``by`` level. Prior weights only shape the fitted prior, so prediction
-    levels carry unit weights.
 
     Parameters
     ----------
@@ -570,33 +687,13 @@ def option_prediction_bindings(
         remap = groups.get(group)
         if remap is None:
             continue
-        count = len(remap.fitted_indices)
-        if option.by_levels:
-            by = option.options.by
-            assert by is not None
-            position = {label: index for index, label in enumerate(option.by_levels)}
-            codes = []
-            rows = remap.row_indices.tolist()
-            for compact, fitted in enumerate(remap.fitted_indices):
-                if fitted >= 0:
-                    codes.append(option.by_codes[fitted])
-                    continue
-                if by not in frame.columns:
-                    raise ValueError(f"new_data is missing predictors {[by]}")
-                labels = {
-                    str(value)
-                    for value, row in zip(frame[by].tolist(), rows, strict=True)
-                    if row == compact
-                }
-                if len(labels) != 1 or not labels <= position.keys():
-                    raise ValueError(
-                        f"a new level of {group!r} needs one fitted level of {by!r}, "
-                        f"got {sorted(labels)}"
-                    )
-                codes.append(position[labels.pop()])
-            values[by_input(group)] = torch.tensor(codes, dtype=torch.long)
-        if option.prior_weights:
-            values[weight_input(group)] = torch.ones(count, dtype=torch.float64)
+        compact = compact_option(option, frame, remap)
+        if compact.by_levels:
+            values[by_input(group)] = torch.tensor(compact.by_codes, dtype=torch.long)
+        if compact.prior_weights:
+            values[weight_input(group)] = torch.tensor(
+                compact.prior_weights, dtype=torch.float64
+            )
     return values
 
 
