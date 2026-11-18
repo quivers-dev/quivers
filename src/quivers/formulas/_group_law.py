@@ -33,11 +33,7 @@ import torch
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.formulas._group_covariance import GroupCovarianceBasis
-from quivers.formulas._group_layout import (
-    GroupBlockLayout,
-    GroupMemberLayout,
-    _covariance_coefficients,
-)
+from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
 
 __all__: list[str] = []
 
@@ -631,6 +627,346 @@ def option_prior_sites(
     return tuple(sites)
 
 
+def _by_codes(law: GroupBlockLaw, codes: torch.Tensor | None) -> torch.Tensor | None:
+    """Read the ``by`` level of each grouping level a computation ranges over.
+
+    Parameters
+    ----------
+    law : GroupBlockLaw
+        Block law.
+    codes : torch.Tensor or None
+        ``by`` level of each level in use; None for the training levels.
+
+    Returns
+    -------
+    torch.Tensor or None
+        Integer codes, or None for a block without a ``by`` partition.
+    """
+    if law.level.by is None:
+        return None
+    if codes is None:
+        return torch.tensor(law.level.by.codes, dtype=torch.long)
+    return codes.to(dtype=torch.long)
+
+
+def _column_parameters(
+    draws: Mapping[str, torch.Tensor],
+    law: GroupBlockLaw,
+    *,
+    sample_ndims: int,
+    codes: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Read the scale of every coordinate at every level, and the block mean.
+
+    Parameters
+    ----------
+    draws : Mapping[str, torch.Tensor]
+        Constrained sites with ``sample_ndims`` leading sample axes.
+    law : GroupBlockLaw
+        Block law.
+    sample_ndims : int
+        Number of leading sample axes.
+    codes : torch.Tensor or None
+        ``by`` level of each level in use.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        Scales shaped sample axes, levels (one for scales without a ``by``
+        axis), coordinates; and means shaped sample axes, one, coordinates.
+
+    Raises
+    ------
+    ValueError
+        If a scale has a ``by`` axis and the levels have no ``by`` codes.
+    """
+    scales, means = [], []
+    for member in law.members:
+        scale = draws[member.scale.site]
+        shape = scale.shape[:sample_ndims]
+        if member.scale.by_axis is not None:
+            if codes is None:
+                raise ValueError(
+                    f"scale {member.scale.site!r} is indexed by a by level and "
+                    "the grouping levels have no by codes"
+                )
+            scale = (
+                scale.reshape(*shape, -1, 1)
+                .index_select(sample_ndims, codes.to(scale.device))
+                .expand(*shape, codes.numel(), member.width)
+            )
+        else:
+            scale = scale.reshape(*shape, 1, member.width)
+        scales.append(scale)
+        means.append(
+            draws[member.mean.site].reshape(*shape, 1, member.width)
+            if member.mean is not None
+            else torch.zeros(*shape, 1, member.width, dtype=scale.dtype)
+        )
+    dtype = torch.promote_types(scales[0].dtype, torch.float64)
+    count = max(scale.shape[-2] for scale in scales)
+    scale = torch.cat(
+        [value.expand(*value.shape[:-2], count, value.shape[-1]) for value in scales],
+        -1,
+    ).to(dtype=dtype)
+    return scale, torch.cat(means, -1).to(scale)
+
+
+def _correlate(
+    rows: torch.Tensor,
+    draws: Mapping[str, torch.Tensor],
+    law: GroupBlockLaw,
+    *,
+    sample_ndims: int,
+    codes: torch.Tensor | None,
+    inverse: bool = False,
+) -> torch.Tensor:
+    """Apply or remove the correlation factor of each level's coordinates.
+
+    Parameters
+    ----------
+    rows : torch.Tensor
+        Sample axes, levels, coordinates.
+    draws : Mapping[str, torch.Tensor]
+        Constrained sites holding the Cholesky factors.
+    law : GroupBlockLaw
+        Block law.
+    sample_ndims : int
+        Number of leading sample axes.
+    codes : torch.Tensor or None
+        ``by`` level of each level in use.
+    inverse : bool
+        Whether to solve by the factor instead of multiplying by it.
+
+    Returns
+    -------
+    torch.Tensor
+        Row ``j`` multiplied, or solved, by the factor of its ``by`` level.
+
+    Raises
+    ------
+    ValueError
+        If the correlation has one factor per ``by`` level and the levels
+        have no ``by`` codes.
+    """
+    correlation = law.correlation
+    if isinstance(correlation, LKJCorrelation):
+        factor = draws[correlation.site].to(rows)
+        if inverse:
+            return torch.linalg.solve_triangular(
+                factor, rows.transpose(-1, -2), upper=False
+            ).transpose(-1, -2)
+        return rows @ factor.transpose(-1, -2)
+    if isinstance(correlation, ByLKJCorrelation):
+        if codes is None:
+            raise ValueError(
+                "per-by-level correlations require the by codes of the levels"
+            )
+        factors = torch.stack(
+            [draws[site].to(rows) for site in correlation.by_sites], dim=sample_ndims
+        ).index_select(sample_ndims, codes.to(rows.device))
+        column = rows.unsqueeze(-1)
+        if inverse:
+            return torch.linalg.solve_triangular(factors, column, upper=False).squeeze(
+                -1
+            )
+        return (factors @ column).squeeze(-1)
+    return rows
+
+
+def column_deviations(
+    gaussian: torch.Tensor,
+    draws: Mapping[str, torch.Tensor],
+    law: GroupBlockLaw,
+    *,
+    sample_ndims: int,
+    codes: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply a block's column factor to rows with identity column covariance.
+
+    Row ``j`` of the result is ``diag(sd[by_j]) L[by_j] g_j``: the deviation
+    of level ``j``'s coefficients from the block mean, before any Student-t
+    mixing.
+
+    Parameters
+    ----------
+    gaussian : torch.Tensor
+        Sample axes, levels, coordinates, with the level covariance between
+        rows and independent standard coordinates within a row.
+    draws : Mapping[str, torch.Tensor]
+        Constrained hyperparameter sites.
+    law : GroupBlockLaw
+        Block law.
+    sample_ndims : int
+        Number of leading sample axes.
+    codes : torch.Tensor or None
+        ``by`` level of each row; None for the training levels.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        The deviations, and the block mean shaped sample axes, one,
+        coordinates.
+    """
+    codes = _by_codes(law, codes)
+    scale, mean = _column_parameters(draws, law, sample_ndims=sample_ndims, codes=codes)
+    correlated = _correlate(
+        gaussian.to(scale), draws, law, sample_ndims=sample_ndims, codes=codes
+    )
+    return correlated * scale, mean
+
+
+def support_gaussian(
+    draws: Mapping[str, torch.Tensor], law: GroupBlockLaw, *, sample_ndims: int
+) -> torch.Tensor:
+    """Read a known-covariance block before its column factor.
+
+    Parameters
+    ----------
+    draws : Mapping[str, torch.Tensor]
+        Constrained sites with ``sample_ndims`` leading sample axes, on the
+        training levels.
+    law : GroupBlockLaw
+        Block with a known level covariance.
+    sample_ndims : int
+        Number of leading sample axes.
+
+    Returns
+    -------
+    torch.Tensor
+        Sample axes, levels, coordinates: rows with the known covariance
+        between levels and independent standard coordinates, ``F Z`` for
+        noncentered support coordinates ``Z`` and support factor ``F``.
+
+    Raises
+    ------
+    ValueError
+        If the block has no known covariance, or a covariance of positive
+        rank has no raw site.
+    """
+    basis = law.level.basis
+    if basis is None:
+        raise ValueError("support coordinates require a known level covariance")
+    codes = _by_codes(law, None)
+    scale, _ = _column_parameters(draws, law, sample_ndims=sample_ndims, codes=codes)
+    shape = scale.shape[:sample_ndims]
+    projection, _, factor = basis.tensors(like=scale)
+    if basis.rank == 0:
+        return scale.new_zeros(*shape, len(basis.levels), law.width)
+    site = law.members[0].raw_site
+    if site is None:
+        raise ValueError("positive-rank group covariance requires a raw sample site")
+    raw = draws[site].reshape(*shape, basis.rank, law.width).to(scale)
+    if law.parameterization == "centered":
+        return _correlate(
+            (projection @ raw) / scale,
+            draws,
+            law,
+            sample_ndims=sample_ndims,
+            codes=codes,
+            inverse=True,
+        )
+    return factor @ raw
+
+
+def support_coefficients(
+    draws: Mapping[str, torch.Tensor], law: GroupBlockLaw, *, sample_ndims: int
+) -> torch.Tensor:
+    """Decode the Gaussian coefficients of a known-covariance block.
+
+    Parameters
+    ----------
+    draws : Mapping[str, torch.Tensor]
+        Constrained sites with ``sample_ndims`` leading sample axes, on the
+        training levels.
+    law : GroupBlockLaw
+        Block with a known level covariance.
+    sample_ndims : int
+        Number of leading sample axes.
+
+    Returns
+    -------
+    torch.Tensor
+        Sample axes, levels, coordinates, before any Student-t mixing.
+
+    Raises
+    ------
+    ValueError
+        If the block has no known covariance, or a covariance of positive
+        rank has no raw site.
+    """
+    basis = law.level.basis
+    if basis is None:
+        raise ValueError("support coordinates require a known level covariance")
+    if law.parameterization == "centered" and basis.rank:
+        scale, mean = _column_parameters(
+            draws, law, sample_ndims=sample_ndims, codes=_by_codes(law, None)
+        )
+        site = law.members[0].raw_site
+        if site is None:
+            raise ValueError(
+                "positive-rank group covariance requires a raw sample site"
+            )
+        projection, _, _ = basis.tensors(like=scale)
+        shape = scale.shape[:sample_ndims]
+        raw = draws[site].reshape(*shape, basis.rank, law.width).to(scale)
+        return projection @ raw + mean
+    deviations, mean = column_deviations(
+        support_gaussian(draws, law, sample_ndims=sample_ndims),
+        draws,
+        law,
+        sample_ndims=sample_ndims,
+    )
+    return deviations + mean
+
+
+def encode_support(
+    gaussian: torch.Tensor,
+    basis: GroupCovarianceBasis,
+    draws: Mapping[str, torch.Tensor],
+    law: GroupBlockLaw,
+    *,
+    parameterization: Literal["centered", "noncentered"],
+    codes: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Encode one draw of a block in the support coordinates of a basis.
+
+    Parameters
+    ----------
+    gaussian : torch.Tensor
+        Levels of the basis by coordinates, with the level covariance
+        between rows and independent standard coordinates within a row.
+    basis : GroupCovarianceBasis
+        Support of the levels being encoded.
+    draws : Mapping[str, torch.Tensor]
+        Constrained hyperparameter sites of one draw.
+    law : GroupBlockLaw
+        Block law.
+    parameterization : {"centered", "noncentered"}
+        Whether the coordinates carry deviations with the block's column
+        factor or standardized innovations.
+    codes : torch.Tensor or None
+        ``by`` level of each row; None for the training levels.
+
+    Returns
+    -------
+    torch.Tensor
+        Support by coordinates, empty for a basis of rank zero.
+    """
+    projection, _, _ = basis.tensors(like=gaussian)
+    if parameterization == "centered" or not basis.rank:
+        deviations, _ = column_deviations(
+            gaussian, draws, law, sample_ndims=0, codes=codes
+        )
+        return projection.T @ deviations.to(gaussian)
+    coordinate_factor = torch.tensor(
+        basis.coordinate_factor, dtype=gaussian.dtype, device=gaussian.device
+    ).reshape(basis.rank, basis.rank)
+    return torch.linalg.solve_triangular(
+        coordinate_factor, projection.T @ gaussian, upper=False
+    )
+
+
 def group_coefficients(
     draws: Mapping[str, torch.Tensor],
     laws: Sequence[GroupBlockLaw],
@@ -681,7 +1017,7 @@ def group_coefficients(
                 )
         correlation = law.correlation
         if level.basis is not None:
-            coefficients = _covariance_coefficients(draws, law.layout, sample_ndims=2)
+            coefficients = support_coefficients(draws, law, sample_ndims=2)
         else:
             raws, scales = [], []
             for member in law.members:

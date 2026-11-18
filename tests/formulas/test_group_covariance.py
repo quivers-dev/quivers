@@ -266,11 +266,12 @@ def test_full_joint_all_heads_and_reference_match_dense_kronecker_oracle(
 def test_group_remap_preserves_physical_known_levels_and_conditional_mean(
     parameterization, policy
 ):
-    from quivers.formulas._group_layout import _covariance_coefficients
+    from quivers.formulas._group_law import KnownCovariance, support_coefficients
     from quivers.formulas._group_prediction import GroupRemap, _remap_covariance_group
 
     spec, lens, parsed, module, native, obs, complement = _compiled(parameterization)
-    layout = complement.group_layouts[0]
+    law = complement.group_laws[0]
+    layout = law.layout
     covariance = GroupCovariance(
         levels=("a", "b", "c"),
         matrix=((1.7, 0.3, 0.6), (0.3, 0.8, -0.1), (0.6, -0.1, 1.4)),
@@ -285,7 +286,7 @@ def test_group_remap_preserves_physical_known_levels_and_conditional_mean(
         sites=layout.raw_sites,
         levels=("b", "c", "a"),
         covariance=covariance,
-        covariance_layouts=(layout,),
+        covariance_laws=(law,),
         covariance_target=target,
         covariance_conditional=conditional,
         covariance_mean_map=tuple(tuple(row) for row in mean_map.tolist()),
@@ -300,17 +301,16 @@ def test_group_remap_preserves_physical_known_levels_and_conditional_mean(
             [[-0.7, 0.2], [0.9, -0.4]], dtype=torch.float64
         ),
     }
-    fitted = _covariance_coefficients(values, layout, sample_ndims=0)
+    fitted = support_coefficients(values, law, sample_ndims=0)
+    compact = law.with_(level=law.level.with_(covariance=KnownCovariance(basis=target)))
     shapes = {"group_covariance_g": (3, 2)}
     draws = []
     fixed = {}
     with torch.random.fork_rng():
         torch.manual_seed(481)
         for _ in range(1500 if policy == "gaussian" else 40):
-            mapped = _remap_covariance_group(group, values, shapes, policy, fixed)
-            physical = _covariance_coefficients(
-                values | mapped, layout.with_(level_covariance=target), sample_ndims=0
-            )
+            mapped = _remap_covariance_group(group, values, shapes, policy, fixed, {})
+            physical = support_coefficients(values | mapped, compact, sample_ndims=0)
             torch.testing.assert_close(physical[[0, 2]], fitted[[1, 0]])
             draws.append(physical[1])
     result = torch.stack(draws)

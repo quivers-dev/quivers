@@ -275,10 +275,10 @@ def _merge_groups(
         merged[group] = remap.with_(
             sites=sites,
             standard_normal_sites=frozenset(normal),
-            covariance_layouts=tuple(
-                layout
-                for layout in fit.emission.group_layouts
-                if layout.group == group and layout.level_covariance is not None
+            covariance_laws=tuple(
+                law
+                for law in fit.emission.group_laws
+                if law.group == group and law.level.basis is not None
             ),
         )
     return merged
@@ -781,8 +781,8 @@ def _check_layout(
     covariance = {
         site
         for group in groups.values()
-        for layout in group.covariance_layouts
-        for site in (f"group_covariance_{_qvr_name(layout.identity)}",)
+        for law in group.covariance_laws
+        for site in (f"group_covariance_{_qvr_name(law.identity)}",)
     } | {
         # Latent training values of mi() and me() terms are not coordinates of
         # fresh rows, which use their recorded values.

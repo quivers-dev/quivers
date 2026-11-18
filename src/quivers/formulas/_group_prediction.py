@@ -17,10 +17,10 @@ from quivers.formulas._group_covariance import (
     _tolerance,
 )
 from quivers.formulas._grouping import rewrite_grouping
-from quivers.formulas._group_layout import (
-    GroupBlockLayout,
-    _covariance_coefficients,
-    _encode_covariance_coefficients,
+from quivers.formulas._group_law import (
+    GroupBlockLaw,
+    encode_support,
+    support_gaussian,
 )
 from quivers.dsl.ast_nodes import (
     LetExprFactor,
@@ -74,7 +74,7 @@ class GroupRemap(ValueModel):
         Compact labels; supplied covariance retains authored identities.
     covariance : GroupCovariance or None
         Complete labeled covariance, including requested future identities.
-    covariance_layouts : tuple[GroupBlockLayout, ...]
+    covariance_laws : tuple[GroupBlockLaw, ...]
         Fitted Gaussian support and coefficient slices.
     covariance_target, covariance_conditional : GroupCovarianceBasis or None
         Once-per-request compact and Schur-conditional support factors.
@@ -95,7 +95,7 @@ class GroupRemap(ValueModel):
     covariance: GroupCovariance | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
-    covariance_layouts: tuple[GroupBlockLayout, ...] = dx.field(
+    covariance_laws: tuple[GroupBlockLaw, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
     covariance_target: GroupCovarianceBasis | None = dx.field(
@@ -316,10 +316,14 @@ def compact_groups(
                 raise TypeError("unsupported grouped baseline layout")
             sites["sbhaz"] = count // len(levels)
         covariance = fit.group_covariances.get(group)
-        covariance_layouts = tuple(
-            layout
-            for layout in layouts
-            if layout.group == group and layout.level_covariance is not None
+        covariance_laws = tuple(
+            law
+            for law in (
+                fit.prediction_plan.group_laws
+                if fit.prediction_plan is not None
+                else ()
+            )
+            if law.group == group and law.level.basis is not None
         )
         if covariance is not None:
             if any(key is None for key in keys):
@@ -327,8 +331,8 @@ def compact_groups(
                     f"supplied covariance requires explicit labeled identities for group {group!r}"
                 )
             covariance.subset(tuple(key for key in keys if key is not None))
-            for layout in covariance_layouts:
-                basis = layout.level_covariance
+            for law in covariance_laws:
+                basis = law.level.basis
                 assert basis is not None
                 fitted_covariance = covariance.subset(basis.levels).tensor()
                 factor = basis.tensors()[2]
@@ -367,7 +371,7 @@ def compact_groups(
                 for index, key in enumerate(keys)
             ),
             covariance=covariance,
-            covariance_layouts=covariance_layouts,
+            covariance_laws=covariance_laws,
             covariance_target=target_basis,
             covariance_conditional=conditional_basis,
             covariance_mean_map=mean_map,
@@ -547,7 +551,12 @@ def remap_draw(
             if group.covariance is not None:
                 result.update(
                     _remap_covariance_group(
-                        group, latents, shapes, policy, fixed_donors
+                        group,
+                        latents,
+                        shapes,
+                        policy,
+                        fixed_donors,
+                        context.observations,
                     )
                 )
                 for name in group.sites:
@@ -590,13 +599,21 @@ def _remap_covariance_group(
     shapes: Mapping[str, tuple[int, ...]],
     policy: str,
     fixed_donors: dict[str, torch.Tensor],
+    observations: Mapping[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
-    """Condition physical coefficients, then encode the compact support once.
+    """Condition new levels on the fitted ones, then encode the compact support.
+
+    Each block is read before its column factor, as rows ``G`` with the
+    known covariance between levels and independent standard coordinates.
+    The rows of new levels are drawn from their Gaussian conditional on the
+    fitted rows, and the compact rows are encoded in the support of the
+    prediction levels, where the block's law applies the column factor of
+    each level.
 
     Parameters
     ----------
     group : GroupRemap
-        Labeled covariance and fitted support layouts.
+        Labeled covariance and the fitted laws of its blocks.
     latents : dict[str, torch.Tensor]
         One posterior draw in original support coordinates.
     shapes : Mapping[str, tuple[int, ...]]
@@ -605,6 +622,8 @@ def _remap_covariance_group(
         Gaussian innovations or empirical retained support-coordinate donors.
     fixed_donors : dict[str, torch.Tensor]
         Request-owned indices for the old_levels innovation policy.
+    observations : Mapping[str, torch.Tensor]
+        Prediction inputs, holding the ``by`` level of each compact level.
 
     Returns
     -------
@@ -633,7 +652,7 @@ def _remap_covariance_group(
         and conditional.rank
         and policy != "gaussian"
     ):
-        fitted_basis = group.covariance_layouts[0].level_covariance
+        fitted_basis = group.covariance_laws[0].level.basis
         assert fitted_basis is not None
         fitted_rank = fitted_basis.rank
         if not fitted_rank:
@@ -648,52 +667,47 @@ def _remap_covariance_group(
         else:
             empirical_donors = torch.randint(fitted_rank, (conditional.rank,))
     output = {}
-    for layout in group.covariance_layouts:
-        basis = layout.level_covariance
+    for law in group.covariance_laws:
+        basis = law.level.basis
         assert basis is not None
-        fitted = _covariance_coefficients(latents, layout, sample_ndims=0)
+        by = law.level.by
+        # The column factor of a compact level is that of its by level.
+        codes = observations[by.input] if by is not None else None
+        fitted = support_gaussian(latents, law, sample_ndims=0)
         compact = fitted[indices.clamp_min(0)].clone()
         if new_labels:
             assert conditional is not None
             mean_map = torch.tensor(
                 group.covariance_mean_map, dtype=fitted.dtype, device=fitted.device
             )
-            scales, means = [], []
-            for member in layout.members:
-                assert member.scale_site is not None
-                scale = latents[member.scale_site].reshape(member.width)
-                scales.append(scale)
-                means.append(
-                    latents[member.mean_site].reshape(member.width)
-                    if member.mean_site is not None
-                    else torch.zeros_like(scale)
-                )
-            scale, mean = torch.cat(scales), torch.cat(means)
-            expectation = mean + mean_map.to(fitted) @ (fitted - mean)
+            expectation = mean_map @ fitted
             if conditional.rank:
                 _, _, factor = conditional.tensors(like=fitted)
                 if policy == "gaussian":
                     noise = torch.randn(
-                        (conditional.rank, layout.width),
+                        (conditional.rank, law.width),
                         dtype=fitted.dtype,
                         device=fitted.device,
                     )
                 else:
                     assert empirical_donors is not None
-                    donors = empirical_donors
-                    innovations = _encode_covariance_coefficients(
-                        fitted, latents, layout, parameterization="noncentered"
+                    innovations = encode_support(
+                        fitted, basis, latents, law, parameterization="noncentered"
                     )
-                    noise = innovations[donors.to(innovations.device)]
-                if layout.correlation_site is not None:
-                    noise = noise @ latents[layout.correlation_site].to(noise).T
-                expectation = expectation + (factor @ noise) * scale
+                    noise = innovations[empirical_donors.to(innovations.device)]
+                expectation = expectation + factor @ noise
             compact[new.to(compact.device)] = expectation
-        target = layout.with_(level_covariance=target_basis)
-        encoded = _encode_covariance_coefficients(compact, latents, target)
-        site = layout.members[0].raw_site
+        encoded = encode_support(
+            compact,
+            target_basis,
+            latents,
+            law,
+            parameterization=law.parameterization,
+            codes=codes,
+        )
+        site = law.members[0].raw_site
         # A zero-rank fitting block can gain supported future dimensions.
         if target_basis.rank:
-            site = site or f"group_covariance_{_qvr_name(layout.identity)}"
+            site = site or f"group_covariance_{_qvr_name(law.identity)}"
             output[site] = encoded.reshape(shapes[site])
     return output

@@ -988,9 +988,9 @@ def prepare_prediction(
         for name, width in group.sites.items()
     }
     covariance_sites = {
-        f"group_covariance_{_qvr_name(layout.identity)}"
+        f"group_covariance_{_qvr_name(law.identity)}"
         for group in groups.values()
-        for layout in group.covariance_layouts
+        for law in group.covariance_laws
     }
     # Fresh latent residuals are drawn for the new rows, not replayed.
     covariance_sites = covariance_sites | set(fresh_sites) | set(gp_fresh)
