@@ -893,6 +893,10 @@ class HandlerDef(QiecModel):
     implementation
         ``"authored"`` when every clause carries a body, ``"foreign"`` when
         none does and a runtime provider supplies the behavior.
+    parameters
+        The handler's parameters, in declaration order: binders whose
+        values are given where the handler is installed, are read by every
+        clause body, and are given anew by each resumption.
     """
 
     id: HandlerId = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
@@ -913,6 +917,9 @@ class HandlerDef(QiecModel):
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
     implementation: Literal["authored", "foreign"] = "foreign"
+    parameters: tuple[Local, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     @dx.model_validator()
     def _validate_record(self) -> None:
@@ -923,7 +930,8 @@ class HandlerDef(QiecModel):
         ValueError
             If the telescope is malformed, if two clauses cover the same
             operation, if the handler claims to be both total and
-            forwarding, or if its bodies disagree with its declared
+            forwarding, if two parameters share a name, if a foreign handler
+            declares parameters, or if its bodies disagree with its declared
             implementation. A total handler covering every operation has
             nothing left to forward. An authored handler missing a body
             has nowhere for that operation's behavior to live, and a body
@@ -952,6 +960,14 @@ class HandlerDef(QiecModel):
                 f"foreign handler {self.name!r} carries authored clause bodies: "
                 f"{supplied!r}; a foreign handler's behavior comes from its "
                 f"runtime provider, so a body here would be ignored"
+            )
+        names = [parameter.name for parameter in self.parameters]
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate parameter in handler {self.name!r}")
+        if not authored and self.parameters:
+            raise ValueError(
+                f"foreign handler {self.name!r} declares parameters; its state "
+                f"belongs to its runtime provider"
             )
         if not authored and self.return_clause is not None:
             raise ValueError(

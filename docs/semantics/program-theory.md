@@ -21,7 +21,7 @@ with kinds, constraints, and edge rules for QVR. Its vertices fall into these gr
 | Finite sets | `finset`, `product_set`, `coproduct_set`, `free_monoid`, `empty_set`, `enum_set`, `free_residuated` |
 | Spaces | `euclidean`, `simplex`, `positive_reals`, `product_space` |
 | Declarations | `object_decl`, `space_decl`, a kind for each morphism role, `output_decl`, `schema_decl` |
-| Declarations of the Quivers Indexed Effect Core (QIEC) | `effect_decl`, `operation`, `instance_decl`, `handler_decl`, `handler_clause`, `computation_decl`, `computation_parameter` |
+| Declarations of the Quivers Indexed Effect Core (QIEC) | `effect_decl`, `operation`, `instance_decl`, `handler_decl`, `handler_clause`, `handler_parameter`, `computation_decl`, `computation_parameter` |
 | Entry points | `program_entry`, `program_parameter`, `program_site` |
 | Root | `program` |
 
@@ -31,8 +31,8 @@ record names, cardinalities, dimensions, families, roles, and bounds.
 
 The QIEC group mirrors the checked [`QiecModule`](../api/qiec/module.md) that the compiler keeps as
 [`Compiler.qiec_module`](../api/dsl/compiler.md), with one vertex for each effect interface and each
-of its operations, each effect instance, each handler and each of its clauses, and each computation
-and each of its parameters. Edges record the interface an instance applies (`instance_of`), the
+of its operations, each effect instance, each handler and each of its parameters and clauses, and each
+computation and each of its parameters. Edges record the interface an instance applies (`instance_of`), the
 interface a handler handles (`handles`), the instances a computation's row names (`row`), and what a
 body does: the computations it calls (`calls`), the instances it sends requests to (`performs`), and
 the handlers it installs (`installs`).

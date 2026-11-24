@@ -803,8 +803,8 @@ class KernelRegistry(QiecModel):
         ------
         KernelError
             If the handler is already registered, if its telescope
-            shadows a binder, if its input, output, or introduced row is
-            ill-formed, if the interface it names is unknown or wrongly
+            shadows a binder, if its input, output, parameter types, or
+            introduced row is ill-formed, if the interface it names is unknown or wrongly
             applied, if a clause covers an operation the interface does
             not declare, or if the handler claims totality while leaving
             an operation uncovered, or if an authored clause body fails
@@ -820,6 +820,8 @@ class KernelRegistry(QiecModel):
         self.validate_static(handler.effect, scope)
         self.validate_type(handler.input_type, scope)
         self.validate_type(handler.output_type, scope)
+        for parameter in handler.parameters:
+            self.validate_type(parameter.type, scope)
         for entry in handler.introduced.entries:
             self.validate_static(entry.effect, scope)
             introduced = self.effects.get(entry.effect.id)
@@ -858,11 +860,13 @@ class KernelRegistry(QiecModel):
     ) -> None:
         """Type every authored clause body and hold it to its grade.
 
-        A clause body answers the handler's output type, and inside it
-        `resume` carries what the handled operation supplies. Those two
-        facts are what make the body checkable at all, and they come from
-        the interface rather than from the clause, so they are
-        established here rather than at the clause.
+        A clause body answers the handler's output type, reads the
+        handler's parameters, and inside it `resume` carries what the
+        handled operation supplies and a value for every parameter. These
+        come from the declaration and the interface rather than from the
+        clause, so they are established here rather than at the clause. A
+        body performs at most the effects the handler introduces, since
+        those are what the row of a handled computation gains.
 
         Parameters
         ----------
@@ -878,14 +882,18 @@ class KernelRegistry(QiecModel):
         ------
         KernelError
             If a clause body fails to check, answers a type other than
-            the handler's output, or resumes more often than its grade
-            allows.
+            the handler's output, performs an effect the handler does not
+            introduce, or resumes more often than its grade allows.
         """
         output = substitute_type(handler.output_type, substitution)
+        parameters = CheckContext()
+        for parameter in handler.parameters:
+            parameters = parameters.extend(parameter)
         if handler.return_clause is not None:
             clause = handler.return_clause
-            context = CheckContext().extend(clause.binder)
+            context = parameters.extend(clause.binder)
             actual = infer_computation(clause.body, self, context)
+            self._check_introduced(handler, actual.effects, subject="return clause")
             if actual.result != output:
                 raise KernelError(
                     f"return clause of handler {handler.name!r} answers "
@@ -908,9 +916,14 @@ class KernelRegistry(QiecModel):
                     f"operation takes {len(parameter_types)}",
                     "qiec-handler-body",
                 )
-            context = CheckContext().with_resumption(
+            context = parameters.with_resumption(
                 ResumptionType(
-                    result=resumed, answer=output, effects=handler.introduced
+                    result=resumed,
+                    answer=output,
+                    effects=handler.introduced,
+                    parameters=tuple(
+                        parameter.type for parameter in handler.parameters
+                    ),
                 )
             )
             for parameter, declared in zip(
@@ -931,10 +944,48 @@ class KernelRegistry(QiecModel):
                     f"answers {actual.result!r}, not the declared {output!r}",
                     "qiec-handler-body",
                 )
+            self._check_introduced(
+                handler, actual.effects, subject=f"clause {operation.name!r}"
+            )
             check_resumption_grade(
                 clause.grade,
                 resumption_use(clause.body),
                 subject=f"clause {operation.name!r} of handler {handler.name!r}",
+            )
+
+    def _check_introduced(
+        self, handler: HandlerDef, effects: EffectRow, *, subject: str
+    ) -> None:
+        """Hold a clause body to the effects its handler introduces.
+
+        Parameters
+        ----------
+        handler : HandlerDef
+            The handler being registered.
+        effects : EffectRow
+            The row the body performs.
+        subject : str
+            The clause, named in the diagnostic.
+
+        Raises
+        ------
+        KernelError
+            If the body performs on an instance the handler's introduced
+            row does not name, or at another interface.
+        """
+        covered = all(
+            handler.introduced.lookup(entry.instance) == entry.effect
+            for entry in effects.entries
+        )
+        if not covered or (
+            effects.tail is not None and handler.introduced.tail is None
+        ):
+            raise KernelError(
+                f"{subject} of handler {handler.name!r} performs "
+                f"{render_row(effects, self.instance_names)}, and the handler "
+                f"introduces "
+                f"{render_row(handler.introduced, self.instance_names)}",
+                "qiec-handler-body",
             )
 
     def register_computation(self, signature: ComputationSignature) -> None:
@@ -1113,11 +1164,17 @@ class ResumptionType(QiecModel):
         What resuming produces, which is the clause's own answer type.
     effects : EffectRow
         The row resuming performs.
+    parameters : tuple[TypeExpr, ...]
+        The types of the handler's parameters, a value of each of which
+        a resumption carries.
     """
 
     result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     answer: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     effects: EffectRow = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    parameters: tuple[TypeExpr, ...] = dx.field(
+        default=(), opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
 
 class CheckContext(QiecModel):
@@ -3305,6 +3362,18 @@ def _infer_computation(
         input_type = substitute_type(handler.input_type, substitution)
         output_type = substitute_type(handler.output_type, substitution)
         introduced = substitute_row(handler.introduced, substitution)
+        _check_handler_arguments(
+            tuple(
+                infer_value(argument, registry, context)
+                for argument in computation.arguments
+            ),
+            tuple(
+                substitute_type(parameter.type, substitution)
+                for parameter in handler.parameters
+            ),
+            subject=f"handler {handler.name!r} is installed",
+            code="qiec-handler",
+        )
         inner = _infer_computation(computation.computation, registry, context)
         if inner.result != input_type:
             raise KernelError(
@@ -3335,6 +3404,47 @@ def _infer_computation(
     raise KernelError(f"unknown computation term {computation!r}")
 
 
+def _check_handler_arguments(
+    actual: tuple[TypeExpr, ...],
+    expected: tuple[TypeExpr, ...],
+    *,
+    subject: str,
+    code: str,
+) -> None:
+    """Check the values a handler's parameters are given.
+
+    Parameters
+    ----------
+    actual : tuple[TypeExpr, ...]
+        The types of the values given.
+    expected : tuple[TypeExpr, ...]
+        The types of the handler's parameters.
+    subject : str
+        What gives the values, as a clause the message completes.
+    code : str
+        The diagnostic code of a mismatch.
+
+    Raises
+    ------
+    KernelError
+        If the counts differ, or a value has another type than its
+        parameter.
+    """
+    if len(actual) != len(expected):
+        raise KernelError(
+            f"{subject} with {len(actual)} parameter value(s); the handler "
+            f"declares {len(expected)}",
+            code,
+        )
+    for position, (given, declared) in enumerate(zip(actual, expected, strict=True)):
+        if given != declared:
+            raise KernelError(
+                f"{subject} with parameter {position} of type "
+                f"{render_static(given)}, not the declared {render_static(declared)}",
+                code,
+            )
+
+
 def _infer_resume(
     resumption: Resume,
     registry: KernelRegistry,
@@ -3361,8 +3471,9 @@ def _infer_resume(
     ------
     KernelError
         If there is no continuation in scope, which is `resume` written
-        outside a handler clause body, or if the value carried does not
-        have the type the resumed operation supplies.
+        outside a handler clause body, if the value carried does not
+        have the type the resumed operation supplies, or if the parameter
+        values it carries do not match the handler's parameters.
     """
     available = context.resumption
     if available is None:
@@ -3378,6 +3489,15 @@ def _infer_resume(
             f"{available.result!r}",
             "qiec-resumption",
         )
+    _check_handler_arguments(
+        tuple(
+            infer_value(argument, registry, context)
+            for argument in resumption.arguments
+        ),
+        available.parameters,
+        subject="resume continues",
+        code="qiec-resumption",
+    )
     return _checked_computation_type(
         available.effects,
         available.answer,
