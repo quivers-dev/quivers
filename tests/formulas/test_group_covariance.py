@@ -271,7 +271,6 @@ def test_group_remap_preserves_physical_known_levels_and_conditional_mean(
 
     spec, lens, parsed, module, native, obs, complement = _compiled(parameterization)
     law = complement.group_laws[0]
-    layout = law.layout
     covariance = GroupCovariance(
         levels=("a", "b", "c"),
         matrix=((1.7, 0.3, 0.6), (0.3, 0.8, -0.1), (0.6, -0.1, 1.4)),

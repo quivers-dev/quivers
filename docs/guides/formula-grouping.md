@@ -69,12 +69,54 @@ weight of zero removes its prior. With weights the model density is no
 longer a normalized prior times a likelihood, so independent prior draws
 refuse it, as for any model with a log-density factor.
 
-These options use brms's noncentered innovations and are refused with
-`reparameterize="centered"` and with a known level covariance. In a
-categorical or other per-category response model each free category takes
+The options compose with each other, with a known level covariance, with
+correlated and independent coefficients, with coefficients over response
+categories or ordinal transitions, and with both parameterizations. The
+coefficients of level $j$ are
+
+$$
+b_j = \mu + \sqrt{\nu u_j}\,
+\operatorname{diag}(\sigma_{b(j)})\, L_{b(j)}\, g_j,
+\qquad G = L_V Z,
+$$
+
+where the rows of $Z$ are standard-normal innovations, $L_V$ is the Cholesky
+factor of the level covariance, $\sigma_{b(j)}$ and $L_{b(j)}$ are the
+standard deviations and the correlation factor of the level's `by` level, and
+a factor that the term does not declare is absent. The parameterization
+decides which of these factors the sampled site carries:
+
+| `reparameterize` | Level covariance | Sampled site | Applied by the program |
+|---|---|---|---|
+| `"noncentered"` | any | innovations $Z$ | every factor |
+| `"centered"` | none | coefficients $b_j$ | none |
+| `"centered"` | known | Gaussian deviations before mixing | $\sqrt{\nu u_j}$ and $\mu$ |
+
+With centered coordinates a prior weight scores the innovations recovered
+from the sampled site, so the posterior of the coefficients is the same under
+either parameterization.
+
+A level has one law in a model. The degrees of freedom and mixing variables
+of a Student-t factor are drawn once for every predictor, mixture component,
+and response that uses them, as in brms. The coefficients that share an
+identifier form one block, so an option that one of them declares applies to
+the block. Within one formula, every group-level term of one factor must use
+the same options, and a factor has one `by` variable in a model.
+
+Two combinations have no density and are refused. Both concern a known level
+covariance of deficient rank, declared with `GroupCovariance(rank=...)`,
+whose coefficients are confined to a subspace of the levels. A prior weight
+belongs to the innovation of one level, and the support coordinates of such a
+covariance belong to no level. With `by`, the subspace depends on the standard
+deviations and correlations of the `by` levels, so there are no fixed centered
+coordinates, and `reparameterize="noncentered"` fits the model.
+
+Under the `"uncertainty"` and `"old_levels"` policies a new level takes the
+coefficients of a fitted level of the same `by` level, as in brms.
+
+In a categorical or other per-category response model each free category takes
 its own group coefficients with these options (see
 [category-specific formulas](formula-mixtures.md#category-specific-formulas)).
-Every group-level term of one factor must use the same options.
 
 <!-- python: run -->
 ```python
@@ -168,8 +210,12 @@ weight $1/K$. `weights = cbind(w1, ..., wK)` takes the weights from columns,
 normalized to sum to one in each row unless `scale = FALSE`, which also
 permits negative weights. A covariate `x` enters every member with the same
 value. `mmc(x1, ..., xK)` gives each member its own covariate, as in
-`(1 + mmc(x1, x2) | mm(g1, g2))`. `mm()` also takes `cor`, `id`, and `cov`
-with their `gr()` meaning.
+`(1 + mmc(x1, x2) | mm(g1, g2))`. A monotonic slope `(mo(x) | mm(g1, g2))`
+multiplies the weighted sum of the members' coefficients by the population
+term's value. `mm()` also takes `cor`, `id`, `cov`, and `dist` with their
+`gr()` meaning. `by = cbind(f1, ..., fK)` names one column per member, and
+the column of a member holds the `by` level of the level that member names.
+Every level of the factor must lie within one `by` level across all members.
 
 <!-- python: run -->
 ```python
@@ -216,10 +262,10 @@ names it. Member columns may not be missing. `mm(g1, g2, cov = M)` gives
 the shared coefficient vector the known covariance `M` over the union of
 the member levels, as `gr(g, cov = M)` does for one factor, and a member
 level that is absent from the training rows and covered by `M` is predicted
-from its conditional distribution. Multi-membership factors take scalar
-group coefficients only: ordinal category-specific coefficients, such as
-`(cs(1) | mm(g1, g2))`, which brms admits, and grouped thresholds are
-refused. A
-categorical or other per-category response gives each free category its own
+from its conditional distribution. A known covariance is keyed by the factor's
+label, so `group_covariances` names `mmfirstsecond`. Coefficients may be
+scalar or range over response categories or ordinal transitions, as in
+`(cs(1) | mm(g1, g2))`. Grouped thresholds are refused, because they read one
+level per row. A categorical or other per-category response gives each free category its own
 scalar multi-membership coefficients (see
 [category-specific formulas](formula-mixtures.md#category-specific-formulas)).

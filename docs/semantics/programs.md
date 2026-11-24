@@ -2619,19 +2619,53 @@ levels, and codes outside $\{0,\dots,D\}$ are refused.
 
 The right side of a group-level bar follows brms. `gr(g, cor, id, cov)`
 denotes the factor `g`. `cor = FALSE` makes each coefficient its own block,
-and `id` joins blocks as the bar notation `|id|` does. `cov = M` takes a
-known covariance $K$ between levels from `data2`, so a coefficient's level
-values are $\sigma F u$ with $FF^\mathsf{T}=K$ and standard-normal $u$, for
-independent coefficients as for a correlated block. With `by = f`, coefficient
-$k$ of level $j$ has standard deviation $\sigma_{k,b(j)}$ and the block the
-Cholesky factor $L_{b(j)}$, where $b(j)$ is the level of `f` containing $j$, so
-level $j$'s coefficients are $\operatorname{diag}(\sigma_{\cdot,b(j)})\,L_{b(j)}\,z_j$
-with standard-normal $z_j$. With `dist = "student"`, $\nu\sim\operatorname{Gamma}(2,0.1)$
-restricted to $\nu>1$, $u_j\sim\text{inverse-}\chi^2(\nu)$, and level $j$'s
-coefficients are multiplied by $\sqrt{\nu u_j}$, which makes them multivariate
-Student-t with $\nu$ degrees of freedom. With `pw = w` the log density gains
-$(w_j-1)\log\phi(z_j)$ per level, so the prior of $z_j$ enters with weight
-$w_j$ as in brms. An interaction `g1:g2`
+and `id` joins blocks as the bar notation `|id|` does. A block is a matrix
+$B$ of $C$ coefficient coordinates over the $J$ levels of its factor, where a
+coefficient over response categories or ordinal transitions has one
+coordinate per category or transition. Its law is the product of the factors
+the term declares. With a $J\times C$ matrix $Z$ of standard-normal
+innovations, the rows of $B$ are
+
+$$
+b_j=\mu+m_j\,A_{b(j)}\,g_j,\qquad
+A_b=\operatorname{diag}(\sigma_{\cdot,b})\,L_b,\qquad
+G=F Z .
+$$
+
+- `cov = M` takes a known covariance $K=FF^\mathsf{T}$ between levels from
+  `data2`. Otherwise $F=I$.
+- `by = f` gives $f$'s level $b(j)$ containing $j$ its own standard
+  deviations $\sigma_{\cdot,b}$ and correlation factor $L_b$. Otherwise there
+  is one of each. Independent coordinates have $L=I$.
+- `dist = "student"` draws $\nu\sim\operatorname{Gamma}(2,0.1)$ restricted to
+  $\nu>1$ and $u_j\sim\text{inverse-}\chi^2(\nu)$ once per factor, and sets
+  $m_j=\sqrt{\nu u_j}$, so the coefficients are multivariate Student-t with
+  $\nu$ degrees of freedom. Otherwise $m_j=1$.
+- `pw = w` adds $(w_j-1)\log\phi(z_j)$ per level to the log density, so the
+  prior of $z_j$ enters with weight $w_j$ as in brms.
+- $\mu$ is the mean of grouped threshold log spacings, and zero for
+  group-level terms.
+
+Noncentered coordinates sample $Z$. Centered coordinates without a known
+covariance sample $b_j\sim\mathcal N(\mu,\,m_j^2A_{b(j)}A_{b(j)}^\mathsf T)$.
+Centered coordinates with a known covariance sample the deviations before
+mixing in the support of $K$: matrix normal with row covariance $K$ on its
+support and column covariance $AA^\mathsf T$, or with a `by` partition and $K$
+of full rank the Gaussian vector with covariance blocks
+$K_{jl}A_{b(j)}A_{b(l)}^\mathsf T$. Prior weights of a centered block score
+$z_j$ recovered by the triangular solves
+$Z=F^{-1}G$, $g_j=A_{b(j)}^{-1}(b_j-\mu)/m_j$, which is the noncentered
+posterior after the change of variables. The change of variables needs
+$F$ invertible, so prior weights are refused for $K$ of deficient rank, and so
+are centered coordinates with `by` there, since the support of $B$ then depends
+on $A$.
+
+A donor of a new level under an empirical policy is a fitted level with the
+same $b(j)$. Under the Gaussian policy a new level draws its sites from the
+same law, and with a known covariance from its conditional given the fitted
+rows of $G$.
+
+An interaction `g1:g2`
 is the factor whose levels are the observed combinations, labeled by pasting
 the source labels with `_`, and nesting `g1/g2` denotes the two factors `g1`
 and `g1:g2`.
@@ -2645,8 +2679,10 @@ $$
 $$
 
 where $J_{kn}$ is the level named by member $k$, $W_{kn}$ its weight, and
-$Z_{kn}$ the coefficient's covariate for that member: one, a column shared by
-all members, or the $k$-th column of `mmc()`. Equal weights are $1/K$, and
+$Z_{kn}$ the coefficient's covariate for that member: one, a column or
+monotonic value shared by all members, or the $k$-th column of `mmc()`. With
+`by = cbind(f_1, ..., f_K)`, column $f_k$ gives the `by` level of the level
+that member $k$ names, and every level of the factor has one. Equal weights are $1/K$, and
 authored weights are divided by their row sum unless `scale = FALSE`
 [@browne2001multiple]. The program evaluates one gather per member and
 never forms a rows-by-levels matrix. `Membership` retains the training codes

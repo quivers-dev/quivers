@@ -27,11 +27,13 @@ import torch
 from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import Compiler
 from quivers.formulas import (
+    BayesianFit,
     FormulaToQVRModule,
     GroupCovariance,
     families,
     fit,
     formula_from_data,
+    mixture,
 )
 from quivers.formulas._fit import _prepare_formula
 from quivers.formulas._group_law import (
@@ -40,7 +42,14 @@ from quivers.formulas._group_law import (
     group_coefficients,
     block_coefficients,
 )
-from quivers.formulas._group_prediction import GroupRemap, _remap_covariance_group
+from quivers.formulas._group_prediction import (
+    GroupRemap,
+    _remap_covariance_group,
+    compact_groups,
+    remap_draw,
+)
+from quivers.formulas._prediction import prepare_prediction
+from quivers.modeling import load_fit, save_fit
 from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import trace
 
@@ -1186,4 +1195,282 @@ def test_every_combination_of_factors_has_the_density_of_its_law(
     for slope, values in effects.items():
         torch.testing.assert_close(
             rebuilt[("", "g", slope)].reshape(values.shape), values.detach()
+        )
+
+
+MEMBER = "mm(g, h, by = cbind(fb, fh))"
+
+
+def _membership_program(text: str, frame: pd.DataFrame, **options):
+    lens, formula, program, observed, complement = _compiled(text, frame, **options)
+    registry = LatentRegistry.from_model(program, observed_names=set(observed))
+    flat = 0.5 * torch.randn(
+        registry.total_unconstrained_dim,
+        generator=torch.Generator().manual_seed(17),
+        dtype=torch.float64,
+    )
+    latent = {
+        name: registry[name].constrain(value)[0].detach()
+        for name, value in registry.unflatten_unconstrained(flat).items()
+    }
+    return formula, program, observed, complement, latent
+
+
+def test_membership_by_partition_reads_each_levels_scale():
+    """brms: r_j = sd[Jby_j] z_j, and row n adds W1 r[J1] + W2 r[J2]."""
+    frame = _options_frame()
+    formula, program, observed, complement, latent = _membership_program(
+        f"y ~ x + (1 | {MEMBER})", frame
+    )
+    (law,) = complement.group_laws
+    assert law.level.by is not None
+    # make_standata(y ~ (1 | mm(g, h, by = cbind(fb, fh))))$Jby_1
+    assert tuple(code + 1 for code in law.level.by.codes) == (1, 2, 1)
+    assert law.level.by.variable == "cbind(fb, fh)"
+    normal = torch.distributions.Normal
+    x = torch.as_tensor(frame["x"].to_numpy(dtype=float))
+    position = {level: index for index, level in enumerate(LEVELS)}
+    first = torch.tensor([position[level] for level in frame["g"]])
+    second = torch.tensor([position[level] for level in frame["h"]])
+    sd = latent["sigma_mmgh_Intercept"]
+    effects = sd[torch.tensor(BY_CODES)] * latent["z_mmgh_Intercept"]
+    mu = (
+        latent["intercept"]
+        + latent["beta_x"] * x
+        + 0.5 * effects[first]
+        + 0.5 * effects[second]
+    )
+    expected = (
+        normal(0.0, 5.0).log_prob(latent["intercept"])
+        + normal(0.0, 5.0 / x.square().mean().sqrt()).log_prob(latent["beta_x"])
+        + torch.distributions.HalfNormal(1.0).log_prob(sd).sum()
+        + normal(0.0, 1.0).log_prob(latent["z_mmgh_Intercept"]).sum()
+        + torch.distributions.HalfCauchy(2.0).log_prob(latent["sigma"])
+        + normal(mu, latent["sigma"]).log_prob(observed["y"]).sum()
+    )
+    actual = _log_joint(program, observed | latent)
+    torch.testing.assert_close(actual, expected, rtol=TOLERANCE, atol=TOLERANCE)
+    assert formula.grouping.membership("mmgh") is not None
+
+
+def test_membership_level_in_two_by_levels_is_refused():
+    frame = _options_frame().assign(fh="m")
+    with pytest.raises(ValueError, match="correspond to multiple levels"):
+        formula_from_data(f"y ~ x + (1 | {MEMBER})", frame)
+
+
+@pytest.mark.parametrize("parameterization", ["noncentered", "centered"])
+def test_monotonic_slope_varies_over_a_membership_factor(
+    parameterization: Parameterization,
+):
+    """brms: (bsp + W1 r[J1] + W2 r[J2]) * mo(simo, x)."""
+    frame = _options_frame().assign(k=[index % 4 for index in range(18)])
+    _, program, observed, _, latent = _membership_program(
+        "y ~ 1 + mo(k) + (0 + mo(k) | mm(g, h))",
+        frame,
+        reparameterize=parameterization,
+    )
+    position = {level: index for index, level in enumerate(LEVELS)}
+    first = torch.tensor([position[level] for level in frame["g"]])
+    second = torch.tensor([position[level] for level in frame["h"]])
+    (simplex,) = [name for name in latent if name.startswith("simo_")]
+    cumulative = torch.cat([torch.zeros(1), latent[simplex].cumsum(0)]).double()
+    value = 3.0 * cumulative[torch.as_tensor(frame["k"].to_numpy())]
+    (slope,) = [name for name in latent if name.startswith("bsp_")]
+    if parameterization == "centered":
+        effects = latent["beta_mmgh_mo_k"]
+    else:
+        (scale,) = [name for name in latent if name.startswith("sigma_mmgh")]
+        (raw,) = [name for name in latent if name.startswith("z_mmgh")]
+        effects = latent[scale] * latent[raw]
+    mu = (
+        latent["intercept"]
+        + (latent[slope] + 0.5 * effects[first] + 0.5 * effects[second]) * value
+    )
+    site = trace(program, torch.zeros(1, 1), observed | latent).sites["mu"]
+    torch.testing.assert_close(
+        site.value.reshape(-1).double(), mu, rtol=TOLERANCE, atol=TOLERANCE
+    )
+
+
+@pytest.mark.parametrize("parameterization", ["noncentered", "centered"])
+def test_new_level_mixing_is_drawn_with_a_known_level_covariance(
+    parameterization: Parameterization,
+):
+    """Known levels keep their own mixing; a new level draws a fresh one."""
+    frame = _frame(24)
+    fitted = fit(
+        "y ~ x + (1 | gr(g, dist = 'student'))",
+        data=frame,
+        group_covariances={"g": FULL},
+        reparameterize=parameterization,
+        method="svi",
+        num_steps=3,
+        seed=2,
+    )
+    selected = frozenset({("g", "Intercept")})
+    fresh = frame.iloc[:3].assign(g=["c", "d", "a"])
+    remap = compact_groups(fitted, fresh, selected, True)["g"]
+    assert remap.sites == {"udf_g": 1}
+    assert len(remap.support_sites) == 1
+    draws = fitted.draws(num_samples=1, seed=4)
+    latents = {name: value[0, 0] for name, value in draws.items()}
+    context = prepare_prediction(
+        fitted,
+        fresh,
+        None,
+        re_formula=None,
+        allow_new_levels=True,
+        sample_new_levels="gaussian",
+        seed=0,
+    )
+    mapped = remap_draw(
+        context,
+        latents,
+        {"udf_g": (3,), next(iter(remap.support_sites)): (3, 1)},
+        torch.Generator().manual_seed(0),
+        {},
+    )
+    torch.testing.assert_close(mapped["udf_g"][[0, 2]], latents["udf_g"][[2, 0]])
+    assert not bool(torch.isin(mapped["udf_g"][1], latents["udf_g"]))
+
+
+def test_donor_of_a_new_level_shares_its_by_level():
+    remap = GroupRemap(
+        group="g",
+        fitted_size=4,
+        fitted_indices=(0, -1, -1, 2),
+        row_indices=torch.tensor([0, 1, 2, 3]),
+        by_codes=(0, 1, 0, 1),
+        compact_by_codes=(0, 1, 0, 0),
+    )
+    with torch.random.fork_rng():
+        torch.manual_seed(3)
+        drawn = torch.stack([remap.donor_indices() for _ in range(64)])
+    assert set(drawn[:, 1].tolist()) == {1, 3}
+    assert set(drawn[:, 2].tolist()) == {0, 2}
+    assert bool((drawn[:, 0] == 0).all() and (drawn[:, 3] == 2).all())
+
+
+@pytest.mark.parametrize("parameterization", ["noncentered", "centered"])
+@pytest.mark.parametrize(
+    "covariance", [None, FULL], ids=["independent-levels", "known-covariance"]
+)
+def test_every_factor_survives_refit_and_an_artifact(
+    covariance: GroupCovariance | None, parameterization: Parameterization, tmp_path
+):
+    frame = _options_frame(24)
+    fitted = fit(
+        "y ~ x + (1 + x | gr(g, by = fb, dist = 'student', pw = pw))",
+        data=frame,
+        group_covariances={"g": covariance} if covariance is not None else None,
+        reparameterize=parameterization,
+        method="svi",
+        num_steps=2,
+        seed=3,
+    )
+    refit = fitted.update(data=frame.iloc[:18].reset_index(drop=True))
+    assert refit.prediction_plan is not None
+    (law,) = refit.prediction_plan.group_laws
+    assert law.level.by is not None and law.level.mixing is not None
+    assert law.level.prior_weight is not None
+    fresh = frame.iloc[:3].assign(g=["a", "d", "c"], fb=["m", "n", "m"])
+    options = {"new_data": fresh, "num_samples": 2, "seed": 9, "allow_new_levels": True}
+    expected = fitted.posterior_epred(**options)
+    path = tmp_path / "factors.qfit"
+    save_fit(fitted, path)
+    restored = load_fit(path)
+    assert isinstance(restored, BayesianFit)
+    torch.testing.assert_close(restored.posterior_epred(**options), expected)
+
+
+@pytest.mark.parametrize("parameterization", ["noncentered", "centered"])
+def test_mixture_components_share_one_level_law(parameterization: Parameterization):
+    """brms draws one df and udf per factor and one scale block per component."""
+    frame = _options_frame()
+    _, _, program, observed, complement = _compiled(
+        "y ~ x + (1 + x | gr(g, by = fb, dist = 'student', pw = pw))",
+        frame,
+        family=mixture("gaussian", "student_t"),
+        group_covariances={"g": FULL},
+        reparameterize=parameterization,
+    )
+    names = LatentRegistry.from_model(program, observed_names=set(observed)).names
+    assert [name for name in names if "df_g" in name] == ["df_g", "udf_g"]
+    laws = complement.group_laws
+    assert [law.members[0].prefix for law in laws] == ["dpar_mu1_", "dpar_mu2_"]
+    assert all(law.level.basis is not None for law in laws)
+    assert len({law.support_site for law in laws}) == 2
+    assert {"g_by", "g_prior_weight"} <= observed.keys()
+
+
+def test_mixture_block_shared_across_components_draws_the_mixing_once():
+    _, _, program, observed, complement = _compiled(
+        "y ~ x + (1 | p | gr(g, dist = 'student'))",
+        _options_frame(),
+        family=mixture("gaussian", "gaussian"),
+        distributional={"sigma2": "~ 1 + (1 | p | gr(g, dist = 'student'))"},
+    )
+    names = LatentRegistry.from_model(program, observed_names=set(observed)).names
+    assert [name for name in names if "df_g" in name] == ["df_g", "udf_g"]
+    (law,) = complement.group_laws
+    assert law.width == 3
+
+
+def test_options_apply_to_the_block_that_declares_them():
+    """brms: sigma's own block of g is Gaussian with one scale."""
+    _, _, _, _, complement = _compiled(
+        "y ~ x + (1 + x | gr(g, by = fb, dist = 'student'))",
+        _options_frame(),
+        distributional={"sigma": "~ 1 + (1 + x | g)"},
+    )
+    location, scale = complement.group_laws
+    assert location.level.by is not None and location.level.mixing is not None
+    assert scale.level.by is None and scale.level.mixing is None
+
+
+def test_category_specific_scales_are_indexed_by_the_by_level():
+    frame = _options_frame().assign(o=[index % 4 for index in range(18)])
+    _, _, program, observed, complement = _compiled(
+        "o ~ x + (1 + cs(x) | gr(g, by = fb))", frame, family="acat"
+    )
+    (law,) = complement.group_laws
+    registry = LatentRegistry.from_model(program, observed_names=set(observed))
+    scales = {
+        member.slope: registry[member.scale.site].constrained_shape
+        for member in law.members
+    }
+    assert scales == {"Intercept": (2,), "cs(x)": (6,)}
+
+
+def test_auxiliary_formula_declares_a_known_covariance():
+    matrix = pd.DataFrame(FULL.tensor().numpy(), index=FULL.levels, columns=FULL.levels)
+    _, _, _, _, complement = _compiled(
+        "y ~ x",
+        _frame(),
+        distributional={"sigma": "~ 1 + (1 | gr(g, cov = V))"},
+        data2={"V": matrix},
+    )
+    (law,) = complement.group_laws
+    assert law.level.basis is not None and law.level.basis.rank == 3
+
+
+def test_colliding_names_are_refused_with_both_owners():
+    """`g` with slope `x_h` and `g_x` with slope `h` name one scale site."""
+    frame = _frame().assign(x_h=lambda f: f["x"] + 1.0, h=lambda f: f["x"] * 2.0)
+    frame["g_x"] = frame["g"]
+    with pytest.raises(ValueError, match="both declare") as caught:
+        _compiled("y ~ x + (0 + x_h | g) + (0 + h | g_x)", frame)
+    message = str(caught.value)
+    assert "'x_h' of 'g'" in message and "'h' of 'g_x'" in message
+
+
+def test_two_by_variables_of_one_factor_are_refused():
+    frame = _options_frame()
+    frame["fc"] = frame["g"].map({"a": "s", "b": "s", "c": "t"})
+    with pytest.raises(ValueError, match="one 'by' variable"):
+        _compiled(
+            "y ~ x + (1 | gr(g, by = fb))",
+            frame,
+            distributional={"sigma": "~ 1 + (1 | gr(g, by = fc))"},
         )
