@@ -841,13 +841,15 @@ def test_new_level_of_a_by_partition_takes_the_column_factor_of_its_by_level():
     assert conditional.rank == 0
     compact_levels = ("a", "d", "c")
     target = repeated.basis(compact_levels)
+    compact_codes = torch.tensor([0, 1, 0])
     group = GroupRemap(
         group="g",
         fitted_size=3,
         fitted_indices=(0, -1, 2),
         row_indices=torch.tensor([0, 1, 2]),
-        sites=law.layout.raw_sites,
         levels=compact_levels,
+        by_codes=by.codes,
+        compact_by_codes=tuple(compact_codes.tolist()),
         covariance=repeated,
         covariance_laws=(law,),
         covariance_target=target,
@@ -855,7 +857,6 @@ def test_new_level_of_a_by_partition_takes_the_column_factor_of_its_by_level():
         covariance_mean_map=tuple(tuple(row) for row in mean_map.tolist()),
     )
     latent = _by_latent((law,), basis)
-    compact_codes = torch.tensor([0, 1, 0])
     site = law.members[0].raw_site
     assert site is not None
     mapped = _remap_covariance_group(
@@ -864,7 +865,6 @@ def test_new_level_of_a_by_partition_takes_the_column_factor_of_its_by_level():
         {site: (target.rank, 2)},
         "gaussian",
         {},
-        {by.input: compact_codes},
     )
     compact = law.with_(
         level=law.level.with_(

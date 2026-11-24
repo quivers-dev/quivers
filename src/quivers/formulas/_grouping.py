@@ -1304,7 +1304,7 @@ def member_covariate(
 
 
 def resolve_group_covariances(
-    formula: str | None,
+    formulas: Sequence[str],
     data2: Mapping[str, np.ndarray | pd.DataFrame] | None,
     group_covariances: Mapping[str, GroupCovariance] | None,
 ) -> dict[str, GroupCovariance] | None:
@@ -1317,9 +1317,8 @@ def resolve_group_covariances(
 
     Parameters
     ----------
-    formula : str or None
-        Authored formula text, or None for a formula that cannot carry
-        ``cov`` (a joint formula).
+    formulas : Sequence[str]
+        Authored formula texts of every predictor.
     data2 : Mapping or None
         Named matrices.
     group_covariances : Mapping[str, GroupCovariance] or None
@@ -1337,9 +1336,9 @@ def resolve_group_covariances(
         If a named matrix is absent, unlabeled, not square with matching row
         and column labels, or a factor receives two covariances.
     """
-    if formula is None:
-        return None if group_covariances is None else dict(group_covariances)
-    covariances = rewrite_grouping(formula).covariances
+    covariances = tuple(
+        pair for text in formulas for pair in rewrite_grouping(text).covariances
+    )
     if not covariances:
         return None if group_covariances is None else dict(group_covariances)
     resolved = dict(group_covariances or {})

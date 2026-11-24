@@ -398,7 +398,7 @@ def test_block_options_come_from_its_members_not_the_first_response():
 )
 def test_an_option_of_one_member_is_a_factor_of_the_shared_block(first, second):
     """brms gives the coefficients of one identifier one law."""
-    emission = _build(
+    emission, _, _ = _build(
         {"first": f"y ~ 1 + {first}", "second": f"z ~ 1 + {second}"}, _frame()
     )
     (law,) = emission.group_laws

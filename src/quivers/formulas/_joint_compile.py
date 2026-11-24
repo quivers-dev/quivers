@@ -308,8 +308,9 @@ def _normalized_components(
     Raises
     ------
     ValueError
-        If two grouping factors share a QVR name, or the responses declare
-        inconsistent or incomplete ``by`` partitions or prior weights.
+        If two grouping factors share a QVR name, a known covariance names no
+        grouping factor, or the responses declare inconsistent or incomplete
+        ``by`` partitions or prior weights.
     """
     levels: dict[str, tuple[str, ...]] = {}
     tokens: dict[str, str] = {}
@@ -326,6 +327,13 @@ def _normalized_components(
                     *current,
                     *(name for name in names if name not in current),
                 )
+    unknown = {
+        group for lens, _ in components.values() for group in lens._group_covariances
+    } - levels.keys()
+    if unknown:
+        raise ValueError(
+            f"group_covariances names unknown grouping factors {sorted(unknown)!r}"
+        )
     factors = _declared_level_factors(components)
     result: dict[str, tuple[FormulaToQVRModule, Formula]] = {}
     for name, (original, formula) in components.items():
@@ -342,7 +350,18 @@ def _normalized_components(
                 }
             )
         lens._emitted_groups = []
-        result[name] = (lens, _recode(formula, levels, factors))
+        recoded = _recode(formula, levels, factors)
+        used = {
+            group
+            for _, _, predictor in lens._predictor_items(recoded)
+            for group in predictor.group_levels
+        }
+        lens._group_covariances = {
+            group: covariance
+            for group, covariance in original._group_covariances.items()
+            if group in used
+        }
+        result[name] = (lens, recoded)
     return result, levels
 
 
@@ -1040,6 +1059,11 @@ def _shared_groups(
     emitter = copy(first_lens)
     emitter._emitted_groups = []
     emitter._drawn_sites = frozenset()
+    emitter._group_covariances = {
+        group: covariance
+        for lens, _ in components.values()
+        for group, covariance in lens._group_covariances.items()
+    }
     emitter._set_prior_configuration(None)
     counts = len(first_formula.response_values)
     grouping = first_formula.with_(

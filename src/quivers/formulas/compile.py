@@ -207,7 +207,6 @@ from quivers.formulas._gp import (
     gp_runtime_parameters,
 )
 from quivers.formulas._grouping_emission import (
-    joint_group_blocks,
     law_observations,
     law_runtime_parameters,
     membership_observations,
@@ -1571,15 +1570,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             raise ValueError(
                 "the 'dpar_' prefix is reserved for distributional coefficients and inputs"
             )
-        correlation_names: dict[str, tuple[str, str]] = {}
-        for block in joint_group_blocks(
-            self._predictor_items(formula), self._group_covariances
-        ):
-            name = f"cor_{_qvr_name(block[1])}"
-            if correlation_names.setdefault(name, block) != block:
-                raise ValueError(
-                    f"correlation name {name!r} is ambiguous across groups or blocks; use distinct shared IDs"
-                )
         module = self._build_module(formula, supplied_groups=supplied_groups)
         targets = self._catalogue_prior_targets(formula, module)
         # brms default policy: one rule for every site no user rule selects.

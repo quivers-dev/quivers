@@ -591,10 +591,12 @@ def check_names(laws: Iterable[GroupBlockLaw]) -> None:
     Raises
     ------
     ValueError
-        If two blocks, or two members, would own the same name, or two
-        grouping factors share a level name.
+        If two blocks, two members, or two grouping factors would own the
+        same name, or the blocks of one factor declare several ``by``
+        variables.
     """
     owners: dict[str, str] = {}
+    partitions: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {}
 
     def own(names: Iterable[str | None], owner: str) -> None:
         for name in names:
@@ -616,6 +618,12 @@ def check_names(laws: Iterable[GroupBlockLaw]) -> None:
         factor = f"the grouping factor {law.group!r}"
         own((level.axis,), factor)
         if level.by is not None:
+            by = (level.by.variable, level.by.levels, level.by.codes)
+            if partitions.setdefault(law.group, by) != by:
+                raise ValueError(
+                    "Each grouping factor can only be associated with one 'by' "
+                    f"variable; {law.group!r} has several"
+                )
             own((level.by.axis, level.by.input), factor)
         if level.mixing is not None:
             own(
@@ -692,8 +700,8 @@ def plan_group_blocks(
     Raises
     ------
     ValueError
-        If the factors of a block are incompatible, or two blocks would own
-        the same name.
+        If the factors of a block are incompatible, two blocks would own the
+        same name, or one correlation identifier names two blocks.
     """
     predictors = tuple(predictors)
     owners = {
@@ -704,9 +712,16 @@ def plan_group_blocks(
     bases: dict[str, GroupCovarianceBasis] = {}
     laws: list[GroupBlockLaw] = []
     planned: set[tuple[str, str, str]] = set(supplied)
-    for (group, identity), members in joint_group_blocks(
-        predictors, covariances, supplied
-    ).items():
+    blocks = joint_group_blocks(predictors, covariances, supplied)
+    identities: dict[str, tuple[str, str]] = {}
+    for block in blocks:
+        if identities.setdefault(_qvr_name(block[1]), block) != block:
+            raise ValueError(
+                f"correlation identifier {block[1]!r} of {block[0]!r} is ambiguous "
+                f"across groups or blocks: {identities[_qvr_name(block[1])]!r} "
+                "normalizes to the same name; use distinct identifiers"
+            )
+    for (group, identity), members in blocks.items():
         axes = [
             member_axis(prefix, term, component_axes, transition_axis)
             for prefix, term in members

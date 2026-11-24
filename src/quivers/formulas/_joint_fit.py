@@ -450,7 +450,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             fixed_prior=self.fixed_prior,
             random_scale_prior=self.random_scale_prior,
             correlation_prior=self.correlation_prior,
-            group_covariances=dict(self.group_covariances),
+            group_covariances=response.lens.group_covariances,
             distributional=dict(response.lens._distributional),
             predictor_graph=response.lens._predictor_graph,
             fixed_parameters=dict(authored.fixed_parameters or {}),
@@ -3092,7 +3092,11 @@ def fit_joint(
         fixed_prior=fixed_prior,
         random_scale_prior=random_scale_prior,
         correlation_prior=correlation_prior,
-        group_covariances=dict(group_covariances or {}),
+        group_covariances={
+            group: covariance
+            for part in prepared.values()
+            for group, covariance in part.lens.group_covariances.items()
+        },
         reparameterize=reparameterize,
         preparation_data=data,
         refit_recipe=refit_recipe,
