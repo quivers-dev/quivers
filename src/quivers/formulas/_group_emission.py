@@ -336,7 +336,7 @@ def _correlation_draw(
     return draw
 
 
-def _draw_level(
+def draw_level(
     lens: FormulaToQVRModule,
     level: GroupLevelLaw,
     statements: list[Statement],
@@ -349,9 +349,9 @@ def _draw_level(
     ``udf_j ~ inv_chi_square(df)`` per level, and binds the multiplier
     ``dfm_j = sqrt(df * udf_j)`` of every Gaussian coefficient of level
     ``j``, a scale mixture whose marginal law is the multivariate Student-t
-    with ``df`` degrees of freedom. The mixing of a level is drawn once, by
-    the first block that declares it, in this program or among the blocks
-    another program emits for it.
+    with ``df`` degrees of freedom. The mixing of a grouping factor is drawn
+    once, by the first block that declares it, unless another program draws
+    it.
 
     Parameters
     ----------
@@ -367,11 +367,9 @@ def _draw_level(
     if level.by is not None:
         lens._append_finite_object(statements, level.by.axis, len(level.by.levels))
     mixing = level.mixing
-    if mixing is None or any(
-        drawn.level.mixing is not None and drawn.level.mixing.df_site == mixing.df_site
-        for drawn in (*lens._supplied_laws, *lens._emitted_groups)
-    ):
+    if mixing is None or mixing.df_site in lens._drawn_sites:
         return
+    lens._drawn_sites = lens._drawn_sites | {mixing.df_site}
     half = mixing.df_site + "_half"
     steps.append(lens._prior_draw(mixing.df_site, mixing.prior, lower=mixing.lower))
     steps.append(_let(half, _mul(_var(mixing.df_site), LetExprLiteral(value=0.5))))
@@ -593,7 +591,7 @@ def draw_group_block(
         Program steps receiving the draws.
     """
     level = law.level
-    _draw_level(lens, level, statements, steps)
+    draw_level(lens, level, statements, steps)
     if _owns_coordinate_axis(law):
         lens._append_finite_object(statements, _dimension(law), law.width)
     for site in law.correlation.sites:

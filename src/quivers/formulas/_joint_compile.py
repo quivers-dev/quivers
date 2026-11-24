@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass
 from typing import TypeVar, cast
@@ -42,10 +42,14 @@ from quivers.dsl.program_templates import (
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._autocor import autocor_binding
 from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
-from quivers.formulas._group_law import GroupBlockLaw, renamed_law
+from quivers.formulas._group_law import (
+    GroupBlockLaw,
+    IdentityCovariance,
+    renamed_law,
+)
 from quivers.formulas._group_layout import GroupBlockLayout
-from quivers.formulas._group_emission import emit_group_block
-from quivers.formulas._group_plan import plan_joint_block
+from quivers.formulas._group_emission import draw_level, emit_group_block
+from quivers.formulas._group_plan import check_names, level_law, plan_joint_block
 from quivers.formulas._grouping_emission import (
     law_observations,
     law_runtime_parameters,
@@ -375,7 +379,7 @@ def _namespace(
     shared_objects: Mapping[str, str],
     global_names: set[str],
     supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None = None,
-    supplied_laws: Sequence[GroupBlockLaw] = (),
+    supplied_sites: Collection[str] = (),
     supplied_inputs: Mapping[str, LetExprNode] | None = None,
     local_module: Callable[[str, Module], Module] | None = None,
 ) -> _ResponseEmission:
@@ -396,9 +400,9 @@ def _namespace(
         renamed nor declared again by the response.
     supplied_groups : Mapping or None
         Shared group coefficients replacing the response's own group blocks.
-    supplied_laws : Sequence[GroupBlockLaw]
-        Laws of the shared blocks, whose level hyperparameters the response
-        reads from the joint program.
+    supplied_sites : Collection[str]
+        Level hyperparameters of grouping factors, which the response reads
+        from the joint program.
     supplied_inputs : Mapping[str, LetExprNode] or None
         Explicit expressions for response inputs over joint bindings.
     local_module : Callable[[str, Module], Module] or None
@@ -421,7 +425,7 @@ def _namespace(
     module, complement = lens._forward(
         formula,
         supplied_groups=supplied_groups,
-        supplied_laws=supplied_laws,
+        supplied_sites=supplied_sites,
         check=False,
     )
     if local_module is not None:
@@ -610,7 +614,8 @@ def _response_parts(
     Raises
     ------
     ValueError
-        If two responses declare one nominal group axis differently.
+        If two responses declare one nominal group axis differently, or two
+        group blocks would own the same name.
     """
     statements = list(initial_objects)
     steps, parameters = list(global_steps), list(global_parameters)
@@ -651,6 +656,7 @@ def _response_parts(
             _law(law, response.names, response.objects, response.prefix)
             for law in response.lens.group_laws
         )
+    check_names(laws)
     return statements, steps, parameters, returned, targets, laws
 
 
@@ -1026,7 +1032,7 @@ def _shared_groups(
     first_lens, first_formula = next(iter(components.values()))
     emitter = copy(first_lens)
     emitter._emitted_groups = []
-    emitter._supplied_laws = ()
+    emitter._drawn_sites = frozenset()
     emitter._set_prior_configuration(None)
     counts = len(first_formula.response_values)
     grouping = first_formula.with_(
@@ -1088,6 +1094,24 @@ def _shared_groups(
             supplied[name][(prefix, group, term.slope)] = values[
                 (actual_prefix, group, term.slope)
             ]
+    # A grouping factor has one Student-t mixing law in the joint program, read
+    # by the blocks each response emits for its unshared coefficients.
+    for lens, formula in components.values():
+        for _, _, predictor in lens._predictor_items(formula):
+            for term in predictor.random_terms:
+                option = predictor.grouping.option(term.group)
+                if option is not None and option.options.student:
+                    draw_level(
+                        emitter,
+                        level_law(
+                            term.group,
+                            len(levels[term.group]),
+                            option.with_(by_levels=(), by_codes=(), prior_weights=()),
+                            IdentityCovariance(),
+                        ),
+                        statements,
+                        steps,
+                    )
     # The responses bind the row data of multi-membership factors.
     inputs = law_observations(emitter.group_laws)
     parameters = tuple(
@@ -1198,7 +1222,7 @@ def emit_joint(
             shared_objects=shared_objects,
             global_names=global_names,
             supplied_groups=supplied[name],
-            supplied_laws=emitter.group_laws,
+            supplied_sites=emitter._drawn_sites,
             supplied_inputs=supplied_inputs.get(name),
             local_module=local_module,
         )
@@ -1234,7 +1258,7 @@ def emit_joint(
         grouping,
         emitter._family,
         predictors,
-        emitter.group_laws,
+        layouts,
         draw=emitter._parse_prior,
         predictor_scopes=scopes,
         predictor_component_labels=labels,
@@ -1294,7 +1318,7 @@ def emit_joint(
                     shared_objects=shared_objects,
                     global_names=global_names,
                     supplied_groups=supplied[name],
-                    supplied_laws=emitter.group_laws,
+                    supplied_sites=emitter._drawn_sites,
                     supplied_inputs=supplied_inputs.get(name),
                     local_module=local_module,
                 )

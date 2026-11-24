@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import product
 from typing import TYPE_CHECKING
 
 from quivers.diagnostics.contrast import _contrast_hypothesis
@@ -153,8 +154,12 @@ def _formula_contrast_inputs(
             Complete nominal axis names and original coordinate labels.
         """
         axes = list(target.axes)
+        partition, components = target.partition_labels, component_labels(target)
         labels = [
-            component_labels(target) or tuple(range(size)) for size in target.shape
+            tuple(product(partition, components))
+            if partition and components
+            else partition or components or tuple(range(size))
+            for size in target.shape
         ]
         for i in range(len(axes), value.ndim - 2):
             axes.append(f"{target.site}_event_{i - len(target.axes)}")

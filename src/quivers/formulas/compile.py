@@ -65,7 +65,7 @@ from quivers._count_capacity import _MAX_EXACT_COUNT
 
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Literal, Mapping
 
 import didactic.api as dx
@@ -979,7 +979,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._random_scale_prior = random_scale_prior
         self._set_prior_configuration(user_priors)
         self._emitted_groups: list[GroupBlockLaw] = []
-        self._supplied_laws: tuple[GroupBlockLaw, ...] = ()
+        # Level hyperparameters another program draws, and those drawn so far.
+        self._supplied_sites: frozenset[str] = frozenset()
+        self._drawn_sites: frozenset[str] = frozenset()
         self._group_plan: dict[tuple[str, str, str], GroupBlockLaw] = {}
         conflicting = (
             self._distributional.keys() | expression_roots
@@ -1225,7 +1227,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         /,
         *,
         supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None = None,
-        supplied_laws: Sequence[GroupBlockLaw] = (),
+        supplied_sites: Collection[str] = (),
         check: bool = True,
     ) -> tuple[Module, FormulaData]:
         """Compile a formula to a QVR module and its complement.
@@ -1237,9 +1239,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         supplied_groups : Mapping or None
             Group coefficients another program emits, gathered at the
             response rows' levels.
-        supplied_laws : Sequence[GroupBlockLaw]
-            Laws of the blocks another program emits, whose level
-            hyperparameters this program reads without drawing them.
+        supplied_sites : Collection[str]
+            Level hyperparameters of grouping factors that another program
+            draws and this program reads.
         check : bool
             Whether to check the emitted module.
 
@@ -1285,7 +1287,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     auxiliary.name: auxiliary.prior
                 }
         self._emitted_groups = []
-        self._supplied_laws = tuple(supplied_laws)
+        self._supplied_sites = frozenset(supplied_sites)
+        self._drawn_sites = self._supplied_sites
         known_groups = {
             group
             for _, _, predictor in self._predictor_items(formula)
@@ -1618,6 +1621,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 self._user_priors = resolved
                 self._prior_steps = steps
                 self._emitted_groups = []
+                self._drawn_sites = self._supplied_sites
                 module = self._build_module(formula, supplied_groups=supplied_groups)
                 targets = self._catalogue_prior_targets(formula, module)
             special = {

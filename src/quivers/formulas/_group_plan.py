@@ -186,13 +186,13 @@ def row_map(formula: Formula, term: RandomTerm, prefix: str) -> RowMap:
     )
 
 
-def _level_law(
+def level_law(
     group: str,
     size: int,
     option: GroupLevelOptions | None,
     covariance: LevelCovariance,
 ) -> GroupLevelLaw:
-    """Build the level factors of a block from its ``gr()`` options.
+    """Build the level factors of a block from its grouping options.
 
     Parameters
     ----------
@@ -421,9 +421,7 @@ def plan_joint_block(
         for _, _, formula in members
         if (option := formula.grouping.option(group)) is not None
     )
-    level = _level_law(
-        group, len(members[0][2].group_levels[group]), option, covariance
-    )
+    level = level_law(group, len(members[0][2].group_levels[group]), option, covariance)
     correlation: CoefficientCorrelation = IndependentCoordinates()
     if basis is None or (correlate and width > 1):
         correlation = (
@@ -503,7 +501,7 @@ def plan_inline_block(
     """
     group = term.group
     coefficient = coefficient_binding(prefix, group, term.slope)
-    level = _level_law(
+    level = level_law(
         group,
         len(formula.group_levels[group]),
         formula.grouping.option(group),

@@ -77,7 +77,9 @@ from quivers.dsl.program_templates import (
 )
 from quivers.dsl.step_resolution import _step_value_names
 from quivers.formulas._ast import _add, _call, _factor, _index, _let, _var
-from quivers.formulas._group_law import GroupBlockLaw, renamed_law
+from quivers.formulas._group_law import GroupBlockLaw, level_names, renamed_law
+from quivers.formulas._group_plan import check_names
+from quivers.formulas._grouping_emission import law_runtime_parameters
 from quivers.formulas._prior_emission import build_prior_targets
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._response_modifiers import response_input_name
@@ -618,7 +620,7 @@ class _Namespace(ValueModel):
         str
             The mixture name; shared names are unchanged.
         """
-        if value in self.shared or value.startswith("__formula_level_"):
+        if value in self.shared:
             return value
         for auxiliary in self.auxiliaries:
             if value == auxiliary:
@@ -832,6 +834,7 @@ def _sub_emission(
     binomial_trials: int | str | None,
     default_priors: Mapping[str, str] | None = None,
     supplied: Mapping[tuple[str, str, str], LetExprNode] | None = None,
+    supplied_sites: Collection[str] = (),
 ) -> _SubEmission:
     """Emit one component or proportion predictor through the ordinary compiler.
 
@@ -857,6 +860,9 @@ def _sub_emission(
     supplied : Mapping or None
         Group coefficients of blocks shared with other mixture parameters,
         keyed by local predictor prefix, group, and slope.
+    supplied_sites : Collection[str]
+        Level hyperparameters of grouping factors drawn for other mixture
+        parameters.
 
     Returns
     -------
@@ -878,10 +884,6 @@ def _sub_emission(
         for group, covariance in lens._group_covariances.items()
         if group in groups
     }
-    if covariances:
-        raise ValueError(
-            "mixture components do not support known group covariances gr(cov = M)"
-        )
 
     def build(priors: Mapping[str, str]) -> tuple[FormulaToQVRModule, Module]:
         sub = type(lens)(
@@ -899,11 +901,21 @@ def _sub_emission(
             else None,
             distributional=distributional,
             fixed_parameters=fixed_parameters,
+            group_covariances=covariances or None,
         )
-        module, _ = sub._forward(formula, supplied_groups=supplied, check=False)
+        module, _ = sub._forward(
+            formula,
+            supplied_groups=supplied,
+            supplied_sites=supplied_sites,
+            check=False,
+        )
         return sub, module
 
     sub, module = build(dict(default_priors or {}))
+    # The components of a response share the levels of a grouping factor.
+    namespace = namespace.with_(
+        shared=namespace.shared | level_names(sub.group_laws) | set(supplied_sites)
+    )
     priors = dict(default_priors or {}) | _local_priors(
         lens, namespace, _sample_sites(module)
     )
@@ -1297,7 +1309,7 @@ def _shared_blocks(
             helper.group_laws,
             draw=lens._parse_prior,
         )
-        if target.class_ in {"sd", "cor"}
+        if target.group is not None
     )
     return dict(supplied)
 
@@ -1510,10 +1522,8 @@ def emit_mixture(
     def absorb(emission: _SubEmission) -> None:
         for item in emission.objects:
             assert isinstance(item, ObjectDecl)
-            if item.names[0] in groups or item.names == ("Resp",):
-                continue
-            # The threshold group axis is declared once for all components.
-            if item.names[0] in THRESHOLD_GROUP_NAMES and any(
+            # The components declare the axes they share once.
+            if any(
                 isinstance(declared, ObjectDecl) and declared.names == item.names
                 for declared in statements
             ):
@@ -1536,6 +1546,11 @@ def emit_mixture(
             for name in _step_value_names(LetStep(name="supplied", value=value))
         }
     )
+
+    def drawn() -> frozenset[str]:
+        return lens._drawn_sites | {
+            law.level.mixing.df_site for law in laws if law.level.mixing is not None
+        }
 
     def local(prefixes: Mapping[str, str]) -> dict[tuple[str, str, str], LetExprNode]:
         return {
@@ -1601,6 +1616,7 @@ def emit_mixture(
             distributional=local_formulas,
             fixed_parameters=local_fixed,
             binomial_trials=trials,
+            supplied_sites=drawn(),
             supplied=local(
                 {f"dpar_mu{index}_": ""}
                 | {f"dpar_{aux}{index}_": f"dpar_{aux}_" for aux in auxiliaries}
@@ -1744,6 +1760,7 @@ def emit_mixture(
                 distributional={},
                 fixed_parameters={"sigma": 1.0},
                 binomial_trials=None,
+                supplied_sites=drawn(),
                 supplied=local({f"dpar_theta{index}_": ""}),
             )
             absorb(emission)
@@ -1835,6 +1852,9 @@ def emit_mixture(
             options=tuple(options),
         )
     )
+    check_names(laws)
+    for parameter in law_runtime_parameters(laws):
+        parameters.setdefault(parameter.name, parameter)
     statements.append(
         ProgramDecl(
             name="model",
