@@ -40,6 +40,8 @@ from quivers.formulas import (
 from quivers.formulas._brms_priors import scale_prior_arguments, sdgp_prior
 from quivers.formulas._fit import _initial_values, _prepare_formula
 from quivers.formulas._joint_missing import missing_specification
+from quivers.formulas._predictor_graph import NonlinearExpression
+from quivers.modeling import load_fit, save_fit
 from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.types import REAL
 
@@ -118,6 +120,31 @@ def test_a_declared_error_scale_admits_se(make, builtin, known):
     assert _renamed(emitted) == formula_to_qvr(formula, data=_frame(), family=builtin)
     with pytest.raises(ValueError, match=r"'(bell|heavy)'.*Family\.error_scale"):
         formula_to_qvr(formula, data=_frame(), family=make(error_scale=None))
+
+
+def test_known_errors_join_a_nonlinear_error_scale():
+    fitted = fit(
+        "y | se(e, sigma = TRUE) ~ x",
+        data=_frame(),
+        distributional={"sigma": NonlinearExpression(expression="exp(a * x)")},
+        nonlinear={"a": "~ 1"},
+        method="svi",
+        num_steps=0,
+        seed=1,
+    )
+    draws = fitted.draws(num_samples=2, seed=2)
+    frame = _frame()
+    x, e, y = (torch.tensor(frame[name].tolist()) for name in ("x", "e", "y"))
+    slope = draws["nlpar_a_intercept"][0, :, None]
+    # The location is the nonlinear formula x and sigma has the log link.
+    mean = x.expand(2, N)
+    total = torch.sqrt(torch.exp(2 * torch.exp(slope * x)) + e.square())
+    torch.testing.assert_close(
+        fitted.log_likelihood(num_samples=2, seed=2)["y"].reshape(2, N).double(),
+        Normal(mean, total).log_prob(y).double(),
+        rtol=1e-4,
+        atol=1e-4,
+    )
 
 
 @pytest.mark.parametrize("term", ["cens(st)", "trunc(lb = 0)"])
@@ -621,6 +648,17 @@ def test_a_custom_continuous_law_admits_missing_responses():
     )
     draws = fitted.draws(num_samples=2)
     assert any("mi_y__missing" in name for name in draws)
+
+
+@pytest.mark.parametrize("make", [_bell, _heavy, _late])
+def test_declarations_survive_a_saved_fit(make, tmp_path):
+    fitted = fit(
+        "y ~ x", data=_frame(), family=make(), method="svi", num_steps=1, seed=1
+    )
+    save_fit(fitted, tmp_path / "fit.qfit")
+    restored = load_fit(tmp_path / "fit.qfit")
+    assert restored.family == make()
+    assert restored.qvr_source == fitted.qvr_source
 
 
 _SOURCES = sorted(Path(quivers.formulas.__file__).parent.glob("*.py"))

@@ -1229,6 +1229,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             sigma = (
                 _index(residual, row)
                 if residual in self._distributional
+                or self._predictor_graph is not None
+                and residual in self._predictor_graph.roots
                 else _var(residual)
             )
             program_steps.append(
