@@ -192,20 +192,15 @@ class DischargedModule(QiecModel):
             ``clause `op` of handler `h```, or ``None`` when the request is
             not written in a clause.
         """
-        operations = _operations(self.module)
+        names = {
+            operation.id: operation.name
+            for effect in self.module.effects
+            for operation in effect.operations
+        }
         for handler in self.module.handlers:
-            bodies: list[tuple[str, Computation | None]] = [
-                (f"clause `{operations[clause.operation][1].name}`", clause.body)
-                for clause in handler.clauses
-            ]
-            if handler.return_clause is not None:
-                bodies.append(("the return clause", handler.return_clause.body))
-            for subject, body in bodies:
-                if body is not None and any(
-                    isinstance(term, Perform) and term.request.origin == request.origin
-                    for term in _subterms(body)
-                ):
-                    return f"{subject} of handler `{handler.name}`"
+            for clause, made in clause_requests(handler, names):
+                if made.origin == request.origin:
+                    return clause
         return None
 
 
@@ -501,6 +496,39 @@ def _subterms(term: Computation) -> tuple[Computation, ...]:
         elif isinstance(item, NewInstance):
             pending.append(item.body)
     return tuple(found)
+
+
+def clause_requests(
+    handler: HandlerDef, names: Mapping[OperationId, str]
+) -> tuple[tuple[str, EffectRequest], ...]:
+    """The requests a handler's clause bodies make.
+
+    Parameters
+    ----------
+    handler : HandlerDef
+        The handler.
+    names : Mapping[OperationId, str]
+        The source name of each operation.
+
+    Returns
+    -------
+    tuple[tuple[str, EffectRequest], ...]
+        Each request with the clause making it, as ``clause `op` of handler
+        `h``` or ``the return clause of handler `h```.
+    """
+    bodies: list[tuple[str, Computation | None]] = [
+        (f"clause `{names[clause.operation]}`", clause.body)
+        for clause in handler.clauses
+    ]
+    if handler.return_clause is not None:
+        bodies.append(("the return clause", handler.return_clause.body))
+    return tuple(
+        (f"{subject} of handler `{handler.name}`", term.request)
+        for subject, body in bodies
+        if body is not None
+        for term in _subterms(body)
+        if isinstance(term, Perform)
+    )
 
 
 def _read(value: Value) -> frozenset[str]:
@@ -2331,6 +2359,7 @@ __all__ = [
     "DISCHARGE_STEPS",
     "DischargeObstacle",
     "DischargedModule",
+    "clause_requests",
     "discharge_computation",
     "discharge_module",
     "installs_handler",

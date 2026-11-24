@@ -417,14 +417,10 @@ def test_the_kernel_rechecks_parameters_independently() -> None:
     assert isinstance(put.body, Resume)
     dropped = put.with_(body=put.body.with_(arguments=()))
     with pytest.raises(KernelError, match="resume continues with 0 parameter"):
-        validate_module(
-            module.with_(handlers=(handler.with_(clauses=(get, dropped)),))
-        )
+        validate_module(module.with_(handlers=(handler.with_(clauses=(get, dropped)),)))
     retyped = put.with_(body=put.body.with_(arguments=(put.body.value,)))
     with pytest.raises(KernelError, match="resume continues with parameter 0"):
-        validate_module(
-            module.with_(handlers=(handler.with_(clauses=(get, retyped)),))
-        )
+        validate_module(module.with_(handlers=(handler.with_(clauses=(get, retyped)),)))
     counted = next(item for item in module.computations if item.name == "counted")
     assert isinstance(counted.body, NewInstance)
     assert isinstance(counted.body.body, Handle)

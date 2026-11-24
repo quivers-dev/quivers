@@ -120,9 +120,7 @@ _COPYING = ("ch", "ct")
 def _row(lines: list[str]) -> str:
     """The row of a body, from the instances its requests name."""
     return ", ".join(
-        name
-        for name in _INSTALLS
-        if any(f"perform {name}." in line for line in lines)
+        name for name in _INSTALLS if any(f"perform {name}." in line for line in lines)
     )
 
 
@@ -196,7 +194,9 @@ def random_body(seed: int) -> str:
         names = ["a", "b"]
         helper += _statements(rng, names, rng.randint(0, 3), copies, " " * 8)
         if rng.random() < 0.3:
-            helper.append(f"        let w <- perform ab.stop({_expression(rng, names)})")
+            helper.append(
+                f"        let w <- perform ab.stop({_expression(rng, names)})"
+            )
             names.append("w")
         helper.append(f"        return {_expression(rng, names)}")
         if branch == 0:
@@ -212,7 +212,9 @@ def random_body(seed: int) -> str:
         names.append(name)
     body.append(f"    return {_expression(rng, names)}")
     helper.insert(0, f"define helper(a : Real, b : Real) : Real !{{{_row(helper)}}} =")
-    body.insert(0, f"define body(a : Real, b : Real) : Real !{{{_row(helper + body)}}} =")
+    body.insert(
+        0, f"define body(a : Real, b : Real) : Real !{{{_row(helper + body)}}} ="
+    )
     order = [name for name in _INSTALLS if name in _row(helper + body).split(", ")]
     rng.shuffle(order)
     handled = ["define handled(a : Real, b : Real) : Real !{} ="]

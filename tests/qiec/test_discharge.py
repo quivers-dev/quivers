@@ -541,9 +541,7 @@ define inner(a : Real) : Real !{} =
     context = CheckContext()
     for parameter in pair.parameters:
         context = context.extend(parameter)
-    assert (
-        infer_computation(pair.body, registry, context).result == pair.type.result
-    )
+    assert infer_computation(pair.body, registry, context).result == pair.type.result
     assert isinstance(pair.body, Return)
     for checked in (module, result.module):
         assert run_named(checked, "inner", (0.5,)).value == pytest.approx(10.5)
