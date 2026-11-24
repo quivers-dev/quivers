@@ -2,9 +2,10 @@
 
 Each `Family` knows how to emit a QVR ``observe`` step plus
 the inverse-link expression that wraps a linear predictor.  The
-registry maps brms-style family names to a typed family record;
-the compiler dispatches on the family name to slot the right
-inverse-link / observe lines into the emitted ``.qvr`` source.
+registry maps brms-style family names to a typed family record. The
+record declares every property the frontend reads: the compiler, the
+posterior methods and the response terms consult those declarations and
+never the family name, so a new family opts in to whatever it declares.
 
 Each family declares location and auxiliary links separately. The compiler
 converts regression parameters to QVR constructor parameters, for instance
@@ -15,14 +16,15 @@ vectors rather than scalar auxiliaries.
 
 from __future__ import annotations
 
+import math
 from typing import Literal, Mapping
 
 import didactic.api as dx
+import numpy as np
 
 from quivers._splines import MSplineBasis
 from quivers.formulas._survival import BaselineSpec
 from quivers.formulas._custom_types import CustomFamilySpec
-from quivers.formulas._link_whitelist import check_family_links
 from quivers.formulas._family_registry import FamilyRegistry
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
 from quivers.qiec.families import DistributionFamily
@@ -67,55 +69,6 @@ class Exposure(dx.Model):
     observe_family: str | None = None
 
 
-class Link(dx.Model):
-    """Inverse-link function bridging a linear predictor on
-    :math:`\\mathbb{R}` to the family's natural parameter space.
-
-    Attributes
-    ----------
-    name : str
-        Canonical name (e.g. ``"identity"``, ``"logit"``, ``"log"``,
-        ``"probit"``, ``"cloglog"``).
-    inverse_expr : str
-        QVR expression giving the family parameter from the linear
-        predictor, written ``{eta}``. The compiler emits exactly this
-        expression. ``{name}`` is the parameter being defined, for
-        referring to `intermediates`.
-    intermediates : tuple[Binding, ...]
-        Shared quantities bound, in order, before the inverse; each name
-        and expression may use ``{eta}`` and ``{name}``.
-    brms_intercept_prior : str or None
-        brms's default prior of a centered location intercept under this
-        link, where it is not the response-scaled Student-t.
-    """
-
-    name: str
-    inverse_expr: str
-    intermediates: tuple[Binding, ...] = ()
-    brms_intercept_prior: str | None = None
-
-
-class OrdinalSpec(dx.Model):
-    """Static ordinal likelihood and threshold configuration.
-
-    Attributes
-    ----------
-    kind : str
-        Cumulative, adjacent-category, stopping-ratio, or continuation-ratio
-        construction. The hurdle variant adds a separate lowest category zero.
-    link : str
-        Inverse link for cumulative or transition probabilities.
-    thresholds : str
-        Flexible, equally spaced, or explicitly sum-centered thresholds.
-    """
-
-    kind: Literal["cumulative", "acat", "sratio", "cratio", "hurdle_cumulative"]
-    link: Literal[
-        "logit", "probit", "probit_approx", "cloglog", "cauchit", "softit"
-    ] = "logit"
-    thresholds: Literal["flexible", "equidistant", "sum_to_zero"] = "flexible"
-
-
 class Domain(dx.Model):
     """The interval of values a family parameter or response may take.
 
@@ -157,6 +110,37 @@ class Domain(dx.Model):
         )
         return above and below
 
+    def within(self, other: Domain) -> bool:
+        """Test whether this interval is contained in another.
+
+        Parameters
+        ----------
+        other : Domain
+            Candidate enclosing interval.
+
+        Returns
+        -------
+        bool
+            True when every value of this interval lies in ``other``.
+        """
+        above = other.lower is None or (
+            self.lower is not None
+            and (
+                self.lower > other.lower
+                or self.lower == other.lower
+                and (other.lower_closed or not self.lower_closed)
+            )
+        )
+        below = other.upper is None or (
+            self.upper is not None
+            and (
+                self.upper < other.upper
+                or self.upper == other.upper
+                and (other.upper_closed or not self.upper_closed)
+            )
+        )
+        return above and below
+
     def requirement(self) -> str:
         """Describe the interval as the completion of "must ...".
 
@@ -188,6 +172,15 @@ class Domain(dx.Model):
         return f"be in {left}{self.lower:g}, {self.upper:g}{right}"
 
 
+RESPONSE_MIN = "response_min"
+"""Name of the smallest response in the prior of a shift below it."""
+
+_POSITIVE_PARAMETER_LINKS = ("log", "identity", "softplus", "squareplus")
+"""brms's links of an auxiliary parameter on the positive half-line."""
+
+_PROBABILITY_PARAMETER_LINKS = ("logit", "identity")
+"""brms's links of an auxiliary parameter on the unit interval."""
+
 _REAL = Domain(lower=None)
 _NONNEGATIVE = Domain(lower_closed=True)
 _UNIT_OPEN = Domain(upper=1.0)
@@ -200,6 +193,87 @@ _SUPPORT_DOMAINS: Mapping[str, Domain] = {
     "unit_interval": _UNIT_OPEN,
 }
 """The interval of each parameter-free continuous support kind."""
+
+
+class Link(dx.Model):
+    """Inverse-link function bridging a linear predictor on
+    :math:`\\mathbb{R}` to the family's natural parameter space.
+
+    Attributes
+    ----------
+    name : str
+        Canonical name (e.g. ``"identity"``, ``"logit"``, ``"log"``,
+        ``"probit"``, ``"cloglog"``).
+    inverse_expr : str
+        QVR expression giving the family parameter from the linear
+        predictor, written ``{eta}``. The compiler emits exactly this
+        expression. ``{name}`` is the parameter being defined, for
+        referring to `intermediates`.
+    intermediates : tuple[Binding, ...]
+        Shared quantities bound, in order, before the inverse; each name
+        and expression may use ``{eta}`` and ``{name}``.
+    image : Domain or None
+        Interval the inverse maps the real line onto, coordinate by
+        coordinate for a vector link. None when it is not declared, which
+        a parameter whose domain has a lower endpoint above zero refuses.
+    brms_intercept_prior : str or None
+        brms's default prior of a centered location intercept under this
+        link, where it is not the response-scaled Student-t.
+    brms_response_expr : str or None
+        The link applied to the response ``{y}``, where brms reads the
+        scales of its default priors from the linked response; None where
+        brms keeps its fixed scale.
+    """
+
+    name: str
+    inverse_expr: str
+    intermediates: tuple[Binding, ...] = ()
+    image: Domain | None = None
+    brms_intercept_prior: str | None = None
+    brms_response_expr: str | None = None
+
+    @property
+    def is_identity(self) -> bool:
+        """Whether the parameter is its linear predictor.
+
+        Returns
+        -------
+        bool
+            True when the inverse is the identity.
+        """
+        return self.inverse_expr == "{eta}"
+
+    @property
+    def is_log(self) -> bool:
+        """Whether the linear predictor is the logarithm of the parameter.
+
+        Returns
+        -------
+        bool
+            True when the inverse is the exponential.
+        """
+        return self.inverse_expr == "exp({eta})"
+
+
+class OrdinalSpec(dx.Model):
+    """Static ordinal likelihood and threshold configuration.
+
+    Attributes
+    ----------
+    kind : str
+        Cumulative, adjacent-category, stopping-ratio, or continuation-ratio
+        construction. The hurdle variant adds a separate lowest category zero.
+    link : str
+        Inverse link for cumulative or transition probabilities.
+    thresholds : str
+        Flexible, equally spaced, or explicitly sum-centered thresholds.
+    """
+
+    kind: Literal["cumulative", "acat", "sratio", "cratio", "hurdle_cumulative"]
+    link: Literal[
+        "logit", "probit", "probit_approx", "cloglog", "cauchit", "softit"
+    ] = "logit"
+    thresholds: Literal["flexible", "equidistant", "sum_to_zero"] = "flexible"
 
 
 class AuxParam(dx.Model):
@@ -225,8 +299,21 @@ class AuxParam(dx.Model):
         otherwise the default of the parameter's brms class applies.
     domain : Domain
         Values the parameter may take; the positive half-line by default. A
-        fixed value is checked against it, and a prior is restricted to a
-        lower endpoint above zero.
+        fixed value is checked against it. A lower endpoint above zero is
+        narrower than the native constraint, so a prior is restricted to it
+        and a link must map into it.
+    links : tuple[str, ...] or None
+        Links `Family.with_links` admits for the parameter, where they are
+        not those brms gives every parameter of the domain
+        (`admissible_links`).
+    below_response : bool
+        Whether the parameter is a shift every response exceeds. A fixed
+        value is checked against the responses, `prior` and `brms_prior` may
+        name the smallest response as ``response_min``, and inference starts
+        at a quarter of it unless the prior is already bounded by it.
+    per_component : bool
+        Whether the parameter has one value per free component of the
+        family's `ResponseSpec`.
     """
 
     name: str
@@ -236,6 +323,80 @@ class AuxParam(dx.Model):
     domain: Domain = Domain()
     brms_class: str | None = None
     brms_prior: str | None = None
+    links: tuple[str, ...] | None = None
+    below_response: bool = False
+    per_component: bool = False
+
+    @property
+    def parameter_class(self) -> str:
+        """The brms class of the parameter.
+
+        Returns
+        -------
+        str
+            The declared class, or the parameter's own name.
+        """
+        return self.name if self.brms_class is None else self.brms_class
+
+    @property
+    def admissible_links(self) -> tuple[str, ...] | None:
+        """The links brms admits for the parameter.
+
+        Returns
+        -------
+        tuple[str, ...] or None
+            The declared links, or those brms gives every parameter on the
+            positive half-line or the unit interval. None for a parameter on
+            another interval that declares no links.
+        """
+        if self.links is not None:
+            return self.links
+        if self.domain.lower != 0.0:
+            return None
+        if self.domain.upper is None:
+            return _POSITIVE_PARAMETER_LINKS
+        return _PROBABILITY_PARAMETER_LINKS if self.domain.upper == 1.0 else None
+
+    @property
+    def bounded_by_response(self) -> bool:
+        """Whether the default prior is bounded by the smallest response.
+
+        Returns
+        -------
+        bool
+            True when `prior` names ``response_min``.
+        """
+        return RESPONSE_MIN in self.prior
+
+    def with_response_minimum(self, prior: str, response: np.ndarray) -> str:
+        """Bind the smallest response in a prior of this parameter.
+
+        Parameters
+        ----------
+        prior : str
+            Prior expression, possibly naming ``response_min``.
+        response : np.ndarray
+            Training responses.
+
+        Returns
+        -------
+        str
+            The prior with ``response_min`` replaced by its value.
+
+        Raises
+        ------
+        ValueError
+            If the prior names ``response_min`` for a parameter that does
+            not declare `below_response`.
+        """
+        if RESPONSE_MIN not in prior:
+            return prior
+        if not self.below_response:
+            raise ValueError(
+                f"the prior of {self.name!r} names {RESPONSE_MIN}, which only a "
+                "parameter declaring AuxParam.below_response may"
+            )
+        return prior.replace(RESPONSE_MIN, repr(float(np.min(response))))
 
 
 class ResponseSpec(dx.Model):
@@ -316,6 +477,51 @@ class ResponseSpec(dx.Model):
         return tuple(index for index in range(len(labels)) if index != reference)
 
 
+class Elliptical(dx.Model):
+    """The elliptical residual law of a location-scale family.
+
+    A family declaring one has the density of a multivariate Normal or
+    Student-t in one coordinate, so residuals may be correlated across rows
+    (autocorrelation terms) or across responses (``set_rescor``) under the
+    multivariate law with the same scale and degrees of freedom.
+
+    Attributes
+    ----------
+    scale : str
+        Auxiliary parameter scaling the residual.
+    df : str or None
+        Auxiliary parameter giving the Student degrees of freedom; None for
+        the Normal law.
+    """
+
+    scale: str
+    df: str | None = None
+
+    @property
+    def kernel(self) -> str:
+        """The native law of a correlated residual vector.
+
+        Returns
+        -------
+        str
+            The multivariate Normal, or Student-t under degrees of freedom.
+        """
+        return "MultivariateNormal" if self.df is None else "MultivariateStudentT"
+
+    @property
+    def parameterization(self) -> tuple[str, ...]:
+        """The constructor parameters of `kernel` in schema order.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Location and Cholesky scale factor, after the degrees of freedom
+            of a Student-t.
+        """
+        location = ("loc", "scale_tril")
+        return location if self.df is None else ("df", *location)
+
+
 # mixtures: brms mixture() components and ordering (quivers.formulas._mixture).
 class MixtureSpec(ValueModel):
     """Retain the components and identification of a finite mixture family.
@@ -324,6 +530,7 @@ class MixtureSpec(ValueModel):
     ----------
     components : tuple[Family, ...]
         Component families in brms order; ``nmix`` repetitions are expanded.
+        One component is a template, repeated ``mixture_components`` times.
     order : {"mu", "none"}
         ``"mu"`` orders the component location intercepts; ``"none"``
         applies no ordering constraint.
@@ -404,6 +611,29 @@ class Family(ValueModel):
         Expression forming the scored event from ``formula_response`` and
         the binary ``formula_decision`` of a ``dec()`` term. None for a
         family whose event is its response.
+    location_links : tuple[str, ...] or None
+        Links `with_links` admits for the location; None declares no
+        decision, and `with_links` refuses a location link.
+    recorded_events : bool
+        Whether the family admits the ``cens()`` and ``trunc()`` terms.
+    error_scale : str or None
+        Auxiliary parameter giving the residual scale that the known errors
+        of a ``se()`` term replace, or join in quadrature; None when the
+        family admits no ``se()``.
+    elliptical : Elliptical or None
+        Elliptical residual law, under which residuals may be correlated
+        across rows or responses.
+    r_squared : {"model", "residual"}
+        Variance ``bayes_r2`` reads by default: the law's own conditional
+        variance or that of the residuals.
+    factor_levels : int or None
+        Number of levels of a factor response the family codes
+        ``0, ..., n - 1``, stated only where the native support depends on
+        parameters (`coded_levels`).
+    mixture_law : str or None
+        Native law of a finite mixture whose components all have this
+        family, over the stacked native arguments of the components. The law
+        must truncate each component itself. None mixes the component laws.
     aux_params : tuple[AuxParam, ...]
         Auxiliary priors and distributional links.
     trials_parameter : str or None
@@ -432,6 +662,13 @@ class Family(ValueModel):
     log_response: bool = False
     response_domain: Domain | None = None
     decision_event: str | None = None
+    location_links: tuple[str, ...] | None = None
+    recorded_events: bool = False
+    error_scale: str | None = None
+    elliptical: Elliptical | None = None
+    r_squared: Literal["model", "residual"] = "residual"
+    factor_levels: int | None = None
+    mixture_law: str | None = None
 
     @property
     def response_interval(self) -> Domain | None:
@@ -488,8 +725,173 @@ class Family(ValueModel):
             location link is the logarithm.
         """
         return (
-            self.log_location_argument is not None and self.location_link.name == "log"
+            self.log_location_argument is not None and self.location_link.is_log
         )
+
+    @property
+    def vector_response(self) -> bool:
+        """Whether one response event is a vector of components.
+
+        Returns
+        -------
+        bool
+            True for compositional and count-vector responses.
+        """
+        return self.response is not None and not self.unordered_categories
+
+    @property
+    def coded_levels(self) -> int | None:
+        """Number of levels of a factor the family reads as integer codes.
+
+        Returns
+        -------
+        int or None
+            The declared number, or the size of a native support
+            ``0, ..., n - 1``. None for a family without such codes; a
+            `category_response` takes any number of levels.
+        """
+        if self.factor_levels is not None:
+            return self.factor_levels
+        support = self.native.finite_support
+        if support is None or list(support) != list(range(len(support))):
+            return None
+        return len(support)
+
+    @property
+    def scores_cutpoints(self) -> bool:
+        """Whether the native law of an ordinal family takes its cutpoints.
+
+        Returns
+        -------
+        bool
+            True for a law over a predictor and cutpoints, False for a law
+            over category logits.
+        """
+        return "cutpoints" in self.native.parameter_names
+
+    @property
+    def component_scale(self) -> AuxParam | None:
+        """The auxiliary parameter with one value per free component.
+
+        Returns
+        -------
+        AuxParam or None
+            The parameter declaring `AuxParam.per_component`, if any.
+        """
+        return next((aux for aux in self.aux_params if aux.per_component), None)
+
+    @property
+    def residual_scale(self) -> AuxParam | None:
+        """The residual scale, the parameter of brms class ``sigma``.
+
+        Returns
+        -------
+        AuxParam or None
+            The parameter of that class, or None.
+        """
+        return next(
+            (aux for aux in self.aux_params if aux.parameter_class == "sigma"), None
+        )
+
+    @property
+    def latent_response_obstacle(self) -> str | None:
+        """Why a missing response cannot be a latent coordinate.
+
+        A missing ``mi()`` response is a latent coordinate drawn from the
+        response law, so the law needs a density on an interval and nothing
+        fixed by the recorded responses.
+
+        Returns
+        -------
+        str or None
+            The property that rules it out, or None when the family admits
+            ``mi()`` responses.
+        """
+        native = self.native
+        if self.response is not None or native.event_rank:
+            return "its response is a vector or a category"
+        if native.discrete:
+            return "its response is discrete"
+        if native.compositional:
+            return "its response mixes component laws"
+        if native.atom_locations is None or native.atom_locations:
+            return "its response law has point masses"
+        if self.decision_event is not None:
+            return "its event combines the response with a decision"
+        if self.baseline is not None:
+            return "its baseline hazard is placed on the recorded times"
+        if any(aux.below_response for aux in self.aux_params):
+            return "its shift is bounded by the recorded responses"
+        return None
+
+    def native_parameter(self, name: str) -> str:
+        """Name the native constructor parameter that receives a quantity.
+
+        Parameters
+        ----------
+        name : str
+            Formula parameter or derived binding passed to the constructor.
+
+        Returns
+        -------
+        str
+            The constructor parameter in the native schema.
+
+        Raises
+        ------
+        ValueError
+            If the quantity is not itself a native constructor argument.
+        """
+        if self.custom is not None:
+            arguments = {bound: native for native, bound in self.custom.bindings}
+        else:
+            arguments = {
+                argument: native
+                for argument, native in zip(
+                    self.observe_args, self.native.parameter_names, strict=False
+                )
+                if isinstance(argument, str)
+            }
+        if name not in arguments:
+            raise ValueError(
+                f"family {self.name!r} does not pass {name!r} to its native "
+                "constructor (Family.observe_args)"
+            )
+        return arguments[name]
+
+    def admissible_links(self, parameter: str) -> tuple[str, ...]:
+        """List the links the family admits for one parameter.
+
+        Parameters
+        ----------
+        parameter : str
+            ``mu`` for the location or an auxiliary parameter name.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Admissible link names.
+
+        Raises
+        ------
+        ValueError
+            If the parameter is unknown or declares no links.
+        """
+        if parameter == "mu":
+            declared, field = self.location_links, "Family.location_links"
+        else:
+            aux = next((aux for aux in self.aux_params if aux.name == parameter), None)
+            if aux is None:
+                raise ValueError(
+                    f"unknown family parameter {parameter!r} of {self.name!r}"
+                )
+            declared, field = aux.admissible_links, "AuxParam.links"
+        if declared is None:
+            raise ValueError(
+                f"family {self.name!r} declares no admissible links for parameter "
+                f"{parameter!r} ({field})"
+            )
+        return declared
 
     aux_params: tuple[AuxParam, ...] = ()
     trials_parameter: str | None = None
@@ -502,6 +904,35 @@ class Family(ValueModel):
     mixture: MixtureSpec | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+
+    @dx.model_validator()
+    def _validate_declarations(self) -> None:
+        """Require declared parameter names to be auxiliary parameters.
+
+        Raises
+        ------
+        ValueError
+            If a declaration names a parameter the family does not have, or a
+            per-component parameter has no components.
+        """
+        names = {aux.name for aux in self.aux_params}
+        declared = {"error_scale": self.error_scale}
+        if self.elliptical is not None:
+            declared |= {
+                "elliptical.scale": self.elliptical.scale,
+                "elliptical.df": self.elliptical.df,
+            }
+        for field, name in declared.items():
+            if name is not None and name not in names:
+                raise ValueError(
+                    f"family {self.name!r} declares {field} {name!r}, which is not "
+                    f"one of its auxiliary parameters {sorted(names)}"
+                )
+        if self.response is None and self.component_scale is not None:
+            raise ValueError(
+                f"family {self.name!r} declares a per-component parameter without "
+                "a ResponseSpec"
+            )
 
     def with_baseline(
         self,
@@ -672,7 +1103,7 @@ class Family(ValueModel):
             links. Categorical models require their multinomial softmax
             location link.
         """
-        if self.mixture is not None:
+        if self.mixture is not None and len(self.mixture.components) > 1:
             raise ValueError(
                 "mixture links belong to the components; set them before mixture()"
             )
@@ -707,62 +1138,34 @@ class Family(ValueModel):
             raise ValueError(
                 f"unknown links {sorted(invalid)}; choices are {sorted(links)}"
             )
-        if self.name == "categorical" and parameters.get("mu", "softmax") != "softmax":
-            raise ValueError("categorical models require the softmax location link")
         ordinal = self.ordinal
+        observe_family = self.observe_family
+        requested = dict(parameters)
         if ordinal is not None and "mu" in parameters:
-            requested = parameters["mu"]
-            if requested == "identity" and self.name == "cumulative":
-                requested = "logit"
-            allowed = {
-                "logit",
-                "probit",
-                "probit_approx",
-                "cloglog",
-                "cauchit",
-                "softit",
-            }
-            if ordinal.kind in {"sratio", "cratio"}:
-                allowed.remove("softit")
-            if requested not in allowed:
+            # The location of a cumulative family is its own linear predictor;
+            # the identity keeps it, with thresholds on the logit scale.
+            if parameters["mu"] == "identity" and ordinal.kind == "cumulative":
+                requested["mu"] = "logit"
+        for parameter, link in requested.items():
+            allowed = self.admissible_links(parameter)
+            if link not in allowed:
                 raise ValueError(
-                    f"link {requested!r} is not supported for parameter 'mu' of "
-                    f"family {self.name!r}; admissible links are {sorted(allowed)}"
+                    f"link {link!r} is not supported for parameter {parameter!r} of "
+                    f"family {self.name!r}; admissible links are {list(allowed)}"
                 )
-            ordinal = ordinal.with_(link=requested)
-        if self.custom is None:
-            # Ordinal families check the link their thresholds will use.
-            effective = dict(parameters)
-            if ordinal is not None and "mu" in parameters:
-                effective["mu"] = ordinal.link
-            check_family_links(self.name, effective)
-        location_link = (
-            links[parameters["mu"]] if "mu" in parameters else self.location_link
-        )
-        return Family(
-            name=self.name,
-            location_link=location_link,
-            observe_family=(
-                "OrderedProbit" if ordinal.link == "probit" else "OrderedLogistic"
+        if ordinal is not None and "mu" in requested:
+            ordinal = ordinal.with_(link=requested["mu"])
+            observe_family = (
+                _CUTPOINT_LAWS.get(ordinal.link, "Categorical")
+                if ordinal.kind == "cumulative"
+                else "Categorical"
             )
-            if ordinal is not None
-            and ordinal.kind == "cumulative"
-            and ordinal.link in {"logit", "probit"}
-            else "Categorical"
-            if ordinal is not None
-            else self.observe_family,
-            observe_lets=self.observe_lets,
-            observe_args=self.observe_args,
-            exposure=self.exposure,
-            log_location_argument=self.log_location_argument,
-            circular=self.circular,
-            log_response=self.log_response,
-            response_domain=self.response_domain,
-            decision_event=self.decision_event,
-            trials_parameter=self.trials_parameter,
+        return self.with_(
+            location_link=links[parameters["mu"]]
+            if "mu" in parameters
+            else self.location_link,
+            observe_family=observe_family,
             ordinal=ordinal,
-            response=self.response,
-            baseline=self.baseline,
             aux_params=tuple(
                 aux.with_(link=links[parameters[aux.name]])
                 if aux.name in parameters
@@ -772,11 +1175,32 @@ class Family(ValueModel):
         )
 
 
-_IDENTITY = Link(name="identity", inverse_expr="{eta}")
-_LOGIT = Link(name="logit", inverse_expr="sigmoid({eta})")
-_LOG = Link(name="log", inverse_expr="exp({eta})")
-_SOFTMAX = Link(name="softmax", inverse_expr="softmax({eta})")
-_INVERSE = Link(name="inverse", inverse_expr="1.0 / {eta}")
+_CUTPOINT_LAWS: Mapping[str, str] = {
+    "logit": "OrderedLogistic",
+    "probit": "OrderedProbit",
+}
+"""Native cumulative laws over cutpoints, by ordinal link."""
+
+_IDENTITY = Link(
+    name="identity",
+    inverse_expr="{eta}",
+    image=_REAL,
+    brms_response_expr="{y}",
+)
+_LOGIT = Link(name="logit", inverse_expr="sigmoid({eta})", image=_UNIT_OPEN)
+_LOG = Link(
+    name="log",
+    inverse_expr="exp({eta})",
+    image=Domain(),
+    brms_response_expr="log({y})",
+)
+_SOFTMAX = Link(name="softmax", inverse_expr="softmax({eta})", image=_UNIT_OPEN)
+_INVERSE = Link(
+    name="inverse",
+    inverse_expr="1.0 / {eta}",
+    image=_REAL,
+    brms_response_expr="1.0 / {y}",
+)
 
 
 _SOFTPLUS_EXPR = (
@@ -794,25 +1218,49 @@ links: Mapping[str, Link] = {
     "softmax": _SOFTMAX,
     "inverse": _INVERSE,
     "probit": Link(
-        name="probit", inverse_expr="0.5 * (1.0 + erf({eta} / 1.4142135623730951))"
+        name="probit",
+        inverse_expr="0.5 * (1.0 + erf({eta} / 1.4142135623730951))",
+        image=_UNIT_OPEN,
     ),
     "probit_approx": Link(
         name="probit_approx",
         inverse_expr="sigmoid(0.07056 * ({eta} * ({eta} * {eta})) + 1.5976 * {eta})",
+        image=_UNIT_OPEN,
     ),
-    "log1p": Link(name="log1p", inverse_expr="expm1({eta})"),
-    "cloglog": Link(name="cloglog", inverse_expr="-1.0 * expm1(-1.0 * exp({eta}))"),
+    "log1p": Link(
+        name="log1p", inverse_expr="expm1({eta})", image=Domain(lower=-1.0)
+    ),
+    "cloglog": Link(
+        name="cloglog",
+        inverse_expr="-1.0 * expm1(-1.0 * exp({eta}))",
+        image=_UNIT_OPEN,
+    ),
     "cauchit": Link(
-        name="cauchit", inverse_expr="0.5 + atan({eta}) / 3.141592653589793"
+        name="cauchit",
+        inverse_expr="0.5 + atan({eta}) / 3.141592653589793",
+        image=_UNIT_OPEN,
     ),
-    "sqrt": Link(name="sqrt", inverse_expr="{eta} * {eta}"),
-    "inverse_square": Link(name="inverse_square", inverse_expr="1.0 / sqrt({eta})"),
-    "logm1": Link(name="logm1", inverse_expr="1.0 + exp({eta})"),
-    "softplus": Link(name="softplus", inverse_expr=_SOFTPLUS_EXPR),
+    "sqrt": Link(
+        name="sqrt",
+        inverse_expr="{eta} * {eta}",
+        image=_NONNEGATIVE,
+        brms_response_expr="sqrt({y})",
+    ),
+    "inverse_square": Link(
+        name="inverse_square",
+        inverse_expr="1.0 / sqrt({eta})",
+        image=Domain(),
+        brms_response_expr="1.0 / ({y} * {y})",
+    ),
+    "logm1": Link(
+        name="logm1", inverse_expr="1.0 + exp({eta})", image=Domain(lower=1.0)
+    ),
+    "softplus": Link(name="softplus", inverse_expr=_SOFTPLUS_EXPR, image=Domain()),
     # The scaled root keeps the square finite for large predictors; select
     # (not abs) retains the right branch's derivative at zero.
     "squareplus": Link(
         name="squareplus",
+        image=Domain(),
         intermediates=(
             Binding(name="{name}_link_half", expr="0.5 * {eta}"),
             Binding(name="{name}_link_scale", expr="max(1.0, abs({name}_link_half))"),
@@ -840,36 +1288,100 @@ links: Mapping[str, Link] = {
     ),
     "softit": Link(
         name="softit",
+        image=_UNIT_OPEN,
         intermediates=(Binding(name="{name}_link_positive", expr=_SOFTPLUS_EXPR),),
         inverse_expr="{name}_link_positive / (1.0 + {name}_link_positive)",
     ),
     "tan_half": Link(
         name="tan_half",
         inverse_expr="2.0 * atan({eta})",
+        image=Domain(lower=-math.pi, upper=math.pi),
         brms_intercept_prior="StudentT(1.0, 0.0, 1.0)",
     ),
 }
 """The built-in inverse links, keyed by link name."""
 
 
+_REAL_LINKS = (
+    "identity",
+    "log",
+    "inverse",
+    "softplus",
+    "squareplus",
+    "logit",
+    "probit",
+    "probit_approx",
+    "cloglog",
+    "cauchit",
+    "softit",
+)
+"""brms's location links of a family whose location is any real number."""
+
+_REAL_EXTENSIONS = ("log1p", "sqrt", "inverse_square", "logm1", "tan_half")
+"""The other real-valued links of the registry, admitted beyond brms where
+the location is any real number, since each gives a valid location."""
+
+_POSITIVE_LINKS = ("log", "identity", "inverse", "softplus", "squareplus")
+_COUNT_LINKS = ("log", "identity", "sqrt", "softplus", "squareplus")
+_UNIT_LINKS = (
+    "logit",
+    "probit",
+    "probit_approx",
+    "cloglog",
+    "cauchit",
+    "softit",
+    "identity",
+    "log",
+)
+_ORDINAL_LINKS = ("logit", "probit", "probit_approx", "cloglog", "cauchit", "softit")
+_RATIO_LINKS = ("logit", "probit", "probit_approx", "cloglog", "cauchit")
+_SHIFTED_LINKS = ("identity", "log", "inverse", "softplus", "squareplus")
+_LOG_LOCATION_LINKS = ("identity", "inverse")
+_COMPOSITIONAL_LINKS = ("logit", "softmax")
+
+_GAUSSIAN = Family(
+    name="gaussian",
+    location_link=_IDENTITY,
+    location_links=_REAL_LINKS + _REAL_EXTENSIONS,
+    observe_family="Normal",
+    observe_args=("mu", "sigma"),
+    recorded_events=True,
+    error_scale="sigma",
+    elliptical=Elliptical(scale="sigma"),
+    r_squared="model",
+    mixture_law="MixtureNormal",
+    aux_params=(AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),),
+)
+
+
 families: Mapping[str, Family] = FamilyRegistry({
     "wiener": Family(
         name="wiener",
         location_link=_IDENTITY,
+        location_links=("identity", "log", "softplus", "squareplus"),
         observe_family="Wiener",
         response_domain=Domain(),
         decision_event="formula_response * (2.0 * real(formula_decision) - 1.0)",
         observe_args=("bs", "ndt", "bias", "mu"),
         aux_params=(
             AuxParam(name="bs", prior="Gamma(1.0, 1.0)", link=_LOG),
-            AuxParam(name="ndt", prior="LogNormal(-2.0, 0.5)", link=_LOG, domain=_NONNEGATIVE),
+            AuxParam(
+                name="ndt",
+                prior="LogNormal(-2.0, 0.5)",
+                link=_LOG,
+                domain=_NONNEGATIVE,
+                below_response=True,
+                brms_prior="Uniform(0.0, response_min)",
+            ),
             AuxParam(name="bias", prior="Beta(1.0, 1.0)", link=_LOGIT, domain=_UNIT_OPEN),
         ),
     ),
     "com_poisson": Family(
         name="com_poisson",
         location_link=_LOG,
+        location_links=_COUNT_LINKS,
         observe_family="COMPoisson",
+        recorded_events=True,
         log_location_argument="log_rate",
         observe_args=("mu", "shape"),
         aux_params=(AuxParam(name="shape", prior="Gamma(0.01, 0.01)", link=_LOG),),
@@ -877,14 +1389,18 @@ families: Mapping[str, Family] = FamilyRegistry({
     "discrete_weibull": Family(
         name="discrete_weibull",
         location_link=_LOGIT,
+        location_links=_UNIT_LINKS[:-1],
         observe_family="DiscreteWeibull",
+        recorded_events=True,
         observe_args=("mu", "shape"),
         aux_params=(AuxParam(name="shape", prior="HalfCauchy(2.0)", link=_LOG),),
     ),
     "zero_inflated_asym_laplace": Family(
         name="zero_inflated_asym_laplace",
         location_link=_IDENTITY,
+        location_links=_SHIFTED_LINKS,
         observe_family="ZeroInflatedAsymmetricLaplace",
+        recorded_events=True,
         observe_args=("zi", "mu", "sigma", "quantile"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
@@ -895,7 +1411,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "negbinomial2": Family(
         name="negbinomial2",
         location_link=_LOG,
+        location_links=_COUNT_LINKS,
         observe_family="NegativeBinomial",
+        recorded_events=True,
         exposure=Exposure(
             observe_lets=(
                 Binding(name="rate_shape", expr="negative_binomial_shape * exposure"),
@@ -917,7 +1435,10 @@ families: Mapping[str, Family] = FamilyRegistry({
     "skew_normal": Family(
         name="skew_normal",
         location_link=_IDENTITY,
+        location_links=_REAL_LINKS + _REAL_EXTENSIONS,
         observe_family="SkewNormal",
+        recorded_events=True,
+        error_scale="sigma",
         observe_lets=(
             Binding(name="skew_delta", expr="sin(atan(alpha))"),
             Binding(name="skew_center", expr="skew_delta * 0.7978845608028654"),
@@ -927,25 +1448,42 @@ families: Mapping[str, Family] = FamilyRegistry({
         observe_args=("skew_location", "skew_scale", "alpha"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="alpha", prior="Normal(0.0, 4.0)", link=_IDENTITY, domain=_REAL),
+            AuxParam(
+                name="alpha",
+                prior="Normal(0.0, 4.0)",
+                link=_IDENTITY,
+                domain=_REAL,
+                links=("identity", "log", "softplus", "squareplus"),
+            ),
         ),
     ),
     "shifted_lognormal": Family(
         name="shifted_lognormal",
         location_link=_IDENTITY,
+        location_links=_LOG_LOCATION_LINKS,
         observe_family="ShiftedLogNormal",
+        recorded_events=True,
         log_response=True,
         response_domain=Domain(),
         observe_args=("mu", "sigma", "ndt"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="ndt", prior="Uniform(0.0, response_min)", link=_LOG, domain=_NONNEGATIVE),
+            AuxParam(
+                name="ndt",
+                prior="Uniform(0.0, response_min)",
+                link=_LOG,
+                domain=_NONNEGATIVE,
+                below_response=True,
+                brms_prior="Uniform(0.0, response_min)",
+            ),
         ),
     ),
     "frechet": Family(
         name="frechet",
         location_link=_LOG,
+        location_links=_POSITIVE_LINKS,
         observe_family="Frechet",
+        recorded_events=True,
         observe_lets=(
             Binding(name="frechet_scale", expr="mu * exp(-1.0 * lgamma(1.0 - 1.0 / nu))"),
         ),
@@ -956,48 +1494,52 @@ families: Mapping[str, Family] = FamilyRegistry({
                 prior="Restrict(base=Gamma(concentration=2.0, rate=0.1), low=1.0)",
                 link=links["logm1"],
                 domain=Domain(lower=1.0),
+                links=("logm1",),
             ),
         ),
     ),
     "gen_extreme_value": Family(
         name="gen_extreme_value",
         location_link=_IDENTITY,
+        location_links=_SHIFTED_LINKS,
         observe_family="GeneralizedExtremeValue",
+        recorded_events=True,
         observe_args=("mu", "sigma", "xi"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
-            AuxParam(name="xi", prior="Normal(0.0, 0.3)", link=_IDENTITY, domain=_REAL),
-        ),
-    ),
-    "gaussian": Family(
-        name="gaussian",
-        location_link=_IDENTITY,
-        observe_family="Normal",
-        observe_args=("mu", "sigma"),
-        aux_params=(
             AuxParam(
-                name="sigma",
-                prior="HalfCauchy(2.0)",
-                link=_LOG,
+                name="xi",
+                prior="Normal(0.0, 0.3)",
+                link=_IDENTITY,
+                domain=_REAL,
+                links=("log1p", "identity"),
             ),
         ),
     ),
+    "gaussian": _GAUSSIAN,
     "bernoulli": Family(
         name="bernoulli",
         location_link=_LOGIT,
+        location_links=_UNIT_LINKS,
         observe_family="Bernoulli",
+        r_squared="model",
     ),
     "binomial": Family(
         name="binomial",
         location_link=_LOGIT,
+        location_links=_UNIT_LINKS,
         observe_family="Binomial",
+        recorded_events=True,
+        factor_levels=2,
         observe_args=("trials", "mu"),
         trials_parameter="total_count",
     ),
     "beta_binomial": Family(
         name="beta_binomial",
         location_link=_LOGIT,
+        location_links=_UNIT_LINKS[:-1],
         observe_family="BetaBinomial",
+        recorded_events=True,
         observe_lets=(
             Binding(name="beta_binomial_concentration1", expr="mu * phi"),
             Binding(name="beta_binomial_concentration0", expr="(1.0 - mu) * phi"),
@@ -1009,12 +1551,14 @@ families: Mapping[str, Family] = FamilyRegistry({
     "categorical": Family(
         name="categorical",
         location_link=_SOFTMAX,
+        location_links=_COMPOSITIONAL_LINKS,
         observe_family="Categorical",
         response=ResponseSpec(kind="categorical"),
     ),
     "multinomial": Family(
         name="multinomial",
         location_link=_SOFTMAX,
+        location_links=_COMPOSITIONAL_LINKS,
         observe_family="Multinomial",
         observe_args=("trials", "mu"),
         trials_parameter="total_count",
@@ -1023,6 +1567,7 @@ families: Mapping[str, Family] = FamilyRegistry({
     "dirichlet_multinomial": Family(
         name="dirichlet_multinomial",
         location_link=_SOFTMAX,
+        location_links=_COMPOSITIONAL_LINKS,
         observe_family="DirichletMultinomial",
         observe_args=("trials", "mu"),
         trials_parameter="total_count",
@@ -1032,6 +1577,7 @@ families: Mapping[str, Family] = FamilyRegistry({
     "dirichlet": Family(
         name="dirichlet",
         location_link=_SOFTMAX,
+        location_links=_COMPOSITIONAL_LINKS,
         observe_family="Dirichlet",
         aux_params=(AuxParam(name="phi", prior="Gamma(2.0, 0.1)", link=_LOG),),
         response=ResponseSpec(kind="dirichlet"),
@@ -1039,20 +1585,26 @@ families: Mapping[str, Family] = FamilyRegistry({
     "dirichlet2": Family(
         name="dirichlet2",
         location_link=_LOG,
+        location_links=("log", "softplus", "squareplus", "identity", "logm1"),
         observe_family="Dirichlet",
         response=ResponseSpec(kind="dirichlet2", reference=None),
     ),
     "logistic_normal": Family(
         name="logistic_normal",
         location_link=_IDENTITY,
+        location_links=("identity",),
         observe_family="AdditiveLogRatioNormal",
-        aux_params=(AuxParam(name="sigma", prior="HalfNormal(1.0)", link=_LOG),),
+        aux_params=(AuxParam(
+                name="sigma", prior="HalfNormal(1.0)", link=_LOG, per_component=True
+            ),),
         response=ResponseSpec(kind="logistic_normal"),
     ),
     "poisson": Family(
         name="poisson",
         location_link=_LOG,
+        location_links=_COUNT_LINKS,
         observe_family="Poisson",
+        recorded_events=True,
         exposure=Exposure(
             observe_lets=(Binding(name="rate_mu", expr="mu * exposure"),),
             observe_args=("rate_mu",),
@@ -1061,7 +1613,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "negative_binomial": Family(
         name="negative_binomial",
         location_link=_LOG,
+        location_links=_COUNT_LINKS,
         observe_family="NegativeBinomial",
+        recorded_events=True,
         exposure=Exposure(
             observe_lets=(Binding(name="rate_shape", expr="disp * exposure"),),
             observe_args=("rate_shape", "negative_binomial_probs"),
@@ -1083,7 +1637,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "gamma": Family(
         name="gamma",
         location_link=_LOG,
+        location_links=_POSITIVE_LINKS,
         observe_family="Gamma",
+        recorded_events=True,
         observe_lets=(
             Binding(name="gamma_rate", expr="shape / mu"),
         ),
@@ -1099,7 +1655,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "beta": Family(
         name="beta",
         location_link=_LOGIT,
+        location_links=_UNIT_LINKS,
         observe_family="Beta",
+        recorded_events=True,
         observe_lets=(
             Binding(name="beta_concentration1", expr="mu * phi"),
             Binding(name="beta_concentration0", expr="(1.0 - mu) * phi"),
@@ -1116,13 +1674,18 @@ families: Mapping[str, Family] = FamilyRegistry({
     "student_t": Family(
         name="student_t",
         location_link=_IDENTITY,
+        location_links=_REAL_LINKS + _REAL_EXTENSIONS,
         observe_family="StudentT",
+        recorded_events=True,
+        error_scale="sigma",
+        elliptical=Elliptical(scale="sigma", df="nu"),
         observe_args=("nu", "mu", "sigma"),
         aux_params=(
             AuxParam(
                 name="nu",
                 prior="Gamma(2.0, 0.1)",
                 link=links["logm1"],
+                links=("logm1", "identity"),
             ),
             AuxParam(
                 name="sigma",
@@ -1134,6 +1697,7 @@ families: Mapping[str, Family] = FamilyRegistry({
     "cumulative": Family(
         name="cumulative",
         location_link=_IDENTITY,
+        location_links=_ORDINAL_LINKS,
         observe_family="OrderedLogistic",
         ordinal=OrdinalSpec(kind="cumulative"),
         aux_params=(
@@ -1145,6 +1709,7 @@ families: Mapping[str, Family] = FamilyRegistry({
     "hurdle_cumulative": Family(
         name="hurdle_cumulative",
         location_link=_LOGIT,
+        location_links=_ORDINAL_LINKS,
         observe_family="Categorical",
         ordinal=OrdinalSpec(kind="hurdle_cumulative"),
         aux_params=(
@@ -1157,6 +1722,7 @@ families: Mapping[str, Family] = FamilyRegistry({
     "acat": Family(
         name="acat",
         location_link=_LOGIT,
+        location_links=_ORDINAL_LINKS,
         observe_family="Categorical",
         ordinal=OrdinalSpec(kind="acat"),
         aux_params=(
@@ -1168,6 +1734,7 @@ families: Mapping[str, Family] = FamilyRegistry({
     "sratio": Family(
         name="sratio",
         location_link=_LOGIT,
+        location_links=_RATIO_LINKS,
         observe_family="Categorical",
         ordinal=OrdinalSpec(kind="sratio"),
         aux_params=(
@@ -1179,6 +1746,7 @@ families: Mapping[str, Family] = FamilyRegistry({
     "cratio": Family(
         name="cratio",
         location_link=_LOGIT,
+        location_links=_RATIO_LINKS,
         observe_family="Categorical",
         ordinal=OrdinalSpec(kind="cratio"),
         aux_params=(
@@ -1190,7 +1758,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "zero_inflated_poisson": Family(
         name="zero_inflated_poisson",
         location_link=_LOG,
+        location_links=_COUNT_LINKS,
         observe_family="ZeroInflatedPoisson",
+        recorded_events=True,
         observe_args=("zi", "mu"),
         aux_params=(
             AuxParam(
@@ -1204,7 +1774,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "hurdle_poisson": Family(
         name="hurdle_poisson",
         location_link=_LOG,
+        location_links=_COUNT_LINKS,
         observe_family="HurdlePoisson",
+        recorded_events=True,
         observe_args=("hu", "mu"),
         aux_params=(
             AuxParam(
@@ -1218,7 +1790,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "zero_inflated_negbinomial": Family(
         name="zero_inflated_negbinomial",
         location_link=_LOG,
+        location_links=_COUNT_LINKS,
         observe_family="ZeroInflatedNegativeBinomial",
+        recorded_events=True,
         observe_lets=(
             Binding(name="negative_binomial_probs", expr="mu / (mu + shape)"),
         ),
@@ -1236,7 +1810,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "zero_inflated_binomial": Family(
         name="zero_inflated_binomial",
         location_link=_LOGIT,
+        location_links=_UNIT_LINKS,
         observe_family="ZeroInflatedBinomial",
+        recorded_events=True,
         observe_args=("zi", "trials", "mu"),
         trials_parameter="total_count",
         aux_params=(AuxParam(name="zi", prior="Beta(2.0, 2.0)", link=_LOGIT, domain=_UNIT_CLOSED),),
@@ -1244,7 +1820,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "zero_inflated_beta_binomial": Family(
         name="zero_inflated_beta_binomial",
         location_link=_LOGIT,
+        location_links=_UNIT_LINKS,
         observe_family="ZeroInflatedBetaBinomial",
+        recorded_events=True,
         observe_lets=(
             Binding(name="beta_binomial_concentration1", expr="mu * phi"),
             Binding(name="beta_binomial_concentration0", expr="(1.0 - mu) * phi"),
@@ -1259,7 +1837,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "hurdle_negbinomial": Family(
         name="hurdle_negbinomial",
         location_link=_LOG,
+        location_links=_COUNT_LINKS,
         observe_family="HurdleNegativeBinomial",
+        recorded_events=True,
         observe_lets=(
             Binding(name="negative_binomial_probs", expr="mu / (mu + shape)"),
         ),
@@ -1277,7 +1857,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "hurdle_gamma": Family(
         name="hurdle_gamma",
         location_link=_LOG,
+        location_links=_POSITIVE_LINKS,
         observe_family="HurdleGamma",
+        recorded_events=True,
         observe_lets=(
             Binding(name="hurdle_gamma_rate", expr="shape / mu"),
         ),
@@ -1290,7 +1872,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "hurdle_lognormal": Family(
         name="hurdle_lognormal",
         location_link=_IDENTITY,
+        location_links=_LOG_LOCATION_LINKS,
         observe_family="HurdleLogNormal",
+        recorded_events=True,
         log_response=True,
         observe_args=("hu", "mu", "sigma"),
         aux_params=(
@@ -1301,7 +1885,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "zero_inflated_beta": Family(
         name="zero_inflated_beta",
         location_link=_LOGIT,
+        location_links=_UNIT_LINKS,
         observe_family="ZeroOneInflatedBeta",
+        recorded_events=True,
         response_domain=Domain(upper=1.0, lower_closed=True),
         observe_args=("mu", "phi", "zi", 0.0),
         aux_params=(
@@ -1312,6 +1898,7 @@ families: Mapping[str, Family] = FamilyRegistry({
     "xbeta": Family(
         name="xbeta",
         location_link=_LOGIT,
+        location_links=_UNIT_LINKS,
         observe_family="ExtendedBeta",
         observe_args=("mu", "phi", "kappa"),
         aux_params=(
@@ -1327,6 +1914,7 @@ families: Mapping[str, Family] = FamilyRegistry({
     "zero_one_inflated_beta": Family(
         name="zero_one_inflated_beta",
         location_link=_LOGIT,
+        location_links=_UNIT_LINKS,
         observe_family="ZeroOneInflatedBeta",
         observe_args=("mu", "phi", "zoi", "coi"),
         aux_params=(
@@ -1352,7 +1940,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "lognormal": Family(
         name="lognormal",
         location_link=_IDENTITY,
+        location_links=_LOG_LOCATION_LINKS,
         observe_family="LogNormal",
+        recorded_events=True,
         log_response=True,
         observe_args=("mu", "sigma"),
         aux_params=(AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),),
@@ -1360,7 +1950,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "asym_laplace": Family(
         name="asym_laplace",
         location_link=_IDENTITY,
+        location_links=_SHIFTED_LINKS,
         observe_family="AsymmetricLaplace",
+        recorded_events=True,
         observe_args=("mu", "sigma", "quantile"),
         aux_params=(
             AuxParam(name="sigma", prior="HalfCauchy(2.0)", link=_LOG),
@@ -1370,7 +1962,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "exgaussian": Family(
         name="exgaussian",
         location_link=_IDENTITY,
+        location_links=_SHIFTED_LINKS,
         observe_family="ExGaussian",
+        recorded_events=True,
         observe_lets=(
             Binding(name="exgaussian_location", expr="mu - beta"),
             Binding(name="exgaussian_rate", expr="1.0 / beta"),
@@ -1384,14 +1978,18 @@ families: Mapping[str, Family] = FamilyRegistry({
     "inverse_gaussian": Family(
         name="inverse_gaussian",
         location_link=_LOG,
+        location_links=("inverse_square", "inverse", "identity", "log", "softplus", "squareplus"),
         observe_family="InverseGaussian",
+        recorded_events=True,
         observe_args=("mu", "shape"),
         aux_params=(AuxParam(name="shape", prior="Gamma(2.0, 2.0)", link=_LOG),),
     ),
     "exponential": Family(
         name="exponential",
         location_link=_LOG,
+        location_links=_POSITIVE_LINKS,
         observe_family="Exponential",
+        recorded_events=True,
         observe_lets=(
             Binding(name="exponential_rate", expr="1.0 / mu"),
         ),
@@ -1400,7 +1998,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "geometric": Family(
         name="geometric",
         location_link=_LOG,
+        location_links=_COUNT_LINKS,
         observe_family="Geometric",
+        recorded_events=True,
         exposure=Exposure(
             observe_family="NegativeBinomial",
             observe_lets=(Binding(name="rate_probs", expr="mu / (1.0 + mu)"),),
@@ -1414,7 +2014,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "weibull": Family(
         name="weibull",
         location_link=_LOG,
+        location_links=_POSITIVE_LINKS,
         observe_family="Weibull",
+        recorded_events=True,
         observe_lets=(
             Binding(name="weibull_scale", expr="mu * exp(-1.0 * lgamma(1.0 + 1.0 / shape))"),
         ),
@@ -1424,7 +2026,9 @@ families: Mapping[str, Family] = FamilyRegistry({
     "von_mises": Family(
         name="von_mises",
         location_link=links["tan_half"],
+        location_links=("tan_half", "identity"),
         observe_family="VonMises",
+        recorded_events=True,
         circular=True,
         observe_args=("mu", "kappa"),
         aux_params=(AuxParam(name="kappa", prior="Gamma(2.0, 2.0)", link=_LOG),),
@@ -1432,16 +2036,21 @@ families: Mapping[str, Family] = FamilyRegistry({
     "cox": Family(
         name="cox",
         location_link=_LOG,
+        location_links=("log", "identity", "softplus", "squareplus"),
         observe_family="BernsteinHazard",
+        recorded_events=True,
         observe_args=("baseline_breaks", "baseline_controls", "mu"),
         log_location_argument="log_rate",
         baseline=BaselineSpec(),
     ),
-    # Expanded by quivers.formulas._mixture to mixture(gaussian, ...).
+    # A template: quivers.formulas._mixture repeats its one component.
     "mixture": Family(
         name="mixture",
         location_link=_IDENTITY,
+        location_links=_REAL_LINKS,
         observe_family="Mixture",
+        recorded_events=True,
+        mixture=MixtureSpec(components=(_GAUSSIAN,)),
     ),
 })  # fmt: skip
 """The built-in response families, keyed by brms-style family name.
@@ -1457,6 +2066,7 @@ one registered family.
 __all__ = [
     "Binding",
     "Domain",
+    "Elliptical",
     "Exposure",
     "Link",
     "AuxParam",
