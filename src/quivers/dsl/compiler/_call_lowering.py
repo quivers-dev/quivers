@@ -88,7 +88,9 @@ from quivers.transpile._pure_calls import (
     Callees,
     _expression,
     _LetFloater,
+    _held,
     computation_value,
+    expanded,
     free_local_names,
     handled_reason,
     inline_call,
@@ -240,7 +242,7 @@ class _Lowering:
                 f"form for ({', '.join(error.kinds)})"
             ) from error
 
-    def let(self, name: str, value: Value) -> None:
+    def let(self, name: str, value: Value, type_: TypeExpr) -> None:
         """Bind a value's hoisted bindings and the value itself as let steps.
 
         Parameters
@@ -249,8 +251,12 @@ class _Lowering:
             The name the value binds, already reserved.
         value : Value
             The value, reading program names only.
+        type_ : TypeExpr
+            The value's type. A product is bound as the tuple of its
+            components.
         """
-        hoisted, result = self.floater.value(value, {})
+        hoisted, floated = self.floater.value(value, {})
+        result = expanded(floated, type_)
         for binding in hoisted:
             self.steps.append(self._let_step(binding.binder.name, binding.value))
         self.steps.append(self._let_step(name, result))
@@ -316,13 +322,13 @@ class _Lowering:
         Value
             The read of the bound value.
         """
-        if sampled_element(type_) is not None:
+        if not _held(type_):
             return value
         if isinstance(value, Var | LiteralValue) and not self.per_item(value):
             return value
         if self.plate is None or not self.per_item(value):
             name = self.floater.fresh(hint)
-            self.let(name, value)
+            self.let(name, value, type_)
             return Var(local=Local(name=name, type=type_))
         plate = self.plate
         lifted = plate.lifted_type(type_)
@@ -332,6 +338,7 @@ class _Lowering:
             Comprehension(
                 binder=plate.index, extent=plate.size, body=value, result_type=lifted
             ),
+            lifted,
         )
         return Gather(
             value=Var(local=Local(name=name, type=lifted)),
@@ -704,10 +711,11 @@ class _Lowering:
                     body=value,
                     result_type=lifted,
                 ),
+                lifted,
             )
             return DrawArgName(text=name)
         name = self.floater.fresh(hint)
-        self.let(name, value)
+        self.let(name, value, _value_type(value))
         return DrawArgName(text=name)
 
     def score(self, weight: Value, prefix: str) -> None:
@@ -777,6 +785,7 @@ class _Lowering:
                 body=value,
                 result_type=lifted,
             ),
+            lifted,
         )
         return Var(local=Local(name=name, type=lifted))
 
@@ -1074,7 +1083,7 @@ class CallLowering:
         result = lowering.call(
             callee, tuple(arguments), callee.type.result, step.name, ()
         )
-        lowering.let(step.name, result)
+        lowering.let(step.name, result, callee.type.result)
         return tuple(lowering.steps)
 
     def traverse(self, step: CallStep) -> tuple[ProgramStep, ...]:
@@ -1207,6 +1216,7 @@ class CallLowering:
             Comprehension(
                 binder=index, extent=plate.size, body=result, result_type=result_type
             ),
+            result_type,
         )
         return tuple(lowering.steps)
 

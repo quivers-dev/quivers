@@ -65,9 +65,7 @@ _ADMITTING: dict[str, frozenset[str]] = {
     "A": frozenset(
         {"pyro", "numpyro", "pymc", "edward2", "turing", "gen", "webppl", "church"}
     ),
-    "B": frozenset(
-        {"pyro", "numpyro", "pymc", "edward2", "turing", "gen", "webppl", "church"}
-    ),
+    "B": frozenset(available_targets()) - {"bugs", "jags"},
     "C": frozenset(
         {"pyro", "numpyro", "pymc", "edward2", "turing", "gen", "webppl", "church"}
     ),
@@ -82,7 +80,6 @@ _REFUSALS: dict[str, dict[str, str]] = {
         "jags": "qiec:capability:arithmetic:fold",
     },
     "B": {
-        "stan": "qiec:capability:handle:counted",
         "bugs": "qiec:capability:arithmetic:bump",
         "jags": "qiec:capability:arithmetic:bump",
     },

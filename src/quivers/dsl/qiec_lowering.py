@@ -1993,7 +1993,7 @@ class _Elaborator(
                 )
                 for authored in declaration.parameters
             )
-            scope_context = CheckContext(locals=handler_parameters)
+            scope_context = self._bound(declaration, CheckContext(), handler_parameters)
             clauses: list[HandlerClauseDef] = []
             return_clause: HandlerReturnClauseDef | None = None
             seen_clauses: set[str] = set()
@@ -2134,37 +2134,37 @@ class _Elaborator(
 
     def _bound(
         self,
-        clause: surface.QiecHandlerClause,
+        authored: surface.QiecHandlerDecl | surface.QiecHandlerClause,
         context: CheckContext,
         binders: tuple[Local, ...],
     ) -> CheckContext:
-        """A handler's parameters in scope together with a clause's binders.
+        """A context extended by a handler's parameters or a clause's binders.
 
         Parameters
         ----------
-        clause : surface.QiecHandlerClause
-            The clause, for the diagnostic.
+        authored : surface.QiecHandlerDecl | surface.QiecHandlerClause
+            The declaration binding them, for the diagnostic.
         context : CheckContext
-            The handler's parameters.
+            The context extended.
         binders : tuple[Local, ...]
-            The clause's binders.
+            The binders.
 
         Returns
         -------
         CheckContext
-            The context the clause's body is lowered in.
+            The extended context.
 
         Raises
         ------
         QiecDiagnosticError
-            If a binder reuses a parameter's name, so that the name would
-            denote two values in the body.
+            If a binder reuses a name in scope, so that the name would
+            denote two values in a body.
         """
         for binder in binders:
             try:
                 context = context.extend(binder)
             except KernelError as error:
-                self._fail_kernel(clause, error, fallback="qiec-handler")
+                self._fail_kernel(authored, error, fallback="qiec-handler")
         return context
 
     def _build_registry(self) -> None:

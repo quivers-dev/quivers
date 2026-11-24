@@ -26,7 +26,7 @@ from typing import Literal, cast
 
 import didactic.api as dx
 
-from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, HeldValue
 from quivers.qiec._models import QiecModel
 from quivers.qiec.canonical import tensor_shape, tensor_type
 from quivers.qiec.declarations import ConstructorDecl
@@ -93,7 +93,7 @@ from quivers.qiec.types import (
     product_type,
 )
 
-DISCHARGE_STATEMENTS = 4096
+DISCHARGE_STATEMENTS = 2048
 """The most statements a discharged computation may have.
 
 A clause that resumes ``m`` times copies the rest of the computation ``m``
@@ -517,7 +517,7 @@ def _read(value: Value) -> frozenset[str]:
         The name of every variable in it.
     """
     found: set[str] = set()
-    pending: list[object] = [value]
+    pending: list[HeldValue] = [value]
     while pending:
         item = pending.pop()
         if isinstance(item, Var):
@@ -690,19 +690,21 @@ def _refined[NodeT: QiecModel](
     return cast(NodeT, _refine(node, rigid))
 
 
-def _refine(node: object, rigid: Mapping[StaticVariableId, StaticArgument]) -> object:
+def _refine(
+    node: HeldValue, rigid: Mapping[StaticVariableId, StaticArgument]
+) -> HeldValue:
     """Refine one node, sharing what does not change.
 
     Parameters
     ----------
-    node : object
+    node : HeldValue
         A kernel record, a tuple of records, or a leaf.
     rigid : Mapping[StaticVariableId, StaticArgument]
         The argument of each rigid variable.
 
     Returns
     -------
-    object
+    HeldValue
         The refined node.
     """
     if isinstance(node, TypeVariable | IndexVariable | EffectVariable):
@@ -710,7 +712,7 @@ def _refine(node: object, rigid: Mapping[StaticVariableId, StaticArgument]) -> o
     if isinstance(node, tuple):
         return tuple(_refine(item, rigid) for item in node)
     if isinstance(node, QiecModel):
-        changes: dict[str, object] = {}
+        changes: dict[str, HeldValue] = {}
         for name in type(node).__field_specs__:
             current = getattr(node, name)
             if isinstance(current, tuple | QiecModel):
@@ -1241,14 +1243,14 @@ class _Discharger:
         """
         handler = self.tables.handlers[term.handler]
         if handler.implementation != "authored":
-            clauses = ", ".join(
-                f"`{self.tables.operations[clause.operation][1].name}`"
+            clauses = " and ".join(
+                f"clause `{self.tables.operations[clause.operation][1].name}`"
                 for clause in handler.clauses
             )
             raise _Undischarged(
                 "foreign",
-                f"installs the foreign handler `{handler.name}`, whose clauses "
-                f"{clauses} are implemented by a runtime provider",
+                f"installs the foreign handler `{handler.name}`, whose {clauses} a "
+                f"runtime provider implements",
                 self.owner.origin,
             )
         statics = instantiate_telescope(handler.telescope, term.static_arguments)
@@ -2151,18 +2153,11 @@ def _entered(stack: tuple[_Frame, ...]) -> frozenset[ComputationId]:
     Returns
     -------
     frozenset[ComputationId]
-        Every entered computation, those of the continuations its running
-        clauses captured included.
+        Every computation entered and not returned from. A computation a
+        running clause captured is left out, since the clause runs outside
+        the handler that captured it.
     """
-    found: set[ComputationId] = set()
-    pending = list(stack)
-    while pending:
-        frame = pending.pop()
-        if isinstance(frame, _CallFrame):
-            found.add(frame.callee)
-        elif isinstance(frame, _ClauseFrame):
-            pending.extend(frame.captured)
-    return frozenset(found)
+    return frozenset(frame.callee for frame in stack if isinstance(frame, _CallFrame))
 
 
 def _same(left: tuple[_Frame, ...], right: tuple[_Frame, ...]) -> bool:

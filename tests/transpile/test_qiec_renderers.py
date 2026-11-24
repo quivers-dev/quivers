@@ -430,7 +430,8 @@ def test_static_targets_refuse_handlers_and_each_resumption_grade_precisely(
 
     assert captured.value.target == f"qvr-{target}"
     assert set(captured.value.kinds) == {
-        "qiec:capability:handle:read",
+        "qiec:capability:handle:read: read installs the foreign handler "
+        "`answer`, whose clause `get` a runtime provider implements",
         "qiec:capability:perform:read",
         f"qiec:capability:{feature}:read",
     }

@@ -34,6 +34,7 @@ from quivers.dsl.ast_nodes.let_expressions import (
     LetExprLiteral,
     LetExprNode,
     LetExprString,
+    LetExprTuple,
     LetExprUnaryOp,
     LetExprVar,
     LetFactorBinder,
@@ -73,6 +74,7 @@ from quivers.qiec.terms import (
     Rowwise,
     CholeskyFactor,
     TensorValue,
+    TupleValue,
     Value,
     Var,
     WeightSum,
@@ -80,11 +82,16 @@ from quivers.qiec.terms import (
 from quivers.qiec.types import (
     INT,
     REAL,
+    UNIT,
+    FunctionType,
     IndexLiteral,
     IndexSum,
     IndexTerm,
     IndexVariable,
+    TypeApplication,
     TypeExpr,
+    TypeVariable,
+    product_type,
     render_static,
 )
 from quivers.transpile._api import UnsupportedConstruct
@@ -353,10 +360,10 @@ class _LetFloater:
             for binding in value.bindings:
                 inner, bound = self.value(binding.value, scope)
                 hoisted.extend(inner)
-                if sampled_element(binding.binder.type) is not None:
-                    # Distribution construction is pure syntax; keep it at
-                    # its consumers instead of transporting a host object
-                    # through tensor-valued deterministic program sites.
+                if not _held(binding.binder.type):
+                    # A distribution, a product, and a unit are not values a
+                    # deterministic program site holds, so they are kept at
+                    # their consumers, which read a product's components.
                     scope[binding.binder] = bound
                     continue
                 local = Local(
@@ -366,6 +373,9 @@ class _LetFloater:
                 scope[binding.binder] = Var(local=local)
             inner, body = self.value(value.body, scope)
             return (*hoisted, *inner), body
+        if isinstance(value, Projection):
+            inner, source = self.value(value.value, renamed)
+            return inner, _component(source, value.position, value.result_type)
         if isinstance(value, ConditionalValue):
             condition_bindings, condition = self.value(value.condition, renamed)
             branches = {}
@@ -467,6 +477,127 @@ class _LetFloater:
             )
         _, body = self.value(body, stacked)
         return tuple(lifted), value.with_(body=body)
+
+
+def _held(type_: TypeExpr) -> bool:
+    """Whether a deterministic program site holds a value of a type.
+
+    Parameters
+    ----------
+    type_ : TypeExpr
+        The type.
+
+    Returns
+    -------
+    bool
+        False for a sampleable, a product, and a unit, which no let step or
+        target statement names.
+    """
+    if sampled_element(type_) is not None or type_ == UNIT:
+        return False
+    if not isinstance(type_, TypeApplication):
+        return True
+    return _components_of(type_) is None
+
+
+def _components_of(type_: TypeExpr) -> tuple[TypeExpr, ...] | None:
+    """The components of a product type.
+
+    Parameters
+    ----------
+    type_ : TypeExpr
+        The type.
+
+    Returns
+    -------
+    tuple[TypeExpr, ...] | None
+        The components, or ``None`` when the type is no product.
+    """
+    if not isinstance(type_, TypeApplication) or not type_.arguments:
+        return None
+    components = tuple(
+        item
+        for item in type_.arguments
+        if isinstance(item, TypeApplication | TypeVariable | FunctionType)
+    )
+    if (
+        len(components) != len(type_.arguments)
+        or type_.constructor.id != product_type(*components).constructor.id
+    ):
+        return None
+    return components
+
+
+def expanded(value: Value, type_: TypeExpr) -> Value:
+    """A value with the components of a product stated one by one.
+
+    Parameters
+    ----------
+    value : Value
+        The value.
+    type_ : TypeExpr
+        Its type.
+
+    Returns
+    -------
+    Value
+        A tuple of the components, each expanded in turn, when the type is a
+        product, and otherwise the value itself.
+    """
+    components = _components_of(type_)
+    if components is None:
+        return value
+    return TupleValue(
+        items=tuple(
+            expanded(_component(value, position, component), component)
+            for position, component in enumerate(components)
+        ),
+        result_type=type_,
+    )
+
+
+def _component(value: Value, position: int, type_: TypeExpr) -> Value:
+    """A component of a product value.
+
+    Parameters
+    ----------
+    value : Value
+        The product.
+    position : int
+        The component's position.
+    type_ : TypeExpr
+        The component's type.
+
+    Returns
+    -------
+    Value
+        The component itself where the product is built in place, under the
+        conditionals and bindings around it, and otherwise the projection.
+    """
+    if isinstance(value, TupleValue):
+        return value.items[position]
+    if isinstance(value, ConditionalValue):
+        return _select(
+            value.condition,
+            _component(value.then, position, type_),
+            _component(value.otherwise, position, type_),
+            type_,
+            _COMPONENT_ORIGIN,
+        )
+    if isinstance(value, LetValue):
+        return value.with_(
+            body=_component(value.body, position, type_), result_type=type_
+        )
+    return Projection(value=value, position=position, result_type=type_)
+
+
+#: The origin of a choice between the components of two products.
+_COMPONENT_ORIGIN = SourceOrigin(
+    module="component",
+    structural_path=("component",),
+    role="primitive",
+    source_protocol="qiec-lowering",
+)
 
 
 def _local_names(term: Computation) -> set[str]:
@@ -749,6 +880,13 @@ def _expression(
                 for item in value.items
             )
         )
+    if isinstance(value, TupleValue) and target == RUNTIME_TARGET:
+        return LetExprTuple(
+            items=tuple(
+                _expression(item, cards, target, program, families=families)
+                for item in value.items
+            )
+        )
     if isinstance(value, Reduction):
         return LetExprCall(
             func=value.operator,
@@ -870,9 +1008,9 @@ def _expression(
             f"qvr-{target}",
             [f"qiec:expression:log_density:{program}"],
         )
-    if isinstance(value, ConstructorValue):
-        # A constructor value reaches a callee through the target's QIEC
-        # runtime; its fields are values of the model body.
+    if isinstance(value, ConstructorValue | TupleValue):
+        # A constructor value and a tuple reach a callee through the target's
+        # QIEC runtime; their fields are values of the model body.
         return IRQiecValueExpr(value=cast(IRQiecValue, _convert(value)))
     if isinstance(value, Projection):
         # A component of a product, as the source subscripts a tuple.
@@ -1111,8 +1249,7 @@ def _select(
     then: Value,
     otherwise: Value,
     result_type: TypeExpr,
-    owner: str,
-    term: If,
+    origin: SourceOrigin,
 ) -> Value:
     """Retain scalar control flow when both computation branches are pure.
 
@@ -1126,10 +1263,8 @@ def _select(
         The value where it does not.
     result_type : TypeExpr
         The type both branches return.
-    owner : str
-        The computation holding the conditional, for the diagnostic.
-    term : If
-        The conditional, for the diagnostic's line.
+    origin : SourceOrigin
+        The conditional's source location.
 
     Returns
     -------
@@ -1144,13 +1279,7 @@ def _select(
             name=signature.name,
             arguments=(condition, then, otherwise),
             result_type=result_type,
-            origin=_first_origin(term)
-            or SourceOrigin(
-                module=owner,
-                structural_path=("if",),
-                role="primitive",
-                source_protocol="qiec-lowering",
-            ),
+            origin=origin,
         )
     return ConditionalValue(
         condition=condition, then=then, otherwise=otherwise, result_type=result_type
@@ -1362,7 +1491,13 @@ def _step_value(
         otherwise = computation_value(
             term.otherwise, replaced, result_type, owner, computations, active
         )
-        return _select(condition, then, otherwise, result_type, owner.name, term)
+        origin = _first_origin(term) or SourceOrigin(
+            module=owner.name,
+            structural_path=("if",),
+            role="primitive",
+            source_protocol="qiec-lowering",
+        )
+        return _select(condition, then, otherwise, result_type, origin)
     if isinstance(term, Perform):
         raise CallNotLowered(
             f"makes a `{term.request.effect.name}` request in "
@@ -1470,7 +1605,8 @@ def pure_call_bindings(
         shared = inline_call(callee, arguments, result_type, computations)
     except CallNotLowered:
         return None
-    return floater.value(shared, {})
+    bindings, result = floater.value(shared, {})
+    return bindings, expanded(result, result_type)
 
 
 __all__: list[str] = []

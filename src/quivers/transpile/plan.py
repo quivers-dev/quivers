@@ -684,7 +684,7 @@ class _ProgramWalk:
         )
 
     def _resolved(self, value: Value) -> Value:
-        """A value with every projection of a held pair read back.
+        """A value with every tuple the plan holds read back.
 
         Parameters
         ----------
@@ -694,15 +694,21 @@ class _ProgramWalk:
         Returns
         -------
         Value
-            The value with ``t[i]`` replaced by the ``i``-th component
-            of every local ``t`` the plan holds as a tuple of bindings.
+            The value with every local the plan holds as a tuple of
+            bindings replaced by the tuple, and a projection of a tuple
+            by its component.
         """
         if isinstance(value, Projection):
             inner = self._resolved(value.value)
-            if isinstance(inner, Var) and inner.local.name in self.tuples:
-                return self.tuples[inner.local.name][value.position]
+            if isinstance(inner, TupleValue):
+                return inner.items[value.position]
             return value.with_(value=inner)
-        if isinstance(value, (Var, LiteralValue)):
+        if isinstance(value, Var):
+            items = self.tuples.get(value.local.name)
+            if items is None:
+                return value
+            return TupleValue(items=items, result_type=value.local.type)
+        if isinstance(value, LiteralValue):
             return value
         changes: dict[str, Value | tuple[Value, ...]] = {}
         for name in type(value).__field_specs__:
@@ -961,11 +967,15 @@ class _ProgramWalk:
                 nodes.extend(self._deterministic(binding.binder, binding.value))
             self.axes[binder.name] = axes
             self.bound_plates[binder.name] = plate
+            if isinstance(result, TupleValue):
+                self.tuples[binder.name] = result.items
+                yield from nodes
+                return
             self.ctx.bound_kinds[binder.name] = "deterministic"
             nodes.append(
                 IRDeterministic(
                     name=binder.name,
-                    expr=result,
+                    expr=self._expr(result),
                     constraint=scalar_carrier_constraint(binder.type),
                     plate=plate,
                 )
@@ -996,7 +1006,7 @@ class _ProgramWalk:
 
     def _inlined(
         self, callee: NamedComputation, call: Call, binder: Local
-    ) -> tuple[tuple[LetBinding, ...], LetExprNode] | None:
+    ) -> tuple[tuple[LetBinding, ...], Value] | None:
         """A pure computation's result at the call, as shared bindings.
 
         A pure computation whose body is a chain of pure bindings is
@@ -1019,16 +1029,16 @@ class _ProgramWalk:
 
         Returns
         -------
-        tuple[tuple[LetBinding, ...], LetExprNode] | None
-            The hoisted bindings and the result's expression, or
-            ``None`` when the computation performs an effect, takes
+        tuple[tuple[LetBinding, ...], Value] | None
+            The hoisted bindings and the result reading them, a product as
+            the tuple of its components, or ``None`` when the computation performs an effect, takes
             static arguments, calls anything, or binds a value the
             expression language has no form for; such a call is made
             through the target's host runtime.
         """
         found = pure_call_bindings(
             callee,
-            call.arguments,
+            tuple(self._resolved(argument) for argument in call.arguments),
             binder.type,
             self.floater,
             self.planner.callees,
@@ -1037,13 +1047,18 @@ class _ProgramWalk:
             return None
         hoisted, result = found
         try:
-            expressions = [self._expr(binding.value) for binding in hoisted]
-            spelled = self._expr(result)
+            expressions = [
+                self._expr(item)
+                for item in (
+                    *(binding.value for binding in hoisted),
+                    *_leaves(result),
+                )
+            ]
         except UnsupportedConstruct:
             return None
-        if not all(self._renderable(item) for item in (*expressions, spelled)):
+        if not all(self._renderable(item) for item in expressions):
             return None
-        return hoisted, spelled
+        return hoisted, result
 
     def _renderable(self, expression: LetExprNode) -> bool:
         """Whether the target renders an inlined expression as a statement.
@@ -2930,6 +2945,25 @@ def _referenced(value: Value) -> Iterator[str]:
                     yield from _referenced(item)  # type: ignore[arg-type]
         elif isinstance(field, QiecModel):
             yield from _referenced(field)  # type: ignore[arg-type]
+
+
+def _leaves(value: Value) -> tuple[Value, ...]:
+    """The values a tuple holds, at any depth of nesting.
+
+    Parameters
+    ----------
+    value : Value
+        The value.
+
+    Returns
+    -------
+    tuple[Value, ...]
+        The components of a tuple and of the tuples in it, or the value
+        itself when it is no tuple.
+    """
+    if isinstance(value, TupleValue):
+        return tuple(leaf for item in value.items for leaf in _leaves(item))
+    return (value,)
 
 
 def _walk(body: tuple[IRNode, ...]) -> Iterator[IRNode]:
