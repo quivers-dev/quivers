@@ -275,7 +275,7 @@ def compact_groups(
     ValueError
         If new identities are forbidden or fitted shared encodings disagree.
     TypeError
-        If an inferred raw group site has an unsupported layout.
+        If a fitted group term has no compiled law.
     """
     predictors = {name: formula for name, _, formula in fit._predictor_items()}
     plan = fit.prediction_plan

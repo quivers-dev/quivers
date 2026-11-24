@@ -559,7 +559,7 @@ def check_block(law: GroupBlockLaw) -> None:
         return
     if level.prior_weight is not None:
         raise ValueError(
-            f"gr({law.group}, pw = ...): a prior weight multiplies the "
+            f"grouping factor {law.group!r}: a prior weight (pw) multiplies the "
             "standard-normal log density of the innovation its level owns, and "
             f"the known level covariance has rank {level.basis.rank} for "
             f"{len(level.basis.levels)} levels, so its support coordinates "
@@ -567,9 +567,9 @@ def check_block(law: GroupBlockLaw) -> None:
         )
     if level.by is not None and law.parameterization == "centered":
         raise ValueError(
-            f"gr({law.group}, by = {level.by.variable}): with a known level "
-            f"covariance of rank {level.basis.rank} for {len(level.basis.levels)} "
-            "levels, the coefficients have a density only on a subspace that "
+            f"grouping factor {law.group!r} with by = {level.by.variable} and a "
+            f"known level covariance of rank {level.basis.rank} for {len(level.basis.levels)} "
+            "levels: the coefficients have a density only on a subspace that "
             "depends on the standard deviations and correlations of the by "
             "levels, so there are no fixed centered coordinates; use "
             "reparameterize='noncentered'"
