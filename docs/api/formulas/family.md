@@ -93,8 +93,6 @@ heavy.elliptical    # Elliptical(scale="sigma", df="nu")
 heavy.with_(error_scale=None)   # refuses se(), naming Family.error_scale
 ```
 
-::: quivers.formulas.family.Elliptical
-
 ## Ordinal configuration
 
 `Family.ordinal` retains an `OrdinalSpec` for cumulative, adjacent-category,
