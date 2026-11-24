@@ -19,6 +19,7 @@ from collections.abc import Callable, Mapping
 import math
 import pathlib
 import subprocess
+from typing import cast
 
 import pytest
 import torch
