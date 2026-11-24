@@ -862,7 +862,7 @@ class KernelRegistry(QiecModel):
 
         A clause body answers the handler's output type, reads the
         handler's parameters, and inside it `resume` carries what the
-        handled operation supplies and a value for every parameter. These
+        handled operation returns and a value for every parameter. These
         come from the declaration and the interface rather than from the
         clause, so they are established here rather than at the clause. A
         body performs at most the effects the handler introduces, since
@@ -3470,7 +3470,7 @@ def _infer_resume(
     KernelError
         If there is no continuation in scope, which is `resume` written
         outside a handler clause body, if the value carried does not
-        have the type the resumed operation supplies, or if the parameter
+        have the type the resumed operation returns, or if the parameter
         values it carries do not match the handler's parameters.
     """
     available = context.resumption

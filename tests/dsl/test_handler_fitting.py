@@ -25,6 +25,7 @@ from quivers.inference import (
     SVI,
     AutoNormalGuide,
 )
+from quivers.qiec.entries import HostValue
 from tests._handler_programs import HANDLERS, random_body
 
 _F64 = torch.float64
@@ -94,7 +95,7 @@ def _joint(
 
 
 def _reference(
-    source: str, entry: str, sites: dict[str, float], data: dict[str, object]
+    source: str, entry: str, sites: dict[str, float], data: dict[str, HostValue]
 ) -> float:
     """The reference machine's log joint at the same sites."""
     return float(loads(source).run(entry, data=data, sites=sites, seed=0).log_joint)
@@ -105,7 +106,7 @@ def _check(
     by_hand: str,
     entry: str,
     points: tuple[dict[str, float], ...],
-    data: dict[str, object] | None = None,
+    data: dict[str, HostValue] | None = None,
 ) -> None:
     """Both encodings and the reference machine agree on value and gradient."""
     host = {"y": _Y4} if data is None else data
