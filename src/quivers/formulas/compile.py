@@ -141,7 +141,6 @@ from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_law import GroupBlockLaw
 from quivers.formulas._group_emission import bind_rows, emit_group_block
 from quivers.formulas._group_plan import (
-    admit_block,
     coefficient_binding,
     plan_group_blocks,
     row_map,
@@ -209,10 +208,9 @@ from quivers.formulas._gp import (
 )
 from quivers.formulas._grouping_emission import (
     joint_group_blocks,
-    option_observations,
-    option_runtime_parameters,
+    law_observations,
+    law_runtime_parameters,
     membership_observations,
-    membership_runtime_parameters,
 )
 from quivers.formulas._monotonic_emission import (
     append_monotonic_terms,
@@ -2079,22 +2077,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             ``float64`` precision under the ``formula_weights`` key.
         """
         obs: dict[str, torch.Tensor] = {}
-        for layout in self.group_layouts:
-            basis = layout.level_covariance
-            if basis is None or not basis.rank:
-                continue
-            stem = f"__formula_level_basis_{_qvr_name(layout.group)}"
-            if any(name.startswith(stem + "_") for name in obs):
-                continue
-            projection, _, factor = basis.tensors()
-            if layout.parameterization == "centered":
-                obs[stem + "_projection"] = projection
-                obs[stem + "_row_factor"] = torch.tensor(
-                    basis.coordinate_factor, dtype=torch.float64
-                )
-            else:
-                obs[stem + "_factor"] = factor
-                obs[stem + "_row_factor"] = torch.eye(basis.rank, dtype=torch.float64)
+        obs.update(law_observations(self.group_laws))
         if (
             formula.response_layout.event_shape
             and self._family.trials_parameter is not None
@@ -2121,7 +2104,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     formula.modifiers.threshold_groups, threshold_kinds(self._family)
                 )
             )
-        obs.update(option_observations(self._predictor_items(formula)))
         for _, prefix, predictor in self._predictor_items(formula):
             obs.update(monotonic_observations(predictor, prefix))
             obs.update(membership_observations(predictor, prefix))
@@ -3720,11 +3702,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             transition_axis=self._transition_axis(formula),
             supplied=supplied or {},
         )
-        component_valued = component_valued_prefixes(self._family, self._distributional)
-        for law in laws:
-            admit_block(
-                law, component_valued=component_valued, family=self._family.name
-            )
         self._group_plan = {
             (member.prefix, law.group, member.slope): law
             for law in laws
@@ -4064,8 +4041,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
         parameters += latent_runtime_parameters(formula)
         parameters += monotonic_runtime_parameters(self._predictor_items(formula))
-        parameters += membership_runtime_parameters(self._predictor_items(formula))
-        parameters += option_runtime_parameters(self._predictor_items(formula))
+        parameters += law_runtime_parameters(self.group_laws)
         for name, _ in self._symbolic_columns(formula):
             if name not in {parameter.name for parameter in parameters}:
                 parameters += (
@@ -4165,56 +4141,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                             static_arguments=(QiecTypeName(name=carrier),)
                         ),
                     ),
-                )
-        covariance_groups = set()
-        for layout in self.group_layouts:
-            basis = layout.level_covariance
-            if basis is None or not basis.rank or layout.group in covariance_groups:
-                continue
-            covariance_groups.add(layout.group)
-            stem = f"__formula_level_basis_{_qvr_name(layout.group)}"
-            support = f"FormulaGroupSupport_{_qvr_name(layout.group)}"
-
-            def matrix_input(name: str, row: str, column: str) -> QiecValueParameter:
-                """Declare one fixed matrix using its actual nominal axes.
-
-                Parameters
-                ----------
-                name, row, column : str
-                    Runtime binding and ordered finite matrix axes.
-
-                Returns
-                -------
-                QiecValueParameter
-                    Checked Real matrix input.
-                """
-                return QiecValueParameter(
-                    name=name,
-                    type_expr=QiecTypeApplication(
-                        constructor="Tensor",
-                        static_arguments=(QiecTypeName(name="Real"),),
-                        indices=(
-                            QiecShapeIndex(
-                                dimensions=(
-                                    QiecIndexName(name=row),
-                                    QiecIndexName(name=column),
-                                )
-                            ),
-                        ),
-                    ),
-                )
-
-            if layout.parameterization == "centered":
-                parameters += (
-                    matrix_input(
-                        stem + "_projection", _qvr_name(layout.group), support
-                    ),
-                    matrix_input(stem + "_row_factor", support, support),
-                )
-            else:
-                parameters += (
-                    matrix_input(stem + "_factor", _qvr_name(layout.group), support),
-                    matrix_input(stem + "_row_factor", support, support),
                 )
         existing = {parameter.name for parameter in parameters}
         for role, column in formula.modifiers.columns():

@@ -17,10 +17,11 @@ from quivers.formulas._group_covariance import (
     _tolerance,
 )
 from quivers.formulas._grouping import rewrite_grouping
+from quivers.formulas._grouping_emission import compact_option
 from quivers.formulas._group_law import (
     GroupBlockLaw,
     encode_support,
-    support_gaussian,
+    block_gaussian,
 )
 from quivers.dsl.ast_nodes import (
     LetExprFactor,
@@ -384,7 +385,9 @@ def compact_groups(
     return result
 
 
-def specialized_formula(formula: Formula, groups: Mapping[str, GroupRemap]) -> Formula:
+def specialized_formula(
+    formula: Formula, groups: Mapping[str, GroupRemap], frame: pd.DataFrame
+) -> Formula:
     """Replace group cardinalities while preserving fitted transforms and priors.
 
     Parameters
@@ -393,14 +396,25 @@ def specialized_formula(formula: Formula, groups: Mapping[str, GroupRemap]) -> F
         Fitted evaluated metadata.
     groups : Mapping[str, GroupRemap]
         Compact prediction axes.
+    frame : pandas.DataFrame
+        Fresh rows, holding the ``by`` level of every new grouping level.
 
     Returns
     -------
     Formula
-        Metadata using synthetic labels for the compact group axes.
+        Metadata using synthetic labels for the compact group axes, with the
+        ``gr()`` options coded on them.
     """
     return formula.with_(
-        group_levels={group: groups[group].levels for group in formula.group_levels}
+        group_levels={group: groups[group].levels for group in formula.group_levels},
+        grouping=formula.grouping.with_(
+            options=tuple(
+                compact_option(option, frame, groups[option.group])
+                if option.group in groups
+                else option
+                for option in formula.grouping.options
+            )
+        ),
     )
 
 
@@ -673,7 +687,7 @@ def _remap_covariance_group(
         by = law.level.by
         # The column factor of a compact level is that of its by level.
         codes = observations[by.input] if by is not None else None
-        fitted = support_gaussian(latents, law, sample_ndims=0)
+        fitted = block_gaussian(latents, law, sample_ndims=0)
         compact = fitted[indices.clamp_min(0)].clone()
         if new_labels:
             assert conditional is not None

@@ -266,7 +266,7 @@ def test_full_joint_all_heads_and_reference_match_dense_kronecker_oracle(
 def test_group_remap_preserves_physical_known_levels_and_conditional_mean(
     parameterization, policy
 ):
-    from quivers.formulas._group_law import KnownCovariance, support_coefficients
+    from quivers.formulas._group_law import KnownCovariance, block_coefficients
     from quivers.formulas._group_prediction import GroupRemap, _remap_covariance_group
 
     spec, lens, parsed, module, native, obs, complement = _compiled(parameterization)
@@ -301,7 +301,7 @@ def test_group_remap_preserves_physical_known_levels_and_conditional_mean(
             [[-0.7, 0.2], [0.9, -0.4]], dtype=torch.float64
         ),
     }
-    fitted = support_coefficients(values, law, sample_ndims=0)
+    fitted = block_coefficients(values, law, sample_ndims=0)
     compact = law.with_(level=law.level.with_(covariance=KnownCovariance(basis=target)))
     shapes = {"group_covariance_g": (3, 2)}
     draws = []
@@ -310,7 +310,7 @@ def test_group_remap_preserves_physical_known_levels_and_conditional_mean(
         torch.manual_seed(481)
         for _ in range(1500 if policy == "gaussian" else 40):
             mapped = _remap_covariance_group(group, values, shapes, policy, fixed, {})
-            physical = support_coefficients(values | mapped, compact, sample_ndims=0)
+            physical = block_coefficients(values | mapped, compact, sample_ndims=0)
             torch.testing.assert_close(physical[[0, 2]], fitted[[1, 0]])
             draws.append(physical[1])
     result = torch.stack(draws)

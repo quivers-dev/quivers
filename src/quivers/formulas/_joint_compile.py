@@ -44,13 +44,11 @@ from quivers.formulas._autocor import autocor_binding
 from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
 from quivers.formulas._group_law import GroupBlockLaw, renamed_law
 from quivers.formulas._group_layout import GroupBlockLayout
-from quivers.formulas._category_formulas import component_valued_prefixes
 from quivers.formulas._group_emission import emit_group_block
-from quivers.formulas._group_plan import admit_block, plan_joint_block
-from quivers.formulas._grouping import GroupLevelOptions
+from quivers.formulas._group_plan import plan_joint_block
 from quivers.formulas._grouping_emission import (
-    level_observations,
-    level_runtime_parameters,
+    law_observations,
+    law_runtime_parameters,
 )
 from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
@@ -986,58 +984,6 @@ def _correlated_residual(
     )
 
 
-def _block_option(
-    group: str,
-    identity: str,
-    members: Sequence[tuple[str, str, str, Formula, RandomTerm]],
-) -> GroupLevelOptions | None:
-    """Read the level factors the members of one shared block declare.
-
-    Parameters
-    ----------
-    group : str
-        Grouping factor of the block.
-    identity : str
-        Identifier the members share.
-    members : Sequence[tuple[str, str, str, Formula, RandomTerm]]
-        Response, parameter, namespace, predictor and coefficient of each
-        member, with ``gr()`` options coded on the joint levels.
-
-    Returns
-    -------
-    GroupLevelOptions or None
-        The options every member declares; None when no member declares any.
-
-    Raises
-    ------
-    ValueError
-        If the members declare different ``by`` partitions, Student-t
-        mixing, or prior weights.
-    """
-    declared = {
-        name: predictor.grouping.option(group) for name, _, _, predictor, _ in members
-    }
-    factors = {
-        (
-            option.by_levels,
-            option.by_codes,
-            option.options.student,
-            option.prior_weights,
-        )
-        if option is not None
-        else ((), (), False, ())
-        for option in declared.values()
-    }
-    if len(factors) > 1:
-        raise ValueError(
-            f"gr({group}): the coefficients sharing the identifier {identity!r} "
-            "have one law, with one by partition, one Student-t mixing "
-            "multiplier and one prior weight per level, and responses "
-            f"{sorted(declared)!r} declare these factors differently"
-        )
-    return next(iter(declared.values()))
-
-
 def _shared_groups(
     components: _Components, levels: Mapping[str, tuple[str, ...]]
 ) -> tuple[
@@ -1093,9 +1039,6 @@ def _shared_groups(
     labels: dict[str, tuple[str, ...]] = {}
     predictors: list[tuple[str, str, Formula]] = []
     supplied: dict[str, _GroupValues] = {name: {} for name in components}
-    component_valued = component_valued_prefixes(
-        emitter._family, emitter._distributional
-    )
     for (group, identity), members in blocks.items():
         if len({item[0] for item in members}) < 2:
             continue
@@ -1133,30 +1076,25 @@ def _shared_groups(
                 )
             ],
             axes,
-            option=_block_option(group, identity, members),
             basis=emitter._level_basis(group, grouping.group_levels)
             if group in emitter._group_covariances
             else None,
             correlate=True,
             parameterization=emitter._reparameterize,
         )
-        admit_block(law, component_valued=component_valued, family=emitter._family.name)
         values = emit_group_block(emitter, law, statements, steps)
         for name, _parameter, prefix, _predictor, term in members:
             actual_prefix = "response_" + _qvr_name(name) + "__" + prefix
             supplied[name][(prefix, group, term.slope)] = values[
                 (actual_prefix, group, term.slope)
             ]
+    # The responses bind the row data of multi-membership factors.
+    inputs = law_observations(emitter.group_laws)
     parameters = tuple(
         parameter
-        for parameter in emitter._runtime_parameters(grouping)
-        if parameter.name.startswith("__formula_level_basis_")
+        for parameter in law_runtime_parameters(emitter.group_laws)
+        if parameter.name in inputs
     )
-    fixed = emitter.fixed_column_observations(grouping)
-    inputs = {parameter.name: fixed[parameter.name] for parameter in parameters}
-    shared_levels = [law.level for law in emitter.group_laws]
-    parameters += level_runtime_parameters(shared_levels)
-    inputs |= level_observations(shared_levels)
     return (
         emitter,
         grouping,

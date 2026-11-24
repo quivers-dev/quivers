@@ -6,7 +6,7 @@ from functools import lru_cache
 from typing import Literal
 
 from quivers.dsl._value_expressions import _parse_value_expression
-from quivers.dsl.let_expr_traversal import substitute_let_expr
+from quivers.dsl.let_expr_traversal import free_let_names, substitute_let_expr
 from quivers.dsl.ast_nodes import (
     DrawArgNamed,
     ObserveStep,
@@ -31,6 +31,7 @@ from quivers.dsl.ast_nodes import (
     LetFactorCase,
     TypeName,
 )
+from quivers.dsl.pure_builtins import BUILTIN_REGISTRY
 from quivers.dsl.family_schemas import family_parameter_names, family_parameterizations
 from quivers.family_catalog import FamilyCatalog
 
@@ -252,6 +253,80 @@ def _factor(
         body=body,
         cases=tuple(LetFactorCase(label=label, value=value) for label, value in cases),
     )
+
+
+def _pointfree(var: str, body: LetExprNode) -> LetExprNode | None:
+    """Rewrite an expression pointwise in one coordinate over whole arrays.
+
+    Arithmetic and scalar primitives lift elementwise and ``a[..., i]`` is the
+    array ``a[...]``, so a body that reads the coordinate only as the last
+    index of an array is the elementwise expression over those arrays. An
+    array indexed by an integer array over the same axis, ``s[c[i]]``, is the
+    gather ``s[c]``.
+
+    Parameters
+    ----------
+    var : str
+        Coordinate variable.
+    body : LetExprNode
+        Expression evaluated at the coordinate.
+
+    Returns
+    -------
+    LetExprNode or None
+        The expression without the coordinate, or None when the body reads
+        it in another position.
+    """
+    if var not in free_let_names(body):
+        return body
+    if isinstance(body, LetExprBinOp):
+        left, right = _pointfree(var, body.left), _pointfree(var, body.right)
+        if left is None or right is None:
+            return None
+        return body.with_(left=left, right=right)
+    if isinstance(body, LetExprCall):
+        overloads = BUILTIN_REGISTRY[body.func].qiec_overloads
+        if not any(len(signature) == len(body.args) for signature in overloads):
+            return None
+        args = [_pointfree(var, arg) for arg in body.args]
+        lifted = tuple(arg for arg in args if arg is not None)
+        return body.with_(args=lifted) if len(lifted) == len(args) else None
+    if isinstance(body, LetExprIndex) and var not in free_let_names(body.array):
+        *leading, last = body.indices
+        if any(var in free_let_names(index) for index in leading):
+            return None
+        if isinstance(last, LetExprVar):
+            return body.with_(indices=tuple(leading)) if leading else body.array
+        if leading or not isinstance(last, LetExprIndex):
+            return None
+        gathered = _pointfree(var, last)
+        return body.with_(indices=(gathered,)) if gathered is not None else None
+    return None
+
+
+def _over(var: str, axis: str, body: LetExprNode) -> LetExprNode:
+    """Build the vector of a body's values over one finite axis.
+
+    Parameters
+    ----------
+    var : str
+        Coordinate variable.
+    axis : str
+        Finite axis name.
+    body : LetExprNode
+        Expression evaluated at each coordinate.
+
+    Returns
+    -------
+    LetExprNode
+        The elementwise expression over whole arrays when the body reads the
+        coordinate only as a last index, otherwise a factor over the axis.
+    """
+    if var in free_let_names(body):
+        lifted = _pointfree(var, body)
+        if lifted is not None:
+            return lifted
+    return _factor(((var, axis),), body=body)
 
 
 def _draw(

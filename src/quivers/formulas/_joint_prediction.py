@@ -32,7 +32,6 @@ from quivers.dsl.ast_nodes import (
     TypeFromExpr,
 )
 from quivers.formulas._autocor import AutocorMatrix, autocor_catalog
-from quivers.formulas._grouping_emission import compact_option
 from quivers.formulas._group_prediction import (
     GroupRemap,
     NewLevelPolicy,
@@ -480,20 +479,12 @@ def prepare_joint_prediction(
                     its ``gr()`` options coded on the compact levels.
                 """
                 assert frame is not None
-                value = specialized_formula(value, groups)
+                value = specialized_formula(value, groups, frame)
                 return value.with_(
                     group_indices={
                         group: tuple(groups[group].row_indices.tolist())
                         for group in value.group_levels
                     },
-                    grouping=value.grouping.with_(
-                        options=tuple(
-                            compact_option(option, frame, groups[option.group])
-                            if option.group in groups
-                            else option
-                            for option in value.grouping.options
-                        )
-                    ),
                 )
 
             lens._distributional = {

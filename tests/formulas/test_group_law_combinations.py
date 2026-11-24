@@ -38,7 +38,7 @@ from quivers.formulas._group_law import (
     KnownCovariance,
     MembershipRows,
     group_coefficients,
-    support_coefficients,
+    block_coefficients,
 )
 from quivers.formulas._group_prediction import GroupRemap, _remap_covariance_group
 from quivers.inference.trace import trace
@@ -871,7 +871,7 @@ def test_new_level_of_a_by_partition_takes_the_column_factor_of_its_by_level():
             by=by.with_(codes=tuple(compact_codes.tolist())),
         )
     )
-    physical = support_coefficients(latent | mapped, compact, sample_ndims=0)
+    physical = block_coefficients(latent | mapped, compact, sample_ndims=0)
     gaussian = basis.tensors()[2] @ latent[site]
     cholesky = torch.tensor(BY_CHOLESKY, dtype=torch.float64)
     scale = torch.stack([latent["sigma_g_Intercept"], latent["sigma_g_x"]], dim=1)

@@ -1734,8 +1734,15 @@ def _formula_and_design(
             per_member = is_member_call(getattr(term.expr, "components", ()))
             if per_member and membership is None:
                 raise ValueError("mmc() requires an mm() grouping factor")
-            if slopes and membership is not None:
-                raise ValueError("mo() slopes cannot vary over an mm() grouping factor")
+            if membership is not None:
+                # A monotonic slope's value is a program binding every member
+                # shares, so its member covariate is the weight alone.
+                member_covariates.extend(
+                    member_covariate(
+                        group, membership, slope, "", np.ones(n_obs), per_member=False
+                    )
+                    for slope in slopes
+                )
             if per_member and membership is not None:
                 random_terms.append(
                     RandomTerm(
@@ -1916,7 +1923,11 @@ def _formula_and_design(
             memberships=tuple(memberships),
             covariates=tuple(member_covariates),
             options=fit_group_options(
-                regrouped.options, pandas_df, group_levels, group_indices
+                regrouped.options,
+                pandas_df,
+                group_levels,
+                group_indices,
+                memberships,
             ),
         ),
     ), dm

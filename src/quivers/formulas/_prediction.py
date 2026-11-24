@@ -44,8 +44,8 @@ from quivers.formulas._autocor import (
 )
 from quivers.formulas._grouping import add_grouping_columns
 from quivers.formulas._grouping_emission import (
+    law_observations,
     membership_prediction_bindings,
-    option_prediction_bindings,
 )
 from quivers.formulas._monotonic_emission import monotonic_prediction_bindings
 from quivers.formulas._latent_effects import formula_families
@@ -824,10 +824,6 @@ def prepare_prediction(
         from quivers.formulas._predictor_graph import graph_input_bindings
 
         observations.update(graph_input_bindings(fit.predictor_graph, frame))
-    # brms gr(by =, pw =): per-level inputs on the compact prediction levels.
-    observations.update(
-        option_prediction_bindings(fit._predictor_items(), frame, groups)
-    )
 
     from quivers.formulas._fit import _binomial_trial_tensor, _predictor_output
 
@@ -920,7 +916,8 @@ def prepare_prediction(
     module = plan.module
     if groups or re_formula is not None or gp_fresh:
         specialized = {
-            name: specialized_formula(gp_formulas[name], groups) for name in formulas
+            name: specialized_formula(gp_formulas[name], groups, frame)
+            for name in formulas
         }
         specialized_lens = fit._formula_lens(
             distributional={
@@ -936,15 +933,8 @@ def prepare_prediction(
             },
         )
         module, _ = specialized_lens.forward(specialized["mu"])
-        observations.update(
-            {
-                name: value
-                for name, value in specialized_lens.fixed_column_observations(
-                    specialized["mu"]
-                ).items()
-                if name.startswith("__formula_level_")
-            }
-        )
+        # The level inputs of every block on the compact prediction levels.
+        observations.update(law_observations(specialized_lens.group_laws))
         module = select_contributions(module, formulas, selected, prefixes=prefixes)
     statements = []
     fresh_axes = {

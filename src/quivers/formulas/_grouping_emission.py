@@ -29,7 +29,7 @@ from quivers.dsl.ast_nodes import (
     QiecTypeName,
     QiecValueParameter,
 )
-from quivers.formulas._group_law import GroupLevelLaw
+from quivers.formulas._group_law import GroupBlockLaw, law_inputs
 from quivers.formulas._grouping import (
     GroupLevelOptions,
     Membership,
@@ -155,42 +155,6 @@ def _tensor(element: str, *axes: str) -> QiecTypeApplication:
             QiecShapeIndex(dimensions=tuple(QiecIndexName(name=axis) for axis in axes)),
         ),
     )
-
-
-def membership_runtime_parameters(
-    predictors: Iterable[tuple[str, str, Formula]],
-) -> tuple[QiecValueParameter, ...]:
-    """Declare member codes and weighted covariates of every predictor.
-
-    Parameters
-    ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        Integer row codes per member and Real row covariates per member and
-        coefficient.
-    """
-    parameters: dict[str, QiecValueParameter] = {}
-    for _, prefix, formula in predictors:
-        for term in formula.random_terms:
-            membership = formula.grouping.membership(term.group)
-            if membership is None:
-                continue
-            for k in range(membership.size):
-                name = member_index(term.group, k)
-                parameters.setdefault(
-                    name,
-                    QiecValueParameter(name=name, type_expr=_tensor("Int", "Resp")),
-                )
-                name = member_input(prefix, term.group, term.slope, k)
-                parameters.setdefault(
-                    name,
-                    QiecValueParameter(name=name, type_expr=_tensor("Real", "Resp")),
-                )
-    return tuple(parameters.values())
 
 
 def _covariate_inputs(
@@ -427,172 +391,104 @@ def student_sites(group: str) -> tuple[str, str, str]:
     return f"df_{name}", f"udf_{name}", f"dfm_{name}"
 
 
-def all_group_options(
-    predictors: Iterable[tuple[str, str, Formula]],
-) -> dict[str, GroupLevelOptions]:
-    """Merge the ``gr()`` options of every predictor by grouping factor.
+def merged_group_option(
+    options: Iterable[GroupLevelOptions],
+) -> GroupLevelOptions | None:
+    """Merge the ``gr()`` options the members of one block declare.
+
+    The coefficients of a block have one law, so an option any member
+    declares applies to the block, as in brms.
 
     Parameters
     ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
+    options : Iterable[GroupLevelOptions]
+        Options of one grouping factor, coded on the same levels.
 
     Returns
     -------
-    dict[str, GroupLevelOptions]
-        Options by grouping factor; a factor that is Student-t in one
-        predictor shares its degrees of freedom with every such predictor.
+    GroupLevelOptions or None
+        The merged options, or None when no member declares any.
 
     Raises
     ------
     ValueError
-        If predictors give one factor different ``by`` variables.
+        If members give one factor different ``by`` variables or prior
+        weights.
     """
-    merged: dict[str, GroupLevelOptions] = {}
-    for _, _, formula in predictors:
-        for option in formula.grouping.options:
-            existing = merged.get(option.group)
-            if existing is None:
-                merged[option.group] = option
-                continue
-            if (
-                option.by_levels
-                and existing.by_levels
-                and (option.by_levels, option.by_codes)
-                != (existing.by_levels, existing.by_codes)
-            ):
+    merged: GroupLevelOptions | None = None
+    for option in options:
+        if merged is None:
+            merged = option
+            continue
+        for label, first, second in (
+            (
+                "'by' variable",
+                (merged.by_levels, merged.by_codes),
+                (option.by_levels, option.by_codes),
+            ),
+            (
+                "vector of prior weights",
+                (merged.prior_weights,),
+                (option.prior_weights,),
+            ),
+        ):
+            if any(first) and any(second) and first != second:
                 raise ValueError(
-                    "Each grouping factor can only be associated with one 'by' "
-                    f"variable; {option.group!r} has several"
+                    "Each grouping factor can only be associated with one "
+                    f"{label}; {option.group!r} has several"
                 )
-            merged[option.group] = existing.with_(
-                options=existing.options.with_(
-                    student=existing.options.student or option.options.student
-                ),
-                by_levels=existing.by_levels or option.by_levels,
-                by_codes=existing.by_codes or option.by_codes,
-                prior_weights=existing.prior_weights or option.prior_weights,
-            )
+        merged = GroupLevelOptions(
+            options=merged.options.with_(
+                by=merged.options.by or option.options.by,
+                by_columns=merged.options.by_columns or option.options.by_columns,
+                student=merged.options.student or option.options.student,
+                prior_weight=merged.options.prior_weight or option.options.prior_weight,
+            ),
+            by_levels=merged.by_levels or option.by_levels,
+            by_codes=merged.by_codes or option.by_codes,
+            prior_weights=merged.prior_weights or option.prior_weights,
+        )
     return merged
 
 
-def option_runtime_parameters(
-    predictors: Iterable[tuple[str, str, Formula]],
+def law_runtime_parameters(
+    laws: Iterable[GroupBlockLaw],
 ) -> tuple[QiecValueParameter, ...]:
-    """Declare per-level ``by`` codes and prior weights.
+    """Declare the runtime inputs that the blocks of a program read.
 
     Parameters
     ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
+    laws : Iterable[GroupBlockLaw]
+        Laws of the blocks.
 
     Returns
     -------
     tuple[QiecValueParameter, ...]
-        Integer ``by`` codes and Real weights over the grouping axis.
+        One checked tensor per input.
     """
-    parameters = []
-    for group, option in all_group_options(predictors).items():
-        if option.by_levels:
-            parameters.append(
-                QiecValueParameter(
-                    name=by_input(group), type_expr=_tensor("Int", _qvr_name(group))
-                )
-            )
-        if option.prior_weights:
-            parameters.append(
-                QiecValueParameter(
-                    name=weight_input(group),
-                    type_expr=_tensor("Real", _qvr_name(group)),
-                )
-            )
-    return tuple(parameters)
+    return tuple(
+        QiecValueParameter(name=item.name, type_expr=_tensor(item.element, *item.axes))
+        for item in law_inputs(laws)
+    )
 
 
-def level_runtime_parameters(
-    levels: Iterable[GroupLevelLaw],
-) -> tuple[QiecValueParameter, ...]:
-    """Declare the ``by`` codes and prior weights the level laws read.
+def law_observations(laws: Iterable[GroupBlockLaw]) -> dict[str, torch.Tensor]:
+    """Bind the inputs whose values the laws of a program retain.
 
     Parameters
     ----------
-    levels : Iterable[GroupLevelLaw]
-        Level factors of emitted blocks.
-
-    Returns
-    -------
-    tuple[QiecValueParameter, ...]
-        One Integer ``by`` input and one Real weight input per level axis
-        that declares the factor.
-    """
-    parameters: dict[str, QiecValueParameter] = {}
-    for level in levels:
-        if level.by is not None:
-            parameters.setdefault(
-                level.by.input,
-                QiecValueParameter(
-                    name=level.by.input, type_expr=_tensor("Int", level.axis)
-                ),
-            )
-        if level.prior_weight is not None:
-            parameters.setdefault(
-                level.prior_weight.input,
-                QiecValueParameter(
-                    name=level.prior_weight.input,
-                    type_expr=_tensor("Real", level.axis),
-                ),
-            )
-    return tuple(parameters.values())
-
-
-def level_observations(levels: Iterable[GroupLevelLaw]) -> dict[str, torch.Tensor]:
-    """Bind the training ``by`` codes and prior weights of the level laws.
-
-    Parameters
-    ----------
-    levels : Iterable[GroupLevelLaw]
-        Level factors of emitted blocks.
+    laws : Iterable[GroupBlockLaw]
+        Laws of the blocks.
 
     Returns
     -------
     dict[str, torch.Tensor]
-        Runtime bindings over the training levels.
+        ``by`` codes, prior weights, and matrices of known level covariances.
+        The row data of multi-membership factors is bound with the design.
     """
-    values: dict[str, torch.Tensor] = {}
-    for level in levels:
-        if level.by is not None:
-            values[level.by.input] = torch.tensor(level.by.codes, dtype=torch.long)
-        if level.prior_weight is not None:
-            values[level.prior_weight.input] = torch.tensor(
-                level.prior_weight.weights, dtype=torch.float64
-            )
-    return values
-
-
-def option_observations(
-    predictors: Iterable[tuple[str, str, Formula]],
-) -> dict[str, torch.Tensor]:
-    """Bind training ``by`` codes and prior weights.
-
-    Parameters
-    ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Runtime bindings over the training levels.
-    """
-    values: dict[str, torch.Tensor] = {}
-    for group, option in all_group_options(predictors).items():
-        if option.by_levels:
-            values[by_input(group)] = torch.tensor(option.by_codes, dtype=torch.long)
-        if option.prior_weights:
-            values[weight_input(group)] = torch.tensor(
-                option.prior_weights, dtype=torch.float64
-            )
-    return values
+    return {
+        item.name: item.value for item in law_inputs(laws) if item.value is not None
+    }
 
 
 def compact_option(
@@ -602,8 +498,8 @@ def compact_option(
 
     A fitted level keeps its training ``by`` level. A new level takes the
     ``by`` level of the fresh rows that name it, which must be a fitted
-    ``by`` level. Prior weights only shape the fitted prior, so prediction
-    levels carry unit weights.
+    ``by`` level. Prior weights shape only the fitted prior, so prediction
+    levels declare none.
 
     Parameters
     ----------
@@ -627,74 +523,31 @@ def compact_option(
     group = option.group
     codes: list[int] = []
     if option.by_levels:
-        by = option.options.by
-        assert by is not None
         position = {label: index for index, label in enumerate(option.by_levels)}
-        rows = remap.row_indices.tolist()
+        rows = [
+            indices.tolist() for indices in remap.member_indices or (remap.row_indices,)
+        ]
+        columns = option.options.by_columns
         for compact, fitted in enumerate(remap.fitted_indices):
             if fitted >= 0:
                 codes.append(option.by_codes[fitted])
                 continue
-            if by not in frame.columns:
-                raise ValueError(f"new_data is missing predictors {[by]}")
+            missing = [column for column in columns if column not in frame.columns]
+            if missing:
+                raise ValueError(f"new_data is missing predictors {missing}")
             labels = {
                 str(value)
-                for value, row in zip(frame[by].tolist(), rows, strict=True)
+                for column, coded in zip(columns, rows, strict=True)
+                for value, row in zip(frame[column].tolist(), coded, strict=True)
                 if row == compact
             }
             if len(labels) != 1 or not labels <= position.keys():
                 raise ValueError(
-                    f"a new level of {group!r} needs one fitted level of {by!r}, "
-                    f"got {sorted(labels)}"
+                    f"a new level of {group!r} needs one fitted level of "
+                    f"{option.options.by!r}, got {sorted(labels)}"
                 )
             codes.append(position[labels.pop()])
-    return option.with_(
-        by_codes=tuple(codes),
-        prior_weights=(1.0,) * len(remap.fitted_indices)
-        if option.prior_weights
-        else (),
-    )
-
-
-def option_prediction_bindings(
-    predictors: Iterable[tuple[str, str, Formula]],
-    frame: pd.DataFrame,
-    groups: Mapping[str, GroupRemap],
-) -> dict[str, torch.Tensor]:
-    """Bind ``by`` codes and prior weights on the compact prediction levels.
-
-    Parameters
-    ----------
-    predictors : Iterable[tuple[str, str, Formula]]
-        Parameter labels, prefixes, and evaluated formulas.
-    frame : pandas.DataFrame
-        Fresh rows.
-    groups : Mapping[str, GroupRemap]
-        Compact prediction axes.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Runtime bindings over the compact levels.
-
-    Raises
-    ------
-    ValueError
-        If a new level has no, several, or an unfitted ``by`` level.
-    """
-    values: dict[str, torch.Tensor] = {}
-    for group, option in all_group_options(predictors).items():
-        remap = groups.get(group)
-        if remap is None:
-            continue
-        compact = compact_option(option, frame, remap)
-        if compact.by_levels:
-            values[by_input(group)] = torch.tensor(compact.by_codes, dtype=torch.long)
-        if compact.prior_weights:
-            values[weight_input(group)] = torch.tensor(
-                compact.prior_weights, dtype=torch.float64
-            )
-    return values
+    return option.with_(by_codes=tuple(codes), prior_weights=())
 
 
 def by_correlation_sites(identity: str, option: GroupLevelOptions) -> tuple[str, ...]:

@@ -138,16 +138,19 @@ class GroupingSpec(ValueModel):
 
 
 class GroupOptions(ValueModel):
-    """The ``gr()`` options of one grouping factor.
+    """The ``gr()`` or ``mm()`` options of one grouping factor.
 
     Attributes
     ----------
     group : str
         Grouping-factor name.
     by : str or None
-        Factor whose levels each get their own group-level standard
-        deviations and correlations; every level of the grouping factor must
-        lie within one of its levels.
+        Label of the variable whose levels each get their own group-level
+        standard deviations and correlations; every level of the grouping
+        factor must lie within one of its levels.
+    by_columns : tuple[str, ...]
+        Columns of the ``by`` variable, one per source column of the factor:
+        the ``by`` level of the level that source names in a row.
     student : bool
         Whether group-level effects follow a multivariate Student-t law
         (brms ``dist = "student"``).
@@ -158,6 +161,7 @@ class GroupOptions(ValueModel):
 
     group: str
     by: str | None = None
+    by_columns: tuple[str, ...] = ()
     student: bool = False
     prior_weight: str | None = None
 
@@ -196,25 +200,26 @@ class GroupLevelOptions(ValueModel):
 
 def _per_level(
     frame: pd.DataFrame,
-    column: str,
+    columns: Sequence[str],
     group: str,
     levels: tuple[str, ...],
-    codes: Sequence[int],
+    codes: Sequence[Sequence[int]],
 ) -> list[str | int | float | bool]:
-    """Read one value of a column per grouping level, which must be unique.
+    """Read one value per grouping level, which must be unique.
 
     Parameters
     ----------
     frame : pandas.DataFrame
-        Rows aligned with ``codes``.
-    column : str
-        Column whose value must be constant within each level.
+        Rows aligned with the codes.
+    columns : Sequence[str]
+        Columns whose values must be constant within each level, one per
+        source column of the factor.
     group : str
         Grouping-factor name, for messages.
     levels : tuple[str, ...]
         Grouping levels.
-    codes : Sequence[int]
-        Level code of each row.
+    codes : Sequence[Sequence[int]]
+        Level code of each row, for every source column.
 
     Returns
     -------
@@ -224,18 +229,22 @@ def _per_level(
     Raises
     ------
     ValueError
-        If the column is absent or varies within a level, as brms refuses.
+        If a column is absent or a level has several values, as brms refuses.
     """
-    if column not in frame.columns:
-        raise ValueError(f"gr({group}): column {column!r} names no data column")
     found: dict[int, set[str]] = {}
     values: dict[int, str | int | float | bool] = {}
-    for code, value in zip(codes, frame[column].tolist(), strict=True):
-        found.setdefault(code, set()).add(str(value))
-        values.setdefault(code, value)
+    for column, coded in zip(columns, codes, strict=True):
+        if column not in frame.columns:
+            raise ValueError(
+                f"grouping factor {group!r}: column {column!r} names no data column"
+            )
+        for code, value in zip(coded, frame[column].tolist(), strict=True):
+            found.setdefault(code, set()).add(str(value))
+            values.setdefault(code, value)
     if any(len(labels) > 1 for labels in found.values()):
+        named = repr(columns[0]) if len(columns) == 1 else repr(list(columns))
         raise ValueError(
-            f"Some levels of {group!r} correspond to multiple levels of {column!r}."
+            f"Some levels of {group!r} correspond to multiple levels of {named}."
         )
     return [values[code] for code in range(len(levels))]
 
@@ -245,8 +254,9 @@ def fit_group_options(
     frame: pd.DataFrame,
     group_levels: Mapping[str, tuple[str, ...]],
     group_indices: Mapping[str, Sequence[int]],
+    memberships: Sequence[Membership] = (),
 ) -> tuple[GroupLevelOptions, ...]:
-    """Code ``gr(by, dist, pw)`` options on the training levels.
+    """Code the ``by``, ``dist`` and ``pw`` options on the training levels.
 
     Parameters
     ----------
@@ -256,6 +266,8 @@ def fit_group_options(
         Included training rows.
     group_levels, group_indices : Mapping
         Training coding of each grouping factor.
+    memberships : Sequence[Membership]
+        Training codes of the multi-membership factors.
 
     Returns
     -------
@@ -268,24 +280,35 @@ def fit_group_options(
         If ``by`` or ``pw`` varies within a grouping level, or weights are
         not finite and nonnegative.
     """
+    members = {membership.group: membership.codes for membership in memberships}
     fitted = []
     for option in options:
         levels = group_levels[option.group]
-        codes = group_indices[option.group]
+        codes = members.get(option.group, (group_indices[option.group],))
         by_levels: tuple[str, ...] = ()
         by_codes: tuple[int, ...] = ()
         weights: tuple[float, ...] = ()
-        if option.by is not None:
+        if option.by_columns:
             per_level = [
                 str(value)
-                for value in _per_level(frame, option.by, option.group, levels, codes)
+                for value in _per_level(
+                    frame, option.by_columns, option.group, levels, codes
+                )
             ]
-            by_levels = tuple(sorted(set(str(v) for v in frame[option.by].tolist())))
+            by_levels = tuple(
+                sorted(
+                    {
+                        str(value)
+                        for column in option.by_columns
+                        for value in frame[column].tolist()
+                    }
+                )
+            )
             position = {label: index for index, label in enumerate(by_levels)}
             by_codes = tuple(position[value] for value in per_level)
         if option.prior_weight is not None:
             raw = np.asarray(
-                _per_level(frame, option.prior_weight, option.group, levels, codes),
+                _per_level(frame, (option.prior_weight,), option.group, levels, codes),
                 dtype=np.float64,
             )
             if not np.isfinite(raw).all() or bool((raw < 0).any()):
@@ -564,6 +587,7 @@ class _Grouping:
         self.identity = identity
         self.covariance = covariance
         self.by: str | None = None
+        self.by_columns: tuple[str, ...] = ()
         self.student = False
         self.prior_weight: str | None = None
 
@@ -639,6 +663,43 @@ def _interaction(sources: tuple[str, ...]) -> tuple[str, GroupingSpec | None]:
     return name, GroupingSpec(name=name, kind="interaction", sources=sources)
 
 
+def _member_columns(argument: str, text: str, members: int) -> tuple[str, ...]:
+    """Parse an ``mm()`` argument holding one column per member.
+
+    Parameters
+    ----------
+    argument : str
+        Argument name, for messages.
+    text : str
+        Authored ``cbind()`` call.
+    members : int
+        Number of members.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Column names in member order.
+
+    Raises
+    ------
+    ValueError
+        If the argument is not ``cbind()`` of one column per member.
+    """
+    function, arguments, extra = (
+        _r_call(text) if text.rstrip().endswith(")") else ("", [], {})
+    )
+    columns = [_r_value(item, "mm") for item in arguments] if not extra else []
+    if function != "cbind" or any(not isinstance(column, str) for column in columns):
+        raise ValueError(
+            f"mm(): {argument} must be cbind() of one data column per member"
+        )
+    if len(columns) != members:
+        raise ValueError(
+            f"mm(): {argument} need as many columns as grouping terms ({members})"
+        )
+    return tuple(str(column) for column in columns)
+
+
 def _parse_call(text: str) -> tuple[_Grouping, tuple[GroupingSpec, ...]]:
     """Parse ``gr()`` or ``mm()``.
 
@@ -655,8 +716,7 @@ def _parse_call(text: str) -> tuple[_Grouping, tuple[GroupingSpec, ...]]:
     Raises
     ------
     ValueError
-        If arguments are malformed, or ``by``, ``pw``, or ``dist = "student"``
-        is requested.
+        If arguments are malformed or unknown.
     """
     head, arguments, options = _r_call(text)
     groups = []
@@ -665,9 +725,8 @@ def _parse_call(text: str) -> tuple[_Grouping, tuple[GroupingSpec, ...]]:
         if not isinstance(value, str):
             raise ValueError(f"{head}(): grouping factors must be column names")
         groups.append(value)
-    allowed = {"by", "cor", "id", "pw", "cov", "dist"}
-    if head == "mm":
-        allowed |= {"weights", "scale"}
+    allowed = {"by", "cor", "id", "cov", "dist"}
+    allowed |= {"weights", "scale"} if head == "mm" else {"pw"}
     unknown = sorted(options.keys() - allowed)
     if unknown:
         raise ValueError(f"{head}(): unknown arguments {unknown!r}")
@@ -683,25 +742,21 @@ def _parse_call(text: str) -> tuple[_Grouping, tuple[GroupingSpec, ...]]:
     dist = _r_value(options["dist"], head) if "dist" in options else "gaussian"
     if dist not in {"gaussian", "student"}:
         raise ValueError(f"{head}(): dist must be 'gaussian' or 'student'")
-    columns: dict[str, str | None] = {}
-    for option in ("by", "pw"):
-        value = _r_value(options[option], head) if option in options else None
-        if value is not None and not isinstance(value, str):
-            raise ValueError(f"{head}(): {option} must name a data column")
-        if value is not None and head == "mm":
-            raise ValueError(
-                f"{text}: the mm() argument {option!r} needs a matrix with one "
-                "column per member, which is not supported"
-            )
-        columns[option] = value
     if head == "gr":
+        columns: dict[str, str | None] = {}
+        for option in ("by", "pw"):
+            value = _r_value(options[option], head) if option in options else None
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{head}(): {option} must name a data column")
+            columns[option] = value
         if len(groups) != 1:
             raise ValueError(
                 "Grouping structure 'gr' expects only a single grouping term"
             )
         name, spec = _interaction(tuple(_split(groups[0], ":")))
         grouping = _Grouping((name,), spec, cor, identity, covariance)
-        grouping.by = columns["by"]
+        by = columns["by"]
+        grouping.by, grouping.by_columns = by, (by,) if by is not None else ()
         grouping.prior_weight = columns["pw"]
         grouping.student = dist == "student"
         return grouping, ((spec,) if spec is not None else ())
@@ -711,17 +766,14 @@ def _parse_call(text: str) -> tuple[_Grouping, tuple[GroupingSpec, ...]]:
         )
     for group in groups:
         _interaction((group,))
-    weights: tuple[str, ...] = ()
-    if "weights" in options:
-        function, columns_text, extra = _r_call(options["weights"])
-        if function != "cbind" or extra:
-            raise ValueError("mm(): weights must be cbind() of one column per member")
-        weight_columns = [_r_value(argument, "mm") for argument in columns_text]
-        if any(not isinstance(column, str) for column in weight_columns):
-            raise ValueError("mm(): weights must be cbind() of weight columns")
-        weights = tuple(str(column) for column in weight_columns)
-        if len(weights) != len(groups):
-            raise ValueError("mm(): weights need as many columns as grouping terms")
+    weights = (
+        _member_columns("weights", options["weights"], len(groups))
+        if "weights" in options
+        else ()
+    )
+    by_columns = (
+        _member_columns("by", options["by"], len(groups)) if "by" in options else ()
+    )
     scale = _r_value(options["scale"], "mm") if "scale" in options else True
     if not isinstance(scale, bool):
         raise ValueError("mm(): scale must be TRUE or FALSE")
@@ -734,6 +786,9 @@ def _parse_call(text: str) -> tuple[_Grouping, tuple[GroupingSpec, ...]]:
     )
     grouping = _Grouping((spec.name,), spec, cor, identity, covariance)
     grouping.student = dist == "student"
+    grouping.by_columns = by_columns
+    if by_columns:
+        grouping.by = f"cbind({', '.join(by_columns)})"
     return grouping, (spec,)
 
 
@@ -813,6 +868,7 @@ def rewrite_grouping(formula: str) -> GroupingRewrite:
             option = GroupOptions(
                 group=name,
                 by=grouping.by,
+                by_columns=grouping.by_columns,
                 student=grouping.student,
                 prior_weight=grouping.prior_weight,
             )
@@ -844,7 +900,7 @@ def rewrite_grouping(formula: str) -> GroupingRewrite:
         options=tuple(
             option
             for option in options.values()
-            if option.by is not None or option.student or option.prior_weight
+            if option.by_columns or option.student or option.prior_weight
         ),
     )
 
