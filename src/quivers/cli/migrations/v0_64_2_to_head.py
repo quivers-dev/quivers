@@ -14,6 +14,9 @@ headers and inferred extents are additive; no released ``data`` step exists.
 ``FinSet _`` previously parsed as an identifier cardinality, but an unbound
 underscore was not well typed; its inference meaning thus affects no released
 well-typed cardinality declaration.
+Handler parameters are additive likewise: no released source writes ``with``
+after a handler's answer type or after ``resume(...)``, nor parentheses after the
+handler a ``handle`` installs.
 
 This is a directed migration, not a target-source formatter. Reapplying it to a
 new static telescope fails the historical source gate rather than guessing at

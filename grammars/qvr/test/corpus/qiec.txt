@@ -714,3 +714,169 @@ define hanging() : Tensor[Real]([2]) !{} =
                 (identifier))
               (let_literal
                 (float)))))))))
+
+================================================================================
+Parameterized handler
+================================================================================
+
+effect State[S : Type]
+    get : Unit -> S
+    put : S -> Unit
+
+handler cell[S : Type, A : Type] for State[S] : A -> A with (s : S) [coverage=total, implementation=authored]
+    return x =>
+        return x
+    get resumes 1 =>
+        resume(s)
+    put(v : S) resumes 1 =>
+        resume() with (v)
+
+handler bare for State[Int] : Int -> Int * Int with (s : Int, t : Int)
+    return x =>
+        return (x, s)
+
+define counted(seed : Int) : Int !{} =
+    with instance c : State[Int] in
+        handle c with cell[Int, Int](seed) in
+            let after <- perform c.get()
+            return after
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (effect_decl
+    (identifier)
+    (qiec_static_telescope
+      (qiec_type_binder
+        (identifier)
+        (qiec_type_kind)))
+    (qiec_operation_decl
+      (identifier)
+      (qiec_type_name
+        (identifier))
+      (qiec_type_name
+        (identifier)))
+    (qiec_operation_decl
+      (identifier)
+      (qiec_type_name
+        (identifier))
+      (qiec_type_name
+        (identifier))))
+  (handler_decl
+    (identifier)
+    (qiec_static_telescope
+      (qiec_type_binder
+        (identifier)
+        (qiec_type_kind))
+      (qiec_type_binder
+        (identifier)
+        (qiec_type_kind)))
+    (qiec_effect_ref
+      (identifier)
+      (qiec_static_argument
+        (qiec_type_name
+          (identifier))))
+    (qiec_type_name
+      (identifier))
+    (qiec_type_name
+      (identifier))
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_handler_options
+      (qiec_handler_first_option
+        (qiec_handler_coverage_key))
+      (qiec_handler_option))
+    (qiec_handler_return_clause
+      (qiec_local_binding
+        (identifier))
+      (qiec_return_computation
+        (let_var
+          (identifier))))
+    (qiec_handler_operation_clause
+      (identifier)
+      (qiec_resumption_grade)
+      (qiec_resume_computation
+        (let_var
+          (identifier))))
+    (qiec_handler_operation_clause
+      (identifier)
+      (qiec_local_binding
+        (identifier)
+        (qiec_type_name
+          (identifier)))
+      (qiec_resumption_grade)
+      (qiec_resume_computation
+        (let_var
+          (identifier)))))
+  (handler_decl
+    (identifier)
+    (qiec_effect_ref
+      (identifier)
+      (qiec_static_argument
+        (qiec_type_name
+          (identifier))))
+    (qiec_type_name
+      (identifier))
+    (qiec_product_type
+      (qiec_type_name
+        (identifier))
+      (qiec_type_name
+        (identifier)))
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_handler_return_clause
+      (qiec_local_binding
+        (identifier))
+      (qiec_return_computation
+        (let_tuple
+          (let_var
+            (identifier))
+          (let_var
+            (identifier))))))
+  (computation_decl
+    (identifier)
+    (qiec_value_parameter
+      (identifier)
+      (qiec_type_name
+        (identifier)))
+    (qiec_type_name
+      (identifier))
+    (qiec_effect_row
+      (qiec_effect_row_literal))
+    (qiec_instance_computation
+      (identifier)
+      (qiec_effect_ref
+        (identifier)
+        (qiec_static_argument
+          (qiec_type_name
+            (identifier))))
+      (qiec_handle_computation
+        (identifier)
+        (qiec_handler_application
+          (identifier)
+          (qiec_static_argument
+            (qiec_type_name
+              (identifier)))
+          (qiec_static_argument
+            (qiec_type_name
+              (identifier)))
+          (let_var
+            (identifier)))
+        (qiec_bind_computation
+          (qiec_local_binding
+            (identifier))
+          (qiec_perform_computation
+            (qiec_effect_request
+              (identifier)
+              (identifier)))
+          (qiec_return_computation
+            (let_var
+              (identifier))))))))

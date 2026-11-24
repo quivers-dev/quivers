@@ -218,8 +218,9 @@ module.exports = grammar({
       $._newline,
     ),
 
-    /* Handler declarations expose only stable signatures and clause grades.
-     * Runtime clause bodies remain attachment-owned and are never serialized. */
+    /* A handler's parameters follow its answer type: ``with (s : S)`` declares
+     * typed binders that every clause reads, that an installation gives values
+     * for, and that each ``resume`` may give anew. */
     handler_decl: $ => seq(
       optional(field('docs', $.doc_comment_group)),
       'handler',
@@ -233,14 +234,23 @@ module.exports = grammar({
       choice(
         prec(10, seq(
           field('output', $._qiec_type_expr),
+          optional($._qiec_handler_parameters),
           field('options', $.qiec_handler_options),
         )),
-        field('output', $._qiec_type_expr),
+        seq(
+          field('output', $._qiec_type_expr),
+          optional($._qiec_handler_parameters),
+        ),
       ),
       $._newline,
       $._indent,
       repeat1(choice(field('clauses', $._qiec_handler_clause), $._newline)),
       $._dedent,
+    ),
+
+    _qiec_handler_parameters: $ => seq(
+      'with',
+      bracketedList($, '(', field('parameters', $.qiec_value_parameter), ')'),
     ),
 
     qiec_handler_options: $ => seq(
@@ -621,12 +631,18 @@ module.exports = grammar({
 
     /* Invoking the continuation of the enclosing handler clause. The
      * resumption is not a named local, so there is one way to invoke it and
-     * no second call syntax to keep in step. */
+     * no second call syntax to keep in step. ``with`` gives the handler's
+     * parameters the values they have while the continuation runs; without
+     * it they keep the clause's own. */
     qiec_resume_computation: $ => seq(
       'resume',
       '(',
       optional(field('value', $._qiec_value)),
       ')',
+      optional(seq(
+        'with',
+        bracketedList($, '(', field('parameters', $._qiec_value), ')'),
+      )),
       $._newline,
     ),
 
@@ -674,6 +690,8 @@ module.exports = grammar({
       $._dedent,
     ),
 
+    /* A handler at its static arguments and, for a handler with parameters,
+     * at the values they start from. */
     qiec_handler_application: $ => seq(
       field('name', $.identifier),
       optional(seq(
@@ -683,6 +701,7 @@ module.exports = grammar({
         optional(','),
         ']',
       )),
+      optional(bracketedList($, '(', field('values', $._qiec_value), ')')),
     ),
 
     /* Branch on a Boolean value. Both branches are computations, so a

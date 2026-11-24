@@ -704,6 +704,16 @@ def qiec_local_bindings(module: Module) -> tuple[QiecBinding, ...]:
             )
             _walk_computation_bindings(statement.body, statement, out)
         elif isinstance(statement, QiecHandlerDecl):
+            out.extend(
+                QiecBinding(
+                    name=parameter.name,
+                    kind="parameter",
+                    declaration=parameter,
+                    owner=statement,
+                    scope=_computation_span(statement.clauses),
+                )
+                for parameter in statement.parameters
+            )
             for clause in statement.clauses:
                 if isinstance(clause, QiecHandlerReturnClause):
                     span = _computation_span(clause.body)
