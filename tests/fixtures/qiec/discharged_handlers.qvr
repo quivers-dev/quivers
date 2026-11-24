@@ -1,0 +1,69 @@
+effect State[S : Type]
+    get : Unit -> S
+    put : S -> Unit
+
+effect Failure
+    fail : Unit -> Real
+
+effect Choice
+    either : Real * Real -> Real
+
+handler cell[S : Type, A : Type] for State[S] : A -> A with (s : S) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    get resumes 1 =>
+        resume(s)
+    put(v : S) resumes 1 =>
+        resume() with (v)
+
+handler floored for Failure : Real -> Real with (floor : Real) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    fail resumes 0 =>
+        return floor
+
+handler averaged for Choice : Real -> Real with (weight : Real) [coverage=total, forwards=none, implementation=authored]
+    return x =>
+        return x
+    either(left : Real, right : Real) resumes omega =>
+        let l <- resume(left)
+        let r <- resume(right)
+        return weight * l + (1.0 - weight) * r
+
+instance latest : State[Real]
+
+instance failure : Failure
+
+instance choice : Choice
+
+define positive(x : Real) : Real !{failure} =
+    if x > 0.0 then
+        return x
+    else
+        let y <- perform failure.fail()
+        return y
+
+define sentence(a : Real, b : Real) : Real !{choice, failure, latest} =
+    let x <- perform choice.either(a, b)
+    perform latest.put(2.0 * x)
+    let referent <- perform latest.get()
+    let d <- positive(referent)
+    return d + x
+
+define judged(a : Real, b : Real, w : Real) : Real !{} =
+    handle choice with averaged(w) in
+        handle failure with floored(0.0 - 1.0) in
+            handle latest with cell[Real, Real](0.0) in
+                let m <- sentence(a, b)
+                return m
+
+object Row : FinSet 4
+
+program judgments : Row -> Row
+    sample a <- Normal(loc=0.0, scale=1.0)
+    sample b <- Normal(loc=0.0, scale=1.0)
+    let m <- judged(a, b, 0.25)
+    observe y : Row <- Normal(loc=m, scale=1.0)
+    return y
+
+export judgments

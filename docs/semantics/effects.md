@@ -245,10 +245,11 @@ weighted accumulation. A handler's clauses are written in QVR, or held only in t
 and given by a provider. Pyro, NumPyro, PyMC, Edward2, Turing, Gen, WebPPL, and Church run the same typed
 computations through implementations of the QIEC runtime for each target, which dispatch by the stable
 identifiers of instances and operations, so the two state cells above stay separate. Tests compare these
-implementations with the reference machine at fixed parameter values. Stan expresses a computation with an
+implementations with the reference machine at fixed parameter values. The static targets read a
+computation with its handlers [discharged](#82-static-discharge). Stan expresses a computation with an
 empty closed row, no static parameters, and a scalar result as a user-defined function, including
-conditionals, calls, and recursion, and BUGS and JAGS refuse every call. For the other forms the static
-targets report a `qiec:capability:*` diagnostic. The [QIEC developer note](../developer/qiec.md) gives the
+conditionals, calls, and recursion, and BUGS and JAGS refuse a call they cannot inline. For the other
+forms the static targets report a `qiec:capability:*` diagnostic. The [QIEC developer note](../developer/qiec.md) gives the
 details.
 
 The effect handlers of [`quivers.effects`](../api/effects/index.md) are handlers of this calculus, in the
@@ -267,3 +268,68 @@ outer answer back through its continuation, so a trace inside a clamp records th
 handler that answers a draw emits its density outward, so every score transformer sees every site, and a
 trace reads the density of each site from what reaches the accumulator, under the static identity and
 dynamic address that every derived request carries.
+
+### 8.2 Static discharge {#82-static-discharge}
+
+Write $\mathcal{E}$ for an evaluation context that contains no handler of $i$ with a clause for
+$\mathsf{op}$, and let $h$ be an authored handler with parameters $\bar p$, return clause
+$\mathsf{return}\ x \Rightarrow c_{\mathsf{ret}}$, and clauses
+$\mathsf{op}(\bar x) \Rightarrow c_{\mathsf{op}}$. The reference machine computes by the two rules of
+deep handlers [@plotkin2009handlers; @kammar2013handlers] with parameters [@leijen2017type]:
+
+$$
+\begin{aligned}
+\mathsf{handle}\ i\ \mathsf{with}\ h(\bar v)\ \mathsf{in}\ \mathsf{return}\ w
+  &\longrightarrow c_{\mathsf{ret}}[\bar v/\bar p,\ w/x] \\
+\mathsf{handle}\ i\ \mathsf{with}\ h(\bar v)\ \mathsf{in}\ \mathcal{E}[\mathsf{perform}\ i.\mathsf{op}(\bar w)]
+  &\longrightarrow c_{\mathsf{op}}[\bar v/\bar p,\ \bar w/\bar x,\
+  \mathsf{resume}(u)\ \mathsf{with}\ (\bar v') \mapsto
+  \mathsf{handle}\ i\ \mathsf{with}\ h(\bar v')\ \mathsf{in}\ \mathcal{E}[\mathsf{return}\ u]]
+\end{aligned}
+$$
+
+*Discharge* applies these rules to the open body of a computation before it runs. It carries four
+equations besides:
+
+- $\mathsf{let}\ x \leftarrow \mathsf{return}\ w\ \mathsf{in}\ c = c[w/x]$, the
+  [left identity law](https://ncatlab.org/nlab/show/monad+%28in+computer+science%29) of sequencing, applied when $w$ is a variable, a literal, or a tuple or constructor application
+  of these, and otherwise left as a binding, so that a computed value is shared;
+- $\mathcal{E}[\mathsf{if}\ b\ \mathsf{then}\ c\ \mathsf{else}\ d] =
+  \mathsf{if}\ b\ \mathsf{then}\ \mathcal{E}[c]\ \mathsf{else}\ \mathcal{E}[d]$, with which a
+  conditional commutes with its context;
+- when both branches return to one context, with values $w_1, w_2$ and handler parameters
+  $\bar v_1, \bar v_2$, the conditional instead binds
+  $\mathsf{if}\ b\ \mathsf{then}\ (w_1, \bar v_1)\ \mathsf{else}\ (w_2, \bar v_2)$ ahead of that
+  context, which is then stated once;
+- $\mathsf{handle}\ i\ \mathsf{with}\ h(\bar v)\ \mathsf{in}\ \mathcal{E}[c] =
+  \mathsf{let}\ y \leftarrow c\ \mathsf{in}\ \mathsf{handle}\ i\ \mathsf{with}\ h(\bar v)\
+  \mathsf{in}\ \mathcal{E}[\mathsf{return}\ y]$ for a request or a call $c$ that does not reach $h$, such
+  as a request to an instance the computation does not handle.
+
+A call whose row names a handled instance is replaced by the body of its callee.
+
+**Proposition.** Let $\Gamma \vdash c : A \mathbin{!} \epsilon$ and let discharge rewrite $c$ to $c'$. Then
+$c'$ installs no handler, $\Gamma \vdash c' : A \mathbin{!} \epsilon'$ with $\epsilon' \subseteq \epsilon$, and
+for every substitution of closed values for $\Gamma$, $c$ and $c'$ make the same requests in the same order
+and return the same value, up to the definedness of pure values that nothing reads, which $c'$ leaves out.
+
+*Proof sketch.* Each step of discharge is one of the machine's rules or one of the equations, closed under
+evaluation contexts. The machine's rules preserve types by the
+[subject reduction](https://en.wikipedia.org/wiki/Subject_reduction) argument for deep handlers
+[@plotkin2009handlers; @kammar2013handlers], and the parameters do not change it, since a `resume` carries values of their declared
+types. A row can only shrink, as a clause that does not resume drops the requests of its continuation. The
+first equation holds in every [monad](https://ncatlab.org/nlab/show/monad). The second and third hold since a closed
+condition is `true` or `false`, and in each case both sides reduce to one term: an authored clause and the
+parameters of its handler are pure data, so the context $\mathcal{E}$ may be entered with either branch's
+values. The fourth holds since a handler that a request does not reach keeps its place in the continuation
+that the request captures, so resuming that continuation with $y$ runs the same handler around
+$\mathcal{E}[\mathsf{return}\ y]$. An `if` whose condition is a variable is kept, so no step depends on an
+assumption about a value. $\square$
+
+Discharge terminates. A callee is entered only when it is not being entered already, so a body unrolls to a
+finite tree of returns, requests, and conditionals. A deep handler is the fold of §6 over that tree: it
+replaces each request by its clause, with the folded subtrees in place of the resumptions, and the fold of a
+finite tree by finite clauses is finite. The result grows by a factor of $m$ at each request whose clause resumes $m$ times, so when every
+clause resumes at most once, and the branches of each conditional return to one context, it is linear in the number of requests and
+the sizes of their clauses. A computation that passes 2048 statements, or 65536 steps of the rules, is left
+as it is.

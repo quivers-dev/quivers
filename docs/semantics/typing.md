@@ -433,6 +433,35 @@ exact applied interface of `i`, and then:
 - the effects of the handler's clauses join the remaining row;
 - a row variable keeps its `lacks` constraints.
 
+A handler may have *parameters*, value binders $\bar p : \bar P$ that its clauses read
+[@leijen2017type; @bauer2015programming]. Write $h : E[\bar a];\ A \Rightarrow B;\ \bar P;\ \epsilon$
+for a handler of $E[\bar a]$ that takes a computation of type $A$ to an answer of type $B$ with
+parameters of types $\bar P$ and introduced row $\epsilon$. Its clauses are checked by
+
+$$
+\frac{\bar p : \bar P,\ x : A \vdash c_{\mathsf{ret}} : B \mathbin{!} \epsilon_0
+  \qquad \epsilon_0 \subseteq \epsilon}
+ {\mathsf{return}\ x \Rightarrow c_{\mathsf{ret}}\ \text{ok}}
+\qquad
+\frac{\bar p : \bar P,\ \bar x : \bar X,\ \mathsf{resume} : Y \times \bar P \to B \mathbin{!} \epsilon
+  \vdash c_{\mathsf{op}} : B \mathbin{!} \epsilon_0 \qquad \epsilon_0 \subseteq \epsilon}
+ {\mathsf{op}(\bar x)\ \mathsf{resumes}\ g \Rightarrow c_{\mathsf{op}}\ \text{ok}}
+$$
+
+for an operation $\mathsf{op} : \bar X \to Y$, where $c_{\mathsf{op}}$ also resumes as its grade $g$
+allows. A `resume` written without `with` carries the clause's own parameters. Installing the handler
+gives the parameters their first values:
+
+$$
+\frac{\Gamma \vdash c : A \mathbin{!} \{i : E[\bar a]\} \cup \epsilon' \qquad
+  \Gamma \vdash \bar v : \bar P \qquad h : E[\bar a];\ A \Rightarrow B;\ \bar P;\ \epsilon}
+ {\Gamma \vdash \mathsf{handle}\ i\ \mathsf{with}\ h(\bar v)\ \mathsf{in}\ c
+  : B \mathbin{!} \epsilon' \cup \epsilon}
+$$
+
+when $h$ is total, and with $i : E[\bar a]$ kept in the row when it is partial. A handler without
+parameters is the case of an empty $\bar P$.
+
 The checker records each clause's grade and rejects an authored clause that visibly resumes more often than
 its grade allows. The [reference machine](../developer/qiec.md#reference-evaluator), the library's interpreter for QIEC, also
 counts resumptions at run time. Rigid indices, scoped

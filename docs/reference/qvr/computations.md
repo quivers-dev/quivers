@@ -127,7 +127,8 @@ the request's arguments and result.
 
 ## Handling and scoped instances
 
-`handle INSTANCE with HANDLER[STATICS] in` installs a handler around its indented body, and
+`handle INSTANCE with HANDLER[STATICS](VALUES) in` installs a handler around its indented body, the
+values starting the handler's [parameters](effects-and-handlers.md#handler-parameters), and
 `with instance NAME : EFFECT in` creates an instance that exists only in its body. Both contain
 computations, so both take part in row checking:
 

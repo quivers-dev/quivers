@@ -590,7 +590,8 @@ effect_decl       := 'effect' IDENT [static_telescope] operation_decl+
 operation_decl    := IDENT [static_telescope] ':' [type ('*' type)* '->'] type
 instance_decl     := 'instance' IDENT ':' effect_ref
 handler_decl      := 'handler' IDENT [static_telescope] 'for' effect_ref ':'
-                     type '->' type [handler_options] handler_clause+
+                     type '->' type ['with' '(' value_params ')']
+                     [handler_options] handler_clause+
 handler_clause    := return_clause | operation_clause
 return_clause     := 'return' local '=>' computation
 operation_clause  := IDENT [static_telescope] ['(' local (',' local)* ')']
@@ -625,6 +626,8 @@ perform           := 'perform' IDENT '.' IDENT [static_arguments]
                      '(' [value (',' value)*] ')'
 call              := IDENT [static_arguments] '(' [value (',' value)*] ')'
 resume            := 'resume' '(' [value] ')'
+                     ['with' '(' value (',' value)* ')']
+handler_application := IDENT [static_arguments] ['(' value (',' value)* ')']
 static_arguments  := '[' static_argument (',' static_argument)* ']'
 static_argument   := type | INT
 ```

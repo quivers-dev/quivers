@@ -57,6 +57,7 @@ _CORPUS: dict[str, str] = {
     "D": "grouped_marginalization",
     "E": "ambiguous_deduction",
     "F": "network_decoder",
+    "G": "discharged_handlers",
 }
 
 #: The targets each fixture transpiles to, and the kind each other target
@@ -72,6 +73,7 @@ _ADMITTING: dict[str, frozenset[str]] = {
     "D": frozenset(available_targets()) - {"bugs"},
     "E": frozenset(),
     "F": frozenset(),
+    "G": frozenset(available_targets()),
 }
 _REFUSALS: dict[str, dict[str, str]] = {
     "A": {
@@ -729,3 +731,70 @@ def test_f_the_reference_answers_the_prelude_draw() -> None:
         RuntimeConfiguration(selections=(RuntimeSelection(provider="core"),)).label
         == "core"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fixture G: discharged handlers.
+# ---------------------------------------------------------------------------
+
+_G_DATA: dict[str, list[float] | list[int]] = {"y": [0.4, -0.3, 0.9, 0.2]}
+_G_POINTS: list[dict[str, Host]] = [
+    {"a": 0.8, "b": -0.3},
+    {"a": -0.4, "b": 0.6},
+    {"a": -0.4, "b": -1.6},
+]
+
+
+def _g_joint(point: Mapping[str, Host]) -> float:
+    """The joint of fixture G, its effects eliminated by hand."""
+    a, b = (cast(float, point[name]) for name in ("a", "b"))
+    left, right = (3.0 * x if x > 0.0 else -1.0 for x in (a, b))
+    location = 0.25 * left + 0.75 * right
+    normal = torch.distributions.Normal
+    return float(
+        normal(0.0, 1.0).log_prob(torch.tensor([a, b], dtype=torch.float64)).sum()
+        + normal(location, 1.0)
+        .log_prob(torch.tensor(_G_DATA["y"], dtype=torch.float64))
+        .sum()
+    )
+
+
+@pytest.mark.parametrize("point", range(len(_G_POINTS)))
+def test_g_reference_compiled_and_oracle_agree(point: int) -> None:
+    program = loads(_source("G"))
+    sites = _G_POINTS[point]
+    expected = _g_joint(sites)
+    run = program.run(
+        "judgments",
+        data={"y": tuple(_G_DATA["y"])},
+        sites=dict(sites),
+        seed=0,
+    )
+    assert float(run.log_joint) == pytest.approx(expected, rel=1e-9)
+    joint = program.morphism.log_joint(
+        torch.zeros(1, 1),
+        {
+            **{
+                name: torch.tensor([value], dtype=torch.float64)
+                for name, value in sites.items()
+            },
+            "y": torch.tensor(_G_DATA["y"], dtype=torch.float64),
+        },
+    )
+    assert float(joint.sum()) == pytest.approx(expected, rel=1e-7)
+
+
+@pytest.mark.parametrize("target", ["pyro", "pymc"])
+def test_g_python_targets_score_the_oracle(target: str) -> None:
+    emitted = transpile(parse(_source("G")), target=target)
+    score = pyro_log_density if target == "pyro" else pymc_log_density
+    for point in _G_POINTS:
+        assert score(emitted, _G_DATA, point) == pytest.approx(
+            _g_joint(point), rel=1e-6
+        )
+
+
+def test_g_the_static_targets_state_no_handler() -> None:
+    for target in ("stan", "jags", "bugs"):
+        emitted = transpile(parse(_source("G")), target=target).decode()
+        assert "resume" not in emitted and "handle" not in emitted

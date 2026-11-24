@@ -1,6 +1,6 @@
 """The statistical fixtures of the QIEC corpus score the same joint everywhere.
 
-Two fixtures under `tests/fixtures/qiec/` carry a joint density:
+Three fixtures under `tests/fixtures/qiec/` carry a joint density:
 
 * `effectful_probabilistic_helper` calls an indexed helper that case
   analyses a GADT, scoring a `Present` measurement and drawing an
@@ -11,6 +11,9 @@ Two fixtures under `tests/fixtures/qiec/` carry a joint density:
   Normal mixture whose rows fibre into the items. Every target that
   can add a per-group log-density to its joint scores the block;
   BUGS cannot and refuses it.
+* `discharged_handlers` calls a computation under authored handlers
+  with parameters. Every target, the static ones included, states the
+  discharged computation.
 
 Each admitting target's log-density at a clamped point must agree with
 the reference machine's up to a constant, at every point of a set that
@@ -36,8 +39,11 @@ from tests.test_qiec_fixture_corpus import (
     _C_POINTS,
     _D_DATA,
     _D_POINTS,
+    _G_DATA,
+    _G_POINTS,
     _c_joint,
     _d_joint,
+    _g_joint,
     _sites,
     _source,
 )
@@ -56,21 +62,30 @@ type Oracle = Callable[[Mapping[str, Host]], float]
 """An independent computation of a fixture's joint at a point."""
 
 #: Each fixture's program.
-_PROGRAMS: dict[str, str] = {"C": "hierarchy", "D": "mixture"}
+_PROGRAMS: dict[str, str] = {"C": "hierarchy", "D": "mixture", "G": "judgments"}
 
 #: Each fixture's data arguments.
-_DATA: dict[str, dict[str, list[float] | list[int]]] = {"C": _C_DATA, "D": _D_DATA}
+_DATA: dict[str, dict[str, list[float] | list[int]]] = {
+    "C": _C_DATA,
+    "D": _D_DATA,
+    "G": _G_DATA,
+}
 
 #: Each fixture's clamped points, every site set at each.
-_POINTS: dict[str, list[dict[str, Host]]] = {"C": _C_POINTS, "D": _D_POINTS}
+_POINTS: dict[str, list[dict[str, Host]]] = {
+    "C": _C_POINTS,
+    "D": _D_POINTS,
+    "G": _G_POINTS,
+}
 
 #: Each fixture's independent joint.
-_ORACLES: dict[str, Oracle] = {"C": _c_joint, "D": _d_joint}
+_ORACLES: dict[str, Oracle] = {"C": _c_joint, "D": _d_joint, "G": _g_joint}
 
 #: The image-backed targets that score each fixture.
 _BACKENDS: dict[str, tuple[str, ...]] = {
     "C": _DYNAMIC,
     "D": (*_DYNAMIC, "stan", "jags"),
+    "G": (*_DYNAMIC, "stan", "jags"),
 }
 
 #: The shape of every name a point carries, for the probes that
@@ -85,6 +100,7 @@ _SHAPES: dict[str, dict[str, list[int]]] = {
         "y": [6],
     },
     "D": {"probs": [2], "mu": [2], "idx": [6], "y": [6]},
+    "G": {"a": [], "b": [], "y": [4]},
 }
 
 #: The dtype of every name a point carries; `idx` is an index.
@@ -98,6 +114,7 @@ _DTYPES: dict[str, dict[str, str]] = {
         "y": "float",
     },
     "D": {"probs": "float", "mu": "float", "idx": "int", "y": "float"},
+    "G": {"a": "float", "b": "float", "y": "float"},
 }
 
 #: The kind each static target refuses a fixture under.
