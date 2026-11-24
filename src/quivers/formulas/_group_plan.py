@@ -430,10 +430,9 @@ def plan_joint_block(
             else LKJCorrelation(site=f"cor_{token}")
         )
     centered = parameterization == "centered"
-    shared_raw = None
-    if basis is not None:
-        shared_raw = f"group_covariance_{token}" if basis.rank else None
-    elif centered:
+    support_site = f"group_covariance_{token}" if basis is not None else None
+    shared_raw = support_site if basis is not None and basis.rank else None
+    if basis is None and centered:
         shared_raw = f"group_coefficients_{token}"
     owns_site = basis is None and not centered
     laws, offset = [], 0
@@ -461,6 +460,7 @@ def plan_joint_block(
         parameterization=parameterization,
         placement="joint",
         coordinate_axis=f"FormulaCorrelation_{token}",
+        support_site=support_site,
     )
     check_block(law)
     return law
@@ -784,8 +784,9 @@ def plan_threshold_block(
         One member over the spacing axis with an affine mean.
     """
     identity = f"thresholds_{_qvr_name(group)}"
+    support_site = f"group_covariance_{identity}" if basis is not None else None
     if basis is not None:
-        raw = f"group_covariance_{identity}" if basis.rank else None
+        raw = support_site if basis.rank else None
     elif parameterization == "centered":
         raw = "cutpoint_log_spacing_value"
     else:
@@ -826,4 +827,5 @@ def plan_threshold_block(
         parameterization=parameterization,
         placement="inline",
         coordinate_axis=axis,
+        support_site=support_site,
     )

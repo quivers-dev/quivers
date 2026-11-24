@@ -219,30 +219,9 @@ def _merge_groups(
         when their included rows differ.
     """
     chosen: dict[str, GroupRemap] = {}
-    extra_sites: dict[str, dict[str, int]] = {}
-    extra_normal: dict[str, set[str]] = {}
     owned: set[str] = set()
     for name, context in contexts.items():
-        response = fit.emission.responses[name]
-        plan = fit._response_fit(name).prediction_plan
-        assert plan is not None
-        layout_sites = {
-            site for layout in plan.group_layouts for site in layout.raw_sites
-        }
         for group, remap in context.groups.items():
-            # Threshold and baseline sites are response-local raw sites.
-            extra_sites.setdefault(group, {}).update(
-                {
-                    response.names.get(site, site): width
-                    for site, width in remap.sites.items()
-                    if site not in layout_sites
-                }
-            )
-            extra_normal.setdefault(group, set()).update(
-                response.names.get(site, site)
-                for site in remap.standard_normal_sites
-                if site not in layout_sites
-            )
             if group not in active[name]:
                 chosen.setdefault(group, remap)
             elif group not in owned:
@@ -258,27 +237,30 @@ def _merge_groups(
                     "new_data; joint prediction requires every response to "
                     "evaluate the same rows of each shared grouping factor"
                 )
-    merged: dict[str, GroupRemap] = {}
+    merged = {}
     for group, remap in chosen.items():
-        sites = dict(extra_sites.get(group, {}))
-        normal = set(extra_normal.get(group, set()))
-        for layout in fit.emission.group_layouts:
-            if layout.group != group:
-                continue
-            sites.update(layout.raw_sites)
-            if (
-                layout.parameterization == "noncentered"
-                and layout.level_covariance is None
-            ):
-                normal.update(layout.raw_sites)
+        # The response declaring a by partition codes it on the compact levels.
+        partition = next(
+            (
+                other
+                for context in contexts.values()
+                if (other := context.groups.get(group)) is not None
+                and other.by_codes
+                and other.fitted_indices == remap.fitted_indices
+            ),
+            remap,
+        )
         merged[group] = remap.with_(
-            sites=sites,
-            standard_normal_sites=frozenset(normal),
+            level_sites=tuple(
+                site for site in fit.emission.level_sites if site.group == group
+            ),
             covariance_laws=tuple(
                 law
                 for law in fit.emission.group_laws
                 if law.group == group and law.level.basis is not None
             ),
+            by_codes=partition.by_codes,
+            compact_by_codes=partition.compact_by_codes,
         )
     return merged
 
@@ -629,12 +611,16 @@ def prepare_joint_prediction(
     prior_program = None
     if sample_new_levels.removeprefix("feasible_") == "gaussian" and any(
         -1 in group.fitted_indices
-        and group.covariance is None
         and not set(group.sites) <= group.standard_normal_sites
         for group in groups.values()
     ):
         prior_program = project_prior_sites(
-            program, {site for group in groups.values() for site in group.sites}
+            program,
+            {
+                site
+                for group in groups.values()
+                for site in (*group.sites, *group.support_sites)
+            },
         )
     # Cumulative responses with category-specific effects replay their fitted
     # thresholds, exactly as a single-response prediction does.
@@ -769,12 +755,7 @@ def _check_layout(
         fit.program, observed_names=set(fit.observations)
     )
     fresh = LatentRegistry.from_model(program, observed_names=set(observations))
-    covariance = {
-        site
-        for group in groups.values()
-        for law in group.covariance_laws
-        for site in (f"group_covariance_{_qvr_name(law.identity)}",)
-    } | {
+    covariance = {site for group in groups.values() for site in group.support_sites} | {
         # Latent training values of mi() and me() terms are not coordinates of
         # fresh rows, which use their recorded values.
         name

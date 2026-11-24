@@ -69,7 +69,7 @@ from quivers.formulas._gp import (
     gp_rows,
 )
 from quivers.formulas._group_layout import GroupBlockLayout
-from quivers.formulas._group_law import GroupBlockLaw
+from quivers.formulas._group_law import GroupBlockLaw, LevelSite
 from quivers.formulas._latent_effects import LatentTerm
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas._ordered_contrasts import apply_ordered_contrasts
@@ -925,6 +925,9 @@ class FormulaData(ValueModel):
     group_levels: dict[str, tuple[str, ...]] = dx.field(default_factory=dict)
     group_indices: dict[str, tuple[int, ...]] = dx.field(default_factory=dict)
     group_laws: tuple[GroupBlockLaw, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    level_sites: tuple[LevelSite, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     prior_targets: tuple[PriorTarget, ...] = dx.field(

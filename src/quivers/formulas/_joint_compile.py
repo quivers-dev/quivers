@@ -45,6 +45,7 @@ from quivers.formulas._ast import _var, _let, _factor, _index, _add, _mul
 from quivers.formulas._group_law import (
     GroupBlockLaw,
     IdentityCovariance,
+    LevelSite,
     renamed_law,
 )
 from quivers.formulas._group_layout import GroupBlockLayout
@@ -128,6 +129,8 @@ class _JointEmission:
         Namespaced response emissions, in authored order.
     group_laws : tuple[GroupBlockLaw, ...]
         Laws of the shared and response-local group blocks.
+    level_sites : tuple[LevelSite, ...]
+        Sites holding values for every level of a grouping factor.
     prior_targets : tuple[PriorTarget, ...]
         Every latent site eligible for prior rules.
     fixed_inputs : Mapping[str, torch.Tensor]
@@ -139,6 +142,7 @@ class _JointEmission:
     module: Module
     responses: Mapping[str, _ResponseEmission]
     group_laws: tuple[GroupBlockLaw, ...]
+    level_sites: tuple[LevelSite, ...]
     prior_targets: tuple[PriorTarget, ...]
     fixed_inputs: Mapping[str, torch.Tensor]
     families: FamilyCatalog
@@ -443,6 +447,9 @@ def _namespace(
     }
     variables.update(
         value for step in program.draws for value in _step_value_names(step)
+    )
+    variables.update(
+        law.support_site for law in lens.group_laws if law.support_site is not None
     )
     names = {value: prefix + value for value in variables - global_names}
     explicit_inputs = supplied_inputs or {}
@@ -1400,8 +1407,19 @@ def emit_joint(
     # Improper flat priors are compilation-local native laws.
     if improper_sites(module):
         catalog = catalog.with_catalog(FLAT_CATALOG)
+    level_sites = {site.site: site for law in layouts for site in law.level_sites}
+    for response in responses.values():
+        for site in response.lens.level_sites:
+            name = response.names.get(site.site, site.site)
+            level_sites.setdefault(name, site.with_(site=name))
     return _JointEmission(
-        module, responses, tuple(layouts), tuple(targets), fixed_inputs, catalog
+        module,
+        responses,
+        tuple(layouts),
+        tuple(level_sites.values()),
+        tuple(targets),
+        fixed_inputs,
+        catalog,
     )
 
 

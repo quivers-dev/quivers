@@ -138,7 +138,7 @@ from quivers.formulas._mixture import (
     validate_mixture_options,
 )
 from quivers.formulas._group_layout import GroupBlockLayout
-from quivers.formulas._group_law import GroupBlockLaw
+from quivers.formulas._group_law import GroupBlockLaw, LevelSite
 from quivers.formulas._group_emission import bind_rows, emit_group_block
 from quivers.formulas._group_plan import (
     coefficient_binding,
@@ -979,6 +979,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._random_scale_prior = random_scale_prior
         self._set_prior_configuration(user_priors)
         self._emitted_groups: list[GroupBlockLaw] = []
+        self._baseline_level_sites: tuple[LevelSite, ...] = ()
         # Level hyperparameters another program draws, and those drawn so far.
         self._supplied_sites: frozenset[str] = frozenset()
         self._drawn_sites: frozenset[str] = frozenset()
@@ -1105,6 +1106,21 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Immutable group blocks shared with retained prediction plans.
         """
         return tuple(law.layout for law in self._emitted_groups)
+
+    @property
+    def level_sites(self) -> tuple[LevelSite, ...]:
+        """Return the sites of the latest forward pass indexed by levels.
+
+        Returns
+        -------
+        tuple[LevelSite, ...]
+            Every level-indexed site once, of the group blocks and of a
+            grouped baseline hazard.
+        """
+        sites = {
+            site.site: site for law in self._emitted_groups for site in law.level_sites
+        }
+        return (*sites.values(), *self._baseline_level_sites)
 
     @property
     def group_laws(self) -> tuple[GroupBlockLaw, ...]:
@@ -1707,6 +1723,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             group_levels=dict(formula.group_levels),
             group_indices=dict(formula.group_indices),
             group_laws=self.group_laws,
+            level_sites=self.level_sites,
             prior_targets=self.prior_targets,
             random_terms=formula.random_terms,
             fixed_column_order=tuple(col.qvr_name for col in formula.fixed_columns),
@@ -4703,9 +4720,12 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
 
         program_steps: list[ProgramStep] = []
         if self._family.baseline is not None:
-            from quivers.formulas._survival import baseline_steps
+            from quivers.formulas._survival import baseline_level_sites, baseline_steps
 
             basis = self._family.baseline.resolve(formula)
+            self._baseline_level_sites = baseline_level_sites(
+                basis, self._family.baseline.by
+            )
             baseline_objects, baseline_draws = baseline_steps(
                 basis,
                 prior=self._prior_draw("sbhaz", self._user_priors["sbhaz"])

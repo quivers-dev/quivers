@@ -936,6 +936,9 @@ def _sub_emission(
     variables.update(
         value for step in program.draws for value in _step_value_names(step)
     )
+    variables.update(
+        law.support_site for law in sub.group_laws if law.support_site is not None
+    )
     names = {value: namespace.name(value) for value in variables}
     for group in groups:
         names[f"{_qvr_name(group)}_idx"] = f"{_qvr_name(group)}_idx"

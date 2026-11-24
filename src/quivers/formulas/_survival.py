@@ -30,7 +30,11 @@ from quivers.dsl.ast_nodes import (
     OptionName,
 )
 
+from quivers.formulas._group_law import LevelSite
 from quivers.formulas.formula import Formula
+
+#: Site of the baseline simplex weights, one simplex per level when grouped.
+BASELINE_SITE = "sbhaz"
 
 
 class BaselineSpec(dx.Model):
@@ -105,6 +109,28 @@ class BaselineSpec(dx.Model):
         )
 
 
+def baseline_level_sites(
+    basis: MSplineBasis, group: str | None
+) -> tuple[LevelSite, ...]:
+    """Declare the sites of a baseline hazard that index grouping levels.
+
+    Parameters
+    ----------
+    basis : MSplineBasis
+        Checked immutable training basis.
+    group : str or None
+        Authored grouping factor of separate baseline profiles.
+
+    Returns
+    -------
+    tuple[LevelSite, ...]
+        The simplex weights of every level; empty for one shared profile.
+    """
+    if group is None:
+        return ()
+    return (LevelSite(group=group, site=BASELINE_SITE, width=basis.size),)
+
+
 def baseline_steps(
     basis: MSplineBasis, *, prior: SampleStep | None = None, group: str | None = None
 ):
@@ -134,7 +160,7 @@ def baseline_steps(
     """
     if prior is None:
         prior = SampleStep(
-            vars=("sbhaz",),
+            vars=(BASELINE_SITE,),
             morphism="Dirichlet",
             args=(
                 DrawArgNamed(parameter="concentration", value=DrawArgScalar(value=1.0)),
@@ -169,7 +195,7 @@ def baseline_steps(
 
     weighted = _mul(
         _index(
-            "sbhaz",
+            BASELINE_SITE,
             *((_var("baseline_group"),) if group is not None else ()),
             _var("baseline_component"),
         ),

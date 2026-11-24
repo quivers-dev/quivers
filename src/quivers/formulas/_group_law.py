@@ -441,6 +441,30 @@ class GroupMemberLaw(ValueModel):
         return self.prefix, self.slope
 
 
+class LevelSite(ValueModel):
+    """A sample site holding values for every level of a grouping factor.
+
+    Given the sites without a level axis, the values of distinct levels are
+    independent, so a new level draws its values from the site's own prior.
+
+    Parameters
+    ----------
+    group : str
+        Authored grouping factor.
+    site : str
+        Sample site, with the levels on its first axis.
+    width : int
+        Number of values per level.
+    standard_normal : bool
+        Whether the values are independent standard-normal innovations.
+    """
+
+    group: str
+    site: str
+    width: int
+    standard_normal: bool = False
+
+
 #: A factor a raw site may carry: the product of the level covariance and the
 #: innovations is always carried or mapped by the block's basis.
 type CarriedFactor = Literal["correlation", "scale", "mixing", "mean"]
@@ -467,6 +491,10 @@ class GroupBlockLaw(ValueModel):
         one member's predictor is emitted.
     coordinate_axis : str or None
         Axis over the block's coordinates; None for one scalar coefficient.
+    support_site : str or None
+        Name of the raw site in the support coordinates of a known level
+        covariance, which the members carry when the covariance of the
+        levels in use has positive rank; None for independent levels.
     """
 
     identity: str
@@ -478,6 +506,7 @@ class GroupBlockLaw(ValueModel):
     parameterization: Literal["centered", "noncentered"] = "noncentered"
     placement: Literal["joint", "inline"] = "joint"
     coordinate_axis: str | None = None
+    support_site: str | None = None
 
     @property
     def group(self) -> str:
@@ -546,22 +575,37 @@ class GroupBlockLaw(ValueModel):
         return "scale" in self.carried and self.level.by is not None
 
     @property
-    def level_sites(self) -> dict[str, int]:
+    def level_sites(self) -> tuple[LevelSite, ...]:
         """Return the sites indexed by the grouping levels.
 
         Returns
         -------
-        dict[str, int]
-            Number of values per level of each raw site, in member order,
-            and of the mixing site, which the blocks of a factor share.
+        tuple[LevelSite, ...]
+            The raw sites of independent levels, in member order, and the
+            mixing site, which the blocks of a factor share. The support
+            coordinates of a known level covariance index no level.
         """
-        sites: dict[str, int] = {}
-        for member in self.members:
-            if member.raw_site is not None:
-                sites[member.raw_site] = sites.get(member.raw_site, 0) + member.width
+        widths: dict[str, int] = {}
+        if self.level.basis is None:
+            for member in self.members:
+                if member.raw_site is not None:
+                    widths[member.raw_site] = (
+                        widths.get(member.raw_site, 0) + member.width
+                    )
+        sites = [
+            LevelSite(
+                group=self.group,
+                site=site,
+                width=width,
+                standard_normal=not self.carried,
+            )
+            for site, width in widths.items()
+        ]
         if self.level.mixing is not None:
-            sites[self.level.mixing.mixing_site] = 1
-        return sites
+            sites.append(
+                LevelSite(group=self.group, site=self.level.mixing.mixing_site, width=1)
+            )
+        return tuple(sites)
 
     @property
     def layout(self) -> GroupBlockLayout:
@@ -694,6 +738,7 @@ def renamed_law(
     return law.with_(
         identity=identity,
         coordinate_axis=_rename(objects, law.coordinate_axis),
+        support_site=_rename(names, law.support_site),
         correlation=correlation,
         members=tuple(members),
         level=level.with_(

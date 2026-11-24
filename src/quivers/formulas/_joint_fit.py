@@ -457,6 +457,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 designs=part.designs,
                 preparation_data=self.preparation_data,
                 group_laws=complement.group_laws,
+                level_sites=complement.level_sites,
                 prior_targets=complement.prior_targets,
             ),
         )

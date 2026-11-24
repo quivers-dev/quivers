@@ -50,7 +50,7 @@ from quivers.formulas._grouping_emission import (
 from quivers.formulas._monotonic_emission import monotonic_prediction_bindings
 from quivers.formulas._latent_effects import formula_families
 from quivers.formulas._autocor import latent_prediction
-from quivers.formulas._group_law import GroupBlockLaw
+from quivers.formulas._group_law import GroupBlockLaw, LevelSite
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
 
@@ -88,6 +88,8 @@ class FormulaPredictionPlan(ValueModel):
     group_laws : tuple[GroupBlockLaw, ...]
         Laws of the emitted group blocks, with their raw sites and
         coefficient-coordinate slices.
+    level_sites : tuple[LevelSite, ...]
+        Emitted sites holding values for every level of a grouping factor.
     prior_targets : tuple[PriorTarget, ...]
         Actual emitted parameter roles, authored labels, and nominal axes.
     version : str
@@ -103,6 +105,9 @@ class FormulaPredictionPlan(ValueModel):
         default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     group_laws: tuple[GroupBlockLaw, ...] = dx.field(
+        default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
+    )
+    level_sites: tuple[LevelSite, ...] = dx.field(
         default_factory=tuple, opaque=True, extras=OPAQUE_BY_VALUE
     )
     prior_targets: tuple[PriorTarget, ...] = dx.field(
@@ -784,7 +789,7 @@ def prepare_prediction(
     original = LatentRegistry.from_model(
         fit.program, observed_names=set(fit.observations)
     )
-    groups = compact_groups(fit, frame, selected, allow_new_levels, original)
+    groups = compact_groups(fit, frame, selected, allow_new_levels)
     order_groups = {
         term.group
         for term in fit.formula.random_terms
@@ -978,9 +983,7 @@ def prepare_prediction(
         for name, width in group.sites.items()
     }
     covariance_sites = {
-        f"group_covariance_{_qvr_name(law.identity)}"
-        for group in groups.values()
-        for law in group.covariance_laws
+        site for group in groups.values() for site in group.support_sites
     }
     # Fresh latent residuals are drawn for the new rows, not replayed.
     covariance_sites = covariance_sites | set(fresh_sites) | set(gp_fresh)
@@ -1008,13 +1011,19 @@ def prepare_prediction(
     prior_program = None
     if sample_new_levels.removeprefix("feasible_") == "gaussian" and any(
         -1 in group.fitted_indices
-        and group.covariance is None
         and not set(group.sites) <= group.standard_normal_sites
         for group in groups.values()
     ):
         from quivers.inference._prior_projection import project_prior_sites
 
-        prior_program = project_prior_sites(program, group_sites)
+        prior_program = project_prior_sites(
+            program,
+            {
+                site
+                for group in groups.values()
+                for site in (*group.sites, *group.support_sites)
+            },
+        )
     return PredictionContext(
         program=program,
         observations=observations,

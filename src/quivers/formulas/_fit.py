@@ -3732,6 +3732,7 @@ def _assemble_fit(
             preparation_data=prepared.preparation_data,
             designs=prepared.formula.designs,
             group_laws=prepared.complement.group_laws,
+            level_sites=prepared.complement.level_sites,
             prior_targets=prepared.complement.prior_targets,
         ),
     )
