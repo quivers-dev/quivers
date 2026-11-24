@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Literal
 
 import didactic.api as dx
 import numpy as np
@@ -223,11 +224,16 @@ def test_autocorrelation_binding_names_the_missing_elliptical_law():
         )
 
 
-def _joint(family: Family | str) -> MultivariateFormula:
-    return (
-        ResponseModel(formula="y ~ x", family=family)
-        + ResponseModel(formula="z ~ x", family=family)
-        + set_rescor(True)
+def _joint(*members: Family | str) -> MultivariateFormula:
+    """Join one response per family under residual correlations."""
+    first, second = members if len(members) == 2 else members * 2
+    return MultivariateFormula(
+        responses={
+            "y": ResponseModel(formula="y ~ x", family=first),
+            "z": ResponseModel(formula="z ~ x", family=second),
+        },
+        rescor=True,
+        response_names=("y", "z"),
     )
 
 
@@ -253,15 +259,11 @@ def test_residual_correlation_needs_one_common_elliptical_law():
     with pytest.raises(
         dx.ValidationError, match=r"Family\.elliptical.*'bell', 'student_t'"
     ):
-        (
-            ResponseModel(formula="y ~ x", family=_bell())
-            + ResponseModel(formula="z ~ x", family="student_t")
-            + set_rescor(True)
-        )
+        _joint(_bell(), "student_t")
 
 
 def test_declared_r_squared_selects_the_model_variance():
-    def ratio(family, method="auto"):
+    def ratio(family: Family, method: Literal["auto", "model", "residual"] = "auto"):
         fitted = fit(
             "y ~ x", data=_frame(), family=family, method="svi", num_steps=0, seed=1
         )
@@ -366,7 +368,7 @@ def test_a_shift_below_the_response_is_bounded_by_it():
             "y ~ x",
             data=_frame(),
             family=_late(),
-            fixed_parameters={"onset": float(_frame()["y"].min())},
+            fixed_parameters={"onset": float(np.min(_frame()["y"].to_numpy()))},
         )
     with pytest.raises(ValueError, match=r"'onset'.*AuxParam\.below_response"):
         formula_to_qvr("y ~ x", data=_frame(), family=_late(below_response=False))
@@ -391,7 +393,7 @@ def test_a_shift_below_the_response_starts_below_it(changes, distributional, exp
     )
     starts = _initial_values(prepared, None, None)
     assert set(starts) == expected
-    quarter = float(_frame()["y"].min()) / 4
+    quarter = float(np.min(_frame()["y"].to_numpy())) / 4
     if "onset" in expected:
         assert starts["onset"] == quarter
     if "dpar_onset_intercept" in expected:
