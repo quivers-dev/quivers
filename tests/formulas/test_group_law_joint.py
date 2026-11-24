@@ -396,9 +396,19 @@ def test_block_options_come_from_its_members_not_the_first_response():
         ("(1 | p | g)", "(1 | p | gr(g, by = fb))"),
     ],
 )
-def test_members_declaring_different_level_factors_are_refused(first, second):
-    with pytest.raises(ValueError, match="one law"):
-        _build({"first": f"y ~ 1 + {first}", "second": f"z ~ 1 + {second}"}, _frame())
+def test_an_option_of_one_member_is_a_factor_of_the_shared_block(first, second):
+    """brms gives the coefficients of one identifier one law."""
+    emission = _build(
+        {"first": f"y ~ 1 + {first}", "second": f"z ~ 1 + {second}"}, _frame()
+    )
+    (law,) = emission.group_laws
+    declared = first + second
+    assert (law.level.mixing is not None) == ("student" in declared)
+    assert (law.level.by is not None) == ("by" in declared)
+    assert all(
+        (member.scale.by_axis is not None) == ("by" in declared)
+        for member in law.members
+    )
 
 
 def test_responses_assigning_one_level_two_by_values_are_refused():

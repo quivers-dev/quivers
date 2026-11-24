@@ -41,6 +41,7 @@ from quivers.formulas._group_law import (
     block_coefficients,
 )
 from quivers.formulas._group_prediction import GroupRemap, _remap_covariance_group
+from quivers.inference.registry import LatentRegistry
 from quivers.inference.trace import trace
 
 Parameterization = Literal["centered", "noncentered"]
@@ -906,3 +907,283 @@ def test_by_known_covariance_fits_and_predicts_new_levels(bar: str):
         )
         assert draws.shape[-1] == 3 and torch.isfinite(draws).all()
     assert fitted.ranef() is not None
+
+
+# --------------------------------------------------------------------------
+# Every combination of level, coefficient and coordinate factors.
+
+BY_CODES = (0, 1, 0)
+WEIGHTS = (0.5, 1.0, 1.8)
+
+
+def _options_frame(rows: int = 18) -> pd.DataFrame:
+    frame = _frame(rows)
+    position = {level: index for index, level in enumerate(LEVELS)}
+    frame["fb"] = ["mn"[BY_CODES[position[level]]] for level in frame["g"]]
+    frame["pw"] = [WEIGHTS[position[level]] for level in frame["g"]]
+    # The second membership column names the same levels.
+    frame["h"] = [LEVELS[(index // 3) % 3] for index in range(rows)]
+    frame["fh"] = ["mn"[BY_CODES[position[level]]] for level in frame["h"]]
+    return frame
+
+
+def _grouping(options: tuple[str, ...]) -> str:
+    spelled = {"by": "by = fb", "student": "dist = 'student'", "pw": "pw = pw"}
+    arguments = ["g", *(spelled[option] for option in options)]
+    return f"gr({', '.join(arguments)})"
+
+
+def _block_oracle(
+    latent: dict[str, torch.Tensor],
+    scales: list[tuple[str, int]],
+    correlations: list[str],
+    raw_sites: list[str],
+    *,
+    options: tuple[str, ...],
+    covariance: torch.Tensor | None,
+    factor: torch.Tensor | None,
+    centered: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Write one block's density and coefficients from brms's law.
+
+    ``b_j = dfm_j A_j g_j`` with ``A_j = diag(sd[by_j]) L[by_j]`` and
+    ``G = L_V Z``, where row ``z_j`` of the innovations has the density
+    ``w_j * std_normal_lpdf(z_j)``.
+    """
+    normal = torch.distributions.Normal
+    count, width = len(LEVELS), sum(size for _, size in scales)
+    codes = BY_CODES if "by" in options else (0, 0, 0)
+    partitions = 2 if "by" in options else 1
+    sd = torch.cat(
+        [latent[site].reshape(partitions, size) for site, size in scales], dim=1
+    )
+    identity = torch.eye(width, dtype=torch.float64)
+    cholesky = [latent[site] for site in correlations] or [identity] * partitions
+    column = torch.stack([sd[code].diag() @ cholesky[code] for code in codes])
+    multiplier = torch.ones(count, dtype=torch.float64)
+    density = torch.distributions.HalfNormal(1.0).log_prob(sd).sum()
+    for site in correlations:
+        density = density + torch.distributions.LKJCholesky(
+            width, torch.tensor(1.0, dtype=torch.float64)
+        ).log_prob(latent[site])
+    if "student" in options:
+        multiplier = torch.sqrt(latent["df_g"] * latent["udf_g"])
+    weights = torch.tensor(
+        WEIGHTS if "pw" in options else (1.0,) * count, dtype=torch.float64
+    )
+    rank = count if factor is None else factor.shape[1]
+    if len(raw_sites) == 1:
+        raw = latent[raw_sites[0]].reshape(rank, width)
+    else:
+        raw = torch.stack([latent[site] for site in raw_sites], dim=1)
+    if not centered:
+        level = factor if factor is not None else torch.eye(count, dtype=torch.float64)
+        gaussian = level @ raw
+        innovations = raw
+        density = density + normal(0.0, 1.0).log_prob(raw).sum()
+        deviations = torch.stack([column[j] @ gaussian[j] for j in range(count)])
+        effects = multiplier[:, None] * deviations
+    elif covariance is None:
+        effects = raw
+        innovations = torch.stack(
+            [
+                torch.linalg.solve(multiplier[j] * column[j], raw[j])
+                for j in range(count)
+            ]
+        )
+        for j in range(count):
+            scaled = multiplier[j] * column[j]
+            density = density + torch.distributions.MultivariateNormal(
+                torch.zeros(width, dtype=torch.float64),
+                covariance_matrix=scaled @ scaled.T,
+            ).log_prob(raw[j])
+    else:
+        # Support coordinates: the levels themselves at full rank, otherwise
+        # the positive eigenvectors of the covariance.
+        if factor is not None and factor.shape[1] < count:
+            eigenvalues, eigenvectors = torch.linalg.eigh(covariance)
+            projection = eigenvectors[:, -rank:]
+            row = torch.diag(eigenvalues[-rank:])
+        else:
+            projection = torch.eye(count, dtype=torch.float64)
+            row = covariance
+        blocks = torch.stack(
+            [
+                torch.cat(
+                    [
+                        row[j, k] * column[min(j, 2)] @ column[min(k, 2)].T
+                        for k in range(rank)
+                    ],
+                    dim=1,
+                )
+                for j in range(rank)
+            ]
+        ).reshape(rank * width, rank * width)
+        density = density + torch.distributions.MultivariateNormal(
+            torch.zeros(rank * width, dtype=torch.float64), covariance_matrix=blocks
+        ).log_prob(raw.reshape(-1))
+        whitened = torch.stack(
+            [torch.linalg.solve(column[min(j, 2)], raw[j]) for j in range(rank)]
+        )
+        innovations = torch.linalg.solve(torch.linalg.cholesky(row), whitened)
+        effects = multiplier[:, None] * (projection @ raw)
+    if "pw" in options:
+        density = (
+            density
+            + ((weights - 1.0)[:, None] * normal(0.0, 1.0).log_prob(innovations)).sum()
+        )
+    return density, effects
+
+
+@pytest.mark.parametrize("parameterization", ["noncentered", "centered"])
+@pytest.mark.parametrize(
+    "covariance", [None, FULL, DEFICIENT], ids=["iid", "full", "deficient"]
+)
+@pytest.mark.parametrize("bar", ["|", "||"], ids=["correlated", "independent"])
+@pytest.mark.parametrize("kind", ["scalar", "component"])
+@pytest.mark.parametrize(
+    "options",
+    [("by",), ("student",), ("pw",), ("by", "student", "pw")],
+    ids=lambda value: "-".join(value),
+)
+def test_every_combination_of_factors_has_the_density_of_its_law(
+    options: tuple[str, ...],
+    kind: str,
+    bar: str,
+    covariance: GroupCovariance | None,
+    parameterization: Parameterization,
+):
+    """The program's log joint and coefficients equal the hand-written law."""
+    frame = _options_frame()
+    grouping = _grouping(options)
+    family = "gaussian" if kind == "scalar" else "categorical"
+    text = (
+        f"y ~ x + (1 + x {bar} {grouping})"
+        if kind == "scalar"
+        else f"k3 ~ x + (1 {bar} {grouping})"
+    )
+    parsed = formula_from_data(text, frame)
+    lens = FormulaToQVRModule(
+        families[family],
+        group_covariances={"g": covariance} if covariance is not None else None,
+        reparameterize=parameterization,
+    )
+    if covariance is DEFICIENT and (
+        "pw" in options or ("by" in options and parameterization == "centered")
+    ):
+        reason = "belong to no level" if "pw" in options else "subspace"
+        with pytest.raises(ValueError, match=reason):
+            lens.forward(parsed)
+        return
+    module, complement = lens.forward(parsed)
+    program = Compiler(module).compile().morphism
+    assert isinstance(program, MonadicProgram)
+    observed = dict(lens.fixed_column_observations(parsed))
+    observed[parsed.response_name] = torch.as_tensor(parsed.response_values.copy())
+    observed["g_idx"] = torch.tensor(parsed.group_indices["g"], dtype=torch.long)
+    registry = LatentRegistry.from_model(program, observed_names=set(observed))
+    generator = torch.Generator().manual_seed(13)
+    flat = 0.5 * torch.randn(
+        registry.total_unconstrained_dim, generator=generator, dtype=torch.float64
+    )
+    latent = {
+        name: registry[name].constrain(value)[0].detach().requires_grad_()
+        for name, value in registry.unflatten_unconstrained(flat).items()
+    }
+    x = torch.as_tensor(frame["x"].to_numpy(dtype=float))
+    rows = observed["g_idx"]
+    full = None if covariance is None else covariance.tensor()[:3, :3]
+
+    def oracle(
+        active: tuple[str, ...] = options,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        normal = torch.distributions.Normal
+        total = (
+            normal(0.0, 5.0).log_prob(latent["intercept"]).sum()
+            + normal(0.0, 5.0 / x.square().mean().sqrt())
+            .log_prob(latent["beta_x"])
+            .sum()
+        )
+        if "student" in active:
+            total = (
+                total
+                + _df_log_prior(latent["df_g"])
+                + torch.distributions.InverseGamma(
+                    latent["df_g"] / 2, latent["df_g"].new_tensor(0.5)
+                )
+                .log_prob(latent["udf_g"])
+                .sum()
+            )
+        effects: dict[str, torch.Tensor] = {}
+        for law in complement.group_laws:
+            basis = law.level.basis
+            density, values = _block_oracle(
+                latent,
+                [(member.scale.site, member.width) for member in law.members],
+                list(law.correlation.sites),
+                list(
+                    dict.fromkeys(
+                        member.raw_site
+                        for member in law.members
+                        if member.raw_site is not None
+                    )
+                ),
+                options=active,
+                covariance=full,
+                factor=None if basis is None else basis.tensors()[2],
+                centered=parameterization == "centered",
+            )
+            total = total + density
+            for member in law.members:
+                effects[member.slope] = values[
+                    :, member.offset : member.offset + member.width
+                ]
+        if kind == "scalar":
+            mu = (
+                latent["intercept"]
+                + latent["beta_x"] * x
+                + effects["Intercept"][rows, 0]
+                + effects["x"][rows, 0] * x
+            )
+            total = (
+                total
+                + torch.distributions.HalfCauchy(2.0).log_prob(latent["sigma"])
+                + normal(mu, latent["sigma"]).log_prob(observed["y"]).sum()
+            )
+        else:
+            free = (
+                latent["intercept"]
+                + latent["beta_x"] * x[:, None]
+                + effects["Intercept"][rows]
+            )
+            logits = torch.cat(
+                [torch.zeros(len(x), 1, dtype=torch.float64), free], dim=1
+            )
+            total = (
+                total
+                + torch.distributions.Categorical(logits=logits)
+                .log_prob(observed["k3"].long())
+                .sum()
+            )
+        return total, effects
+
+    actual = _log_joint(program, observed | latent)
+    expected, effects = oracle()
+    torch.testing.assert_close(actual, expected, rtol=TOLERANCE, atol=TOLERANCE)
+    if "pw" in options:
+        unweighted, _ = oracle(tuple(item for item in options if item != "pw"))
+        assert abs(float(unweighted - actual)) > 1e-3
+    heads = tuple(latent.values())
+    for got, wanted in zip(
+        torch.autograd.grad(actual, heads, retain_graph=True),
+        torch.autograd.grad(expected, heads),
+        strict=True,
+    ):
+        torch.testing.assert_close(got, wanted, rtol=1e-5, atol=1e-5)
+    rebuilt = group_coefficients(
+        _retained(latent), complement.group_laws, parsed.group_levels
+    )
+    for slope, values in effects.items():
+        torch.testing.assert_close(
+            rebuilt[("", "g", slope)].reshape(values.shape), values.detach()
+        )
