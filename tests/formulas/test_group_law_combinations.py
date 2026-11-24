@@ -1092,11 +1092,14 @@ def test_every_combination_of_factors_has_the_density_of_its_law(
     observed["g_idx"] = torch.tensor(parsed.group_indices["g"], dtype=torch.long)
     registry = LatentRegistry.from_model(program, observed_names=set(observed))
     generator = torch.Generator().manual_seed(13)
+    # Gradients are compared in the sites' unconstrained coordinates, since the
+    # entries of a Cholesky factor above its diagonal are not coordinates.
     flat = 0.5 * torch.randn(
         registry.total_unconstrained_dim, generator=generator, dtype=torch.float64
     )
+    flat.requires_grad_()
     latent = {
-        name: registry[name].constrain(value)[0].detach().requires_grad_()
+        name: registry[name].constrain(value)[0]
         for name, value in registry.unflatten_unconstrained(flat).items()
     }
     x = torch.as_tensor(frame["x"].to_numpy(dtype=float))
@@ -1182,13 +1185,9 @@ def test_every_combination_of_factors_has_the_density_of_its_law(
     if "pw" in options:
         unweighted, _ = oracle(tuple(item for item in options if item != "pw"))
         assert abs(float(unweighted - actual)) > 1e-3
-    heads = tuple(latent.values())
-    for got, wanted in zip(
-        torch.autograd.grad(actual, heads, retain_graph=True),
-        torch.autograd.grad(expected, heads),
-        strict=True,
-    ):
-        torch.testing.assert_close(got, wanted, rtol=1e-5, atol=1e-5)
+    (got,) = torch.autograd.grad(actual, flat, retain_graph=True)
+    (wanted,) = torch.autograd.grad(expected, flat)
+    torch.testing.assert_close(got, wanted, rtol=1e-5, atol=1e-5)
     rebuilt = group_coefficients(
         _retained(latent), complement.group_laws, parsed.group_levels
     )
