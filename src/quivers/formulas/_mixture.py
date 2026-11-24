@@ -1818,7 +1818,11 @@ def emit_mixture(
         )
     if law is not None:
         # The native law of the mixture takes the stacked component arguments.
-        stacked = tuple(argument.parameter for argument in observations[0].args)
+        stacked = tuple(
+            argument.parameter
+            for argument in observations[0].args
+            if isinstance(argument, DrawArgNamed)
+        )
         for parameter in stacked:
             _row_stack(
                 f"mixture_{parameter}",

@@ -110,7 +110,7 @@ def test_matching_duplicate_declarations_are_allowed(frame):
 
 def test_decision_is_not_silently_ignored_by_other_families(frame):
     formula = formula_from_data("rt | dec(choice) ~ x", frame)
-    with pytest.raises(ValueError, match="requires the wiener family"):
+    with pytest.raises(ValueError, match=r"Family\.decision_event"):
         FormulaToQVRModule(families["gaussian"]).forward(formula)
 
 

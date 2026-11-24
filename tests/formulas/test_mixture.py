@@ -774,7 +774,9 @@ def test_rejected_families():
             method="svi",
             num_steps=0,
         )
-    assert families["mixture"].mixture is None
+    template = families["mixture"].mixture
+    assert template is not None
+    assert template.components == (families["gaussian"],)
 
 
 def test_group_identifier_shared_across_components_is_one_block():
