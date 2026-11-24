@@ -921,9 +921,7 @@ class KernelRegistry(QiecModel):
                     result=resumed,
                     answer=output,
                     effects=handler.introduced,
-                    parameters=tuple(
-                        parameter.type for parameter in handler.parameters
-                    ),
+                    parameters=handler.parameters,
                 )
             )
             for parameter, declared in zip(
@@ -1164,15 +1162,15 @@ class ResumptionType(QiecModel):
         What resuming produces, which is the clause's own answer type.
     effects : EffectRow
         The row resuming performs.
-    parameters : tuple[TypeExpr, ...]
-        The types of the handler's parameters, a value of each of which
-        a resumption carries.
+    parameters : tuple[Local, ...]
+        The handler's parameters, a value of each of which a resumption
+        carries.
     """
 
     result: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     answer: TypeExpr = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     effects: EffectRow = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    parameters: tuple[TypeExpr, ...] = dx.field(
+    parameters: tuple[Local, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
 
@@ -3494,7 +3492,7 @@ def _infer_resume(
             infer_value(argument, registry, context)
             for argument in resumption.arguments
         ),
-        available.parameters,
+        tuple(parameter.type for parameter in available.parameters),
         subject="resume continues",
         code="qiec-resumption",
     )

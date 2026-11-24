@@ -930,8 +930,8 @@ class HandlerDef(QiecModel):
         ValueError
             If the telescope is malformed, if two clauses cover the same
             operation, if the handler claims to be both total and
-            forwarding, if two parameters share a name, if a foreign handler
-            declares parameters, or if its bodies disagree with its declared
+            forwarding, if two parameters share a name or one shadows a
+            static binder, if a foreign handler declares parameters, or if its bodies disagree with its declared
             implementation. A total handler covering every operation has
             nothing left to forward. An authored handler missing a body
             has nowhere for that operation's behavior to live, and a body
@@ -964,6 +964,12 @@ class HandlerDef(QiecModel):
         names = [parameter.name for parameter in self.parameters]
         if len(set(names)) != len(names):
             raise ValueError(f"duplicate parameter in handler {self.name!r}")
+        overlap = {binder.name for binder in self.telescope} & set(names)
+        if overlap:
+            raise ValueError(
+                f"handler {self.name!r} reuses static names as parameters: "
+                f"{sorted(overlap)!r}"
+            )
         if not authored and self.parameters:
             raise ValueError(
                 f"foreign handler {self.name!r} declares parameters; its state "

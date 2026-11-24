@@ -28,6 +28,7 @@ import didactic.api as dx
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
+from quivers.qiec.canonical import tensor_shape, tensor_type
 from quivers.qiec.declarations import ConstructorDecl
 from quivers.qiec.effects import (
     EffectDef,
@@ -64,6 +65,7 @@ from quivers.qiec.terms import (
     Computation,
     ConstructorValue,
     EvidenceValue,
+    Gather,
     Handle,
     If,
     LetBinding,
@@ -76,6 +78,7 @@ from quivers.qiec.terms import (
     Resume,
     Return,
     SiteValue,
+    TensorValue,
     TupleValue,
     Value,
     Var,
@@ -580,6 +583,34 @@ def _pure(term: Computation) -> bool:
     )
 
 
+def _live(statements: _Statements, reads: frozenset[str]) -> _Statements:
+    """The statements a rewritten term keeps.
+
+    A value nothing reads is not computed, while a call or a request is
+    made whether or not its result is read.
+
+    Parameters
+    ----------
+    statements : tuple[tuple[Local, Computation], ...]
+        The statements, in order.
+    reads : frozenset[str]
+        The names read after them.
+
+    Returns
+    -------
+    tuple[tuple[Local, Computation], ...]
+        The statements kept.
+    """
+    needed = set(reads)
+    kept: list[tuple[Local, Computation]] = []
+    for binder, first in reversed(statements):
+        if isinstance(first, Return) and binder.name not in needed:
+            continue
+        kept.append((binder, first))
+        needed |= _computation_reads(first)
+    return tuple(reversed(kept))
+
+
 def _sequence(statements: _Statements, tail: Computation) -> Computation:
     """A chain of statements ending in a computation.
 
@@ -593,36 +624,22 @@ def _sequence(statements: _Statements, tail: Computation) -> Computation:
     Returns
     -------
     Computation
-        The chain.
+        The chain, without the values nothing reads. A chain that returns
+        what its last statement binds ends in that statement.
     """
+    kept = _live(statements, _computation_reads(tail))
     result = tail
-    for binder, first in reversed(statements):
+    if (
+        kept
+        and isinstance(tail, Return)
+        and isinstance(tail.value, Var)
+        and tail.value.local == kept[-1][0]
+    ):
+        result = kept[-1][1]
+        kept = kept[:-1]
+    for binder, first in reversed(kept):
         result = Bind(binder=binder, first=first, then=result)
     return result
-
-
-def _needed(statements: _Statements, value: Value) -> _Statements:
-    """The statements a value depends on.
-
-    Parameters
-    ----------
-    statements : tuple[tuple[Local, Computation], ...]
-        Statements that make no request.
-    value : Value
-        The value read after them.
-
-    Returns
-    -------
-    tuple[tuple[Local, Computation], ...]
-        The statements the value reads, directly or through another.
-    """
-    reads = set(_read(value))
-    kept: list[tuple[Local, Computation]] = []
-    for binder, first in reversed(statements):
-        if binder.name in reads:
-            kept.append((binder, first))
-            reads |= _computation_reads(first)
-    return tuple(reversed(kept))
 
 
 def _combined(
@@ -725,6 +742,7 @@ class _Discharger:
         self.tables = tables
         self.occupied = {parameter.name for parameter in owner.parameters}
         self.scopes: set[StaticScopeId] = set()
+        self.tensors: dict[str, tuple[Value, ...]] = {}
         self.awaited: set[int] = set()
         self.serial = 0
         self.steps = 0
@@ -824,7 +842,8 @@ class _Discharger:
         -------
         Value
             The value over the rewritten body's names. A projection of a
-            tuple is its component.
+            tuple is its component, and a selection from a tensor of known
+            entries at a literal index is the entry.
         """
         return cast(Value, self.rewritten(term, environment))
 
@@ -869,6 +888,11 @@ class _Discharger:
             if isinstance(source, TupleValue):
                 return source.items[term.position]
             return term.with_(value=source)
+        if isinstance(term, Gather):
+            source = self.value(term.value, environment)
+            index = self.value(term.index, environment)
+            entry = self.entry(source, index)
+            return term.with_(value=source, index=index) if entry is None else entry
         if isinstance(term, _VALUES):
             record = cast(Value, term)
             changes: dict[str, _Term] = {}
@@ -879,6 +903,34 @@ class _Discharger:
             return record.with_(**changes) if changes else record
         return term
 
+    def entry(self, source: Value, index: Value) -> Value | None:
+        """The entry of a tensor of known entries at a literal index.
+
+        Parameters
+        ----------
+        source : Value
+            The tensor.
+        index : Value
+            The index.
+
+        Returns
+        -------
+        Value or None
+            The entry, or ``None`` when the tensor's entries or the index
+            are known only at run time.
+        """
+        if not isinstance(source, Var) or not isinstance(index, LiteralValue):
+            return None
+        entries = self.tensors.get(source.local.name)
+        position = index.value
+        if (
+            entries is None
+            or not isinstance(position, int)
+            or not 0 <= position < len(entries)
+        ):
+            return None
+        return entries[position]
+
     def atom(
         self, value: Value, hint: str, type_: TypeExpr
     ) -> tuple[_Statements, Value]:
@@ -886,7 +938,8 @@ class _Discharger:
 
         A variable, a literal, a tuple, and a constructor application are
         read in place, their components bound first where they are neither.
-        Any other value is bound to a fresh name.
+        Any other value is bound to a fresh name. A tensor's entries are
+        bound before it, so a selection at a literal index reads the entry.
 
         Parameters
         ----------
@@ -925,9 +978,19 @@ class _Discharger:
                 statements.extend(made)
                 items.append(read)
             return tuple(statements), value.with_(fields=tuple(items))
+        statements = []
+        if isinstance(value, TensorValue):
+            entries: list[Value] = []
+            for item in value.items:
+                made, read = self.atom(item, hint, _entry_type(type_))
+                statements.extend(made)
+                entries.append(read)
+            value = value.with_(items=tuple(entries))
         binder = Local(name=self.fresh(hint), type=type_)
         self.count(1)
-        return ((binder, Return(value=value)),), Var(local=binder)
+        if isinstance(value, TensorValue):
+            self.tensors[binder.name] = value.items
+        return (*statements, (binder, Return(value=value))), Var(local=binder)
 
     # ------------------------------------------------------------------
     # reduction
@@ -1688,8 +1751,8 @@ class _Discharger:
         """The statements binding what a conditional's branches differ in.
 
         Branches that make no request are stated once per part they differ
-        in, each with the statements the part reads. Branches that make
-        requests are stated once, their parts as one tuple.
+        in, each with the values the part reads. Branches that make requests
+        are stated once, their parts as one tuple.
 
         Parameters
         ----------
@@ -1711,7 +1774,7 @@ class _Discharger:
             _pure(first) for item in arrivals for _binder, first in item.statements
         )
         if not differing:
-            if pure:
+            if not any(_live(item.statements, frozenset()) for item in arrivals):
                 return ()
             unit = LiteralValue(value=None, type=UNIT)
             binder = Local(name=self.fresh("done"), type=UNIT)
@@ -1725,12 +1788,7 @@ class _Discharger:
                     local,
                     rebuild(
                         tuple(
-                            _sequence(
-                                _needed(item.statements, part)
-                                if pure
-                                else item.statements,
-                                Return(value=part),
-                            )
+                            _sequence(item.statements, Return(value=part))
                             for item, part in zip(arrivals, values, strict=True)
                         ),
                         type_,
@@ -1989,6 +2047,25 @@ class _Tables:
         return tuple(
             substitute_type(field.type, substitution) for field in constructor.fields
         )
+
+
+def _entry_type(type_: TypeExpr) -> TypeExpr:
+    """The type of a tensor's entries along its outermost axis.
+
+    Parameters
+    ----------
+    type_ : TypeExpr
+        The tensor type.
+
+    Returns
+    -------
+    TypeExpr
+        The element type, or the tensor type one rank lower.
+    """
+    split = tensor_shape(type_)
+    assert split is not None
+    element, dimensions = split
+    return tensor_type(element, dimensions[1:]) if dimensions[1:] else element
 
 
 def _arguments(type_: TypeExpr) -> tuple[StaticArgument, ...]:

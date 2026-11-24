@@ -149,6 +149,9 @@ def _walk_qiec_statement(t: _Tree, vid: str):
             coverage=coverage,
             forwards_unknown=forwards,
             implementation=implementation,
+            parameters=tuple(
+                _walk_value_parameter(t, child) for child in t.fields(vid, "parameters")
+            ),
             clauses=tuple(
                 _walk_handler_clause(t, child) for child in t.fields(vid, "clauses")
             ),
@@ -652,6 +655,9 @@ def _walk_computation(t: _Tree, vid: str) -> QiecComputation:
         handler = QiecHandlerApplication(
             name=_field_text(t, handler_vid, "name"),
             static_arguments=_walk_static_arguments(t, handler_vid, "arguments"),
+            values=tuple(
+                _walk_value(t, child) for child in t.fields(handler_vid, "values")
+            ),
             line=handler_line,
             col=handler_col,
         )
@@ -702,6 +708,9 @@ def _walk_computation(t: _Tree, vid: str) -> QiecComputation:
         value_vid = t.field(vid, "value")
         return QiecResumeComputation(
             value=None if value_vid is None else _walk_value(t, value_vid),
+            parameters=tuple(
+                _walk_value(t, child) for child in t.fields(vid, "parameters")
+            ),
             line=line,
             col=col,
         )
