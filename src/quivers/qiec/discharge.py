@@ -2313,7 +2313,28 @@ def discharge_computation(
         The computation with a body that installs no handler, or why its
         handlers remain.
     """
-    discharger = _Discharger(computation, _Tables(module))
+    return _discharged(computation, _Tables(module))
+
+
+def _discharged(
+    computation: NamedComputation, tables: _Tables
+) -> NamedComputation | DischargeObstacle:
+    """Discharge one computation's handlers, over a module's tables.
+
+    Parameters
+    ----------
+    computation : NamedComputation
+        A checked computation of the module.
+    tables : _Tables
+        The module's declarations.
+
+    Returns
+    -------
+    NamedComputation | DischargeObstacle
+        The computation with a body that installs no handler, or why its
+        handlers remain.
+    """
+    discharger = _Discharger(computation, tables)
     try:
         body = discharger.body()
     except _Undischarged as error:
@@ -2343,11 +2364,12 @@ def discharge_module(module: QiecModule) -> DischargedModule:
     """
     computations: list[NamedComputation] = []
     obstacles: list[DischargeObstacle] = []
+    tables = _Tables(module)
     for computation in module.computations:
         if not installs_handler(computation):
             computations.append(computation)
             continue
-        result = discharge_computation(computation, module)
+        result = _discharged(computation, tables)
         if isinstance(result, DischargeObstacle):
             obstacles.append(result)
             computations.append(computation)
