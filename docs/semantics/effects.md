@@ -292,8 +292,9 @@ $$
 equations besides:
 
 - $\mathsf{let}\ x \leftarrow \mathsf{return}\ w\ \mathsf{in}\ c = c[w/x]$, the
-  [left identity law](https://ncatlab.org/nlab/show/monad+%28in+computer+science%29) of sequencing, applied when $w$ is a variable, a literal, or a tuple or constructor application
-  of these, and otherwise left as a binding, so that a computed value is shared;
+  [left identity law](https://ncatlab.org/nlab/show/monad+%28in+computer+science%29) of sequencing,
+  applied when $w$ is a variable, a literal, or a tuple or constructor application of these, and
+  otherwise left as a binding, so that a computed value is shared;
 - $\mathcal{E}[\mathsf{if}\ b\ \mathsf{then}\ c\ \mathsf{else}\ d] =
   \mathsf{if}\ b\ \mathsf{then}\ \mathcal{E}[c]\ \mathsf{else}\ \mathcal{E}[d]$, with which a
   conditional commutes with its context;
@@ -306,7 +307,8 @@ equations besides:
   \mathsf{in}\ \mathcal{E}[\mathsf{return}\ y]$ for a request or a call $c$ that does not reach $h$, such
   as a request to an instance the computation does not handle.
 
-A call whose row names a handled instance is replaced by the body of its callee.
+A call whose row names a handled instance is replaced by the body of its callee. A `case` on a constructor
+application is its branch, and any other `case` is treated as a conditional.
 
 **Proposition.** Let $\Gamma \vdash c : A \mathbin{!} \epsilon$ and let discharge rewrite $c$ to $c'$. Then
 $c'$ installs no handler, $\Gamma \vdash c' : A \mathbin{!} \epsilon'$ with $\epsilon' \subseteq \epsilon$, and
@@ -316,10 +318,11 @@ and return the same value, up to the definedness of pure values that nothing rea
 *Proof sketch.* Each step of discharge is one of the machine's rules or one of the equations, closed under
 evaluation contexts. The machine's rules preserve types by the
 [subject reduction](https://en.wikipedia.org/wiki/Subject_reduction) argument for deep handlers
-[@plotkin2009handlers; @kammar2013handlers], and the parameters do not change it, since a `resume` carries values of their declared
-types. A row can only shrink, as a clause that does not resume drops the requests of its continuation. The
-first equation holds in every [monad](https://ncatlab.org/nlab/show/monad). The second and third hold since a closed
-condition is `true` or `false`, and in each case both sides reduce to one term: an authored clause and the
+[@plotkin2009handlers; @kammar2013handlers], and the parameters do not change it, since a `resume` carries
+values of their declared types. A row can only shrink, as a clause that does not resume drops the requests
+of its continuation. The first equation holds in every [monad](https://ncatlab.org/nlab/show/monad). The
+second and third hold since a closed condition is `true` or `false`, and in each case both sides reduce to
+one term: an authored clause and the
 parameters of its handler are pure data, so the context $\mathcal{E}$ may be entered with either branch's
 values. The fourth holds since a handler that a request does not reach keeps its place in the continuation
 that the request captures, so resuming that continuation with $y$ runs the same handler around
@@ -329,7 +332,7 @@ assumption about a value. $\square$
 Discharge terminates. A callee is entered only when it is not being entered already, so a body unrolls to a
 finite tree of returns, requests, and conditionals. A deep handler is the fold of §6 over that tree: it
 replaces each request by its clause, with the folded subtrees in place of the resumptions, and the fold of a
-finite tree by finite clauses is finite. The result grows by a factor of $m$ at each request whose clause resumes $m$ times, so when every
-clause resumes at most once, and the branches of each conditional return to one context, it is linear in the number of requests and
-the sizes of their clauses. A computation that passes 2048 statements, or 65536 steps of the rules, is left
+finite tree by finite clauses is finite. The result grows by a factor of $m$ at each request whose clause
+resumes $m$ times, so when every clause resumes at most once, and the branches of each conditional return to
+one context, it is linear in the number of requests and the sizes of their clauses. A computation that passes 2048 statements, or 65536 steps of the rules, is left
 as it is.
