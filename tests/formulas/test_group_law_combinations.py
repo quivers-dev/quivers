@@ -1375,13 +1375,19 @@ def test_every_factor_survives_refit_and_an_artifact(
     assert law.level.by is not None and law.level.mixing is not None
     assert law.level.prior_weight is not None
     fresh = frame.iloc[:3].assign(g=["a", "d", "c"], fb=["m", "n", "m"])
-    options = {"new_data": fresh, "num_samples": 2, "seed": 9, "allow_new_levels": True}
-    expected = fitted.posterior_epred(**options)
+    expected = fitted.posterior_epred(
+        new_data=fresh, num_samples=2, seed=9, allow_new_levels=True
+    )
     path = tmp_path / "factors.qfit"
     save_fit(fitted, path)
     restored = load_fit(path)
     assert isinstance(restored, BayesianFit)
-    torch.testing.assert_close(restored.posterior_epred(**options), expected)
+    torch.testing.assert_close(
+        restored.posterior_epred(
+            new_data=fresh, num_samples=2, seed=9, allow_new_levels=True
+        ),
+        expected,
+    )
 
 
 @pytest.mark.parametrize("parameterization", ["noncentered", "centered"])
@@ -1467,7 +1473,7 @@ def test_colliding_names_are_refused_with_both_owners():
 
 def test_two_by_variables_of_one_factor_are_refused():
     frame = _options_frame()
-    frame["fc"] = frame["g"].map({"a": "s", "b": "s", "c": "t"})
+    frame["fc"] = [{"a": "s", "b": "s", "c": "t"}[level] for level in frame["g"]]
     with pytest.raises(ValueError, match="one 'by' variable"):
         _compiled(
             "y ~ x + (1 | gr(g, by = fb))",
