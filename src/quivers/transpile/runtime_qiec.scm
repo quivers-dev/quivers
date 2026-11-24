@@ -71,7 +71,8 @@
 (define (_qvr-qiec-instance thunk)
   (set! _qvr-qiec-instance-serial (+ _qvr-qiec-instance-serial 1))
   (_qvr-qiec-call thunk (list (list "instance" _qvr-qiec-instance-serial)) #f))
-(define (_qvr-qiec-resume resume value) (_qvr-qiec-as-computation (resume value)))
+(define (_qvr-qiec-resume resume value parameters)
+  (_qvr-qiec-as-computation (resume value parameters)))
 (define (_qvr-qiec-if condition then otherwise)
   (let ((flag (_qvr-qiec-value condition)))
     (if (not (boolean? flag)) (error 'qiec "QIEC if condition is not a Boolean"))
@@ -684,6 +685,18 @@
                   (_qvr-qiec-finalize ((caddr current) value) lifecycle)))))))
 (define (_qvr-qiec-invoke entry . arguments)
   (apply (if (procedure? entry) entry (_qvr-qiec-get entry "invoke")) arguments))
+(define (_qvr-qiec-validate-parameters manifest parameters)
+  (if (not (= (length parameters)
+              (length (_qvr-qiec-get manifest "parameters" '()))))
+      (error 'qiec "QIEC handler parameter values disagree with checked IR"))
+  parameters)
+(define (_qvr-qiec-parameter-captures manifest parameters)
+  (map (lambda (parameter value)
+         (list (cons "kind" "parameter")
+               (cons "label" (_qvr-qiec-get parameter "name"))
+               (cons "binding" value)))
+       (_qvr-qiec-get manifest "parameters" '())
+       parameters))
 (define (_qvr-qiec-handle computation instance manifest raw-static-arguments computation-static-environment handlers . rest)
   (let* ((static-arguments (_qvr-qiec-specialize raw-static-arguments computation-static-environment))
          (handler-static-environment
@@ -692,6 +705,12 @@
          (manifest (_qvr-qiec-set (_qvr-qiec-specialize manifest handler-static-environment) "telescope" '()))
          (attachments (if (pair? rest) (car rest) '()))
          (operations (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) '()))
+         (initial-parameters
+           (_qvr-qiec-validate-parameters
+             manifest
+             (if (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest)))
+                 (caddr rest)
+                 '())))
          (handler-id (_qvr-qiec-get manifest "id"))
          (handler-entry (or (assoc handler-id handlers)
                             (assoc handler-id _qvr-qiec-authored))))
@@ -755,7 +774,7 @@
                    (cons "resumption_uses" 0))))
       (letrec
         ((walk
-          (lambda (current)
+          (lambda (current parameters)
             (set! current (_qvr-qiec-force current))
             (if (and (eq? (car current) 'effect)
                      (pair? (_qvr-qiec-get (cadr current) "handler_states" '())))
@@ -765,14 +784,15 @@
                         ((_qvr-qiec-get captured "restore") state)))
                   (_qvr-qiec-get (cadr current) "handler_captures" '())
                   (_qvr-qiec-get (cadr current) "handler_states" '())))
-            (let ((handler (vector-ref handler-ref 0)))
+            (let ((handler (vector-ref handler-ref 0))
+                  (clause-context (cons (cons "parameters" parameters) context)))
               (if (eq? (car current) 'pure)
                   (let* ((value (_qvr-qiec-validate
                                   (_qvr-qiec-get handler "input_validator" #f)
                                   (cadr current)
                                   "handler input type"))
                          (ret (_qvr-qiec-get handler "return" #f))
-                         (result (if ret (_qvr-qiec-invoke ret value context) value)))
+                         (result (if ret (_qvr-qiec-invoke ret value clause-context) value)))
                     (_qvr-qiec-finalize
                       (_qvr-qiec-validate-computation
                         result (_qvr-qiec-get handler "output_validator" #f)
@@ -787,6 +807,11 @@
                              (let ((forwarded-handler (vector-ref handler-ref 0))
                                    (forwarded-lifecycle (vector-ref lifecycle-ref 0))
                                    (forwarded request))
+                               (set! forwarded
+                                 (_qvr-qiec-set forwarded "captures"
+                                   (append (_qvr-qiec-get request "captures" '())
+                                           (_qvr-qiec-parameter-captures
+                                             manifest parameters))))
                                (set! forwarded
                                  (_qvr-qiec-set forwarded "handler_captures"
                                    (_qvr-qiec-unique
@@ -807,7 +832,8 @@
                                        (vector-set! lifecycle-ref 0 forwarded-lifecycle)
                                        (_qvr-qiec-with-ambient
                                          controller
-                                         (lambda () (walk ((caddr current) value))))))))))
+                                         (lambda ()
+                                           (walk ((caddr current) value) parameters)))))))))
                     (if (not (equal? (_qvr-qiec-get request "instance") instance))
                         (forward)
                         (begin
@@ -822,9 +848,22 @@
                             (let* ((uses 0)
                                    (grade-entry (assoc operation grades))
                                    (grade (cdr grade-entry))
+                                   (request
+                                     (if (equal? grade "omega")
+                                         (_qvr-qiec-set request "captures"
+                                           (append (_qvr-qiec-get request "captures" '())
+                                                   (_qvr-qiec-parameter-captures
+                                                     manifest parameters)))
+                                         request))
                                    (resume
-                                     (lambda (value)
-                                       (let ((shot uses))
+                                     (lambda (value . resumed-parameters)
+                                       (let ((shot uses)
+                                             (carried
+                                               (_qvr-qiec-validate-parameters
+                                                 manifest
+                                                 (if (pair? resumed-parameters)
+                                                     (car resumed-parameters)
+                                                     parameters))))
                                          (set! uses (+ uses 1))
                                          (set-cdr!
                                            (assoc "resumption_uses" context)
@@ -849,7 +888,8 @@
                                                    (lambda ()
                                                      (walk (_qvr-qiec-readdress
                                                              ((caddr current) value)
-                                                             shot))))))
+                                                             shot)
+                                                           carried)))))
                                            (if (eq? (car resumed) 'pure)
                                                (cadr resumed)
                                                resumed)))))
@@ -864,7 +904,7 @@
                                                  (_qvr-qiec-lifecycle-drop clause-lifecycle)
                                                  (raise condition)))
                                         (_qvr-qiec-invoke
-                                          (cdr clause) request resume context))))
+                                          (cdr clause) request resume clause-context))))
                                 (if (and (equal? grade "1") (not (= uses 1)))
                                     (begin
                                       (_qvr-qiec-drop-request request)
@@ -882,7 +922,8 @@
                          (vector-ref lifecycle-ref 0))
                        (_qvr-qiec-lifecycle-drop root-lifecycle)
                        (raise condition)))
-          (walk (_qvr-qiec-with-ambient controller (lambda () (_qvr-qiec-force (computation))))))))))
+          (walk (_qvr-qiec-with-ambient controller (lambda () (_qvr-qiec-force (computation))))
+                initial-parameters))))))
 (define (_qvr-qiec-run build operations)
   (set! _qvr-qiec-call-serial 0)
   (set! _qvr-qiec-instance-serial 0)

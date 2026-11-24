@@ -73,7 +73,7 @@ function _qvr_qiec_instance(thunk)
     _qvr_qiec_serials["instance"] += 1
     return _qvr_qiec_call(thunk, Any[Any["instance", _qvr_qiec_serials["instance"]]], false)
 end
-_qvr_qiec_resume(resume, value) = _qvr_qiec_as_computation(resume(value))
+_qvr_qiec_resume(resume, value, parameters) = _qvr_qiec_as_computation(resume(value, parameters))
 function _qvr_qiec_if(condition, then, otherwise)
     condition = _qvr_qiec_value(condition)
     condition isa Bool || error("QIEC if condition is not a Boolean")
@@ -538,11 +538,18 @@ function _qvr_qiec_finalize(comp, lifecycle)
     return _QvrQiecEffect(request, value -> _qvr_qiec_finalize(current.continuation(value), lifecycle))
 end
 _qvr_qiec_invoke(entry, arguments...) = (entry isa AbstractDict ? entry["invoke"] : entry)(arguments...)
-function _qvr_qiec_handle(comp, instance, manifest, static_arguments, computation_static_environment, handlers, attachments=Dict(), operations=Dict())
+function _qvr_qiec_validate_parameters(manifest, parameters)
+    length(parameters) == length(get(manifest, "parameters", Any[])) || error("QIEC handler parameter values disagree with checked IR")
+end
+function _qvr_qiec_parameter_captures(manifest, parameters)
+    return Any[Dict{String, Any}("kind" => "parameter", "label" => parameter["name"], "binding" => value) for (parameter, value) in zip(get(manifest, "parameters", Any[]), parameters)]
+end
+function _qvr_qiec_handle(comp, instance, manifest, static_arguments, computation_static_environment, handlers, attachments=Dict(), operations=Dict(), initial_parameters=Any[])
     static_arguments = _qvr_qiec_specialize(static_arguments, computation_static_environment)
     handler_static_environment = _qvr_qiec_static_environment(manifest["telescope"], static_arguments)
     manifest = _qvr_qiec_specialize(manifest, handler_static_environment)
     manifest["telescope"] = Any[]
+    _qvr_qiec_validate_parameters(manifest, initial_parameters)
     handler_id = manifest["id"]
     prototype = if haskey(handlers, handler_id)
         handlers[handler_id]
@@ -585,14 +592,16 @@ function _qvr_qiec_handle(comp, instance, manifest, static_arguments, computatio
         end),
     )
     grades = Dict(clause["operation"] => clause["grade"] for clause in manifest["clauses"])
-    context = Dict("handler" => handler_id, "definition" => manifest, "static_arguments" => static_arguments, "static" => handler_static_environment, "attachments" => attachments, "handlers" => handlers, "operations" => operations, "resumption_uses" => 0)
-    function walk(current)
+    context = Dict{String, Any}("handler" => handler_id, "definition" => manifest, "static_arguments" => static_arguments, "static" => handler_static_environment, "attachments" => attachments, "handlers" => handlers, "operations" => operations, "resumption_uses" => 0)
+    function walk(current, parameters)
         handler = handler_ref[1]
+        clause_context = copy(context)
+        clause_context["parameters"] = parameters
         current = _qvr_qiec_force(current)
         if current isa _QvrQiecPure
             value = _qvr_qiec_validate(get(handler, "input_validator", nothing), current.value, "handler input type")
             return_clause = get(handler, "return", nothing)
-            result = return_clause === nothing ? value : _qvr_qiec_invoke(return_clause, value, context)
+            result = return_clause === nothing ? value : _qvr_qiec_invoke(return_clause, value, clause_context)
             return _qvr_qiec_finalize(_qvr_qiec_validate_computation(result, get(handler, "output_validator", nothing), "handler output type"), lifecycle_ref[1])
         end
         request = current.request
@@ -606,13 +615,14 @@ function _qvr_qiec_handle(comp, instance, manifest, static_arguments, computatio
             forwarded_handler = handler_ref[1]
             forwarded_lifecycle = lifecycle_ref[1]
             forwarded = copy(request)
+            forwarded["captures"] = Any[get(request, "captures", Any[])..., _qvr_qiec_parameter_captures(manifest, parameters)...]
             forwarded["handler_captures"] = _qvr_qiec_unique(Any[get(request, "handler_captures", Any[])..., controller])
             forwarded["handler_states"] = Any[captured["capture"]() for captured in forwarded["handler_captures"]]
             forwarded["lifecycles"] = Any[get(request, "lifecycles", Any[])..., lifecycle_ref[1]]
             return _QvrQiecEffect(forwarded, value -> begin
                 handler_ref[1] = forwarded_handler
                 lifecycle_ref[1] = forwarded_lifecycle
-                _qvr_qiec_with_ambient(controller, () -> walk(current.continuation(value)))
+                _qvr_qiec_with_ambient(controller, () -> walk(current.continuation(value), parameters))
             end)
         end
         request["instance"] != instance && return forward()
@@ -625,23 +635,29 @@ function _qvr_qiec_handle(comp, instance, manifest, static_arguments, computatio
         end
         uses = Ref(0)
         grade = grades[operation]
-        grade == "omega" && _qvr_qiec_validate_capture(request, controller)
-        function resume(value)
+        if grade == "omega"
+            request = copy(request)
+            request["captures"] = Any[get(request, "captures", Any[])..., _qvr_qiec_parameter_captures(manifest, parameters)...]
+            _qvr_qiec_validate_capture(request, controller)
+        end
+        function resume(value, resumed_parameters=nothing)
+            carried = resumed_parameters === nothing ? parameters : resumed_parameters
+            _qvr_qiec_validate_parameters(manifest, carried)
             shot = uses[]
             uses[] += 1
-            context["resumption_uses"] = uses[]
+            clause_context["resumption_uses"] = uses[]
             grade == "0" && error("QIEC zero-grade clause resumed")
             grade in ("aff", "1") && uses[] > 1 && error("QIEC resumption exceeds grade " * grade)
             grade == "omega" && _qvr_qiec_fork_capture(request, controller, shot)
             validator = clause isa AbstractDict ? get(clause, "result_validator", nothing) : nothing
             value = _qvr_qiec_validate(validator, value, "handler operation result type")
-            resumed = _qvr_qiec_with_ambient(controller, () -> walk(_qvr_qiec_readdress(current.continuation(value), shot)))
+            resumed = _qvr_qiec_with_ambient(controller, () -> walk(_qvr_qiec_readdress(current.continuation(value), shot), carried))
             return resumed isa _QvrQiecPure ? resumed.value : resumed
         end
         clause = clauses[operation]
         clause_lifecycle = lifecycle_ref[1]
         result = try
-            _qvr_qiec_invoke(clause, request, resume, context)
+            _qvr_qiec_invoke(clause, request, resume, clause_context)
         catch
             _qvr_qiec_drop_request(request)
             _qvr_qiec_lifecycle_drop(clause_lifecycle)
@@ -657,7 +673,7 @@ function _qvr_qiec_handle(comp, instance, manifest, static_arguments, computatio
     end
     try
         comp = _qvr_qiec_with_ambient(controller, () -> _qvr_qiec_force(comp()))
-        return walk(comp)
+        return walk(comp, initial_parameters)
     catch
         _qvr_qiec_lifecycle_drop(lifecycle_ref[1])
         _qvr_qiec_lifecycle_drop(root_lifecycle)

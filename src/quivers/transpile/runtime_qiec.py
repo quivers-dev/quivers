@@ -111,8 +111,8 @@ def _qvr_qiec_instance(thunk):
     return _qvr_qiec_call(thunk, (("instance", _qvr_qiec_serials["instance"]),))
 
 
-def _qvr_qiec_resume(resume, value):
-    return _qvr_qiec_as_computation(resume(value))
+def _qvr_qiec_resume(resume, value, parameters):
+    return _qvr_qiec_as_computation(resume(value, parameters))
 
 
 def _qvr_qiec_if(condition, then, otherwise):
@@ -815,6 +815,7 @@ def _qvr_qiec_as_computation(value):
     if (
         isinstance(value, tuple)
         and value
+        and isinstance(value[0], str)
         and value[0] in ("pure", "effect", "call", "bind")
     ):
         return value
@@ -1040,6 +1041,18 @@ def _qvr_qiec_validate_handler(handler, manifest):
         raise ValueError("QIEC mutable duplicable handler requires fork_context")
 
 
+def _qvr_qiec_validate_parameters(manifest, parameters):
+    if len(parameters) != len(manifest.get("parameters", ())):
+        raise ValueError("QIEC handler parameter values disagree with checked IR")
+
+
+def _qvr_qiec_parameter_captures(manifest, parameters):
+    return tuple(
+        {"kind": "parameter", "label": local["name"], "binding": value}
+        for local, value in zip(manifest.get("parameters", ()), parameters, strict=True)
+    )
+
+
 def _qvr_qiec_invoke(entry, *arguments):
     invoke = _qvr_qiec_member(entry, "invoke", entry)
     if not callable(invoke):
@@ -1059,6 +1072,7 @@ def _qvr_qiec_handle(
     handlers,
     attachments=None,
     operations=None,
+    initial_parameters=(),
 ):
     static_arguments = _qvr_qiec_specialize(
         static_arguments, computation_static_environment
@@ -1068,6 +1082,7 @@ def _qvr_qiec_handle(
     )
     manifest = _qvr_qiec_specialize(manifest, handler_static_environment)
     manifest["telescope"] = []
+    _qvr_qiec_validate_parameters(manifest, initial_parameters)
     handler_id = manifest["id"]
     if handler_id in handlers:
         prototype = handlers[handler_id]
@@ -1101,8 +1116,9 @@ def _qvr_qiec_handle(
         "resumption_uses": 0,
     }
 
-    def walk(current):
+    def walk(current, parameters):
         handler = handler_ref[0]
+        clause_context = {**context, "parameters": parameters}
         current = _qvr_qiec_force(current)
         if current[0] == "pure":
             value = _qvr_qiec_validate(
@@ -1114,7 +1130,7 @@ def _qvr_qiec_handle(
             result = (
                 value
                 if return_clause is None
-                else _qvr_qiec_invoke(return_clause, value, context)
+                else _qvr_qiec_invoke(return_clause, value, clause_context)
             )
             return _qvr_qiec_finalize(
                 _qvr_qiec_validate_computation(
@@ -1138,12 +1154,18 @@ def _qvr_qiec_handle(
         def continue_forwarded(value):
             handler_ref[0] = forwarded_handler
             lifecycle_ref[0] = forwarded_lifecycle
-            return _qvr_qiec_with_ambient(controller, lambda: walk(current[2](value)))
+            return _qvr_qiec_with_ambient(
+                controller, lambda: walk(current[2](value), parameters)
+            )
 
         if request["instance"] != instance:
             forwarded_handler = handler_ref[0]
             forwarded_lifecycle = lifecycle_ref[0]
             forwarded = dict(request)
+            forwarded["captures"] = (
+                *request.get("captures", ()),
+                *_qvr_qiec_parameter_captures(manifest, parameters),
+            )
             forwarded["handler_captures"] = _qvr_qiec_unique(
                 (*request.get("handler_captures", ()), controller)
             )
@@ -1168,6 +1190,10 @@ def _qvr_qiec_handle(
                 forwarded_handler = handler_ref[0]
                 forwarded_lifecycle = lifecycle_ref[0]
                 forwarded = dict(request)
+                forwarded["captures"] = (
+                    *request.get("captures", ()),
+                    *_qvr_qiec_parameter_captures(manifest, parameters),
+                )
                 forwarded["handler_captures"] = _qvr_qiec_unique(
                     (*request.get("handler_captures", ()), controller)
                 )
@@ -1187,12 +1213,21 @@ def _qvr_qiec_handle(
         uses = [0]
         grade = grades[operation]
         if grade == "omega":
+            request = {
+                **request,
+                "captures": (
+                    *request.get("captures", ()),
+                    *_qvr_qiec_parameter_captures(manifest, parameters),
+                ),
+            }
             _qvr_qiec_validate_capture(request, controller)
 
-        def resume(value):
+        def resume(value, resumed_parameters=None):
+            carried = parameters if resumed_parameters is None else resumed_parameters
+            _qvr_qiec_validate_parameters(manifest, carried)
             shot = uses[0]
             uses[0] += 1
-            context["resumption_uses"] = uses[0]
+            clause_context["resumption_uses"] = uses[0]
             if grade == "0":
                 raise RuntimeError("QIEC zero-grade clause resumed")
             if grade in ("aff", "1") and uses[0] > 1:
@@ -1206,13 +1241,15 @@ def _qvr_qiec_handle(
             )
             resumed = _qvr_qiec_with_ambient(
                 controller,
-                lambda: walk(_qvr_qiec_readdress(current[2](value), shot)),
+                lambda: walk(_qvr_qiec_readdress(current[2](value), shot), carried),
             )
             return resumed[1] if resumed[0] == "pure" else resumed
 
         clause_lifecycle = lifecycle_ref[0]
         try:
-            result = _qvr_qiec_invoke(clauses[operation], request, resume, context)
+            result = _qvr_qiec_invoke(
+                clauses[operation], request, resume, clause_context
+            )
         except BaseException:
             _qvr_qiec_drop_request(request)
             _qvr_qiec_lifecycle_drop(clause_lifecycle)
@@ -1238,7 +1275,7 @@ def _qvr_qiec_handle(
         computation = _qvr_qiec_with_ambient(
             controller, lambda: _qvr_qiec_force(computation())
         )
-        return walk(computation)
+        return walk(computation, tuple(initial_parameters))
     except BaseException:
         _qvr_qiec_lifecycle_drop(lifecycle_ref[0])
         _qvr_qiec_lifecycle_drop(root_lifecycle)
