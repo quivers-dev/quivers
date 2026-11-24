@@ -100,27 +100,6 @@ from quivers.qiec.canonical import tensor_type
 
 __all__: list[str] = []
 
-#: Families admitting ``mi()`` responses, as brms ``family_info(family, "ad")``
-#: lists them (checked with ``tests/formulas/oracles/brms_missing.R``).
-MI_FAMILIES: frozenset[str] = frozenset(
-    {
-        "gaussian",
-        "student_t",
-        "skew_normal",
-        "lognormal",
-        "exgaussian",
-        "gamma",
-        "weibull",
-        "frechet",
-        "exponential",
-        "inverse_gaussian",
-        "beta",
-        "von_mises",
-        "asym_laplace",
-        "gen_extreme_value",
-    }
-)
-
 _MEASUREMENT = re.compile(
     r"\bme\(\s*([A-Za-z_][\w.]*)\s*,\s*([A-Za-z_][\w.]*)\s*"
     r"(?:,\s*(?:gr\s*=\s*)?([A-Za-z_][\w.]*)\s*)?\)"
@@ -458,8 +437,8 @@ def missing_specification(
     Raises
     ------
     ValueError
-        If an ``mi()`` response uses a family brms does not allow, residual
-        correlation is requested, ``mi(x)`` names no ``mi()`` response, or a
+        If an ``mi()`` response uses a family whose missing values cannot be
+        latent (`Family.latent_response_obstacle`), residual correlation is requested, ``mi(x)`` names no ``mi()`` response, or a
         variable enters one response through both ``mi()`` and ``me()``.
     """
     responses: dict[str, ResponseModel] = {}
@@ -490,12 +469,13 @@ def missing_specification(
                     "different noise or grouping columns"
                 )
         if declaration is not None:
-            family = rewritten.resolved_family.name
-            if family not in MI_FAMILIES:
+            family = rewritten.resolved_family
+            obstacle = family.latent_response_obstacle
+            if obstacle is not None:
                 raise ValueError(
                     f"response {label!r}: mi() is not supported for family "
-                    f"{family!r}, as in brms (only continuous families admit "
-                    "latent missing values)"
+                    f"{family.name!r}, as in brms: a missing value is a latent "
+                    f"coordinate of a continuous response law, and {obstacle}"
                 )
             declared[label] = declaration
     variables = {item.variable: label for label, item in declared.items()}

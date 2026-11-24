@@ -139,12 +139,8 @@ def prepare_likelihood(
     response = fit.formula.with_(response_values=values, modifiers=modifiers)
     if (
         response.response_layout.event_shape
-        and fit.family.response is not None
-        and fit.family.response.kind
-        not in {
-            "multinomial",
-            "dirichlet_multinomial",
-        }
+        and fit.family.vector_response
+        and fit.family.trials_parameter is None
     ):
         validate_simplex(response)
     outcome = response_tensor(response, fit.family)

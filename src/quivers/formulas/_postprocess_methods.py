@@ -1233,9 +1233,14 @@ class SinglePostprocess(_PostprocessCore):
             The response's ``sigma`` draws, or None.
         """
         fit = self._pp_fit()
-        if "sigma" not in names or "sigma" in fit.distributional:
+        residual = fit.family.residual_scale
+        if (
+            residual is None
+            or residual.name not in names
+            or residual.name in fit.distributional
+        ):
             return None
-        return [(fit.formula.response_name, names["sigma"])], None
+        return [(fit.formula.response_name, names[residual.name])], None
 
     def _pp_nobs(self, resp: str | None) -> int:
         """Return the number of fitted rows.
@@ -2276,14 +2281,14 @@ class JointPostprocess(_PostprocessCore):
         Returns
         -------
         frozenset[str]
-            Auxiliary parameter names, plus the shared Student ``nu``.
+            Auxiliary parameter names.
         """
         fit = self._pp_fit()
         return frozenset(
             aux.name
             for name in fit.response_names
             for aux in fit._response_fit(name).family.aux_params
-        ) | {"nu"}
+        )
 
     def _pp_describe(self) -> tuple[str, str]:
         """Describe the joint formula and its families.
@@ -2325,17 +2330,24 @@ class JointPostprocess(_PostprocessCore):
             response regresses sigma or no response has one.
         """
         fit = self._pp_fit()
-        if any(
-            "sigma" in fit._response_fit(name).distributional
+        residuals = {
+            name: scale.name
             for name in fit.response_names
+            if (scale := fit._response_fit(name).family.residual_scale) is not None
+        }
+        if any(
+            scale in fit._response_fit(name).distributional
+            for name, scale in residuals.items()
         ):
             return None
         # brms omits the response from names of a one-response model.
         single = len(fit.response_names) == 1
+        labelled = {
+            name: scale if single else f"{scale}_{name}"
+            for name, scale in residuals.items()
+        }
         scales = [
-            (name, names["sigma" if single else f"sigma_{name}"])
-            for name in fit.response_names
-            if ("sigma" if single else f"sigma_{name}") in names
+            (name, names[label]) for name, label in labelled.items() if label in names
         ]
         if not scales:
             return None

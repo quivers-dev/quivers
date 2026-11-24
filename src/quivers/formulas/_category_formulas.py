@@ -84,18 +84,20 @@ def is_category_parameter(family: Family, name: str) -> bool:
     )
 
 
-def scale_parameter(label: str) -> str:
-    """Name the logistic-normal scale parameter of one response category.
+def scale_parameter(scale: str, label: str) -> str:
+    """Name the scale parameter of one response category.
 
     Parameters
     ----------
+    scale : str
+        Name of the per-component scale parameter.
     label : str
         Category or component label.
 
     Returns
     -------
     str
-        ``sigma`` followed by the label with characters other than letters,
+        The scale name followed by the label with characters other than letters,
         digits and underscores removed, as brms forms ``sigma<cat>``.
 
     Raises
@@ -103,7 +105,7 @@ def scale_parameter(label: str) -> str:
     ValueError
         If the label has no letter, digit or underscore.
     """
-    return "sigma" + category_parameter(label)[2:]
+    return scale + category_parameter(label)[2:]
 
 
 def is_scale_parameter(family: Family, name: str) -> bool:
@@ -119,14 +121,12 @@ def is_scale_parameter(family: Family, name: str) -> bool:
     Returns
     -------
     bool
-        True for ``sigma<c>`` names of the logistic-normal family.
+        True for a name extending that of the parameter a family declares
+        `AuxParam.per_component`, as ``sigma<c>`` of the logistic-normal
+        family.
     """
-    return (
-        family.response is not None
-        and family.response.kind == "logistic_normal"
-        and name.startswith("sigma")
-        and name != "sigma"
-    )
+    scale = family.component_scale
+    return scale is not None and name.startswith(scale.name) and name != scale.name
 
 
 def free_scales(family: Family, labels: tuple[str, ...]) -> tuple[tuple[int, str], ...]:
@@ -144,9 +144,10 @@ def free_scales(family: Family, labels: tuple[str, ...]) -> tuple[tuple[int, str
     tuple[tuple[int, str], ...]
         Coordinate positions and ``sigma<c>`` names in retained order.
     """
-    assert family.response is not None
+    assert family.response is not None and family.component_scale is not None
+    scale = family.component_scale.name
     return tuple(
-        (index, scale_parameter(labels[index]))
+        (index, scale_parameter(scale, labels[index]))
         for index in family.response.coordinate_indices(labels)
     )
 
@@ -172,8 +173,9 @@ def check_scale_formulas(
         no scale), or if ``sigma`` is given beside a ``sigma<c>``.
     """
     requested = {name for name in names if is_scale_parameter(family, name)}
-    if not requested:
+    if not requested or family.component_scale is None:
         return
+    scale = family.component_scale.name
     known = {name for _, name in free_scales(family, labels)}
     unknown = requested - known
     if unknown:
@@ -181,9 +183,9 @@ def check_scale_formulas(
             f"unknown scale parameters {sorted(unknown)}; the free categories "
             f"have {sorted(known)} (the reference category has no scale)"
         )
-    if "sigma" in names:
+    if scale in names:
         raise ValueError(
-            "logistic_normal takes either 'sigma', which predicts every "
+            f"{family.name} takes either {scale!r}, which predicts every "
             f"category's scale, or per-category scales {sorted(known)}, not both"
         )
 
@@ -321,8 +323,9 @@ def component_valued_prefixes(
     prefixes = set()
     if not any(is_category_parameter(family, name) for name in distributional):
         prefixes.add("")
-    if family.response.kind == "logistic_normal" and "sigma" in distributional:
-        prefixes.add("dpar_sigma_")
+    scale = family.component_scale
+    if scale is not None and scale.name in distributional:
+        prefixes.add(f"dpar_{scale.name}_")
     return frozenset(prefixes)
 
 
@@ -478,7 +481,8 @@ def append_scale_predictors(
         If a ``sigma<c>`` names no free category or ``sigma`` is also given.
     """
     family = lens._family
-    if not any(
+    scale = family.component_scale
+    if scale is None or not any(
         is_scale_parameter(family, name)
         for name in lens._distributional.keys() | lens._fixed_parameters.keys()
     ):
@@ -514,7 +518,7 @@ def append_scale_predictors(
         values.append(_add(_var("scale_row_zero"), _var(name)))
     steps.append(
         _let(
-            "sigma_by_category",
+            f"{scale.name}_by_category",
             _factor(
                 (("category_logit", "FormulaCategoryLogit"),),
                 cases=tuple(enumerate(values)),
@@ -523,11 +527,13 @@ def append_scale_predictors(
     )
     steps.append(
         _let(
-            "sigma",
+            scale.name,
             _factor(
                 (("response", "Resp"), ("category_logit", "FormulaCategoryLogit")),
                 body=_index(
-                    "sigma_by_category", _var("category_logit"), _var("response")
+                    f"{scale.name}_by_category",
+                    _var("category_logit"),
+                    _var("response"),
                 ),
             ),
         )

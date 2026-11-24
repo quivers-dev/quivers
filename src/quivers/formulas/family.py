@@ -724,9 +724,7 @@ class Family(ValueModel):
             True when the native law accepts a log-scale location and the
             location link is the logarithm.
         """
-        return (
-            self.log_location_argument is not None and self.location_link.is_log
-        )
+        return self.log_location_argument is not None and self.location_link.is_log
 
     @property
     def vector_response(self) -> bool:
@@ -767,7 +765,11 @@ class Family(ValueModel):
             True for a law over a predictor and cutpoints, False for a law
             over category logits.
         """
-        return "cutpoints" in self.native.parameter_names
+        return (
+            self.ordinal is not None
+            and self.ordinal.kind == "cumulative"
+            and _CUTPOINT_LAWS.get(self.ordinal.link) == self.observe_family
+        )
 
     @property
     def component_scale(self) -> AuxParam | None:
@@ -1227,9 +1229,7 @@ links: Mapping[str, Link] = {
         inverse_expr="sigmoid(0.07056 * ({eta} * ({eta} * {eta})) + 1.5976 * {eta})",
         image=_UNIT_OPEN,
     ),
-    "log1p": Link(
-        name="log1p", inverse_expr="expm1({eta})", image=Domain(lower=-1.0)
-    ),
+    "log1p": Link(name="log1p", inverse_expr="expm1({eta})", image=Domain(lower=-1.0)),
     "cloglog": Link(
         name="cloglog",
         inverse_expr="-1.0 * expm1(-1.0 * exp({eta}))",

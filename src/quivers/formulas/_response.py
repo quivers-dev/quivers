@@ -257,10 +257,7 @@ def resolve_trials(family: Family, trials: int | str | None) -> int | str | None
         One trial for scalar families by default, or inferred totals for
         vector count families.
     """
-    vector_counts = family.response is not None and family.response.kind in {
-        "multinomial",
-        "dirichlet_multinomial",
-    }
+    vector_counts = family.vector_response and family.trials_parameter is not None
     return 1 if trials is None and not vector_counts else trials
 
 

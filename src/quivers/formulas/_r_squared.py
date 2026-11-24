@@ -70,10 +70,8 @@ def formula_r2(
         )
     if method == "auto":
         method = (
-            "model"
-            if observed is None
-            and fit.family.name in {"gaussian", "bernoulli"}
-            and fit.formula.modifiers.truncation is None
+            fit.family.r_squared
+            if observed is None and fit.formula.modifiers.truncation is None
             else "residual"
         )
     if method == "residual":

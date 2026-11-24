@@ -115,7 +115,13 @@ def custom_family(
         name=name,
         observe_family=name,
         location_link=link,
-        aux_params=(*auxiliary_values, *deterministic),
+        # The native law constrains its own parameters and recorded events.
+        location_links=tuple(links),
+        recorded_events=True,
+        aux_params=tuple(
+            aux if aux.links is not None else aux.with_(links=tuple(links))
+            for aux in (*auxiliary_values, *deterministic)
+        ),
         custom=CustomFamilySpec(
             catalog=catalog,
             bindings=bindings,

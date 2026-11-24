@@ -817,8 +817,9 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 result |= scalar_coordinates(f"sd_{target.group}__{term}", value)
             elif target.class_ == "cor" and target.site == "rescor":
                 result |= correlation_pairs("rescor", self.response_names, value)
-            elif target.site == "nu" and resp is None:
-                result["nu"] = value
+            elif target.dpar == target.site and resp is None:
+                # The degrees of freedom that correlated responses share.
+                result[target.site] = value
             elif target.class_ == "corme" and resp is not None:
                 result |= correlation_pairs(
                     f"corme_{resp}" if joint else "corme",

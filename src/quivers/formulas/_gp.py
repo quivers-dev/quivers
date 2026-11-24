@@ -83,7 +83,6 @@ if TYPE_CHECKING:
     from formulae.matrices import DesignMatrices
 
     from quivers.formulas.compile import FormulaToQVRModule
-    from quivers.formulas.family import Family
     from quivers.formulas.formula import Formula
 
 type ColumnInput = pd.Series | npt.NDArray[np.generic]
@@ -511,58 +510,6 @@ def lscale_prior(points: npt.NDArray[np.float64]) -> str:
         return "HalfNormal(0.5)"
     shape, scale = np.round(np.exp(solution.x), 6)
     return f"InverseGamma({float(shape)!r}, {float(scale)!r})"
-
-
-def sdgp_prior(response: npt.NDArray[np.generic], family: Family) -> str:
-    """Give brms's default ``sdgp`` prior, its ``def_scale_prior``.
-
-    brms uses a half Student t with three degrees of freedom and scale
-    ``max(2.5, round(mad(link(y)), 1))`` for the identity, log, inverse,
-    square-root, and inverse-square links on a non-categorical response,
-    and scale 2.5 otherwise. Log-scale families read the response through
-    the log link.
-
-    Parameters
-    ----------
-    response : numpy.ndarray
-        Training response values.
-    family : Family
-        Response family.
-
-    Returns
-    -------
-    str
-        A QVR prior expression.
-    """
-    link = family.location_link.name
-    if family.log_response:
-        link = "log"
-    scale = 2.5
-    values = np.asarray(response)
-    if (
-        family.response is None
-        and values.ndim == 1
-        and values.dtype.kind in "iuf"
-        and link in {"identity", "log", "inverse", "sqrt", "inverse_square"}
-    ):
-        y = values.astype(np.float64)
-        if link in {"log", "inverse", "inverse_square"}:
-            y = np.where(y == 0, y + 0.1, y)
-        with np.errstate(all="ignore"):
-            transformed = {
-                "identity": y,
-                "log": np.log(y),
-                "inverse": 1 / y,
-                "sqrt": np.sqrt(y),
-                "inverse_square": 1 / y**2,
-            }[link]
-            spread = round(
-                1.4826 * float(np.median(np.abs(transformed - np.median(transformed)))),
-                1,
-            )
-        if math.isfinite(spread):
-            scale = max(scale, spread)
-    return f"HalfStudentT(3.0, {float(scale)!r})"
 
 
 def _boundary(centered: npt.NDArray[np.float64], c: tuple[float, ...]) -> np.ndarray:

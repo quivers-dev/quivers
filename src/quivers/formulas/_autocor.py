@@ -1034,7 +1034,7 @@ def autocor_family(
     modifiers: ResponseModifiers,
     caller: str,
 ) -> Family:
-    """Bind residual autocorrelation terms to a Gaussian or Student family.
+    """Bind residual autocorrelation terms to an elliptical family.
 
     Parameters
     ----------
@@ -1080,24 +1080,27 @@ def autocor_family(
     assert term is not None
     arma = conditional if structural else None
     label = " + ".join(item.label for item in terms)
-    if family.name not in {"gaussian", "student_t"} or family.custom is not None:
+    elliptical = family.elliptical
+    if elliptical is None:
         raise ValueError(
-            f"{caller}: {label} requires family 'gaussian' or 'student_t'; "
-            "brms's latent-residual formulation for other families is not supported"
+            f"{caller}: {label} requires a family declaring an elliptical "
+            f"residual law (Family.elliptical), such as 'gaussian' or 'student_t'; "
+            f"{family.name!r} declares none"
         )
-    if family.location_link.name != "identity":
+    if not family.location_link.is_identity:
         raise ValueError(
             f"{caller}: {label} requires the identity link of the location"
         )
     regressed = set(distributional or {})
-    if "nu" in regressed:
-        raise ValueError(f"{caller}: {label} requires a scalar 'nu'")
-    if "sigma" in regressed and term.kind == "sar":
+    if elliptical.df in regressed:
+        raise ValueError(f"{caller}: {label} requires a scalar {elliptical.df!r}")
+    if elliptical.scale in regressed and term.kind == "sar":
         raise ValueError(
-            "SAR models are not implemented when predicting 'sigma' or 'nu'."
+            "SAR models are not implemented when predicting "
+            f"{elliptical.scale!r} or 'nu'."
         )
     known = _addition_rules(term, arma, modifiers, caller)
-    student = family.name == "student_t"
+    student = elliptical.df is not None
     frame = nw.from_native(data, eager_only=True).to_pandas().reset_index(drop=True)
     rows = len(frame)
     history = np.asarray(response, dtype=np.float64).reshape(rows)
@@ -1181,9 +1184,9 @@ def autocor_family(
     )
     catalog = _catalog(binding, layout)
     _BINDINGS[id(catalog)] = (catalog, binding)
-    bindings = [("loc", "mu"), ("scale", "sigma")]
-    if student:
-        bindings.append(("nu", "nu"))
+    bindings = [("loc", "mu"), ("scale", elliptical.scale)]
+    if elliptical.df is not None:
+        bindings.append(("nu", elliptical.df))
     bindings.extend((coefficient, coefficient) for coefficient in coefficients)
     if term.kind == "unstr":
         bindings.append(("factor", "formula_cortime_factor"))
@@ -1193,9 +1196,11 @@ def autocor_family(
         location_link=family.location_link,
         observe_family=name,
         aux_params=(*family.aux_params, *auxiliary),
+        recorded_events=family.recorded_events,
         custom=CustomFamilySpec(
             catalog=catalog,
             bindings=tuple(sorted(bindings, key=lambda item: order[item[0]])),
+            data=family.custom.data if family.custom is not None else (),
         ),
     )
 
@@ -1426,9 +1431,9 @@ def bind_autocor_terms(
         If a term is incompatible with the family or formula, as in brms.
     """
     residual = tuple(term for term in terms if term.kind != "car")
-    if family.name == "mixture":
+    if family.mixture is not None:
         raise ValueError("Autocorrelation terms cannot be applied in mixture models.")
-    if residual and family.name not in {"gaussian", "student_t"}:
+    if residual and family.elliptical is None:
         # A SAR or fixed-covariance term raises brms's refusal before any
         # second latent term could be added.
         ordered = sorted(residual, key=lambda term: term.dimension == "time")
