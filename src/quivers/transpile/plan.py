@@ -59,6 +59,7 @@ from quivers.dsl.let_expr_traversal import let_expr_children
 from quivers.transpile._resolve import build_let_table, build_morphism_table
 from quivers.transpile._python_calls import PYTHON_TARGETS, python_call_renderable
 from quivers.qiec import QiecModule, validate_module
+from quivers.qiec.discharge import DischargedModule, discharge_module
 from quivers.qiec._models import QiecModel
 from quivers.qiec.effects import EffectRequest
 from quivers.qiec.module import NamedComputation
@@ -176,7 +177,7 @@ from quivers.transpile.qiec_ir import (
     IRQiecModule,
     IRQiecStatic,
     _convert,
-    lower_qiec_ir,
+    project_for_target,
 )
 from quivers.transpile._pure_calls import (
     _VALUE_TYPES,
@@ -184,6 +185,7 @@ from quivers.transpile._pure_calls import (
     _LetFloater,
     _expression,
     _local_names,
+    Callees,
     pure_call_bindings,
 )
 
@@ -195,9 +197,10 @@ _REGISTRY_NAMES: dict[str, dict[str, str]] = {"GP": {"covariance_matrix": "kerne
 class _TargetPreparation:
     """Retain one checked source and its projection within a target request.
 
-    The projection is constructed here, never supplied by a caller. Both
-    capability analysis and planning thus read the same checked module, while
-    a separate request or revised source owns a separate preparation.
+    The projection and the discharged module are constructed here, never
+    given by a caller. Both capability analysis and planning thus read the same
+    checked module, while a separate request or revised source owns a separate
+    preparation.
 
     Parameters
     ----------
@@ -213,19 +216,23 @@ class _TargetPreparation:
         self.module = module
         self.source = source
         self.target = target
+        self.discharged: DischargedModule = discharge_module(module)
         self._projection: IRQiecModule | None = None
 
     @property
     def projection(self) -> IRQiecModule:
-        """The structural projection of this request's checked module.
+        """The target's structural projection of this request's module.
 
         Returns
         -------
         IRQiecModule
-            The module, projected at most once during this preparation.
+            The module as the target reads it, projected at most once
+            during this preparation.
         """
         if self._projection is None:
-            self._projection = lower_qiec_ir(self.module)
+            self._projection = project_for_target(
+                self.module, self.discharged, self.target
+            )
         return self._projection
 
     def checked_program_plan(self) -> IRProgram | None:
@@ -272,6 +279,7 @@ class _Planner:
         self.source = source
         self.target = preparation.target
         self.computations = {item.name: item for item in module.computations}
+        self.callees = Callees(preparation.discharged)
         self.entries = {entry.name: entry for entry in module.entries}
         shapes = object_shapes(source)
         self.cards = {
@@ -920,7 +928,7 @@ class _ProgramWalk:
             program's ``random`` and ``score``, or is not a computation
             of the module.
         """
-        callee = self.planner.computations.get(call.name)
+        callee = self.planner.callees.get(call.name)
         if callee is None:
             raise UnsupportedConstruct(
                 f"qvr-{self.planner.target}",
@@ -1023,7 +1031,7 @@ class _ProgramWalk:
             call.arguments,
             binder.type,
             self.floater,
-            self.planner.computations,
+            self.planner.callees,
         )
         if found is None:
             return None

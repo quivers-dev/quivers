@@ -40,9 +40,11 @@ from quivers.dsl.ast_nodes.let_expressions import (
 )
 from quivers.dsl.pure_builtins import PRIMITIVE_BUILTINS, PRIMITIVE_OPERATORS
 from quivers.qiec.canonical import sampled_element, tensor_shape, tensor_type
+from quivers.qiec.discharge import DischargedModule
 from quivers.qiec.identifiers import SourceOrigin
 from quivers.qiec.module import NamedComputation
 from quivers.qiec.primitives import primitive
+from quivers.qiec.effects import EffectRequest
 from quivers.qiec.terms import (
     Bind,
     Call,
@@ -903,6 +905,76 @@ class CallNotLowered(Exception):
         self.effects = effects
 
 
+class Callees:
+    """The computations a program's calls are lowered from.
+
+    Their handlers are discharged, so a call of a computation that handles
+    the effects it requests is lowered as a call of any other.
+
+    Parameters
+    ----------
+    discharged : DischargedModule
+        The module holding the computations.
+    """
+
+    def __init__(self, discharged: DischargedModule) -> None:
+        self.discharged = discharged
+        self._computations = {
+            item.name: item for item in discharged.module.computations
+        }
+
+    def __contains__(self, name: str) -> bool:
+        """Whether the module has a computation of a name.
+
+        Parameters
+        ----------
+        name : str
+            The name.
+
+        Returns
+        -------
+        bool
+            True when it does.
+        """
+        return name in self._computations
+
+    def get(self, name: str) -> NamedComputation | None:
+        """The computation of a name.
+
+        Parameters
+        ----------
+        name : str
+            The name.
+
+        Returns
+        -------
+        NamedComputation or None
+            The computation, its handlers discharged, or ``None`` when the
+            module has none of the name.
+        """
+        return self._computations.get(name)
+
+    def performer(self, request: EffectRequest, owner: NamedComputation) -> str:
+        """Where a request a call reaches is written.
+
+        Parameters
+        ----------
+        request : EffectRequest
+            The request.
+        owner : NamedComputation
+            The computation that makes it.
+
+        Returns
+        -------
+        str
+            The computation, and the handler clause when one makes it.
+        """
+        clause = self.discharged.requester(request)
+        if clause is None:
+            return f"`{owner.name}`"
+        return f"`{owner.name}`, from {clause}"
+
+
 def origin_line(term: object) -> str:
     """The source line a term records, as a parenthetical.
 
@@ -1089,7 +1161,7 @@ def inline_call(
     callee: NamedComputation,
     arguments: tuple[Value, ...],
     result_type: TypeExpr,
-    computations: Mapping[str, NamedComputation],
+    computations: Callees,
     active: tuple[str, ...] = (),
 ) -> Value:
     """A pure computation's call as one value, its calls inlined in turn.
@@ -1108,8 +1180,8 @@ def inline_call(
         The call's arguments, one per parameter.
     result_type : TypeExpr
         The type of the call's result.
-    computations : Mapping[str, NamedComputation]
-        The module's computations, by name.
+    computations : Callees
+        The module's computations.
     active : tuple[str, ...]
         The computations whose bodies enclose this call, outermost
         first, which the call may not reenter.
@@ -1125,9 +1197,9 @@ def inline_call(
     ------
     CallNotLowered
         If the callee takes static arguments, is reentered, makes a
-        request (``effects`` set), handles an effect, branches with
-        ``case``, or chooses with ``if`` between values ``select``
-        cannot.
+        request (``effects`` set), installs a handler that is not
+        discharged, branches with ``case``, or chooses with ``if`` between
+        values ``select`` cannot.
     """
     if callee.name in active:
         raise CallNotLowered(recursion_reason((*active, callee.name)))
@@ -1168,7 +1240,7 @@ def computation_value(
     replaced: Mapping[Local, Value],
     result_type: TypeExpr,
     owner: NamedComputation,
-    computations: Mapping[str, NamedComputation],
+    computations: Callees,
     active: tuple[str, ...],
 ) -> Value:
     """A pure computation term as one value.
@@ -1184,8 +1256,8 @@ def computation_value(
         The type of the term's result.
     owner : NamedComputation
         The computation whose body holds the term, for diagnostics.
-    computations : Mapping[str, NamedComputation]
-        The module's computations, by name.
+    computations : Callees
+        The module's computations.
     active : tuple[str, ...]
         The computations whose bodies enclose the term, the owner last.
 
@@ -1199,8 +1271,9 @@ def computation_value(
     ------
     CallNotLowered
         If the term makes a request (``effects`` set), reenters a
-        computation, handles an effect, branches with ``case``, or
-        chooses between computations with unsupported effects.
+        computation, installs a handler that is not discharged, branches
+        with ``case``, or chooses between computations with unsupported
+        effects.
     """
     bindings: list[LetBinding] = []
     node = term
@@ -1235,7 +1308,7 @@ def _step_value(
     replaced: Mapping[Local, Value],
     result_type: TypeExpr,
     owner: NamedComputation,
-    computations: Mapping[str, NamedComputation],
+    computations: Callees,
     active: tuple[str, ...],
 ) -> Value:
     """One pure step of a body as a value.
@@ -1250,8 +1323,8 @@ def _step_value(
         The type of the step's result.
     owner : NamedComputation
         The computation whose body holds the step.
-    computations : Mapping[str, NamedComputation]
-        The module's computations, by name.
+    computations : Callees
+        The module's computations.
     active : tuple[str, ...]
         The computations whose bodies enclose the step, the owner last.
 
@@ -1292,8 +1365,8 @@ def _step_value(
         return _select(condition, then, otherwise, result_type, owner.name, term)
     if isinstance(term, Perform):
         raise CallNotLowered(
-            f"makes a `{term.request.effect.name}` request in `{owner.name}`"
-            f"{origin_line(term)}",
+            f"makes a `{term.request.effect.name}` request in "
+            f"{computations.performer(term.request, owner)}{origin_line(term)}",
             effects=True,
         )
     if isinstance(term, Case):
@@ -1303,7 +1376,7 @@ def _step_value(
             f"whose branches are pure, as `select`"
         )
     if isinstance(term, Handle | NewInstance | Resume):
-        raise CallNotLowered(handled_reason(owner, term))
+        raise CallNotLowered(handled_reason(owner, computations))
     raise CallNotLowered(
         f"runs a {type(term).__name__} in `{owner.name}`, which the compiled "
         f"runtime has no step for"
@@ -1334,30 +1407,28 @@ def recursion_reason(chain: tuple[str, ...]) -> str:
     )
 
 
-def handled_reason(owner: NamedComputation, term: Computation) -> str:
-    """Why a callee that handles an effect is refused.
+def handled_reason(owner: NamedComputation, computations: Callees) -> str:
+    """Why a callee whose handlers are not discharged is refused.
 
     Parameters
     ----------
     owner : NamedComputation
         The callee.
-    term : Computation
-        The handling, instance, or resumption term.
+    computations : Callees
+        The module's computations.
 
     Returns
     -------
     str
-        The reason clause.
+        The reason clause, naming the handler and the clause.
     """
-    effect = (
-        f"the effect `{term.effect.name}`"
-        if isinstance(term, NewInstance)
-        else "an effect"
-    )
+    obstacle = computations.discharged.obstacle(owner.name)
+    assert obstacle is not None
+    line = obstacle.origin.line if obstacle.origin is not None else None
     return (
-        f"handles {effect} inside `{owner.name}`{origin_line(term)}, and the "
-        f"compiled runtime runs only the program's own `Random` and `Score` "
-        f"requests, not a handler and its resumptions"
+        f"calls `{owner.name}`, which {obstacle.reason}"
+        f"{f' (line {line})' if line else ''}, so its handlers cannot be "
+        f"discharged and the compiled runtime has no steps for it"
     )
 
 
@@ -1366,7 +1437,7 @@ def pure_call_bindings(
     arguments: tuple[Value, ...],
     result_type: TypeExpr,
     floater: _LetFloater,
-    computations: Mapping[str, NamedComputation],
+    computations: Callees,
 ) -> tuple[tuple[LetBinding, ...], Value] | None:
     """A pure computation's call as hoisted bindings and a result.
 
@@ -1386,8 +1457,8 @@ def pure_call_bindings(
         The type of the call's result.
     floater : _LetFloater
         The floater that names the hoisted bindings.
-    computations : Mapping[str, NamedComputation]
-        The module's computations, by name.
+    computations : Callees
+        The module's computations.
 
     Returns
     -------

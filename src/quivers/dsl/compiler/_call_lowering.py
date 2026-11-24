@@ -55,6 +55,7 @@ from quivers.qiec.canonical import (
     tensor_shape,
     tensor_type,
 )
+from quivers.qiec.discharge import discharge_module
 from quivers.qiec.kinds import NAT
 from quivers.qiec.module import NamedComputation, QiecModule
 from quivers.qiec.terms import (
@@ -84,6 +85,7 @@ from quivers.qiec.types import INT, REAL, IndexLiteral, TypeExpr
 from quivers.transpile._api import UnsupportedConstruct
 from quivers.transpile._pure_calls import (
     CallNotLowered,
+    Callees,
     _expression,
     _LetFloater,
     computation_value,
@@ -175,8 +177,8 @@ class _Lowering:
 
     Parameters
     ----------
-    computations : Mapping[str, NamedComputation]
-        The module's computations, by name.
+    computations : Callees
+        The module's computations, their handlers discharged.
     cards : dict[str, int]
         The cardinality of every finite object, which names an axis.
     occupied : set[str]
@@ -191,7 +193,7 @@ class _Lowering:
 
     def __init__(
         self,
-        computations: Mapping[str, NamedComputation],
+        computations: Callees,
         cards: dict[str, int],
         occupied: set[str],
         program: str,
@@ -493,7 +495,7 @@ class _Lowering:
                 f"`if` whose branches are pure, as `select`"
             )
         if isinstance(term, Handle | NewInstance | Resume):
-            raise CallNotLowered(handled_reason(owner, term))
+            raise CallNotLowered(handled_reason(owner, self.computations))
         raise CallNotLowered(
             f"runs a {type(term).__name__} in `{owner.name}`, which the "
             f"compiled runtime has no step for"
@@ -542,8 +544,9 @@ class _Lowering:
             self.score(replace_locals(weight, env), prefix)
             return LiteralValue(value=None, type=binder.type)
         raise CallNotLowered(
-            f"performs `{effect}` in `{owner.name}`{origin_line(term)}, which "
-            f"the compiled runtime runs only through the program's own "
+            f"performs `{effect}` in "
+            f"{self.computations.performer(request, owner)}{origin_line(term)}, "
+            f"which the compiled runtime runs only through the program's own "
             f"`Random` and `Score`"
         )
 
@@ -910,7 +913,7 @@ class CallLowering:
         }
         self.cards = cards
         self.occupied = occupied
-        self.computations = {item.name: item for item in module.computations}
+        self.computations = Callees(discharge_module(module))
         self.entries = {item.name: item for item in module.entries}
         entry = self.entries.get(program)
         self.checked_body: Computation | None = next(

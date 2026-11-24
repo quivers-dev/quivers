@@ -931,9 +931,7 @@ class _HandlerFrame(ContinuationFrame):
             parameters at their current values.
         """
         environment = dict(self.environment)
-        environment.update(
-            zip(self.definition.parameters, self.arguments, strict=True)
-        )
+        environment.update(zip(self.definition.parameters, self.arguments, strict=True))
         return environment
 
     def carrying(self, arguments: tuple[HeldValue, ...]) -> _HandlerFrame:
