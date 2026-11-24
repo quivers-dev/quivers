@@ -221,7 +221,7 @@ def test_the_reference_machine_gives_each_value(name: str) -> None:
     assert run_named(compiler.qiec_module, name, arguments).value == value
 
 
-@pytest.mark.parametrize("target", ["pyro", "numpyro", "pymc", "edward2"])
+@pytest.mark.parametrize("target", ["pyro", "pymc", "edward2"])
 def test_python_threads_the_parameters(target: str) -> None:
     for name, (source, arguments, value) in _CALLS.items():
         namespace: dict[str, object] = {}

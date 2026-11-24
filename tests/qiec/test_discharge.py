@@ -393,16 +393,16 @@ family Outcome : Type
     constructor Won : Real -> Outcome
     constructor Lost : Outcome
 
-define score(out : Outcome) : Real !{ab} =
+define score(out : Outcome) : Real !{ch} =
     case out motive => Real
         Won(x) =>
-            return x
-        Lost =>
-            let y <- perform ab.stop(0.0)
+            let y <- perform ch.flip(x)
             return y
+        Lost =>
+            return 0.0
 
 define subject(out : Outcome) : Real !{} =
-    handle ab with stopped in
+    handle ch with mixed in
         let x <- score(out)
         return x + 1.0
 """,
@@ -459,6 +459,66 @@ define subject(a : Real) : Real !{} =
 """
     )
     assert _agree(module, "subject", (0.25,)) == pytest.approx(1.0 + 0.5 * 0.75)
+
+
+def test_the_branches_of_a_case_meet_around_the_handler() -> None:
+    """A branch a clause ends and one that finishes are one value after it."""
+    module = _module(
+        HANDLERS
+        + """
+family Outcome : Type
+    constructor Won : Real -> Outcome
+    constructor Lost : Outcome
+
+define points(out : Outcome) : Real !{ab} =
+    case out motive => Real
+        Won(x) =>
+            return x
+        Lost =>
+            let y <- perform ab.stop(2.0)
+            return y
+
+define scored(out : Outcome) : Real !{} =
+    handle ab with stopped in
+        let x <- points(out)
+        return x + 1.0
+
+define subject(a : Real) : Real !{} =
+    let won <- scored(construct Won(a) as Outcome)
+    let lost <- scored(construct Lost() as Outcome)
+    return won * 10.0 + lost
+"""
+    )
+    body = _discharged(module, "scored").body
+    assert sum(isinstance(term, Case) for term in _terms(body)) == 1
+    for checked in (module, discharge_module(module).module):
+        assert run_named(checked, "subject", (0.25,)).value == pytest.approx(13.0)
+
+
+def test_branches_meet_at_the_handler_whose_clause_ends_one() -> None:
+    """Two shots of a choice, each ending early or not, stay two conditionals."""
+    module = _module(
+        HANDLERS
+        + """
+define guard(x : Real) : Real !{ab} =
+    if x > 0.0 then
+        return x
+    else
+        let y <- perform ab.stop(x)
+        return y
+
+define subject(a : Real) : Real !{} =
+    handle ch with mixed in
+        handle ab with stopped in
+            let x <- perform ch.flip(a)
+            let y <- guard(x)
+            return y * y
+"""
+    )
+    body = _discharged(module, "subject").body
+    assert sum(isinstance(term, If) for term in _terms(body)) == 2
+    for a in (0.5, -0.5):
+        _agree(module, "subject", (a,))
 
 
 def test_a_case_on_a_constructor_selects_its_branch() -> None:

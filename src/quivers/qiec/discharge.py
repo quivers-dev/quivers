@@ -339,12 +339,15 @@ class _CallFrame(_Frame):
 
 
 class _JoinFrame(_Frame):
-    """The point at which the branches of one conditional meet.
+    """A point at which the branches of a conditional may meet.
+
+    One stands at the end of each conditional and one around each installed
+    handler, where the branches meet that a clause leaves.
 
     Parameters
     ----------
     serial
-        The conditional's ordinal.
+        The join's ordinal.
     """
 
     serial: int
@@ -387,6 +390,8 @@ class _Fork(QiecModel):
         The conditional over its rewritten branches and the type they have.
     paths
         How each branch ended.
+    duplicable
+        Whether the conditional may be stated more than once.
     """
 
     statements: _Statements = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -396,6 +401,7 @@ class _Fork(QiecModel):
     paths: tuple[_Arrival | _Fork, ...] = dx.field(
         opaque=True, extras=OPAQUE_BY_IDENTITY
     )
+    duplicable: bool
 
 
 class _Meeting(QiecModel):
@@ -794,7 +800,7 @@ class _Discharger:
         environment: _Environment = {
             parameter.name: Var(local=parameter) for parameter in self.owner.parameters
         }
-        path = self.reduce(self.owner.body, environment, (), None)
+        path = self.reduce(self.owner.body, environment, ())
         return self.close(path, self.owner.type.result)
 
     # ------------------------------------------------------------------
@@ -1030,7 +1036,6 @@ class _Discharger:
         state: _State,
         environment: _Environment,
         stack: tuple[_Frame, ...],
-        join: int | None,
     ) -> _Path:
         """Reduce a term under a continuation.
 
@@ -1043,15 +1048,13 @@ class _Discharger:
             The value each local of the term stands for.
         stack : tuple[_Frame, ...]
             The continuation, innermost frame first.
-        join : int or None
-            The join the reduction stops at, or ``None`` for the
-            computation's end.
 
         Returns
         -------
         _Path
-            How the reduction ended. A value that arrives at a join an
-            enclosing reduction awaits ends this one there.
+            How the reduction ended: at the first awaited join a value
+            arrives at, at the computation's end, or in a conditional whose
+            branches do not meet.
 
         Raises
         ------
@@ -1117,7 +1120,7 @@ class _Discharger:
             elif isinstance(term, Handle):
                 frame, bound = self.install(term, environment)
                 made.extend(bound)
-                stack = (frame, *stack)
+                stack = (frame, _JoinFrame(serial=self.ordinal()), *stack)
                 state = term.computation
             elif isinstance(term, Call):
                 entered = self.enter(term, stack)
@@ -1194,6 +1197,8 @@ class _Discharger:
                         resumed=True,
                     )
                 state = value
+                if beyond is stack:
+                    beyond = (_JoinFrame(serial=self.ordinal()), *stack)
                 stack = (*captured, *beyond)
             elif isinstance(term, If):
                 condition = self.value(term.condition, environment)
@@ -1205,7 +1210,6 @@ class _Discharger:
                     _if(condition),
                     ((term.then, environment), (term.otherwise, environment)),
                     stack,
-                    join,
                     duplicable=True,
                 )
                 if not isinstance(path, _Meeting):
@@ -1218,7 +1222,7 @@ class _Discharger:
                 if isinstance(scrutinee, ConstructorValue):
                     environment, state = self.matched(term, scrutinee, environment)
                     continue
-                path = self.case(tuple(made), term, scrutinee, environment, stack, join)
+                path = self.case(tuple(made), term, scrutinee, environment, stack)
                 if not isinstance(path, _Meeting):
                     return path
                 made = list(path.statements)
@@ -1517,7 +1521,6 @@ class _Discharger:
         rebuild: Callable[[tuple[Computation, ...], TypeExpr], Computation],
         branches: tuple[tuple[Computation, _Environment], ...],
         stack: tuple[_Frame, ...],
-        join: int | None,
         *,
         duplicable: bool,
     ) -> _Path | _Meeting:
@@ -1526,7 +1529,9 @@ class _Discharger:
         Branches that arrive at one join with one continuation, up to the
         values of handler parameters, meet: the conditional is bound to what
         the branches' values and parameters differ in, and the continuation
-        is reduced once. Any other branches are followed separately.
+        is reduced once. A branch that a clause ends early arrives at the
+        join around the clause's handler, so the other branches are followed
+        there. Branches that meet at no join are followed to the end.
 
         Parameters
         ----------
@@ -1538,8 +1543,6 @@ class _Discharger:
             Each branch, and the environment it is read under.
         stack : tuple[_Frame, ...]
             The continuation of the conditional.
-        join : int or None
-            The join the enclosing reduction stops at.
         duplicable : bool
             Whether the conditional may be stated more than once.
 
@@ -1554,45 +1557,69 @@ class _Discharger:
         _Undischarged
             If a handler cannot be discharged.
         """
-        if not stack and join is None:
-            # Nothing follows, so the conditional is the result.
-            paths = tuple(
-                self.reduce(body, environment, (), None)
-                for body, environment in branches
-            )
-            return _Fork(statements=made, rebuild=rebuild, paths=paths)
-        serial = self.ordinal()
-        self.awaited.add(serial)
-        paths = tuple(
-            self.reduce(body, environment, (_JoinFrame(serial=serial), *stack), serial)
-            for body, environment in branches
-        )
-        self.awaited.discard(serial)
-        meeting = self.meet(made, rebuild, paths, duplicable=duplicable)
-        if meeting is not None:
-            if meeting.join != serial:
-                return meeting
-            outer = stack[0] if stack else None
-            if (
-                meeting.resumed
-                and isinstance(outer, _JoinFrame)
-                and outer.serial in self.awaited
-            ):
-                # The resumption that ends this conditional ends the one
-                # around it.
-                return meeting.with_(join=outer.serial)
-            return _Meeting(
-                statements=meeting.statements,
-                value=meeting.value,
-                stack=meeting.stack,
-            )
-        return _Fork(
+        own = self.ordinal()
+        joins = [own]
+        for frame in stack:
+            if isinstance(frame, _JoinFrame):
+                if frame.serial in self.awaited:
+                    break
+                joins.append(frame.serial)
+        self.awaited.update(joins)
+        path: _Path = _Fork(
             statements=made,
             rebuild=rebuild,
-            paths=tuple(self.follow(path, serial, join) for path in paths),
+            paths=tuple(
+                self.reduce(body, environment, (_JoinFrame(serial=own), *stack))
+                for body, environment in branches
+            ),
+            duplicable=duplicable,
         )
+        for serial in joins:
+            path = self.settled(path)
+            self.awaited.discard(serial)
+            if isinstance(path, _Arrival):
+                if path.join != serial:
+                    if path.join in joins:
+                        continue
+                    self.awaited.difference_update(joins)
+                    return path
+                self.awaited.difference_update(joins)
+                outer = stack[0] if stack else None
+                if (
+                    path.resumed
+                    and isinstance(outer, _JoinFrame)
+                    and outer.serial in self.awaited
+                ):
+                    # The resumption that ends this conditional ends the one
+                    # around it.
+                    return path.with_(join=outer.serial)
+                return _Meeting(
+                    statements=path.statements, value=path.value, stack=path.stack
+                )
+            path = self.follow(path, serial)
+        return self.settled(path)
 
-    def follow(self, path: _Path, serial: int, join: int | None) -> _Path:
+    def settled(self, path: _Path) -> _Path:
+        """A path with every conditional met whose branches have met.
+
+        Parameters
+        ----------
+        path : _Path
+            The path.
+
+        Returns
+        -------
+        _Path
+            The path, each conditional in it whose branches arrived at one
+            join with one continuation an arrival there.
+        """
+        if isinstance(path, _Arrival):
+            return path
+        fork = path.with_(paths=tuple(self.settled(item) for item in path.paths))
+        met = self.meet(fork)
+        return fork if met is None else met
+
+    def follow(self, path: _Path, serial: int) -> _Path:
         """Continue the paths that arrived at a join past it.
 
         Parameters
@@ -1600,9 +1627,7 @@ class _Discharger:
         path : _Path
             How a branch ended.
         serial : int
-            The join.
-        join : int or None
-            The join the enclosing reduction stops at.
+            The join, which is no longer awaited.
 
         Returns
         -------
@@ -1611,45 +1636,32 @@ class _Discharger:
         """
         if isinstance(path, _Fork):
             return path.with_(
-                paths=tuple(self.follow(item, serial, join) for item in path.paths)
+                paths=tuple(self.follow(item, serial) for item in path.paths)
             )
         if path.join != serial:
             return path
-        further = self.reduce(path.value, {}, path.stack, join)
+        further = self.reduce(path.value, {}, path.stack)
         return further.with_(statements=(*path.statements, *further.statements))
 
-    def meet(
-        self,
-        made: _Statements,
-        rebuild: Callable[[tuple[Computation, ...], TypeExpr], Computation],
-        paths: tuple[_Path, ...],
-        *,
-        duplicable: bool,
-    ) -> _Arrival | None:
-        """Bring paths together that arrived at one join.
+    def meet(self, fork: _Fork) -> _Arrival | None:
+        """Bring the branches of a conditional together at one join.
 
         Parameters
         ----------
-        made : tuple[tuple[Local, Computation], ...]
-            The statements before the conditional.
-        rebuild : Callable[[tuple[Computation, ...], TypeExpr], Computation]
-            The conditional over its rewritten branches and their type.
-        paths : tuple[_Path, ...]
-            How each branch ended.
-        duplicable : bool
-            Whether the conditional may be stated more than once.
+        fork : _Fork
+            The conditional and how each branch ended.
 
         Returns
         -------
         _Arrival or None
-            The arrival of the whole conditional, or ``None`` when the paths
-            do not arrive at one join with one continuation.
+            The arrival of the whole conditional, or ``None`` when its
+            branches did not arrive at one join with one continuation.
         """
-        arrivals = [path for path in paths if isinstance(path, _Arrival)]
+        arrivals = [path for path in fork.paths if isinstance(path, _Arrival)]
         first = arrivals[0] if arrivals else None
         if (
             first is None
-            or len(arrivals) != len(paths)
+            or len(arrivals) != len(fork.paths)
             or first.join is None
             or any(
                 item.join != first.join
@@ -1686,12 +1698,14 @@ class _Discharger:
             frames.append(
                 frame if carried == frame.arguments else frame.carrying(carried)
             )
-        stated = self.stated(rebuild, arrivals, differing, duplicable=duplicable)
+        stated = self.stated(
+            fork.rebuild, arrivals, differing, duplicable=fork.duplicable
+        )
         self.count(len(stated))
         return _Arrival(
             join=first.join,
             resumed=first.resumed,
-            statements=(*made, *stated),
+            statements=(*fork.statements, *stated),
             value=_read_chosen(value, differing, stated),
             stack=tuple(
                 frame.carrying(
@@ -1912,7 +1926,6 @@ class _Discharger:
         scrutinee: Value,
         environment: _Environment,
         stack: tuple[_Frame, ...],
-        join: int | None,
     ) -> _Path | _Meeting:
         """Reduce a case analysis on a value known only at run time.
 
@@ -1928,8 +1941,6 @@ class _Discharger:
             The value each local stands for.
         stack : tuple[_Frame, ...]
             The continuation.
-        join : int or None
-            The join the enclosing reduction stops at.
 
         Returns
         -------
@@ -1989,9 +2000,7 @@ class _Discharger:
                 ),
             )
 
-        path = self.branch(
-            made, rebuild, tuple(branches), stack, join, duplicable=False
-        )
+        path = self.branch(made, rebuild, tuple(branches), stack, duplicable=False)
         if repeated or (isinstance(path, _Fork) and stack):
             raise _Undischarged(
                 "case",
