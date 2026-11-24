@@ -81,7 +81,7 @@ family is a new value and not a new branch in the compiler.
   per free component of the response, as the `sigma` of `logistic_normal`.
 
 Every declaration is open to a new family. A family built with `Family`, or
-with [`custom_family`](index.md#quivers.formulas.custom_family) and then
+with [`custom_family`](custom.md#quivers.formulas._custom_family.custom_family) and then
 `with_`, takes part in a feature by declaring its property:
 
 ```python
