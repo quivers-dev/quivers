@@ -283,10 +283,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         name="productions-not-normalized",
         defect_class="normalizer",
         provenance="the weights of a left-hand side are used as they are",
-        target="quivers.stochastic.productions:ProductionWeights.log_probs",
-        rewrites=(),
-        rejected_by=(),
-        min_effect=0.0,
+        target="quivers.stochastic.productions:ProductionWeights.table",
+        rewrites=(
+            Rewrite(
+                old="vector = torch.log_softmax(vector, dim=0)", new="vector = vector"
+            ),
+        ),
+        rejected_by=("machine/normalized",),
+        min_effect=0.5,
     ),
     Mutation(
         name="lexicon-normalized-over-words",
@@ -343,9 +347,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         defect_class="aggregation",
         provenance="a maximum over the contracted axes of a sum",
         target="quivers.core.algebras:RealAlgebra.join",
-        rewrites=(),
-        rejected_by=(),
-        min_effect=0.0,
+        rewrites=(
+            Rewrite(old="result = result.sum(dim=d)", new="result = result.amax(dim=d)"),
+        ),
+        rejected_by=(
+            "contraction/value/real/product/positive",
+            "contraction/value/real/triangle/zeros",
+        ),
+        min_effect=0.1,
     ),
     Mutation(
         name="mixture-keeps-the-best-class",
@@ -405,15 +414,6 @@ MUTATIONS: tuple[Mutation, ...] = (
             "contraction/gradient/markov/triangle",
         ),
         min_effect=0.1,
-    ),
-    Mutation(
-        name="chain-gradient-cut",
-        defect_class="gradient path",
-        provenance="the rows of a summed-out class are detached",
-        target=f"{PLATE}:marginalize_grouped",
-        rewrites=(),
-        rejected_by=(),
-        min_effect=0.0,
     ),
     Mutation(
         name="groups-share-one-draw",
@@ -724,15 +724,6 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
         rejected_by=("work/repeated-runs-of-one-rule-set",),
         min_effect=2.0,
-    ),
-    Mutation(
-        name="pathfinder-drops-the-jacobian",
-        defect_class="normalizer",
-        provenance="a potential without the log determinant of its bijector",
-        target="quivers.inference.mcmc.kernel:PotentialFn._unconstrained",
-        rewrites=(),
-        rejected_by=(),
-        min_effect=0.0,
     ),
 )
 """The catalogue."""

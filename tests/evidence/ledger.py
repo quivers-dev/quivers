@@ -1589,18 +1589,69 @@ def _impossible_sentence() -> Facts:
         ),
         observed(categories, terminals, lexical),
     )
-    return {"score of an impossible sentence": number(algorithm(torch.tensor([0, 1])))}
+    rules = torch.zeros(2, 2, 2, dtype=torch.float64)
+    rules[0, 1, 1] = 1.0
+    rules[0, 0, 1] = 0.5
+    rules.requires_grad_()
+    words = torch.tensor([[0.5, 0.0], [0.5, 0.0]], dtype=torch.float64)
+    sloped = type(algorithm)(
+        observed(categories, ProductSet(components=(categories, categories)), rules),
+        observed(categories, terminals, words),
+    )
+    (found,) = torch.autograd.grad(sloped(torch.tensor([0, 0, 0])), rules)
+    return {
+        "score of an impossible sentence": number(algorithm(torch.tensor([0, 1]))),
+        "derivative in a rule of weight zero": number(found[1, 1, 1]),
+    }
+
+
+def _zero_rule_slope() -> str:
+    """The derivative of a log score in a rule of weight zero, exactly.
+
+    The rule derives the second category over two of three words, so the
+    score is a polynomial of degree at most two in its weight and three
+    values give its linear coefficient.
+
+    Returns
+    -------
+    str
+        The derivative at zero.
+    """
+    values = [
+        exact.inside(
+            {
+                (0, 1, 1): Fraction(1),
+                (0, 0, 1): Fraction(1, 2),
+                (1, 1, 1): Fraction(level),
+            },
+            {(0, 0): Fraction(1, 2), (1, 0): Fraction(1, 2)},
+            {},
+            (0, 0, 0),
+            2,
+        )[0]
+        for level in (0, 1, 2)
+    ]
+    slope = 2 * (values[1] - values[0]) - (values[2] - values[0]) / 2
+    return number(float(slope / values[0]))
 
 
 record(
     "zero-probability-clamped",
     "stochastic/inside.py: InsideAlgorithm._fill_chart",
     "zero probabilities are replaced by a small positive number, so a sentence "
-    "without a derivation has a finite score",
-    {"score of an impossible sentence": "-69.0776"},
-    {"score of an impossible sentence": "-inf"},
+    "without a derivation has a finite score and a rule of weight zero has no "
+    "gradient",
+    {
+        "score of an impossible sentence": "-69.0776",
+        "derivative in a rule of weight zero": "0",
+    },
+    {
+        "score of an impossible sentence": "-inf",
+        "derivative in a rule of weight zero": "3.33333",
+    },
     _impossible_sentence,
     lambda: {
+        "derivative in a rule of weight zero": _zero_rule_slope(),
         "score of an impossible sentence": number(
             logarithm(
                 exact.inside(

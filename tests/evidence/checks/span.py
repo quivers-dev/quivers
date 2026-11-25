@@ -542,6 +542,64 @@ def check_inside_gradient() -> None:
     )
 
 
+def check_impossible_cell_gradient() -> None:
+    """Compare a gradient where some cells of the chart are impossible.
+
+    Category two has no binary rule, so it is impossible over every span
+    longer than one word. The derivative in the weight of a rule is the
+    expected number of its uses over the weight. A rule of weight zero is
+    left to the ledger.
+    """
+    sentence = (0, 1, 0)
+    with double_precision():
+        algorithm, tensors = inside_algorithm({}, requires_grad=True)
+        with torch.no_grad():
+            tensors["binary"].zero_()
+            tensors["binary"][0, 0, 1] = 0.5
+            tensors["binary"][0, 1, 0] = 0.5
+        value = algorithm(torch.tensor(sentence))
+        (found,) = torch.autograd.grad(value, tensors["binary"])
+    axioms = [
+        (f"{i}:{a}", ("span", a, i, i + 1))
+        for i, token in enumerate(sentence)
+        for a, t in LEXICAL
+        if t == token
+    ]
+    i, k, j = Variable("i"), Variable("k"), Variable("j")
+    rules: list[derivations.RuleRow] = [
+        (f"b{a}{b}{c}", (("span", b, i, k), ("span", c, k, j)), ("span", a, i, j), f"b{a}{b}{c}")
+        for a, b, c in ((0, 0, 1), (0, 1, 0))
+    ]
+    trees = derivations.derivations(axioms, rules, ("span", 0, 0, 3))
+    weights = {
+        "b001": Fraction(1, 2),
+        "b010": Fraction(1, 2),
+        **{
+            name: Fraction(LEXICAL[(int(name.split(":")[1]), sentence[int(name.split(":")[0])])])
+            for name, _ in axioms
+        },
+    }
+    reference = {
+        name: derivations.logarithmic_gradient(trees, weights, name) / weights[name]
+        for name in ("b001", "b010")
+    }
+    gradients: dict[str, torch.Tensor | None] = {
+        "b001": found[0, 0, 1],
+        "b010": found[0, 1, 0],
+    }
+    forward = span_accuracy(len(sentence), {})
+    compare_gradients(
+        gradients,
+        reference,
+        Accuracy(
+            domain="linear",
+            operations=5 * forward.operations,
+            condition=forward.condition * forward.magnitude,
+        ),
+        "inside gradient with impossible cells",
+    )
+
+
 def check_divergent_unary(executor: str) -> None:
     """Require a refusal for unary rules whose chains do not sum.
 
@@ -642,6 +700,12 @@ def _register() -> None:
     for unary in ("none", "acyclic", "cyclic"):
         add(f"span/inside/{unary}", "inside", "Q3", partial(check_inside, unary))
     add("span/inside/gradient", "inside", "Q1g", check_inside_gradient)
+    add(
+        "span/inside/impossible_cell_gradient",
+        "inside",
+        "Q1g",
+        check_impossible_cell_gradient,
+    )
     add("span/inside/counts", "inside", "Q11", check_inside_gradient)
     for executor in ("chart-parser", "inside"):
         add(
