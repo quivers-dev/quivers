@@ -761,7 +761,7 @@ def _member_axis(
             "FormulaCategoryLogit" if prefix == "" else prefix + "FormulaCategoryLogit"
         )
         return namespace + axis, width
-    if term.column is not None and term.column.category_specific:
+    if term.category_specific:
         count = lens._category_count(formula, family=lens._family.name) - 1
         if (
             lens._family.ordinal is not None

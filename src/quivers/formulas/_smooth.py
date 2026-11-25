@@ -67,6 +67,7 @@ from quivers.formulas._mgcv_smooth import (
     tensor_t2,
     thin_plate,
 )
+from quivers.formulas._monotonic import modified_call
 from quivers.formulas._term import (
     AxisDecl,
     EffectSource,
@@ -1446,7 +1447,9 @@ def term_constants(term: Term) -> frozenset[str]:
     names = {"TRUE", "FALSE", "NA"}
     for component in getattr(term, "components", ()):
         transform = getattr(
-            getattr(component, "call", None), "stateful_transform", None
+            modified_call(getattr(component, "call", None)),
+            "stateful_transform",
+            None,
         )
         if isinstance(transform, SmoothTransform) and transform.state is not None:
             names.update(transform.state.data2)
@@ -1474,7 +1477,9 @@ def smooth_states(design: DesignMatrices | None) -> dict[str, SmoothState]:
         if len(components) != 1:
             continue
         transform = getattr(
-            getattr(components[0], "call", None), "stateful_transform", None
+            modified_call(getattr(components[0], "call", None)),
+            "stateful_transform",
+            None,
         )
         if isinstance(transform, SmoothTransform) and transform.state is not None:
             states[str(label)] = transform.state

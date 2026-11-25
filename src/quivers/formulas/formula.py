@@ -97,6 +97,7 @@ from quivers.formulas._grouping import (
     rewrite_grouping,
 )
 from quivers.formulas._monotonic import (
+    modified_call,
     Monotonic,
     MonotonicTerm,
     monotonic_design,
@@ -354,15 +355,32 @@ class RandomTerm(ValueModel):
     column : FixedColumn or None
         Evaluated slope column, including categorical contrasts and numeric
         transforms. The intercept uses a constant column.
+    specific : bool
+        Whether a slope the program computes has one coefficient per ordinal
+        transition.
     """
 
     slope: str
     group: str
     correlation_id: str | None = None
     shared: bool = False
+    specific: bool = False
     column: FixedColumn | SymbolicColumn | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+
+    @property
+    def category_specific(self) -> bool:
+        """Return whether the slope has one coefficient per transition.
+
+        Returns
+        -------
+        bool
+            True for a ``cs()`` slope.
+        """
+        return self.specific or (
+            self.column is not None and self.column.category_specific
+        )
 
 
 class SplineBasis(ValueModel):
@@ -453,6 +471,8 @@ class GaussianDesignTerm(ValueModel):
     scale_group : str
         Name of a smoothing scale shared with other blocks (an mgcv ``id``),
         or empty when this block samples its own scale.
+    category_specific : bool
+        Whether the block has one coefficient vector per ordinal transition.
     gp : GaussianProcessBlock or None
         For an approximate ``gp()`` term, the block whose coordinates take
         per-coordinate scales ``sqrt(spd)`` of sampled ``sdgp`` and
@@ -472,6 +492,7 @@ class GaussianDesignTerm(ValueModel):
     coefficient_map: tuple[tuple[float, ...], ...] = ()
     constraint: tuple[float, ...] = ()
     scale_group: str = ""
+    category_specific: bool = False
     gp: GaussianProcessBlock | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -865,6 +886,25 @@ class Formula(ValueModel):
         default_factory=GroupingPlan, opaque=True, extras=OPAQUE_BY_VALUE
     )
 
+    @property
+    def category_specific(self) -> bool:
+        """Return whether a term has one coefficient per ordinal transition.
+
+        Returns
+        -------
+        bool
+            True for a formula with a ``cs()`` term.
+        """
+        return any(
+            part.category_specific
+            for part in (
+                *self.fixed_columns,
+                *self.design_terms,
+                *self.monotonic_terms,
+                *self.random_terms,
+            )
+        )
+
     def without(self, parts: Collection[FormulaPart]) -> Formula:
         """Return the formula without some of its elements.
 
@@ -1070,6 +1110,9 @@ def _smooth_design(
                     column_indices=group,
                     data=np.column_stack([columns[index].data for index in group]),
                     basis=basis,
+                    category_specific=any(
+                        columns[index].category_specific for index in group
+                    ),
                     coefficient_map=tuple(map(tuple, padded.tolist())),
                     constraint=state.constraint,
                     scale_group=(
@@ -1116,13 +1159,16 @@ def _gp_design(
         data = np.column_stack([columns[index].data for index in indices])
         if subterm.block.exact:
             data = gp_rows(data, subterm.block)[1]
+        specific = any(columns[index].category_specific for index in indices)
+        block = subterm.block.specific() if specific else subterm.block
         terms.append(
             GaussianDesignTerm(
                 term=term_name,
-                qvr_name="gp_" + _qvr_name(subterm.block.label),
+                qvr_name="gp_" + _qvr_name(block.label),
                 column_indices=indices,
                 data=data,
-                gp=subterm.block,
+                category_specific=specific,
+                gp=block,
             )
         )
     return terms
@@ -1657,7 +1703,9 @@ def _formula_and_design(
                 continue
             columns = _explode_term(term_name, term, n_obs)
             call = (
-                getattr(components[0], "call", None) if len(components) == 1 else None
+                modified_call(getattr(components[0], "call", None))
+                if len(components) == 1
+                else None
             )
             modifier = getattr(call, "callee", None)
             if modifier not in _SMOOTH_CALLS and any(
@@ -1745,7 +1793,14 @@ def _formula_and_design(
             )
             random_terms.extend(
                 RandomTerm(
-                    slope=slope, group=group, correlation_id=identity, shared=shared
+                    slope=slope,
+                    group=group,
+                    correlation_id=identity,
+                    shared=shared,
+                    specific=any(
+                        column.name == slope and column.category_specific
+                        for column in monotonic_terms
+                    ),
                 )
                 for slope in slopes
             )

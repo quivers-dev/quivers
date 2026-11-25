@@ -255,6 +255,20 @@ class GaussianProcessBlock(ValueModel):
         default=None, opaque=True, extras=opaque_by_value(_frozen_or_none)
     )
 
+    def specific(self) -> GaussianProcessBlock:
+        """Return the block of one process per ordinal transition.
+
+        Returns
+        -------
+        GaussianProcessBlock
+            The same block, with labels distinct from those of a block
+            shared by the transitions.
+        """
+        return self.with_(
+            label="cs" + self.label,
+            lscale_labels=tuple("cs" + label for label in self.lscale_labels),
+        )
+
     @property
     def exact(self) -> bool:
         """Report whether the block is brms's exact GP.

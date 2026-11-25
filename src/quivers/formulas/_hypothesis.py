@@ -6,6 +6,7 @@ from itertools import product
 from typing import TYPE_CHECKING
 
 from quivers.diagnostics.contrast import _contrast_hypothesis
+from quivers.formulas._predictor import TRANSITION_AXIS
 from quivers.formulas._group_law import LKJCorrelation, group_coefficients
 
 # Pathfinder draws report variational provenance.
@@ -76,32 +77,14 @@ def _formula_contrast_inputs(
                 original_components.get(label, label)
                 for label in target.component_labels
             )
-        for name, _, predictor in fit._predictor_items():
-            if name != (target.nlpar or target.dpar):
-                continue
-            columns = (
-                (
-                    term.column
-                    for term in predictor.random_terms
-                    if term.group == target.group and term.slope == target.coef
-                )
-                if target.group is not None
-                else (
-                    column
-                    for column in predictor.fixed_columns
-                    if column.name == target.coef
-                )
-            )
-            if any(
-                column is not None and column.category_specific for column in columns
+        if target.coef is not None and TRANSITION_AXIS in target.axes:
+            categories = fit.category_labels
+            if (
+                fit.family.ordinal is not None
+                and fit.family.ordinal.kind == "hurdle_cumulative"
             ):
-                categories = fit.category_labels
-                if (
-                    fit.family.ordinal is not None
-                    and fit.family.ordinal.kind == "hurdle_cumulative"
-                ):
-                    categories = categories[1:]
-                return tuple(zip(categories[:-1], categories[1:], strict=True))
+                categories = categories[1:]
+            return tuple(zip(categories[:-1], categories[1:], strict=True))
         return ()
 
     def add(name, value, axes=(), labels=()):

@@ -722,13 +722,7 @@ def _constrained_thresholds(view: BayesianFit) -> bool:
     return (
         ordinal is not None
         and ordinal.kind in {"cumulative", "hurdle_cumulative"}
-        and (
-            any(column.category_specific for column in view.formula.fixed_columns)
-            or any(
-                term.column is not None and term.column.category_specific
-                for term in view.formula.random_terms
-            )
-        )
+        and (view.formula.category_specific)
     )
 
 

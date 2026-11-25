@@ -396,6 +396,9 @@ class MonotonicTerm(ValueModel):
     column : int
         Position of the covariate among the evaluated columns of the term's
         other components, or ``-1`` when the term has none.
+    category_specific : bool
+        Whether the column has one coefficient and one simplex per ordinal
+        transition.
     factors : tuple[MonotonicFactor, ...]
         The ``mo()`` factors in term order.
     covariate : numpy.ndarray
@@ -407,6 +410,7 @@ class MonotonicTerm(ValueModel):
     name: str
     coef: str
     column: int = -1
+    category_specific: bool = False
     factors: tuple[MonotonicFactor, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -430,6 +434,28 @@ class MonotonicTerm(ValueModel):
         return values
 
 
+def modified_call(call: _LazyNode | None) -> _LazyNode | None:
+    """Read the special term a ``cs()`` call modifies.
+
+    Parameters
+    ----------
+    call : LazyCall or other lazy expression, or None
+        Parsed component of a term.
+
+    Returns
+    -------
+    LazyCall or other lazy expression, or None
+        The modified ``s()``, ``t2()``, ``gp()`` or ``mo()`` call of a
+        ``cs()`` call; the component itself otherwise.
+    """
+    arguments = getattr(call, "args", ())
+    if getattr(call, "callee", None) != "cs" or len(arguments) != 1:
+        return call
+    inner = arguments[0]
+    special = getattr(inner, "callee", None) in {"mo", "s", "t2", "gp"}
+    return inner if special else call
+
+
 def monotonic_positions(components: Sequence[Variable | Call]) -> tuple[int, ...]:
     """Find the ``mo()`` components of a formulae term.
 
@@ -450,7 +476,7 @@ def monotonic_positions(components: Sequence[Variable | Call]) -> tuple[int, ...
     """
     positions = []
     for index, component in enumerate(components):
-        call = getattr(component, "call", None)
+        call = modified_call(getattr(component, "call", None))
         if getattr(call, "callee", None) == "mo":
             if any(_nested_mo(argument) for argument in getattr(call, "args", ())):
                 raise ValueError(f"The monotonic term '{component}' is invalid.")
@@ -513,7 +539,7 @@ def monotonic_design(
     for position in positions:
         component = components[position]
         assert isinstance(component, Call)
-        transform = component.call.stateful_transform
+        transform = getattr(modified_call(component.call), "stateful_transform", None)
         if not isinstance(transform, Monotonic) or transform.state is None:
             raise ValueError("mo() terms require the retained monotonic coding")
         states[position] = transform.state
@@ -561,6 +587,10 @@ def monotonic_design(
                 else f"{term_name}_{column + 1}",
                 coef=coef,
                 column=column if product is not None else -1,
+                category_specific=any(
+                    getattr(getattr(component, "call", None), "callee", None) == "cs"
+                    for component in components
+                ),
                 factors=factors,
                 covariate=product[:, column] if product is not None else np.zeros(0),
             )

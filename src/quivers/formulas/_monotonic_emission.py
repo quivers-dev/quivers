@@ -630,7 +630,12 @@ class MonotonicRow(ValueModel):
 
 
 def monotonic_rows(
-    formula: Formula, prefix: str, *, prior: str, output: OutputAxis | None
+    formula: Formula,
+    prefix: str,
+    *,
+    prior: str,
+    output: OutputAxis | None,
+    transitions: OutputAxis | None,
 ) -> tuple[MonotonicRow, ...]:
     """Build the special-effects columns of one predictor.
 
@@ -647,6 +652,8 @@ def monotonic_rows(
         Default prior of a coefficient.
     output : OutputAxis or None
         Axis of the predictor.
+    transitions : OutputAxis or None
+        Axis of category-specific columns.
 
     Returns
     -------
@@ -672,7 +679,7 @@ def monotonic_rows(
                     if name not in drawn
                     and name in {factor.simplex for factor in term.factors}
                 ),
-                output=output,
+                output=transitions if term.category_specific else output,
             )
         )
         drawn.update(factor.simplex for factor in term.factors)

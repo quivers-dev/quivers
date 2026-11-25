@@ -335,7 +335,7 @@ def member_axis(
     axis = component_axes.get(prefix)
     if axis is not None:
         return axis
-    if term.column is not None and term.column.category_specific:
+    if term.category_specific:
         if transition_axis is None:
             raise ValueError(
                 f"category-specific coefficient {term.slope!r} requires a "
@@ -539,7 +539,7 @@ def plan_joint_block(
                 if owns_site
                 else shared_raw,
                 owns_site=owns_site,
-                vector=prefix in vectors,
+                vector=prefix in vectors or term.category_specific,
             )
         )
         offset += laws[-1].width
@@ -867,7 +867,7 @@ def plan_group_blocks(
                     term,
                     formula,
                     member_axis(prefix, term, component_axes, transition_axis),
-                    vector=prefix in component_axes,
+                    vector=prefix in component_axes or term.category_specific,
                     parameterization=parameterization,
                 )
             )

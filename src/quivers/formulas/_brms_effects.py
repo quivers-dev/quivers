@@ -1847,13 +1847,22 @@ def brms_conditional_smooths(
                     site_prefix=site_prefix,
                 )
                 output = next(
-                    item.output
+                    term.output
                     for item in plan.predictors
                     if item.parameter == parameter
+                    for term in item.terms
+                    if any(
+                        source.label == label and source.kind == "sm"
+                        for source in term.effects()
+                    )
                 )
-                # A vector-valued parameter has one effect per coordinate.
-                parameters = output.parameters if output is not None else (parameter,)
-                effects = eta.unbind(-1) if output is not None else (eta,)
+                # A vector of smooths has one effect per coordinate.
+                parameters, effects = (parameter,), (eta,)
+                if output is not None:
+                    effects = eta.unbind(-1)
+                    parameters = output.parameters or tuple(
+                        f"{parameter}[{index + 1}]" for index in range(output.size)
+                    )
                 for coordinate, values in zip(parameters, effects, strict=True):
                     name = f"{coordinate}_{response}" if response else coordinate
                     frame = cast(pd.DataFrame, grid[variables]).copy()

@@ -163,12 +163,7 @@ def _ordinal_thresholds(fit: BayesianFit) -> bool:
         return True
     if fit.family.ordinal.kind != "cumulative" or fit.thresholds_by is not None:
         return False
-    return not any(
-        column.category_specific for column in fit.formula.fixed_columns
-    ) and not any(
-        term.column is not None and term.column.category_specific
-        for term in fit.formula.random_terms
-    )
+    return not fit.formula.category_specific
 
 
 def _time_label(level: str) -> str:

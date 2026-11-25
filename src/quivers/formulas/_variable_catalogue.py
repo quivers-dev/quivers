@@ -127,6 +127,9 @@ def smooth_label(term: str) -> str:
         raise ValueError(f"smooth term {term!r} is not a function call") from error
     if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
         raise ValueError(f"smooth term {term!r} is not a function call")
+    if call.func.id == "cs" and len(call.args) == 1:
+        # A category-specific smooth has the label of its smooth.
+        return "cs" + smooth_label(ast.unparse(call.args[0]))
     variables = [ast.unparse(argument) for argument in call.args]
     variables.extend(
         ast.unparse(keyword.value)
@@ -231,8 +234,9 @@ def smooth_names(
     coefficients: list[tuple[str, str]] = []
     for term, state in states.items():
         base = smooth_label(term)
+        specific = "cs" if term.startswith("cs(") else ""
         fixed = [
-            (brms_rename(block.label), position + 1)
+            (specific + brms_rename(block.label), position + 1)
             for block in state.blocks
             for position in range(block.fixed_width)
         ]
@@ -317,8 +321,10 @@ def scalar_coordinates(stem: str, value: torch.Tensor) -> dict[str, torch.Tensor
     event = tuple(value.shape[2:])
     if not event:
         return {stem: value}
+    # The coordinates of an indexed name follow its index.
+    stem = stem.removesuffix("]") + "," if stem.endswith("]") else stem + "["
     return {
-        f"{stem}[{','.join(str(i + 1) for i in index)}]": value[(..., *index)]
+        f"{stem}{','.join(str(i + 1) for i in index)}]": value[(..., *index)]
         for index in itertools.product(*(range(size) for size in event))
     }
 

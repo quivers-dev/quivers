@@ -339,13 +339,7 @@ def prepare_prediction(
     constrained_cs = (
         fit.family.ordinal is not None
         and fit.family.ordinal.kind in {"cumulative", "hurdle_cumulative"}
-        and (
-            any(column.category_specific for column in fit.formula.fixed_columns)
-            or any(
-                term.column is not None and term.column.category_specific
-                for term in fit.formula.random_terms
-            )
-        )
+        and (fit.formula.category_specific)
     )
     selected = selected_effects(formulas, re_formula)
     retained_observations = fit.observations
@@ -484,9 +478,7 @@ def prepare_prediction(
     )
     groups = compact_groups(fit, frame, selected, allow_new_levels)
     order_groups = {
-        term.group
-        for term in fit.formula.random_terms
-        if term.column is not None and term.column.category_specific
+        term.group for term in fit.formula.random_terms if term.category_specific
     }
     if fit.thresholds_by is not None:
         order_groups.add(fit.thresholds_by)

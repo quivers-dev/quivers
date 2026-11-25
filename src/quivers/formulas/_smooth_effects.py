@@ -9,6 +9,7 @@ import narwhals as nw
 import torch
 from narwhals.typing import IntoDataFrame
 
+from quivers.formulas._monotonic import modified_call
 from quivers.formulas._row_source import PredictorRows, RowSource
 from quivers.formulas._gp import (
     GaussianProcess,
@@ -94,7 +95,11 @@ def conditional_smooths(
         )
     components = getattr(terms[term], "components", ())
     transform = (
-        getattr(getattr(components[0], "call", None), "stateful_transform", None)
+        getattr(
+            modified_call(getattr(components[0], "call", None)),
+            "stateful_transform",
+            None,
+        )
         if len(components) == 1
         else None
     )

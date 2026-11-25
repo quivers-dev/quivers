@@ -631,6 +631,10 @@ class Predictor(ValueModel):
         return {self.role: self.parameter}
 
 
+#: Axis of the transitions between ordered categories.
+TRANSITION_AXIS = "FormulaCutpoint"
+
+
 def response_axis(family: Family, labels: tuple[str, ...]) -> OutputAxis | None:
     """Return the axis of the free coordinates of a vector-valued location.
 
@@ -681,7 +685,7 @@ def transition_axis(family: Family, categories: int) -> OutputAxis:
     if ordinal is None:
         raise ValueError("cs terms require an ordinal response family")
     return OutputAxis(
-        name="FormulaCutpoint",
+        name=TRANSITION_AXIS,
         size=categories - 1 - int(ordinal.kind == "hurdle_cumulative"),
     )
 
@@ -733,6 +737,7 @@ def design_terms(
     prefix: str,
     *,
     output: OutputAxis | None = None,
+    specific: bool = False,
     scale_prior: str = "",
     process_prior: Callable[[], str] = str,
 ) -> tuple[Term, ...]:
@@ -745,7 +750,9 @@ def design_terms(
     prefix : str
         Its namespace.
     output : OutputAxis or None
-        Axis of the predictor.
+        Axis of the blocks.
+    specific : bool
+        Build the blocks with one coefficient vector per transition.
     scale_prior : str
         Default prior of a smooth's scale; empty when only the inputs of the
         terms are read.
@@ -760,6 +767,8 @@ def design_terms(
     terms: list[Term] = []
     scales: set[str] = set()
     for block in formula.design_terms:
+        if block.category_specific != specific:
+            continue
         name = prefix + block.qvr_name
         if block.gp is not None:
             terms.append(
@@ -994,11 +1003,9 @@ def predictor_terms(
         column for column in formula.fixed_columns if column.category_specific
     )
     specific_randoms = tuple(
-        term
-        for term in formula.random_terms
-        if term.column is not None and term.column.category_specific
+        term for term in formula.random_terms if term.category_specific
     )
-    if (specific_columns or specific_randoms) and transitions is None:
+    if formula.category_specific and transitions is None:
         raise ValueError("cs terms require an ordinal response family")
     offsets: tuple[Term, ...] = (
         (OffsetTerm(prefix=prefix, columns=formula.offsets, output=output),)
@@ -1013,7 +1020,11 @@ def predictor_terms(
         process_prior=process_prior,
     )
     special: tuple[Term, ...] = monotonic_rows(
-        formula, prefix, prior=options.coefficient_prior, output=output
+        formula,
+        prefix,
+        prior=options.coefficient_prior,
+        output=output,
+        transitions=transitions,
     )
     population = _population(
         tuple(
@@ -1044,6 +1055,14 @@ def predictor_terms(
         correlation_prior=options.correlation_prior,
     )
     specific: tuple[Term, ...] = (
+        *design_terms(
+            formula,
+            prefix,
+            output=transitions,
+            specific=True,
+            scale_prior=options.scale_prior,
+            process_prior=process_prior,
+        ),
         *_population(
             specific_columns,
             formula,
@@ -1102,7 +1121,7 @@ def data_terms(formula: Formula, prefix: str) -> tuple[Term, ...]:
             host=None,
         ),
         output=None,
-        transitions=OutputAxis(name="FormulaCutpoint", size=1),
+        transitions=OutputAxis(name=TRANSITION_AXIS, size=1),
         laws={},
     )
 

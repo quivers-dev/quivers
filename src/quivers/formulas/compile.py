@@ -1294,11 +1294,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             col for col in formula.fixed_columns if col.category_specific
         )
         category_terms = tuple(
-            term
-            for term in formula.random_terms
-            if term.column is not None and term.column.category_specific
+            term for term in formula.random_terms if term.category_specific
         )
-        if category_columns or category_terms:
+        if formula.category_specific:
             if self._family.ordinal is None:
                 raise ValueError("cs terms require an ordinal response family")
             if (
@@ -1345,10 +1343,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 and re.fullmatch(r"mu\d+", name)
             ):
                 continue
-            if any(col.category_specific for col in predictor.fixed_columns) or any(
-                term.column is not None and term.column.category_specific
-                for term in predictor.random_terms
-            ):
+            if predictor.category_specific:
                 raise ValueError(f"cs terms are only valid for mu, not {name!r}")
         interval = self._family.response_interval
         if interval is not None:
@@ -2073,13 +2068,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             return ""
 
         ordered = spec.kind in {"cumulative", "hurdle_cumulative"}
-        constrained_cs = ordered and (
-            any(column.category_specific for column in formula.fixed_columns)
-            or any(
-                term.column is not None and term.column.category_specific
-                for term in formula.random_terms
-            )
-        )
+        constrained_cs = ordered and (formula.category_specific)
         cutpoint_index = "FormulaCutpoint"
         self._append_finite_object(statements, cutpoint_index, n_cutpoints)
 
@@ -2096,10 +2085,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     "thres(gr = ...) is supported for the ordinal families with "
                     "flexible thresholds"
                 )
-            if any(column.category_specific for column in formula.fixed_columns) or any(
-                term.column is not None and term.column.category_specific
-                for term in formula.random_terms
-            ):
+            if formula.category_specific:
                 raise ValueError(
                     "Cannot use category specific effects in models with "
                     "multiple thresholds."
@@ -3310,12 +3296,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             category-specific coefficient.
         """
         if not any(
-            column is not None and column.category_specific
+            predictor.category_specific
             for _, _, predictor in self._predictor_items(formula)
-            for column in (
-                *predictor.fixed_columns,
-                *(term.column for term in predictor.random_terms),
-            )
         ):
             return None
         return transition_axis(

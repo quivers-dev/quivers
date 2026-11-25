@@ -2234,13 +2234,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             graph.leaves.keys() | graph.expressions.keys()
         ):
             site = f"nlpar_{parameter}"
-        specific = parameter == "mu" and (
-            any(column.category_specific for column in self.formula.fixed_columns)
-            or any(
-                term.column is not None and term.column.category_specific
-                for term in self.formula.random_terms
-            )
-        )
+        specific = parameter == "mu" and (self.formula.category_specific)
         width = self._predictor_width(parameter)
         if specific:
             width = (
