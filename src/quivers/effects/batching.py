@@ -6,8 +6,8 @@ steps once, on values that carry the position axis
 the step for a Python callable the program cannot inspect and by the
 morphism for a distribution, and is never found out by running it.
 `batching_obstacles` reads the declarations of a program and of the
-programs it calls and scans, and
-[`require_batchable`][quivers.effects.joint_plan.require_batchable] raises
+programs it calls and scans, and the batch methods of
+[`PotentialFn`][quivers.inference.mcmc.PotentialFn] raise
 `UnbatchableProgramError` when any of them stands in the way.
 """
 
