@@ -16,6 +16,7 @@ from quivers.formulas import (
     fit,
     formula_from_data,
     get_prior,
+    links,
 )
 from quivers.inference import trace
 from quivers.inference.mcmc.driver import MCMCResult
@@ -196,9 +197,12 @@ def test_frechet_prior_override_is_conditioned_on_the_mean_domain():
 
 
 def test_frechet_unsafe_regression_link_is_refused():
-    lens_family = families["frechet"].with_links(nu="identity")
-    with pytest.raises(ValueError, match="logm1"):
-        FormulaToQVRModule(lens_family)
+    frechet = families["frechet"]
+    with pytest.raises(ValueError, match=r"admissible links are \['logm1'\]"):
+        frechet.with_links(nu="identity")
+    nu = frechet.aux_params[0].with_(link=links["identity"])
+    with pytest.raises(ValueError, match=r"must exceed 1.*Link\.image"):
+        FormulaToQVRModule(frechet.with_(aux_params=(nu,)))
 
 
 @pytest.mark.parametrize("shape", [1.01, 1.7, 3.0])
