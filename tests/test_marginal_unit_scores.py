@@ -16,7 +16,7 @@ import torch
 import torch.distributions as D
 
 from quivers.continuous import marginal as marginal_module
-from quivers.continuous.measure import Mixture
+from quivers.continuous.measure import Independent, Mixture
 from quivers.continuous.program_steps import Observe, Score
 from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import loads
@@ -27,6 +27,7 @@ from quivers.effects import (
     observation_scoring,
     scale,
 )
+from quivers.effects import joint_plan
 from quivers.effects.joint_plan import prepare_joint
 from quivers.inference import (
     ELBO,
@@ -37,6 +38,7 @@ from quivers.inference import (
     Predictive,
     posterior_expectations,
 )
+from quivers.inference import registry as registry_module
 from quivers.inference._likelihood import (
     collect_log_likelihood,
     collect_unit_log_likelihood,
@@ -1020,21 +1022,68 @@ def test_truncated_components_are_mixed_after_truncation() -> None:
 # --- scoring paths -----------------------------------------------------
 
 
-def test_the_compiled_plan_and_the_machine_agree() -> None:
-    for source, values in (
-        (AROUND_BY_ROW, {**_around(), "tidx": torch.tensor([2, 0, 1, 5, 4, 3])}),
-        (NEST, _nest()),
-        (PRODUCT, _product()),
-    ):
+def _check_plans() -> None:
+    """Every plan against the machine, and its joint against the densities."""
+    prior, _, probability = _around_by_class()
+    index = torch.tensor([2, 0, 1, 5, 4, 3])
+    scores = D.Bernoulli(probability[index]).log_prob(_around()["accept"][:, None])
+    product = _product()
+    powered = product["power"][:, None] * D.Normal(product["mu"], 1.0).log_prob(
+        product["y"][:, None]
+    )
+    flat = product["g"] * 2 + product["h"]
+    cases = (
+        (
+            AROUND_BY_ROW,
+            {**_around(), "tidx": index},
+            torch.logsumexp(prior + scores, -1).sum() + _around_prior(),
+        ),
+        (NEST, _nest(), _nest_units(_nest()).sum() + _nest_prior(_nest())),
+        (
+            PRODUCT,
+            product,
+            torch.logsumexp(product["pa"].log() + _grouped(flat, powered, 4), -1).sum()
+            + D.Normal(0.0, 1.0).log_prob(product["mu"]).sum()
+            + D.HalfNormal(1.0).log_prob(product["pa"]).sum(),
+        ),
+    )
+    x = torch.zeros(1, 1, dtype=torch.long)
+    for source, values, expected in cases:
         program = _compiled(source)
-        x = torch.zeros(1, 1, dtype=torch.long)
         plan = prepare_joint(program, x, values)
         assert not isinstance(plan, str)
         densities, total = plan.evaluate(x, values)
         recorded = _run(program, values)
+        assert float(total) == pytest.approx(float(expected), abs=_TOLERANCE)
         assert torch.equal(total, recorded.log_joint)
         for name, density in densities.items():
             assert torch.equal(density, recorded.sites[name].log_prob)
+
+
+def test_the_compiled_plan_and_the_machine_agree() -> None:
+    _check_plans()
+
+
+def test_a_plan_that_drops_or_doubles_the_score_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exact = joint_plan._ScoreAdd.execute
+
+    def dropped(
+        instruction: joint_plan._ScoreAdd, state: joint_plan._Evaluation
+    ) -> None:
+        state.slots[instruction.target] = None
+
+    def doubled(
+        instruction: joint_plan._ScoreAdd, state: joint_plan._Evaluation
+    ) -> None:
+        exact(instruction, state)
+        exact(instruction, state)
+
+    for wrong in (dropped, doubled):
+        monkeypatch.setattr(joint_plan._ScoreAdd, "execute", wrong)
+        with pytest.raises(AssertionError):
+            _check_plans()
 
 
 def test_many_runs_score_as_each_run_alone() -> None:
@@ -1097,23 +1146,97 @@ def test_tempering_puts_the_block_in_the_likelihood() -> None:
     )
 
 
-def test_a_response_is_never_a_latent() -> None:
+def _check_refusal() -> None:
+    """A response with no value is refused, and one with a value is data."""
     values = {**_around(), "tidx": torch.arange(6)}
     program = _compiled(AROUND_BY_ROW)
+    data = set(values) - {"res_logits", "noise"}
+    assert LatentRegistry.from_model(program, data).names == ("res_logits", "noise")
     with pytest.raises(ValueError, match="data of the model rather than a latent"):
-        LatentRegistry.from_model(program, set(values) - {"accept", "res_logits"})
+        LatentRegistry.from_model(program, data - {"accept"})
+    released = {name: value for name, value in values.items() if name != "accept"}
+    with pytest.raises(ValueError, match="data of the model rather than a latent"):
+        LatentRegistry.from_trace(program, _run(program, released))
 
 
-def test_variational_steps_run_on_a_grouped_block() -> None:
+def test_a_response_is_never_a_latent() -> None:
+    _check_refusal()
+
+
+def test_a_registry_that_admits_the_response_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(registry_module, "MarginalizedFactor", Independent)
+    with pytest.raises((pytest.fail.Exception, AssertionError, NotImplementedError)):
+        _check_refusal()
+
+
+def _check_objective() -> None:
+    """The ELBO at seeded draws, and its gradient, against the densities."""
     values = {**_around(), "tidx": torch.arange(6)}
     program = _compiled(AROUND_BY_ROW)
-    for name in ("res_logits", "noise"):
-        values.pop(name)
-    guide = AutoNormalGuide(program, observed_names=set(values))
-    optimizer = torch.optim.Adam(guide.parameters(), lr=1e-2)
-    svi = SVI(program, guide, optimizer, ELBO())
-    losses = [svi.step(torch.zeros(1, 1, dtype=torch.long), values) for _ in range(5)]
-    assert all(math.isfinite(loss) for loss in losses)
+    data = {
+        name: value
+        for name, value in values.items()
+        if name not in ("res_logits", "noise")
+    }
+    guide = AutoNormalGuide(program, observed_names=set(data))
+    x = torch.zeros(1, 1, dtype=torch.long)
+
+    def gradient(loss: torch.Tensor) -> torch.Tensor:
+        found = torch.autograd.grad(loss, tuple(guide.parameters()))
+        return torch.cat([item.reshape(-1) for item in found])
+
+    torch.manual_seed(11)
+    loss = ELBO()(program, guide, x, data)
+    torch.manual_seed(11)
+    draws = guide.rsample(x)
+    logits, noise = draws["res_logits"].reshape(3), draws["noise"].reshape(())
+    inside = (data["dist"][:, None] <= data["halfwidth"][None]).double()
+    scores = D.Bernoulli(noise + (1 - 2 * noise) * inside).log_prob(
+        data["accept"][:, None]
+    )
+    joint = (
+        torch.logsumexp(logits.log_softmax(-1) + scores, -1).sum()
+        + D.Normal(0.0, 1.0).log_prob(logits).sum()
+        + D.Beta(1.0, 20.0).log_prob(noise)
+    )
+    expected = guide.log_prob(x, draws).sum() - joint
+    assert float(loss) == pytest.approx(float(expected), abs=1e-9)
+    wanted = gradient(expected)
+    assert torch.allclose(gradient(loss), wanted, atol=1e-9)
+    optimizer = torch.optim.SGD(guide.parameters(), lr=1e-2)
+    before = [item.detach().clone() for item in guide.parameters()]
+    torch.manual_seed(11)
+    SVI(program, guide, optimizer, ELBO()).step(x, data)
+    moved = torch.cat(
+        [
+            (new - old).reshape(-1)
+            for new, old in zip(guide.parameters(), before, strict=True)
+        ]
+    )
+    for item, old in zip(guide.parameters(), before, strict=True):
+        item.data.copy_(old)
+    assert torch.allclose(moved, -1e-2 * wanted, atol=1e-9)
+
+
+def test_a_variational_step_descends_the_marginal_objective() -> None:
+    _check_objective()
+
+
+def test_an_objective_without_the_class_sum_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exact = blocks.GroupedBlock.unit_weights
+    for wrong in (
+        # The block scores nothing.
+        lambda *given, **options: exact(*given, **options) * 0.0,
+        # The block scores the first unit for every unit.
+        lambda *given, **options: exact(*given, **options)[:1].expand(6),
+    ):
+        monkeypatch.setattr(blocks.GroupedBlock, "unit_weights", wrong)
+        with pytest.raises(AssertionError):
+            _check_objective()
 
 
 # --- fits ---------------------------------------------------------------
