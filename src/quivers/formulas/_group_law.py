@@ -42,7 +42,7 @@ from quivers.formulas._group_layout import GroupBlockLayout, GroupMemberLayout
 __all__: list[str] = []
 
 
-class LevelCovariance(dx.TaggedUnion, discriminator="kind"):
+class LevelCovariance(dx.TaggedUnion, ValueModel, discriminator="kind"):
     """The covariance between the levels of a grouping factor."""
 
 
