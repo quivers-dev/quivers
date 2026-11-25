@@ -1490,7 +1490,8 @@ each $\ell$ by $h(w,\ell)$ before these reductions, leaving the priors unchanged
 
 The inner block contributes one aggregate per inner group to the enclosing
 block. Equal checked group extents align positionwise, including when their
-object names differ. An inner product of groups may instead refine the outer
+object names differ. A block may hold several inner blocks and observations
+of its own; each is one contribution to the block's units. An inner product of groups may instead refine the outer
 group by a projection, as $G\times H\to G$; reducing its additional group
 coordinates preserves all enclosing class axes. This group aggregation does
 not supply arbitrary missing axes to likelihood parameters. Each parameter
@@ -1502,6 +1503,78 @@ A `sample` inside a block that reads nothing the block binds is drawn once
 before the block, since every value of the latent shares it. A draw whose
 arguments read the latent would be one draw for each class, and the compiler
 rejects it.
+
+#### 2.7.1 Units and row scores {#271-units-and-row-scores}
+
+A score $S$ *factors over a set of units* $U$ when it is a sum $S = \sum_{u \in U} w(u)$ whose term
+$w(u)$ reads the rows that a *row map* sends to $u$ and no other row. Each response $m$ of the score
+has a row map $\iota_m : N_m \to U$. Given the values that the block does not sum out, the rows of
+different units are independent, and under the log-sum-exp reduction
+
+$$
+w(u) = \log p\bigl(\{\, r_m(n) : \iota_m(n) = u \,\} \mid \phi\bigr)
+$$
+
+is the log density of all the rows of $u$ together. The units are the objects the block declares:
+
+| block | units | row map |
+|---|---|---|
+| grouped, `[over=G]` | the elements of $G$ | the map `via` names |
+| grouped over a product, `[over=[G, H]]` | the pairs | the pair of maps |
+| nested grouped blocks | the units of the outermost block | the inner map followed by the projection of the plates |
+| `marginalize z : A <- Bernoulli(...)` | the elements of $A$ | the map `via` names, or the identity |
+| no index and no `over` | one unit | every row to it |
+| a chain carried by a scan ([§2.6.1](#261-a-latent-variable-carried-by-a-scan)) | one unit | every position to it |
+
+A row $n$ of response $m$ has a score of its own when its unit holds no other row of any response,
+$\sum_{m'} |\iota_{m'}^{-1}(\iota_m(n))| = 1$, and the score is then $w(\iota_m(n))$. Otherwise the row
+has none: for two rows in one unit,
+$\log \sum_k \pi_k\, p(r_1 \mid k)\, p(r_2 \mid k)$ is not a sum of a term in $r_1$ and a term in $r_2$
+unless the likelihoods do not depend on $k$. The scores of the units exist in both cases. The row map
+needs to be injective and need not be the identity, and a unit without rows has $w(u) = 0$ when the
+prior sums to one.
+
+In a program with one latent $c$ for all its rows, no row has a score of its own when there are two
+rows or more. A program in which every row has its own $c$ states it, by grouping the block by the
+rows with an identity map. It is another model: its likelihood is
+$\prod_n \sum_k \pi_k\, p(r_n \mid k)$ rather than $\sum_k \pi_k \prod_n p(r_n \mid k)$.
+
+Under the `sum` and `mean` reductions the score factors over the same units, and $w(u)$ is not the
+log density of the rows of $u$, so it is not read as a log likelihood. A likelihood power
+([observation weights](#26-marginalize)) changes the weights that sum to the score. The log
+likelihoods of units and rows leave powers out.
+
+#### 2.7.2 Laws of marginalized responses {#272-laws-of-marginalized-responses}
+
+A response inside a block is a site of the run whose density the block's score holds. A run that is
+given a value for it scores the value there. A run that is given none draws it, from the law of the
+response with the latent summed out, given the values that the run holds. For response $m$ of a
+grouped block, the draw first takes the class of each unit from
+
+$$
+p\bigl(c_u = k \mid \phi, r_1, \ldots, r_{m-1}\bigr)
+\propto
+\pi(u, k) \prod_{m' < m} \prod_{n \,:\, \iota_{m'}(n) = u} p_{F_{m'}}\bigl(r_{m'}(n) ; \theta_{m'}(n, k, \phi)\bigr),
+$$
+
+and then each row from $F_m$ at the class of its unit. Rows of one unit therefore share a class, and
+responses that come before $m$ in the block, observed or drawn, inform it. The product of these
+conditional laws over the responses is the block's joint density. Under nested blocks the classes of
+the outer and inner units are drawn jointly in the same way. A response that an earlier step of the
+program reads is data of the run rather than a site.
+
+Each row also has a marginal law given $\phi$ alone,
+
+$$
+p(r_m(n) \mid \phi) = \sum_k \pi(\iota_m(n), k)\, p_{F_m}\bigl(r_m(n) ; \theta_m(n, k, \phi)\bigr),
+$$
+
+whose expectation is the class-weighted mean
+$\sum_k \pi(\iota_m(n), k)\, \mathbb{E}_{F_m}[\,\cdot \mid k\,]$, and for a categorical response the
+class-weighted vector of category probabilities. This expectation exists for a block with one latent
+for all its rows as well, where rows have no scores of their own. A truncated response is truncated
+within each class before the classes are mixed. The laws are defined for the log-sum-exp reduction
+only.
 
 ### 2.8 Effect annotations {#28-effect-signatures}
 
@@ -1823,8 +1896,8 @@ $\ell_{si}=\log p(y_i\mid\theta_s,x_i)$. This is the raw response density;
 it excludes the prior and any fitting weight. A fitting weight can change the
 posterior distribution of $\theta_s$ without changing this conditional score.
 Coordinates of one multivariate event are reduced together, while independent
-observation axes remain separate. A marginalized joint density does not determine
-pointwise response scores without a corresponding likelihood observer.
+observation axes remain separate. Rows that share one value of a summed-out latent
+have a joint score and no score each ([§2.7.1](#271-units-and-row-scores)).
 
 `ModelFit.analysis` and `BayesianFit.analysis` retain draws and these raw scores
 for reuse. An MCMC analysis retains recorded chains and their sampler statistics.

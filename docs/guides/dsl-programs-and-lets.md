@@ -272,7 +272,8 @@ export mixture1
 ```
 
 This adds $\log \sum_k \pi_k \prod_{n} \mathcal N(y_n; \mu_k, 1)$ to the log joint
-density. One latent per row, or per group of rows, is the grouped form,
+density, which is not a sum of one term per row, so the rows have a joint score and no
+[scores of their own](../semantics/programs.md#271-units-and-row-scores). One latent per row, or per group of rows, is the grouped form,
 `[over=G]` on the block with `[via=idx]` on each observation, described under
 [grouped marginalization](programs-hierarchical.md#grouped-marginalization-fibred-discrete-latents).
 

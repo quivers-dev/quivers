@@ -256,9 +256,25 @@ the raw terms with the zero-weight convention before summing. Event coordinates
 of one multivariate response are reduced together, while independent response
 rows remain separate.
 
-An observation hidden inside exact marginalization requires a corresponding
-marginal-likelihood observer. The current method refuses that case rather
-than assigning the whole marginalized joint to individual observations.
+An observation inside a `marginalize` block has a log likelihood per row when
+no two rows share one value of the summed-out latent, as in a block grouped by
+the rows with an identity index map. When rows share a value, the method raises
+[`UnfactoredObservationError`](../api/effects/units.md#quivers.effects.units.UnfactoredObservationError),
+whose message names the rows and the program that gives each row its own
+value. That program is another model, so the choice is the modeler's.
+
+`unit_log_likelihood` returns the log likelihood of each
+[unit](../semantics/programs.md#271-units-and-row-scores) instead: one per group
+of a grouped block, one per row of an ordinary observation, and one for a block
+whose rows all share one value. Each result is a
+[`UnitLogLikelihood`](../api/inference/units.md#quivers.inference.units.UnitLogLikelihood)
+with the unit of every row:
+
+```python
+units = fit.unit_log_likelihood(num_samples=100)["y"]
+assert units.log_likelihood.shape[-1] == 3
+assert units.row_units["y"].tolist() == [0, 1, 2]
+```
 
 ### Reuse posterior analysis
 
@@ -268,7 +284,9 @@ statistics in a `PosteriorAnalysis`. Formula fits expose the same method.
 Its `summary()`, `waic(var_name="y")`, `to_datatree(coords=..., dims=...)`, and
 `loo(var_name="y")` methods reuse retained tensors without replaying the model.
 Select `var_name` explicitly when the program has multiple response variables;
-the interface does not combine unrelated observation units.
+the interface does not combine unrelated observation units. With
+`units="factors"`, the analysis holds one score per unit, so that `loo` and
+`waic` leave out one group of a grouped block at a time.
 
 Variational analysis draws from the guide once and reports uncertainty without
 MCMC convergence diagnostics. Recorded MCMC chains retain their diagnostics.

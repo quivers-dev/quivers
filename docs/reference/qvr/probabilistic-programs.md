@@ -513,6 +513,12 @@ refuses the block with `marginalize:unknown-cardinality:<family>` when neither f
 Inside the block the latent is an integer in that range, so `real(z + 1)` is 1 at the first value on
 every target.
 
+A family with a fixed set of atoms has no values for the index object to name. In
+`marginalize z : Row <- Bernoulli(probs=p)` the object indexes the latent, so there is one `z` per
+element of `Row`, whether `p` is one number or one number per element. An observation over `Row`
+reads its own element, and an observation over other rows names its index map with `via`.
+Without the index object there is one `z` for the block.
+
 The reductions are:
 
 | Reduction | Aggregate over the latent's values |
@@ -521,6 +527,12 @@ The reductions are:
 | `sum` | the arithmetic sum of the block's weights |
 | `mean` | the arithmetic mean of the block's weights |
 
+A response of the block has a log likelihood per row when each row's latent belongs to that row
+alone, and the joint log likelihood of the rows of one latent exists in every case
+([units and row scores](../../semantics/programs.md#271-units-and-row-scores)). A run that is given no
+value for the response draws the latent and then the response
+([response laws](../../semantics/programs.md#272-laws-of-marginalized-responses)).
+
 A nested grouped block retains a separate class axis for each enclosing
 latent. An inner likelihood may depend on both an outer and an inner class,
 including through chained `let` bindings; the inner reduction removes only
@@ -528,7 +540,8 @@ its own class axis. Two or three class sets may have different cardinalities.
 Each observation's `via` map still gathers group-indexed values to that
 observation's rows before their scores are aggregated.
 
-The inner block returns one aggregate per group to the enclosing block.
+The inner block returns one aggregate per group to the enclosing block,
+which may hold several inner blocks and observations of its own.
 Equal checked group extents align positionwise, even with distinct object
 names. An inner product grouping can refine the enclosing grouping by
 projection, but its likelihood parameters must satisfy the inner checked
@@ -839,6 +852,10 @@ Forms outside the forward algorithm are refused where they are written, on both 
 | `scope` | a chain inside a `marginalize` block |
 | `outputs` | a chain asked for every state with `outputs=all` |
 | `entry` | a draw or call of the cell other than as a scan's cell |
+
+The compiled runtime scores a chain as one
+[unit](../../semantics/programs.md#271-units-and-row-scores), so its positions have no log likelihoods
+of their own.
 
 Every transpile target refuses a marginalized chain with `scan:marginal:no-lowering:<cell>`.
 

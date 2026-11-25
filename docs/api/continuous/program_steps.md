@@ -9,7 +9,11 @@ records, each of which does one thing in the environment of named values
 [`Score`](#quivers.continuous.program_steps.Score) adds a log weight,
 [`Call`](#quivers.continuous.program_steps.Call) runs a subprogram's steps in place, and
 [`Scan`](#quivers.continuous.program_steps.Scan) runs a step program once per position of a
-sequence. The [`Indexed`](#quivers.continuous.program_steps.Indexed) argument form indexes a
+sequence. A score whose contribution is a sum over
+[units](../../semantics/programs.md#271-units-and-row-scores) declares them in a
+[`UnitFactorization`](#quivers.continuous.program_steps.UnitFactorization), and an observation whose
+density a score holds draws its response from a
+[`ResponseLaw`](#quivers.continuous.program_steps.ResponseLaw). The [`Indexed`](#quivers.continuous.program_steps.Indexed) argument form indexes a
 collection, and [`reading`](#quivers.continuous.program_steps.reading) declares the names a step
 function reads. A function given to a step declares whether it can be evaluated at
 [many positions](../../guides/inference-mcmc.md#densities-at-many-positions) at once, through the

@@ -352,9 +352,9 @@ source. The step records are:
 | Record | Source form | Fields |
 |---|---|---|
 | [`Draw`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Draw) | `sample x <- f(a, b)` | `names`, `morphism`, `args` |
-| [`Observe`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Observe) | `observe y <- f(a, b)` | `names`, `morphism`, `args` |
+| [`Observe`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Observe) | `observe y <- f(a, b)` | `names`, `morphism`, `args`, and `law` inside a `marginalize` block |
 | [`Let`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Let) | `let w = expression` | `name`, `value` |
-| [`Score`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Score) | a `marginalize` block | `name`, `score` |
+| [`Score`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Score) | a `marginalize` block | `name`, `score`, `units` |
 
 A draw's `args` are names of earlier bindings or
 [`Indexed`](../api/continuous/program_steps.md#quivers.continuous.program_steps.Indexed)

@@ -98,6 +98,7 @@ continuous morphisms.
 - **[Morphisms](continuous/morphisms.md)**: kernels with log densities and sampling methods
 - **[Families](continuous/families.md)**: families of continuous distributions
 - **[Programs](continuous/programs.md)**: probabilistic programs over continuous spaces
+- **[Marginalized responses](continuous/marginal.md)**: laws of responses whose density a marginal score holds
 - **[Boundaries](continuous/boundaries.md)**: discretization and embedding between finite and continuous spaces
 - **[Flows](continuous/flows.md)**: [normalizing flows](https://en.wikipedia.org/wiki/Flow-based_generative_model)
 
@@ -124,6 +125,7 @@ The `inference` package contains variational inference, MCMC, and posterior pred
 - **[ELBO](inference/elbo.md)**: the evidence lower bound and related objectives
 - **[SVI](inference/svi.md)**: stochastic variational inference
 - **[Predictive](inference/predictive.md)**: posterior predictive sampling
+- **[Unit likelihoods](inference/units.md)**: log likelihoods of the independent units of a fit's responses
 - **[MCMC](inference/mcmc.md)**: Hamiltonian Monte Carlo (HMC) and No-U-Turn Sampler (NUTS) kernels, and the runner for several chains
 
 ## Data, Diagnostics, and Formulas

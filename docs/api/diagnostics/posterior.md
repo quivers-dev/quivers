@@ -56,8 +56,10 @@ error. Tensor mappings and returned tensor storage remain caller-owned.
 Log-likelihood tensors have shape `(chain, draw, *observation_shape)`, after
 reducing event coordinates. They contain raw conditional densities, excluding
 priors and likelihood weights. Multiple responses require an explicit `var_name`;
-combining their scores requires a justified common predictive unit. An observation
-hidden inside exact marginalization requires a corresponding likelihood observer.
+combining their scores requires a justified common predictive unit. Rows of a
+marginalized observation that share one value of the summed-out latent have a joint
+score and no scores of their own
+([units and row scores](../../semantics/programs.md#271-units-and-row-scores)).
 
 `waic` needs only PyTorch and at least two pooled posterior draws with finite
 scores. It uses unbiased sample log-score variances, with divisor `S - 1`,
