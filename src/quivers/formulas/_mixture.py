@@ -1339,7 +1339,7 @@ def _shared_blocks(
             module,
             bare,
             lens._family,
-            helper._predictor_items(bare),
+            helper._plan(bare, helper._group_plan),
             helper.group_laws,
             draw=lens._parse_prior,
         )

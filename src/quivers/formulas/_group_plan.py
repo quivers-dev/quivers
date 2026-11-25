@@ -1022,10 +1022,7 @@ class GroupTerm(ValueModel):
             if member.prefix == self.prefix and member.slope == self.slope
         )
         by = law.level.by if member.scale.by_axis is not None else None
-        axes = (
-            member.scale.by_axis if member.scale.cell_axis is None else None,
-            member.scale.component_axis,
-        )
+        labelled = member.scale.component_axis is not None and self.output is not None
         return (
             SiteDecl(
                 name=member.scale.site,
@@ -1033,8 +1030,11 @@ class GroupTerm(ValueModel):
                 section="level",
                 coef=self.slope,
                 group=self.group,
-                axes=tuple(axis for axis in axes if axis is not None),
+                axes=(member.scale.axis,) if member.scale.axis is not None else (),
                 lower=0.0,
+                component_labels=self.output.labels
+                if labelled and self.output is not None
+                else (),
                 partition_labels=by.levels if by is not None else (),
                 rank=self.rank,
             ),

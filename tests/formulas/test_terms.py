@@ -222,6 +222,77 @@ def test_catalogs_hold_the_laws_the_program_draws_from(name):
     assert used <= available
 
 
+CATALOGUE: dict[str, list[tuple[str, str, str | None, str | None, float | None]]] = {
+    "centered": [
+        ("intercept_centered", "Intercept", "Intercept", None, None),
+        ("beta_x", "b", "x", None, None),
+        ("sigma", "sigma", None, None, 0.0),
+    ],
+    "qr": [
+        ("intercept_qr", "Intercept", "Intercept", None, None),
+        ("beta_x_qr", "b", "x", None, None),
+        ("beta_x2_qr", "b", "x2", None, None),
+        ("sigma", "sigma", None, None, 0.0),
+    ],
+    "shared_smooth": [
+        ("smooth_id__1_1_scale", "sds", "s(x, k=5, id=1)", None, 0.0),
+    ],
+    "spectral": [
+        ("sdgp_gpx", "sdgp", "gpx", None, 0.0),
+        ("lscale_gpx", "lscale", "gpx", None, 0.0),
+        ("intercept", "Intercept", "Intercept", None, None),
+        ("sigma", "sigma", None, None, 0.0),
+    ],
+    "monotonic": [
+        ("intercept", "Intercept", "Intercept", None, None),
+        ("beta_x", "b", "x", None, None),
+        ("bsp_mo_z", "b", "mo(z)", None, None),
+        ("simo_moz1", "simo", "moz1", None, None),
+        ("sigma", "sigma", None, None, 0.0),
+    ],
+    "group_uncorrelated": [
+        ("intercept", "Intercept", "Intercept", None, None),
+        ("beta_x", "b", "x", None, None),
+        ("sigma_g_Intercept", "sd", "Intercept", "g", 0.0),
+        ("sigma_g_x", "sd", "x", "g", 0.0),
+        ("sigma", "sigma", None, None, 0.0),
+    ],
+    "bym2": [
+        ("intercept", "Intercept", "Intercept", None, None),
+        ("beta_x", "b", "x", None, None),
+        ("sdcar", "sdcar", None, None, 0.0),
+        ("rhocar", "rhocar", None, None, 0.0),
+    ],
+}
+
+
+@pytest.mark.parametrize("name", CATALOGUE)
+def test_prior_targets_follow_the_declared_sites(name):
+    """The catalogue lists each overridable site once, in its stated order."""
+    lens, _, _, _ = _emit(name)
+    targets = [
+        (target.site, target.class_, target.coef, target.group, target.lower)
+        for target in lens.prior_targets
+    ]
+    if name == "shared_smooth":
+        targets = [target for target in targets if target[1] == "sds"]
+    assert targets == CATALOGUE[name]
+
+
+def test_component_coefficients_carry_the_labels_of_their_coordinates():
+    """A coefficient vector is labelled by the free categories it indexes."""
+    lens, _, _, _ = _emit("categorical")
+    labels = {
+        target.site: target.component_labels
+        for target in lens.prior_targets
+        if target.axes == ("FormulaCategoryLogit",)
+    }
+    assert set(labels) == {
+        target.site for target in lens.prior_targets if target.class_ != "cor"
+    }
+    assert set(labels.values()) == {("B", "C")}
+
+
 def _inputs(name: str) -> dict[str, torch.Tensor]:
     lens, _, _, _ = _emit(name)
     return bind_inputs(item for term in _terms(lens) for item in term.inputs())
@@ -388,7 +459,7 @@ def test_no_module_tests_the_class_of_a_term():
 
 
 #: Modules that plan and emit predictors.
-PLANNED = ("_term.py", "_predictor.py")
+PLANNED = ("_term.py", "_predictor.py", "_prior_emission.py")
 
 
 def test_parsed_kinds_are_read_only_by_the_plan():

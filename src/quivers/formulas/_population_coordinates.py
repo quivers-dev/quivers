@@ -22,7 +22,7 @@ Both maps are linear with constant Jacobian (one for centering,
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 
 import didactic.api as dx
 import numpy as np
@@ -417,6 +417,7 @@ class PopulationTerm(ValueModel):
             default=self.prior,
             coef=column.name,
             axes=(self.output.name,) if self.output is not None else (),
+            component_labels=self.output.labels if self.output is not None else (),
             divisor=divisor,
             multiplier=multiplier,
             rank=rank,
@@ -444,29 +445,6 @@ class PopulationTerm(ValueModel):
             None.
         """
         return None
-
-
-def sampled_site(site: str, samples: Collection[str]) -> str:
-    """Map a reported coefficient site to the site actually sampled.
-
-    Parameters
-    ----------
-    site : str
-        Reported site (``intercept`` or ``beta_<column>`` with a prefix).
-    samples : collection of str
-        Sampled site names of the emitted program.
-
-    Returns
-    -------
-    str
-        The site itself, its centered intercept, or its QR coordinate.
-    """
-    if site in samples:
-        return site
-    for suffix in (CENTERED_SUFFIX, QR_SUFFIX):
-        if site + suffix in samples:
-            return site + suffix
-    return site
 
 
 def reported_coefficients(formulas: Sequence[tuple[str, str, Formula]]) -> list[str]:

@@ -514,7 +514,7 @@ def design_terms(
     return tuple(terms)
 
 
-def _group_term(
+def group_term(
     formula: Formula,
     prefix: str,
     position: int,
@@ -715,7 +715,7 @@ def predictor_terms(
         else ()
     )
     groups: tuple[Term, ...] = tuple(
-        _group_term(formula, prefix, position, term, output, laws)
+        group_term(formula, prefix, position, term, output, laws)
         for position, term in randoms
         if (position, term) not in specific_randoms
     )
@@ -735,7 +735,7 @@ def predictor_terms(
             transform=False,
         ),
         *(
-            _group_term(formula, prefix, position, term, transitions, laws)
+            group_term(formula, prefix, position, term, transitions, laws)
             for position, term in specific_randoms
         ),
     )

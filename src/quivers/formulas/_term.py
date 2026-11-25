@@ -172,6 +172,8 @@ class SiteDecl(ValueModel):
         divides the scale of a default prior.
     multiplier : float or None
         Factor multiplying the scale of a default prior.
+    component_labels : tuple[str, ...]
+        Labels of the output coordinates indexing the site.
     partition_labels : tuple[str, ...]
         Labels of the partition of the levels indexing the site.
     scoped : bool
@@ -193,6 +195,7 @@ class SiteDecl(ValueModel):
     overridable: bool = True
     divisor: float | None = None
     multiplier: float | None = None
+    component_labels: tuple[str, ...] = ()
     partition_labels: tuple[str, ...] = ()
     scoped: bool = True
     rank: int = 0

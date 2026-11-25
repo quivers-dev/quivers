@@ -1850,11 +1850,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             module,
             value,
             self._family,
-            self._predictor_items(value),
+            self._predictors,
             self.group_laws,
-            nonlinear_names=()
-            if self._predictor_graph is None
-            else tuple(self._predictor_graph.leaves),
             draw=self._parse_prior,
             thresholds_by=self._thresholds_by,
         )

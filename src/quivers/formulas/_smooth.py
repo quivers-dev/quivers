@@ -1579,6 +1579,7 @@ class BasisTerm(ValueModel):
             default=self.prior,
             coef=self.label,
             axes=(self.output.name,) if self.output is not None else (),
+            component_labels=self.output.labels if self.output is not None else (),
             lower=0.0,
         )
         innovations = SiteDecl(

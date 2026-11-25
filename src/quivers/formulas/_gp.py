@@ -1784,30 +1784,6 @@ def exact_contribution(
     return latent @ torch.as_tensor(rows, dtype=torch.float64).T
 
 
-def gp_prior_sites(
-    block: GaussianProcessBlock, prefix: str
-) -> tuple[tuple[str, str, str], ...]:
-    """List ``(site, class, coef)`` of a block's hyperparameters.
-
-    Parameters
-    ----------
-    block : GaussianProcessBlock
-        Retained block.
-    prefix : str
-        Owning predictor namespace.
-
-    Returns
-    -------
-    tuple[tuple[str, str, str], ...]
-        brms classes ``sdgp`` and ``lscale`` with their coefficient labels.
-    """
-    sdgp, lscales = block.sites(prefix)
-    return ((sdgp, "sdgp", block.label),) + tuple(
-        (site, "lscale", label)
-        for site, label in zip(lscales, block.lscale_labels, strict=True)
-    )
-
-
 def spectral_density(
     block: GaussianProcessBlock, sdgp: torch.Tensor, lscales: tuple[torch.Tensor, ...]
 ) -> torch.Tensor:

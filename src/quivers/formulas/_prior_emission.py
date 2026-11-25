@@ -36,10 +36,7 @@ from quivers.formulas._ast import (
 )
 from quivers.formulas._autocor import autocor_matrix_targets, autocor_prior_target
 from quivers.formulas._category_formulas import scale_parameter
-from quivers.formulas._gp import gp_prior_sites
 from quivers.formulas._group_law import LKJCorrelation, option_prior_sites
-from quivers.formulas._latent_effects import field_terms
-from quivers.formulas._monotonic_emission import monotonic_prior_sites
 from quivers.formulas._term import catalogue_sites
 from quivers.formulas._priors import PriorTarget, PriorSpec, RegularizedHorseshoe, R2D2
 
@@ -50,7 +47,6 @@ from quivers.formulas._brms_priors import (
     flat_event_rank,
     join_main_rules,
 )
-from quivers.formulas._population_coordinates import sampled_site
 
 
 def _ordered_steps(steps: Sequence[ProgramStep]) -> tuple[ProgramStep, ...]:
@@ -412,11 +408,9 @@ def build_prior_targets(
     predictors,
     laws,
     *,
-    nonlinear_names=(),
     draw,
     thresholds_by=None,
     predictor_scopes=None,
-    predictor_component_labels=None,
 ):
     """Combine explicit formula roles, group-block laws, and actual sample axes.
 
@@ -428,12 +422,10 @@ def build_prior_targets(
         Response layout and retained authored labels.
     family : Family
         Response and auxiliary parameter metadata.
-    predictors : Sequence
-        Canonical predictor_items output with labels, prefixes, and designs.
+    predictors : Sequence[Predictor]
+        Planned predictors, whose terms declare their sites.
     laws : Sequence[GroupBlockLaw]
         Laws of the group blocks of the same emission.
-    nonlinear_names : Collection[str]
-        Names of retained nonlinear parameter designs.
     draw : Callable
         Existing compositional prior parser.
     thresholds_by : str or None
@@ -441,8 +433,6 @@ def build_prior_targets(
     predictor_scopes : Mapping or None
         Explicit response/dpar/nlpar coordinates for a joint program's
         existing predictor prefixes. Ordinary programs derive their scopes.
-    predictor_component_labels : Mapping or None
-        Free component labels for each explicitly indexed joint predictor.
 
     Returns
     -------
@@ -457,10 +447,7 @@ def build_prior_targets(
     }
     sizes = finite_object_sizes(module)
     targets = {}
-    scopes = {
-        prefix: ({"nlpar": name} if name in nonlinear_names else {"dpar": name})
-        for name, prefix, _ in predictors
-    }
+    scopes = {predictor.prefix: predictor.scope for predictor in predictors}
     scopes.update(predictor_scopes or {})
     labels = ()
     if family.response is not None:
@@ -472,7 +459,7 @@ def build_prior_targets(
             names = tuple(str(i) for i in sorted(set(formula.response_values.tolist())))
         labels = tuple(str(names[i]) for i in family.response.coordinate_indices(names))
 
-    def add(site, role, *, lower=None, upper=None, component_labels=None, **metadata):
+    def add(site, role, *, lower=None, upper=None, **metadata):
         if site not in samples or site in targets:
             return
         step = samples[site]
@@ -495,79 +482,27 @@ def build_prior_targets(
             lower=lower,
             upper=upper,
             event_rank=event_rank,
-            component_labels=(labels if component_labels is None else component_labels)
-            if axes and role in {"b", "Intercept", "sd", "sds"}
-            else (),
             **metadata,
         )
 
-    members = {
-        (member.prefix, law.group, member.slope): (law, member)
-        for law in laws
-        for member in law.members
-    }
-    for _name, prefix, predictor in predictors:
-        for term in predictor.design_terms:
-            # brms gp(): classes sdgp and lscale in place of one sds.
-            if term.gp is not None:
-                for site, role, coef in gp_prior_sites(term.gp, prefix):
-                    add(
-                        site,
-                        role,
-                        coef=coef,
-                        lower=0.0,
-                        component_labels=(predictor_component_labels or {}).get(prefix),
-                        **scopes[prefix],
-                    )
-                continue
-            add(
-                prefix + (term.scale_group or term.qvr_name) + "_scale",
-                "sds",
-                coef=term.term,
-                lower=0.0,
-                component_labels=(predictor_component_labels or {}).get(prefix),
-                **scopes[prefix],
-            )
-        for column in predictor.fixed_columns:
-            # Centered and QR predictors sample transformed coordinates.
-            site = sampled_site(
-                prefix
-                + ("intercept" if column.is_intercept else "beta_" + column.qvr_name),
-                samples,
-            )
-            add(
-                site,
-                "Intercept" if column.is_intercept else "b",
-                coef=column.name,
-                component_labels=(predictor_component_labels or {}).get(prefix),
-                **scopes[prefix],
-            )
-        # brms mo(): class b for bsp, class simo for each simplex.
-        for site, role, coef in monotonic_prior_sites(predictor, prefix):
-            add(
-                site,
-                role,
-                coef=coef,
-                component_labels=(predictor_component_labels or {}).get(prefix),
-                **scopes[prefix],
-            )
-        for term in predictor.random_terms:
-            law, member = members.get((prefix, term.group, term.slope), (None, None))
-            if law is None or member is None:
-                continue
-            by = law.level.by if member.scale.by_axis is not None else None
-            add(
-                member.scale.site,
-                "sd",
-                coef=term.slope,
-                group=term.group,
-                lower=0.0,
-                component_labels=(predictor_component_labels or {}).get(prefix)
-                if member.scale.component_axis is not None
-                else (),
-                partition_labels=by.levels if by is not None else (),
-                **scopes[prefix],
-            )
+    def add_terms(*, deferred):
+        for predictor in predictors:
+            for site in catalogue_sites(
+                term for term in predictor.terms if term.deferred is deferred
+            ):
+                add(
+                    site.name,
+                    site.class_,
+                    coef=site.coef,
+                    group=site.group,
+                    lower=site.lower,
+                    upper=site.upper,
+                    component_labels=site.component_labels,
+                    partition_labels=site.partition_labels,
+                    **(scopes[predictor.prefix] if site.scoped else {}),
+                )
+
+    add_terms(deferred=False)
     # brms gr(dist = "student") df and gr(by =) per-level correlations.
     for site, role, group, coef, lower in option_prior_sites(laws):
         add(site, role, group=group, coef=coef, lower=lower)
@@ -634,8 +569,7 @@ def build_prior_targets(
             add(name, name, lower=0.0, dpar=name)
     for site, role in autocor_matrix_targets(family):
         add(site, role)
-    for site in catalogue_sites(field_terms(formula)):
-        add(site.name, site.class_, lower=site.lower, upper=site.upper)
+    add_terms(deferred=True)
     return tuple(targets.values())
 
 

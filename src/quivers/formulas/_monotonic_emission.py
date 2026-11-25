@@ -411,34 +411,6 @@ def monotonic_prediction_bindings(
     return values
 
 
-def monotonic_prior_sites(
-    formula: Formula, prefix: str
-) -> tuple[tuple[str, str, str], ...]:
-    """List the overrideable sites of one predictor's ``mo()`` terms.
-
-    Parameters
-    ----------
-    formula : Formula
-        One predictor's evaluated terms.
-    prefix : str
-        Predictor namespace.
-
-    Returns
-    -------
-    tuple[tuple[str, str, str], ...]
-        Site, brms class (``b`` or ``simo``), and coefficient label.
-    """
-    sites: list[tuple[str, str, str]] = [
-        (coefficient_site(prefix, term), "b", term.name)
-        for term in formula.monotonic_terms
-    ]
-    sites.extend(
-        (simplex.site, "simo", simplex.label)
-        for simplex in simplex_sites(formula, prefix).values()
-    )
-    return tuple(sites)
-
-
 class MonotonicRow(ValueModel):
     """One special-effects column: a coefficient times a monotonic row value.
 

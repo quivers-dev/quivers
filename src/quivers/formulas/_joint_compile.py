@@ -52,7 +52,13 @@ from quivers.formulas._group_law import (
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._group_emission import draw_level, emit_group_block
 from quivers.formulas._group_plan import check_names, level_law, plan_joint_block
-from quivers.formulas._term import bind_inputs, declare_inputs
+from quivers.formulas._predictor import (
+    Predictor,
+    group_term,
+    response_axis,
+    slot_link,
+)
+from quivers.formulas._term import OutputAxis, bind_inputs, declare_inputs
 from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
     apply_prior_plan,
@@ -1039,9 +1045,8 @@ def _shared_groups(
     tuple[QiecValueParameter, ...],
     dict[str, torch.Tensor],
     dict[str, _GroupValues],
-    list[tuple[str, str, Formula]],
+    list[Predictor],
     dict[str, dict[str, str]],
-    dict[str, tuple[str, ...]],
 ]:
     """Emit one existing Gaussian block for each cross-response shared ID.
 
@@ -1057,8 +1062,7 @@ def _shared_groups(
     tuple
         The emitting lens, the grouping formula, object declarations, program
         steps, runtime parameters and their bound inputs, shared coefficients
-        for each response, namespaced predictors, their response scopes, and
-        their component labels.
+        for each response, namespaced predictors, and their response scopes.
     """
     blocks: dict[tuple[str, str], list[tuple[str, str, str, Formula, RandomTerm]]] = {}
     for name, (lens, formula) in components.items():
@@ -1086,8 +1090,7 @@ def _shared_groups(
     statements: list[Statement] = []
     steps: list[ProgramStep] = []
     scopes: dict[str, dict[str, str]] = {}
-    labels: dict[str, tuple[str, ...]] = {}
-    predictors: list[tuple[str, str, Formula]] = []
+    planned: dict[str, Predictor] = {}
     supplied: dict[str, _GroupValues] = {name: {} for name in components}
     for (group, identity), members in blocks.items():
         if len({item[0] for item in members}) < 2:
@@ -1102,20 +1105,22 @@ def _shared_groups(
             axes.append(axis)
             if axis is not None:
                 emitter._append_finite_object(statements, *axis)
-            scopes[actual_prefix] = {
-                "response": name,
+            role = (
                 "nlpar"
                 if lens._predictor_graph is not None
                 and parameter in lens._predictor_graph.leaves
-                else "dpar": parameter,
-            }
-            if lens._family.response is not None:
-                names = lens._component_labels(formula)
-                labels[actual_prefix] = tuple(
-                    names[index]
-                    for index in lens._family.response.coordinate_indices(names)
-                )
-            predictors.append((parameter, actual_prefix, predictor))
+                else "dpar"
+            )
+            scopes[actual_prefix] = {"response": name, role: parameter}
+            planned.setdefault(
+                actual_prefix,
+                Predictor(
+                    parameter=parameter,
+                    role=role,
+                    prefix=actual_prefix,
+                    link=slot_link(lens._family, parameter),
+                ),
+            )
         law = plan_joint_block(
             group,
             "joint_shared_" + identity,
@@ -1133,8 +1138,34 @@ def _shared_groups(
             parameterization=emitter._reparameterize,
         )
         values = emit_group_block(emitter, law, statements, steps)
-        for name, _parameter, prefix, _predictor, term in members:
+        for (name, _, prefix, predictor, term), axis in zip(members, axes, strict=True):
             actual_prefix = "response_" + _qvr_name(name) + "__" + prefix
+            lens, formula = components[name]
+            response = response_axis(
+                lens._family,
+                lens._component_labels(formula)
+                if lens._family.response is not None
+                else (),
+            )
+            planned[actual_prefix] = planned[actual_prefix].with_(
+                terms=(
+                    *planned[actual_prefix].terms,
+                    group_term(
+                        predictor,
+                        actual_prefix,
+                        predictor.random_terms.index(term),
+                        term,
+                        OutputAxis(
+                            name=axis[0],
+                            size=axis[1],
+                            labels=response.labels if response is not None else (),
+                        )
+                        if axis is not None
+                        else None,
+                        {(actual_prefix, group, term.slope): law},
+                    ),
+                )
+            )
             supplied[name][(prefix, group, term.slope)] = values[
                 (actual_prefix, group, term.slope)
             ]
@@ -1171,9 +1202,8 @@ def _shared_groups(
         parameters,
         inputs,
         supplied,
-        predictors,
+        list(planned.values()),
         scopes,
-        labels,
     )
 
 
@@ -1250,7 +1280,6 @@ def emit_joint(
         supplied,
         predictors,
         scopes,
-        labels,
     ) = _shared_groups(components, levels)
     global_steps = [*preamble, *global_steps]
     global_parameters = (*external_inputs, *global_parameters)
@@ -1305,7 +1334,6 @@ def emit_joint(
         layouts,
         draw=emitter._parse_prior,
         predictor_scopes=scopes,
-        predictor_component_labels=labels,
     )
     targets.extend(global_targets)
     program = ProgramDecl(
