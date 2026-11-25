@@ -1137,6 +1137,12 @@ def _shared_groups(
             if group in emitter._group_covariances
             else None,
             correlate=True,
+            components=1,
+            vectors={
+                actual_prefix
+                for (actual_prefix, _), axis in zip(actual, axes, strict=True)
+                if axis is not None
+            },
             parameterization=emitter._reparameterize,
         )
         values = emit_group_block(emitter, law, statements, steps)
@@ -1160,6 +1166,9 @@ def _shared_groups(
                             name=axis[0],
                             size=axis[1],
                             labels=response.labels if response is not None else (),
+                            parameters=response.parameters
+                            if response is not None and not term.category_specific
+                            else (),
                         )
                         if axis is not None
                         else None,
