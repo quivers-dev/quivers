@@ -97,60 +97,6 @@ if TYPE_CHECKING:
 
 _Value = TypeVar("_Value")
 
-#: brms 2.23 ``no_mixture``: categorical, multinomial, simplex and continuous
-#: hurdle laws (``is_cont_hurdle``: hurdle_gamma, hurdle_lognormal,
-#: zero_inflated_beta, zero_one_inflated_beta).
-_NO_MIXTURE = frozenset(
-    {
-        "categorical",
-        "multinomial",
-        "dirichlet_multinomial",
-        "dirichlet",
-        "dirichlet2",
-        "logistic_normal",
-        "hurdle_gamma",
-        "hurdle_lognormal",
-        "zero_inflated_beta",
-        "zero_one_inflated_beta",
-    }
-)
-
-#: Families with integer support in brms (``family_info(., "type") == "int"``).
-_INTEGER = frozenset(
-    {
-        "bernoulli",
-        "binomial",
-        "beta_binomial",
-        "poisson",
-        "negative_binomial",
-        "negbinomial2",
-        "geometric",
-        "discrete_weibull",
-        "com_poisson",
-        "hurdle_poisson",
-        "hurdle_negbinomial",
-        "hurdle_cumulative",
-        "zero_inflated_poisson",
-        "zero_inflated_negbinomial",
-        "zero_inflated_binomial",
-        "zero_inflated_beta_binomial",
-        "cumulative",
-        "sratio",
-        "cratio",
-        "acat",
-    }
-)
-
-#: Components this mixture construction refuses, with the reason.
-_UNSUPPORTED = {
-    "wiener": "its signed decision response is not a scalar mixture event",
-    "cox": (
-        "its baseline hazard is shared by construction; brms's Stan program "
-        "for two Cox components declares the baseline data twice and does "
-        "not compile"
-    ),
-}
-
 #: Object carrying the component axis of weights and stacked predictors.
 COMPONENT_AXIS = "FormulaMixtureComponent"
 #: Object carrying the K - 1 positive gaps between ordered intercepts.
@@ -190,18 +136,19 @@ def _component_family(value: str | Family) -> Family:
         value = families[value]
     if not isinstance(value, Family):
         raise TypeError("mixture components must be family names or Family values")
-    if value.mixture is not None or value.name == "mixture":
+    if value.mixture is not None:
         raise ValueError("mixture: a component cannot itself be a mixture")
-    if value.name in _NO_MIXTURE:
-        raise ValueError(
-            f"mixture: family {value.name!r} is not allowed in mixture models: "
-            "brms 2.23 refuses categorical, multinomial, simplex, and continuous "
-            "hurdle and zero-inflated families as mixture components"
-        )
-    if value.name in _UNSUPPORTED:
+    if value.decision_event is not None:
         raise ValueError(
             f"mixture: family {value.name!r} is not supported as a mixture "
-            f"component: {_UNSUPPORTED[value.name]}"
+            "component: its signed decision response is not a scalar mixture event"
+        )
+    if value.baseline is not None:
+        raise ValueError(
+            f"mixture: family {value.name!r} is not supported as a mixture "
+            "component: its baseline hazard is shared by construction; brms's "
+            "Stan program for two Cox components declares the baseline data "
+            "twice and does not compile"
         )
     if value.custom is not None:
         raise ValueError(
@@ -209,7 +156,8 @@ def _component_family(value: str | Family) -> Family:
         )
     if value.response is not None:
         raise ValueError(
-            f"mixture: family {value.name!r} is not allowed in mixture models"
+            f"mixture: family {value.name!r} is not allowed in mixture models: "
+            "a component must have a scalar response event"
         )
     if any(aux.name == "theta" for aux in value.aux_params):
         raise ValueError("mixture: parameter name 'theta' is reserved in mixtures")
@@ -281,7 +229,7 @@ def mixture(
     )
     if len(expanded) < 2:
         raise ValueError("mixture: expecting at least 2 mixture components")
-    integer = {family.name in _INTEGER for family in expanded}
+    integer = {family.native.discrete for family in expanded}
     if len(integer) > 1:
         raise ValueError("mixture: cannot mix families with real and integer support")
     ordinal = {family.ordinal is not None for family in expanded}
@@ -340,6 +288,7 @@ def mixture(
         observe_family="Mixture",
         aux_params=tuple(aux_params),
         trials_parameter=trials,
+        recorded_events=all(family.recorded_events for family in expanded),
         mixture=MixtureSpec(components=expanded, order=chosen, equal=equalities),
     )
 
@@ -451,27 +400,28 @@ def _validate_equalities(
 
 
 def expand_mixture(family: Family, components: int) -> Family:
-    """Read the registered ``"mixture"`` family as a Gaussian mixture.
+    """Repeat the component of a mixture template.
 
     Parameters
     ----------
     family : Family
         A response family.
     components : int
-        Gaussian component count for the bare registered mixture family.
+        Component count of a mixture template.
 
     Returns
     -------
     Family
-        ``mixture("gaussian", nmix=components)`` for the bare registered
-        family, otherwise ``family`` unchanged.
+        The mixture of ``components`` copies of the one component of a
+        template, as the registered ``"mixture"`` family is of the Gaussian,
+        otherwise ``family`` unchanged.
 
     Raises
     ------
     ValueError
         If ``components`` is not an integer of at least two.
     """
-    if family.name != "mixture" or family.mixture is not None:
+    if family.mixture is None or len(family.mixture.components) != 1:
         return family
     if (
         isinstance(components, bool)
@@ -479,7 +429,7 @@ def expand_mixture(family: Family, components: int) -> Family:
         or components < 2
     ):
         raise ValueError("mixture_components must be an integer of at least two")
-    return mixture("gaussian", nmix=components)
+    return mixture(*family.mixture.components, nmix=components)
 
 
 def mixture_distributional(
@@ -1532,7 +1482,7 @@ def emit_mixture(
     assert spec is not None
     count = len(spec.components)
     trials = lens._binomial_trials
-    if spec.components[0].name in _INTEGER:
+    if spec.components[0].native.discrete:
         values = np.asarray(formula.response_values, dtype=np.float64)
         if (
             not np.isfinite(values).all()
@@ -1853,31 +1803,42 @@ def emit_mixture(
         steps.append(_let(WEIGHTS, _var("theta")))
         targets.append(PriorTarget(site="theta", class_="theta", event_rank=1))
     events = event_option_columns(formula.modifiers)
-    gaussian = all(component.family == "Normal" for component in observations)
+    assert lens._family.mixture is not None
+    native = {family.mixture_law for family in lens._family.mixture.components}
+    mixture_law = native.pop() if len(native) == 1 else None
     options = [
         OptionEntry(key=key, value=OptionName(value=column.qvr_name))
         for key, column in events
-        # The Gaussian mixture kernel truncates component-wise itself.
-        if gaussian or key not in {"trunc_lower", "trunc_upper"}
+        # A native mixture law truncates component-wise itself.
+        if mixture_law is not None or key not in {"trunc_lower", "trunc_upper"}
     ]
     if formula.modifiers.weights is not None:
         options.insert(
             0, OptionEntry(key="weights", value=OptionName(value="formula_weights"))
         )
-    if gaussian:
-        # All-Gaussian mixtures use the native MixtureNormal kernel on stacked
-        # component locations and scales.
-        for parameter in ("loc", "scale"):
+    if mixture_law is not None:
+        # The native law of the mixture takes the stacked component arguments.
+        stacked = tuple(
+            argument.parameter
+            for argument in observations[0].args
+            if isinstance(argument, DrawArgNamed)
+        )
+        for parameter in stacked:
             _row_stack(
                 f"mixture_{parameter}",
                 [_argument(component, parameter) for component in observations],
                 steps,
             )
-        family_name = "MixtureNormal"
+        family_name = mixture_law
         arguments: tuple[DrawArgNamed, ...] = (
             DrawArgNamed(parameter="weights", value=DrawArgName(text=WEIGHTS)),
-            DrawArgNamed(parameter="loc", value=DrawArgName(text="mixture_loc")),
-            DrawArgNamed(parameter="scale", value=DrawArgName(text="mixture_scale")),
+            *(
+                DrawArgNamed(
+                    parameter=parameter,
+                    value=DrawArgName(text=f"mixture_{parameter}"),
+                )
+                for parameter in stacked
+            ),
         )
     else:
         family_name = "Mixture"

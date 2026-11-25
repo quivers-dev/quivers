@@ -567,8 +567,8 @@ def _member_axis(
     namespace = "response_" + _qvr_name(name) + "__"
     if lens._family.response is not None and (
         prefix == ""
-        or lens._family.response.kind == "logistic_normal"
-        and prefix == "dpar_sigma_"
+        or lens._family.component_scale is not None
+        and prefix == f"dpar_{lens._family.component_scale.name}_"
     ):
         labels = lens._component_labels(formula)
         width = len(lens._family.response.coordinate_indices(labels))
@@ -598,12 +598,12 @@ def _validate_residual_rows(components: _Components) -> None:
     Raises
     ------
     ValueError
-        If the families are not one common Gaussian or Student family, a
+        If the families do not declare one common elliptical law, a
         response event is not scalar, the rows, subsets, or weights differ,
         a response is censored or truncated, or Student responses do not
         share one ``nu``.
     """
-    kinds = {lens._family.name for lens, _ in components.values()}
+    laws = {lens._family.elliptical for lens, _ in components.values()}
     # Residual autocorrelation terms replace a response's law. brms refuses
     # its covariance terms beside estimated residual correlations; it admits
     # the conditional ARMA formulation there, which this emission lacks.
@@ -620,10 +620,13 @@ def _validate_residual_rows(components: _Components) -> None:
             f"response {label!r}: {binding.term.label} beside estimated residual "
             "correlations is not supported; use set_rescor(False)"
         )
-    if len(kinds) != 1 or not kinds <= {"gaussian", "student_t"}:
+    elliptical = next(iter(laws))
+    if len(laws) != 1 or elliptical is None:
         raise ValueError(
-            "residual correlations require homogeneous Gaussian or Student responses"
+            "residual correlations require homogeneous Gaussian or Student responses, "
+            "families declaring one elliptical residual law (Family.elliptical)"
         )
+    df = elliptical.df
     first = next(iter(components.values()))[1]
     first_weights = first.modifiers.weights
     for lens, formula in components.values():
@@ -653,15 +656,19 @@ def _validate_residual_rows(components: _Components) -> None:
             raise ValueError(
                 "joint residual censoring and truncation require a multivariate recording law"
             )
-        if "nu" in lens._distributional or (
-            lens._predictor_graph is not None and "nu" in lens._predictor_graph.roots
+        if df is not None and (
+            df in lens._distributional
+            or lens._predictor_graph is not None
+            and df in lens._predictor_graph.roots
         ):
-            raise ValueError("correlated Student responses use one shared nu parameter")
-    if kinds == {"student_t"}:
-        values = {lens._fixed_parameters.get("nu") for lens, _ in components.values()}
+            raise ValueError(
+                f"correlated Student responses use one shared {df} parameter"
+            )
+    if df is not None:
+        values = {lens._fixed_parameters.get(df) for lens, _ in components.values()}
         if len(values) != 1:
             raise ValueError(
-                "correlated Student responses require one common fixed or sampled nu"
+                f"correlated Student responses require one common fixed or sampled {df}"
             )
 
 
@@ -719,10 +726,13 @@ def _correlated_residual(
             for argument in observation.args or ()
             if isinstance(argument, DrawArgNamed)
         }
-    student = next(iter(responses.values())).lens._family.name == "student_t"
+    shared = next(iter(responses.values())).lens
+    elliptical = shared._family.elliptical
+    assert elliptical is not None
+    df = elliptical.df
     nu_sites = (
-        {response.names.get("nu") for response in responses.values()}
-        if student
+        {response.names.get(df) for response in responses.values()}
+        if df is not None
         else set()
     )
     nu_prior = next(
@@ -755,29 +765,29 @@ def _correlated_residual(
             component_labels=names,
         )
     )
-    if student:
-        fixed_nu = next(iter(responses.values())).lens._fixed_parameters.get("nu")
+    if df is not None:
+        fixed_nu = shared._fixed_parameters.get(df)
         if fixed_nu is None:
             assert nu_prior is not None
-            steps.append(nu_prior.with_(vars=("nu",)))
+            steps.append(nu_prior.with_(vars=(df,)))
             original = next(
                 target
                 for response in responses.values()
                 for target in response.lens.prior_targets
-                if target.site == "nu"
+                if target.site == df
             )
-            targets.append(original.with_(site="nu", response=None))
+            targets.append(original.with_(site=df, response=None))
         else:
-            steps.append(_let("nu", LetExprLiteral(value=float(fixed_nu))))
+            steps.append(_let(df, LetExprLiteral(value=float(fixed_nu))))
     steps.append(
         _let(
             "formula_joint_zeros",
             _factor((("row", row),), body=LetExprLiteral(value=0.0)),
         )
     )
-    for result, parameter in (
-        ("formula_joint_means_by_response", "loc"),
-        ("formula_joint_scales_by_response", "scale"),
+    for result, quantity in (
+        ("formula_joint_means_by_response", "mu"),
+        ("formula_joint_scales_by_response", elliptical.scale),
     ):
         # Scalar-to-row broadcasting uses the ordinary typed binary operation;
         # nominal row ownership never depends on coincident axis cardinalities.
@@ -785,10 +795,13 @@ def _correlated_residual(
             (
                 index,
                 _add(
-                    arguments_by_response[name][parameter], _var("formula_joint_zeros")
+                    arguments_by_response[name][
+                        response.lens._family.native_parameter(quantity)
+                    ],
+                    _var("formula_joint_zeros"),
                 ),
             )
-            for index, name in enumerate(responses)
+            for index, (name, response) in enumerate(responses.items())
         )
         steps.append(_let(result, _factor((("component", axis),), cases=cases)))
     steps.append(
@@ -820,22 +833,15 @@ def _correlated_residual(
         if first.formula.modifiers.weights is not None
         else None
     )
-    family = "MultivariateStudentT" if student else "MultivariateNormal"
-    arguments = (
-        ("nu", "formula_joint_mu", "formula_joint_scale")
-        if student
-        else ("formula_joint_mu", "formula_joint_scale")
-    )
+    location = ("formula_joint_mu", "formula_joint_scale")
     observation = _draw(
         "formula_joint_response",
-        family,
-        arguments,
+        elliptical.kernel,
+        location if df is None else (df, *location),
         index=TypeName(name=row),
         mode="score",
         weights=weights,
-        parameterization=("df", "loc", "scale_tril")
-        if student
-        else ("loc", "scale_tril"),
+        parameterization=elliptical.parameterization,
     )
     observation = observation.with_(
         options=(
@@ -1183,7 +1189,7 @@ def emit_joint(
         replacements = {
             site: ordinary_prior_step(by_site[site], rule, draw=emitter._parse_prior)
             for site, rule in ordinary.items()
-            if by_site[site] in global_targets or site in {"rescor", "nu"}
+            if by_site[site] in global_targets or by_site[site].response is None
         }
         program = program.with_(
             draws=tuple(
@@ -1216,9 +1222,13 @@ def emit_joint(
                 if target.response is None:
                     continue
                 response = responses[target.response]
-                sigma = response.names.get("sigma")
-                if sigma is not None and "sigma" not in response.lens._distributional:
-                    sigmas[target.site] = sigma
+                residual = response.lens._family.residual_scale
+                if (
+                    residual is not None
+                    and residual.name in response.names
+                    and residual.name not in response.lens._distributional
+                ):
+                    sigmas[target.site] = response.names[residual.name]
             module = apply_prior_plan(
                 module,
                 targets,

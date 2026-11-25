@@ -790,11 +790,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             return self.formula.response_layout.category_values
         if self.formula.response_layout.category_levels:
             return self.formula.response_layout.category_levels
-        if self.family.observe_family not in {
-            "Categorical",
-            "OrderedLogistic",
-            "OrderedProbit",
-        }:
+        if self.family.ordinal is None and not self.family.unordered_categories:
             return ()
         return tuple(
             range(
@@ -1202,11 +1198,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             raise ValueError(
                 "ordinal probabilities depend on thresholds; use posterior_epred"
             )
-        retained_log_rate = (
-            (self.family.name == "com_poisson" or self.family.baseline is not None)
-            and self.family.location_link.name == "log"
-            and parameter == "mu"
-        )
+        retained_log_rate = self.family.retains_log_location and parameter == "mu"
         binding = (
             ("mu" if transform and not retained_log_rate else "eta")
             if parameter == "mu"
@@ -1393,7 +1385,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             raise ValueError(
                 "decision probabilities require a decision response modifier"
             )
-        if self.family.observe_family == "VonMises":
+        if self.family.circular:
             raise TypeError(
                 "a circular response expectation requires an angular convention"
             )
@@ -1413,12 +1405,7 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         draws = self.draws(num_samples=num_samples, seed=seed)
         rows = context.rows
         response = _qvr_name(self.formula.response_name)
-        categories = (
-            len(self.category_labels)
-            if self.family.observe_family == "Categorical"
-            or self.family.response_ordinal() is not None
-            else 0
-        )
+        categories = len(self.category_labels) if self.family.category_response else 0
         if component == "decision":
             categories = 2
 
@@ -1452,11 +1439,12 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             try:
                 return collect_draws(values(), shape)
             except TypeError as error:
-                if self.family.name == "cox":
+                if self.family.baseline is not None:
                     # brms: "Cannot compute expected values of the posterior
                     # predictive distribution for family 'cox'."
                     error.add_note(
-                        "brms refuses posterior_epred for family 'cox' as well: "
+                        "brms refuses posterior_epred for family "
+                        f"{self.family.name!r} as well: "
                         "the baseline hazard is a spline on the observed time "
                         "range, which fixes no mean survival time. Use "
                         "posterior_linpred for the log hazard ratio."
@@ -2105,9 +2093,8 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
         self._formula_predictor(parameter)
         return (
             self.coefficient_labels
-            if response is not None
-            and response.kind == "logistic_normal"
-            and parameter == "sigma"
+            if self.family.component_scale is not None
+            and parameter == self.family.component_scale.name
             else ()
         )
 
@@ -2150,7 +2137,8 @@ class BayesianFit(SinglePostprocess, EvidenceEffectsMethods, ValueModel):
             return len(self.category_labels) - int(response.kind == "logistic_normal")
         return (
             len(self.category_labels) - 1
-            if response.kind == "logistic_normal" and parameter == "sigma"
+            if self.family.component_scale is not None
+            and parameter == self.family.component_scale.name
             else 0
         )
 
@@ -3456,30 +3444,27 @@ def _initial_values(
     parsed, family_obj = prepared.formula, prepared.family
     parameter_formulas = prepared.distributional
     starts: dict[str, torch.Tensor | float] = {}
-    if (
-        family_obj.name in {"shifted_lognormal", "wiener"}
-        and "ndt" in parameter_formulas
-        and next(aux for aux in family_obj.aux_params if aux.name == "ndt").link.name
-        == "log"
-    ):
-        shift_formula = parameter_formulas["ndt"]
-        if any(column.is_intercept for column in shift_formula.fixed_columns):
-            # These are initial coordinates, never a model offset.
-            for column in shift_formula.fixed_columns:
-                name = "dpar_ndt_" + (
-                    "intercept" if column.is_intercept else f"beta_{column.qvr_name}"
-                )
-                starts[name] = (
-                    math.log(float(np.min(parsed.response_values)) / 4)
-                    if column.is_intercept
-                    else 0.0
-                )
-    if (
-        family_obj.name == "wiener"
-        and "ndt" not in parameter_formulas
-        and "ndt" not in (fixed_parameters or {})
-    ):
-        starts["ndt"] = float(np.min(parsed.response_values)) / 4
+    for shift in family_obj.aux_params:
+        if not shift.below_response:
+            continue
+        # These are initial coordinates, never a model offset.
+        start = float(np.min(parsed.response_values)) / 4
+        shift_formula = parameter_formulas.get(shift.name)
+        if shift_formula is None:
+            if not shift.bounded_by_response and shift.name not in (
+                fixed_parameters or {}
+            ):
+                starts[shift.name] = start
+            continue
+        if not shift.link.is_log or not any(
+            column.is_intercept for column in shift_formula.fixed_columns
+        ):
+            continue
+        for column in shift_formula.fixed_columns:
+            name = f"dpar_{shift.name}_" + (
+                "intercept" if column.is_intercept else f"beta_{column.qvr_name}"
+            )
+            starts[name] = math.log(start) if column.is_intercept else 0.0
     starts.update(initial_values or {})
     return starts
 

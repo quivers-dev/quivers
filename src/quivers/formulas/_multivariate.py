@@ -24,9 +24,6 @@ from quivers.formulas._category_formulas import (
 )
 from quivers.formulas._mixture import expand_mixture
 
-#: Response families admitting a residual correlation, following brms.
-RESCOR_FAMILIES: frozenset[str] = frozenset({"gaussian", "student_t"})
-
 _MVBIND = re.compile(r"^\s*mvbind\s*\((?P<names>[^()]*)\)\s*(?P<rest>[|~].*)$", re.S)
 _LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
 
@@ -682,10 +679,10 @@ def default_rescor(responses: Mapping[str, ResponseModel]) -> bool:
     bool
         The brms default.
     """
-    names = {response.resolved_family.name for response in responses.values()}
+    laws = {response.resolved_family.elliptical for response in responses.values()}
     return (
-        len(names) == 1
-        and names <= RESCOR_FAMILIES
+        len(laws) == 1
+        and None not in laws
         and not any(
             uses_missing_response(response.formula) for response in responses.values()
         )
@@ -788,13 +785,16 @@ class MultivariateFormula(ValueModel):
             if not isinstance(response, ResponseModel):
                 raise TypeError("responses must map labels to ResponseModel values")
         if self.rescor:
-            names = {
-                response.resolved_family.name for response in self.responses.values()
-            }
-            if len(names) != 1 or not names <= RESCOR_FAMILIES:
+            resolved = [
+                response.resolved_family for response in self.responses.values()
+            ]
+            laws = {family.elliptical for family in resolved}
+            if len(laws) != 1 or None in laws:
                 raise ValueError(
-                    "rescor requires homogeneous Gaussian or Student responses; "
-                    f"got families {sorted(names)!r}"
+                    "rescor requires homogeneous Gaussian or Student responses, "
+                    "families declaring one elliptical residual law "
+                    "(Family.elliptical); got families "
+                    f"{sorted({family.name for family in resolved})!r}"
                 )
 
     def __add__(

@@ -704,11 +704,51 @@ def test_rejected_specifications(options, message):
         formula_to_qvr("y ~ x", data=frame, **options)
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "hurdle_gamma",
+        "hurdle_lognormal",
+        "zero_inflated_beta",
+        "zero_one_inflated_beta",
+        "xbeta",
+        "zero_inflated_asym_laplace",
+    ],
+)
+def test_components_with_a_point_mass_fit_and_predict(name):
+    generator = np.random.default_rng(3)
+    rows = 40
+    family = families[name]
+    interval = family.response_interval
+    assert interval is not None
+    if interval.upper is None and interval.lower is not None:
+        response = generator.gamma(2.0, 1.0, size=rows)
+    elif interval.upper is None:
+        response = generator.normal(size=rows)
+    else:
+        response = np.clip(generator.beta(2.0, 5.0, size=rows), 0.01, 0.99)
+    response[:8] = 0.0
+    frame = pd.DataFrame({"y": response, "x": generator.normal(size=rows)})
+    fitted = fit(
+        "y ~ x",
+        data=frame,
+        family=mixture(name, name),
+        method="svi",
+        num_steps=20,
+        seed=1,
+    )
+    scores = next(iter(fitted.log_likelihood().values()))
+    assert torch.isfinite(scores).all()
+    predicted = fitted.posterior_predict(num_samples=20, seed=2)
+    assert torch.isfinite(predicted).all()
+    # The point mass at zero survives mixing.
+    assert (predicted == 0).any()
+    assert torch.isfinite(fitted.posterior_epred()).all()
+
+
 def test_rejected_families():
     with pytest.raises(ValueError, match="real and integer"):
         mixture("gaussian", "poisson")
-    with pytest.raises(ValueError, match="not allowed in mixture"):
-        mixture("hurdle_gamma", "gamma")
     with pytest.raises(ValueError, match="not allowed in mixture"):
         mixture("categorical", "categorical")
     with pytest.raises(ValueError, match="cannot mix ordinal and non-ordinal"):
@@ -734,7 +774,9 @@ def test_rejected_families():
             method="svi",
             num_steps=0,
         )
-    assert families["mixture"].mixture is None
+    template = families["mixture"].mixture
+    assert template is not None
+    assert template.components == (families["gaussian"],)
 
 
 def test_group_identifier_shared_across_components_is_one_block():
@@ -767,3 +809,16 @@ def test_group_identifier_shared_across_components_is_one_block():
     assert fitted.posterior_epred(
         new_data=fresh, allow_new_levels=True, num_samples=2
     ).shape == (1, 2, 1)
+
+
+def test_template_links_are_the_links_of_its_component():
+    linked = families["mixture"].with_links(mu="log", sigma="softplus")
+    component = families["gaussian"].with_links(mu="log", sigma="softplus")
+    frame = _frame()
+    source = formula_to_qvr("y ~ x", data=frame, family=linked)
+    assert source == formula_to_qvr(
+        "y ~ x", data=frame, family=mixture(component, component)
+    )
+    assert source != formula_to_qvr("y ~ x", data=frame, family="mixture")
+    with pytest.raises(ValueError, match="admissible links"):
+        families["mixture"].with_links(mu="softmax")

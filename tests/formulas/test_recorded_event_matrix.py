@@ -1,7 +1,7 @@
 """Every formula family against every ``cens`` and ``trunc`` combination.
 
 The matrix is derived from the family registry: each registered family must
-carry a recorded decision in `RECORDED_EVENT_DECISIONS`. A family admitting
+declare `Family.recorded_events` exactly where brms admits the terms. A family admitting
 the terms is fitted with SVI under left, right and interval censoring, lower,
 upper and two-sided truncation, and censoring with truncation; the combined
 specification also runs a few HMC and NUTS steps. Its pointwise log
@@ -26,7 +26,6 @@ from scipy import stats
 
 from quivers.formulas import families, fit, formula_to_qvr
 from quivers.formulas import _response as response_module
-from quivers.formulas._recorded_event_families import RECORDED_EVENT_DECISIONS
 from quivers._spline_design import cox_spline_basis
 from quivers.inference.mcmc.driver import MCMCResult
 from quivers.inference.registry import LatentRegistry
@@ -101,18 +100,33 @@ SUPPORT = {
 TRIALS = 6
 COUNT_CAP = 400
 STATUS = np.array([0, 1, -1, 2, 0, -1, 1, 2])
-SUPPORTED = sorted(
-    name for name, allowed in RECORDED_EVENT_DECISIONS.items() if allowed
-)
+SUPPORTED = sorted(KIND)
 REFUSED = sorted(
-    name for name, allowed in RECORDED_EVENT_DECISIONS.items() if not allowed
+    {
+        "wiener",
+        "xbeta",
+        "bernoulli",
+        "categorical",
+        "multinomial",
+        "dirichlet_multinomial",
+        "dirichlet",
+        "dirichlet2",
+        "logistic_normal",
+        "cumulative",
+        "sratio",
+        "cratio",
+        "acat",
+        "hurdle_cumulative",
+        "zero_one_inflated_beta",
+    }
 )
 VARIANTS = ("cens", "trunc_lower", "trunc_upper", "trunc_both", "cens_trunc")
 
 
-def test_every_registered_family_has_a_recorded_event_decision():
-    assert set(families) == set(RECORDED_EVENT_DECISIONS)
-    assert set(SUPPORTED) == set(KIND)
+def test_every_registered_family_declares_the_brms_recorded_event_decision():
+    declared = {name for name, family in families.items() if family.recorded_events}
+    assert declared == set(SUPPORTED)
+    assert set(families) - declared == set(REFUSED)
 
 
 def _frame(kind: str) -> pd.DataFrame:

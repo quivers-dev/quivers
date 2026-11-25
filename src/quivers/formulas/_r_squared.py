@@ -63,17 +63,15 @@ def formula_r2(
         raise ValueError("R-squared method must be auto, model, or residual")
     if observed is not None and not isinstance(observed, torch.Tensor):
         raise TypeError("R-squared observed responses must be a real tensor")
-    if fit.family.observe_family == "Categorical" and fit.family.ordinal is None:
+    if fit.family.unordered_categories:
         raise ValueError(
             "bayes_R2 is not defined for unordered categorical models, as in "
             "brms: unordered categories have no residual"
         )
     if method == "auto":
         method = (
-            "model"
-            if observed is None
-            and fit.family.name in {"gaussian", "bernoulli"}
-            and fit.formula.modifiers.truncation is None
+            fit.family.r_squared
+            if observed is None and fit.formula.modifiers.truncation is None
             else "residual"
         )
     if method == "residual":
@@ -133,7 +131,7 @@ def formula_r2(
         for recorded in replay(fit, draws, shape, context=context):
             law = response_distribution(recorded, response)
             try:
-                if fit.family.name == "wiener":
+                if fit.family.decision_event is not None:
                     from quivers.continuous._wiener import Wiener
 
                     assert isinstance(law, Wiener)

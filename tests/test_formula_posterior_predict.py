@@ -288,7 +288,7 @@ def test_predictions_do_not_require_a_defined_response_expectation(family):
             name="cauchy",
             location_link=families["gaussian"].location_link,
             observe_family="Cauchy",
-            extra_observe_args=("sigma",),
+            observe_args=("mu", "sigma"),
             aux_params=families["gaussian"].aux_params,
         )
         if family == "cauchy"

@@ -5,13 +5,15 @@ Oracles: hand-written Normal, Student-t, and mean-parameterized skew-normal
 densities (SciPy), with the residual scale either absent (``se(e)``) or
 combined in quadrature (``se(e, sigma=True)``); the brms link tables in
 ``R/family-lists.R`` and ``links_dpars`` in ``R/families.R`` transcribed in
-`quivers.formulas._link_whitelist`. Tolerances: 1e-6 relative for float32
+``oracles/brms_links.json``. Tolerances: 1e-6 relative for float32
 response densities.
 """
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -29,17 +31,15 @@ from quivers.formulas import (
     get_prior,
     links,
 )
-from quivers.formulas._link_whitelist import (
-    AUXILIARY_CLASSES,
-    AUXILIARY_LINKS,
-    LOCATION_EXTENSIONS,
-    LOCATION_LINKS,
-    admissible_links,
-)
 from quivers.inference.mcmc.driver import MCMCResult
 from quivers.inference.trace import trace
 
 RTOL = 1e-6
+
+#: The brms tables, with the stated extensions beyond them.
+LINKS = json.loads((Path(__file__).parent / "oracles" / "brms_links.json").read_text())
+#: frechet's nu must exceed one, which only the logm1 link guarantees.
+NARROWED = {("frechet", "nu"): ["logm1"]}
 
 
 def _frame() -> pd.DataFrame:
@@ -163,31 +163,34 @@ def test_prediction_with_known_errors_alone_has_the_error_spread():
 # Links -----------------------------------------------------------------------
 
 
-def test_every_registered_family_has_a_link_decision_and_admits_its_defaults():
-    assert set(families) <= set(LOCATION_LINKS)
+def test_every_registered_family_declares_brms_links_and_admits_its_defaults():
+    assert set(families) == set(LINKS["location"])
     for name, family in families.items():
+        extra = LINKS["extensions"].get(name, [])
+        assert list(family.admissible_links("mu")) == LINKS["location"][name] + extra
         location = (
             family.ordinal.link
             if family.ordinal is not None
             else family.location_link.name
         )
-        assert location in admissible_links(name, "mu"), name
+        assert location in family.admissible_links("mu"), name
         for aux in family.aux_params:
-            assert aux.link.name in admissible_links(name, aux.name), (name, aux.name)
-    every = {link for table in LOCATION_LINKS.values() for link in table}
-    every |= {link for table in AUXILIARY_LINKS.values() for link in table}
+            admitted = list(family.admissible_links(aux.name))
+            assert admitted == NARROWED.get(
+                (name, aux.name), LINKS["auxiliary"][aux.parameter_class]
+            )
+            assert aux.link.name in admitted, (name, aux.name)
+    every = {link for table in LINKS["location"].values() for link in table}
+    every |= {link for table in LINKS["auxiliary"].values() for link in table}
     assert every <= set(links)
 
 
 def _admitted_cases():
     for name, family in families.items():
-        if getattr(family, "mixture", None) is not None:
-            # A finite mixture takes the links of its component families.
-            continue
-        for link in LOCATION_LINKS[name] + LOCATION_EXTENSIONS.get(name, ()):
+        for link in LINKS["location"][name] + LINKS["extensions"].get(name, []):
             yield name, "mu", link
         for aux in family.aux_params:
-            for link in AUXILIARY_LINKS[AUXILIARY_CLASSES.get(aux.name, aux.name)]:
+            for link in family.admissible_links(aux.name):
                 yield name, aux.name, link
 
 
@@ -231,8 +234,8 @@ def test_links_brms_rejects_are_refused_with_the_admissible_links(
 
 
 def test_stated_link_extensions_are_beyond_brms_and_real_valued():
-    for name, extra in LOCATION_EXTENSIONS.items():
-        assert not set(extra) & set(LOCATION_LINKS[name])
+    for name, extra in LINKS["extensions"].items():
+        assert not set(extra) & set(LINKS["location"][name])
         assert families[name].location_link.name == "identity"
     with pytest.raises(ValueError, match="admissible links"):
         families["lognormal"].with_links(mu="sqrt")

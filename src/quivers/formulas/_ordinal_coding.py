@@ -42,7 +42,7 @@ def family_category_coding(family: Family) -> CategoryCoding | None:
     -------
     {"ordinal", "hurdle", "nominal"} or None
         The coding of an ordinal family (also as mixture components), of
-        ``hurdle_cumulative``, and of ``categorical``; None for a family
+        ``hurdle_cumulative``, and of unordered categories; None for a family
         whose response is not a category.
     """
     components = family.mixture.components if family.mixture is not None else (family,)
@@ -55,7 +55,7 @@ def family_category_coding(family: Family) -> CategoryCoding | None:
         return "hurdle"
     if kinds:
         return "ordinal"
-    if family.name == "categorical":
+    if family.unordered_categories:
         return "nominal"
     return None
 

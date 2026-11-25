@@ -12,13 +12,10 @@ include the denominator, linear predictors and ``mu`` do not.
 
 from __future__ import annotations
 
-from quivers.dsl.ast_nodes import LetExprLiteral, ProgramStep
-from quivers.formulas._ast import _add, _div, _let, _mul, _var
-from quivers.formulas.family import Family
+from quivers.dsl.ast_nodes import ProgramStep
+from quivers.formulas._ast import _bind, _let, _var
+from quivers.formulas.family import Family, families
 from quivers.formulas.formula import ResponseModifiers
-
-#: Families whose brms ``ad`` list includes ``rate``.
-RATE_FAMILIES = frozenset({"poisson", "negative_binomial", "negbinomial2", "geometric"})
 
 
 def rate_arguments(
@@ -53,34 +50,28 @@ def rate_arguments(
     Raises
     ------
     ValueError
-        If ``rate`` is used with a family outside poisson, negative_binomial,
-        negbinomial2 and geometric.
+        If ``rate`` is used with a family that declares no exposure law.
     """
     if modifiers.rate is None:
         return observe_family, arguments
-    if family.name not in RATE_FAMILIES:
+    exposure = family.exposure
+    if exposure is None:
+        admitted = sorted(
+            name for name, entry in families.items() if entry.exposure is not None
+        )
         raise ValueError(
             f"rate() is not supported for the {family.name} family; it applies to "
-            f"{', '.join(sorted(RATE_FAMILIES))}"
+            f"{', '.join(admitted)}"
         )
-    denominator = _var(modifiers.rate.qvr_name)
-    if family.name == "poisson":
-        steps.append(_let("rate_mu", _mul(_var("mu"), denominator)))
-        return observe_family, ("rate_mu",)
-    if family.name == "geometric":
-        # NB(shape = denom, mean = mu * denom): success odds mu / (1 + mu).
-        steps.append(
-            _let(
-                "rate_probs",
-                _div(_var("mu"), _add(LetExprLiteral(value=1.0), _var("mu"))),
-            )
-        )
-        return "NegativeBinomial", (modifiers.rate.qvr_name, "rate_probs")
-    # Negative binomial: the shape scales by denom, which leaves the success
-    # probability mu / (mu + shape) unchanged.
-    shape, probs = arguments
-    steps.append(_let("rate_shape", _mul(_var(str(shape)), denominator)))
-    return observe_family, ("rate_shape", probs)
+    denominator = modifiers.rate.qvr_name
+    steps.extend(
+        _let(binding.name, _bind(binding.expr, exposure=_var(denominator)))
+        for binding in exposure.observe_lets
+    )
+    return exposure.observe_family or observe_family, tuple(
+        denominator if argument == "exposure" else argument
+        for argument in exposure.observe_args
+    )
 
 
-__all__ = ["RATE_FAMILIES", "rate_arguments"]
+__all__ = ["rate_arguments"]

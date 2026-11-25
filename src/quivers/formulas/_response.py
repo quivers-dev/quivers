@@ -94,18 +94,9 @@ def response_dtype(formula: Formula, family: Family | None = None) -> torch.dtyp
     torch.dtype
         Canonical Int64/Bool carriers, or the established real precision.
     """
-    from quivers.qiec.families import family as semantic_family
     from quivers.qiec.types import BOOL, INT
 
-    element = (
-        (
-            family.custom.catalog[family.observe_family]
-            if family.custom is not None
-            else semantic_family(family.observe_family)
-        ).element
-        if family is not None
-        else None
-    )
+    element = family.native.element if family is not None else None
     if (
         element == INT
         or family is None
@@ -266,10 +257,7 @@ def resolve_trials(family: Family, trials: int | str | None) -> int | str | None
         One trial for scalar families by default, or inferred totals for
         vector count families.
     """
-    vector_counts = family.response is not None and family.response.kind in {
-        "multinomial",
-        "dirichlet_multinomial",
-    }
+    vector_counts = family.vector_response and family.trials_parameter is not None
     return 1 if trials is None and not vector_counts else trials
 
 
@@ -308,11 +296,11 @@ def expected_response(
     """
     from quivers.inference._response import category_probabilities, response_mean
 
-    if family.observe_family == "VonMises":
+    if family.circular:
         raise TypeError(
             "a circular response expectation requires an angular convention"
         )
-    if decision or family.name == "wiener":
+    if decision or family.decision_event is not None:
         from quivers.continuous._wiener import Wiener
 
         if not isinstance(distribution, Wiener):
@@ -320,11 +308,7 @@ def expected_response(
         value = (
             distribution.choice_probs if decision else distribution.mean_response_time
         )
-    elif family.observe_family == "Categorical":
-        if not isinstance(distribution, torch.distributions.Categorical):
-            raise TypeError(
-                "the categorical response has no native class probabilities"
-            )
+    elif isinstance(distribution, torch.distributions.Categorical):
         value = distribution.probs
     elif family.response_ordinal() is not None:
         value = category_probabilities(distribution, categories)

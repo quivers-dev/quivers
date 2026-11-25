@@ -251,7 +251,7 @@ def test_undefined_mean_refusal_and_missing_auxiliary_predictor(data):
         name="cauchy",
         location_link=families["gaussian"].location_link,
         observe_family="Cauchy",
-        extra_observe_args=("sigma",),
+        observe_args=("mu", "sigma"),
         aux_params=families["gaussian"].aux_params,
     )
     result = fit("y ~ x", data=data, family=cauchy, method="svi", num_steps=1)

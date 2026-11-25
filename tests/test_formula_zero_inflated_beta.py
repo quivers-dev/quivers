@@ -205,7 +205,9 @@ def test_zero_inflated_beta_fitting_prior_and_posterior_mean(data, method):
 
 @pytest.mark.parametrize("value", [1.0, -0.1, 1.1, np.inf, -np.inf])
 def test_zero_inflated_beta_response_domain_checked_before_fitting(data, value):
-    with pytest.raises(ValueError, match=r"finite response values in \[0, 1\)"):
+    with pytest.raises(
+        ValueError, match=r"response values must be finite and be in \[0, 1\)"
+    ):
         fit(
             "y ~ x",
             data=data.assign(y=[value, 0.2, 0.3, 0.0]),

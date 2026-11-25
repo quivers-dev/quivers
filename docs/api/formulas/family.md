@@ -19,6 +19,80 @@ distinguishes a distributional predictor's link from a scalar auxiliary
 prior, and the [formal definition](../../semantics/programs.md#inverse-links-as-value-maps)
 states their value-map semantics.
 
+## What a family declares
+
+A `Family` states everything the compiler needs to emit it, so a new
+family is a new value and not a new branch in the compiler.
+
+- **Native parameterization.** `Family.observe_lets` binds quantities
+  derived from `mu` and the auxiliary parameters, and
+  `Family.observe_args` lists the native constructor arguments in order.
+  `families["gamma"]`, for instance, binds `gamma_rate = shape / mu` and
+  passes `(shape, gamma_rate)`.
+- **Links.** A `Link` carries its inverse as a QVR expression in
+  `Link.inverse_expr`, with any shared `Link.intermediates`; the emitted
+  program contains exactly that expression. `Link.image` is the interval
+  the inverse maps onto.
+- **Admissible links.** `Family.location_links` and `AuxParam.links` list
+  the links `with_links` admits. An auxiliary parameter on the positive
+  half-line or the unit interval takes brms's links for that interval when
+  it lists none. `Family.admissible_links` reads either list, and a
+  parameter without one refuses `with_links`.
+- **Parameter ranges.** Each `AuxParam` has a `Domain`. A fixed value
+  outside it is refused. A lower endpoint above zero also restricts the
+  prior, and the link must map into it: the `nu` of `frechet`, for
+  instance, must exceed one, so its link is `logm1`.
+- **Shifts.** `AuxParam.below_response` marks a shift every response
+  exceeds, such as the `ndt` of `shifted_lognormal`. A fixed value is
+  checked against the responses, a prior may name the smallest one as
+  `response_min`, and inference starts below it.
+- **Response support.** `Family.response_interval` is the interval a
+  continuous scalar response must lie in. It comes from the support and
+  atoms of the native distribution, reached through `Family.native`,
+  unless `Family.response_domain` states it. Every such family checks its
+  response before inference.
+- **Exposure.** `Family.exposure` gives the distribution of a count over a
+  `rate()` denominator. A family without one refuses `rate()`.
+- **Log-scale location.** `Family.log_location_argument` names a native
+  parameter that takes the location on the log scale; under a log link
+  the linear predictor is passed to it without exponentiation.
+- **Known errors.** `Family.error_scale` names the residual scale that the
+  errors of a `se()` term replace, or join in quadrature under
+  `sigma = TRUE`. A family without one refuses `se()`.
+- **Correlated residuals.** `Family.elliptical` is an `Elliptical` value
+  naming the scale and the degrees of freedom of a Normal or Student-t
+  residual law. Autocorrelation terms and `set_rescor` read the
+  multivariate law from it. Responses are correlated only under one common
+  value.
+- **Recorded events.** `Family.recorded_events` admits `cens()` and
+  `trunc()`. A mixture admits them when all its components do.
+- **Missing responses.** A family admits `mi()` when a missing response can
+  be a latent coordinate of its law: a continuous scalar law without point
+  masses, decision, baseline or shift below the responses.
+  `Family.latent_response_obstacle` gives the property that rules it out.
+- **Factor responses.** A factor is coded `0, ..., n - 1` when the native
+  support is that set, or when `Family.factor_levels` states the number of
+  levels (`Family.coded_levels`).
+- **Explained variance.** `Family.r_squared` selects the variance
+  `bayes_r2` reads by default.
+- **Mixture law.** `Family.mixture_law` names a native law for a mixture of
+  copies of the family, such as `MixtureNormal` for `gaussian`.
+- **Component scales.** `AuxParam.per_component` gives a parameter one value
+  per free component of the response, as the `sigma` of `logistic_normal`.
+
+Every declaration is open to a new family. A family built with `Family`, or
+with [`custom_family`](custom.md#quivers.formulas._custom_family.custom_family) and then
+`with_`, takes part in a feature by declaring its property:
+
+```python
+from quivers.formulas import Elliptical, families
+
+heavy = families["student_t"]
+heavy.error_scale   # "sigma"
+heavy.elliptical    # Elliptical(scale="sigma", df="nu")
+heavy.with_(error_scale=None)   # refuses se(), naming Family.error_scale
+```
+
 ## Ordinal configuration
 
 `Family.ordinal` retains an `OrdinalSpec` for cumulative, adjacent-category,

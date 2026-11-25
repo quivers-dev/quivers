@@ -21,6 +21,12 @@ deterministic parameters from typed numeric columns. An auxiliary mapping can
 separate the constructor name from the regression name. For instance, native
 `scale` can receive formula parameter `sigma`.
 
+The family takes part in further formula features by
+[declaration](family.md#what-a-family-declares). For instance,
+`family.with_(error_scale="sigma")` admits `se()`, and
+`family.with_(elliptical=Elliptical(scale="sigma"))` admits autocorrelation
+terms and `set_rescor` for a law that is Normal in its location and scale.
+
 The following factory returns a symmetric two-component Normal mixture. Its
 component locations differ by two, and a known per-row shift enters both
 components. The example uses a small optimization budget to exercise the API.

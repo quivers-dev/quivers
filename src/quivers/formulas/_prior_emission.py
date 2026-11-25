@@ -571,8 +571,15 @@ def build_prior_targets(
         support = semantic_family(default.morphism).support
         lower = 0.0 if support in {"positive", "nonnegative", "unit_interval"} else None
         upper = 1.0 if support == "unit_interval" else None
-        if auxiliary.link.name == "logm1":
-            lower = 1.0
+        # A positive parameter lies where its domain and its link's image do.
+        ends = (
+            lower,
+            auxiliary.domain.lower or None,
+            auxiliary.link.image.lower
+            if lower is not None and auxiliary.link.image is not None
+            else None,
+        )
+        lower = max((end for end in ends if end is not None), default=None)
         # Autocorrelation parameters take brms classes (ar, ma, cosy, ...).
         structural = autocor_prior_target(family, auxiliary.name)
         if structural is not None:
@@ -603,11 +610,12 @@ def build_prior_targets(
             )
     if family.baseline is not None:
         add("sbhaz", "sbhaz")
-    if family.response is not None and family.response.kind == "logistic_normal":
+    component_scale = family.component_scale
+    if component_scale is not None:
         add("rescor", "rescor")
         # brms sigma<c>: the scalar scale of a category without a formula.
         for label in labels:
-            name = scale_parameter(label)
+            name = scale_parameter(component_scale.name, label)
             add(name, name, lower=0.0, dpar=name)
     for site, role in autocor_matrix_targets(family):
         add(site, role)

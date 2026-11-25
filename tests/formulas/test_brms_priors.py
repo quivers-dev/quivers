@@ -21,7 +21,7 @@ import pytest
 import torch
 
 from quivers.dsl import Compiler
-from quivers.formulas import FormulaToQVRModule, families, fit, formula_from_data
+from quivers.formulas import FormulaToQVRModule, families, fit, formula_from_data, links
 from quivers.formulas._brms_priors import (
     FLAT_CATALOG,
     improper_sites,
@@ -201,16 +201,16 @@ def _flatten(args):
 def test_default_scale_arguments_follow_brms_rounding_and_links():
     pos = FRAME["pos"].to_numpy()
     rounding = ORACLE["rounding"]
-    location, scale = scale_prior_arguments(pos, "log", center=False)
+    location, scale = scale_prior_arguments(pos, links["log"], center=False)
     assert location == rounding["median_log"]
     assert scale == max(2.5, rounding["mad_log"])
     y = FRAME["y"].to_numpy()
     assert r_mad(y) == pytest.approx(1.4826 * np.median(np.abs(y - np.median(y))))
     # A negative response under the log link has no finite mad: brms keeps 2.5.
-    assert scale_prior_arguments(y, "log", center=True) == (0.0, 2.5)
+    assert scale_prior_arguments(y, links["log"], center=True) == (0.0, 2.5)
     # Factor and vector responses, and links brms does not apply, keep 0, 2.5.
-    assert scale_prior_arguments(None, "identity", center=False) == (0.0, 2.5)
-    assert scale_prior_arguments(pos, "logit", center=False) == (0.0, 2.5)
+    assert scale_prior_arguments(None, links["identity"], center=False) == (0.0, 2.5)
+    assert scale_prior_arguments(pos, links["logit"], center=False) == (0.0, 2.5)
 
 
 def test_validate_prior_marks_user_rows_tags_and_bounds():

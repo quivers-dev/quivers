@@ -54,9 +54,13 @@ from quivers.dsl.ast_nodes import (
     SampleStep,
     TypeName,
 )
+from quivers.dsl._value_expressions import _parse_value_expression
+from quivers.dsl.compiler.programs import _ProgramsMixin
 from quivers.dsl.emit import draw_call_to_source
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._ast import _factor, finite_object_sizes
+from quivers.formulas._category_formulas import is_scale_parameter
+from quivers.formulas.family import RESPONSE_MIN, Family, Link, links
 from quivers.formulas._priors import (
     ConstantPrior,
     ImproperFlat,
@@ -932,49 +936,51 @@ def r_mad(values: np.ndarray) -> float:
     return 1.4826 * float(np.median(np.abs(values - center)))
 
 
-_TRANSFORMABLE_LINKS = frozenset(
-    {"identity", "log", "inverse", "sqrt", "inverse_square"}
-)
-"""Links brms applies to the response when it scales default priors."""
-
-_LOGSCALE_FAMILIES = frozenset({"lognormal", "shifted_lognormal", "hurdle_lognormal"})
-"""Families brms scales on the log response (``has_logscale``)."""
-
-
-def _linked_response(response: np.ndarray, link: str) -> np.ndarray:
+def _linked_response(response: np.ndarray, expression: str) -> np.ndarray:
     """Apply a link to the response as brms's ``def_scale_prior`` does.
 
     Parameters
     ----------
     response : np.ndarray
         Training responses.
-    link : str
-        A link in `_TRANSFORMABLE_LINKS`.
+    expression : str
+        The `Link.brms_response_expr` of the link.
 
     Returns
     -------
     np.ndarray
-        Linked responses; zeros are moved to 0.1 for the log and inverse
-        links, and nonpositive values give NaN or infinity as in R.
+        Linked responses; zeros are moved to 0.1 under a link that is not
+        finite at zero, and values outside the link's domain give NaN or
+        infinity as in R.
     """
+    node = _parse_value_expression(expression.format(y="y"))
+    evaluate = _ProgramsMixin._compile_let_expr(node)
+
+    def linked(values: np.ndarray) -> np.ndarray:
+        """Evaluate the link at float64 values.
+
+        Parameters
+        ----------
+        values : np.ndarray
+            Responses.
+
+        Returns
+        -------
+        np.ndarray
+            Linked values.
+        """
+        y = torch.as_tensor(values, dtype=torch.float64)
+        return torch.as_tensor(evaluate({"y": y}), dtype=torch.float64).numpy()
+
     y = np.asarray(response, dtype=np.float64)
-    if link in {"log", "inverse", "inverse_square"}:
+    if not np.isfinite(linked(np.zeros(1))).all():
         y = np.where(y == 0, y + 0.1, y)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        if link == "log":
-            return np.log(y)
-        if link == "inverse":
-            return 1.0 / y
-        if link == "inverse_square":
-            return 1.0 / y**2
-        if link == "sqrt":
-            return np.sqrt(y)
-    return y
+    return linked(y)
 
 
 def scale_prior_arguments(
     response: np.ndarray | None,
-    link: str,
+    link: Link,
     *,
     center: bool,
     offset_mean: float = 0.0,
@@ -986,8 +992,9 @@ def scale_prior_arguments(
     response : np.ndarray or None
         Scalar numeric training responses, or None for factor and vector
         responses, which keep the fixed location 0 and scale 2.5.
-    link : str
-        Link applied before scaling.
+    link : Link
+        Link applied before scaling, where it declares
+        `Link.brms_response_expr`.
     center : bool
         Keep location zero (scale priors) or use the rounded linked median
         minus the mean offset (location intercepts).
@@ -1000,9 +1007,9 @@ def scale_prior_arguments(
         ``(location, scale)`` with ``scale = max(2.5, round(mad, 1))``.
     """
     location, scale = 0.0, 2.5
-    if response is None or link not in _TRANSFORMABLE_LINKS:
+    if response is None or link.brms_response_expr is None:
         return location, scale
-    linked = _linked_response(response, link)
+    linked = _linked_response(response, link.brms_response_expr)
     spread = r_mad(linked)
     if math.isfinite(spread):
         rounded = r_round(spread)
@@ -1015,6 +1022,35 @@ def scale_prior_arguments(
         if math.isfinite(offset_mean):
             location = location - offset_mean
     return location, scale
+
+
+def sdgp_prior(response: np.ndarray, family: Family) -> str:
+    """Give brms's default ``sdgp`` prior, its ``def_scale_prior``.
+
+    Parameters
+    ----------
+    response : np.ndarray
+        Training response values.
+    family : Family
+        Response family.
+
+    Returns
+    -------
+    str
+        A half Student t with three degrees of freedom and the scale of
+        `scale_prior_arguments`, 2.5 for a factor, category or vector
+        response.
+    """
+    values = np.asarray(response)
+    numeric = (
+        family.response is None and values.ndim == 1 and values.dtype.kind in "iuf"
+    )
+    _, scale = scale_prior_arguments(
+        values if numeric else None,
+        links["log"] if family.log_response else family.location_link,
+        center=True,
+    )
+    return f"HalfStudentT(3.0, {_number(scale)})"
 
 
 def _number(value: float) -> str:
@@ -1071,11 +1107,6 @@ _LINKED_DPAR_PRIORS: Mapping[str, str] = {
 }
 """``def_dpar_prior`` for the centered intercept of a predicted parameter."""
 
-_NEGBINOMIAL_SHAPE = frozenset(
-    {"negative_binomial", "zero_inflated_negbinomial", "hurdle_negbinomial"}
-)
-"""Families whose estimated shape has the pinned ``inv_gamma(0.4, 0.3)`` default."""
-
 _BOUNDED_FLAT_CLASSES = frozenset({"ar", "ma", "cosy", "car", "lagsar", "errorsar"})
 """Structural classes brms gives a flat prior over their bounded domain."""
 
@@ -1086,34 +1117,32 @@ standard deviations of ``me()`` terms (``prior_Xme``; ``sdme`` has
 ``lb = 0``)."""
 
 
-def _brms_dpar_class(family: str, name: str) -> str:
+def _brms_dpar_class(family: Family, name: str) -> str:
     """Map a quivers auxiliary name to its brms parameter class.
 
     Parameters
     ----------
-    family : str
-        quivers family name.
+    family : Family
+        Response family.
     name : str
         Auxiliary parameter name.
 
     Returns
     -------
     str
-        brms class name (``disp`` of ``negative_binomial`` is brms ``shape``,
-        and a per-category scale ``sigma<c>`` of ``logistic_normal`` takes the
-        defaults of ``sigma``).
+        The class of the parameter, that of the per-component parameter for
+        the scale of one category, and otherwise the name itself.
     """
-    if family == "logistic_normal" and name.startswith("sigma"):
-        return "sigma"
-    return "shape" if family == "negative_binomial" and name == "disp" else name
+    for aux in family.aux_params:
+        if aux.name == name or aux.per_component and is_scale_parameter(family, name):
+            return aux.parameter_class
+    return name
 
 
 def brms_default_rule(
     target: PriorTarget,
     *,
-    family: str,
-    location_link: str,
-    dpar_links: Mapping[str, str],
+    family: Family,
     response: np.ndarray | None,
     offset_means: Mapping[str, float],
     centered: frozenset[str],
@@ -1124,12 +1153,8 @@ def brms_default_rule(
     ----------
     target : PriorTarget
         Overrideable site.
-    family : str
-        quivers family name.
-    location_link : str
-        Link of the location predictor.
-    dpar_links : Mapping[str, str]
-        Links of the auxiliary parameters.
+    family : Family
+        Response family, whose links and declared brms defaults apply.
     response : np.ndarray or None
         Scalar numeric training responses, or None.
     offset_means : Mapping[str, float]
@@ -1147,10 +1172,10 @@ def brms_default_rule(
         conditional ARMA coefficients, ``meanme`` and ``sdme`` take brms's
         improper flat prior.
     """
+    # brms has_logscale: scale defaults on the log response.
+    location_link = links["log"] if family.log_response else family.location_link
+    auxiliaries = {aux.name: aux for aux in family.aux_params}
     role = target.class_
-    if family in _LOGSCALE_FAMILIES:
-        # brms has_logscale: scale defaults on the log response.
-        location_link = "log"
 
     def rule(distribution: str | ImproperFlat) -> PriorSpec:
         return PriorSpec(distribution=distribution, class_=None, site=target.site)
@@ -1177,8 +1202,8 @@ def brms_default_rule(
             return None
         dpar = target.dpar or "mu"
         if dpar == "mu":
-            if family == "von_mises" and location_link == "tan_half":
-                return rule("StudentT(1.0, 0.0, 1.0)")
+            if family.location_link.brms_intercept_prior is not None:
+                return rule(family.location_link.brms_intercept_prior)
             location, intercept_scale = scale_prior_arguments(
                 response,
                 location_link,
@@ -1188,29 +1213,27 @@ def brms_default_rule(
             return rule(
                 f"StudentT(3.0, {_number(location)}, {_number(intercept_scale)})"
             )
-        link = dpar_links.get(dpar, "identity")
+        link = auxiliaries[dpar].link if dpar in auxiliaries else links["identity"]
         brms_class = _brms_dpar_class(family, dpar)
         if brms_class == "sigma":
-            linked = "log" if family in _LOGSCALE_FAMILIES else link
+            linked = links["log"] if family.log_response else link
             _, sigma_scale = scale_prior_arguments(response, linked, center=True)
             return rule(f"StudentT(3.0, 0.0, {_number(sigma_scale)})")
-        table = _IDENTITY_DPAR_PRIORS if link == "identity" else _LINKED_DPAR_PRIORS
+        table = _IDENTITY_DPAR_PRIORS if link.is_identity else _LINKED_DPAR_PRIORS
         text = table.get(brms_class)
         return None if text is None else rule(text)
     if target.dpar is not None and role == target.dpar:
+        auxiliary = auxiliaries.get(role)
+        declared = auxiliary.brms_prior if auxiliary is not None else None
+        if auxiliary is not None and declared is not None:
+            if response is not None:
+                declared = auxiliary.with_response_minimum(declared, response)
+            return None if RESPONSE_MIN in declared else rule(declared)
         brms_class = _brms_dpar_class(family, role)
         if brms_class == "sigma":
-            if family == "negbinomial2":
-                return rule("Gamma(0.4, 0.3)")
-            linked = "log" if family in _LOGSCALE_FAMILIES else "identity"
+            linked = links["log" if family.log_response else "identity"]
             _, sigma_scale = scale_prior_arguments(response, linked, center=True)
             return rule(f"HalfStudentT(3.0, {_number(sigma_scale)})")
-        if brms_class == "shape" and family in _NEGBINOMIAL_SHAPE:
-            return rule("InverseGamma(0.4, 0.3)")
-        if brms_class == "ndt" and response is not None:
-            return rule(f"Uniform(0.0, {_number(float(np.min(response)))})")
-        if brms_class == "kappa" and family == "xbeta":
-            return rule("Gamma(0.01, 0.01)")
         text = _IDENTITY_DPAR_PRIORS.get(brms_class)
         return None if text is None else rule(text)
     return None

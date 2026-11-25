@@ -84,18 +84,6 @@ _SPECIAL_TYPES: dict[str, str] = {
     "gp": "gp",
 }
 
-#: Families whose responses brms predicts per category.
-_CATEGORICAL_RESPONSES = frozenset(
-    {
-        "categorical",
-        "multinomial",
-        "dirichlet_multinomial",
-        "dirichlet",
-        "dirichlet2",
-        "logistic_normal",
-    }
-)
-
 _IDENTIFIER = re.compile(r"[A-Za-z_.][A-Za-z0-9_.]*")
 
 
@@ -1584,10 +1572,7 @@ def brms_conditional_effects(
     for effect in chosen:
         for response, view in views.items():
             family = view.family
-            is_categorical = (
-                family.response is not None
-                and family.response.kind in _CATEGORICAL_RESPONSES
-            )
+            is_categorical = family.response is not None
             is_ordinal = family.response_ordinal() is not None
             frame, ordered, types, second_labels = prepare_cond_data(
                 context,
@@ -1690,7 +1675,7 @@ def brms_conditional_effects(
                 filled,
                 labels,
                 select_points=select_points,
-                binary=family.observe_family == "Bernoulli",
+                binary=family.native.support == "boolean",
             )
             prefix = f"{response}.{response}_" if response else ""
             out.append(

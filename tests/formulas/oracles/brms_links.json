@@ -1,0 +1,498 @@
+{
+ "location": {
+  "gaussian": [
+   "identity",
+   "log",
+   "inverse",
+   "softplus",
+   "squareplus",
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit"
+  ],
+  "student_t": [
+   "identity",
+   "log",
+   "inverse",
+   "softplus",
+   "squareplus",
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit"
+  ],
+  "skew_normal": [
+   "identity",
+   "log",
+   "inverse",
+   "softplus",
+   "squareplus",
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit"
+  ],
+  "mixture": [
+   "identity",
+   "log",
+   "inverse",
+   "softplus",
+   "squareplus",
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit"
+  ],
+  "binomial": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit",
+   "identity",
+   "log"
+  ],
+  "bernoulli": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit",
+   "identity",
+   "log"
+  ],
+  "beta": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit",
+   "identity",
+   "log"
+  ],
+  "xbeta": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit",
+   "identity",
+   "log"
+  ],
+  "zero_inflated_beta": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit",
+   "identity",
+   "log"
+  ],
+  "zero_one_inflated_beta": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit",
+   "identity",
+   "log"
+  ],
+  "zero_inflated_binomial": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit",
+   "identity",
+   "log"
+  ],
+  "zero_inflated_beta_binomial": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit",
+   "identity",
+   "log"
+  ],
+  "beta_binomial": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit",
+   "identity"
+  ],
+  "discrete_weibull": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit",
+   "identity"
+  ],
+  "categorical": [
+   "logit",
+   "softmax"
+  ],
+  "multinomial": [
+   "logit",
+   "softmax"
+  ],
+  "dirichlet": [
+   "logit",
+   "softmax"
+  ],
+  "dirichlet_multinomial": [
+   "logit",
+   "softmax"
+  ],
+  "dirichlet2": [
+   "log",
+   "softplus",
+   "squareplus",
+   "identity",
+   "logm1"
+  ],
+  "logistic_normal": [
+   "identity"
+  ],
+  "poisson": [
+   "log",
+   "identity",
+   "sqrt",
+   "softplus",
+   "squareplus"
+  ],
+  "negative_binomial": [
+   "log",
+   "identity",
+   "sqrt",
+   "softplus",
+   "squareplus"
+  ],
+  "negbinomial2": [
+   "log",
+   "identity",
+   "sqrt",
+   "softplus",
+   "squareplus"
+  ],
+  "geometric": [
+   "log",
+   "identity",
+   "sqrt",
+   "softplus",
+   "squareplus"
+  ],
+  "com_poisson": [
+   "log",
+   "identity",
+   "sqrt",
+   "softplus",
+   "squareplus"
+  ],
+  "hurdle_poisson": [
+   "log",
+   "identity",
+   "sqrt",
+   "softplus",
+   "squareplus"
+  ],
+  "hurdle_negbinomial": [
+   "log",
+   "identity",
+   "sqrt",
+   "softplus",
+   "squareplus"
+  ],
+  "zero_inflated_poisson": [
+   "log",
+   "identity",
+   "sqrt",
+   "softplus",
+   "squareplus"
+  ],
+  "zero_inflated_negbinomial": [
+   "log",
+   "identity",
+   "sqrt",
+   "softplus",
+   "squareplus"
+  ],
+  "gamma": [
+   "log",
+   "identity",
+   "inverse",
+   "softplus",
+   "squareplus"
+  ],
+  "weibull": [
+   "log",
+   "identity",
+   "inverse",
+   "softplus",
+   "squareplus"
+  ],
+  "exponential": [
+   "log",
+   "identity",
+   "inverse",
+   "softplus",
+   "squareplus"
+  ],
+  "frechet": [
+   "log",
+   "identity",
+   "inverse",
+   "softplus",
+   "squareplus"
+  ],
+  "hurdle_gamma": [
+   "log",
+   "identity",
+   "inverse",
+   "softplus",
+   "squareplus"
+  ],
+  "inverse_gaussian": [
+   "inverse_square",
+   "inverse",
+   "identity",
+   "log",
+   "softplus",
+   "squareplus"
+  ],
+  "lognormal": [
+   "identity",
+   "inverse"
+  ],
+  "shifted_lognormal": [
+   "identity",
+   "inverse"
+  ],
+  "hurdle_lognormal": [
+   "identity",
+   "inverse"
+  ],
+  "exgaussian": [
+   "identity",
+   "log",
+   "inverse",
+   "softplus",
+   "squareplus"
+  ],
+  "gen_extreme_value": [
+   "identity",
+   "log",
+   "inverse",
+   "softplus",
+   "squareplus"
+  ],
+  "asym_laplace": [
+   "identity",
+   "log",
+   "inverse",
+   "softplus",
+   "squareplus"
+  ],
+  "zero_inflated_asym_laplace": [
+   "identity",
+   "log",
+   "inverse",
+   "softplus",
+   "squareplus"
+  ],
+  "cox": [
+   "log",
+   "identity",
+   "softplus",
+   "squareplus"
+  ],
+  "von_mises": [
+   "tan_half",
+   "identity"
+  ],
+  "wiener": [
+   "identity",
+   "log",
+   "softplus",
+   "squareplus"
+  ],
+  "cumulative": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit"
+  ],
+  "acat": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit"
+  ],
+  "hurdle_cumulative": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit",
+   "softit"
+  ],
+  "sratio": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit"
+  ],
+  "cratio": [
+   "logit",
+   "probit",
+   "probit_approx",
+   "cloglog",
+   "cauchit"
+  ]
+ },
+ "auxiliary": {
+  "sigma": [
+   "log",
+   "identity",
+   "softplus",
+   "squareplus"
+  ],
+  "shape": [
+   "log",
+   "identity",
+   "softplus",
+   "squareplus"
+  ],
+  "nu": [
+   "logm1",
+   "identity"
+  ],
+  "phi": [
+   "log",
+   "identity",
+   "softplus",
+   "squareplus"
+  ],
+  "kappa": [
+   "log",
+   "identity",
+   "softplus",
+   "squareplus"
+  ],
+  "beta": [
+   "log",
+   "identity",
+   "softplus",
+   "squareplus"
+  ],
+  "zi": [
+   "logit",
+   "identity"
+  ],
+  "hu": [
+   "logit",
+   "identity"
+  ],
+  "zoi": [
+   "logit",
+   "identity"
+  ],
+  "coi": [
+   "logit",
+   "identity"
+  ],
+  "disc": [
+   "log",
+   "identity",
+   "softplus",
+   "squareplus"
+  ],
+  "bs": [
+   "log",
+   "identity",
+   "softplus",
+   "squareplus"
+  ],
+  "ndt": [
+   "log",
+   "identity",
+   "softplus",
+   "squareplus"
+  ],
+  "bias": [
+   "logit",
+   "identity"
+  ],
+  "quantile": [
+   "logit",
+   "identity"
+  ],
+  "xi": [
+   "log1p",
+   "identity"
+  ],
+  "alpha": [
+   "identity",
+   "log",
+   "softplus",
+   "squareplus"
+  ]
+ },
+ "extensions": {
+  "gaussian": [
+   "log1p",
+   "sqrt",
+   "inverse_square",
+   "logm1",
+   "tan_half"
+  ],
+  "student_t": [
+   "log1p",
+   "sqrt",
+   "inverse_square",
+   "logm1",
+   "tan_half"
+  ],
+  "skew_normal": [
+   "log1p",
+   "sqrt",
+   "inverse_square",
+   "logm1",
+   "tan_half"
+  ],
+  "mixture": [
+   "log1p",
+   "sqrt",
+   "inverse_square",
+   "logm1",
+   "tan_half"
+  ]
+ }
+}

@@ -589,7 +589,7 @@ def pp_check(
     elif resp is not None:
         raise ValueError("resp applies only to joint fits")
     view = _view(fit, resp)
-    if view.family.response is not None and view.family.response.kind != "categorical":
+    if view.family.vector_response:
         raise ValueError(
             "pp_check is not implemented for multicolumn response families"
         )

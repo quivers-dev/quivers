@@ -817,8 +817,9 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 result |= scalar_coordinates(f"sd_{target.group}__{term}", value)
             elif target.class_ == "cor" and target.site == "rescor":
                 result |= correlation_pairs("rescor", self.response_names, value)
-            elif target.site == "nu" and resp is None:
-                result["nu"] = value
+            elif target.dpar == target.site and resp is None:
+                # The degrees of freedom that correlated responses share.
+                result[target.site] = value
             elif target.class_ == "corme" and resp is not None:
                 result |= correlation_pairs(
                     f"corme_{resp}" if joint else "corme",
@@ -1504,10 +1505,7 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 view = self._response_fit(name)
                 family = view.family
                 categories = (
-                    len(view.category_labels)
-                    if family.observe_family == "Categorical"
-                    or family.response_ordinal() is not None
-                    else 0
+                    len(view.category_labels) if family.category_response else 0
                 )
                 site = response.names[_qvr_name(response.formula.response_name)]
                 value = expected_response(
@@ -2445,11 +2443,7 @@ def _linpred_binding(
         raise ValueError(
             "ordinal probabilities depend on thresholds; use posterior_epred"
         )
-    retained_log_rate = (
-        (view.family.name == "com_poisson" or view.family.baseline is not None)
-        and view.family.location_link.name == "log"
-        and parameter == "mu"
-    )
+    retained_log_rate = view.family.retains_log_location and parameter == "mu"
     binding = (
         ("mu" if transform and not retained_log_rate else "eta")
         if parameter == "mu"
