@@ -730,5 +730,36 @@ MUTATIONS: tuple[Mutation, ...] = (
         rejected_by=("work/repeated-runs-of-one-rule-set",),
         min_effect=32.0,
     ),
+    Mutation(
+        name="weight-read-as-a-number",
+        defect_class="scalar coercion",
+        provenance="a premise weight is turned into a Python number and back",
+        target=f"{AGENDA}:_conclusion_weight",
+        rewrites=(
+            Rewrite(
+                old="acc = semiring.times(acc, w)",
+                new="acc = semiring.times(acc, torch.tensor(float(w), dtype=w.dtype))",
+            ),
+        ),
+        rejected_by=(
+            "deduction/gradient/fifo/logprob/reach",
+            "deduction/gradient/fifo/counting/high_arity",
+        ),
+        min_effect=1.0,
+    ),
+    Mutation(
+        name="replayed-site-dropped",
+        defect_class="site address",
+        provenance="a replay that loses one recorded site draws it again",
+        target="quivers.effects.replay:ReplayHandler.install",
+        rewrites=(
+            Rewrite(
+                old="for name, site in self._trace.sites.items()",
+                new="for name, site in list(self._trace.sites.items())[1:]",
+            ),
+        ),
+        rejected_by=("consumer/replay/beta", "consumer/replay/hmm"),
+        min_effect=1.0,
+    ),
 )
 """The catalogue."""

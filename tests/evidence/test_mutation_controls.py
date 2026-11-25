@@ -70,6 +70,10 @@ def test_the_classes_named_by_the_harness_are_covered() -> None:
         "observer",
         "empty reduction",
         "scaling",
+        "scalar coercion",
+        "site address",
+        "cache",
+        "order",
     }
 
 
