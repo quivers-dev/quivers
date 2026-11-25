@@ -1804,19 +1804,19 @@ def emit_mixture(
         targets.append(PriorTarget(site="theta", class_="theta", event_rank=1))
     events = event_option_columns(formula.modifiers)
     assert lens._family.mixture is not None
-    laws = {family.mixture_law for family in lens._family.mixture.components}
-    law = laws.pop() if len(laws) == 1 else None
+    native = {family.mixture_law for family in lens._family.mixture.components}
+    mixture_law = native.pop() if len(native) == 1 else None
     options = [
         OptionEntry(key=key, value=OptionName(value=column.qvr_name))
         for key, column in events
         # A native mixture law truncates component-wise itself.
-        if law is not None or key not in {"trunc_lower", "trunc_upper"}
+        if mixture_law is not None or key not in {"trunc_lower", "trunc_upper"}
     ]
     if formula.modifiers.weights is not None:
         options.insert(
             0, OptionEntry(key="weights", value=OptionName(value="formula_weights"))
         )
-    if law is not None:
+    if mixture_law is not None:
         # The native law of the mixture takes the stacked component arguments.
         stacked = tuple(
             argument.parameter
@@ -1829,7 +1829,7 @@ def emit_mixture(
                 [_argument(component, parameter) for component in observations],
                 steps,
             )
-        family_name = law
+        family_name = mixture_law
         arguments: tuple[DrawArgNamed, ...] = (
             DrawArgNamed(parameter="weights", value=DrawArgName(text=WEIGHTS)),
             *(

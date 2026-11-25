@@ -486,6 +486,13 @@
    "inverse_square",
    "logm1",
    "tan_half"
+  ],
+  "mixture": [
+   "log1p",
+   "sqrt",
+   "inverse_square",
+   "logm1",
+   "tan_half"
   ]
  }
 }

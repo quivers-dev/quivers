@@ -872,13 +872,16 @@ class Family(ValueModel):
         Returns
         -------
         tuple[str, ...]
-            Admissible link names.
+            Admissible link names; those of its component for a mixture
+            template.
 
         Raises
         ------
         ValueError
             If the parameter is unknown or declares no links.
         """
+        if self.mixture is not None and len(self.mixture.components) == 1:
+            return self.mixture.components[0].admissible_links(parameter)
         if parameter == "mu":
             declared, field = self.location_links, "Family.location_links"
         else:
@@ -1112,7 +1115,10 @@ class Family(ValueModel):
                     "mixture links belong to the components; set them before mixture()"
                 )
             template = self.mixture.components[0].with_links(**parameters)
-            return self.with_(mixture=self.mixture.with_(components=(template,)))
+            return self.with_(
+                location_link=template.location_link,
+                mixture=self.mixture.with_(components=(template,)),
+            )
         known = {"mu", *(aux.name for aux in self.aux_params)}
         unknown = parameters.keys() - known
         if unknown:
