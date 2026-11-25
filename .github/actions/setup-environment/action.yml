@@ -1,0 +1,126 @@
+name: Set up the test environment
+description: >-
+  Install Python, the package with the extras a job needs, and, when asked, the
+  language tools the transpile tests run emitted programs through.
+
+inputs:
+  python-version:
+    description: Python version to install.
+    default: "3.14"
+  uv-version:
+    description: uv release to install.
+    default: "0.13.10"
+  extras:
+    description: Extras of the package to install, separated by commas.
+    default: data,dev,diagnostics,docs,formulas,lsp,repl,targets
+  dependencies:
+    description: >-
+      `locked` installs the versions of uv.lock; `newest` the newest versions
+      the package allows.
+    default: locked
+  tools:
+    description: >-
+      `languages` installs Chez Scheme, JAGS, stanc, Julia, Node.js and WebPPL.
+      A transpile test that finds one missing fails.
+    default: ""
+  stanc-version:
+    description: stanc3 release to install.
+    default: "v2.39.0"
+  julia-version:
+    description: Julia version to install.
+    default: "1.11"
+  node-version:
+    description: Node.js version to install.
+    default: "22"
+
+runs:
+  using: composite
+  steps:
+    # Caches are written by `main` alone and read by every other run, so that
+    # no branch pushes another's out of the repository's allowance.
+    - name: Set up uv and Python
+      uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      with:
+        version: ${{ inputs.uv-version }}
+        python-version: ${{ inputs.python-version }}
+        activate-environment: true
+        no-project: true
+        enable-cache: true
+        cache-dependency-glob: uv.lock
+        save-cache: ${{ github.ref == 'refs/heads/main' }}
+
+    # The lock constrains the versions rather than naming the packages: the
+    # CPU build of torch needs none of the accelerator libraries the lock
+    # lists for Linux.
+    - name: Install package
+      shell: bash
+      env:
+        EXTRAS: ${{ inputs.extras }}
+        DEPENDENCIES: ${{ inputs.dependencies }}
+        UV_TORCH_BACKEND: cpu
+      run: |
+        constraints="$RUNNER_TEMP/constraints.txt"
+        : > "$constraints"
+        if [ "$DEPENDENCIES" = locked ]; then
+          uv export --frozen --all-extras --no-hashes --no-emit-project --quiet > "$constraints"
+        fi
+        uv pip install --constraint "$constraints" --editable ".[$EXTRAS]"
+
+    # An editable checkout compiles the grammar's parser once, into a directory
+    # named by its content.
+    - name: Restore compiled grammar
+      id: grammar
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/quivers
+        key: grammar-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('grammars/qvr/src/**', 'src/quivers/dsl/_grammar_build.py') }}
+
+    - name: Compile grammar
+      shell: bash
+      run: |
+        python -c "from quivers.dsl import loads; loads('object X : FinSet 2\n')"
+
+    - name: Save compiled grammar
+      if: github.ref == 'refs/heads/main' && steps.grammar.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/quivers
+        key: ${{ steps.grammar.outputs.cache-primary-key }}
+
+    - name: Install Chez Scheme and JAGS
+      if: inputs.tools == 'languages'
+      shell: bash
+      run: |
+        sudo apt-get -o Acquire::Retries=5 update
+        sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends chezscheme jags
+
+    - name: Install stanc
+      if: inputs.tools == 'languages'
+      shell: bash
+      env:
+        STANC_VERSION: ${{ inputs.stanc-version }}
+      run: |
+        curl -fsSL --retry 5 -o "$RUNNER_TEMP/stanc" \
+          "https://github.com/stan-dev/stanc3/releases/download/${STANC_VERSION}/linux-stanc"
+        sudo install -m 0755 "$RUNNER_TEMP/stanc" /usr/local/bin/stanc
+        stanc --version
+
+    - name: Set up Julia
+      if: inputs.tools == 'languages'
+      uses: julia-actions/setup-julia@da908477b5db94c10ffce8cfea9f2b3b9d5db687 # v3.0.3
+      with:
+        version: ${{ inputs.julia-version }}
+
+    - name: Set up Node.js
+      if: inputs.tools == 'languages'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    # The WebPPL target's runtime is written in WebPPL's own subset, and the
+    # renderer tests run each generated program through the compiler that
+    # defines that subset.
+    - name: Install WebPPL
+      if: inputs.tools == 'languages'
+      shell: bash
+      run: npm install --global webppl

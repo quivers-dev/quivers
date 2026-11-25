@@ -1,0 +1,55 @@
+name: Prepare a probe image
+description: >-
+  Load one probe image from the cache, or build it from its Dockerfile. A run on
+  `main` caches what it built.
+
+inputs:
+  image:
+    description: The image's name, which is its directory under tests/transpile/docker.
+    required: true
+  images:
+    description: The images the job needs, separated by spaces.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore image
+      id: restore
+      if: contains(format(' {0} ', inputs.images), format(' {0} ', inputs.image))
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/qvr-probe-images/${{ inputs.image }}.tar.zst
+        key: qvr-probe-image-${{ inputs.image }}-${{ hashFiles(format('tests/transpile/docker/{0}/**', inputs.image)) }}
+
+    - name: Load image
+      if: steps.restore.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        zstd -dc ~/.cache/qvr-probe-images/"$IMAGE".tar.zst | docker load
+        rm ~/.cache/qvr-probe-images/"$IMAGE".tar.zst
+
+    - name: Build image
+      if: steps.restore.outputs.cache-hit != 'true' && contains(format(' {0} ', inputs.images), format(' {0} ', inputs.image))
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: bash tests/transpile/docker/build.sh "$IMAGE"
+
+    - name: Pack image
+      if: github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true' && contains(format(' {0} ', inputs.images), format(' {0} ', inputs.image))
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        mkdir -p ~/.cache/qvr-probe-images
+        docker save "panproto-test-$IMAGE" | zstd -T0 -3 > ~/.cache/qvr-probe-images/"$IMAGE".tar.zst
+
+    - name: Save image
+      if: github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true' && contains(format(' {0} ', inputs.images), format(' {0} ', inputs.image))
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/qvr-probe-images/${{ inputs.image }}.tar.zst
+        key: ${{ steps.restore.outputs.cache-primary-key }}

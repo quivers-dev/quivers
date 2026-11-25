@@ -1,0 +1,39 @@
+name: Require verification
+
+# Publishing cannot be undone, so a publishing workflow starts here: the commit
+# it publishes must have passed CI with every gate of `.config/verification.toml`
+# run on it. A push to `main` does that for its commit, and a dispatch of the CI
+# workflow does it for the head of any branch.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit, tag, or branch to publish
+        type: string
+        required: true
+
+permissions:
+  checks: read
+  contents: read
+
+jobs:
+  verified:
+    name: Verified
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the checks on the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$REF" --jq .sha)"
+          passed="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$commit/check-runs?filter=all&per_page=100" \
+            --jq '.check_runs[] | select(.conclusion == "success" and .app.slug == "github-actions") | .name')"
+          for check in "CI status" "Release verification"; do
+            if ! grep -qxF "$check" <<< "$passed"; then
+              echo "::error::$check has not passed on $commit ($REF)"
+              exit 1
+            fi
+          done

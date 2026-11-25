@@ -1,19 +1,13 @@
-"""Probe selection uses exact Git trees, independently of PR diff size."""
+"""Change detection reads exact Git trees, independently of pull-request diff size."""
 
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
 import subprocess
-import sys
+from pathlib import Path
 
 import pytest
 
-from tools.ci_changes import probes_required
-
-
-TOOL = Path(__file__).resolve().parents[1] / "tools" / "ci_changes.py"
+from tools.ci_changes import changed_paths, tree_difference
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -32,7 +26,7 @@ def _commit(repository: Path) -> str:
 def repository(tmp_path: Path) -> Path:
     repo = tmp_path / "repository"
     repo.mkdir()
-    _git(repo, "init", "--quiet")
+    _git(repo, "init", "--quiet", "--initial-branch=main")
     _git(repo, "config", "user.email", "fixture@example.invalid")
     _git(repo, "config", "user.name", "CI fixture")
     (repo / "README.md").write_text("initial\n")
@@ -40,69 +34,92 @@ def repository(tmp_path: Path) -> Path:
     return repo
 
 
-def _pr(base: str, head: str) -> dict:
-    return {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}
+def _merge(repository: Path, base: str, head: str) -> str:
+    """Merge a head into a base as a pull request's test merge does."""
+    tree = _git(repository, "merge-tree", "--write-tree", base, head)
+    return _git(repository, "commit-tree", tree, "-p", base, "-p", head, "-m", "merge")
 
 
-@pytest.mark.parametrize("path", ["guide.md", "docs/nested.md", "docs/line\nbreak.md"])
-def test_markdown_only_changes_skip_probes(repository: Path, path: str) -> None:
-    base = _git(repository, "rev-parse", "HEAD")
-    target = repository / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("changed\n")
-    head = _commit(repository)
-    assert not probes_required(repository, "pull_request", _pr(base, head))
+def _pr(head: str, ref: str = "main") -> dict:
+    return {
+        "pull_request": {"base": {"ref": ref}, "head": {"sha": head}},
+        "repository": {"default_branch": "main"},
+    }
+
+
+def _changed(repository: Path, base: str, head: str) -> list[str] | None:
+    return changed_paths(
+        repository, "pull_request", _pr(head), _merge(repository, base, head)
+    )
 
 
 @pytest.mark.parametrize(
-    "path", ["module.py", "line\nbreak.py", ".github/workflows/ci.yml"]
+    "path",
+    [
+        "guide.md",
+        "docs/nested.md",
+        "docs/line\nbreak.md",
+        "module.py",
+        "line\nbreak.py",
+        ".github/workflows/ci.yml",
+    ],
 )
-def test_non_markdown_changes_enable_probes(repository: Path, path: str) -> None:
+def test_an_added_file_is_a_changed_path(repository: Path, path: str) -> None:
     base = _git(repository, "rev-parse", "HEAD")
     target = repository / path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("changed\n")
     head = _commit(repository)
-    assert probes_required(repository, "push", {"before": base, "after": head})
+    assert _changed(repository, base, head) == [path]
 
 
-@pytest.mark.parametrize("suffix,required", [("md", False), ("py", True)])
-def test_deleted_files_keep_their_original_classification(
-    repository: Path, suffix: str, required: bool
-) -> None:
+@pytest.mark.parametrize("suffix", ["md", "py"])
+def test_a_deleted_file_is_a_changed_path(repository: Path, suffix: str) -> None:
     target = repository / f"deleted.{suffix}"
     target.write_text("deleted\n")
     base = _commit(repository)
     target.unlink()
     head = _commit(repository)
-    assert probes_required(repository, "pull_request", _pr(base, head)) is required
+    assert _changed(repository, base, head) == [f"deleted.{suffix}"]
 
 
 @pytest.mark.parametrize(
-    "before,after,required",
+    "before,after",
     [
-        ("source.py", "guide.md", True),
-        ("guide.md", "source.py", True),
-        ("guide.md", "docs\nnew.md", False),
+        ("source.py", "guide.md"),
+        ("guide.md", "source.py"),
+        ("guide.md", "docs\nnew.md"),
     ],
 )
-def test_renames_consider_both_original_and_destination_paths(
-    repository: Path, before: str, after: str, required: bool
+def test_a_rename_changes_both_its_names(
+    repository: Path, before: str, after: str
 ) -> None:
     (repository / before).write_text("unchanged contents\n")
     base = _commit(repository)
     (repository / before).rename(repository / after)
     head = _commit(repository)
-    assert probes_required(repository, "pull_request", _pr(base, head)) is required
+    assert _changed(repository, base, head) == sorted([before, after])
 
 
-def test_identical_trees_skip_probes_even_for_distinct_commits(
+def test_identical_trees_change_nothing_even_for_distinct_commits(
     repository: Path,
 ) -> None:
     base = _git(repository, "rev-parse", "HEAD")
     head = _commit(repository)
-    assert not probes_required(repository, "pull_request", _pr(base, head))
-    assert not probes_required(repository, "pull_request", _pr(head, head))
+    assert _changed(repository, base, head) == []
+    assert tree_difference(repository, head, head) == []
+
+
+def test_changes_the_base_gained_meanwhile_are_not_the_pull_requests(
+    repository: Path,
+) -> None:
+    fork = _git(repository, "rev-parse", "HEAD")
+    (repository / "README.md").write_text("pull request\n")
+    head = _commit(repository)
+    _git(repository, "checkout", "--quiet", "--detach", fork)
+    (repository / "source.py").write_text("main moved on\n")
+    base = _commit(repository)
+    assert _changed(repository, base, head) == ["README.md"]
 
 
 def test_exact_event_revisions_ignore_newer_checkout_changes(repository: Path) -> None:
@@ -111,29 +128,21 @@ def test_exact_event_revisions_ignore_newer_checkout_changes(repository: Path) -
     head = _commit(repository)
     (repository / "unrelated.py").write_text("not in this event\n")
     _commit(repository)
-    assert not probes_required(repository, "pull_request", _pr(base, head))
+    assert _changed(repository, base, head) == ["README.md"]
 
 
-def test_first_push_classifies_the_full_head_tree(repository: Path) -> None:
-    head = _git(repository, "rev-parse", "HEAD")
-    event = {"before": "0" * 40, "after": head}
-    assert not probes_required(repository, "push", event)
-    (repository / "source.py").write_text("source\n")
-    event["after"] = _commit(repository)
-    assert probes_required(repository, "push", event)
-
-
-def test_large_path_list_is_not_truncated(repository: Path) -> None:
+def test_a_large_path_list_is_not_truncated(repository: Path) -> None:
     base = _git(repository, "rev-parse", "HEAD")
     docs = repository / "docs"
     docs.mkdir()
     for index in range(4096):
         (docs / f"page-{index:05}.md").write_text("documentation\n")
-    head = _commit(repository)
-    assert not probes_required(repository, "pull_request", _pr(base, head))
     (repository / "zz-last-source.py").write_text("source\n")
     head = _commit(repository)
-    assert probes_required(repository, "pull_request", _pr(base, head))
+    changed = _changed(repository, base, head)
+    assert changed is not None
+    assert len(changed) == 4097
+    assert changed[-1] == "zz-last-source.py"
 
 
 @pytest.mark.parametrize("missing_role", ["base", "head"])
@@ -156,48 +165,80 @@ def test_missing_exact_event_commit_is_fetched_from_shallow_origin(
         ).returncode
         != 0
     )
-    event = _pr(base, head) if missing_role == "base" else _pr(head, base)
-    assert not probes_required(checkout, "pull_request", event)
+    old, new = (base, head) if missing_role == "base" else (head, base)
+    assert tree_difference(checkout, old, new) == ["README.md"]
     assert _git(checkout, "rev-parse", f"{base}^{{commit}}") == base
 
 
-def test_missing_commits_fail_instead_of_skipping_probes(repository: Path) -> None:
+def test_missing_commits_fail_instead_of_counting_as_unchanged(
+    repository: Path,
+) -> None:
     head = _git(repository, "rev-parse", "HEAD")
     with pytest.raises(subprocess.CalledProcessError):
-        probes_required(repository, "pull_request", _pr("a" * 40, head))
+        tree_difference(repository, "a" * 40, head)
+    with pytest.raises(subprocess.CalledProcessError):
+        changed_paths(repository, "pull_request", _pr(head), "a" * 40)
 
 
-def test_manual_dispatch_always_enables_probes_without_commits(tmp_path: Path) -> None:
-    assert probes_required(tmp_path, "workflow_dispatch", {})
-
-
-def test_actions_entry_point_appends_boolean_output(
-    repository: Path, tmp_path: Path
+@pytest.mark.parametrize("name", ["push", "schedule", "workflow_dispatch"])
+def test_a_run_that_certifies_a_commit_changes_everything(
+    tmp_path: Path, name: str
 ) -> None:
-    revision = _git(repository, "rev-parse", "HEAD")
-    payload = tmp_path / "event.json"
-    payload.write_text(json.dumps(_pr(revision, revision)))
-    output = tmp_path / "output"
-    output.write_text("existing=value\n")
-    env = dict(
-        os.environ,
-        GITHUB_EVENT_PATH=str(payload),
-        GITHUB_EVENT_NAME="pull_request",
-        GITHUB_OUTPUT=str(output),
-    )
-    result = subprocess.run(
-        [sys.executable, str(TOOL)],
-        cwd=repository,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert output.read_text() == "existing=value\nprobes=false\n"
-    assert result.stdout.strip() == "Probe tests required: false"
+    assert changed_paths(tmp_path, name, {}, "") is None
+
+
+def test_a_change_to_another_branch_than_the_default_changes_everything(
+    repository: Path,
+) -> None:
+    head = _git(repository, "rev-parse", "HEAD")
+    event = _pr(head, ref="feature")
+    assert changed_paths(repository, "pull_request", event, head) is None
+
+
+def test_a_merge_group_changes_what_its_commits_differ_in(repository: Path) -> None:
+    base = _git(repository, "rev-parse", "HEAD")
+    (repository / "source.py").write_text("source\n")
+    head = _commit(repository)
+    event = {
+        "merge_group": {
+            "base_ref": "refs/heads/main",
+            "base_sha": base,
+            "head_sha": head,
+        },
+        "repository": {"default_branch": "main"},
+    }
+    assert changed_paths(repository, "merge_group", event, head) == ["source.py"]
+    event["merge_group"]["base_ref"] = "refs/heads/other"
+    assert changed_paths(repository, "merge_group", event, head) is None
+
+
+def test_a_commit_that_is_not_the_merge_of_the_head_is_refused(
+    repository: Path,
+) -> None:
+    base = _git(repository, "rev-parse", "HEAD")
+    (repository / "source.py").write_text("source\n")
+    head = _commit(repository)
+    (repository / "source.py").write_text("newer\n")
+    newer = _commit(repository)
+    with pytest.raises(ValueError, match="is not the merge of the head"):
+        changed_paths(repository, "pull_request", _pr(head), head)
+    with pytest.raises(ValueError, match="is not the merge of the head"):
+        changed_paths(
+            repository, "pull_request", _pr(head), _merge(repository, base, newer)
+        )
 
 
 @pytest.mark.parametrize("bad", ["main", "--help", "", None])
-def test_event_revisions_must_be_full_commit_ids(repository: Path, bad: object) -> None:
+def test_event_revisions_must_be_full_commit_ids(
+    repository: Path, bad: str | None
+) -> None:
+    head = _git(repository, "rev-parse", "HEAD")
+    event = _pr(head)
+    event["pull_request"]["head"]["sha"] = bad
     with pytest.raises(ValueError, match="full base and head commit SHAs"):
-        probes_required(repository, "push", {"before": bad, "after": bad})
+        changed_paths(repository, "pull_request", event, head)
+
+
+def test_an_unknown_event_is_refused(repository: Path) -> None:
+    with pytest.raises(ValueError, match="unsupported change-detection event"):
+        changed_paths(repository, "issue_comment", {}, "")

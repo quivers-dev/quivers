@@ -84,11 +84,25 @@ python -m pytest tests/ -m "not slow and probe" -n auto
 Use `--dist loadfile` for the fast tier. Each of its tests takes far less time than handing it
 to a worker costs, so whole files are distributed rather than single tests.
 
-To divide the probe tier across machines, `pytest-split` takes a share:
+Set `OMP_NUM_THREADS=1` with either: the tensors of the suite are small, and several workers with
+several threads each slow one another down.
+
+### What CI verifies
+
+[`.config/verification.toml`](https://github.com/quivers-dev/quivers/blob/main/.config/verification.toml)
+declares it, and `tools/verification.py` derives every CI job from it. Ordinary tests run on every
+change. The slow tests, the probes, and the documentation blocks form gates, and a gate runs on a
+change that can affect it: one that touches a module its tests can import, a file it declares, or a
+file that nothing accounts for. A push to `main` runs every gate, and a release publishes only a
+commit on which that run passed. After a run, the `Suite coverage` job checks that every collected
+test ran once in the job that owns it. To run one job locally, or to check the declaration:
 
 ```bash
-python -m pytest tests/ -m "not slow and probe" --splits 4 --group 1
+python tools/verification.py run "library 1/6"
+python tools/verification.py check
 ```
+
+`CONTRIBUTING.md` describes how durations are recorded and how a release commit is certified.
 
 ### Caching probe measurements
 
