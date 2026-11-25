@@ -613,11 +613,11 @@ def lift(
             axis.
         """
         filled = list(leaves)
-        rows, *tensors = tensors if refused is not None else (None, *tensors)
+        rows = None if refused is None else tensors[0]
+        count = len(slots)
         for index, tensor, positional in zip(
-            slots, tensors, carried[-len(slots) :], strict=True
+            slots, tensors[-count:], carried[-count:], strict=True
         ):
-            assert tensor is not None
             if positional:
                 # A value of its own, so that marking it marks no other
                 # tensor.

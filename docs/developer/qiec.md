@@ -311,6 +311,13 @@ whole array asks `everywhere`, `anywhere`, or `largest`. A routine that selects 
 declared `elementwise` and is called with the axis leading, as is a step's callable declared
 `batched`.
 
+Torch's own validators and factorizations are read per position through a
+[`TorchFunctionMode`](https://docs.pytorch.org/docs/stable/torch.overrides.html), which depends on
+how torch asks their questions. Once per process the module checks that on positions of which some
+are refused and some are not, and a torch that asks differently raises an `UnreadRefusalError` that
+names its version. The same error stops an evaluation that torch refuses as a whole when no value the
+positions share accounts for it, so one refused position never decides for another.
+
 #### Calls between programs
 
 A draw from another program, `sample theta <- school_effects[School](0.6)` or
