@@ -104,12 +104,12 @@ def validate_categories(
                 )
 
 
-def numeric_matrix(values: object, rows: int, name: str) -> np.ndarray:
+def numeric_matrix(values: npt.ArrayLike, rows: int, name: str) -> np.ndarray:
     """Validate and normalize one evaluated predictor term on its row axis.
 
     Parameters
     ----------
-    values : object
+    values : numpy.typing.ArrayLike
         Evaluated numeric term.
     rows : int
         Required row count.
