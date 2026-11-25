@@ -63,7 +63,7 @@ def test_codes_and_prior_catalogue_match_brms(formula):
     np.testing.assert_array_equal(
         np.asarray(parsed.group_indices["g"]) + 1, case["data"]["J_1"]
     )
-    option = parsed.grouping.option("g")
+    option = parsed.grouping.option(parsed.random_terms[0].options)
     assert option is not None
     lens = FormulaToQVRModule(families["gaussian"])
     lens.forward(parsed)
@@ -120,7 +120,7 @@ def test_group_effects_equal_brms_generated_stan_statements(formula):
     generator = np.random.default_rng(12)
     z = generator.normal(size=(len(slopes), levels))
     parameters: dict = {"z": z}
-    option = parsed.grouping.option("g")
+    option = parsed.grouping.option(parsed.random_terms[0].options)
     assert option is not None
     if "Nby_1" in case["data"]:
         nby = case["data"]["Nby_1"]
@@ -269,8 +269,6 @@ def test_invalid_options_are_refused():
     frame = pd.DataFrame(ORACLE["data"])
     with pytest.raises(ValueError, match="correspond to multiple levels"):
         formula_from_data("y ~ (1 | gr(g, by = x))", frame)
-    with pytest.raises(ValueError, match="same gr\\(\\) options"):
-        formula_from_data("y ~ (1 | g) + (0 + x | gr(g, dist = 'student'))", frame)
     for by in ("f", "cbind(f)", "cbind(f, f, f)", "c(f, f)"):
         with pytest.raises(ValueError, match="cbind|as many columns"):
             formula_from_data(f"y ~ (1 | mm(g, f, by = {by}))", frame)
@@ -356,7 +354,7 @@ def test_training_rows_update_and_artifact_round_trip(tmp_path):
         fitted.posterior_linpred(num_samples=3, seed=4),
     )
     refit = fitted.update(data=frame.iloc[:36].reset_index(drop=True))
-    assert refit.formula.grouping.option("g") is not None
+    assert refit.formula.grouping.option(refit.formula.random_terms[0].options)
     fresh = frame.iloc[:3]
     expected = fitted.posterior_epred(new_data=fresh, num_samples=2, seed=9)
     path = tmp_path / "options.qfit"

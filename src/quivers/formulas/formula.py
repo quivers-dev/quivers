@@ -983,7 +983,7 @@ class Witness(ValueModel):
         Name in the program.
     """
 
-    part: FormulaPart
+    part: FormulaPart = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     binding: str
 
 

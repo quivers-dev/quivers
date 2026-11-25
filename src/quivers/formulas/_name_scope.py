@@ -285,7 +285,7 @@ class LevelCoefficient(ValueModel):
     """
 
     group: str
-    coefficient: CoefficientName
+    coefficient: CoefficientName = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
     values: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
 
     @property

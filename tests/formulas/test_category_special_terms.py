@@ -30,6 +30,7 @@ from quivers.formulas import (
     fit,
     formula_to_qvr,
     get_prior,
+    prior_summary,
     set_rescor,
     validate_prior,
 )
@@ -535,8 +536,7 @@ def test_category_priors_score_like_their_scipy_laws(joint):
             separated[f"{prefix}{site}__{category}"] = whole[index]
     assert set(separated) == set(_latent(fitted))
     table = {
-        (row.class_, row.coef, row.dpar): row.prior
-        for row in plain.prior_summary().rows
+        (row.class_, row.coef, row.dpar): row.prior for row in prior_summary(plain).rows
     }
     default = float(re.search(r"scale=([0-9.e-]+)", table[("b", "x", "muB")]).group(1))
     coefficients = shared[prefix + "beta_x"].numpy()

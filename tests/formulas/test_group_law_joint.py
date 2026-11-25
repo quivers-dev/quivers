@@ -25,7 +25,6 @@ from quivers.dsl.ast_nodes import ObserveStep, ProgramDecl, SampleStep
 from quivers.formulas import GroupCovariance, bf, fit, set_rescor
 from quivers.formulas._fit import _prepare_formula
 from quivers.formulas._group_law import (
-    ByLKJCorrelation,
     LKJCorrelation,
     group_coefficients,
 )
@@ -252,7 +251,7 @@ def test_shared_by_block_reads_each_level_scale_and_correlation():
     (law,) = emission.group_laws
     by = law.level.by
     assert by is not None and by.levels == ("m", "n")
-    assert isinstance(law.correlation, ByLKJCorrelation)
+    assert isinstance(law.correlation, LKJCorrelation)
     codes = torch.tensor(by.codes)
     torch.testing.assert_close(observations[by.input], codes)
     values = {
@@ -264,7 +263,7 @@ def test_shared_by_block_reads_each_level_scale_and_correlation():
     }
     values = {name: value.requires_grad_() for name, value in values.items()}
     sites = {}
-    for index, site in enumerate(law.correlation.by_sites):
+    for index, site in enumerate(law.correlation.factors):
         sites[site] = values["cholesky"][index]
     for index, (member, name) in enumerate(
         zip(law.members, ("first", "second"), strict=True)

@@ -267,7 +267,11 @@ def test_group_remap_preserves_physical_known_levels_and_conditional_mean(
     parameterization, policy
 ):
     from quivers.formulas._group_law import KnownCovariance, block_coefficients
-    from quivers.formulas._group_prediction import GroupRemap, _remap_covariance_group
+    from quivers.formulas._group_prediction import (
+        CovarianceRemap,
+        GroupRemap,
+        _remap_covariance_group,
+    )
 
     spec, lens, parsed, module, native, obs, complement = _compiled(parameterization)
     law = complement.group_laws[0]
@@ -283,11 +287,16 @@ def test_group_remap_preserves_physical_known_levels_and_conditional_mean(
         fitted_indices=(1, -1, 0),
         row_indices=torch.tensor([0, 1, 2]),
         levels=("b", "c", "a"),
-        covariance=covariance,
-        covariance_laws=(law,),
-        covariance_target=target,
-        covariance_conditional=conditional,
-        covariance_mean_map=tuple(tuple(row) for row in mean_map.tolist()),
+        covariances=(
+            CovarianceRemap(
+                name="",
+                covariance=covariance,
+                laws=(law,),
+                target=target,
+                conditional=conditional,
+                mean_map=tuple(tuple(row) for row in mean_map.tolist()),
+            ),
+        ),
     )
     values = {
         "sigma_g_Intercept": torch.tensor(0.7, dtype=torch.float64),

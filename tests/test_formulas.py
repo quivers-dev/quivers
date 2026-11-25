@@ -603,7 +603,7 @@ class TestLensLaws:
             ("y ~ x + offset(z)", {}, "0"),
             ("y ~ x + s(z, k = 4)", {}, "smooth_s_z_k_4"),
             ("y ~ x + gp(z, k = 3, c = 1.25)", {}, "design"),
-            ("y ~ x + mo(m)", {}, "mom"),
+            ("y ~ x + mo(m)", {}, "mo(m)"),
         ],
     )
     def test_backward_reads_the_terms_from_the_module(
@@ -1298,7 +1298,7 @@ class TestFamilyLinkDefaults:
             family="categorical",
             reparameterize="centered",
         )
-        assert "sample group_coefficients_g" in source
+        assert "sample centered_alpha_g" in source
         assert "sample z_g_Intercept" not in source
         loads(source)
 
@@ -1491,7 +1491,7 @@ class TestCategoricalAndMixtureInference:
         )
         assert not torch.equal(initial, predictor.weight.detach())
         assert result.observations["neural_eta"].shape == (len(categorical_df) * 2,)
-        assert "neural_eta[response * 2 + category_logit]" in result.qvr_source
+        assert "neural_eta[response * 2 + output_coordinate]" in result.qvr_source
 
     def test_categorical_predictor_rejects_wrong_width(self, categorical_df):
         with pytest.raises(ValueError, match=r"expected \(24, 2\) or \(24, 3\)"):

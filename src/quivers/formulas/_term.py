@@ -33,7 +33,7 @@ import didactic.api as dx
 import numpy as np
 import torch
 
-from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
+from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.dsl.ast_nodes import (
     LetExprLiteral,
     LetExprNode,
@@ -544,7 +544,9 @@ class Contribution(ValueModel):
     coordinates: bool
     owner: str | None = None
     varying: bool = False
-    part: FormulaPart | None = None
+    part: FormulaPart | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_VALUE
+    )
 
     def cell(self, row: LetExprNode, coordinate: LetExprNode) -> LetExprNode:
         """Read the value at one row and output coordinate.

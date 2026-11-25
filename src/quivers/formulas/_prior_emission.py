@@ -36,7 +36,7 @@ from quivers.formulas._ast import (
 )
 from quivers.formulas._autocor import autocor_matrix_targets, autocor_prior_target
 from quivers.formulas._category_formulas import scale_parameter
-from quivers.formulas._group_law import LKJCorrelation, option_prior_sites
+from quivers.formulas._group_law import option_prior_sites
 from quivers.formulas._term import catalogue_sites
 from quivers.formulas._priors import PriorTarget, PriorSpec, RegularizedHorseshoe, R2D2
 
@@ -517,12 +517,12 @@ def build_prior_targets(
     for site, role, group, coef, lower in option_prior_sites(laws):
         add(site, role, group=group, coef=coef, lower=lower)
     for law in laws:
-        correlation = law.correlation
-        if not isinstance(correlation, LKJCorrelation) or law.level.by is not None:
+        drawn = [site for site in law.correlation.sites if site in samples]
+        if law.level.by is not None or not drawn:
             continue
         common = {tuple(scopes[member.prefix].items()) for member in law.members}
         scope = dict(next(iter(common))) if len(common) == 1 else {}
-        for site in correlation.factors:
+        for site in drawn:
             add(site, "cor", group=law.group, **scope)
     for auxiliary in family.aux_params:
         default = draw(auxiliary.name, auxiliary.prior)

@@ -123,10 +123,10 @@ def test_monotonic_coefficients_are_part_of_the_population():
     fitted = _single("y ~ x + mo(z) + (1 + mo(z) | g)", "gaussian")
     fixed = fitted.fixed_effects(num_samples=3, seed=2)
     draws = fitted.draws(num_samples=3, seed=2)
-    torch.testing.assert_close(fixed["moz"], draws["bsp_moz"])
-    varying = fitted.random_effects(num_samples=3, seed=2)["g"]["moz"]
-    combined = fitted.coefficients(num_samples=3, seed=2)["g"]["moz"]
-    torch.testing.assert_close(combined, varying + draws["bsp_moz"].unsqueeze(2))
+    torch.testing.assert_close(fixed["mo(z)"], draws["bsp_mo_z"])
+    varying = fitted.random_effects(num_samples=3, seed=2)["g"]["mo(z)"]
+    combined = fitted.coefficients(num_samples=3, seed=2)["g"]["mo(z)"]
+    torch.testing.assert_close(combined, varying + draws["bsp_mo_z"].unsqueeze(2))
     assert "x" in fixed
 
 
