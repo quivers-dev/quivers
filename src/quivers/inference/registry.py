@@ -54,7 +54,7 @@ from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous._matrix import PositiveDefiniteTransform
 from quivers.effects.subsample import refuse_subsampling
 from quivers.continuous.plate import PlateDraw
-from quivers.continuous.morphisms import ContinuousMorphism
+from quivers.continuous.morphisms import ContinuousMorphism, MarginalizedFactor
 from quivers.continuous.program_steps import Call, Draw, Let, Observe, Scan, Score
 from quivers.continuous.programs import MonadicProgram
 from quivers.continuous.spaces import ContinuousSpace
@@ -564,7 +564,18 @@ def _latent_site(
     -------
     LatentSite
         The site.
+
+    Raises
+    ------
+    ValueError
+        If the site is the response of a marginalized block, which has no
+        coordinates of its own: the block's score holds its density.
     """
+    if isinstance(morphism, MarginalizedFactor):
+        raise ValueError(
+            f"{name!r} is observed by a block that sums its latent out, so it is "
+            "data of the model rather than a latent; give it a value"
+        )
     is_plate = isinstance(morphism, PlateDraw)
     support, constrained_dim, plate_index_size, plate_shape, event_shape = (
         _site_geometry(morphism, names)

@@ -4,9 +4,11 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 
 import torch
-from torch.distributions import Distribution, constraints
+from torch.distributions import Categorical, Distribution, constraints
 
 from quivers._rng import seeded_rng
+from quivers.continuous._ordinal import OrdinalDistribution
+from quivers.continuous.measure import Mixture
 from quivers.inference.trace import Trace
 
 
@@ -104,8 +106,6 @@ def category_probabilities(distribution: Distribution, categories: int) -> torch
     torch.Tensor
         Probabilities on batch axes followed by the category axis.
     """
-    from quivers.continuous._ordinal import OrdinalDistribution
-
     if isinstance(distribution, OrdinalDistribution):
         return distribution.category_probs()
     from quivers.continuous._interval import _reference
@@ -119,6 +119,35 @@ def category_probabilities(distribution: Distribution, categories: int) -> torch
         .exp()
         .movedim(0, -1)
     )
+
+
+def category_vector(distribution: Distribution) -> torch.Tensor | None:
+    """The category probabilities of a law whose expectation they are.
+
+    Parameters
+    ----------
+    distribution : Distribution
+        A native response law.
+
+    Returns
+    -------
+    torch.Tensor or None
+        Probabilities on batch axes followed by the category axis for an
+        ordinal or categorical law, or a mixture of such laws over the same
+        categories; ``None`` for a law with a numeric expectation.
+    """
+    if isinstance(distribution, OrdinalDistribution):
+        return distribution.category_probs()
+    if isinstance(distribution, Categorical):
+        return distribution.probs
+    if isinstance(distribution, Mixture):
+        vectors = [category_vector(component) for component in distribution.components]
+        known = [vector for vector in vectors if vector is not None]
+        if len(known) == len(vectors):
+            weights = distribution.component_probabilities.unsqueeze(-2)
+            stacked = torch.stack(torch.broadcast_tensors(*known), dim=-1)
+            return (weights * stacked).sum(-1)
+    return None
 
 
 def response_mean(
