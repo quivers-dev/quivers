@@ -7379,8 +7379,12 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
             )
             plate = self._broadcast_plate(record, step, plate, arguments, scope)
         if refinement is not None:
+            ranks = {parameter.name: parameter.rank for parameter in record.parameters}
             arguments = [
-                (name, self._refined(value, refinement, plate, scope, step))
+                (
+                    name,
+                    self._refined(value, refinement, ranks[name], plate, scope, step),
+                )
                 for name, value in arguments
             ]
         arguments = self._widen_alphabet(record, morphism, arguments, scope, step)
@@ -9765,6 +9769,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         self: _Elaborator,
         value: Value,
         refinement: tuple[PlateAxis, Value],
+        rank: int,
         plate: PlateShape,
         scope: _Scope,
         node: object,
@@ -9778,6 +9783,9 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         refinement : tuple[PlateAxis, Value]
             The outer group and the index projecting the refining group's
             positions onto it.
+        rank : int
+            The rank of one value of the parameter, whose own axes are not
+            the group's.
         plate : PlateShape
             The latent's plate, whose batch axis is the refining group.
         scope : _Scope
@@ -9793,7 +9801,7 @@ class _ProgramElaboration(_SequenceFunctionElaboration):
         """
         outer, projection = refinement
         shape = tensor_shape(self._value_type(value, scope.context(), node))
-        if shape is None or not shape[1] or shape[1][0] != outer.size:
+        if shape is None or len(shape[1]) <= rank or shape[1][0] != outer.size:
             return value
         assert len(plate.batch) == 1
         rows = plate.batch[0].size
