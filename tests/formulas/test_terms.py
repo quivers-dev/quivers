@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from typing import Literal, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -15,7 +16,6 @@ import quivers.formulas
 from quivers.dsl.ast_nodes import (
     Module,
     ProgramDecl,
-    QiecTypeApplication,
     SampleStep,
     TypeName,
 )
@@ -31,12 +31,14 @@ from quivers.formulas._term import (
     AxisDecl,
     InputDecl,
     OutputAxis,
+    Section,
     SiteDecl,
     bind_inputs,
     catalogue_sites,
     column_rms,
     declare_axes,
     declare_inputs,
+    tensor_type,
 )
 from quivers.formulas.formula import Formula, _qvr_name
 from quivers.qiec.families import FAMILIES
@@ -65,7 +67,18 @@ ADJACENCY = pd.DataFrame(
     columns=["l0", "l1", "l2", "l3"],
 )
 
-CASES: dict[str, tuple[str, dict[str, str | bool | dict[str, str]]]] = {
+
+class Options(TypedDict, total=False):
+    """Model options a case sets."""
+
+    family: str
+    center: bool
+    decomp: Literal["none", "QR"]
+    reparameterize: Literal["centered", "noncentered"]
+    distributional: dict[str, str]
+
+
+CASES: dict[str, tuple[str, Options]] = {
     "population": ("y ~ x * x2", {}),
     "no_intercept": ("y ~ 0 + x", {}),
     "centered": ("y ~ x", {"center": True}),
@@ -177,12 +190,7 @@ def test_declared_inputs_cover_what_the_program_reads(name):
         assert (item.name in parameters) == item.declared
         if item.declared:
             kind = parameters[item.name]
-            axes = (
-                tuple(index.name for index in kind.indices[0].dimensions)
-                if isinstance(kind, QiecTypeApplication)
-                else ()
-            )
-            assert axes == item.axes
+            assert kind == tensor_type(item.element, *item.axes)
         if item.values is not None:
             assert tuple(item.values.shape) == tuple(sizes[axis] for axis in item.axes)
     free = {value for step in program.draws for value in _step_value_names(step)} - set(
@@ -267,6 +275,13 @@ def test_declarations_are_listed_by_section_and_deduplicated():
             )
 
         def inputs(self):
+            entries: tuple[tuple[str, Section, bool], ...] = (
+                ("d", "design", True),
+                ("c", "column", True),
+                ("hidden", "column", False),
+                ("f", "field", True),
+                ("d", "design", True),
+            )
             return tuple(
                 InputDecl(
                     name=name,
@@ -275,13 +290,7 @@ def test_declarations_are_listed_by_section_and_deduplicated():
                     section=section,
                     declared=declared,
                 )
-                for name, section, declared in (
-                    ("d", "design", True),
-                    ("c", "column", True),
-                    ("hidden", "column", False),
-                    ("f", "field", True),
-                    ("d", "design", True),
-                )
+                for name, section, declared in entries
             )
 
         def sites(self):
@@ -371,7 +380,7 @@ def test_no_module_tests_the_class_of_a_term():
                 if isinstance(leaf, ast.Name)
             }
             tests.extend(
-                f"{path.name}:{node.lineno if hasattr(node, 'lineno') else 0} {name}"
+                f"{path.name}: {name}"
                 for name in names & VARIANTS.keys()
                 if VARIANTS[name] != path.name
             )
