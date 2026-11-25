@@ -10,6 +10,7 @@ are one thing here: a namespace, a link, and a tuple of terms.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from functools import partial
 from typing import Literal
 
 import didactic.api as dx
@@ -25,7 +26,7 @@ from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._gp import process_term
 from quivers.formulas._group_law import GroupBlockLaw
 from quivers.formulas._group_plan import GroupTerm, row_map
-from quivers.formulas._latent_effects import field_terms
+from quivers.formulas._field_term import field_terms
 from quivers.formulas._monotonic_emission import monotonic_rows
 from quivers.formulas._population_coordinates import (
     PopulationCoordinates,
@@ -33,6 +34,7 @@ from quivers.formulas._population_coordinates import (
     population_coordinates,
 )
 from quivers.formulas._predictor_graph import PredictorGraph
+from quivers.formulas._row_source import PredictorRows, RowSource, fresh_columns
 from quivers.formulas._smooth import BasisTerm
 from quivers.formulas._term import (
     AxisDecl,
@@ -44,6 +46,7 @@ from quivers.formulas._term import (
     OutputAxis,
     SiteDecl,
     Term,
+    column_rms,
 )
 from quivers.formulas.family import Family, Link, links
 from quivers.formulas.formula import FixedColumn, Formula, RandomTerm
@@ -78,6 +81,23 @@ class OffsetTerm(ValueModel):
             Their labels, joined by plus signs.
         """
         return " + ".join(column.name for column in self.columns)
+
+    def at(self, rows: PredictorRows) -> OffsetTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        OffsetTerm
+            The offsets evaluated on the rows.
+        """
+        if rows.frame is None:
+            return self
+        return self.with_(columns=fresh_columns(self.columns, rows.column))
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
@@ -195,6 +215,21 @@ class HostTerm(ValueModel):
             Input name.
         """
         return self.name
+
+    def at(self, rows: PredictorRows) -> HostTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        HostTerm
+            The term itself: the host evaluates its own rows.
+        """
+        return self
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
@@ -340,6 +375,22 @@ class Predictor(ValueModel):
     output: OutputAxis | None = None
     terms: tuple[Term, ...] = dx.field(default=(), opaque=True, extras=OPAQUE_BY_VALUE)
     nonlinear: bool = False
+
+    def at(self, rows: RowSource) -> Predictor:
+        """Return the predictor on other rows.
+
+        Parameters
+        ----------
+        rows : RowSource
+            Rows of one request.
+
+        Returns
+        -------
+        Predictor
+            The predictor with every term on the rows.
+        """
+        read = rows.predictor(self.prefix)
+        return self.with_(terms=tuple(term.at(read) for term in self.terms))
 
     def part(self, output: OutputAxis | None) -> tuple[Term, ...]:
         """Select the terms over one output axis.
@@ -532,6 +583,7 @@ def design_terms(
                     prefix=prefix,
                     block=block.gp,
                     matrix=block.data,
+                    columns=block.column_indices,
                     scale_prior=process_prior(),
                     output=output,
                 )
@@ -543,6 +595,7 @@ def design_terms(
                 label=block.term,
                 name=name,
                 matrix=block.data,
+                columns=block.column_indices,
                 scale=scale,
                 owns_scale=scale not in scales,
                 prior=scale_prior,
@@ -551,6 +604,34 @@ def design_terms(
         )
         scales.add(scale)
     return tuple(terms)
+
+
+def _slope_position(formula: Formula, term: RandomTerm) -> tuple[int, int]:
+    """Locate a slope among the design columns of its term.
+
+    Parameters
+    ----------
+    formula : Formula
+        Evaluated predictor.
+    term : RandomTerm
+        Group-level coefficient.
+
+    Returns
+    -------
+    tuple[int, int]
+        Position of the slope's column, and the number of columns. A slope
+        shared by several grouping factors has one column.
+    """
+    if term.column is None:
+        return 0, 1
+    names = list(
+        dict.fromkeys(
+            other.column.name
+            for other in formula.random_terms
+            if other.column is not None and other.column.term == term.column.term
+        )
+    )
+    return names.index(term.column.name), len(names)
 
 
 def group_term(
@@ -591,6 +672,7 @@ def group_term(
         raise ValueError(
             f"multi-membership coefficient {term.slope!r} has no member covariate"
         )
+    position, width = _slope_position(formula, term)
     return GroupTerm(
         prefix=prefix,
         group=term.group,
@@ -600,6 +682,8 @@ def group_term(
         membership=membership,
         covariate=covariate if membership is not None else None,
         law=laws.get((prefix, term.group, term.slope)),
+        position=position,
+        width=width,
         output=output,
     )
 
@@ -648,6 +732,12 @@ def _population(
             prefix=prefix,
             prior=options.coefficient_prior,
             columns=columns,
+            scales=tuple(
+                column_rms(column.data)
+                if isinstance(column, FixedColumn) and not column.is_intercept
+                else None
+                for column in columns
+            ),
             coordinates=coordinates,
             output=output,
         ),
@@ -659,7 +749,7 @@ def predictor_terms(
     prefix: str,
     role: Literal["dpar", "nlpar"],
     *,
-    family: Family,
+    process_prior: Callable[[], str],
     options: PredictorOptions,
     output: OutputAxis | None,
     transitions: OutputAxis | None,
@@ -675,8 +765,8 @@ def predictor_terms(
         Its namespace, empty for the location.
     role : {"dpar", "nlpar"}
         Role of the predictor.
-    family : Family
-        Response family.
+    process_prior : Callable[[], str]
+        Default prior of a Gaussian process's scale.
     options : PredictorOptions
         Default priors, coordinates and the host contribution.
     output : OutputAxis or None
@@ -724,7 +814,7 @@ def predictor_terms(
         prefix,
         output=output,
         scale_prior=options.scale_prior,
-        process_prior=lambda: sdgp_prior(formula.response_values, family),
+        process_prior=process_prior,
     )
     special: tuple[Term, ...] = monotonic_rows(
         formula, prefix, prior=options.coefficient_prior, output=output
@@ -779,6 +869,44 @@ def predictor_terms(
         *groups,
         *fields,
         *specific,
+    )
+
+
+def data_terms(formula: Formula, prefix: str) -> tuple[Term, ...]:
+    """Build the terms of one predictor as readers of row data.
+
+    Parameters
+    ----------
+    formula : Formula
+        Evaluated predictor.
+    prefix : str
+        Its namespace.
+
+    Returns
+    -------
+    tuple[Term, ...]
+        The terms without priors, coordinates, or group laws. The slope of a
+        multi-membership coefficient is its row column.
+    """
+    grouping = formula.grouping.with_(memberships=())
+    return predictor_terms(
+        formula.with_(grouping=grouping),
+        prefix,
+        "dpar",
+        process_prior=str,
+        options=PredictorOptions(
+            coefficient_prior="",
+            scale_prior="",
+            correlation_prior="",
+            default_priors="quivers",
+            center=None,
+            decomp="none",
+            coordinates=False,
+            host=None,
+        ),
+        output=None,
+        transitions=OutputAxis(name="FormulaCutpoint", size=1),
+        laws={},
     )
 
 
@@ -873,7 +1001,7 @@ def plan_predictors(
                     value,
                     prefix,
                     role,
-                    family=family,
+                    process_prior=partial(sdgp_prior, value.response_values, family),
                     options=options,
                     output=output,
                     transitions=transitions,

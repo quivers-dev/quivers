@@ -42,12 +42,9 @@ from quivers.dsl.ast_nodes import ProgramStep, Statement
 from quivers.formulas._latent_effects import (
     LatentTerm,
     latent_car_term,
-    field_terms,
-    latent_prediction_codes,
 )
 from quivers.formulas._predictor_graph import NonlinearExpression
 from quivers.formulas._response_roles import bind_roles
-from quivers.formulas._term import bind_inputs
 from quivers.formulas.family import AuxParam, Family, links
 from quivers.formulas.formula import _qvr_name
 from quivers.inference._posterior import collect_site_draws
@@ -1286,92 +1283,59 @@ def latent_residual_term(
     )
 
 
-def latent_prediction(
-    fit: BayesianFit, frame: pd.DataFrame | None, *, include: bool
-) -> tuple[Formula, dict[str, torch.Tensor], tuple[str, ...]]:
-    """Specialize latent terms to prediction rows, as brms predicts them.
+def rebound_residual(
+    term: LatentTerm, binding: AutocorTerm, frame: pd.DataFrame, *, include: bool
+) -> LatentTerm:
+    """Bind latent residuals to fresh rows, as brms predicts them.
 
-    CAR rows map to fitted locations. Latent residuals keep their posterior
-    values on the training rows. New rows draw fresh residuals from the
-    structure at each posterior draw (brms ``cov = TRUE``); the conditional
-    formulation cannot, as brms states.
+    Fresh rows draw new residuals from the fitted structure at each posterior
+    draw (brms ``cov = TRUE``); the conditional formulation cannot, as brms
+    states.
 
     Parameters
     ----------
-    fit : BayesianFit
-        Fitted formula.
-    frame : pandas.DataFrame or None
-        Prediction rows, or None for the training rows.
+    term : LatentTerm
+        Fitted residuals.
+    binding : AutocorTerm
+        Their authored structure.
+    frame : pandas.DataFrame
+        Fresh rows.
     include : bool
         Include autocorrelation terms (brms ``incl_autocor``).
 
     Returns
     -------
-    tuple[Formula, dict[str, torch.Tensor], tuple[str, ...]]
-        Formula whose latent terms cover the rows, their runtime inputs, and
-        latent sites to draw afresh rather than replay.
+    LatentTerm
+        Residuals of the fresh rows.
 
     Raises
     ------
     ValueError
-        For new CAR locations, CAR without ``gr``, or new rows of conditional
-        latent residuals.
+        For a conditional structure, or rows its series cannot hold.
     """
-    formula = fit.formula
-    if not formula.latent_terms:
-        return formula, {}, ()
-    if frame is None:
-        return (
-            formula,
-            bind_inputs(
-                item
-                for term in field_terms(formula, include=include)
-                for item in term.inputs()
-            ),
-            (),
+    assert term.layout is not None
+    if term.layout.kind == "arma" and not term.layout.stationary and include:
+        raise ValueError(
+            "Cannot predict new latent residuals when using cov = FALSE in "
+            "autocor terms."
         )
-    terms = []
-    values: dict[str, torch.Tensor] = {}
-    fresh: list[str] = []
-    for term in formula.latent_terms:
-        if term.kind == "car":
-            terms.append(term)
-            values.update(
-                term.observations(latent_prediction_codes(term, frame), include=include)
-            )
-            continue
-        assert term.layout is not None
-        if term.layout.kind == "arma" and not term.layout.stationary and include:
-            raise ValueError(
-                "Cannot predict new latent residuals when using cov = FALSE in "
-                "autocor terms."
-            )
-        binding = next(
-            parsed
-            for parsed in split_autocor_terms(formula.formula)[1]
-            if parsed.label == term.label
-        )
-        rows = frame.reset_index(drop=True)
-        if not include and binding.kind != "unstr" and binding.time is not None:
-            # An excluded term adds nothing to the predictor (brms
-            # ``incl_autocor = FALSE``), so its rows need no time order:
-            # prediction grids repeat time points within a group.
-            rows = rows.assign(**{binding.time: range(len(rows))})
-        layout, _ = _series_layout(
-            binding,
-            rows,
-            student=False,
-            history=None,
-            time_levels=_unstr_levels(term),
-            caller="new_data",
-        )
-        if binding.kind == "arma" and not binding.cov:
-            layout = layout.with_(p=0, q=binding.p)
-        fresh_term = term.with_(layout=layout, codes=tuple(range(len(frame))))
-        terms.append(fresh_term)
-        values.update(fresh_term.observations(fresh_term.codes, include=include))
-        fresh.append(term.name)
-    return formula.with_(latent_terms=tuple(terms)), values, tuple(fresh)
+    rows = frame.reset_index(drop=True)
+    if not include and binding.kind != "unstr" and binding.time is not None:
+        # An excluded term adds nothing to the predictor (brms
+        # ``incl_autocor = FALSE``), so its rows need no time order:
+        # prediction grids repeat time points within a group.
+        rows = rows.assign(**{binding.time: range(len(rows))})
+    layout, _ = _series_layout(
+        binding,
+        rows,
+        student=False,
+        history=None,
+        time_levels=_unstr_levels(term),
+        caller="new_data",
+    )
+    if binding.kind == "arma" and not binding.cov:
+        layout = layout.with_(p=0, q=binding.p)
+    return term.with_(layout=layout, codes=tuple(range(len(frame))))
 
 
 def _unstr_levels(term: LatentTerm) -> tuple[str, ...] | None:

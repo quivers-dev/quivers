@@ -14,6 +14,7 @@ population coefficients and each penalized group one Gaussian design block.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from formulae.matrices import DesignMatrices
 from formulae.terms.terms import Term
@@ -21,7 +22,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from quivers._values import OPAQUE_BY_VALUE, ValueModel
+from quivers._values import OPAQUE_BY_VALUE, ValueModel, opaque_by_value
 from quivers.dsl.ast_nodes import (
     ProgramStep,
     TypeName,
@@ -71,12 +72,16 @@ from quivers.formulas._term import (
     at_coordinate,
     flat_index,
     over_output,
+    read_only,
     Emission,
     InputDecl,
     OutputAxis,
     SiteDecl,
     design_declarations,
 )
+
+if TYPE_CHECKING:
+    from quivers.formulas._row_source import PredictorRows
 
 type ColumnInput = pd.Series | npt.NDArray[np.generic]
 type Order = int | float | tuple[int | float, ...] | None
@@ -1498,6 +1503,8 @@ class BasisTerm(ValueModel):
         Prefixed design identifier.
     matrix : np.ndarray
         Rows by coordinates; read-only.
+    columns : tuple[int, ...]
+        Columns of the evaluated term holding the coordinates.
     scale : str
         Scale site.
     owns_scale : bool
@@ -1510,11 +1517,29 @@ class BasisTerm(ValueModel):
 
     label: str
     name: str
-    matrix: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    matrix: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(read_only))
+    columns: tuple[int, ...]
     scale: str
     owns_scale: bool
     prior: str
     output: OutputAxis | None = None
+
+    def at(self, rows: PredictorRows) -> BasisTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        BasisTerm
+            The same coefficients over the basis at the rows.
+        """
+        if rows.frame is None:
+            return self
+        return self.with_(matrix=rows.matrix(self.label)[:, list(self.columns)])
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

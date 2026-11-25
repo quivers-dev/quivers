@@ -206,6 +206,7 @@ from quivers.formulas._predictor import (
     response_axis,
     transition_axis,
 )
+from quivers.formulas._row_source import RowSource
 from quivers.formulas._term_emission import (
     ProgramEmission,
     emit_axis_part,
@@ -976,6 +977,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         self._group_plan: dict[tuple[str, str, str], GroupBlockLaw] = {}
         self._predictors: tuple[Predictor, ...] = ()
         self._term_laws: FamilyCatalog | None = None
+        self._rows: RowSource | None = None
         conflicting = (
             self._distributional.keys() | expression_roots
         ) & self._named_prior_inputs.keys()
@@ -1168,13 +1170,17 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             return response if response is not None else self._term_laws
         return response.with_catalog(self._term_laws)
 
-    def terms(self, formula: Formula) -> tuple[Term, ...]:
+    def terms(
+        self, formula: Formula, rows: RowSource | None = None
+    ) -> tuple[Term, ...]:
         """List the terms of every linear predictor.
 
         Parameters
         ----------
         formula : Formula
             Location predictor and response.
+        rows : RowSource or None
+            Rows of the terms; None for the training rows.
 
         Returns
         -------
@@ -1182,7 +1188,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Terms in predictor order.
         """
         return tuple(
-            term for predictor in self._plan(formula, {}) for term in predictor.terms
+            term
+            for predictor in self._plan(formula, {}, rows)
+            for term in predictor.terms
         )
 
     def _observe_argument(
@@ -1291,6 +1299,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None = None,
         supplied_sites: Collection[str] = (),
         check: bool = True,
+        rows: RowSource | None = None,
     ) -> tuple[Module, FormulaData]:
         """Compile a formula to a QVR module and its complement.
 
@@ -1306,6 +1315,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             draws and this program reads.
         check : bool
             Whether to check the emitted module.
+        rows : RowSource or None
+            Rows the program covers; None for the training rows of
+            ``formula``. The fitted coordinates, priors and response
+            metadata stay those of ``formula``.
 
         Returns
         -------
@@ -1349,6 +1362,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                     auxiliary.name: auxiliary.prior
                 }
         self._emitted_groups = []
+        self._rows = rows
         self._supplied_sites = frozenset(supplied_sites)
         self._drawn_sites = self._supplied_sites
         known_groups = {
@@ -3546,7 +3560,10 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         )
 
     def _plan(
-        self, formula: Formula, laws: Mapping[tuple[str, str, str], GroupBlockLaw]
+        self,
+        formula: Formula,
+        laws: Mapping[tuple[str, str, str], GroupBlockLaw],
+        rows: RowSource | None,
     ) -> tuple[Predictor, ...]:
         """Plan every linear predictor of the model.
 
@@ -3556,13 +3573,15 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             Location predictor and response.
         laws : Mapping[tuple[str, str, str], GroupBlockLaw]
             Laws of the group blocks the program emits, by coefficient.
+        rows : RowSource or None
+            Rows of the terms; None for the training rows.
 
         Returns
         -------
         tuple[Predictor, ...]
             The planned predictors.
         """
-        return plan_predictors(
+        predictors = plan_predictors(
             formula,
             self._family,
             distributional=self._distributional,
@@ -3581,6 +3600,9 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
             transitions=self._transition_axis(formula),
             laws=laws,
         )
+        if rows is None:
+            return predictors
+        return tuple(predictor.at(rows) for predictor in predictors)
 
     def _plan_groups(
         self, formula: Formula, supplied: Collection[tuple[str, str, str]]
@@ -4274,6 +4296,8 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         formula = self._threshold_location_formula(formula)
         statements: list[Statement] = []
         n_obs = formula.response_values.shape[0]
+        if self._rows is not None and self._rows.size is not None:
+            n_obs = self._rows.size
         statements.append(
             ObjectDecl(
                 names=("Resp",),
@@ -4307,6 +4331,7 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
                 for law in laws
                 for member in law.members
             },
+            self._rows,
         )
         terms = tuple(
             term for predictor in self._predictors for term in predictor.terms

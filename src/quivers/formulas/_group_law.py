@@ -774,9 +774,8 @@ def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[InputDecl, ...]:
     Returns
     -------
     tuple[InputDecl, ...]
-        Each input once: the member indices and weighted covariates of
-        multi-membership rows, then per grouping factor the ``by`` codes, the
-        prior weights, and the matrices of a known level covariance.
+        Each input once, per grouping factor: the ``by`` codes, the prior
+        weights, and the matrices of a known level covariance.
     """
     laws = tuple(laws)
     inputs: dict[str, InputDecl] = {}
@@ -798,13 +797,6 @@ def law_inputs(laws: Iterable[GroupBlockLaw]) -> tuple[InputDecl, ...]:
             ),
         )
 
-    for law in laws:
-        for member in law.members:
-            rows = member.rows
-            if isinstance(rows, MembershipRows):
-                for index, covariate in zip(rows.indices, rows.covariates, strict=True):
-                    add(index, "Int", ("Resp",))
-                    add(covariate, "Real", ("Resp",))
     for law in laws:
         level = law.level
         if level.by is not None:

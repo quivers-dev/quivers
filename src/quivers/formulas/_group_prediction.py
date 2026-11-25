@@ -23,19 +23,9 @@ from quivers.formulas._group_law import (
     encode_support,
     block_gaussian,
 )
-from quivers.dsl.ast_nodes import (
-    LetExprFactor,
-    LetExprLiteral,
-    LetFactorBinder,
-    TypeName,
-    LetStep,
-    Module,
-    ProgramDecl,
-)
 from quivers.formulas.formula import (
     Formula,
     _normalize_cs_intercept,
-    _qvr_name,
     _random_blocks,
 )
 
@@ -447,83 +437,6 @@ def specialized_formula(
             )
         ),
     )
-
-
-def select_contributions(
-    module: Module,
-    formulas: Mapping[str, Formula],
-    selected: frozenset[tuple[str, str]],
-    *,
-    prefixes: Mapping[str, str] | None = None,
-) -> Module:
-    """Zero excluded row contributions without changing correlation blocks.
-
-    Parameters
-    ----------
-    module : Module
-        Formula-generated prediction module.
-    formulas : Mapping[str, Formula]
-        Fitted predictors.
-    selected : frozenset[tuple[str, str]]
-        Active group and slope pairs.
-    prefixes : Mapping[str, str] or None
-        Retained coefficient namespaces for every additive graph leaf.
-
-    Returns
-    -------
-    Module
-        A module retaining the fitted latent prior but excluding selected-out
-        effects from its response predictor.
-    """
-    from quivers.formulas._ast import _factor
-
-    excluded = set()
-    for parameter, formula in formulas.items():
-        prefix = (
-            prefixes[parameter]
-            if prefixes is not None
-            else ""
-            if parameter == "mu"
-            else f"dpar_{parameter}_"
-        )
-        for term in formula.random_terms:
-            if (term.group, term.slope) in selected:
-                continue
-            qgroup, qslope = _qvr_name(term.group), _qvr_name(term.slope)
-            latent = (
-                f"alpha_{qgroup}"
-                if term.slope == "Intercept"
-                else f"beta_{qgroup}_{qslope}"
-            )
-            excluded.add(f"{prefix}{latent}_per_row")
-    statements = []
-    for statement in module.statements:
-        if isinstance(statement, ProgramDecl):
-            steps = []
-            for step in statement.draws:
-                if isinstance(step, LetStep) and step.name in excluded:
-                    zero = LetExprLiteral(value=0.0)
-                    if isinstance(step.value, LetExprFactor):
-                        binders = step.value.binders
-                        if not any(
-                            isinstance(binder.index, TypeName)
-                            and binder.index.name == "Resp"
-                            for binder in binders
-                        ):
-                            binders = (
-                                *binders,
-                                LetFactorBinder(
-                                    var="prediction_row", index=TypeName(name="Resp")
-                                ),
-                            )
-                        value = step.value.with_(binders=binders, body=zero, cases=())
-                    else:
-                        value = _factor((("prediction_row", "Resp"),), body=zero)
-                    step = step.with_(value=value)
-                steps.append(step)
-            statement = statement.with_(draws=tuple(steps))
-        statements.append(statement)
-    return module.with_(statements=tuple(statements))
 
 
 def remap_draw(

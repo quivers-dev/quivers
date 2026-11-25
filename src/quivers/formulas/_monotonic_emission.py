@@ -19,9 +19,7 @@ from functools import reduce
 from typing import TYPE_CHECKING
 
 import didactic.api as dx
-from formulae.matrices import DesignMatrices
 import numpy as np
-import pandas as pd
 import torch
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
@@ -40,6 +38,7 @@ from quivers.formulas._monotonic import (
     MonotonicTerm,
     evaluate_monotonic_term,
 )
+from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
     Contribution,
@@ -288,43 +287,6 @@ def _bindings(
     return values
 
 
-def monotonic_prediction_bindings(
-    formula: Formula, design: DesignMatrices, frame: pd.DataFrame, prefix: str
-) -> dict[str, torch.Tensor]:
-    """Evaluate one predictor's ``mo()`` inputs on fresh rows.
-
-    Parameters
-    ----------
-    formula : Formula
-        Fitted predictor.
-    design : DesignMatrices
-        Its retained formulae evaluator.
-    frame : pandas.DataFrame
-        Fresh rows.
-    prefix : str
-        Predictor namespace.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Indicator matrices and covariates of the fresh rows.
-
-    Raises
-    ------
-    ValueError
-        If a fresh value lies outside the training categories, as brms refuses.
-    """
-    values: dict[str, torch.Tensor] = {}
-    if not formula.monotonic_terms:
-        return values
-    assert design.common is not None
-    for term in formula.monotonic_terms:
-        components = design.common.terms[term.term].components
-        designs, covariate = evaluate_monotonic_term(term, components, frame)
-        values.update(_bindings(prefix, term, designs, covariate))
-    return values
-
-
 class MonotonicRow(ValueModel):
     """One special-effects column: a coefficient times a monotonic row value.
 
@@ -336,6 +298,8 @@ class MonotonicRow(ValueModel):
         Evaluated column.
     prior : str
         Default prior of the coefficient.
+    scale : float or None
+        Root mean square of the training values the coefficient multiplies.
     simplexes : tuple[Simplex, ...]
         Simplex of each factor of the column.
     owned : tuple[Simplex, ...]
@@ -347,6 +311,7 @@ class MonotonicRow(ValueModel):
     prefix: str
     term: MonotonicTerm = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     prior: str
+    scale: float | None
     simplexes: tuple[Simplex, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     owned: tuple[Simplex, ...] = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
     output: OutputAxis | None = None
@@ -361,6 +326,34 @@ class MonotonicRow(ValueModel):
             Label of the column's term.
         """
         return self.term.term
+
+    def at(self, rows: PredictorRows) -> MonotonicRow:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        MonotonicRow
+            The same coefficient over the rows' indicator matrices.
+        """
+        if rows.frame is None:
+            return self
+        designs, covariate = evaluate_monotonic_term(
+            self.term, rows.components(self.term.term), rows.frame
+        )
+        return self.with_(
+            term=self.term.with_(
+                factors=tuple(
+                    factor.with_(design=design)
+                    for factor, design in zip(self.term.factors, designs, strict=True)
+                ),
+                covariate=self.term.covariate if covariate is None else covariate,
+            )
+        )
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
@@ -444,7 +437,7 @@ class MonotonicRow(ValueModel):
                 class_="b",
                 default=self.prior,
                 coef=self.term.name,
-                divisor=column_rms(self.term.linear_values),
+                divisor=self.scale,
             ),
         )
 
@@ -555,6 +548,7 @@ def monotonic_rows(
                 prefix=prefix,
                 term=term,
                 prior=prior,
+                scale=column_rms(term.linear_values),
                 simplexes=tuple(sites[factor.simplex] for factor in term.factors),
                 owned=tuple(
                     site

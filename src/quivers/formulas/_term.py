@@ -50,6 +50,7 @@ from quivers.formulas._ast import _add, _factor, _index, _mul, _var
 from quivers.formulas._design import SymbolicColumn
 
 if TYPE_CHECKING:
+    from quivers.formulas._row_source import PredictorRows
     from quivers.formulas._group_law import GroupBlockLaw
     from quivers.formulas.formula import FixedColumn
 
@@ -141,6 +142,8 @@ class SiteDecl(ValueModel):
         Bounds of the support.
     overridable : bool
         Whether prior rules can select the site.
+    fresh : bool
+        Whether the site is drawn for fresh rows rather than replayed.
     divisor : float or None
         Root mean square of the design column the coefficient multiplies, which
         divides the scale of a default prior.
@@ -162,6 +165,7 @@ class SiteDecl(ValueModel):
     lower: float | None = None
     upper: float | None = None
     overridable: bool = True
+    fresh: bool = False
     divisor: float | None = None
     multiplier: float | None = None
     component_labels: tuple[str, ...] = ()
@@ -401,6 +405,22 @@ class Term(Protocol):
         """
         ...
 
+    def at(self, rows: PredictorRows) -> Term:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        Term
+            The same coefficients over the design of the rows. A site drawn afresh
+            for them says so.
+        """
+        ...
+
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
 
@@ -491,6 +511,24 @@ def tensor_type(element: str, *axes: str) -> QiecTypeApplication | QiecTypeName:
             QiecShapeIndex(dimensions=tuple(QiecIndexName(name=axis) for axis in axes)),
         ),
     )
+
+
+def read_only(values: np.ndarray) -> np.ndarray:
+    """Copy an array in double precision and clear its writeable flag.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Numeric values.
+
+    Returns
+    -------
+    np.ndarray
+        Read-only copy.
+    """
+    copy = np.array(values, dtype=np.float64, order="C")
+    copy.setflags(write=False)
+    return copy
 
 
 def column_rms(data: np.ndarray) -> float | None:

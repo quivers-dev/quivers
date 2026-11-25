@@ -13,12 +13,13 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Literal
 
 import didactic.api as dx
+import numpy as np
 import torch
 
 from quivers._values import OPAQUE_BY_VALUE, ValueModel
-from quivers.dsl.ast_nodes import LetExprNode, ProgramStep
+from quivers.dsl.ast_nodes import ProgramStep
 from quivers.family_catalog import FamilyCatalog
-from quivers.formulas._ast import _index
+from quivers.formulas._ast import row_zero
 from quivers.formulas._design import SymbolicColumn
 from quivers.formulas._group_covariance import GroupCovariance, GroupCovarianceBasis
 from quivers.formulas._group_emission import bind_rows
@@ -42,7 +43,12 @@ from quivers.formulas._group_law import (
     SingleLevelRows,
     StudentMixing,
 )
-from quivers.formulas._grouping import GroupLevelOptions, MemberCovariate, Membership
+from quivers.formulas._grouping import (
+    GroupLevelOptions,
+    MemberCovariate,
+    Membership,
+    member_weights,
+)
 from quivers.formulas._grouping_emission import (
     by_axis,
     by_correlation_sites,
@@ -55,6 +61,7 @@ from quivers.formulas._grouping_emission import (
     student_sites,
     weight_input,
 )
+from quivers.formulas._row_source import PredictorRows
 from quivers.formulas._term import (
     AxisDecl,
     Contribution,
@@ -885,6 +892,10 @@ class GroupTerm(ValueModel):
     law : GroupBlockLaw or None
         Law of the block holding the coefficient; None when another program
         emits the block.
+    position, width : int
+        Position of the slope among the columns of its term, and their number.
+    active : bool
+        Whether the coefficient contributes to the predictor.
     output : OutputAxis or None
         Axis of the coefficient vectors.
     """
@@ -905,6 +916,9 @@ class GroupTerm(ValueModel):
     law: GroupBlockLaw | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
+    position: int = 0
+    width: int = 1
+    active: bool = True
     output: OutputAxis | None = None
 
     @property
@@ -929,6 +943,59 @@ class GroupTerm(ValueModel):
         """
         return f"{self.slope} | {self.group}"
 
+    def at(self, rows: PredictorRows) -> GroupTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        GroupTerm
+            The same coefficient gathered at the rows' levels. A coefficient the
+            request does not select adds nothing.
+        """
+        if not rows.selects(self.group, self.slope):
+            return self.with_(active=False)
+        if rows.frame is None:
+            return self
+        column, membership, covariate = self.column, self.membership, self.covariate
+        size = len(rows.frame)
+        if isinstance(column, FixedColumn) and not column.is_intercept:
+            position, width = self.position, self.width
+            values = rows.slopes(column.term)
+            if values.shape[1] != width:
+                raise ValueError(
+                    f"new_data changed the design width of {column.term!r}"
+                )
+            column = column.with_(data=values[:, position])
+        if membership is not None and covariate is not None:
+            columns = np.ones((size, membership.size))
+            if covariate.term and covariate.per_member:
+                columns = rows.slopes(covariate.term)
+            elif covariate.term:
+                position, width = self.position, self.width
+                values = rows.slopes(covariate.term)
+                if values.shape[1] != width:
+                    raise ValueError(
+                        f"new_data changed the design width of {covariate.term!r}"
+                    )
+                columns = np.repeat(
+                    values[:, position : position + 1], membership.size, axis=1
+                )
+            if columns.shape[1] != membership.size:
+                raise ValueError(
+                    f"new_data must give finite member covariates for {covariate.term!r}"
+                )
+            covariate = covariate.with_(values=columns)
+            membership = membership.with_(
+                codes=rows.member_codes(membership),
+                weights=member_weights(rows.frame, membership.spec),
+            )
+        return self.with_(column=column, membership=membership, covariate=covariate)
+
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
 
@@ -939,7 +1006,9 @@ class GroupTerm(ValueModel):
         """
         return (
             Contribution(
-                name=self.binding, rows=True, coordinates=self.output is not None
+                name=self.binding,
+                rows=True,
+                coordinates=self.active and self.output is not None,
             ),
         )
 
@@ -963,6 +1032,8 @@ class GroupTerm(ValueModel):
             multi-membership factor.
         """
         inputs: tuple[InputDecl, ...] = ()
+        if not self.active:
+            return inputs
         if self.column is not None:
             inputs = column_inputs(
                 ((f"{self.prefix}random_{self.column.qvr_name}", self.column),)
@@ -978,21 +1049,30 @@ class GroupTerm(ValueModel):
             membership.weights,
             covariate.values,
         )
-        codes = {
-            member_index(self.group, member): torch.tensor(values, dtype=torch.long)
-            for member, values in enumerate(membership.codes)
-        }
+        members = (
+            entry
+            for (member, codes), (name, values) in zip(
+                enumerate(membership.codes), products.items(), strict=True
+            )
+            for entry in (
+                (
+                    member_index(self.group, member),
+                    torch.tensor(codes, dtype=torch.long),
+                ),
+                (name, values),
+            )
+        )
         return (
             *inputs,
             *(
                 InputDecl(
                     name=name,
-                    element="Int" if name in codes else "Real",
+                    element="Real" if values.is_floating_point() else "Int",
                     axes=("Resp",),
                     declared=self.law is not None,
-                    values=value,
+                    values=values,
                 )
-                for name, value in {**codes, **products}.items()
+                for name, values in members
             ),
         )
 
@@ -1066,6 +1146,8 @@ class GroupTerm(ValueModel):
             The block holding the coefficient, unless emitted, and the contribution.
         """
         steps, gathered = emission.gathered(self.key, self.law)
+        if not self.active:
+            return (*steps, row_zero(self.binding))
         contribution: list[ProgramStep] = []
         bind_rows(
             self.binding,
@@ -1075,20 +1157,3 @@ class GroupTerm(ValueModel):
             contribution,
         )
         return (*steps, *contribution)
-
-    def cells(
-        self, row: LetExprNode, component: LetExprNode
-    ) -> tuple[LetExprNode, ...]:
-        """Read the contributions at one row and output coordinate.
-
-        Parameters
-        ----------
-        row, component : LetExprNode
-            Row and output coordinate.
-
-        Returns
-        -------
-        tuple[LetExprNode, ...]
-            The bound contribution there.
-        """
-        return (_index(self.binding, component, row),)

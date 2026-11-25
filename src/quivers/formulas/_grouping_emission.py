@@ -14,10 +14,9 @@ new-level policies of the shared Gaussian group layout unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable
 from typing import TYPE_CHECKING
 
-from formulae.terms.terms import Term
 import numpy as np
 import pandas as pd
 import torch
@@ -31,8 +30,6 @@ from quivers.dsl.ast_nodes import (
 from quivers.formulas._grouping import (
     GroupLevelOptions,
     Membership,
-    member_codes,
-    member_weights,
 )
 from quivers.formulas.formula import Formula, RandomTerm, _qvr_name
 
@@ -190,104 +187,6 @@ def member_covariates(
         member_input(prefix, group, slope, k): torch.as_tensor(product[:, k].copy())
         for k in range(membership.size)
     }
-
-
-def membership_prediction_bindings(
-    formula: Formula,
-    design_terms: Mapping[str, Term],
-    frame: pd.DataFrame,
-    prefix: str,
-    groups: Mapping[str, GroupRemap] | None,
-) -> dict[str, torch.Tensor]:
-    """Bind fresh member codes and weighted covariates.
-
-    Parameters
-    ----------
-    formula : Formula
-        Fitted predictor.
-    design_terms : Mapping[str, Term]
-        Retained formulae group-level expressions by term name.
-    frame : pandas.DataFrame
-        Fresh rows.
-    prefix : str
-        Predictor namespace.
-    groups : Mapping[str, GroupRemap] or None
-        Compact prediction axes with member codes, or None to code fresh
-        members against the fitted levels.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Runtime bindings.
-
-    Raises
-    ------
-    ValueError
-        If members, weights, or covariates are invalid.
-    """
-    values: dict[str, torch.Tensor] = {}
-    rows = len(frame)
-    for term in formula.random_terms:
-        membership = formula.grouping.membership(term.group)
-        if membership is None:
-            continue
-        spec = membership.spec
-        if groups is not None:
-            codes = tuple(
-                tuple(int(code) for code in indices.tolist())
-                for indices in groups[term.group].member_indices
-            )
-        else:
-            levels = formula.group_levels[term.group]
-            codes = member_codes(
-                frame, spec, {label: index for index, label in enumerate(levels)}
-            )
-        for k, member in enumerate(codes):
-            values[member_index(term.group, k)] = torch.tensor(member, dtype=torch.long)
-        covariate = formula.grouping.covariate(term.group, term.slope)
-        assert covariate is not None
-        if covariate.term == "":
-            columns = np.ones((rows, membership.size))
-        else:
-            evaluated = np.asarray(
-                design_terms[covariate.term].eval_new_data(frame),
-                dtype=np.float64,
-            ).reshape(rows, -1)
-            if covariate.per_member:
-                columns = evaluated
-            else:
-                # The slope's position among its term's exploded columns.
-                assert term.column is not None
-                siblings = [
-                    other.column.name
-                    for other in formula.random_terms
-                    if other.group == term.group
-                    and other.column is not None
-                    and other.column.term == covariate.term
-                ]
-                position = siblings.index(term.column.name)
-                if evaluated.shape[1] != len(siblings):
-                    raise ValueError(
-                        f"new_data changed the design width of {covariate.term!r}"
-                    )
-                columns = np.repeat(
-                    evaluated[:, position : position + 1], membership.size, axis=1
-                )
-            if columns.shape[1] != membership.size or not np.isfinite(columns).all():
-                raise ValueError(
-                    f"new_data must give finite member covariates for {covariate.term!r}"
-                )
-        values.update(
-            member_covariates(
-                prefix,
-                term.group,
-                term.slope,
-                membership,
-                member_weights(frame, spec),
-                columns,
-            )
-        )
-    return values
 
 
 def by_axis(group: str) -> str:

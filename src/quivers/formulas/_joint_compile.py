@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass
 from typing import TypeVar, cast
@@ -67,6 +67,7 @@ from quivers.formulas._predictor import (
     response_axis,
     slot_link,
 )
+from quivers.formulas._row_source import RowSource
 from quivers.formulas._term import OutputAxis, bind_inputs, declare_inputs
 from quivers.formulas._brms_priors import FLAT_CATALOG, improper_sites
 from quivers.formulas._prior_emission import (
@@ -420,7 +421,7 @@ def _namespace(
     supplied_groups: Mapping[tuple[str, str, str], LetExprNode] | None = None,
     supplied_sites: Collection[str] = (),
     supplied_inputs: Mapping[str, LetExprNode] | None = None,
-    local_module: Callable[[str, Module], Module] | None = None,
+    rows: RowSource | None = None,
 ) -> _ResponseEmission:
     """Apply the existing program-template substitution to one emitted response.
 
@@ -444,9 +445,8 @@ def _namespace(
         from the joint program.
     supplied_inputs : Mapping[str, LetExprNode] or None
         Explicit expressions for response inputs over joint bindings.
-    local_module : Callable[[str, Module], Module] or None
-        Rewrite of the response's local module before namespacing, used by
-        prediction to resize the row axis and select varying effects.
+    rows : RowSource or None
+        Rows the response covers; None for its training rows.
 
     Returns
     -------
@@ -466,9 +466,8 @@ def _namespace(
         supplied_groups=supplied_groups,
         supplied_sites=supplied_sites,
         check=False,
+        rows=rows,
     )
-    if local_module is not None:
-        module = local_module(name, module)
     program = next(item for item in module.statements if isinstance(item, ProgramDecl))
     prefix = "response_" + _qvr_name(name) + "__"
     objects = {
@@ -1181,13 +1180,8 @@ def _shared_groups(
                         statements,
                         steps,
                     )
-    # The responses bind the row data of multi-membership factors.
     inputs = bind_inputs(law_inputs(emitter.group_laws))
-    parameters = tuple(
-        parameter
-        for parameter in declare_inputs(law_inputs(emitter.group_laws))
-        if parameter.name in inputs
-    )
+    parameters = declare_inputs(law_inputs(emitter.group_laws))
     return (
         emitter,
         grouping,
@@ -1210,7 +1204,7 @@ def emit_joint(
     preamble: tuple[ProgramStep, ...] = (),
     external_inputs: tuple[QiecValueParameter, ...] = (),
     external_objects: tuple[ObjectDecl, ...] = (),
-    local_module: Callable[[str, Module], Module] | None = None,
+    rows: Mapping[str, RowSource] | None = None,
 ) -> _JointEmission:
     """Compose existing response emissions, shared groups, and one prior plan.
 
@@ -1233,8 +1227,8 @@ def emit_joint(
         Joint runtime parameters preceding every response parameter.
     external_objects : tuple[ObjectDecl, ...]
         Joint object declarations preceding every response object.
-    local_module : Callable[[str, Module], Module] or None
-        Rewrite applied to each response's local module before namespacing.
+    rows : Mapping[str, RowSource] or None
+        Rows each response covers; None for the training rows.
 
     Returns
     -------
@@ -1291,7 +1285,7 @@ def emit_joint(
             supplied_groups=supplied[name],
             supplied_sites=emitter._drawn_sites,
             supplied_inputs=supplied_inputs.get(name),
-            local_module=local_module,
+            rows=(rows or {}).get(name),
         )
         for name, (lens, formula) in components.items()
     }
@@ -1386,7 +1380,7 @@ def emit_joint(
                     supplied_groups=supplied[name],
                     supplied_sites=emitter._drawn_sites,
                     supplied_inputs=supplied_inputs.get(name),
-                    local_module=local_module,
+                    rows=(rows or {}).get(name),
                 )
         statements, steps, parameters, returned, _, layouts = _response_parts(
             responses,

@@ -37,6 +37,7 @@ from quivers.dsl.ast_nodes import (
 from quivers.formulas._ast import _add, _index, _let, _mul, _sub, _var
 from quivers.family_catalog import FamilyCatalog
 from quivers.formulas._design import SymbolicColumn
+from quivers.formulas._row_source import PredictorRows, fresh_columns
 from quivers.formulas._term import (
     AxisDecl,
     Contribution,
@@ -302,6 +303,9 @@ class PopulationTerm(ValueModel):
         Default prior of a coefficient.
     columns : tuple[FixedColumn or SymbolicColumn, ...]
         Design columns, in authored order.
+    scales : tuple[float or None, ...]
+        Root mean square of each training column, which a default prior
+        scale is divided by.
     coordinates : PopulationCoordinates or None
         Centered and QR coordinates of the block; None samples the
         coefficients themselves.
@@ -314,6 +318,7 @@ class PopulationTerm(ValueModel):
     columns: tuple[FixedColumn | SymbolicColumn, ...] = dx.field(
         opaque=True, extras=OPAQUE_BY_VALUE
     )
+    scales: tuple[float | None, ...]
     coordinates: PopulationCoordinates | None = dx.field(
         default=None, opaque=True, extras=OPAQUE_BY_VALUE
     )
@@ -329,6 +334,40 @@ class PopulationTerm(ValueModel):
             Their labels, joined by plus signs.
         """
         return " + ".join(dict.fromkeys(column.term for column in self.columns))
+
+    def at(self, rows: PredictorRows) -> PopulationTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        PopulationTerm
+            The same coefficients and coordinates over the rows' columns.
+        """
+        if rows.frame is None:
+            return self
+        evaluated = iter(
+            fresh_columns(
+                tuple(
+                    column
+                    for column in self.columns
+                    if isinstance(column, FixedColumn) and not column.is_intercept
+                ),
+                rows.column,
+            )
+        )
+        return self.with_(
+            columns=tuple(
+                next(evaluated)
+                if isinstance(column, FixedColumn) and not column.is_intercept
+                else column
+                for column in self.columns
+            )
+        )
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
@@ -398,7 +437,7 @@ class PopulationTerm(ValueModel):
         elif isinstance(column, SymbolicColumn):
             multiplier = column.prior_multiplier
         elif not column.is_intercept:
-            divisor = column_rms(column.data)
+            divisor = self.scales[self.columns.index(column)]
         return SiteDecl(
             name=site,
             class_="Intercept" if column.is_intercept else "b",

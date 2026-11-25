@@ -35,6 +35,7 @@ from copy import copy
 from dataclasses import replace
 
 import didactic.api as dx
+from formulae.matrices import DesignMatrices
 import numpy as np
 import pandas as pd
 import torch
@@ -84,7 +85,9 @@ from quivers.formulas._missing import (
     bind_latent_response,
 )
 from quivers.formulas._multivariate import MultivariateFormula, ResponseModel
-from quivers.formulas._prediction import _predictor_bindings
+from quivers.formulas._predictor import data_terms
+from quivers.formulas._row_source import RowSource, finite_inputs
+from quivers.formulas._term import bind_inputs
 from quivers.formulas._prior_emission import order_prior_dependencies
 from quivers.formulas._priors import PriorTarget
 from quivers.formulas.compile import FormulaToQVRModule
@@ -654,11 +657,8 @@ def symbolize(
             Population-level and varying-slope column values by local input
             name.
         """
-        return _predictor_bindings(
-            formula.with_(group_levels={}, group_indices={}),
-            part.designs[parameter],
-            included.assign(**dict(values)),
-            prefix,
+        return _evaluated_columns(
+            formula, part.designs[parameter], included.assign(**dict(values)), prefix
         )
 
     def dependence(
@@ -1838,11 +1838,42 @@ def missing_multipliers(
                 response_values=np.zeros(len(frame)),
             )
         )
-        values = _predictor_bindings(
+        values = _evaluated_columns(
             predictor, part.designs[item.parameter], ones, item.prefix
         )
         result[item.binding] = values[item.input_name]
     return result
+
+
+def _evaluated_columns(
+    formula: Formula, design: DesignMatrices, frame: pd.DataFrame, prefix: str
+) -> dict[str, torch.Tensor]:
+    """Evaluate the row data of one predictor.
+
+    Parameters
+    ----------
+    formula : Formula
+        Predictor.
+    design : DesignMatrices
+        Its retained evaluators.
+    frame : pandas.DataFrame
+        Rows.
+    prefix : str
+        Its local input prefix.
+
+    Returns
+    -------
+    dict[str, torch.Tensor]
+        Population-level and varying-slope column values by local input name.
+    """
+    rows = RowSource(frame=frame, designs={prefix: design}).predictor(prefix)
+    return finite_inputs(
+        bind_inputs(
+            item
+            for term in data_terms(formula, prefix)
+            for item in term.at(rows).inputs()
+        )
+    )
 
 
 def fresh_values(plan: MissingPlan, frame: pd.DataFrame) -> dict[str, torch.Tensor]:

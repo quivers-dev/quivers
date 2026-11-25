@@ -2,38 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import TYPE_CHECKING, Literal, Mapping, Never, SupportsIndex
 
 import didactic.api as dx
-from formulae.categorical import CategoricalBox
 from formulae.matrices import DesignMatrices
-from formulae.terms.call import Call
-from formulae.terms.variable import Variable
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
 import numpy as np
-import pandas as pd
 import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE, ValueModel
 from quivers.continuous.programs import MonadicProgram
 from quivers.dsl import Compiler
 from quivers.dsl.ast_nodes import (
-    DiscreteConstructor,
     Module,
-    ObjectDecl,
-    TypeFromExpr,
 )
-from quivers.formulas._smooth import term_constants
 from quivers.formulas.formula import (
-    FixedColumn,
-    Formula,
     _CS_ONES,
     _qvr_name,
-)
-from quivers.formulas._gp import (
-    gp_prediction,
 )
 from quivers.formulas._autocor import (
     AutocorMatrix,
@@ -41,14 +27,9 @@ from quivers.formulas._autocor import (
     autocor_catalog,
 )
 from quivers.formulas._grouping import add_grouping_columns
-from quivers.formulas._grouping_emission import (
-    membership_prediction_bindings,
-)
-from quivers.formulas._monotonic_emission import monotonic_prediction_bindings
-from quivers.formulas._autocor import latent_prediction
 from quivers.formulas._group_law import GroupBlockLaw, LevelSite, law_inputs
-from quivers.formulas._predictor import design_terms
-from quivers.formulas._term import bind_inputs, join_catalogs
+from quivers.formulas._row_source import RowSource, finite_inputs
+from quivers.formulas._term import bind_inputs
 from quivers.formulas._group_layout import GroupBlockLayout
 from quivers.formulas._priors import PriorTarget
 
@@ -61,7 +42,6 @@ from quivers.formulas._group_prediction import (
     NewLevelPolicy,
     compact_groups,
     selected_effects,
-    select_contributions,
     specialized_formula,
 )
 from quivers.formulas._threshold_groups import threshold_selectors
@@ -196,6 +176,8 @@ class PredictionContext(ValueModel):
     ordinal_replays : tuple of OrdinalReplay
         Ordinal responses with retained thresholds. Empty means the single
         response of the fit, named without a prefix.
+    source : RowSource or None
+        Rows of the request; None when the fitted program serves it.
     """
 
     program: MonadicProgram = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
@@ -214,315 +196,12 @@ class PredictionContext(ValueModel):
     retain_ordinal_cutpoints: bool = False
     ordinal_order_groups: tuple[str, ...] = ()
     fresh_sites: tuple[str, ...] = ()
+    source: RowSource | None = dx.field(
+        default=None, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
     ordinal_replays: tuple[OrdinalReplay, ...] = dx.field(
         default=(), opaque=True, extras=OPAQUE_BY_VALUE
     )
-
-
-def _validate_categories(
-    design: DesignMatrices,
-    frame: pd.DataFrame,
-    selected: frozenset[tuple[str, str]] | None = None,
-) -> None:
-    """Check required variables and categorical levels without global settings.
-
-    Parameters
-    ----------
-    design : DesignMatrices
-        Fitted expression and contrast state.
-    frame : pandas.DataFrame
-        Fresh predictor rows.
-    selected : frozenset[tuple[str, str]] or None
-        Active grouping-factor and expanded-slope pairs. None validates all
-        fitted slopes; grouping identities are checked separately.
-
-    Raises
-    ------
-    ValueError
-        If predictors are absent, missing, or contain unknown categories.
-    TypeError
-        If a retained categorical evaluator is unsupported.
-    """
-    terms = []
-    if design.common is not None:
-        terms.extend(design.common.terms.values())
-    if design.group is not None:
-        for term in design.group.terms.values():
-            if selected is None or any(
-                group == term.factor.name
-                and (
-                    slope == term.expr.name.replace(_CS_ONES, "1")
-                    or slope.startswith(term.expr.name.replace(_CS_ONES, "1") + "_")
-                )
-                for group, slope in selected
-            ):
-                terms.append(term.expr)
-    seen: set[int] = set()
-    for term in terms:
-        # formulae's CallVarsExtractor represents literal arguments by "".
-        missing = (set(term.var_names) - {""} - term_constants(term)) - set(
-            frame.columns
-        )
-        if missing:
-            raise ValueError(f"new_data is missing predictors {sorted(missing)}")
-        for component in getattr(term, "components", ()):
-            if id(component) in seen or component.kind != "categoric":
-                continue
-            seen.add(id(component))
-            if isinstance(component, Variable):
-                values = frame[component.name]
-            elif isinstance(component, Call):
-                values = component.call.eval(frame, component.env)
-                if isinstance(values, CategoricalBox):
-                    values = values.data
-            else:
-                raise TypeError("unsupported retained categorical evaluator")
-            values = np.asarray(values)
-            if pd.isna(values).any():
-                raise ValueError(
-                    "new_data categorical predictors cannot contain missing values"
-                )
-            levels = component.levels
-            assert levels is not None
-            unknown = set(values.reshape(-1)) - set(levels)
-            if unknown:
-                raise ValueError(
-                    f"new_data contains unknown levels {sorted(map(str, unknown))} "
-                    f"for {component.name!r}; only fitted levels are supported"
-                )
-
-
-def _numeric_matrix(values: object, rows: int, name: str) -> np.ndarray:
-    """Validate and normalize one evaluated predictor term on its row axis.
-
-    Parameters
-    ----------
-    values : object
-        Evaluated numeric term.
-    rows : int
-        Required row count.
-    name : str
-        Term name for diagnostics.
-
-    Returns
-    -------
-    numpy.ndarray
-        Finite numeric values with row and column axes.
-
-    Raises
-    ------
-    ValueError
-        If the term has an invalid shape or nonfinite values.
-    """
-    matrix = np.asarray(values)
-    if matrix.ndim == 1:
-        matrix = matrix[:, None]
-    if matrix.ndim != 2 or matrix.shape[0] != rows:
-        raise ValueError(f"new_data term {name!r} must retain exactly {rows} rows")
-    if matrix.dtype.kind not in "biuf" or not np.isfinite(matrix).all():
-        raise ValueError(f"new_data term {name!r} must produce finite numeric values")
-    return matrix
-
-
-def _column_values(
-    columns: tuple[FixedColumn, ...],
-    matrices: Mapping[str, np.ndarray],
-    *,
-    structured_widths: Mapping[str, int] | None = None,
-) -> Iterator[tuple[FixedColumn, np.ndarray]]:
-    """Match fitted exploded-column labels to fresh term-matrix positions.
-
-    Parameters
-    ----------
-    columns : tuple[FixedColumn, ...]
-        Fitted labels in design-column order.
-    matrices : Mapping[str, numpy.ndarray]
-        Fresh matrices keyed by the original term name.
-    structured_widths : Mapping[str, int] or None
-        Full retained width for terms whose remaining columns belong to
-        explicitly identified coupled Gaussian designs.
-
-    Yields
-    ------
-    tuple[FixedColumn, numpy.ndarray]
-        Each fitted label and its fresh numeric values.
-
-    Raises
-    ------
-    ValueError
-        If an evaluated term changes its fitted design width.
-    """
-    positions: dict[str, int] = {}
-    for column in columns:
-        index = positions.get(column.term, 0)
-        positions[column.term] = index + 1
-        matrix = matrices[column.term]
-        if index >= matrix.shape[1]:
-            raise ValueError(f"new_data changed the design width of {column.term!r}")
-        yield column, matrix[:, index]
-    for name, count in positions.items():
-        if matrices[name].shape[1] != (structured_widths or {}).get(name, count):
-            raise ValueError(f"new_data changed the design width of {name!r}")
-
-
-def _predictor_bindings(
-    formula: Formula,
-    design: DesignMatrices,
-    frame: pd.DataFrame,
-    prefix: str,
-    groups: Mapping[str, GroupRemap] | None = None,
-    selected: frozenset[tuple[str, str]] | None = None,
-) -> dict[str, torch.Tensor]:
-    """Evaluate retained fixed columns, offsets, and random slopes once.
-
-    Parameters
-    ----------
-    formula : Formula
-        Fitted column labels and group coding.
-    design : DesignMatrices
-        Fitted evaluator state.
-    frame : pandas.DataFrame
-        Fresh predictor rows.
-    prefix : str
-        Auxiliary-parameter input namespace, or the empty location prefix.
-    groups : Mapping[str, GroupRemap] or None
-        Compact group indices, or None to require original fitted levels.
-    selected : frozenset[tuple[str, str]] or None
-        Active grouping-factor and slope pairs; excluded slope inputs use zero.
-
-    Returns
-    -------
-    dict[str, torch.Tensor]
-        Validated native covariate and group-index bindings.
-
-    Raises
-    ------
-    ValueError
-        If evaluated columns or grouping levels are invalid.
-    """
-    rows = len(frame)
-    _validate_categories(design, frame, selected)
-    matrices: dict[str, np.ndarray] = {}
-    if design.common is not None:
-        evaluated = design.common.evaluate_new_data(frame)
-        assert evaluated.design_matrix is not None
-        for name, slice_ in design.common.slices.items():
-            matrices[name] = _numeric_matrix(
-                evaluated.design_matrix[:, slice_], rows, name
-            )
-    result = monotonic_prediction_bindings(formula, design, frame, prefix)
-    for term in formula.design_terms:
-        values = matrices[term.term][:, term.column_indices]
-        result[prefix + term.qvr_name] = torch.as_tensor(
-            values.copy(), dtype=torch.float64
-        )
-    # Inputs with no row axis keep their training values.
-    result.update(
-        bind_inputs(
-            item
-            for term in design_terms(formula, prefix)
-            for item in term.inputs()
-            if "Resp" not in item.axes
-        )
-    )
-    structured_widths = {
-        term.term: max(term.column_indices) + 1 for term in formula.design_terms
-    }
-    for column, values in _column_values(
-        tuple(
-            column
-            for column in formula.fixed_columns
-            if isinstance(column, FixedColumn)
-        ),
-        matrices,
-        structured_widths=structured_widths,
-    ):
-        if not column.is_intercept:
-            result[prefix + column.qvr_name] = torch.as_tensor(
-                values.copy(), dtype=torch.float32
-            )
-    for index, (column, values) in enumerate(_column_values(formula.offsets, matrices)):
-        result[f"{prefix}formula_offset_{index}"] = torch.as_tensor(
-            values.copy(), dtype=torch.float32
-        )
-
-    if design.group is not None:
-        slope_matrices = {}
-        for term in design.group.terms.values():
-            if term.expr.name not in slope_matrices:
-                active = selected is None or any(
-                    group == term.factor.name
-                    and (
-                        slope == term.expr.name.replace(_CS_ONES, "1")
-                        or slope.startswith(term.expr.name.replace(_CS_ONES, "1") + "_")
-                    )
-                    for group, slope in selected
-                )
-                if active:
-                    slope_matrices[term.expr.name] = _numeric_matrix(
-                        term.expr.eval_new_data(frame), rows, term.expr.name
-                    )
-                else:
-                    width = len(
-                        {
-                            term_.column.name
-                            for term_ in formula.random_terms
-                            if term_.column is not None
-                            and term_.column.term == term.expr.name
-                        }
-                    )
-                    slope_matrices[term.expr.name] = np.zeros((rows, max(1, width)))
-        # A slope shared by several grouping factors has one evaluated input.
-        columns = tuple(
-            {
-                term.column.name: term.column
-                for term in formula.random_terms
-                if isinstance(term.column, FixedColumn)
-            }.values()
-        )
-        for column, values in _column_values(columns, slope_matrices):
-            if not column.is_intercept:
-                result[f"{prefix}random_{column.qvr_name}"] = torch.as_tensor(
-                    values.copy(), dtype=torch.float32
-                )
-
-    for group, levels in formula.group_levels.items():
-        if groups is not None:
-            result[f"{_qvr_name(group)}_idx"] = groups[group].row_indices
-            continue
-        mapping = {level: index for index, level in enumerate(levels)}
-        values = frame[group]
-        if np.asarray(pd.isna(values)).any():
-            raise ValueError(
-                f"new_data grouping factor {group!r} contains missing values"
-            )
-        unknown = set(map(str, values)) - mapping.keys()
-        if unknown:
-            raise ValueError(
-                f"new_data contains unknown groups {sorted(unknown)} for {group!r}; "
-                "only fitted levels are supported"
-            )
-        result[f"{_qvr_name(group)}_idx"] = torch.tensor(
-            [mapping[str(value)] for value in values], dtype=torch.long
-        )
-    if design.group is not None:
-        result.update(
-            membership_prediction_bindings(
-                formula,
-                {term.expr.name: term.expr for term in design.group.terms.values()},
-                frame,
-                prefix,
-                groups,
-            )
-        )
-    if any(
-        value.is_floating_point() and not torch.isfinite(value).all()
-        for value in result.values()
-    ):
-        raise ValueError(
-            "new_data predictor values must fit finite native floating-point inputs"
-        )
-    return result
 
 
 def _set_trial_rows(
@@ -720,19 +399,14 @@ def prepare_prediction(
             raise ValueError("predictor_data requires new_data")
         if plan is None:
             raise ValueError("this fit has no retained formula prediction plan")
-        module = select_contributions(
-            plan.module, formulas, selected, prefixes=prefixes
-        )
+        source = RowSource(selected=selected, include=incl_autocor)
+        lens = fit._formula_lens()
+        module, _ = lens._forward(fit.formula, rows=source)
         program = (
             Compiler(
                 module,
                 # Improper flat priors are compilation-local native laws.
-                families=with_flat_catalog(
-                    join_catalogs(
-                        response_families, fit._formula_lens().terms(fit.formula)
-                    ),
-                    module,
-                ),
+                families=with_flat_catalog(lens.families(response_families), module),
             )
             .compile()
             .morphism
@@ -742,8 +416,13 @@ def prepare_prediction(
         return PredictionContext(
             program=program,
             observations=dict(retained_observations)
-            | latent_prediction(fit, None, include=incl_autocor)[1],
+            | bind_inputs(
+                item
+                for term in lens.terms(fit.formula, source)
+                for item in term.inputs()
+            ),
             rows=len(fit.formula.response_values),
+            source=source,
             seed=seed,
             retain_ordinal_cutpoints=constrained_cs,
         )
@@ -818,20 +497,42 @@ def prepare_prediction(
             "sample_new_levels='feasible_uncertainty' or 'feasible_gaussian' "
             "policy, conditioned on ordered thresholds for the requested rows"
         )
-    observations: dict[str, torch.Tensor] = {}
-    for parameter, prefix, formula in fit._predictor_items():
-        bindings = _predictor_bindings(
-            formula,
-            plan.designs[parameter],
-            frame,
-            prefix,
-            groups,
-            selected,
-        )
-        for name, value in bindings.items():
-            if name in observations and not torch.equal(value, observations[name]):
-                raise ValueError(f"new_data has inconsistent shared input {name!r}")
-            observations[name] = value
+    source = RowSource(
+        frame=frame,
+        designs={prefixes[name]: plan.designs[name] for name in formulas},
+        groups=groups,
+        selected=selected,
+        include=incl_autocor,
+    )
+    specialized = {
+        name: specialized_formula(formula, groups, frame)
+        for name, formula in formulas.items()
+    }
+    specialized_lens = fit._formula_lens(
+        distributional={
+            name: formula
+            for name, formula in specialized.items()
+            if name in fit.distributional
+        },
+        nonlinear_leaves={
+            name: formula
+            for name, formula in specialized.items()
+            if fit.predictor_graph is not None and name in fit.predictor_graph.leaves
+        },
+    )
+    terms = specialized_lens.terms(specialized["mu"], source)
+    observations = finite_inputs(
+        bind_inputs(item for term in terms for item in term.inputs())
+    )
+    observations.update(
+        {
+            f"{_qvr_name(group)}_idx": remap.row_indices
+            for group, remap in groups.items()
+        }
+    )
+    fresh_sites = tuple(
+        site.name for term in terms for site in term.sites() if site.fresh
+    )
 
     if fit.predictor_graph is not None:
         from quivers.formulas._predictor_graph import graph_input_bindings
@@ -860,16 +561,6 @@ def prepare_prediction(
     observations.update(prediction_role_bindings(fit.formula.modifiers, frame))
     # brms thres(n, gr): the fitted category selectors of every group.
     observations.update(threshold_selectors(fit.observations))
-    # Latent terms (brms car, latent residuals) cover the prediction rows.
-    latent_formula, latent_values, fresh_sites = latent_prediction(
-        fit, frame, include=incl_autocor
-    )
-    observations.update(latent_values)
-    # gp-exact: exact gp() blocks draw their latent function at the new inputs.
-    gp_formulas, gp_values, gp_fresh = gp_prediction(
-        fit._predictor_items(), plan.designs, frame
-    )
-    observations.update(gp_values)
     if fit.family.trials_parameter is not None:
         retained_source = dict(fit.formula.modifiers.sources).get("trials")
         specification = (
@@ -920,56 +611,12 @@ def prepare_prediction(
             raise ValueError("new_data neural predictor must produce finite values")
         observations[fit.predictor_name] = neural
 
-    module = plan.module
-    families = join_catalogs(
-        response_families, fit._formula_lens().terms(latent_formula)
-    )
-    if groups or re_formula is not None or gp_fresh:
-        specialized = {
-            name: specialized_formula(gp_formulas[name], groups, frame)
-            for name in formulas
-        }
-        specialized_lens = fit._formula_lens(
-            distributional={
-                name: formula
-                for name, formula in specialized.items()
-                if name in fit.distributional
-            },
-            nonlinear_leaves={
-                name: formula
-                for name, formula in specialized.items()
-                if fit.predictor_graph is not None
-                and name in fit.predictor_graph.leaves
-            },
-        )
-        module, _ = specialized_lens.forward(
-            specialized["mu"].with_(latent_terms=latent_formula.latent_terms)
-        )
-        families = specialized_lens.families(response_families)
-        # The level inputs of every block on the compact prediction levels.
-        observations.update(bind_inputs(law_inputs(specialized_lens.group_laws)))
-        module = select_contributions(module, formulas, selected, prefixes=prefixes)
-    statements = []
-    fresh_axes = {
-        term.axis for term in latent_formula.latent_terms if term.name in fresh_sites
-    }
-    for statement in module.statements:
-        if isinstance(statement, ObjectDecl) and (
-            statement.names == ("Resp",) or statement.names[0] in fresh_axes
-        ):
-            statement = statement.with_(
-                init=TypeFromExpr(
-                    expr=DiscreteConstructor(constructor="FinSet", args=(str(rows),))
-                )
-            )
-        statements.append(statement)
+    module, _ = specialized_lens._forward(specialized["mu"], rows=source)
+    # The level inputs of every block on the compact prediction levels.
+    observations.update(bind_inputs(law_inputs(specialized_lens.group_laws)))
     # Improper flat priors are compilation-local native laws.
-    families = with_flat_catalog(families, module)
-    program = (
-        Compiler(module.with_(statements=tuple(statements)), families=families)
-        .compile()
-        .morphism
-    )
+    families = with_flat_catalog(specialized_lens.families(response_families), module)
+    program = Compiler(module, families=families).compile().morphism
     if not isinstance(program, MonadicProgram):
         raise TypeError("prediction requires a native monadic program")
     specialized_registry = LatentRegistry.from_model(
@@ -983,8 +630,8 @@ def prepare_prediction(
     covariance_sites = {
         site for group in groups.values() for site in group.support_sites
     }
-    # Fresh latent residuals are drawn for the new rows, not replayed.
-    covariance_sites = covariance_sites | set(fresh_sites) | set(gp_fresh)
+    # Sites drawn for the new rows are not replayed.
+    covariance_sites = covariance_sites | set(fresh_sites)
     if (
         set(original.names) - covariance_sites
         != set(specialized_registry.names) - covariance_sites
@@ -1032,5 +679,6 @@ def prepare_prediction(
         seed=seed,
         retain_ordinal_cutpoints=constrained_cs,
         ordinal_order_groups=tuple(sorted(order_groups)) if constrained_cs else (),
-        fresh_sites=(*fresh_sites, *gp_fresh),
+        fresh_sites=fresh_sites,
+        source=source,
     )

@@ -82,14 +82,14 @@ from quivers.formulas._term import (
     OutputAxis,
     SiteDecl,
     design_declarations,
+    read_only,
 )
 from quivers.qiec.families import DistributionFamily, FamilyParameter
 from quivers.qiec.types import REAL
 
 if TYPE_CHECKING:
-    from formulae.matrices import DesignMatrices
+    from quivers.formulas._row_source import PredictorRows
 
-    from quivers.formulas.formula import Formula
 
 type ColumnInput = pd.Series | npt.NDArray[np.generic]
 type GpKernel = Literal["exp_quad", "matern32", "matern52", "exponential"]
@@ -1498,70 +1498,6 @@ def gp_conditional_catalog(
     return catalog
 
 
-def gp_prediction(
-    items: Iterable[tuple[str, str, Formula]],
-    designs: Mapping[str, DesignMatrices],
-    frame: pd.DataFrame,
-) -> tuple[dict[str, Formula], dict[str, torch.Tensor], tuple[str, ...]]:
-    """Specialize every exact GP block to prediction rows, as brms predicts them.
-
-    Each exact block reads its fresh inputs and design from the rows
-    (`gp_rows`) and draws the latent function there from
-    `GaussianProcessConditional`, given the replayed training values, under
-    each posterior draw. A sub-GP with no active row keeps one zero design
-    column at its first training input, so it adds nothing.
-
-    Parameters
-    ----------
-    items : Iterable[tuple[str, str, Formula]]
-        Fitted predictor name, input prefix, and formula of each predictor.
-    designs : Mapping[str, DesignMatrices]
-        Retained evaluators by predictor name.
-    frame : pandas.DataFrame
-        Prediction rows.
-
-    Returns
-    -------
-    tuple[dict[str, Formula], dict[str, torch.Tensor], tuple[str, ...]]
-        The formulas with specialized blocks, the fresh designs and anchors,
-        and the latent sites to draw afresh; empty when no exact block exists.
-    """
-    formulas: dict[str, Formula] = {}
-    values: dict[str, torch.Tensor] = {}
-    fresh: list[str] = []
-    for parameter, prefix, formula in items:
-        if not any(
-            term.gp is not None and term.gp.exact for term in formula.design_terms
-        ):
-            formulas[parameter] = formula
-            continue
-        design = designs[parameter]
-        assert design.common is not None
-        evaluated = design.common.evaluate_new_data(frame)
-        assert evaluated.design_matrix is not None
-        terms = []
-        for term in formula.design_terms:
-            block = term.gp
-            if block is None or not block.exact:
-                terms.append(term)
-                continue
-            assert block.inputs is not None
-            columns = evaluated.design_matrix[:, design.common.slices[term.term]]
-            raw = np.asarray(columns, dtype=np.float64)[:, list(term.column_indices)]
-            points, rows = gp_rows(raw, block)
-            if not len(points):
-                points, rows = block.inputs[:1], np.zeros((len(frame), 1))
-            name = prefix + term.qvr_name
-            terms.append(
-                term.with_(data=rows, gp=block.with_(prediction_inputs=points))
-            )
-            values[name] = torch.as_tensor(rows, dtype=torch.float64)
-            values[name + "_anchor"] = torch.zeros(len(points), dtype=torch.float64)
-            fresh.append(name + "_coefficients")
-        formulas[parameter] = formula.with_(design_terms=tuple(terms))
-    return formulas, values, tuple(fresh)
-
-
 def exact_contribution(
     draws: Mapping[str, torch.Tensor],
     block: GaussianProcessBlock,
@@ -1708,6 +1644,8 @@ class _ProcessTerm(ValueModel):
         Retained block.
     matrix : np.ndarray
         Rows by coordinates; read-only.
+    columns : tuple[int, ...]
+        Columns of the evaluated term the block reads.
     scale_prior : str
         Default ``sdgp`` prior.
     output : OutputAxis or None
@@ -1718,7 +1656,8 @@ class _ProcessTerm(ValueModel):
     name: str
     prefix: str
     block: GaussianProcessBlock = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
-    matrix: np.ndarray = dx.field(opaque=True, extras=OPAQUE_BY_VALUE)
+    matrix: np.ndarray = dx.field(opaque=True, extras=opaque_by_value(read_only))
+    columns: tuple[int, ...]
     scale_prior: str
     output: OutputAxis | None = None
 
@@ -1841,6 +1780,23 @@ class SpectralTerm(_ProcessTerm):
 
     The coefficients are ``sqrt(spd(frequencies; sdgp, lscale)) * z``.
     """
+
+    def at(self, rows: PredictorRows) -> SpectralTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        SpectralTerm
+            The same coefficients over the spectral basis at the rows.
+        """
+        if rows.frame is None:
+            return self
+        return self.with_(matrix=rows.matrix(self.label)[:, list(self.columns)])
 
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
@@ -1966,6 +1922,31 @@ class ExactProcessTerm(_ProcessTerm):
             size=len(self.block.inputs),
         )
 
+    def at(self, rows: PredictorRows) -> ExactProcessTerm:
+        """Return the term on other rows.
+
+        Parameters
+        ----------
+        rows : PredictorRows
+            Rows of one request, read through the term's predictor.
+
+        Returns
+        -------
+        ExactProcessTerm
+            The function drawn at the rows' distinct inputs given its training
+            values. A block with no active row keeps one zero design column at
+            its first training input, so it adds nothing.
+        """
+        if rows.frame is None:
+            return self
+        block = self.block
+        assert block.inputs is not None
+        raw = np.asarray(rows.matrix(self.label), dtype=np.float64)
+        points, design = gp_rows(raw[:, list(self.columns)], block)
+        if not len(points):
+            points, design = block.inputs[:1], np.zeros((len(raw), 1))
+        return self.with_(matrix=design, block=block.with_(prediction_inputs=points))
+
     def axes(self) -> tuple[AxisDecl, ...]:
         """List the finite axes the term uses.
 
@@ -2053,6 +2034,7 @@ class ExactProcessTerm(_ProcessTerm):
                 class_="zgp",
                 event_axis=self.name + "_Coordinate",
                 overridable=False,
+                fresh=True,
             ),
         )
 
@@ -2139,6 +2121,7 @@ def process_term(
     prefix: str,
     block: GaussianProcessBlock,
     matrix: np.ndarray,
+    columns: tuple[int, ...],
     scale_prior: str,
     output: OutputAxis | None,
 ) -> SpectralTerm | ExactProcessTerm:
@@ -2156,6 +2139,8 @@ def process_term(
         Retained block.
     matrix : np.ndarray
         Rows by coordinates; read-only.
+    columns : tuple[int, ...]
+        Columns of the evaluated term the block reads.
     scale_prior : str
         Default ``sdgp`` prior.
     output : OutputAxis or None
@@ -2183,6 +2168,7 @@ def process_term(
         prefix=prefix,
         block=block,
         matrix=matrix,
+        columns=columns,
         scale_prior=scale_prior,
     )
 

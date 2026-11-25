@@ -935,6 +935,9 @@ def _sub_emission(
             supplied_groups=supplied,
             supplied_sites=supplied_sites,
             check=False,
+            rows=lens._rows.within(namespace.prefix)
+            if lens._rows is not None
+            else None,
         )
         return sub, module
 
@@ -1145,6 +1148,25 @@ def _restricted(component: DrawArgDist, formula: Formula) -> DrawArgDist:
     )
 
 
+def row_count(lens: FormulaToQVRModule, formula: Formula) -> int:
+    """Count the rows the program covers.
+
+    Parameters
+    ----------
+    lens : FormulaToQVRModule
+        The mixture lens.
+    formula : Formula
+        Main formula.
+
+    Returns
+    -------
+    int
+        Fresh rows of the request, or the training rows.
+    """
+    fresh = lens._rows.size if lens._rows is not None else None
+    return int(formula.response_values.shape[0]) if fresh is None else fresh
+
+
 def _row_inputs(
     lens: FormulaToQVRModule,
     formula: Formula,
@@ -1331,7 +1353,7 @@ def _shared_blocks(
             module,
             bare,
             lens._family,
-            helper._plan(bare, helper._group_plan),
+            helper._plan(bare, helper._group_plan, None),
             helper.group_laws,
             draw=lens._parse_prior,
         )
@@ -1513,7 +1535,7 @@ def emit_mixture(
             init=TypeFromExpr(
                 expr=DiscreteConstructor(
                     constructor="FinSet",
-                    args=(str(int(formula.response_values.shape[0])),),
+                    args=(str(row_count(lens, formula)),),
                 )
             ),
         )
