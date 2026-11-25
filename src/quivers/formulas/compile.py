@@ -2168,10 +2168,6 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         return obs
 
     @staticmethod
-    def _ordinal_category_count(formula: Formula) -> int:
-        return FormulaToQVRModule._category_count(formula, family="cumulative")
-
-    @staticmethod
     def _component_labels(formula: Formula) -> tuple[str, ...]:
         """Read retained event components or scalar factor category labels.
 
