@@ -518,8 +518,9 @@ class PopulationTerm(ValueModel):
                 ]
             )
         )
-        coefficients = self.coefficients(draws).double()
-        return torch.einsum("cdj...,jn->cdn...", coefficients, design)
+        return torch.einsum(
+            "cdj...,jn->cdn...", self.coefficients(draws).to(design), design
+        )
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.

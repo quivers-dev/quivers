@@ -108,7 +108,6 @@ from quivers.formulas.compile import FormulaToQVRModule
 from quivers.formulas._priors import PriorSpec, resolve_priors
 from quivers.formulas._priors import PriorInput, PriorSet, PriorTarget, normalize_priors
 from quivers.formulas._response import expected_response, response_tensor
-from quivers.formulas._smooth import smooth_states
 from quivers.formulas.formula import Formula, _qvr_name
 from quivers.formulas._response_modifiers import response_input_name
 from quivers.inference._likelihood import collect_log_likelihood
@@ -143,13 +142,19 @@ from quivers.formulas._postprocess_names import (
     _ordinal_thresholds,
     brms_rename,
     coefficient_labels,
+    name_scope,
     coordinate_labels,
     distributional_classes,
     shrinkage_scales,
 )
 
 # One catalogue of brms variable names shared with single-response fits.
-from quivers.formulas._name_scope import NameScope, predictor_variables
+from quivers.formulas._term import OutputAxis
+from quivers.formulas._name_scope import (
+    NameScope,
+    level_coefficients,
+    predictor_variables,
+)
 from quivers.formulas._variable_catalogue import (
     brms_order,
     checked_variables,
@@ -719,6 +724,8 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             )
         consumed: set[str] = set()
         shrunk: dict[str, str] = {}
+        scopes: dict[tuple[str, str], NameScope] = {}
+        outputs: dict[tuple[str, str], OutputAxis | None] = {}
         for resp, response in self.emission.responses.items():
             plan = self._response_fit(resp).prediction_plan
             assert plan is not None
@@ -728,28 +735,28 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
                 if site.startswith(response.prefix)
             }
             planned = {predictor.prefix: predictor for predictor in plan.predictors}
+            outputs |= {(resp, key): item.output for key, item in planned.items()}
             for parameter, prefix, predictor in response.lens._predictor_items(
                 response.formula
             ):
+                scope = name_scope(
+                    self._response_fit(resp),
+                    parameter,
+                    prefix,
+                    predictor,
+                    renamed[resp],
+                    response=resp if joint else "",
+                    special={
+                        column: label
+                        for (owner, name, column), label in special.items()
+                        if (owner, name) == (resp, parameter)
+                    },
+                )
+                scopes[(resp, prefix)] = scope
                 named = predictor_variables(
                     planned[prefix].terms,
-                    NameScope(
-                        parameter=parameter,
-                        role=planned[prefix].role,
-                        response=resp if joint else "",
-                        formula=predictor,
-                        labels={
-                            column: label
-                            for (owner, column), label in renamed[resp].items()
-                            if owner == parameter
-                        },
-                        states=smooth_states(plan.designs.get(parameter)),
-                        special={
-                            column: label
-                            for (owner, name, column), label in special.items()
-                            if (owner, name) == (resp, parameter)
-                        },
-                        intercept=not (resp in thresholds and parameter == "mu"),
+                    scope.with_(
+                        intercept=not (resp in thresholds and parameter == "mu")
                     ),
                     local,
                 )
@@ -874,19 +881,13 @@ class MultivariateFit(JointPostprocess, EvidenceEffectsMethods, ValueModel):
             ):
                 if not predictor.random_terms:
                     continue
-                if prefix.startswith("nlpar_"):
-                    label = f"{tag(resp)}{parameter}"
-                elif prefix.startswith("dpar_"):
-                    label = f"{parameter}_{resp}" if joint else parameter
-                else:
-                    label = resp if joint else ""
-                varying = self._random(draws, predictor, response.prefix + prefix)
-                for group, coefficients in varying.items():
-                    for coef, value in coefficients.items():
-                        brms_coef = coefficient_label(resp, parameter, coef)
-                        for index, level in enumerate(levels[group]):
-                            name = f"r_{group}__{label}" if label else f"r_{group}"
-                            result[f"{name}[{level},{brms_coef}]"] = value[:, :, index]
+                for item in level_coefficients(
+                    self._random(draws, predictor, response.prefix + prefix),
+                    scopes[(resp, prefix)],
+                    outputs[(resp, prefix)],
+                ):
+                    for index, level in enumerate(levels[item.group]):
+                        result[item.variable(level)] = item.values[:, :, index]
         for law in block_laws:
             consumed.update(law.correlation.sites)
             consumed.update(

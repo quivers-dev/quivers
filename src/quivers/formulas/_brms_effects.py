@@ -1810,7 +1810,6 @@ def brms_conditional_smooths(
                 compact = re.sub(r"\s", "", label)
                 if wanted is not None and compact not in wanted:
                     continue
-                owner = f"{parameter}_{response}" if response else parameter
                 names = {
                     n
                     for n in getattr(term, "var_names", set())
@@ -1883,44 +1882,54 @@ def brms_conditional_smooths(
                     draws=joint_draws,
                     site_prefix=site_prefix,
                 )
-                frame = cast(pd.DataFrame, grid[variables]).copy()
-                plotted = covars[:2]
-                for i, name in enumerate(plotted, start=1):
-                    frame[f"effect{i}__"] = _col(frame, name).to_numpy()
-                if len(numeric) == 2 and numeric[1] and not surface:
-                    frame["effect2__"] = _second_effect_labels(
-                        _col(frame, plotted[1]), None
+                output = next(
+                    item.output
+                    for item in plan.predictors
+                    if item.parameter == parameter
+                )
+                # A vector-valued parameter has one effect per coordinate.
+                parameters = output.parameters if output is not None else (parameter,)
+                effects = eta.unbind(-1) if output is not None else (eta,)
+                for coordinate, values in zip(parameters, effects, strict=True):
+                    name = f"{coordinate}_{response}" if response else coordinate
+                    frame = cast(pd.DataFrame, grid[variables]).copy()
+                    plotted = covars[:2]
+                    for i, covariate in enumerate(plotted, start=1):
+                        frame[f"effect{i}__"] = _col(frame, covariate).to_numpy()
+                    if len(numeric) == 2 and numeric[1] and not surface:
+                        frame["effect2__"] = _second_effect_labels(
+                            _col(frame, plotted[1]), None
+                        )
+                    frame["cond__"] = (
+                        pd.Categorical(rows2labels(cast(pd.DataFrame, frame[byvars])))
+                        if byvars
+                        else pd.Categorical(["1"] * len(frame))
                     )
-                frame["cond__"] = (
-                    pd.Categorical(rows2labels(cast(pd.DataFrame, frame[byvars])))
-                    if byvars
-                    else pd.Categorical(["1"] * len(frame))
-                )
-                spag = (
-                    _spaghetti(frame, eta, tuple(plotted))
-                    if spaghetti and not show_surface and numeric[0]
-                    else None
-                )
-                stats = _summary(eta.double(), probs, True)
-                frame["estimate__"] = stats[:, 0]
-                frame["se__"] = stats[:, 1]
-                frame["lower__"] = stats[:, 2]
-                frame["upper__"] = stats[:, 3]
-                points = cast(pd.DataFrame, data[variables]).copy()
-                for i, name in enumerate(covars, start=1):
-                    points[f"effect{i}__"] = points[name].to_numpy()
-                out.append(
-                    EffectFrame(
-                        name=f"{owner}: {compact}",
-                        effects=tuple(plotted),
-                        response=f"{owner}: {compact}",
-                        frame=frame,
-                        draws=eta.double(),
-                        surface=show_surface,
-                        spaghetti=spag,
-                        points=points,
+                    spag = (
+                        _spaghetti(frame, values, tuple(plotted))
+                        if spaghetti and not show_surface and numeric[0]
+                        else None
                     )
-                )
+                    stats = _summary(values.double(), probs, True)
+                    frame["estimate__"] = stats[:, 0]
+                    frame["se__"] = stats[:, 1]
+                    frame["lower__"] = stats[:, 2]
+                    frame["upper__"] = stats[:, 3]
+                    points = cast(pd.DataFrame, data[variables]).copy()
+                    for i, covariate in enumerate(covars, start=1):
+                        points[f"effect{i}__"] = points[covariate].to_numpy()
+                    out.append(
+                        EffectFrame(
+                            name=f"{name}: {compact}",
+                            effects=tuple(plotted),
+                            response=f"{name}: {compact}",
+                            frame=frame,
+                            draws=values.double(),
+                            surface=show_surface,
+                            spaghetti=spag,
+                            points=points,
+                        )
+                    )
     if not out:
         raise ValueError("no valid smooth terms found in the model")
     return BrmsConditionalEffects(effects=tuple(out), smooths_only=True)

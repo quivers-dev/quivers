@@ -17,9 +17,10 @@ import torch
 
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.formulas._smooth import SmoothState
-from quivers.formulas._term import Term, VariableDecl
+from quivers.formulas._term import OutputAxis, Term, VariableDecl
 from quivers.formulas._variable_catalogue import (
     SmoothNames,
+    brms_rename,
     scalar_coordinates,
     smooth_names,
 )
@@ -236,3 +237,104 @@ def predictor_variables(
         sites=sites,
         read=frozenset(read),
     )
+
+
+class LevelCoefficient(ValueModel):
+    """One scalar group-level coefficient and its brms name.
+
+    Parameters
+    ----------
+    group : str
+        Grouping factor.
+    infix : str
+        Parameter and response part of the name.
+    label : str
+        Coefficient label; a coefficient indexed by position ends in its
+        index.
+    values : torch.Tensor
+        Draws with chain, draw, and level axes.
+    """
+
+    group: str
+    infix: str
+    label: str
+    values: torch.Tensor = dx.field(opaque=True, extras=OPAQUE_BY_IDENTITY)
+
+    @property
+    def name(self) -> str:
+        """Return the label brms's ``ranef`` gives the coefficient.
+
+        Returns
+        -------
+        str
+            The parameter, the response, and the coefficient.
+        """
+        return self.infix + self.label
+
+    def variable(self, level: str) -> str:
+        """Return brms's variable of one level.
+
+        Parameters
+        ----------
+        level : str
+            Level of the grouping factor.
+
+        Returns
+        -------
+        str
+            ``r_<group>__<parameter>[<level>,<coefficient>]``.
+        """
+        owner = f"__{self.infix.rstrip('_')}" if self.infix else ""
+        return f"r_{self.group}{owner}[{level},{self.label}]"
+
+
+def level_coefficients(
+    varying: Mapping[str, Mapping[str, torch.Tensor]],
+    scope: NameScope,
+    output: OutputAxis | None,
+) -> tuple[LevelCoefficient, ...]:
+    """Name the group-level coefficients of one predictor.
+
+    Parameters
+    ----------
+    varying : Mapping[str, Mapping[str, torch.Tensor]]
+        Draws by grouping factor and coefficient label, with chain, draw, and
+        level axes, and a coordinate axis for coefficient vectors.
+    scope : NameScope
+        Names of the predictor.
+    output : OutputAxis or None
+        Axis of the predictor.
+
+    Returns
+    -------
+    tuple[LevelCoefficient, ...]
+        One scalar coefficient per label and coordinate.
+    """
+    result: list[LevelCoefficient] = []
+    for group, coefficients in varying.items():
+        for coefficient, values in coefficients.items():
+            label = scope.special.get(coefficient, scope.label(coefficient))
+            if coefficient not in scope.labels and coefficient not in scope.special:
+                label = brms_rename(coefficient)
+            if values.ndim == 3:
+                result.append(
+                    LevelCoefficient(
+                        group=group, infix=scope.infix, label=label, values=values
+                    )
+                )
+                continue
+            parts = (
+                [(scope.coordinate(name).infix, label) for name in output.parameters]
+                if output is not None and len(output.parameters) == values.shape[-1]
+                else [
+                    (scope.infix, f"{label}[{index + 1}]")
+                    for index in range(values.shape[-1])
+                ]
+            )
+            result.extend(
+                LevelCoefficient(
+                    group=group, infix=infix, label=name, values=values[..., index]
+                )
+                for index, (infix, name) in enumerate(parts)
+            )
+    return tuple(result)

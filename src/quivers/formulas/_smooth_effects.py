@@ -107,6 +107,10 @@ def conditional_smooths(
     draws = dict(
         fitted.draws(num_samples=num_samples, seed=seed) if draws is None else draws
     )
+    draws = {
+        site: value.double() if value.is_floating_point() else value
+        for site, value in draws.items()
+    }
     if site_prefix:
         draws = {
             site.removeprefix(site_prefix): value

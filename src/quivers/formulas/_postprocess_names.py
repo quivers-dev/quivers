@@ -26,7 +26,11 @@ from quivers.formulas._priors import PriorTarget
 from quivers.formulas._smooth import smooth_states
 from quivers.formulas._threshold_groups import LOCATION_SITE
 from quivers.formulas.formula import Formula
-from quivers.formulas._name_scope import NameScope, predictor_variables
+from quivers.formulas._name_scope import (
+    NameScope,
+    level_coefficients,
+    predictor_variables,
+)
 from quivers.formulas._variable_catalogue import (
     brms_order,
     brms_rename,
@@ -322,6 +326,56 @@ def _location_first(fit: BayesianFit) -> list[tuple[str, str, Formula]]:
     return sorted(fit._predictor_items(), key=rank)
 
 
+def name_scope(
+    fit: BayesianFit,
+    parameter: str,
+    prefix: str,
+    predictor: Formula,
+    labels: Mapping[tuple[str, str], str],
+    *,
+    response: str = "",
+    special: Mapping[str, str] | None = None,
+) -> NameScope:
+    """Build the names of one predictor of a fit.
+
+    Parameters
+    ----------
+    fit : BayesianFit
+        Fitted model, or the response view of a joint fit.
+    parameter : str
+        Predicted parameter.
+    prefix : str
+        Its native namespace.
+    predictor : Formula
+        Evaluated predictor.
+    labels : Mapping[tuple[str, str], str]
+        Design labels of the fit (`coefficient_labels`).
+    response : str
+        Response part of the names; empty for a single response.
+    special : Mapping[str, str] or None
+        Labels of special-effects columns, by column name.
+
+    Returns
+    -------
+    NameScope
+        The names of the predictor.
+    """
+    plan = fit.prediction_plan
+    return NameScope(
+        parameter=parameter,
+        role="nlpar" if prefix.startswith("nlpar_") else "dpar",
+        response=response,
+        formula=predictor,
+        labels={
+            column: label
+            for (owner, column), label in labels.items()
+            if owner == parameter
+        },
+        states=smooth_states(plan.designs.get(parameter) if plan is not None else None),
+        special=dict(special or {}),
+    )
+
+
 def single_variables(
     fit: BayesianFit, *, num_samples: int | None, seed: int
 ) -> dict[str, torch.Tensor]:
@@ -368,22 +422,14 @@ def single_variables(
     shrunk: dict[str, str] = {}
     items = _location_first(fit)
     planned = {predictor.prefix: predictor for predictor in plan.predictors}
-    for parameter, prefix, predictor in items:
+    scopes = {
+        prefix: name_scope(fit, parameter, prefix, predictor, labels)
+        for parameter, prefix, predictor in items
+    }
+    for parameter, prefix, _ in items:
         named = predictor_variables(
             planned[prefix].terms,
-            NameScope(
-                parameter=parameter,
-                role=planned[prefix].role,
-                response="",
-                formula=predictor,
-                labels={
-                    column: label
-                    for (owner, column), label in labels.items()
-                    if owner == parameter
-                },
-                states=smooth_states(plan.designs.get(parameter)),
-                intercept=not (thresholds and parameter == "mu"),
-            ),
+            scopes[prefix].with_(intercept=not (thresholds and parameter == "mu")),
             draws,
         )
         population |= named.population
@@ -527,15 +573,10 @@ def single_variables(
     for parameter, prefix, predictor in items:
         if not predictor.random_terms:
             continue
-        suffix = "" if parameter == "mu" else f"__{parameter}"
         varying = fit._random_effects(draws, shape, predictor, prefix)
-        for group, coefficients in varying.items():
-            for coef, value in coefficients.items():
-                label = labels.get((parameter, coef), brms_rename(coef))
-                for index, level in enumerate(group_levels[group]):
-                    group_coefficients |= scalar_coordinates(
-                        f"r_{group}{suffix}[{level},{label}]", value[:, :, index]
-                    )
+        for item in level_coefficients(varying, scopes[prefix], planned[prefix].output):
+            for index, level in enumerate(group_levels[item.group]):
+                group_coefficients[item.variable(level)] = item.values[:, :, index]
     return checked_variables(
         brms_order(
             population

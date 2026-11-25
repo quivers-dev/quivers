@@ -1616,8 +1616,7 @@ class BasisTerm(ValueModel):
         torch.Tensor
             Coefficients by basis coordinate, then output coordinate.
         """
-        raw = draws[self.name + "_z"].double()
-        scale = draws[self.scale].double()
+        raw, scale = draws[self.name + "_z"], draws[self.scale]
         if self.output is not None:
             raw = raw.unflatten(-1, (-1, self.output.size))
         return scale.unsqueeze(2) * raw
@@ -1656,7 +1655,9 @@ class BasisTerm(ValueModel):
             output axis.
         """
         design = torch.tensor(self.matrix)
-        return torch.einsum("cdj...,nj->cdn...", self.coefficients(draws), design)
+        return torch.einsum(
+            "cdj...,nj->cdn...", self.coefficients(draws).to(design), design
+        )
 
     def contributions(self) -> tuple[Contribution, ...]:
         """List the bound summands of the term.
