@@ -1192,6 +1192,48 @@ def _gp_design(
     return terms
 
 
+def _distinct_processes(
+    blocks: Sequence[GaussianDesignTerm], earlier: Sequence[GaussianDesignTerm]
+) -> list[GaussianDesignTerm]:
+    """Give the Gaussian processes of one covariate labels of their own.
+
+    Parameters
+    ----------
+    blocks : Sequence[GaussianDesignTerm]
+        Blocks of one ``gp()`` term.
+    earlier : Sequence[GaussianDesignTerm]
+        Blocks of the terms before it.
+
+    Returns
+    -------
+    list[GaussianDesignTerm]
+        The blocks. A label an earlier block has takes brms's suffix ``__1``,
+        ``__2`` and so on.
+    """
+    used = {block.gp.label for block in earlier if block.gp is not None}
+    result = []
+    for block in blocks:
+        assert block.gp is not None
+        repeat = next(
+            count
+            for count in range(len(used) + 1)
+            if block.gp.label + (f"__{count}" if count else "") not in used
+        )
+        suffix = f"__{repeat}" if repeat else ""
+        label = block.gp.label + suffix
+        used.add(label)
+        process = block.gp.with_(
+            label=label,
+            lscale_labels=tuple(name + suffix for name in block.gp.lscale_labels),
+        )
+        result.append(
+            block.with_(gp=process, qvr_name="gp_" + _qvr_name(label))
+            if suffix
+            else block
+        )
+    return result
+
+
 def _explode_term(term_name: str, term, n_obs: int) -> list[FixedColumn]:
     """Explode a single formulae Term into one or more FixedColumn
     entries, matching R/brms's one-coefficient-per-column convention.
@@ -1800,7 +1842,11 @@ def _formula_and_design(
                     or transform.state is None
                 ):
                     raise ValueError("gp() terms require the retained basis evaluator")
-                design_terms.extend(_gp_design(term_name, transform, columns))
+                design_terms.extend(
+                    _distinct_processes(
+                        _gp_design(term_name, transform, columns), design_terms
+                    )
+                )
             elif modifier in _SMOOTH_CALLS:
                 transform = getattr(call, "stateful_transform", None)
                 if (

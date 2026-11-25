@@ -580,3 +580,29 @@ def test_categorical_predictors_give_each_category_a_gp():
     )
     draws = fitted.draws(num_samples=1)
     assert draws["lscale_gpx"].shape[-1] == draws["sdgp_gpx"].shape[-1] == 2
+
+
+def test_processes_of_one_covariate_are_terms_of_their_own():
+    """brms draws one sdgp and one lscale per term and repairs the later names."""
+    fitted = fit(
+        "y ~ gp(x, k = 4, c = 1.25) + gp(x, k = 3, c = 1.5)",
+        data=FRAME,
+        method="svi",
+        num_steps=0,
+    )
+    draws = fitted.draws(num_samples=2, seed=1)
+    assert draws["gp_gpx_z"].shape[-1] == 4 and draws["gp_gpx_1_z"].shape[-1] == 3
+    assert {"sdgp_gpx", "sdgp_gpx__1", "lscale_gpx", "lscale_gpx__1"} <= set(
+        fitted.variables(num_samples=1)
+    )
+    total = fitted.posterior_linpred(num_samples=2, seed=1)
+    parts = [
+        conditional_smooths(fitted, term, FRAME, num_samples=2, seed=1)
+        for term in ("gp(x, k=4, c=1.25)", "gp(x, k=3, c=1.5)")
+    ]
+    torch.testing.assert_close(
+        total.double(),
+        draws["intercept"][..., None].double() + parts[0] + parts[1],
+        rtol=1e-5,
+        atol=1e-5,
+    )
