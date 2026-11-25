@@ -99,6 +99,7 @@ from quivers.transpile.renderers._qiec import (
     qiec_helper_families_used,
     render_computations_dynamic,
 )
+from quivers.transpile.renderers._subtree import subtree_vertices, vertex_kinds
 
 
 class PyMCRenderer(RendererBase):
@@ -1752,14 +1753,15 @@ def _load_runtime_pymc_helpers() -> tuple[panproto.Schema, tuple[str, ...]]:
             f"no module root parsed from {_RUNTIME_PYMC_PATH}; the "
             "renderer expects a valid Python module of grafted helpers."
         )
+    children = {
+        edge.tgt
+        for edge in schema.edges
+        if edge.src == module_id and edge.kind == "child_of"
+    }
     roots = tuple(
         v.id
         for v in schema.vertices
-        if v.kind == "function_definition"
-        and any(
-            e.src == module_id and e.tgt == v.id and e.kind == "child_of"
-            for e in schema.edges
-        )
+        if v.kind == "function_definition" and v.id in children
     )
     if not roots:
         raise RuntimeError(
@@ -1770,24 +1772,8 @@ def _load_runtime_pymc_helpers() -> tuple[panproto.Schema, tuple[str, ...]]:
     return schema, roots
 
 
-def _subtree_vertex_ids(schema: panproto.Schema, root: str) -> set[str]:
-    """Return every vertex id reachable from `root` via outgoing
-    edges of `schema`."""
-    seen: set[str] = {root}
-    frontier: list[str] = [root]
-    while frontier:
-        src = frontier.pop()
-        for edge in schema.edges:
-            if edge.src == src and edge.tgt not in seen:
-                seen.add(edge.tgt)
-                frontier.append(edge.tgt)
-    return seen
-
-
 _RUNTIME_PYMC_SCHEMA, _RUNTIME_PYMC_ROOTS = _load_runtime_pymc_helpers()
-_RUNTIME_PYMC_REACHABLE: set[str] = set()
-for _root in _RUNTIME_PYMC_ROOTS:
-    _RUNTIME_PYMC_REACHABLE |= _subtree_vertex_ids(_RUNTIME_PYMC_SCHEMA, _root)
+_RUNTIME_PYMC_REACHABLE = subtree_vertices(_RUNTIME_PYMC_SCHEMA, _RUNTIME_PYMC_ROOTS)
 
 #: The grafted vertices in the parsed schema's own vertex order, so a
 #: render assigns fresh ids, and the pretty printer emits the helper
@@ -1874,15 +1860,15 @@ def _graft_runtime_pymc_helpers(py: PyCtx, *, probability_only: bool = False) ->
                 for constraint in src_schema.constraints_for(edge.tgt)
             )
         )
-    reachable = set().union(*(_subtree_vertex_ids(src_schema, root) for root in roots))
+    reachable = subtree_vertices(src_schema, roots)
     id_map: dict[str, str] = {}
+    kinds = vertex_kinds(src_schema)
     for old in _RUNTIME_PYMC_SUBTREE:
         if old not in reachable:
             continue
         new = py.fresh("rt")
         id_map[old] = new
-        kind = next(v.kind for v in src_schema.vertices if v.id == old)
-        py.v(new, kind)
+        py.v(new, kinds[old])
         for cstr in src_schema.constraints_for(old):
             py.constraint(new, cstr.sort, cstr.value)
     for edge in src_schema.edges:

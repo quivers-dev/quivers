@@ -92,6 +92,7 @@ from quivers.transpile.renderers._qiec import (
     qiec_helper_roots,
     render_computations_dynamic,
 )
+from quivers.transpile.renderers._subtree import vertex_kinds
 
 
 #: The backend key used to look up `target_names` / `arg_aliases` in
@@ -2079,11 +2080,11 @@ def _emit_runtime_helper(py: PyCtx, class_name: str) -> None:
     subtree = _RUNTIME_NUMPYRO_HELPER_SUBTREES[class_name]
     root = _RUNTIME_NUMPYRO_HELPER_ROOTS[class_name]
     id_map: dict[str, str] = {}
+    kinds = vertex_kinds(src_schema)
     for old in subtree:
         new = py.fresh("rh")
         id_map[old] = new
-        kind = next(v.kind for v in src_schema.vertices if v.id == old)
-        py.v(new, kind)
+        py.v(new, kinds[old])
         for cstr in src_schema.constraints_for(old):
             py.constraint(new, cstr.sort, cstr.value)
     for edge in src_schema.edges:
