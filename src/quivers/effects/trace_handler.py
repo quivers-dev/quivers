@@ -339,9 +339,15 @@ class TraceHandler(EffectHandler):
             environment[name] = (
                 value[0] if run.carries_run_axis(step.program, name) else value
             )
+        factorization = spec.units
+        conditions = run.conditions(
+            (lambda name: f"{name}{occurrence}") if occurrence else None
+        )
+        if not conditions.unconditioned and factorization.under is not None:
+            factorization = factorization.under(conditions)
         return (
             SiteUnits(
-                factorization=spec.units,
+                factorization=factorization,
                 environment=environment,
                 occurrence=occurrence,
             ),

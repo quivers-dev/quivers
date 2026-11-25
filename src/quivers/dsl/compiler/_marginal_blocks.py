@@ -34,8 +34,11 @@ from quivers.continuous.plate import (
 from quivers.continuous.program_steps import (
     Environment,
     Indexed,
+    PlateMembers,
     ResponseLaw,
+    RunConditions,
     StepArgument,
+    StepFunction,
     UnitFactorization,
     UnitRows,
     reading,
@@ -43,6 +46,7 @@ from quivers.continuous.program_steps import (
 )
 from quivers.continuous.param_transforms import _validate_parameter
 from quivers.continuous.programs import _lookup_arg
+from quivers.continuous.unit_subsets import unit_coefficients, units_subsampled
 from quivers.dsl.compiler._prelude import CompileError
 from quivers.effects._observation_events import RecordedObservation, resolve_event
 from quivers.effects._observation_weights import WeightedObservation, checked_weights
@@ -261,6 +265,10 @@ def _observation_parameter(
         # their columns.
         theta = theta.unsqueeze(0)
     return theta
+
+
+#: A run that evaluates every factor in full.
+UNCONDITIONED = RunConditions()
 
 
 def unit_positions(
@@ -692,29 +700,36 @@ class GroupedObservation(ValueModel):
             **_aligned_roles(roles, rows, len(distribution.batch_shape), 1),
         )
 
-    def response_rows(self, env: Environment) -> torch.Tensor:
+    def response_rows(
+        self, env: Environment, kept: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """The response along its rows, without a run axis of length one.
 
         Parameters
         ----------
         env : Environment
             The bindings.
+        kept : torch.Tensor or None
+            The rows kept of a subsampled plate. The response may then be
+            given at every row or at the rows kept, in their order.
 
         Returns
         -------
         torch.Tensor
-            The response, ``(rows, *event)``.
+            The response, ``(rows, *event)``, at the rows kept.
 
         Raises
         ------
         ValueError
-            If the response holds several runs.
+            If the response holds several runs, or neither every row nor
+            the rows kept.
         """
         response = env[self.response]
+        extents = {self.rows, *(() if kept is None else (int(kept.numel()),))}
         if (
             response.dim() >= 2
-            and int(response.shape[0]) != self.rows
-            and int(response.shape[1]) == self.rows
+            and int(response.shape[0]) not in extents
+            and int(response.shape[1]) in extents
         ):
             # The observation carries a leading axis of runs before its rows.
             runs = int(response.shape[0])
@@ -726,9 +741,60 @@ class GroupedObservation(ValueModel):
                     f"run's data"
                 )
             response = response[0]
+        if kept is None:
+            return response
+        if int(response.shape[0]) == self.rows:
+            return response.index_select(0, kept.to(response.device))
+        if int(response.shape[0]) != int(kept.numel()):
+            raise ValueError(
+                f"observation {self.response!r} has {int(response.shape[0])} rows, "
+                f"neither the {self.rows} of plate {self.row_axis!r} nor the "
+                f"{int(kept.numel())} kept"
+            )
         return response
 
-    def log_prob(self, env: Environment, *, powers: bool = True) -> torch.Tensor:
+    def kept_rows(self, conditions: RunConditions) -> torch.Tensor | None:
+        """The rows a run under conditions scores.
+
+        Parameters
+        ----------
+        conditions : RunConditions
+            The run's conditions.
+
+        Returns
+        -------
+        torch.Tensor or None
+            The rows kept of the observation's plate, or ``None`` when the
+            plate is not subsampled.
+        """
+        return conditions.subsets.get(self.row_axis)
+
+    def scored_units(self, env: Environment, conditions: RunConditions) -> torch.Tensor:
+        """The unit of each row a run under conditions scores.
+
+        Parameters
+        ----------
+        env : Environment
+            The bindings.
+        conditions : RunConditions
+            The run's conditions.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(rows scored,)``.
+        """
+        units = self.unit_rows(env)
+        kept = self.kept_rows(conditions)
+        return units if kept is None else units[kept.to(units.device)]
+
+    def log_prob(
+        self,
+        env: Environment,
+        *,
+        powers: bool = True,
+        conditions: RunConditions = UNCONDITIONED,
+    ) -> torch.Tensor:
         """The log likelihood of each row at each class.
 
         Parameters
@@ -737,50 +803,76 @@ class GroupedObservation(ValueModel):
             The bindings.
         powers : bool
             Whether the rows' likelihood powers multiply their scores.
+        conditions : RunConditions
+            The run's conditions. A fixed response has no factor, so its
+            rows score zero; a subsampled plate scores the rows it keeps.
 
         Returns
         -------
         torch.Tensor
-            ``(rows, *class_sizes)``.
+            ``(rows scored, *class_sizes)``.
         """
-        response = self.response_rows(env)
+        kept = self.kept_rows(conditions)
+        if self.response in conditions.fixed:
+            scored = self.row_count(env) if kept is None else int(kept.numel())
+            parts, _ = self._parts(env, self.row_count(env))
+            dtype = next(
+                (part.dtype for part in parts if part.is_floating_point()),
+                torch.get_default_dtype(),
+            )
+            return torch.zeros(
+                scored,
+                *self.class_sizes,
+                dtype=dtype,
+                device=env[self.response].device,
+            )
+        response = self.response_rows(env, kept)
         rows = int(response.shape[0]) if response.dim() >= 1 else self.rows
-        parts, row_parts = self._parts(env, rows)
-        declared_rows = rows
+        declared_rows = rows if kept is None else self.row_count(env)
+        parts, row_parts = self._parts(env, declared_rows)
+        scored = rows
+        selected = kept
         active: torch.Tensor | None = None
         weights: torch.Tensor | None = None
         if powers and self.weights is not None:
             weights = checked_weights(
                 env[self.weights] if isinstance(self.weights, str) else self.weights,
                 response,
-                rows,
-            ).expand(rows)
+                declared_rows,
+            ).expand(declared_rows)
+            if kept is not None:
+                weights = weights.index_select(0, kept.to(weights.device))
             active = torch.nonzero(weights > 0, as_tuple=False).flatten()
             if active.numel() == 0:
                 zero = (weights * 0.0).sum()
                 for part in parts:
                     zero = zero + (part * 0.0).sum()
-                return zero.expand(rows, *self.class_sizes)
-            if active.numel() == rows:
+                return zero.expand(scored, *self.class_sizes)
+            if active.numel() == scored:
                 # Dense weights need no response or parameter copies.
                 active = None
             else:
                 response = response.index_select(0, active)
-                parts = [
-                    part.index_select(0, active.to(part.device)) if is_row else part
-                    for part, is_row in zip(parts, row_parts, strict=True)
-                ]
+                selected = active if kept is None else kept.to(active.device)[active]
                 rows = int(active.numel())
         roles = self._roles(env)
-        if roles is not None and active is not None:
-            roles = {
-                name: value.index_select(0, active.to(value.device))
-                if isinstance(value, torch.Tensor)
-                and value.ndim
-                and int(value.shape[0]) == declared_rows
-                else value
-                for name, value in roles.items()
-            }
+        if selected is not None:
+            parts = [
+                part.index_select(0, selected.to(part.device)) if is_row else part
+                for part, is_row in zip(parts, row_parts, strict=True)
+            ]
+            roles = (
+                None
+                if roles is None
+                else {
+                    name: value.index_select(0, selected.to(value.device))
+                    if isinstance(value, torch.Tensor)
+                    and value.ndim
+                    and int(value.shape[0]) == declared_rows
+                    else value
+                    for name, value in roles.items()
+                }
+            )
         if self.crosses:
             distribution = self._builder._dist_builder(
                 self._class_parameters(parts, row_parts, rows)
@@ -808,9 +900,7 @@ class GroupedObservation(ValueModel):
         if active is None:
             return score * weights.reshape(shape)
         score = score * weights.index_select(0, active).reshape(shape)
-        return score.new_zeros(declared_rows, *self.class_sizes).index_copy(
-            0, active, score
-        )
+        return score.new_zeros(scored, *self.class_sizes).index_copy(0, active, score)
 
     def _typed(self, response: torch.Tensor, parts: list[torch.Tensor]) -> torch.Tensor:
         """The response at the dtype its family's support is scored in.
@@ -1192,7 +1282,9 @@ class BlockEntry(ValueModel):
         assert self.block is not None
         return self.block.raw_reads
 
-    def value(self, env: Environment, *, powers: bool) -> torch.Tensor:
+    def value(
+        self, env: Environment, *, powers: bool, conditions: RunConditions
+    ) -> torch.Tensor:
         """The contribution over this block's rows or units.
 
         Parameters
@@ -1201,6 +1293,8 @@ class BlockEntry(ValueModel):
             The bindings.
         powers : bool
             Whether likelihood powers apply.
+        conditions : RunConditions
+            The conditions of the run that made the bindings.
 
         Returns
         -------
@@ -1212,10 +1306,10 @@ class BlockEntry(ValueModel):
         if powers or not self.weighted:
             value = env[self.slot]
         elif self.observation is not None:
-            value = self.observation.log_prob(env, powers=False)
+            value = self.observation.log_prob(env, powers=False, conditions=conditions)
         else:
             assert self.block is not None
-            value = self.block.unit_weights(env, powers=False)
+            value = self.block.unit_weights(env, powers=False, conditions=conditions)
         if self.projection is None:
             return value
         return _project_nested_aggregates(
@@ -1424,7 +1518,13 @@ class GroupedBlock:
             prior.shape[0], *(extents.get(name, 1) for name in class_sizes)
         ).expand(self.units, *class_sizes.values())
 
-    def unit_weights(self, env: Environment, *, powers: bool = True) -> torch.Tensor:
+    def unit_weights(
+        self,
+        env: Environment,
+        *,
+        powers: bool = True,
+        conditions: RunConditions = UNCONDITIONED,
+    ) -> torch.Tensor:
         """The log weight of each unit, its classes aggregated.
 
         Parameters
@@ -1433,6 +1533,8 @@ class GroupedBlock:
             The bindings.
         powers : bool
             Whether the observations' likelihood powers apply.
+        conditions : RunConditions
+            The conditions of the run that made the bindings.
 
         Returns
         -------
@@ -1448,7 +1550,7 @@ class GroupedBlock:
         values: list[torch.Tensor] = []
         maps: list[torch.Tensor | tuple[torch.Tensor, ...]] = []
         for entry in self.entries:
-            value = entry.value(env, powers=powers)
+            value = entry.value(env, powers=powers, conditions=conditions)
             extents = dict(zip(entry.classes, value.shape[1:], strict=True))
             value = value.reshape(
                 value.shape[0], *(extents.get(name, 1) for name in sizes)
@@ -1461,7 +1563,15 @@ class GroupedBlock:
                 )
             values.append(value)
             if entry.observation is not None:
-                maps.append(self._index(entry.observation.index_tensors(env)))
+                kept = entry.observation.kept_rows(conditions)
+                maps.append(
+                    self._index(
+                        tuple(
+                            index if kept is None else index[kept.to(index.device)]
+                            for index in entry.observation.index_tensors(env)
+                        )
+                    )
+                )
             else:
                 # An inner block's aggregates already lie at this block's
                 # units.
@@ -1558,8 +1668,49 @@ class GroupedBlock:
             for inner in entry.block.row_maps():
                 yield UnitRows(
                     response=inner.response,
-                    units=_projected_map(inner, entry.projection),
+                    units=_projected(inner.units, entry.projection),
                     one_row_per_unit=inner.one_row_per_unit,
+                )
+
+    def plate_members(self) -> Iterator[PlateMembers]:
+        """The plates whose elements lie in the block's units.
+
+        Yields
+        ------
+        PlateMembers
+            The rows of each observation, and the units of each inner
+            block along each axis of its plate.
+        """
+        for entry in self.entries:
+            if entry.observation is not None:
+                rows = _row_map(entry.observation)
+                yield PlateMembers(
+                    plate=entry.observation.row_axis,
+                    extent=entry.observation.rows,
+                    units=rows,
+                    positions=_row_positions(rows),
+                )
+                continue
+            assert entry.block is not None and entry.projection is not None
+            parents = entry.projection.parents()
+            coordinates = torch.unravel_index(
+                torch.arange(entry.block.units), entry.block.sizes
+            )
+            for axis, extent, along in zip(
+                entry.block.axes, entry.block.sizes, coordinates, strict=True
+            ):
+                yield PlateMembers(
+                    plate=axis,
+                    extent=extent,
+                    units=_fixed_map(parents),
+                    positions=_fixed_map(along),
+                )
+            for inner in entry.block.plate_members():
+                yield PlateMembers(
+                    plate=inner.plate,
+                    extent=inner.extent,
+                    units=_projected(inner.units, entry.projection),
+                    positions=inner.positions,
                 )
 
     def density_obstacle(self) -> str | None:
@@ -1583,8 +1734,15 @@ class GroupedBlock:
                     return reason
         return None
 
-    def factorization(self) -> UnitFactorization:
+    def factorization(
+        self, conditions: RunConditions = UNCONDITIONED
+    ) -> UnitFactorization:
         """The block's score as a sum over its units.
+
+        Parameters
+        ----------
+        conditions : RunConditions
+            The conditions of the run that made the bindings.
 
         Returns
         -------
@@ -1606,7 +1764,7 @@ class GroupedBlock:
             torch.Tensor
                 ``(units,)``.
             """
-            return self.unit_weights(env)
+            return self.unit_weights(env, conditions=conditions)
 
         def raw_weights(env: Environment) -> torch.Tensor:
             """The log weight of each unit without likelihood powers.
@@ -1621,21 +1779,54 @@ class GroupedBlock:
             torch.Tensor
                 ``(units,)``.
             """
-            return self.unit_weights(env, powers=False)
+            return self.unit_weights(env, powers=False, conditions=conditions)
 
         declared = reading(weights, self.reads)
-        return UnitFactorization(
-            latent=self.latent,
-            axes=self.axes,
-            sizes=self.sizes,
-            weights=declared,
-            raw_weights=reading(raw_weights, self.raw_reads) if weighted else declared,
-            rows=tuple(self.row_maps()),
-            density_obstacle=self.density_obstacle(),
+        return _conditioned(
+            UnitFactorization(
+                latent=self.latent,
+                axes=self.axes,
+                sizes=self.sizes,
+                weights=declared,
+                raw_weights=reading(raw_weights, self.raw_reads)
+                if weighted
+                else declared,
+                rows=tuple(self.row_maps()),
+                density_obstacle=self.density_obstacle(),
+                members=tuple(self.plate_members()),
+                under=self.factorization,
+            ),
+            conditions,
         )
 
+    def score(
+        self, env: Environment, conditions: RunConditions = UNCONDITIONED
+    ) -> torch.Tensor:
+        """The block's contribution to the joint.
+
+        Parameters
+        ----------
+        env : Environment
+            The bindings.
+        conditions : RunConditions
+            The run's conditions.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(1,)``: the sum of the units' weights, or its estimate from
+            the units a subsampled plate keeps.
+        """
+        if conditions.unconditioned:
+            return self.unit_weights(env).sum(dim=0).reshape(1)
+        return self.factorization(conditions).weights(env).sum(dim=0).reshape(1)
+
     def response_law(
-        self, observation: GroupedObservation, class_sizes: Mapping[str, int]
+        self,
+        observation: GroupedObservation,
+        class_sizes: Mapping[str, int],
+        conditions: RunConditions = UNCONDITIONED,
+        earlier: tuple[tuple[BlockEntry, ...], ...] | None = None,
     ) -> ResponseLaw:
         """The law of a response given the responses bound before it.
 
@@ -1645,6 +1836,12 @@ class GroupedBlock:
             The response's observation, directly in this block.
         class_sizes : Mapping[str, int]
             The extent of each latent of the program.
+        conditions : RunConditions
+            The run's conditions. A response an intervention fixes says
+            nothing of the classes.
+        earlier : tuple[tuple[BlockEntry, ...], ...] or None
+            The contributions bound before the response to each block
+            around it, outermost first; those made so far when ``None``.
 
         Returns
         -------
@@ -1668,7 +1865,7 @@ class GroupedBlock:
                     0,
                     0,
                 )
-        earlier = tuple(block.entries for block in chain)
+        before = tuple(block.entries for block in chain) if earlier is None else earlier
         axes = tuple(
             {name: class_sizes[name] for name in names[: depth + 1]}
             for depth in range(len(chain))
@@ -1736,8 +1933,8 @@ class GroupedBlock:
                     ``(rows,)``.
                 """
                 levels = [
-                    block._level(env, entries, sizes)
-                    for block, entries, sizes in zip(chain, earlier, axes, strict=True)
+                    block._level(env, entries, sizes, conditions)
+                    for block, entries, sizes in zip(chain, before, axes, strict=True)
                 ]
                 drawn = draw_classes(levels)
                 rows = observation.unit_rows(env).to(drawn[-1].device)
@@ -1752,13 +1949,32 @@ class GroupedBlock:
         for block in chain:
             prior_reads.update((block.prior, *block.prior_indices))
         draw_reads = set(prior_reads)
-        for entries in earlier:
+        for entries in before:
             for entry in entries:
                 draw_reads |= entry.reads
                 if entry.weighted:
                     draw_reads |= entry.raw_reads
+
+        def under(run: RunConditions) -> ResponseLaw:
+            """The law in a run under conditions.
+
+            Parameters
+            ----------
+            run : RunConditions
+                The conditions.
+
+            Returns
+            -------
+            ResponseLaw
+                The law.
+            """
+            return self.response_law(observation, class_sizes, run, before)
+
         return ResponseLaw(
-            marginal=reading(marginal, prior_reads), draw=reading(draw, draw_reads)
+            marginal=reading(marginal, prior_reads),
+            draw=reading(draw, draw_reads),
+            row_axis=observation.row_axis,
+            under=under,
         )
 
     def _level(
@@ -1766,6 +1982,7 @@ class GroupedBlock:
         env: Environment,
         entries: tuple[BlockEntry, ...],
         class_sizes: Mapping[str, int],
+        conditions: RunConditions,
     ) -> GroupLevel:
         """The block's class weights given contributions already made.
 
@@ -1777,6 +1994,8 @@ class GroupedBlock:
             The contributions.
         class_sizes : Mapping[str, int]
             The class axes of the block and the blocks around it.
+        conditions : RunConditions
+            The conditions of the run that made the bindings.
 
         Returns
         -------
@@ -1785,7 +2004,7 @@ class GroupedBlock:
         """
         weights = self.unit_prior(env, class_sizes)
         for entry in entries:
-            value = entry.value(env, powers=False)
+            value = entry.value(env, powers=False, conditions=conditions)
             extents = dict(zip(entry.classes, value.shape[1:], strict=True))
             value = value.reshape(
                 value.shape[0], *(extents.get(name, 1) for name in class_sizes)
@@ -1793,8 +2012,10 @@ class GroupedBlock:
             if entry.observation is None:
                 weights = weights + value
             else:
-                rows = entry.observation.unit_rows(env).to(weights.device)
-                weights = weights.index_add(0, rows, value.to(weights.dtype))
+                rows = entry.observation.scored_units(env, conditions)
+                weights = weights.index_add(
+                    0, rows.to(weights.device), value.to(weights.dtype)
+                )
         return GroupLevel(
             log_weights=weights,
             parent=None
@@ -1854,26 +2075,22 @@ def _row_map(observation: GroupedObservation) -> Callable[[Environment], torch.T
     return reading(rows, observation.index_maps)
 
 
-def _projected_map(
-    inner: UnitRows, projection: GroupProjection
-) -> Callable[[Environment], torch.Tensor]:
-    """A row map into an outer block's units.
+def _row_positions(rows: StepFunction) -> StepFunction:
+    """The position of each row along its plate.
 
     Parameters
     ----------
-    inner : UnitRows
-        The row map into the inner block's units.
-    projection : GroupProjection
-        Where the inner units lie in the outer ones.
+    rows : StepFunction
+        The row map, whose length is the number of rows.
 
     Returns
     -------
-    Callable[[Environment], torch.Tensor]
-        The map from the environment to each row's outer unit.
+    StepFunction
+        From the environment to the rows in order.
     """
 
-    def rows(env: Environment) -> torch.Tensor:
-        """The outer unit of each row.
+    def positions(env: Environment) -> torch.Tensor:
+        """The rows in order.
 
         Parameters
         ----------
@@ -1885,11 +2102,159 @@ def _projected_map(
         torch.Tensor
             ``(rows,)``.
         """
-        units = inner.units(env)
-        return projection.parents(units.device)[units]
+        return torch.arange(int(rows(env).shape[0]))
 
-    declared = reads_of(inner.units)
-    return rows if declared is None else reading(rows, declared)
+    return _reading_as(positions, rows)
+
+
+def _fixed_map(values: torch.Tensor) -> StepFunction:
+    """A map that reads no binding.
+
+    Parameters
+    ----------
+    values : torch.Tensor
+        Its values.
+
+    Returns
+    -------
+    StepFunction
+        From any environment to the values.
+    """
+
+    def fixed(env: Environment) -> torch.Tensor:
+        """The values.
+
+        Parameters
+        ----------
+        env : Environment
+            The bindings, which the map does not read.
+
+        Returns
+        -------
+        torch.Tensor
+            The values.
+        """
+        del env
+        return values
+
+    return reading(fixed, ())
+
+
+def _reading_as(function: StepFunction, other: StepFunction) -> StepFunction:
+    """Declare that a function reads the names another one reads.
+
+    Parameters
+    ----------
+    function : StepFunction
+        The function.
+    other : StepFunction
+        The function whose reads it has.
+
+    Returns
+    -------
+    StepFunction
+        The first function.
+    """
+    declared = reads_of(other)
+    return function if declared is None else reading(function, declared)
+
+
+def _projected(units: StepFunction, projection: GroupProjection) -> StepFunction:
+    """A map into an inner block's units, read in the outer block's.
+
+    Parameters
+    ----------
+    units : StepFunction
+        The map into the inner block's units.
+    projection : GroupProjection
+        Where the inner units lie in the outer ones.
+
+    Returns
+    -------
+    StepFunction
+        The map from the environment to the outer units.
+    """
+
+    def outer(env: Environment) -> torch.Tensor:
+        """The outer unit of each element.
+
+        Parameters
+        ----------
+        env : Environment
+            The bindings.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(elements,)``.
+        """
+        inner = units(env)
+        return projection.parents(inner.device)[inner]
+
+    return _reading_as(outer, units)
+
+
+def _conditioned(
+    factorization: UnitFactorization, conditions: RunConditions
+) -> UnitFactorization:
+    """A factorization without the factors and units a run leaves out.
+
+    Parameters
+    ----------
+    factorization : UnitFactorization
+        The factorization, whose weights already leave out the factors of
+        fixed responses and the rows a subset does not keep.
+    conditions : RunConditions
+        The run's conditions.
+
+    Returns
+    -------
+    UnitFactorization
+        The factorization with the row maps of the responses that are not
+        fixed and, under a subsampled plate of it, the weight of each unit
+        times its coefficient.
+    """
+    if conditions.fixed:
+        factorization = factorization.with_(
+            rows=tuple(
+                item
+                for item in factorization.rows
+                if item.response not in conditions.fixed
+            )
+        )
+    if not units_subsampled(factorization, conditions.subsets):
+        return factorization
+    whole = factorization
+    subsets = conditions.subsets
+
+    def weights(env: Environment) -> torch.Tensor:
+        """The weight of each unit kept times its coefficient.
+
+        Parameters
+        ----------
+        env : Environment
+            The bindings.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(units,)``, zero at a unit not kept, whose own weight is not
+            read.
+        """
+        values = whole.weights(env)
+        coefficients = unit_coefficients(whole, env, subsets).to(values)
+        kept = (coefficients > 0).nonzero().flatten()
+        return torch.zeros_like(values).index_copy(
+            0, kept, coefficients[kept] * values[kept]
+        )
+
+    return whole.with_(
+        weights=weights if whole.reads is None else reading(weights, whole.reads),
+        density_obstacle=(
+            f"the run scores subsets of the plates {sorted(subsets)}, so its "
+            "weights estimate the score and are not the log densities of the units"
+        ),
+    )
 
 
 class EnumeratedObservation(ValueModel):
@@ -1992,45 +2357,65 @@ class EnumeratedObservation(ValueModel):
             array_shape=self.array_shape,
         )
 
-    def value(self, env: Environment) -> torch.Tensor:
+    def kept_rows(self, conditions: RunConditions) -> torch.Tensor | None:
+        """The rows a run under conditions scores.
+
+        Parameters
+        ----------
+        conditions : RunConditions
+            The run's conditions.
+
+        Returns
+        -------
+        torch.Tensor or None
+            The rows kept of the observation's plate, or ``None`` when it
+            has none or the plate is not subsampled.
+        """
+        if self.row_axis is None:
+            return None
+        return conditions.subsets.get(self.row_axis)
+
+    def value(self, env: Environment, kept: torch.Tensor | None = None) -> torch.Tensor:
         """The response without a run axis of length one before its rows.
 
         Parameters
         ----------
         env : Environment
             The bindings.
+        kept : torch.Tensor or None
+            The rows kept of a subsampled plate, at which the response may
+            be given.
 
         Returns
         -------
         torch.Tensor
-            The response.
+            The response, at the layout it is given in.
         """
         response = env[self.response]
         if self.placeholder is None:
             return response
-        rows = int(self.placeholder.shape[0])
+        extents = {
+            int(self.placeholder.shape[0]),
+            *(() if kept is None else (int(kept.numel()),)),
+        }
         if (
             response.dim() >= 2
-            and int(response.shape[0]) == 1 != rows
-            and int(response.shape[1]) == rows
+            and int(response.shape[0]) == 1
+            and 1 not in extents
+            and int(response.shape[1]) in extents
         ):
             return response[0]
         return response
 
-    def row_count(self, env: Environment) -> int:
-        """The number of rows of the response.
-
-        Parameters
-        ----------
-        env : Environment
-            The bindings.
+    def row_count(self) -> int:
+        """The number of rows of the observation.
 
         Returns
         -------
         int
-            The length of the response's plate; one without a plate.
+            The extent of the response's plate; one without a plate.
         """
-        return 1 if self.placeholder is None else int(self.value(env).shape[0])
+        return 1 if self.placeholder is None else int(self.placeholder.shape[0])
 
     def parameter(self, env: Environment, *, drawn: bool = False) -> torch.Tensor:
         """The family's parameter at one value of the latent.
@@ -2078,7 +2463,13 @@ class EnumeratedObservation(ValueModel):
         """
         return None if self.event is None else resolve_event(self.event, env)
 
-    def row_scores(self, env: Environment, *, powers: bool) -> torch.Tensor:
+    def row_scores(
+        self,
+        env: Environment,
+        *,
+        powers: bool,
+        conditions: RunConditions = UNCONDITIONED,
+    ) -> torch.Tensor:
         """The log likelihood of each row at one atom of the latent.
 
         Parameters
@@ -2087,15 +2478,22 @@ class EnumeratedObservation(ValueModel):
             The bindings, the latent's and the body's among them.
         powers : bool
             Whether the rows' likelihood powers multiply their scores.
+        conditions : RunConditions
+            The run's conditions. A subsampled plate scores the rows it
+            keeps.
 
         Returns
         -------
         torch.Tensor
-            ``(rows,)``, with one entry for an observation without a plate.
+            ``(rows scored,)``, with one entry for an observation without
+            a plate.
         """
-        response = self.value(env)
+        kept = self.kept_rows(conditions)
+        response = self.value(env, kept)
         theta = self.parameter(env)
         weights = self.weights if powers else None
+        if kept is not None:
+            return self._kept_scores(env, theta, response, weights, kept)
         if weights is None and self.event is None:
             score = self.family.log_prob(theta, response)
         else:
@@ -2121,6 +2519,78 @@ class EnumeratedObservation(ValueModel):
         if self.placeholder is None:
             return score.sum().reshape(1)
         return score if score.dim() == 1 else score.reshape(score.shape[0], -1).sum(-1)
+
+    def _kept_scores(
+        self,
+        env: Environment,
+        theta: torch.Tensor,
+        response: torch.Tensor,
+        weights: str | float | None,
+        kept: torch.Tensor,
+    ) -> torch.Tensor:
+        """The log likelihood of the rows a subsampled plate keeps.
+
+        Parameters
+        ----------
+        env : Environment
+            The bindings at one atom of the latent.
+        theta : torch.Tensor
+            The family's parameter, shared or one row per observation row.
+        response : torch.Tensor
+            The response, at every row or at the rows kept.
+        weights : str or float or None
+            The likelihood powers that apply.
+        kept : torch.Tensor
+            The rows kept.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(rows kept,)``.
+        """
+        declared = self.declared()
+        assert isinstance(declared, VectorisedObserve)
+        count = int(kept.numel())
+        if int(response.shape[0]) != count:
+            response = response.index_select(0, kept.to(response.device))
+        powers: torch.Tensor | None = None
+        active = torch.arange(count)
+        if weights is not None:
+            powers = checked_weights(
+                env[weights] if isinstance(weights, str) else weights,
+                theta,
+                int(declared.response.shape[0]),
+            ).expand(int(declared.response.shape[0]))
+            powers = powers.index_select(0, kept.to(powers.device))
+            # A row with power zero has no factor, whatever its density.
+            active = (powers > 0).nonzero().flatten().cpu()
+            if not active.numel():
+                return (theta.sum() * 0.0 + powers.sum() * 0.0).expand(count)
+        scored = kept.cpu()[active]
+        response = response.index_select(0, active.to(response.device))
+        arrays = tuple(torch.arange(extent) for extent in self.array_shape)
+        roles = self.roles(env)
+        if theta.dim() and int(theta.shape[0]) not in (
+            1,
+            int(declared.response.shape[0]),
+        ):
+            # A shared parameter without a row axis.
+            theta = theta.unsqueeze(0)
+        score = (
+            declared.log_prob_pointwise_rows(theta, response, scored, *arrays)
+            if roles is None
+            else declared.log_prob_pointwise_rows_event(
+                theta, response, roles, scored, *arrays
+            )
+        )
+        assert isinstance(score, torch.Tensor)
+        score = score.reshape(int(active.numel()), -1).sum(-1)
+        if powers is None:
+            return score
+        active = active.to(score.device)
+        return score.new_zeros(count).index_copy(
+            0, active, score * powers[active.to(powers.device)]
+        )
 
     def marginal(
         self, envs: list[Environment], probabilities: torch.Tensor
@@ -2344,12 +2814,18 @@ class EnumeratedBlock(ValueModel):
             index = _index_map_tensor(env, self.observation.index_map)
             return unit_positions((index.reshape(-1).to(torch.long),), self.sizes)
         device = env[self.observation.response].device
-        rows = self.observation.row_count(env)
+        rows = self.observation.row_count()
         if self.axes:
             return torch.arange(rows, device=device)
         return torch.zeros(rows, dtype=torch.long, device=device)
 
-    def unit_weights(self, env: Environment, *, powers: bool = True) -> torch.Tensor:
+    def unit_weights(
+        self,
+        env: Environment,
+        *,
+        powers: bool = True,
+        conditions: RunConditions = UNCONDITIONED,
+    ) -> torch.Tensor:
         """The log weight of each unit, its atoms aggregated.
 
         Parameters
@@ -2358,6 +2834,9 @@ class EnumeratedBlock(ValueModel):
             The bindings before the block, with the response.
         powers : bool
             Whether the observation's likelihood powers apply.
+        conditions : RunConditions
+            The run's conditions. A fixed response has no factor; a
+            subsampled plate scores the rows it keeps.
 
         Returns
         -------
@@ -2371,17 +2850,23 @@ class EnumeratedBlock(ValueModel):
             observation does not hold one row per element.
         """
         weighted = self.log_prior(env)
-        if self.observation is not None:
-            observation = self.observation
+        observation = self.observation
+        if observation is not None and observation.response not in conditions.fixed:
             scores = torch.stack(
                 [
-                    observation.row_scores(atom, powers=powers)
+                    observation.row_scores(atom, powers=powers, conditions=conditions)
                     for atom in self.atoms(env)
                 ],
                 dim=-1,
             )
+            kept = observation.kept_rows(conditions)
             if not self.axes:
                 weighted = weighted + scores.sum(dim=0, keepdim=True)
+            elif kept is not None:
+                rows = self.unit_rows(env)
+                weighted = weighted.index_add(
+                    0, rows[kept.to(rows.device)], scores.to(weighted.dtype)
+                )
             elif observation.index_map is None:
                 if int(scores.shape[0]) != self.units:
                     raise ValueError(
@@ -2449,8 +2934,37 @@ class EnumeratedBlock(ValueModel):
             return frozenset((self.prior.name, *self.prior.indices))
         return frozenset((self.prior,))
 
-    def factorization(self) -> UnitFactorization:
+    def score(
+        self, env: Environment, conditions: RunConditions = UNCONDITIONED
+    ) -> torch.Tensor:
+        """The block's contribution to the joint.
+
+        Parameters
+        ----------
+        env : Environment
+            The bindings.
+        conditions : RunConditions
+            The run's conditions.
+
+        Returns
+        -------
+        torch.Tensor
+            ``(1,)``: the sum of the units' weights, or its estimate from
+            the units a subsampled plate keeps.
+        """
+        if conditions.unconditioned:
+            return self.unit_weights(env).sum().reshape(1)
+        return self.factorization(conditions).weights(env).sum().reshape(1)
+
+    def factorization(
+        self, conditions: RunConditions = UNCONDITIONED
+    ) -> UnitFactorization:
         """The block's score as a sum over its units.
+
+        Parameters
+        ----------
+        conditions : RunConditions
+            The run's conditions.
 
         Returns
         -------
@@ -2472,7 +2986,7 @@ class EnumeratedBlock(ValueModel):
             torch.Tensor
                 ``(units,)``.
             """
-            return self.unit_weights(env)
+            return self.unit_weights(env, conditions=conditions)
 
         def raw_weights(env: Environment) -> torch.Tensor:
             """The log weight of each unit without likelihood powers.
@@ -2487,9 +3001,10 @@ class EnumeratedBlock(ValueModel):
             torch.Tensor
                 ``(units,)``.
             """
-            return self.unit_weights(env, powers=False)
+            return self.unit_weights(env, powers=False, conditions=conditions)
 
         rows: tuple[UnitRows, ...] = ()
+        members: tuple[PlateMembers, ...] = ()
         weighted = False
         if self.observation is not None:
             observation = self.observation
@@ -2513,24 +3028,39 @@ class EnumeratedBlock(ValueModel):
                 """
                 return self.unit_rows(env)
 
+            units = reading(row_map, names)
             rows = (
                 UnitRows(
                     response=observation.response,
-                    units=reading(row_map, names),
+                    units=units,
                     one_row_per_unit=self._one_row_per_unit(observation.row_axis),
                 ),
             )
+            if observation.row_axis is not None:
+                members = (
+                    PlateMembers(
+                        plate=observation.row_axis,
+                        extent=observation.row_count(),
+                        units=units,
+                        positions=_row_positions(units),
+                    ),
+                )
         declared = reading(weights, self.score_reads)
-        return UnitFactorization(
-            latent=self.latent,
-            axes=self.axes,
-            sizes=self.sizes,
-            weights=declared,
-            raw_weights=reading(raw_weights, self.score_reads)
-            if weighted
-            else declared,
-            rows=rows,
-            density_obstacle=self.density_obstacle(),
+        return _conditioned(
+            UnitFactorization(
+                latent=self.latent,
+                axes=self.axes,
+                sizes=self.sizes,
+                weights=declared,
+                raw_weights=reading(raw_weights, self.score_reads)
+                if weighted
+                else declared,
+                rows=rows,
+                density_obstacle=self.density_obstacle(),
+                members=members,
+                under=self.factorization,
+            ),
+            conditions,
         )
 
     def _one_row_per_unit(self, row_axis: str | None) -> str:
@@ -2633,6 +3163,7 @@ class EnumeratedBlock(ValueModel):
                     self.latent,
                 },
             ),
+            row_axis=observation.row_axis,
         )
 
 

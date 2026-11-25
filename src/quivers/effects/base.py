@@ -30,7 +30,7 @@ provenance.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import lru_cache
 import threading
 from typing import Self
@@ -41,6 +41,7 @@ import torch
 from quivers._values import HeldValue, OPAQUE_BY_IDENTITY, OPAQUE_BY_VALUE
 from quivers.qiec._models import QiecModel
 
+from quivers.continuous.program_steps import RunConditions
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.program_module import ProgramKernel
 from quivers.qiec.effects import HandlerDef
@@ -173,6 +174,9 @@ class RunContext(QiecModel):
         The score contributions that reached the accumulator, in order.
     interventions
         The sites an intervention fixed, by address.
+    fixed
+        The labels of the same sites, an occurrence of a site a scan
+        reaches once per position as ``"<label>@<n>"``.
     annotations
         Per-site annotations handlers attach, keyed by site label.
     parameters
@@ -217,6 +221,9 @@ class RunContext(QiecModel):
         default_factory=list, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     interventions: set[SiteKey] = dx.field(
+        default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
+    )
+    fixed: set[str] = dx.field(
         default_factory=set, opaque=True, extras=OPAQUE_BY_IDENTITY
     )
     annotations: dict[str, dict[str, HeldValue]] = dx.field(
@@ -264,6 +271,45 @@ class RunContext(QiecModel):
             handler answers with.
         """
         return self.kernel.result_type
+
+    def intervene(self, request: RuntimeRequest) -> None:
+        """Record that a site's own factor is not part of the joint.
+
+        Parameters
+        ----------
+        request : RuntimeRequest
+            The site's sample request, whose first argument is its label.
+        """
+        self.interventions.add(self.key_of(request))
+        label = request.arguments[0]
+        assert isinstance(label, str)
+        self.fixed.add(label)
+
+    def conditions(
+        self, occurrence: Callable[[str], str] | None = None
+    ) -> RunConditions:
+        """What the run does to the factors of a score.
+
+        Parameters
+        ----------
+        occurrence : Callable[[str], str] or None
+            From a site's label to the address a step of a scan reads it
+            at; ``None`` for a step outside any scan.
+
+        Returns
+        -------
+        RunConditions
+            The responses fixed, by the names a step reads them under, and
+            the subsets of the subsampled plates.
+        """
+        if occurrence is None:
+            fixed = frozenset(self.fixed)
+        else:
+            bases = {label.rpartition("@")[0] for label in self.fixed}
+            fixed = frozenset(
+                name for name in bases if name and occurrence(name) in self.fixed
+            )
+        return RunConditions(fixed=fixed, subsets=dict(self.subsamples))
 
     def key_of(self, request: RuntimeRequest) -> SiteKey:
         """The address of the site a request belongs to.
@@ -368,6 +414,25 @@ class Installation(QiecModel):
         return Installation(instance=self.instance, runtime=runtime)
 
 
+def fixed_site_values() -> dict[str, torch.Tensor] | None:
+    """The sites the current stack fixes, when it does nothing else.
+
+    Returns
+    -------
+    dict[str, torch.Tensor] or None
+        The value of each fixed site, the innermost handler's where
+        several fix one; ``None`` when a handler on the stack does
+        anything besides fixing sites.
+    """
+    fixed: dict[str, torch.Tensor] = {}
+    for handler in _handler_stack():
+        values = handler.site_values
+        if values is None:
+            return None
+        fixed.update(values)
+    return fixed
+
+
 class EffectHandler(ABC):
     """A handler of a program's canonical instances, stacked by ``with``.
 
@@ -382,6 +447,19 @@ class EffectHandler(ABC):
     Nested ``with`` blocks stack handlers outer-first; the innermost
     handler of an instance is installed closest to the program.
     """
+
+    @property
+    def site_values(self) -> Mapping[str, torch.Tensor] | None:
+        """The values the handler fixes sites to, when it does nothing else.
+
+        Returns
+        -------
+        Mapping[str, torch.Tensor] or None
+            The value of each site, by label, for a handler whose only
+            effect is to answer those sites without scoring them; ``None``
+            for any other handler.
+        """
+        return None
 
     def __enter__(self) -> Self:
         """Push the handler on the thread's stack.

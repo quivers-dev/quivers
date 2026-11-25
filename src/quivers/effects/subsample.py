@@ -12,10 +12,20 @@ whose batch axes include the plate, a plate latent or an observation, is
 scored at the subset's rows only, and its contribution is multiplied by
 ``N / B`` for a plate of ``N`` rows and a subset of ``B``. A site outside
 the plate, a global latent among them, is scored in full and unscaled, and
-so is a ``score`` step, which is a factor of the whole run. Handlers for
+so is a ``score`` step that declares no units, which is a factor of the
+whole run. Handlers for
 several plates compose: a site in two subsampled plates is scored at the
 product of the two subsets and scaled by the product of the two factors,
 and a site in one of two sibling plates by its own plate's factor alone.
+
+A score step that declares its units
+([`UnitFactorization`][quivers.continuous.program_steps.UnitFactorization])
+is a sum over them, and a subsampled plate keeps a subset of the units when
+the plate is a unit axis or no unit has rows both inside and outside the
+subset. Each unit kept is scaled by the number of units over the number
+kept (see [`unit_coefficients`][quivers.continuous.unit_subsets.unit_coefficients]).
+A subset that splits a unit is refused: the joint score of rows that share a
+summed-out latent is not a sum over them.
 
 Within a run a subsampled plate keeps its declared extent: its latents are
 drawn at every row and the program's lets compute every row, so the rows
@@ -40,7 +50,7 @@ from __future__ import annotations
 
 import torch
 
-from quivers.continuous.program_steps import Draw, Observe
+from quivers.continuous.program_steps import Draw, Observe, Score
 from quivers.continuous.programs import MonadicProgram
 from quivers.effects.base import (
     EffectHandler,
@@ -154,7 +164,8 @@ def plate_extents(run: RunContext) -> dict[str, int]:
     -------
     dict[str, int]
         Each plate's number of rows, by name, read from the
-        `MonadicProgram.site_plates` of the programs the run executes.
+        `MonadicProgram.site_plates` of the programs the run executes and
+        from the units their score steps declare.
 
     Raises
     ------
@@ -163,9 +174,16 @@ def plate_extents(run: RunContext) -> dict[str, int]:
     """
     extents: dict[str, int] = {}
     for step in run.kernel.steps:
-        if step.kind != "draw" or not isinstance(step.spec, Draw | Observe):
-            continue
-        for name, extent in site_plates(step.program, step.spec):
+        plates: tuple[tuple[str, int | None], ...] = ()
+        if step.kind == "draw" and isinstance(step.spec, Draw | Observe):
+            plates = site_plates(step.program, step.spec)
+        elif isinstance(step.spec, Score) and step.spec.units is not None:
+            units = step.spec.units
+            plates = (
+                *zip(units.axes, units.sizes, strict=True),
+                *((item.plate, item.extent) for item in units.members),
+            )
+        for name, extent in plates:
             if extent is None:
                 continue
             if extents.setdefault(name, extent) != extent:

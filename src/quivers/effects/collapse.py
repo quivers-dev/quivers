@@ -120,7 +120,7 @@ class CollapseHandler(EffectHandler):
                 value = sampleable.rsample()
                 parents[site] = (sampleable, value)
                 run.annotations.setdefault(site, {})["collapse"] = self.pairs[site]
-                run.interventions.add(run.key_of(request))
+                run.intervene(request)
                 return resume(value)
             if site in children:
                 parent_name = children[site]

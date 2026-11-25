@@ -58,6 +58,7 @@ from quivers.continuous.program_steps import (
     Scan,
     Score,
     Step,
+    RunConditions,
     StepArgument,
     StepFunction,
     UnitFactorization,
@@ -945,6 +946,60 @@ def _single_unit(name: str, width: int | None) -> StepFunction:
         return torch.zeros(positions, dtype=torch.long, device=value.device)
 
     return reading(units, (name,))
+
+
+def _under(
+    function: Callable[[dict[str, torch.Tensor], RunConditions], torch.Tensor],
+    reads: Iterable[str],
+) -> Callable[[RunConditions], StepFunction]:
+    """A step's function in each run, from one of the run's conditions too.
+
+    Parameters
+    ----------
+    function : Callable[[dict[str, torch.Tensor], RunConditions], torch.Tensor]
+        The step's value given the bindings and the run's conditions.
+    reads : Iterable[str]
+        The names it reads from the bindings.
+
+    Returns
+    -------
+    Callable[[RunConditions], StepFunction]
+        From conditions to the function of the bindings alone.
+    """
+    names = frozenset(reads)
+
+    def under(run: RunConditions) -> StepFunction:
+        """The step's function in a run under conditions.
+
+        Parameters
+        ----------
+        run : RunConditions
+            The conditions.
+
+        Returns
+        -------
+        StepFunction
+            The function of the bindings.
+        """
+
+        def conditioned(env: dict[str, torch.Tensor]) -> torch.Tensor:
+            """The step's value under the conditions.
+
+            Parameters
+            ----------
+            env : dict[str, torch.Tensor]
+                The bindings.
+
+            Returns
+            -------
+            torch.Tensor
+                The value.
+            """
+            return function(env, run)
+
+        return reading(conditioned, names)
+
+    return under
 
 
 def _draws_response(steps: Sequence[Step], response: str) -> bool:
@@ -4707,6 +4762,12 @@ class _ProgramsMixin:
                             family.mapping_obstacle(),
                             (step.weights,) if isinstance(step.weights, str) else (),
                         ),
+                        under=_under(
+                            lambda env, run, _observation=observation: (
+                                _observation.log_prob(env, conditions=run)
+                            ),
+                            observation.score_reads,
+                        ),
                     )
                 )
                 block.add(
@@ -4903,6 +4964,12 @@ class _ProgramsMixin:
                             Let(
                                 name=marg_name,
                                 value=_compiled_step(_inner_weights, block.reads),
+                                under=_under(
+                                    lambda env, run, _block=block: _block.unit_weights(
+                                        env, conditions=run
+                                    ),
+                                    block.reads,
+                                ),
                             )
                         )
                         continue
@@ -4923,7 +4990,7 @@ class _ProgramsMixin:
                         torch.Tensor
                             ``(1,)``.
                         """
-                        return _block.unit_weights(env).sum(dim=0).reshape(1)
+                        return _block.score(env)
 
                     steps.append(
                         Score(
@@ -4931,6 +4998,7 @@ class _ProgramsMixin:
                             role="likelihood",
                             score=_compiled_step(_unit_score, block.reads),
                             units=block.factorization(),
+                            under=_under(block.score, block.reads),
                         )
                     )
                     continue
@@ -6416,7 +6484,7 @@ class _ProgramsMixin:
                 shared_vector=shared_vector_theta,
                 row_axis=self._object_expr_text(observe_step.index_set)
                 if isinstance(observe_step, VectorisedObserveStep)
-                else None,
+                else (unit_axes[0] if unit_axes else None),
                 placeholder=None
                 if rows is None
                 else torch.zeros(
@@ -6508,7 +6576,7 @@ class _ProgramsMixin:
             torch.Tensor
                 ``(1,)``.
             """
-            return _block.unit_weights(env).sum().reshape(1)
+            return _block.score(env)
 
         steps.append(
             Score(
@@ -6529,6 +6597,7 @@ class _ProgramsMixin:
                     ),
                 ),
                 units=block.factorization(),
+                under=_under(block.score, block.score_reads),
             )
         )
 

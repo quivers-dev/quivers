@@ -28,8 +28,8 @@ branch. `prepare_joint` declines, naming the reason, a program whose
 entry computation is not such a chain (one with a scan, whose
 recursion depends on the sequence it runs over), a site that is given
 no value, an input of more than one run, host data that is not a
-tensor; and, checked on every call, a call made with handlers on the
-stack, a program whose ``log_joint`` is overridden, and a run under
+tensor; and, checked on every call, a call made with a handler on the
+stack that does more than fix sites, a program whose ``log_joint`` is overridden, and a run under
 another installed evaluator. Those are evaluated on the reference
 machine, or by the override.
 """
@@ -46,7 +46,7 @@ import torch
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.program_steps import Draw, Let, Observe, Score
 from quivers.continuous.programs import MonadicProgram, _evaluator
-from quivers.effects.base import RunContext, _handler_stack
+from quivers.effects.base import RunContext, fixed_site_values
 from quivers.effects.batching import (
     BatchingObstacle,
     UnbatchableProgramError,
@@ -89,9 +89,13 @@ _ADD = cast(Callable[[object, object], object], operator.add)
 type TensorLayout = tuple[tuple[int, ...], torch.dtype, torch.device]
 """The shape, dtype, and device of one tensor."""
 
-type JointSignature = tuple[TensorLayout, tuple[tuple[str, TensorLayout], ...]]
-"""The layout of a scoring call: the input's, and each given value's by
-name, in the order given."""
+type JointSignature = tuple[
+    TensorLayout,
+    tuple[tuple[str, TensorLayout], ...],
+    tuple[tuple[str, TensorLayout], ...],
+]
+"""The layout of a scoring call: the input's, each given value's by name in
+the order given, and each fixed site's by name."""
 
 
 def _layout(value: torch.Tensor) -> TensorLayout:
@@ -125,7 +129,8 @@ def joint_signature(
     Returns
     -------
     JointSignature
-        The input's layout and every value's, by name, in order.
+        The input's layout, every value's, by name, in order, and that of
+        every site the handlers on the stack fix.
 
     Raises
     ------
@@ -139,7 +144,12 @@ def joint_signature(
                 f"joint_signature: {name!r} is a {type(value).__name__}, not a tensor"
             )
         entries.append((name, _layout(value)))
-    return (_layout(x), tuple(entries))
+    fixed = fixed_site_values() or {}
+    return (
+        _layout(x),
+        tuple(entries),
+        tuple((name, _layout(value)) for name, value in sorted(fixed.items())),
+    )
 
 
 def _checked(value: object, subject: str) -> object:
@@ -181,9 +191,20 @@ class _Evaluation:
         Reads a draw's parameters from the run's parameter store.
     clamped : dict[str, torch.Tensor]
         Each site's given value, in the shape its morphism scores.
+    fixed : dict[str, torch.Tensor]
+        The value of each site an intervention fixes.
     """
 
-    __slots__ = ("slots", "steps", "parameters", "clamped", "events", "scores", "total")
+    __slots__ = (
+        "slots",
+        "steps",
+        "parameters",
+        "clamped",
+        "fixed",
+        "events",
+        "scores",
+        "total",
+    )
 
     def __init__(
         self,
@@ -191,11 +212,13 @@ class _Evaluation:
         steps: _HostSteps,
         parameters: Callable[[str, ContinuousMorphism], dict[str, torch.Tensor]],
         clamped: dict[str, torch.Tensor],
+        fixed: dict[str, torch.Tensor],
     ) -> None:
         self.slots = slots
         self.steps = steps
         self.parameters = parameters
         self.clamped = clamped
+        self.fixed = fixed
         # The trace's events in order: a site's label and its density, or
         # a let or score step and its value.
         self.events: list[tuple[str, HostStep | None, torch.Tensor | object]] = []
@@ -294,6 +317,8 @@ class _Sample(_Instruction):
     def execute(self, state: _Evaluation) -> None:
         """Score the given value under the sampleable and bind it.
 
+        A site an intervention fixes takes its value and scores nothing.
+
         Parameters
         ----------
         state : _Evaluation
@@ -304,6 +329,18 @@ class _Sample(_Instruction):
         EvaluationError
             If the site's sampleable has no ``log_prob``.
         """
+        if self.label in state.fixed:
+            value = _checked(state.fixed[self.label], f"intervention {self.label!r}")
+            state.steps.run.fixed.add(self.label)
+            state.slots[self.target] = value
+            state.events.append(
+                (
+                    "site",
+                    None,
+                    (self.label, torch.zeros((), device=state.steps.x.device)),
+                )
+            )
+            return
         value = _checked(state.clamped[self.label], f"observation {self.label!r}")
         sampleable = state.slots[self.sampleable]
         log_prob = getattr(sampleable, "log_prob", None)
@@ -702,9 +739,10 @@ class JointPlan:
         ------
         ValueError
             If the input or a value is not of the prepared layout, or the
-            program is not scored by the reference machine under no
-            handler now (handlers are on the stack, its ``log_joint`` is
-            overridden, or another evaluator is installed).
+            program is not scored by the reference machine now under no
+            handler but those that fix sites (another handler is on the
+            stack, its ``log_joint`` is overridden, or another evaluator
+            is installed).
         Exception
             Any error a host step or a site's density raises.
         """
@@ -717,8 +755,9 @@ class JointPlan:
         if reason is not None:
             raise ValueError(
                 f"JointPlan.evaluate: {reason}; the plan reproduces the reference "
-                "machine under no handler"
+                "machine under no handler but those that fix sites"
             )
+        fixed = fixed_site_values() or {}
         kernel = self._kernel
         run_sites = {
             label: _run_slice(kernel, label, values[label], 1, 0)
@@ -777,6 +816,10 @@ class JointPlan:
             {
                 label: _canonical(_site_morphism(kernel, label), value)
                 for label, value in run_sites.items()
+            },
+            {
+                label: _run_slice(kernel, label, value, 1, 0)
+                for label, value in fixed.items()
             },
         )
         for instruction in self._instructions:
@@ -878,8 +921,9 @@ def _machine_obstacle(program: MonadicProgram) -> str | None:
     """Why the program's log joint is not the reference machine's, now.
 
     A prepared joint reproduces `MonadicProgram.log_joint` on the
-    reference machine with no handler installed. It does not describe a
-    call made while handlers are on the stack, a program whose
+    reference machine with no handler installed but those that fix sites.
+    It does not describe a call made while another handler is on the
+    stack, a program whose
     ``log_joint`` is overridden (by a subclass, or on the instance), or
     a run under another installed evaluator. Each of these can change
     between calls, so it is checked on every call.
@@ -892,10 +936,10 @@ def _machine_obstacle(program: MonadicProgram) -> str | None:
     Returns
     -------
     str | None
-        The reason, or ``None`` when the reference machine with no
-        handler scores the program.
+        The reason, or ``None`` when the reference machine scores the
+        program under no handler but those that fix sites.
     """
-    if _handler_stack():
+    if fixed_site_values() is None:
         return "handlers are on the stack"
     if not isinstance(program, MonadicProgram):
         return f"the model is a {type(program).__name__}, not a MonadicProgram"
@@ -943,7 +987,7 @@ def require_own_joint(program: MonadicProgram) -> None:
     ------
     UnbatchableProgramError
         If the program's joint is not the one its steps define under the
-        reference evaluator with no handler.
+        reference evaluator with no handler but those that fix sites.
     """
     reason = _machine_obstacle(program)
     if reason is not None:
@@ -971,10 +1015,13 @@ def require_batchable(
     UnbatchableProgramError
         If a step does not declare that it can be evaluated at many
         positions, or the program's joint is not the one its steps
-        define under the reference evaluator with no handler.
+        define under the reference evaluator with no handler but those
+        that fix sites.
     """
     require_own_joint(program)
-    obstacles = batching_obstacles(program, latents, given)
+    obstacles = batching_obstacles(
+        program, latents, {*given, *(fixed_site_values() or {})}
+    )
     if obstacles:
         raise UnbatchableProgramError(obstacles)
 
@@ -1001,8 +1048,8 @@ def prepare_joint(
     JointPlan | str
         The plan, or why the program at these values is scored on the
         reference machine instead: an input of more than one run, a
-        value that is not a tensor, handlers on the stack, a site given
-        no value, or an entry computation that is not a straight bind
+        value that is not a tensor, a handler on the stack that does more
+        than fix sites, a site given no value, or an entry computation that is not a straight bind
         chain (a program with a scan).
 
     Raises
@@ -1029,7 +1076,10 @@ def prepare_joint(
     reason = compiler.compile()
     if reason is not None:
         return reason
-    missing = sorted(label for label in compiler.labels if label not in sites)
+    fixed = fixed_site_values() or {}
+    missing = sorted(
+        label for label in compiler.labels if label not in sites and label not in fixed
+    )
     if missing:
         return f"the sites {missing} are given no value"
     axis = _RunAxis(program, {name: per_run_data.get(name, False) for name in data})
@@ -1118,8 +1168,8 @@ class JointPlans:
         -------
         JointPlan | str
             The layout's plan, prepared on first use; or why values of
-            this layout, or any call made while handlers are on the
-            stack, are scored on the reference machine.
+            this layout, or any call made while a handler on the stack
+            does more than fix sites, are scored on the reference machine.
 
         Raises
         ------

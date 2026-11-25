@@ -57,6 +57,7 @@ from quivers.continuous import (
     programs,
     scan,
     spaces,
+    unit_subsets,
 )
 from quivers.continuous._asymmetric_laplace import *  # noqa: F403
 from quivers.continuous._response_time import *  # noqa: F403
@@ -81,6 +82,7 @@ from quivers.continuous.program_steps import *  # noqa: F403
 from quivers.continuous.programs import *  # noqa: F403
 from quivers.continuous.scan import *  # noqa: F403
 from quivers.continuous.spaces import *  # noqa: F403
+from quivers.continuous.unit_subsets import *  # noqa: F403
 from quivers.continuous.morphisms import ContinuousMorphism
 from quivers.continuous.program_steps import StepArgument
 
@@ -188,6 +190,7 @@ __all__ += _ordered.__all__
 __all__ += _zip_hurdle.__all__
 __all__ += log_space.__all__
 __all__ += marginal.__all__
+__all__ += unit_subsets.__all__
 __all__ += boundaries.__all__
 __all__ += _asymmetric_laplace.__all__
 __all__ += _response_time.__all__

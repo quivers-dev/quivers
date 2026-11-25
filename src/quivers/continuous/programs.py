@@ -1255,7 +1255,7 @@ class MonadicProgram(ContinuousMorphism):
         The runs are scored together, each equal to its own score up to
         rounding, when every step declares that it can be evaluated at
         many positions, none draws at random, no host datum is given per
-        run, and no handler is on the stack. Otherwise they are scored
+        run, and no handler on the stack does more than fix sites. Otherwise they are scored
         one by one.
 
         Parameters

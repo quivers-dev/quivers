@@ -36,6 +36,7 @@ from quivers._positions import map_positions, rejects_position
 from quivers._values import OPAQUE_BY_IDENTITY, ValueModel
 from quivers.continuous.program_steps import Draw, Observe
 from quivers.continuous.programs import MonadicProgram
+from quivers.effects.base import fixed_site_values
 from quivers.effects.joint_plan import (
     JointPlans,
     require_batchable,
@@ -726,7 +727,7 @@ class PotentialFn:
                 f"shape (B, {dimension}), got {tuple(positions.shape)}"
             )
         refuse_subsampling(type(self).__name__)
-        given = frozenset(self._observations)
+        given = frozenset((*self._observations, *(fixed_site_values() or {})))
         if given in self._batchable:
             require_own_joint(self._model)
         else:

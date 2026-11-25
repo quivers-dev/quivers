@@ -38,7 +38,16 @@ from quivers.core.morphisms import extract_morphism
 from quivers.continuous.plate import PlateDraw, VectorisedObserve
 from quivers.continuous.spaces import ContinuousSpace
 from quivers.continuous.program_steps import Call as CallStep
-from quivers.continuous.program_steps import Draw, Indexed, Let, Observe, Scan, Score
+from quivers.continuous.program_steps import (
+    Draw,
+    Indexed,
+    Let,
+    Observe,
+    ResponseLaw,
+    RunConditions,
+    Scan,
+    Score,
+)
 from quivers.continuous.programs import install_evaluator, _lookup_arg
 
 from quivers.continuous.programs import MonadicProgram
@@ -48,6 +57,7 @@ from quivers.effects.base import (
     Installation,
     RunContext,
     _handler_stack,
+    fixed_site_values,
 )
 from quivers.effects.batching import batching_obstacles, draws_at_random
 from quivers.effects.checked_program import CheckedProgram
@@ -566,6 +576,37 @@ def _subsampled_rows(
             "only a plate draw or a plated observation can be subsampled"
         )
     return found
+
+
+def _refuse_split_rows(
+    step: HostStep, spec: Observe, law: ResponseLaw, conditions: RunConditions
+) -> None:
+    """Refuse a subset of the entries each row of a response holds.
+
+    Parameters
+    ----------
+    step : HostStep
+        The response's host step.
+    spec : Observe
+        Its step record.
+    law : ResponseLaw
+        Its law, which names the plate of its rows.
+    conditions : RunConditions
+        The run's conditions.
+
+    Raises
+    ------
+    ValueError
+        If a subsampled plate of the response is not the plate of its rows.
+    """
+    for name, _ in site_plates(step.program, spec):
+        if name in conditions.subsets and name != law.row_axis:
+            raise ValueError(
+                f"the subset of plate {name!r} keeps some entries of each row of "
+                f"{step.site!r}; a row's entries are one term of the block's "
+                "class weights, so a part of them does not estimate it. "
+                "Subsample whole units"
+            )
 
 
 def _split_observations(
@@ -1431,7 +1472,12 @@ class _HostSteps:
         if isinstance(spec, Observe) and spec.law is not None:
             assert isinstance(morphism, MarginalizedFactor)
             stripped, _ = self._one_run(step, env)
-            drawing = MarginalizedResponse(morphism, spec.law, stripped)
+            law = spec.law
+            conditions = self._conditions(step)
+            if not conditions.unconditioned and law.under is not None:
+                law = law.under(conditions)
+            _refuse_split_rows(step, spec, law, conditions)
+            drawing = MarginalizedResponse(morphism, law, stripped)
         elif isinstance(spec, Observe) and spec.event is not None:
             from quivers.effects._observation_events import (
                 RecordedObservation,
@@ -1452,7 +1498,13 @@ class _HostSteps:
                 else spec.weights
             )
             drawing = WeightedObservation(drawing, morphism, weights, inp)
-        subsampled = _subsampled_rows(self.run, step, spec, morphism)
+        # A response with a law of its own has its subsampled rows scored
+        # by the step that holds its factor.
+        subsampled = (
+            None
+            if isinstance(spec, Observe) and spec.law is not None
+            else _subsampled_rows(self.run, step, spec, morphism)
+        )
         if subsampled is not None:
             rows, factor = subsampled
             annotations = self.run.annotations.setdefault(step.site, {})
@@ -1613,11 +1665,13 @@ class _HostSteps:
             return env[spec.value]
         if callable(spec.value):
             stripped, carried = self._one_run(step, env)
-            value = (
-                lift(spec.value, f"let step {spec.name!r}", stripped)
-                if spec.batched
-                else spec.value(stripped)
-            )
+            conditions = self._conditions(step)
+            if spec.under is not None and not conditions.unconditioned:
+                value = spec.under(conditions)(stripped)
+            elif spec.batched:
+                value = lift(spec.value, f"let step {spec.name!r}", stripped)
+            else:
+                value = spec.value(stripped)
             if isinstance(value, ChartView | CorpusChart):
                 # The checked program binds a deduction's answer, the
                 # inside weight of its goal.
@@ -1652,15 +1706,37 @@ class _HostSteps:
             self.axis.record(step.program, spec.name, True)
             return torch.zeros(self.x.shape[0], device=self.x.device)
         stripped, carried = self._one_run(step, _environment(step, argument))
-        value = (
-            lift(spec.score, f"score step {spec.name!r}", stripped)
-            if spec.batched
-            else spec.score(stripped)
-        )
+        conditions = self._conditions(step)
+        if spec.under is not None and not conditions.unconditioned:
+            value = spec.under(conditions)(stripped)
+        elif spec.batched:
+            value = lift(spec.score, f"score step {spec.name!r}", stripped)
+        else:
+            value = spec.score(stripped)
         if carried:
             value = _with_run_axis(value)
         self.axis.record(step.program, spec.name, carried)
         return value
+
+    def _conditions(self, step: HostStep) -> RunConditions:
+        """What the run does to the factors a step evaluates.
+
+        Parameters
+        ----------
+        step : HostStep
+            The step.
+
+        Returns
+        -------
+        RunConditions
+            The run's conditions at the step, a site a scan reaches once
+            per position read at the position the run is at.
+        """
+        if not step.scanned:
+            return self.run.conditions()
+        return self.run.conditions(
+            lambda name: site_label(name, self.run.occurrences.get(name, 0) - 1)
+        )
 
     def _pack(self, step: HostStep, argument: HostValue) -> torch.Tensor:
         """Assemble a called program's input from its parameters.
@@ -3094,8 +3170,9 @@ def _mapped_joint(
 
     The runs are scored together, each value given per run mapped along
     the run axis, when every step declares that it can be evaluated at
-    many positions, none draws at random, and no host datum is given per
-    run. Each run's joint is then its own up to rounding, and a run that
+    many positions, none draws at random, no host datum and no fixed site
+    value is given per run, and no handler on the stack does more than fix
+    sites. Each run's joint is then its own up to rounding, and a run that
     raises raises its own error.
 
     Parameters
@@ -3122,7 +3199,8 @@ def _mapped_joint(
         The error the first run to fail raises.
     """
     runs = int(x.shape[0]) if x.dim() else 1
-    if runs <= 1 or _handler_stack() or evaluating():
+    fixed = fixed_site_values()
+    if runs <= 1 or fixed is None or evaluating():
         return None
     sites, supplied, data = _split_observations(program, values)
     per_run_data = check_host_data(program, data, runs=runs)
@@ -3130,6 +3208,12 @@ def _mapped_joint(
         return None
     kernel = _cached_kernel(program, tuple(sorted(data)))
     _check_sequence_layouts(kernel, values)
+    if any(
+        _given_per_run(kernel, label, value, runs)
+        for label, value in fixed.items()
+        if _site_morphism(kernel, label) is not None
+    ):
+        return None
     if _vectorized_sites(program, kernel, sites, supplied, data, runs) is not None:
         return None
     per_run = {
@@ -3141,7 +3225,9 @@ def _mapped_joint(
     }
     varying = {name for name, given in per_run.items() if given}
     entry = {INPUT_NAME, *(program._params or ())}
-    if batching_obstacles(program, varying | entry, values) or draws_at_random(program):
+    if batching_obstacles(
+        program, varying | entry, {*values, *fixed}
+    ) or draws_at_random(program):
         return None
 
     def run_values(
