@@ -1117,6 +1117,18 @@ class FormulaToQVRModule(dx.Lens[Formula, Module, FormulaData]):
         return (*sites.values(), *self._baseline_level_sites)
 
     @property
+    def predictors(self) -> tuple[Predictor, ...]:
+        """Return the linear predictors of the latest forward pass.
+
+        Returns
+        -------
+        tuple[Predictor, ...]
+            The location, the distributional parameters, and the nonlinear
+            parameters. Empty for a mixture, whose components have their own.
+        """
+        return self._predictors
+
+    @property
     def group_laws(self) -> tuple[GroupBlockLaw, ...]:
         """Return the law of each group block of the latest forward pass.
 
